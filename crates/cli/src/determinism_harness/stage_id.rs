@@ -73,7 +73,7 @@ pub enum StageId {
     /// against the `Dockerfile` at the worktree root per run, emits an
     /// OCI tarball to disk, SHA-256s the tarball, and records the
     /// BuildKit-reported image digest. Both fingerprints must match
-    /// across runs for the stage to greenlight.
+    /// across runs for the stage to approve.
     ///
     /// Known non-determinism the workaround set addresses:
     /// - **File mtimes inside layers**: `rewrite-timestamp=true` on the

@@ -84,7 +84,7 @@ pub enum ReconcileState {
         note: String,
     },
     /// The version exists upstream but the LOCAL artifact bytes differ from
-    /// what landed. The one true blocker at any time: the operator must bump
+    /// what was published. The one true blocker at any time: the operator must bump
     /// the version. Honors [`Publisher::required`] at the dispatch arm — a
     /// required publisher's divergence fails the run via the Submitter gate
     /// (the result is recorded as `Failed` and the run exits nonzero) while
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn pending_outcome_round_trips_through_context() {
-        // The slot is single-shot: write once, drain once, then empty.
+        // The slot is single-shot: write once, take once, then empty.
         // Without single-shot semantics, a chocolatey moderation skip
         // would bleed into the next publisher's row at dispatch time.
         let mut ctx = Context::test_fixture();

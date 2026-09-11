@@ -9,7 +9,7 @@
 //! existing artifact-discovery walker picks them up.
 //!
 //! Skips cleanly when `cargo` or `git` are missing from PATH so the
-//! suite stays green on minimal hosts (the documentation-build job,
+//! suite keeps passing on minimal hosts (the documentation-build job,
 //! containers without rustup, etc.).
 //!
 //! Known non-determinism the harness's env workarounds address:

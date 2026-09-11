@@ -159,7 +159,7 @@ pub(crate) fn stage_cloudsmith_file(
 
 /// Format the single default-verbosity summary line for one cloudsmith entry,
 /// collapsing the per-file `uploading …` / `uploaded …` / `skipping …`
-/// firehose into one line. `uploaded` counts artifacts this run newly landed;
+/// firehose into one line. `uploaded` counts artifacts this run newly published;
 /// `skipped` counts artifacts already present with a matching md5 (no upload
 /// issued).
 pub(crate) fn cloudsmith_upload_summary(

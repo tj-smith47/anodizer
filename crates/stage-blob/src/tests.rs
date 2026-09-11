@@ -1456,7 +1456,7 @@ fn test_upload_to_in_memory_store_empty_directory() {
 }
 
 /// Important #3 — `upload_files_owned` returns the list of keys that
-/// successfully landed so `BlobPublisher::run` can record only landed
+/// successfully uploaded so `BlobPublisher::run` can record only uploaded
 /// uploads in evidence (not the planned set). The two test files both
 /// succeed; the returned vec carries both keys in deterministic order.
 #[test]
@@ -1698,7 +1698,7 @@ fn blob_stage_appends_failed_to_publish_report() {
     use anodizer_core::PublisherOutcome;
 
     let mut ctx = make_ctx();
-    // Mid-stream failure: one key landed before the upload errored. The
+    // Mid-stream failure: one key uploaded before the upload errored. The
     // partial-success list is preserved on the helper input, but
     // failed entries record no evidence so a downstream rollback can't
     // mistakenly treat the failed publisher as having a clean

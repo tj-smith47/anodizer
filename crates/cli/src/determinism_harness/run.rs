@@ -88,7 +88,7 @@ impl Harness {
         // When the workflow plans to ship the harness's output via the
         // publish-only path (`--preserve-dist=<path>` set on the harness;
         // `COSIGN_KEY` / `GPG_PRIVATE_KEY` exported on the runner), the
-        // harness's ephemeral signatures would land in the preserved dist
+        // harness's ephemeral signatures would end up in the preserved dist
         // and have to be stripped before re-signing with production keys.
         // Cleaner to never write them: skip the Sign stage entirely.
         //
@@ -451,9 +451,9 @@ impl Harness {
         // `self.preserve_dist == Some(_)` means run-0's tree IS on
         // disk under `dest`. Branch on drift_count alone.
         //
-        // Safety property: shippable bytes must come from a green
+        // Safety property: shippable bytes must come from a passing
         // determinism run, never a drifted one. Drift → remove the
-        // tree; green → write `<dest>/context.json` so the publish-
+        // tree; passing → write `<dest>/context.json` so the publish-
         // only path can rehydrate.
         if let Some(dest) = effective_preserve_dest.as_ref() {
             if report.drift_count > 0 {
@@ -627,7 +627,7 @@ impl Harness {
         // cargo writes to `<cargo_target>/package/<name>-<version>.crate`
         // where `cargo_target` came from `CARGO_TARGET_DIR` in the env
         // block. The env block sets `CARGO_TARGET_DIR=<worktree>/.det-tmp/target`
-        // so the .crate files land there.
+        // so the .crate files end up there.
         let source = worktree_path
             .join(".det-tmp")
             .join("target")

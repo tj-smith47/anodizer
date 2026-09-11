@@ -3,7 +3,7 @@
 //!
 //! The verify-release gate runs LAST and `bail!`s when it finds defects, so by
 //! the time the summary is built the publish report still reads all-`succeeded`
-//! (the publishes genuinely landed). This slot lets the summary state the
+//! (the publishes genuinely succeeded). This slot lets the summary state the
 //! SEPARATE verify-release verdict, so a failing post-publish check surfaces in
 //! the final status block rather than being buried in a stderr `bail!` — the
 //! publishes are real, but the release has unverified defects the operator must

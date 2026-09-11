@@ -38,7 +38,7 @@ pub const CHANGELOG_PROVENANCE_PREFIX: &str = "changelog regenerated for ";
 /// by `crate_name` at `version`: `changelog regenerated for <crate>@<version>`.
 /// Always crate-scoped, so one crate's regeneration can never vouch for a
 /// same-numbered version of a different crate, and a root-only aggregate that
-/// touched no packaged crate's own `CHANGELOG.md` mints no marker at all.
+/// touched no packaged crate's own `CHANGELOG.md` creates no marker at all.
 pub fn changelog_regenerated_marker(crate_name: &str, version: &str) -> String {
     format!("{CHANGELOG_PROVENANCE_PREFIX}{crate_name}@{version}")
 }

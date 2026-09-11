@@ -56,7 +56,7 @@ fn git_stdout(dir: &Path, args: &[&str]) -> String {
 /// tempdir. The publisher clones this via the `git.url` SSH branch
 /// (which is a plain `git clone <localpath>` for a filesystem path),
 /// commits the formula, and pushes back to it. The seeded bare repo is
-/// the assertion surface: its landed `.rb` content + the commit subject
+/// the assertion surface: its published `.rb` content + the commit subject
 /// are inspected after the publish.
 fn make_bare_tap(branch: &str) -> (String, tempfile::TempDir) {
     let bare = tempfile::tempdir().expect("bare tempdir");
@@ -90,7 +90,7 @@ fn make_bare_tap(branch: &str) -> (String, tempfile::TempDir) {
     (bare.path().to_string_lossy().into_owned(), bare)
 }
 
-/// Read the rendered formula `.rb` that landed on the bare tap's
+/// Read the rendered formula `.rb` that reached the bare tap's
 /// `branch` ref (formula lives at the tap root unless `directory:` is
 /// set). Uses `git show <branch>:<path>` to read the pushed object,
 /// not a stale working tree.
@@ -359,7 +359,7 @@ fn homebrew_matching_artifacts_excludes_windows() {
 
 /// The apple-non-macOS targets (`*-apple-ios`/`-tvos`/`-watchos`) are
 /// buildable but carry no `brew`-installable binary; the broad `is_darwin`
-/// ("apple") predicate would wrongly admit them (they land in the formula's
+/// ("apple") predicate would wrongly admit them (they end up in the formula's
 /// untyped `# platform:` url block — a 404-class install). The macOS-specific
 /// `is_macos` eligibility must exclude them while keeping genuine macOS.
 #[test]
@@ -555,7 +555,7 @@ fn render_formula_for_crate_falsy_if_returns_none() {
 
 /// Happy path, single-crate mode: the publisher clones the local bare
 /// tap, writes `mytool.rb`, commits, and pushes. Asserts (1) the return
-/// is `Ok(true)` (a real push happened), (2) the formula `.rb` landed on
+/// is `Ok(true)` (a real push happened), (2) the formula `.rb` reached
 /// the tap's branch ref with the correct class + version + url + sha, and
 /// (3) the commit subject names the formula + version.
 #[test]
@@ -630,7 +630,7 @@ fn publish_to_homebrew_writes_into_configured_directory() {
 }
 
 /// Non-default push branch: `repository.branch` routes the commit onto a
-/// branch other than the tap's seeded default. Asserts the formula landed
+/// branch other than the tap's seeded default. Asserts the formula published
 /// on that branch ref.
 #[test]
 fn publish_to_homebrew_pushes_to_configured_branch() {
@@ -654,7 +654,7 @@ fn publish_to_homebrew_pushes_to_configured_branch() {
 
 /// A custom `commit_msg_template` renders into the actual tap commit
 /// subject. Pins that the template (not a hard-coded string) drives the
-/// landed commit message. `render_commit_msg` registers the formula name
+/// published commit message. `render_commit_msg` registers the formula name
 /// as `ProjectName` (it is invoked with `ident.formula_name`) and the
 /// version as `Version`; the Go-style leading dots are stripped by the
 /// template preprocessor before Tera renders, so `.ProjectName` /
@@ -685,7 +685,7 @@ fn publish_to_homebrew_renders_custom_commit_message() {
 }
 
 /// Idempotent re-publish: running the publisher twice against the same
-/// tap (identical formula content) lands one commit the first time
+/// tap (identical formula content) produces one commit the first time
 /// (Ok(true)) and a no-op the second time (Ok(false)) — the
 /// commit-and-push helper detects the unchanged tree and skips.
 #[test]
@@ -717,7 +717,7 @@ fn publish_to_homebrew_second_run_is_noop() {
 
 /// Workspace lockstep mode: the crate lives only under
 /// `config.workspaces[].crates` (no top-level entry). The publisher must
-/// resolve it via the workspace fallthrough and still land the formula on
+/// resolve it via the workspace fallthrough and still push the formula to
 /// the tap — proving per-crate publish is not single-crate-only.
 #[test]
 fn publish_to_homebrew_workspace_crate_lands_formula() {
@@ -758,7 +758,7 @@ fn publish_to_homebrew_workspace_crate_lands_formula() {
 }
 
 /// Workspace per-crate mode: two crates each carry their OWN homebrew
-/// block pointing at distinct taps; publishing each lands ITS formula on
+/// block pointing at distinct taps; publishing each pushes ITS formula to
 /// ITS tap with ITS own formula name. Proves per-crate config resolution
 /// + per-crate name rendering, not a shared/last-writer-wins config.
 #[test]
@@ -815,7 +815,7 @@ fn publish_to_homebrew_workspace_per_crate_distinct_taps() {
 /// Same-tap cask co-publish: with a `cask:` block + a darwin DiskImage
 /// artifact, the publisher writes the cask alongside the formula into the
 /// same clone and the single commit covers BOTH files. Asserts both
-/// `mytool.rb` (formula) and `Casks/<cask>.rb` landed on the tap, and the
+/// `mytool.rb` (formula) and `Casks/<cask>.rb` reached the tap, and the
 /// commit subject reflects the formula+cask kind.
 #[test]
 fn publish_to_homebrew_co_publishes_cask_into_same_tap() {
@@ -868,7 +868,7 @@ fn publish_to_homebrew_co_publishes_cask_into_same_tap() {
 
 /// PR path: with `pull_request.enabled = true` (same-repo), the publisher
 /// still commits+pushes the formula to the tap AND attempts a PR. The
-/// formula push (the local effect) must land regardless of the PR outcome.
+/// formula push (the local effect) must happen regardless of the PR outcome.
 ///
 /// Hermetic by construction: a failing `gh` stub forces the PR transport's
 /// `gh_is_available()` probe to false, and no token is configured, so the

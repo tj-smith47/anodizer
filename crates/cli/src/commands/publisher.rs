@@ -1482,7 +1482,7 @@ crates:
     #[test]
     fn split_shellwords_yields_no_word_for_an_empty_quoted_string() {
         // An empty quoted run pushes nothing — `current` is still empty when
-        // the closing quote lands, so no zero-length argument is emitted.
+        // the closing quote is emitted, so no zero-length argument is written.
         assert_eq!(words(r#"cmd "" x"#), vec!["cmd", "x"]);
     }
 

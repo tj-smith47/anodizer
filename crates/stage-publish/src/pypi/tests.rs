@@ -1438,7 +1438,7 @@ fn oidc_mint_errors_without_request_env() {
         // send the id-token request for real.
         .sealed_env()
         .build();
-    // live-host-ok: the mint URL is derived from the repository, and only
+    // live-host-ok: the token URL is derived from the repository, and only
     // pypi.org/test.pypi.org derive one at all — a loopback repository would
     // fail the derivation instead of the env gate this test pins. The sealed
     // env above is what makes the run unreachable: hop 1 needs
@@ -1461,7 +1461,7 @@ fn oidc_mint_errors_without_request_env() {
 fn oidc_mode_ignores_a_malformed_inline_token() {
     use super::publisher::resolve_upload_credential;
     // The token field is "Unused when auth: oidc": a stray/malformed inline
-    // token template must NOT be resolved (and abort) before the mint path.
+    // token template must NOT be resolved (and abort) before the token path.
     let ctx = TestContextBuilder::new()
         .project_name("demo")
         .tag("v1.2.3")
@@ -1501,7 +1501,7 @@ fn auto_mode_routes_around_a_token_render_error_to_oidc() {
     // auto's contract is "use whatever credential the environment offers": a
     // `token:` template that fails to render must NOT abort the run when an
     // OIDC context is present — it routes to Trusted Publishing instead. With
-    // a full OIDC context the mint path is taken, so the error is an OIDC-path
+    // a full OIDC context the token path is taken, so the error is an OIDC-path
     // error, never "render token template".
     let mut ctx = TestContextBuilder::new()
         .project_name("demo")
@@ -1521,7 +1521,7 @@ fn auto_mode_routes_around_a_token_render_error_to_oidc() {
     let err = resolve_upload_credential(
         &ctx,
         &cfg,
-        // Custom index → the mint path fast-fails deterministically offline.
+        // Custom index → the token path fast-fails deterministically offline.
         "https://pypi.example.com/legacy/",
         &anodizer_core::retry::RetryPolicy::PREFLIGHT,
         None,
@@ -1579,7 +1579,7 @@ fn oidc_mint_errors_on_custom_index() {
         .tag("v1.2.3")
         .crates(vec![demo_crate("demo", ".")])
         .build();
-    // Even with a full OIDC context, a custom index has no mint endpoint.
+    // Even with a full OIDC context, a custom index has no token endpoint.
     ctx.set_env_source(
         anodizer_core::MapEnvSource::new()
             .with("ACTIONS_ID_TOKEN_REQUEST_URL", "https://actions/x")

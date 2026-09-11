@@ -280,7 +280,7 @@ npm only accepts from a **GitHub-hosted** runner. On a self-hosted runner the pr
 exchange is unavailable, and npm rejects a publish that requests it.
 
 This github-hosted requirement is specific to **npm's provenance policy**, not a property
-of GitHub Actions OIDC in general. GitHub mints a valid OIDC id-token on self-hosted
+of GitHub Actions OIDC in general. GitHub creates a valid OIDC id-token on self-hosted
 runners too; npm's provenance verifier is what rejects the `self-hosted` runner-environment
 claim. Anodizer's other OIDC-authenticated publisher — the [MCP registry](./mcp-registry.md)
 (`auth.type: github-oidc`) — runs on a self-hosted runner without issue, because that
@@ -331,7 +331,7 @@ jobs:
   publish-oidc:                  # github-hosted: npm provenance + PyPI + crates.io TP
     runs-on: ubuntu-latest
     permissions:
-      id-token: write            # mints npm provenance + PyPI + crates.io upload tokens
+      id-token: write            # issues npm provenance + PyPI + crates.io upload tokens
     env:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}   # first-publish fallback; pypi/cargo under auth: oidc need no token
     steps:

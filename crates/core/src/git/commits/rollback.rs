@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command;
 
 /// Committer identity (author + committer name/email) for the rare path
-/// where a git invocation lands on a host with no `user.email` /
+/// where a git invocation reaches a host with no `user.email` /
 /// `user.name` configured — notably `actions/checkout@v6`, which does
 /// NOT set committer identity for the workflow runner. Resolved once per
 /// caller and threaded through to [`revert_commit_in`] so the CLI never

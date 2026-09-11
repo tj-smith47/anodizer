@@ -137,7 +137,7 @@ pub(crate) const COSIGN_CONSENT_ENV: &str = "COSIGN_YES";
 /// CI, so the prompt hangs or the banner pollutes the log. cosign's documented
 /// non-interactive consent is the global `--yes` flag or its `COSIGN_YES` env
 /// equivalent; the env form is preferred here because it is subcommand- and
-/// arg-position-agnostic (one seam covers `sign`, `sign-blob`, and any
+/// arg-position-agnostic (one point covers `sign`, `sign-blob`, and any
 /// user-supplied args) and cannot collide with a positional the user wrote.
 ///
 /// A no-op for non-cosign signers. Idempotent and operator-respecting: an

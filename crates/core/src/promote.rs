@@ -87,7 +87,7 @@ pub fn is_promotion_capable(name: &str) -> bool {
 /// a GitHub tag).
 #[derive(Debug, Clone)]
 pub enum PromoteSelector {
-    /// Promote the newest artifact currently landed in the `from` track
+    /// Promote the newest artifact currently in the `from` track
     /// (publisher-resolved — e.g. the highest snapcraft revision in the
     /// from-channel).
     Newest,

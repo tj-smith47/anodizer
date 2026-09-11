@@ -22,7 +22,7 @@ pub(crate) fn run(opts: RollbackOpts) -> Result<()> {
 /// Path-taking sibling of [`run`]: `gh_binary` is the `gh` CLI used by
 /// the published-state guard's GitHub-release fallback probe.
 /// Production passes `Path::new("gh")` (PATH lookup); tests point at a
-/// stub script so no global PATH mutation is needed (same seam
+/// stub script so no global PATH mutation is needed (same injection
 /// convention as `core::git::gh_api_get_with_binary`).
 pub(super) fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
     let log = StageLogger::new(
@@ -85,7 +85,7 @@ pub(super) fn run_with_logger(
 
     // Published-state guard, BEFORE any mutation (including dry-run,
     // so the preview reports the same refusal the real run would).
-    // A one-way-door (Submitter) publisher that landed for one of these
+    // A one-way-door (Submitter) publisher that published for one of these
     // tags burned the version: registries like crates.io / chocolatey /
     // winget / snapcraft never accept the same version twice, so
     // deleting the tag + reverting the bump can never lead to a clean
@@ -218,7 +218,7 @@ pub(super) fn run_with_logger(
     };
 
     // Safety check (--mode=revert only). Non-bump commits on top of
-    // the target SHA mean someone landed unrelated work since the
+    // the target SHA mean someone published unrelated work since the
     // bump; reverting blindly would lose it. Tolerate only anodizer's
     // OWN prior revert commit so re-runs are idempotent — a generic
     // `"Revert "<...>"` prefix would silently absorb GitHub's

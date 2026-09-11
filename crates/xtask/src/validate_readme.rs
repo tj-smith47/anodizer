@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 const DEFAULT_READMES: &[&str] = &["README.md", "crates/cli/README.md"];
 
 /// Resolve the workspace root from xtask's own manifest directory.
-/// xtask lives at `crates/xtask/`, so going up two levels lands at the
+/// xtask lives at `crates/xtask/`, so going up two levels ends up at the
 /// workspace root regardless of where `cargo xtask` is invoked from.
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

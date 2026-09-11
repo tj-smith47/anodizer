@@ -5623,7 +5623,7 @@ fn test_nfpm_falls_back_to_project_metadata() {
 #[test]
 fn compound_spdx_license_emitted_verbatim() {
     // nfpm passes the SPDX license through unchanged: a dual `MIT OR Apache-2.0`
-    // expression must land in the generated nfpm YAML's `license:` field as the
+    // expression must end up in the generated nfpm YAML's `license:` field as the
     // exact string, not split or reshaped.
     use anodizer_core::config::NfpmConfig;
 
@@ -5768,7 +5768,7 @@ fn test_setup_lintian_overrides_noop_for_rpm() {
 }
 
 /// In dry-run mode, no on-disk write happens (so the lintian file does NOT
-/// land on disk), but the content entry is still injected so the rendered
+/// reach disk), but the content entry is still injected so the rendered
 /// nfpm.yaml reflects what would ship in a wet run.
 #[test]
 fn test_setup_lintian_overrides_dry_run_skips_write_but_injects_content() {
@@ -7475,7 +7475,7 @@ fn signed_apk_is_byte_reproducible_across_time() {
 
     // Byte-equality alone is vacuous: an UNSIGNED apk is ALSO byte-identical
     // across builds at a fixed SOURCE_DATE_EPOCH, so the assert above would stay
-    // green even if signing silently no-op'd. Prove the SIGNED path actually ran
+    // passing even if signing silently no-op'd. Prove the SIGNED path actually ran
     // by confirming the apk carries a `.SIGN.RSA...` signature member (an apk is
     // a gzipped tar; GNU `tar tzf` lists the concatenated gzip members). Skip
     // this sub-check when `tar` is absent, matching the hermetic skip idiom above.

@@ -3,7 +3,7 @@
 //! entrypoint.
 //!
 //! Chocolatey is structurally a Submitter publisher: the push to the
-//! community feed lands the package in a **moderation queue** at
+//! community feed puts the package in a **moderation queue** at
 //! `community.chocolatey.org/packages/<id>`. There is no public
 //! programmatic withdraw endpoint. The community gallery's "Maintain"
 //! UI is the only path back, and only the package owner can drive it.
@@ -43,7 +43,7 @@ simple_publisher!(
 /// community.chocolatey.org); `version` is the bare semver string
 /// Aliased to the core-owned snapshot so the evidence schema lives in
 /// [`anodizer_core::publish_evidence`] and credential-shaped fields
-/// (`api_key`, `token`, `password`) have no slot to land in.
+/// (`api_key`, `token`, `password`) have no slot to fill.
 type ChocolateyTarget = anodizer_core::publish_evidence::ChocolateyTargetSnapshot;
 
 /// Decode the `chocolatey_targets` array from
@@ -430,7 +430,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
         use anodizer_core::PreflightCheck;
 
         // Shallow probe policy: best-effort pre-publish gate, not a write that
-        // must land (see `RetryPolicy::PREFLIGHT`).
+        // must succeed (see `RetryPolicy::PREFLIGHT`).
         let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
         // Severity for a DEFINITIVE failure (no key, key rejected, feed
         // unreachable) is the publisher's own required→Blocker / optional→Warning

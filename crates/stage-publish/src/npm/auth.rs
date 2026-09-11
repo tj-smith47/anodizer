@@ -21,7 +21,7 @@ use super::manifest::{DEFAULT_TAG, token_env_var};
 /// shape (registry 5xx, auth failure, network glitch) surfaces an `Err`
 /// rather than `Ok(false)`. An `npm publish` is irreversible after npm's 72h
 /// unpublish window, so a probe that *cannot prove* the version is absent must
-/// not green-light the publish — assuming "not published" on an outage would
+/// not approve the publish — assuming "not published" on an outage would
 /// re-push over an existing version (or double-ship) the moment the registry
 /// recovers. The caller aborts this package's publish and records the failure
 /// for the operator instead.
@@ -98,7 +98,7 @@ pub(crate) fn resolve_token(ctx: &Context, cfg: &NpmConfig) -> Result<String> {
 
 /// The two GitHub Actions OIDC request variables npm's Trusted Publishing
 /// exchange consumes. Both must be present for an OIDC context to exist — the
-/// URL is the token-mint endpoint, the token authorizes the mint request.
+/// URL is the token endpoint, the token authorizes the token request.
 pub(crate) const OIDC_ENV_VARS: [&str; 2] = [
     "ACTIONS_ID_TOKEN_REQUEST_URL",
     "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
@@ -113,7 +113,7 @@ pub(crate) enum NpmAuth {
     Token(String),
     /// A GitHub Actions OIDC context (Trusted Publishing). Carries the
     /// `ACTIONS_ID_TOKEN_REQUEST_*` pairs to thread into the `npm publish`
-    /// subprocess so the npm CLI mints a short-lived credential itself; the
+    /// subprocess so the npm CLI creates a short-lived credential itself; the
     /// `.npmrc` carries no token line.
     Oidc(Vec<(String, String)>),
 }
@@ -364,7 +364,7 @@ pub(crate) fn probe_dist_tag_latest(
 /// When the configured tag is the default `latest` AND `publish_version` is
 /// strictly LOWER than the registry's current `latest`, this returns an INERT
 /// named dist-tag `release-<version>`: the version still publishes (versions are
-/// immutable and always land), but the `latest` pointer is left on the newer
+/// immutable and always publish), but the `latest` pointer is left on the newer
 /// release. Every non-regressing case returns the configured tag unchanged — a
 /// NON-default configured tag (the operator asked for an explicit tag),
 /// `registry_latest == None` (fail-open), an equal/newer version, or a version

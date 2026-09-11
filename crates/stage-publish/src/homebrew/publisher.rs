@@ -41,7 +41,7 @@ simple_publisher!(
 /// Serialized shape of a recorded homebrew tap push. Aliased to the
 /// core-owned snapshot so the wire schema lives in
 /// [`anodizer_core::publish_evidence`] and credential-shaped fields
-/// have no slot to land in. One entry per pushed formula/cask.
+/// have no slot to fill. One entry per pushed formula/cask.
 type HomebrewTarget = HomebrewTargetSnapshot;
 
 /// Decode the `homebrew_targets` array from
@@ -614,7 +614,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         // Nothing applied when the crate scope carried no per-crate
         // `publish.homebrew` block AND every configured top-level cask was
         // inapplicable (no macOS artifact in scope). Reporting that as the
-        // run's landing lets `evaluate_entry_skips` rank it against the
+        // run's outcome lets `evaluate_entry_skips` rank it against the
         // entries that disqualified themselves, and keeps the summary and the
         // submitter gate on a non-failure outcome.
         let landing = if processed == 0 && cask_result.total > 0 && cask_result.applicable == 0 {
@@ -844,7 +844,7 @@ mod publisher_tests {
         // serialize, assert (a) no credential-shaped keys appear AND
         // (b) the operator-public shape is preserved. The type system
         // pins the negative half (the snapshot struct has no token
-        // field to land in); this test pins the positive half.
+        // field to end up in); this test pins the positive half.
         let mut e = PublishEvidence::new("homebrew");
         e.extra = PublishEvidenceExtra::Homebrew(HomebrewExtra {
             homebrew_targets: vec![HomebrewTarget {

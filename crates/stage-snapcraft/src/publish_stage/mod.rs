@@ -189,7 +189,7 @@ impl Stage for SnapcraftPublishStage {
 
         // Resolve the planned per-config snapshot BEFORE uploading so the
         // upload loop can clone each snap's channel/version base while
-        // stamping the per-arch revision it mints. The recorded per-arch
+        // stamping the per-arch revision it creates. The recorded per-arch
         // entries returned below feed
         // `PublishEvidence::extra.snapcraft_targets` on success so
         // `promote --from-run` / `anodizer tag rollback` consumers can
@@ -218,7 +218,7 @@ impl Stage for SnapcraftPublishStage {
         );
 
         if !attempted {
-            // Nothing was uploaded this run. Two shapes land here:
+            // Nothing was uploaded this run. Two shapes end up here:
             //
             // 1. Every applicable snap's version was already published (the
             //    idempotency probe skipped them) — record an

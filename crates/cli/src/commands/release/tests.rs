@@ -408,7 +408,7 @@ fn base_release_opts() -> ReleaseOpts {
 #[test]
 fn an_empty_release_footer_file_suppresses_the_attribution() {
     // `--release-footer <empty file>` is the documented opt-out from the
-    // default attribution line. The empty file must land as an explicit empty
+    // default attribution line. The empty file must be written as an explicit empty
     // string: dropping it to `None` would read as "unset" downstream and
     // restore the very footer the operator asked to remove.
     let dir = tempfile::tempdir().unwrap();

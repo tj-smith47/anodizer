@@ -34,7 +34,7 @@ simple_publisher!(
 
 /// Aliased to the core-owned snapshot so the evidence schema lives in
 /// [`anodizer_core::publish_evidence`] and credential-shaped fields
-/// have no slot to land in.
+/// have no slot to fill.
 pub(crate) type GemFurySnapshot = anodizer_core::publish_evidence::GemFuryTargetSnapshot;
 
 /// Decode the `gemfury_targets` array from
@@ -68,14 +68,14 @@ fn encode_gemfury_targets(targets: &[GemFuryTarget]) -> anodizer_core::PublishEv
     })
 }
 
-/// Delete a set of landed GemFury targets via the per-version API.
+/// Delete a set of published GemFury targets via the per-version API.
 ///
 /// Shared by `GemFuryPublisher`'s
 /// [`Publisher::rollback`](anodizer_core::Publisher::rollback) (post-publish rollback from
 /// recorded evidence) and the in-run partial-push cleanup, so a failure
-/// after some artifacts landed undoes exactly what this run placed. Best
+/// after some artifacts published undoes exactly what this run placed. Best
 /// effort: a delete that fails (or a missing token) is warned, not raised —
-/// the goal is to remove as much of the half-landed push as possible while
+/// the goal is to remove as much of the half-published push as possible while
 /// surfacing whatever the operator must clean up by hand.
 fn delete_recorded_targets(ctx: &mut Context, targets: &[GemFuryTarget]) {
     let log = ctx.logger("publish");
@@ -223,14 +223,14 @@ impl anodizer_core::Publisher for GemFuryPublisher {
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
-        // `pushed` accumulates landed artifacts. On a mid-loop failure it
-        // holds the partial set — the artifacts that DID land before the
+        // `pushed` accumulates published artifacts. On a mid-loop failure it
+        // holds the partial set — the artifacts that DID upload before the
         // error. The dispatch layer records NO evidence on an `Err` return
         // (it can only carry evidence on `Ok`), so those partials would
         // otherwise be orphaned: a required-publisher failure aborts the
         // release without ever deleting what gemfury already pushed. Roll
         // the partials back in-place here, before re-raising, so a failed
-        // push leaves no half-landed packages on the Fury repo.
+        // push leaves no half-published packages on the Fury repo.
         let mut pushed: Vec<GemFuryTarget> = Vec::new();
         if let Err(err) = publish_to_gemfury(ctx, &log, &mut pushed) {
             if !pushed.is_empty() {

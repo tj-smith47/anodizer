@@ -380,7 +380,7 @@ fn render_package_json_metadata_fallback() {
 #[test]
 fn compound_spdx_license_emitted_verbatim() {
     // npm passes the SPDX license through unchanged: a dual `MIT OR Apache-2.0`
-    // expression derived from project metadata must land in package.json's
+    // expression derived from project metadata must end up in package.json's
     // `license` field as the exact string, not split or reshaped.
     let cfg_top = Config {
         project_name: "demo".to_string(),
@@ -505,7 +505,7 @@ fn assemble_postinstall_tarball_scoped_package_basename() {
 }
 
 /// A `description` template that fails to render (undefined field) falls
-/// back to its raw `{{ }}` text and lands in `package.json` —
+/// back to its raw `{{ }}` text and ends up in `package.json` —
 /// `guard_no_unrendered` must hard-fail a real-publish assembly before
 /// `write_deterministic` ever touches the staging dir.
 #[test]
@@ -2558,7 +2558,7 @@ fn publish_optional_deps_dry_run_returns_empty() {
 }
 
 /// A `description` template that fails to render (undefined field) falls
-/// back to its own raw `{{ }}` text and lands in every per-platform
+/// back to its own raw `{{ }}` text and ends up in every per-platform
 /// `package.json` — `guard_no_unrendered` must hard-fail the real publish
 /// before staging (and therefore before any `npm publish` subprocess),
 /// naming the manifest.
@@ -2835,7 +2835,7 @@ fn auth_oidc_mode_writes_no_token_and_threads_env() {
         "OIDC .npmrc must NOT carry _authToken: {body:?}"
     );
     // Full body shape for the OIDC path: registry + access only — no token line
-    // (npm mints a short-lived credential via the OIDC exchange) and NO
+    // (npm creates a short-lived credential via the OIDC exchange) and NO
     // deprecated `always-auth` key.
     assert!(
         body.contains("registry=https://registry.npmjs.org"),
@@ -3891,7 +3891,7 @@ fn assemble_optional_deps_tarball_is_reproducible_and_binary_is_0o755() {
     let b2 = std::fs::read(&t2.tarball_path).expect("read 2");
     assert_eq!(b1, b2, "optional-deps tarball must be byte-reproducible");
 
-    // The embedded binary must land inside the tarball at mode 0o755.
+    // The embedded binary must end up inside the tarball at mode 0o755.
     let f = std::fs::File::open(&t1.tarball_path).expect("open tgz");
     let gz = flate2::read::GzDecoder::new(f);
     let mut ar = tar::Archive::new(gz);

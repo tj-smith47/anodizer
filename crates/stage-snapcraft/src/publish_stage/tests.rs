@@ -58,7 +58,7 @@ fn tagless_project_root() -> (tempfile::TempDir, anodizer_core::context::Context
 
 // ---------------------------------------------------------------
 // Idempotent retry floor — the snapcraft upload is an opaque subprocess
-// (`run_capture_timeout`) with no in-process retry-mock seam, so the
+// (`run_capture_timeout`) with no in-process retry-mock point, so the
 // strongest feasible proof is that the effective upload policy equals
 // `max(global, IDEMPOTENT_PUT_ATTEMPTS)`. This is the same expression the
 // production upload site applies (`retry_policy.with_idempotent_floor()`),
@@ -469,7 +469,7 @@ fn no_configured_crates_records_nothing() {
 #[test]
 fn dry_run_with_publishable_config_records_nothing() {
     // Mirrors BlobStage's dry-run contract: what WOULD run is logged,
-    // but no PublisherResult lands because no upload was attempted.
+    // but no PublisherResult arrives because no upload was attempted.
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::context::ContextOptions;
     use std::collections::HashMap;
@@ -512,7 +512,7 @@ fn dry_run_with_publishable_config_records_nothing() {
 }
 
 // ---------------------------------------------------------------
-// record_snapcraft_result direct seam — Failed(_) entry coverage
+// record_snapcraft_result direct point — Failed(_) entry coverage
 // ---------------------------------------------------------------
 
 #[test]
@@ -543,7 +543,7 @@ fn record_snapcraft_result_initializes_report_if_missing() {
 
 #[test]
 fn record_snapcraft_result_failed_entry_announce_gate_visibility() {
-    // Required invariant: a failed snap upload lands as a
+    // Required invariant: a failed snap upload arrives as a
     // `Failed(_)` entry, NOT a stage-error bail. This is the
     // property the announce gate (`AnnounceGate::AllPublishers`)
     // and `anodizer tag rollback` consumers depend on —
@@ -1012,7 +1012,7 @@ fn snapcraft_in_allowlist_is_not_deselected() {
 
 #[test]
 fn run_uploads_no_configured_publishers_returns_not_attempted() {
-    // White-box test of the (attempted, exec_result) seam:
+    // White-box test of the (attempted, exec_result) injection point:
     // every snap_cfg is `publish: false`, so the loop runs but
     // never flips `attempted_upload`. exec_result is Ok(()).
     let krate = CrateConfig {
@@ -1044,7 +1044,7 @@ fn run_uploads_no_configured_publishers_returns_not_attempted() {
 
 // Drives the real upload path against a stubbed `snapcraft` whose upload
 // answers with the store's manual-review-hold wording: the run must stay
-// green (a hold can still be approved) while the evidence snapshot and
+// passing (a hold can still be approved) while the evidence snapshot and
 // the outcome both carry the unresolved hold instead of a silent
 // "uploaded".
 // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
@@ -2137,7 +2137,7 @@ fn preupload_promotion_failure_is_reported_as_failed() {
 
 // -----------------------------------------------------------------
 // Dual-arch isolation — a dual-arch snap config (`crates:` targeting
-// both x86_64 and aarch64) mints one `list-revisions` row per arch per
+// both x86_64 and aarch64) creates one `list-revisions` row per arch per
 // version; the amd64 and arm64 legs must be probed independently.
 // -----------------------------------------------------------------
 
@@ -2243,7 +2243,7 @@ fn dual_arch_arm64_not_skipped_when_only_amd64_published() {
 
 // -----------------------------------------------------------------
 // Per-arch revision recording — a fresh dual-arch upload must record ONE
-// evidence entry per architecture, each carrying that arch's minted Snap
+// evidence entry per architecture, each carrying that arch's issued Snap
 // Store revision, so a later `promote --from-run` can release every arch.
 // Before the fix the evidence recorded `revision: None` and one entry per
 // config, making `--from-run` a dead selector for multi-arch snaps.
@@ -2258,10 +2258,10 @@ fn fresh_dual_arch_upload_records_a_revision_per_arch() {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    // A minimal Snap Store simulation: `upload` mints an incrementing
+    // A minimal Snap Store simulation: `upload` creates an incrementing
     // revision for the arch in the snap path and appends it to a state file;
     // `list-revisions` prints that state. So the post-upload evidence probe
-    // resolves each arch's own freshly-minted revision.
+    // resolves each arch's own freshly issued revision.
     let state_dir = tempfile::TempDir::new().unwrap();
     let state = state_dir.path().join("revs");
     let count = state_dir.path().join("count");
@@ -2363,12 +2363,12 @@ fn fresh_dual_arch_upload_records_a_revision_per_arch() {
     assert_eq!(
         amd.revision.as_deref(),
         Some("1"),
-        "amd64's minted revision must be recorded: {amd:?}"
+        "amd64's issued revision must be recorded: {amd:?}"
     );
     assert_eq!(
         arm.revision.as_deref(),
         Some("2"),
-        "arm64's minted revision must be recorded: {arm:?}"
+        "arm64's issued revision must be recorded: {arm:?}"
     );
 }
 

@@ -1,4 +1,4 @@
-//! crates.io Trusted Publishing (OIDC): mint a short-lived crates.io token
+//! crates.io Trusted Publishing (OIDC): create a short-lived crates.io token
 //! from a GitHub Actions OIDC identity, so a release can publish without a
 //! stored long-lived `CARGO_REGISTRY_TOKEN`.
 //!
@@ -10,12 +10,12 @@
 //!    Both env vars are set automatically by a GitHub Actions runner granted
 //!    `id-token: write`.
 //! 2. POST `{"jwt": <jwt>}` to `https://crates.io/api/v1/trusted_publishing/tokens`
-//!    → `{"token": "<minted>"}`. That minted token is a valid crates.io token,
+//!    → `{"token": "<issued>"}`. That issued token is a valid crates.io token,
 //!    supplied to `cargo publish` via the `CARGO_REGISTRY_TOKEN` env var.
 //!
-//! The minted token is **workspace-scoped**: one token authorizes every crate
+//! The issued token is **workspace-scoped**: one token authorizes every crate
 //! whose Trusted-Publisher config matches this repository/workflow, so the
-//! publish loop mints once, reuses it for all crates, and revokes once (the
+//! publish loop creates one token, reuses it for all crates, and revokes once (the
 //! token also self-expires in ~30 minutes).
 
 use std::time::{Duration, Instant};
@@ -48,7 +48,7 @@ const CARGO_AUDIENCE: &str = "crates.io";
 const MINT_URL: &str = "https://crates.io/api/v1/trusted_publishing/tokens";
 
 /// crates.io mint-token response. `token` is the short-lived crates.io token.
-/// Unlike PyPI there is no `success` field — a refused mint is an HTTP 4xx.
+/// Unlike PyPI there is no `success` field — a refused token request is an HTTP 4xx.
 #[derive(Deserialize)]
 struct MintResponse {
     #[serde(default)]
@@ -107,11 +107,11 @@ pub(crate) fn mint_trusted_publishing_token(
              has a Trusted Publisher configured for this repository/workflow on crates.io"
         );
     }
-    log.verbose("minted short-lived crates.io token via Trusted Publishing");
+    log.verbose("issued short-lived crates.io token via Trusted Publishing");
     Ok(mint.token)
 }
 
-/// Revoke a minted Trusted-Publishing token. **Best-effort**: a failed revoke
+/// Revoke an issued Trusted-Publishing token. **Best-effort**: a failed revoke
 /// is logged, never propagated — the token self-expires in ~30 minutes, so a
 /// revoke failure must never fail the release. Called once after the publish
 /// loop on both the success and failure paths.
@@ -191,7 +191,7 @@ fn delete_minted_token(
 mod tests {
     use super::*;
 
-    /// The mint REQUEST body must serialize with the field name `jwt` — the
+    /// The token request body must serialize with the field name `jwt` — the
     /// crates.io contract (pypi uses `token`; a wrong field is HTTP 400 at
     /// publish). Guards against a copy-paste regression from the pypi mirror.
     #[test]
@@ -202,7 +202,7 @@ mod tests {
         assert!(!body.contains("\"token\""));
     }
 
-    /// The mint RESPONSE parses from `{"token":"..."}` (crates.io has no
+    /// The token response parses from `{"token":"..."}` (crates.io has no
     /// `success` field, unlike pypi).
     #[test]
     fn mint_response_parses_token_field() {

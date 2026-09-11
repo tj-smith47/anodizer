@@ -88,13 +88,13 @@ pub fn run_report_sizes(ctx: &mut Context, config: &Config, log: &StageLogger) {
 /// Write `dist/metadata.json` from the current context's resolved
 /// release variables (`tag`, `previous_tag`, `version`, `commit`,
 /// `date`, `release_url`, host `runtime`) and return the path it
-/// landed at.
+/// ended up at.
 ///
 /// The output directory is taken from `ctx.config.dist`, NOT the
 /// `config` parameter. Per-crate publish-only re-anchors `ctx.config.dist`
 /// onto the per-crate `dist/<crate>/` subdir while still threading the
 /// flat-root `config` through; the release stage's existence gate reads
-/// `ctx.config.dist/metadata.json`, so the file must land there. For the
+/// `ctx.config.dist/metadata.json`, so the file must end up there. For the
 /// full-release callers `ctx.config.dist == config.dist`, so this is
 /// behaviour-preserving for them.
 ///

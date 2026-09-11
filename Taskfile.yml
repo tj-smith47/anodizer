@@ -283,7 +283,7 @@ tasks:
       - bash .claude/scripts/publish-coverage.sh cobertura.xml
 
   coverage:gate:
-    # Full output lands in target/coverage-gate.log. The floor lives in
+    # Full output ends up in target/coverage-gate.log. The floor lives in
     # coverage-gate.sh and nowhere else; override per-run with COVERAGE_FLOOR.
     desc: "Run the instrumented suite and fail below the coverage floor."
     deps: [_check:tmp-headroom]
@@ -314,7 +314,7 @@ tasks:
     # Mirrors ci.yml's `actionlint` job, which runs actionlint plus four audit
     # scripts. Keep this list equal to that job's steps: JOB_MIRROR maps whole
     # jobs to whole tasks, so a step present in the job and absent here is drift
-    # the gate-mirror audit cannot see, and CI goes red after a green gate.
+    # the gate-mirror audit cannot see, and CI goes red after a passing gate.
     desc: "Guard: workflows pass actionlint and the four workflow audits (mirrors the CI actionlint job)."
     cmds:
       - actionlint -color

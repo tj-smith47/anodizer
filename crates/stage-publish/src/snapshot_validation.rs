@@ -2272,7 +2272,7 @@ mod tests {
     }
 
     /// Per-crate mode: two nix-configured crates share one snapshot run, but only
-    /// `built` produced archives (the sharded case where one crate's targets land
+    /// `built` produced archives (the sharded case where one crate's targets arrive
     /// in this shard and another's do not). The skip is keyed on each crate's own
     /// `produced_archives` set, so it must not leak across crates: `empty` skips
     /// while `built` still runs its full cross-check and catches a 404 mismatch.

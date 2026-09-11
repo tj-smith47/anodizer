@@ -63,7 +63,7 @@ Three public projects use anodizer to ship themselves:
 - **brontes**, a single crate (clap → MCP server toolkit) at [github.com/tj-smith47/brontes/releases](https://github.com/tj-smith47/brontes/releases). Latest: [v0.3.0](https://github.com/tj-smith47/brontes/releases/tag/v0.3.0). Library-only pipeline: changelog → source tarball → source SBOM → keyless sign → attestation → cargo publish.
 
 When a row says "lives on `<package manager>`", click through and you'll
-land on the live page. Where multiple examples exist (one per project), we
+reach the live page. Where multiple examples exist (one per project), we
 link each so you can see the same feature in different configurations —
 lockstep workspace (anodizer), per-crate workspace (cfgd), and single crate
 (brontes).

@@ -26,7 +26,7 @@ use super::platform_render::{
 };
 
 /// One native binary embedded in a per-platform package: its on-disk source
-/// and the package-relative path it lands under (`cli`, `cli.exe`, or
+/// and the package-relative path it ends up under (`cli`, `cli.exe`, or
 /// `bin/git-cliff` when `platform_bin_dir` is set). A single-command package
 /// carries one; a multi-command `bins:` package carries one per command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,7 +123,7 @@ pub(crate) fn resolve_bin<'a>(cfg: &'a NpmConfig, metapackage: &'a str) -> &'a s
 }
 
 /// The trimmed, slash-stripped `platform_bin_dir` (e.g. `bin`), or `None` when
-/// unset/blank — the binary then lands at the package root.
+/// unset/blank — the binary then ends up at the package root.
 fn platform_bin_dir(cfg: &NpmConfig) -> Option<&str> {
     cfg.platform_bin_dir
         .as_deref()
@@ -571,7 +571,7 @@ pub(crate) fn generate_layout(
         }
         // `amd64_variant` / `arm_variant` microarch filter: a tuned build whose
         // variant metadata does not match the configured (or default) variant is
-        // dropped so only the chosen microarch lands in each package.
+        // dropped so only the chosen microarch ends up in each package.
         if !super::manifest::artifact_matches_variant(art, cfg) {
             continue;
         }

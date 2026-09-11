@@ -26,7 +26,7 @@ const OBJECT_STORE_RETRY_TIMEOUT_CAP: std::time::Duration = std::time::Duration:
 /// Floor on `object_store::RetryConfig::max_retries` for an idempotent blob
 /// PUT, decoupled from the global attempt cap. A bucket PUT to a fixed key is
 /// idempotent — re-issuing it after a transient 5xx/429 or a dropped
-/// connection lands the same bytes at the same key. Stateful modes like
+/// connection writes the same bytes at the same key. Stateful modes like
 /// `--publish-only` resolve `attempts: 1` → `max_retries: 0`, which strips the
 /// SDK's own transient retry entirely and turns a recoverable network blip
 /// into a failed release. Flooring at 2 retries (3 total attempts) restores a

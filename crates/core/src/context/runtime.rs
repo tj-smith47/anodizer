@@ -55,7 +55,7 @@ impl Context {
     /// applying defaults when `retry:` is unset. Equivalent to
     /// `ctx.config.retry.unwrap_or_default().to_policy()` but centralizes
     /// the lookup so a future refactor can hang validation / clamping off
-    /// a single seam.
+    /// a single place.
     pub fn retry_policy(&self) -> crate::retry::RetryPolicy {
         self.config.retry.unwrap_or_default().to_policy()
     }
@@ -68,11 +68,11 @@ impl Context {
     /// [`crate::retry::retry_async_deadline`] is bounded by default and the
     /// operator can raise or lower the ceiling with one config field.
     ///
-    /// This is a READ, not a mint. The anchor belongs to the enclosing
+    /// This is a READ, not a new anchor. The anchor belongs to the enclosing
     /// [`crate::retry::PublisherRetryScope`], installed once per publisher
-    /// invocation at the dispatch seam, so every seam inside one invocation —
+    /// invocation at the dispatch site, so every read inside one invocation —
     /// an auth exchange, the publish request, a cleanup — observes the SAME
-    /// deadline and a wedged remote cannot spend the budget once per seam. A
+    /// deadline and a wedged remote cannot spend the budget once per read. A
     /// caller outside any such scope (a stage-level retry ladder) anchors at
     /// the moment of the call.
     ///
@@ -104,7 +104,7 @@ impl Context {
         // construction so a secret injected via `template_vars_mut().set_env`
         // (which has no mutation hook) is captured, matching the historical
         // snapshot-at-`logger()` behavior. The cell stays shared afterward, so
-        // a secret minted later through an `env_source` mutation still reaches
+        // a secret issued later through an `env_source` mutation still reaches
         // this logger via `refresh_secret_env` at that mutation point.
         self.refresh_secret_env();
         #[allow(unused_mut)]

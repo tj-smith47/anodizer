@@ -92,7 +92,7 @@ pub(crate) struct AuxInputs<'a> {
     pub log: &'a StageLogger,
 }
 
-/// Where one generated aux file lands, and what to call it in diagnostics.
+/// Where one generated aux file is written, and what to call it in diagnostics.
 struct GenOutput<'a> {
     staging: &'a Path,
     file_name: &'a str,

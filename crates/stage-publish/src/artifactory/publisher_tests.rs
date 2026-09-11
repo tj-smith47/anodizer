@@ -65,7 +65,7 @@ fn artifactory_rollback_empty_warning_msg_shape() {
 
 /// Critical #1 — rollback must reuse the publish path's basic-auth
 /// credentials, not narrowly read `ARTIFACTORY_TOKEN`. Verified at
-/// the seam: the helper that resolves a given entry's credentials
+/// the hook: the helper that resolves a given entry's credentials
 /// returns the configured (username, password) for an entry whose
 /// config carries them.
 #[test]
@@ -328,7 +328,7 @@ fn parallel_delete_mixed_batch_aggregates_all_buckets() {
         bearer: None,
     };
     // Five jobs > ROLLBACK_PARALLELISM (4) so the chunking loop runs
-    // more than once. `/ok1` repeated lands two deletes.
+    // more than once. `/ok1` repeated produces two deletes.
     let jobs = vec![mk("/ok1"), mk("/ok2"), mk("/gone"), mk("/bad"), mk("/ok1")];
     let (deleted, absent, failed) = parallel_delete(&delete_client(), &jobs, &log);
     assert_eq!(deleted, 3, "ok1 + ok2 + ok1");

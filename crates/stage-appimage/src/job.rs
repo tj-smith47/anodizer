@@ -265,7 +265,7 @@ pub(crate) fn execute_appimage_job(
     // Register the `.AppImage.zsync` sidecar so it is byte-verified by the
     // determinism harness, preserved into the shard's dist, and uploaded to the
     // release. Without this the AppImage ships with embedded update-info
-    // (`.upd_info`) pointing at a `*.AppImage.zsync` that never lands on the
+    // (`.upd_info`) pointing at a `*.AppImage.zsync` that never reaches the
     // release — delta auto-update silently 404s. `pin_zsync_mtime` has already
     // placed it at `<final>.AppImage.zsync` under a reproducible build (the
     // release/harness path always sets SOURCE_DATE_EPOCH); it is absent only

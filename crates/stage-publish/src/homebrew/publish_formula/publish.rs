@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use super::*;
 
 /// The pull-request title for a formula bump, naming the co-published
-/// same-tap cask when there is one — formula and cask land in a SINGLE PR,
+/// same-tap cask when there is one — formula and cask end up in a SINGLE PR,
 /// not one each. Shared with the reconcile probe so a converged re-run looks
 /// for the title this function produced.
 pub(crate) fn pr_title(formula_name: &str, cask_name: Option<&str>, version: &str) -> String {

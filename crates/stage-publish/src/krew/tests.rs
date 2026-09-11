@@ -1787,7 +1787,7 @@ fn publish_to_krew_pr_direct_pushes_branch_and_opens_pr() {
         "PrDirect publish must report a real push (drives any_pushed gate)"
     );
 
-    // (1) The versioned branch landed in the bare repo, carrying the
+    // (1) The versioned branch ended up in the bare repo, carrying the
     //     manifest file with the real sha256.
     let branches = git_stdout(bare.path(), &["branch", "--list"]);
     assert!(
@@ -1922,7 +1922,7 @@ fn publish_to_krew_pr_direct_idempotent_no_changes() {
 
 /// Workspace per-crate mode: each crate renders + pushes its OWN
 /// versioned branch under its OWN plugin name. Two krew crates sharing
-/// one bare fork must each land a distinct `plugins/<plugin>.yaml` on a
+/// one bare fork must each push a distinct `plugins/<plugin>.yaml` to a
 /// distinct `<plugin>-v<version>` branch — proving the per-crate name +
 /// branch resolution is not clobbered by a sibling.
 #[test]
@@ -1979,7 +1979,7 @@ fn publish_to_krew_pr_direct_workspace_per_crate_distinct_branches() {
 }
 
 /// `url_template` rewrites the pushed manifest's `platforms[].uri`
-/// (not the raw artifact URL). The landed manifest in the bare repo
+/// (not the raw artifact URL). The published manifest in the bare repo
 /// must carry the templated URL with `{{ name }}/{{ version }}/{{ os
 /// }}-{{ arch }}` substituted — proving the override survives the
 /// full render→push round-trip, not just an in-memory render.
@@ -2037,7 +2037,7 @@ fn publish_to_krew_pr_direct_applies_url_template() {
     drop(bare);
 }
 
-/// dry-run short-circuits before any clone/push: no branch lands in
+/// dry-run short-circuits before any clone/push: no branch ends up in
 /// the bare repo, and the outcome reports `pushed = false`. Guards the
 /// "(dry-run) would submit …" early return from making real side
 /// effects.
@@ -2483,7 +2483,7 @@ fn krew_publisher_run_records_rollback_target_after_push() {
 }
 
 /// A `krew.description` template that fails to render (undefined field)
-/// falls back to its raw `{{ }}` text via `render_or_warn` and lands in
+/// falls back to its raw `{{ }}` text via `render_or_warn` and ends up in
 /// the plugin manifest — `guard_no_unrendered` must hard-fail the real
 /// PrDirect publish before any branch is pushed, naming the manifest.
 #[test]

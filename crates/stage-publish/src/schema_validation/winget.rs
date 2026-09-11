@@ -284,7 +284,7 @@ mod tests {
 
     /// (a) Single-crate mode: one crate, one tag. Every exposed option set, and
     /// the rendered manifests must conform to all three schemas with zero
-    /// findings — and land their values in the schema-expected fields.
+    /// findings — and put their values in the schema-expected fields.
     #[test]
     fn single_crate_every_option_validates_and_lands_in_fields() {
         let cfg = every_option_winget_cfg();
@@ -309,13 +309,13 @@ mod tests {
         let rendered = render_winget_manifests_for_crate(&ctx, "widget", &ctx.logger("publish"))
             .expect("render ok")
             .expect("not skipped");
-        // Installer manifest: the windows zip lands as an Installers entry with
+        // Installer manifest: the windows zip arrives as an Installers entry with
         // the schema-expected Architecture / InstallerUrl.
         assert!(rendered.installer_yaml.contains("Installers:"));
         assert!(rendered.installer_yaml.contains("Architecture: x64"));
         assert!(rendered.installer_yaml.contains("InstallerUrl:"));
         assert!(rendered.installer_yaml.contains("InstallerSha256:"));
-        // Locale manifest: the descriptive options land in their schema fields.
+        // Locale manifest: the descriptive options end up in their schema fields.
         assert!(rendered.locale_yaml.contains("PackageName: Widget Tool"));
         assert!(rendered.locale_yaml.contains("Publisher: Acme Co"));
         assert!(rendered.locale_yaml.contains("License: MIT"));
@@ -324,7 +324,7 @@ mod tests {
                 .locale_yaml
                 .contains("ShortDescription: A widget management tool")
         );
-        // Version manifest: the identifier + version land on the version doc.
+        // Version manifest: the identifier + version reach the version doc.
         assert!(
             rendered
                 .version_yaml
@@ -590,7 +590,7 @@ mod tests {
     /// A TARGET-RESTRICTED determinism shard that built no Windows installer for
     /// a winget-configured crate must SKIP it (zero findings, no error) rather
     /// than trip the publisher's "no Windows artifact" guard — the installer
-    /// legitimately landed on another shard. The self-skip is gated on
+    /// legitimately reached another shard. The self-skip is gated on
     /// `partial_target`, so this holds only on a shard.
     #[test]
     fn partial_shard_without_windows_artifact_is_skipped_not_failed() {
@@ -855,7 +855,7 @@ mod tests {
     /// `resolve_winget_identity` is resolved exactly once per render, so the
     /// "publisher not explicitly set; falling back to repo owner" warning it
     /// emits when `publish.winget.publisher` is unset fires once — not twice.
-    /// Pins the seam where a re-resolving renderer would double-warn.
+    /// Pins the point where a re-resolving renderer would double-warn.
     #[test]
     fn publisher_fallback_warning_fires_once_per_render() {
         // No explicit `publisher` — resolution falls back to the repo owner and

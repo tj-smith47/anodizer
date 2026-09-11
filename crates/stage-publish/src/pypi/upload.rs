@@ -50,7 +50,7 @@ impl FileType {
 /// Terminal state of one file's upload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum UploadOutcome {
-    /// Bytes landed this run.
+    /// Bytes published this run.
     Uploaded { sha256: String },
     /// The index already holds this filename and `skip_existing` folded the
     /// rejection into an idempotent skip.

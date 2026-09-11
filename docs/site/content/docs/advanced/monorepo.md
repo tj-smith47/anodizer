@@ -31,7 +31,7 @@ for the changelog side, including the flat-aggregate
 ## Crate-level defaults
 
 `CrateConfig.tag_template` is optional. Anodizer resolves each crate's
-effective tag family — the template `anodizer tag` mints under and every
+effective tag family — the template `anodizer tag` creates under and every
 other command (`release`, `bump`, `changelog`, `docker promote`,
 `tag rollback`, `resolve-tag`) scans under — with this precedence, first
 rung that applies wins:

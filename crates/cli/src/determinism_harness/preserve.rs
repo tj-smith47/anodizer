@@ -1,6 +1,6 @@
 //! Preserved-dist support for `anodizer check determinism --preserve-dist=<path>`.
 //!
-//! When the harness greens, this module:
+//! When the harness passes, this module:
 //!
 //! 1. Copies `<worktree>/dist/**` from run-0 to the operator-supplied
 //!    destination ([`preserve_dist_tree`]).
@@ -17,7 +17,7 @@
 //! `artifacts.rs` owns per-run *discovery / hashing / dump-prune* — work
 //! that runs inside the harness loop. Preserve-dist is end-of-loop work
 //! with a different lifecycle (one-shot, runs only on the
-//! green-with-flag-set path). Keeping the two concerns split keeps
+//! passing-run-with-flag-set path). Keeping the two concerns split keeps
 //! `artifacts.rs` focused and makes the preserve-dist surface easier to
 //! reason about as an integration boundary with the publish-only path.
 
@@ -73,7 +73,7 @@ pub struct PreservedArtifact {
 }
 
 /// Manifest the `--preserve-dist=<path>` flag emits to
-/// `<dest>/context.json` once the harness greens.
+/// `<dest>/context.json` once the harness passes.
 ///
 /// Schema mirrors the needed subset of
 /// `crate::commands::release::split::SplitContext`: `artifacts`,
@@ -189,7 +189,7 @@ pub(super) fn preserve_dist_tree(worktree_path: &Path, dest: &Path) -> Result<()
         .with_context(|| format!("creating preserved-dist root at {}", dest.display()))?;
     // src may be absent: the harness ran a build that produced
     // nothing under dist/ (e.g. only `target/...` raw binaries). Keep
-    // the dest dir so context.json can still land — caller writes it
+    // the dest dir so context.json can still be written — caller writes it
     // post-loop regardless.
     match std::fs::read_dir(&src) {
         Ok(entries) => {
@@ -220,7 +220,7 @@ pub(super) fn preserve_dist_tree(worktree_path: &Path, dest: &Path) -> Result<()
     Ok(())
 }
 
-/// Subdirectory under `<dest>/` where raw build outputs land after
+/// Subdirectory under `<dest>/` where raw build outputs are copied after
 /// `preserve_raw_binaries` mirrors them out of the worktree's
 /// `target/<triple>/release/` tree. Single source of truth so the
 /// manifest rewrite, the disk copy, and downstream consumers all agree
@@ -724,7 +724,7 @@ fn hash_file_streaming(path: &Path) -> Result<(String, u64)> {
 
 /// Remove the preserved-dist tree after drift detection. Best-effort —
 /// IO failures are warned rather than propagated so a stale preserved
-/// tree never blocks the determinism report from landing. The
+/// tree never blocks the determinism report from being written. The
 /// determinism check's exit code already encodes the drift; an
 /// operator who needs to investigate can `rm -rf` the path manually.
 pub(super) fn remove_preserved_on_drift(dest: &Path, log: &StageLogger) {
@@ -1367,7 +1367,7 @@ mod tests {
     /// fixture through the full pipeline (discover_artifacts → hash_artifacts
     /// → build a DeterminismReport carrying those rows → preserve_dist_tree →
     /// write_preserved_dist_context → read context.json back) and asserts
-    /// that BOTH per-arch entries land in the manifest carrying the hashes
+    /// that BOTH per-arch entries end up in the manifest carrying the hashes
     /// the harness recorded (not freshly re-hashed against disk). Catches a
     /// key-contract drift between the hashing layer and the preservation
     /// lookup that the piece-wise tests cannot.
@@ -1504,9 +1504,9 @@ mod tests {
 
     /// When the harness computes an effective_preserve_dest of `<base>/<crate>/`
     /// and calls write_preserved_dist_context with that dest, context.json
-    /// must land in `<base>/<crate>/context.json` (not at the flat root).
+    /// must end up in `<base>/<crate>/context.json` (not at the flat root).
     /// This test simulates that call — the subdir computation is in mod.rs;
-    /// the write itself is what is pinned: it lands in whatever dest is passed.
+    /// the write itself is what is pinned: it ends up in whatever dest is passed.
     #[test]
     fn write_context_in_subdir_when_called_with_subdir_dest() {
         let tmp = TempDir::new().unwrap();
@@ -1544,7 +1544,7 @@ mod tests {
     }
 
     /// When called with the flat base dest (no crate_name subdir), context.json
-    /// lands at the flat root as before.
+    /// ends up at the flat root as before.
     #[test]
     fn write_context_flat_when_called_with_base_dest() {
         let tmp = TempDir::new().unwrap();

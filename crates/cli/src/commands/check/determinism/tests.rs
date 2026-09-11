@@ -931,7 +931,7 @@ fn signature_allowlist_derives_custom_cosign_bundle_suffix() {
 fn signature_allowlist_derives_keyless_certificate_suffix() {
     use anodizer_core::config::{Config, SignConfig};
     // A cosign keyless-mode `certificate:` template is per-invocation
-    // (Fulcio mints a fresh short-lived cert every sign) just like the
+    // (Fulcio creates a fresh short-lived cert every sign) just like the
     // signature itself, so it must drift-allowlist the same way.
     let cfg = Config {
         signs: vec![SignConfig {

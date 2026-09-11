@@ -79,7 +79,7 @@ impl Config {
         (out, warnings)
     }
 
-    /// Whether the configured crate universe mints more than one tag family
+    /// Whether the configured crate universe creates more than one tag family
     /// — the per-crate shape, as opposed to single-crate or lockstep, where
     /// every crate shares one `tag_template`.
     pub fn mints_multiple_tag_families(&self) -> bool {
@@ -667,7 +667,7 @@ mod tests {
             let lines: Vec<&str> = production.lines().collect();
             for (index, line) in lines.iter().enumerate() {
                 // rustfmt wraps a long condition, so the emptiness test and
-                // the membership test can land on consecutive lines; joining
+                // the membership test can span consecutive lines; joining
                 // the pair reads them as the one expression they are.
                 let joined = format!("{line}{}", lines.get(index + 1).unwrap_or(&""));
                 if retypes_the_selection_predicate(&flatten(&joined)) {

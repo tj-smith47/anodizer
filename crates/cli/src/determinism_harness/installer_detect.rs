@@ -152,7 +152,7 @@ impl InstallerToolGate {
     /// stage set only by an explicit `--stages` token — either named directly
     /// (`--stages=msi`) or via the `installers` umbrella, which the parser
     /// expands to the concrete installer `StageId`s before they reach the gate
-    /// (see `parse_stages`). Both forms land in `self.stages` as explicit IDs,
+    /// (see `parse_stages`). Both forms end up in `self.stages` as explicit IDs,
     /// so a hit here means a shard claimed it would byte-verify a format whose
     /// tool is missing — false coverage that must hard-fail. Mirrors the docker
     /// stage's hard-fail-when-explicit contract.
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn well_formed_partition_on_every_requested_stage() {
-        // Structural invariant: every requested stage must land in
+        // Structural invariant: every requested stage must end up in
         // exactly one of `available` or `skipped`. Independent of host
         // tool set. A resolved v3 msi tool set is supplied so the msi
         // stage carries a concrete requirement.
@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn missing_tool_routes_every_installer_to_skipped() {
         // Behavioral contract: with an always-false probe (every tool
-        // missing), every installer stage must land in `skipped` paired
+        // missing), every installer stage must end up in `skipped` paired
         // with its expected primary-tool name. Non-installer stages
         // must still pass through to `available`.
         let req = vec![
@@ -415,7 +415,7 @@ mod tests {
     #[test]
     fn present_tool_routes_every_installer_to_available() {
         // Behavioral contract: with an always-true probe (every tool
-        // installed), every installer stage must land in `available`.
+        // installed), every installer stage must end up in `available`.
         let req = installer_stages();
         let gate = filter_available_with_probe(&req, &msi_map(&["candle", "light"]), |_| true);
         assert_eq!(gate.available, req);
@@ -426,7 +426,7 @@ mod tests {
     fn appimage_flatpak_route_to_skipped_when_tool_absent() {
         // AppImage / Flatpak are gated by the same probe as the installer
         // family (linuxdeploy / flatpak-builder). With every tool missing
-        // they must land in `skipped` paired with their primary tool, and a
+        // they must end up in `skipped` paired with their primary tool, and a
         // non-gated stage (Build) must still pass through.
         let req = vec![StageId::Build, StageId::Appimage, StageId::Flatpak];
         let gate = filter_available_with_probe(&req, &BTreeMap::new(), |_| false);
@@ -463,7 +463,7 @@ mod tests {
     #[test]
     fn snapcraft_routes_to_skipped_when_tool_absent() {
         // snapcraft is a config-gated host-default Linux producer. With its
-        // single `snapcraft` binary missing it must land in `skipped` (so a
+        // single `snapcraft` binary missing it must end up in `skipped` (so a
         // host-default run warn-skips in dev and hard-fails cleanly under
         // `--require-tools`), while a non-gated stage (Build) passes through —
         // it must NOT reach the child release run only to die at spawn time.

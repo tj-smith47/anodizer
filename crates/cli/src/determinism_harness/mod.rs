@@ -297,7 +297,7 @@ fn stage_docker_context(
 ///
 /// Only the per-triple builds are surfaced — the bare host
 /// `release/<bin>` is a non-shipped tooling byproduct (the man-page
-/// `before:` hook's `cargo run`) and never lands in an image. The file
+/// `before:` hook's `cargo run`) and never ends up in an image. The file
 /// filter matches [`artifacts::discover_artifacts`]: regular files with
 /// an empty extension (`anodizer`) or `.exe` (`anodizer.exe`).
 fn discover_per_triple_binaries(worktree_path: &Path) -> Result<Vec<(String, PathBuf)>> {

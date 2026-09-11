@@ -15,7 +15,7 @@
 //! aggregate deadline — its success is recorded, so a re-run skips it. It
 //! degrades to *at-least-once* only for a send still **genuinely in-flight**
 //! when the deadline elapsed: that straggler is abandoned without a marker, so
-//! a re-run re-fires it (and it may also still land on the first run, hence the
+//! a re-run re-fires it (and it may also still reach the first run, hence the
 //! possible duplicate). A send that *finished* right at the deadline is NOT a
 //! straggler — the dispatch runner does a final non-blocking drain of completed
 //! results before computing the abandoned set, so a completed-but-undrained
@@ -203,7 +203,7 @@ mod tests {
         let log = quiet();
         let mut m = AnnounceSentMarker::load(dir.path(), "1.0.0+meta/../../etc", &log);
         m.mark_sent("discord", &log);
-        // The marker file lands directly under dist, not in a parent dir.
+        // The marker file ends up directly under dist, not in a parent dir.
         let entries: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .filter_map(|e| e.ok())

@@ -107,7 +107,7 @@ const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodizer.dev";
 /// Resolve the default commit identity used whenever no config-supplied
 /// author is in scope: the local `git config user.{name,email}` (read from
 /// the process's current directory — the source repo being released, not
-/// the publisher-owned repo a commit lands in), falling back to the
+/// the publisher-owned repo a commit ends up in), falling back to the
 /// built-in defaults above when unset.
 ///
 /// This is the single source of truth for that fallback chain, shared by

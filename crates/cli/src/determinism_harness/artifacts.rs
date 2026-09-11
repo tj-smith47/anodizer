@@ -109,7 +109,7 @@ pub(super) const TAIL_SAMPLE_BYTES: usize = 16 * 1024;
 ///
 /// Which binaries count as shipped depends on the build layout:
 ///   - `<cargo_target>/<triple>/release/<bin>` — always surfaced; these
-///     are the pre-package binaries that land in archives.
+///     are the pre-package binaries that end up in archives.
 ///   - `<cargo_target>/release/<bin>` (bare host, no triple) — surfaced
 ///     ONLY when no `<triple>/release/` directory exists (a host-native
 ///     consumer building with no `--target`). When any per-triple build
@@ -167,7 +167,7 @@ fn visit_dir(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 ///   host-native consumer building with no `--target`). The exclusion is
 ///   keyed on the presence of any per-triple build, not on inspecting the
 ///   binary's provenance. It is sound because anodizer's build stage always
-///   pins `--target`, so a shipped binary never lands at the bare
+///   pins `--target`, so a shipped binary never ends up at the bare
 ///   `release/<bin>` path — when a per-triple build exists, anything at that
 ///   path is a host `cargo run` hook byproduct (e.g. the man-page `before:`
 ///   hook running `cargo run --release --bin anodizer -- man` to emit
@@ -182,7 +182,7 @@ fn visit_dir(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 /// File filter: regular files whose extension is empty (`anodizer`) or
 /// `.exe` (`anodizer.exe`). Excludes `.d` (depfiles), `.pdb` (debug
 /// symbols), `.rlib`, etc. — those are tooling byproducts, not the
-/// shippable binary that lands in archives.
+/// shippable binary that ends up in archives.
 fn collect_raw_binaries(target_root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     let entries = match std::fs::read_dir(target_root) {
         Ok(e) => e,
@@ -220,7 +220,7 @@ fn collect_raw_binaries(target_root: &Path, out: &mut Vec<PathBuf>) -> Result<()
     }
     // The decision keys on whether any per-triple build is present, not on
     // the bare binary's provenance. That is sound because anodizer's build
-    // stage always pins `--target`, so a shipped binary never lands at the
+    // stage always pins `--target`, so a shipped binary never ends up at the
     // bare `release/<bin>` path — when a per-triple build exists, anything
     // there is only ever a host `cargo run` hook byproduct (the man-page
     // emitter), never a shipped artifact, so it is excluded.
@@ -491,7 +491,7 @@ pub(super) fn infer_stage_from_path(rel: &str) -> String {
     }
     // Path-prefix wins over extension matching: the OCI tarball under
     // `dist/docker/` ends in `.tar` and would otherwise misattribute to
-    // `archive`. Companion `image.digest` lands here too so both
+    // `archive`. Companion `image.digest` ends up here too so both
     // byte-stability inputs group under the same stage row.
     if lower.starts_with("dist/docker/") || lower.contains("/dist/docker/") {
         return "docker".into();
@@ -533,7 +533,7 @@ pub(super) fn infer_stage_from_path(rel: &str) -> String {
     } else if lower.ends_with(".src.rpm") {
         // Source RPM produced by `stage-srpm` — guard before the
         // generic `.rpm` rule below so binary RPM detection doesn't
-        // swallow it. `stage-srpm` should already land under the
+        // swallow it. `stage-srpm` should already end up under the
         // `dist/srpm/` prefix above; this is the trailing-fallback
         // path for builds that emit a `.src.rpm` outside the
         // canonical directory layout.

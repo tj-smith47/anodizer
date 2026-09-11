@@ -165,7 +165,7 @@ pub(crate) fn build_entry_json(
 
 /// Render an entry as a prettier-style block at the given indentation (number
 /// of leading spaces for the object's opening `{`). Every line of serde_json's
-/// pretty output is shifted right by `indent` so the inner keys land at
+/// pretty output is shifted right by `indent` so the inner keys end up at
 /// `indent + 2`.
 fn render_entry(entry: &Value, indent: usize) -> anyhow::Result<String> {
     let pretty = serde_json::to_string_pretty(entry)?;

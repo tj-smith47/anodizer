@@ -216,7 +216,7 @@ async fn head_probe_skips_off_host_link_without_any_request() {
     )
     .await;
     assert_eq!(size, None, "off-host link must degrade to size-unknown");
-    // Give any (buggy) in-flight request time to land before asserting.
+    // Give any (buggy) in-flight request time to arrive before asserting.
     std::thread::sleep(std::time::Duration::from_millis(50));
     assert_eq!(
         foreign_calls.load(std::sync::atomic::Ordering::SeqCst),
@@ -245,7 +245,7 @@ async fn head_probe_skips_scheme_downgrade_link_without_any_request() {
         size, None,
         "scheme-downgrade link must degrade to size-unknown"
     );
-    // Give any (buggy) in-flight request time to land before asserting.
+    // Give any (buggy) in-flight request time to arrive before asserting.
     std::thread::sleep(std::time::Duration::from_millis(50));
     assert_eq!(
         calls.load(std::sync::atomic::Ordering::SeqCst),

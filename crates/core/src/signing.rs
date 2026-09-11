@@ -14,7 +14,7 @@
 //! accessors below — no inline `unwrap_or_else(|| "cosign".to_string())`
 //! at call sites — so the answer to "what's the default?" lives in one
 //! place per stage and a future default change (or override resolution)
-//! lands in one place too. This is the lazy-vs-eager defaults policy
+//! ends up in one place too. This is the lazy-vs-eager defaults policy
 //! anodizer uses across stage configs; precedent commit `ff3be47`
 //! (stage-checksum).
 

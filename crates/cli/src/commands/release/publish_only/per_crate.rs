@@ -317,7 +317,7 @@ impl Drop for PerCrateOverlayGuard<'_> {
 /// each crate's preserved manifest carries its own version; without this
 /// re-anchor the crate's `tag_template`, release title, and artifact
 /// names would all render against the first-resolved crate's version and
-/// mint a mis-tagged GitHub release.
+/// create a mis-tagged GitHub release.
 ///
 /// Best-effort: a missing preserved manifest or a non-semver version
 /// string leaves the upstream `Version` vars in place rather than

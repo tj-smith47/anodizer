@@ -168,7 +168,7 @@ pub(crate) fn probe_version_published(
 ///
 /// Post-publish landing verification needs this three-way split: an npm
 /// version is immutable once published, so a transient 5xx or DNS blip must
-/// never be reported as "not visible" and fail an already-landed release — the
+/// never be reported as "not visible" and fail an already published release — the
 /// same fail-closed discipline cargo's [`crate::cargo::published_on_crates_io`]
 /// applies. The bare-`bool` [`probe_version_published`] is still correct for
 /// the pre-publish duplicate-version *warning*, where an unreachable registry

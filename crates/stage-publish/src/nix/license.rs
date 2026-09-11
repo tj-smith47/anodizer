@@ -361,7 +361,7 @@ pub fn resolve_nix_license_meta(value: &str) -> Option<NixLicense> {
     if expr.is_single() {
         // One literal: map it, or fall back to the verbatim string. A
         // compound the parser declined to split (a `WITH` exception, a mixed
-        // connective) lands here as a `Single` carrying the whole expression,
+        // connective) ends up here as a `Single` carrying the whole expression,
         // which `resolve_single_id` correctly fails to map → string fallback.
         return Some(match resolve_single_id(expr.ids()[0].as_str()) {
             Some(attr) => NixLicense::Single(attr),

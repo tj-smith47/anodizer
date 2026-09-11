@@ -491,7 +491,7 @@ fn libc_ceiling_over_zero_packages_stamps_no_verdict() {
     // produced zero `.deb`s, so the axis inspects nothing. github-release is
     // NOT selected (blob-only surface), so the asset check is also out of
     // scope. With no axis having actually examined an artifact, the stage must
-    // record NO verdict rather than fabricate a green "verified" off a check
+    // record NO verdict rather than fabricate a passing "verified" off a check
     // that ran over an empty package set.
     let mut ctx = TestContextBuilder::new()
         .tag("v1.0.0")
@@ -988,7 +988,7 @@ fn asset_existence_skipped_when_crate_has_no_github_repo() {
     );
     // Every crate hit the Ok(None) silent-skip: zero assets were compared,
     // and with no landing evidence recorded no other check ran either — the
-    // stage must not stamp a green verdict off a run that proved nothing.
+    // stage must not stamp a passing verdict off a run that proved nothing.
     assert!(
         ctx.verify_release.is_none(),
         "all-crates-Ok(None) asset axis inspected nothing; no verdict may be stamped"
@@ -2592,7 +2592,7 @@ fn content_check_exempts_certificate_assets_from_digest_comparison() {
     // The Certificate half of the Signature/Certificate exemption —
     // `content_check_exempts_signature_assets_from_digest_comparison` above
     // only exercises `ArtifactKind::Signature`. A keyless cosign certificate
-    // is equally per-invocation (Fulcio mints a fresh short-lived cert every
+    // is equally per-invocation (Fulcio creates a fresh short-lived cert every
     // sign), so it must be exempted from digest comparison the same way.
     let checksum_bytes = b"app.tar.gz  deadbeef";
     let checksum_sha = {
@@ -3681,7 +3681,7 @@ mod signature_crypto_verification {
 
     #[test]
     fn dynamic_tail_signature_failure_reaches_the_contents_gate() {
-        // A signature name minted from a dynamic-tail template has no static
+        // A signature name issued from a dynamic-tail template has no static
         // suffix, so classification rides on its ArtifactKind — and an
         // invalid such signature must still surface as an issue.
         let tmp = tempfile::tempdir().expect("tempdir");

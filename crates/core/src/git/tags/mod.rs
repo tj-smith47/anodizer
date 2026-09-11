@@ -3,7 +3,7 @@
 //! The release pipeline asks four separable questions of a repository's tags,
 //! and each has its own submodule:
 //!
-//! - [`family`] — which tags a `tag_template` mints, and which are filtered
+//! - [`family`] — which tags a `tag_template` creates, and which are filtered
 //!   out (`ignore_tags`, `ignore_tag_prefixes`, nightly debris). Every other
 //!   submodule narrows its candidate set through this one, so a multi-track
 //!   workspace (`v`, `core-v`, `operator-v` in one repo) never crosses tracks.

@@ -114,7 +114,7 @@ pub struct CommitAuthorConfig {
     /// PRs against `homebrew/homebrew-core` / `kubernetes-sigs/krew-index`
     /// / `microsoft/winget-pkgs` opened from a GitHub App workflow, where
     /// EasyCLA / DCO / signed-commit policies require the App's identity
-    /// (rather than a per-user bot identity) to land the merge.
+    /// (rather than a per-user bot identity) to complete the merge.
     #[serde(default)]
     pub use_github_app_token: bool,
 }
@@ -322,11 +322,11 @@ pub struct CargoPublishConfig {
     /// otherwise a Trusted-Publishing exchange when an OIDC context is
     /// available.
     ///
-    /// `oidc` mints a short-lived crates.io token from a GitHub Actions
+    /// `oidc` creates a short-lived crates.io token from a GitHub Actions
     /// id-token — no stored `CARGO_REGISTRY_TOKEN` is needed — and revokes it
-    /// after the publish loop. The mint is workspace-scoped: one token
+    /// after the publish loop. The token is workspace-scoped: one token
     /// authorizes every crate whose Trusted-Publisher config matches this
-    /// repository/workflow, so a lockstep workspace mints once and reuses it
+    /// repository/workflow, so a lockstep workspace creates one token and reuses it
     /// for all crates.
     ///
     /// When omitted, resolves to [`Auto`]. Optional (rather than a bare enum
@@ -375,20 +375,20 @@ impl CargoPublishConfig {
 
 /// How a `publish.cargo` block authenticates its `cargo publish`: a
 /// long-lived crates.io API token, or GitHub Actions OIDC (crates.io Trusted
-/// Publishing, which mints a short-lived token per run — no stored secret).
+/// Publishing, which creates a short-lived token per run — no stored secret).
 ///
 /// crates.io publishes through the `cargo` CLI, but the Trusted-Publishing
 /// exchange (Actions id-token → crates.io mint-token) is performed by
-/// anodizer itself: it mints one token before the dependency-order publish
+/// anodizer itself: it creates one token before the dependency-order publish
 /// loop, supplies it to every `cargo publish` via `CARGO_REGISTRY_TOKEN`, and
-/// revokes it (best-effort) after the loop. The minted token is
-/// workspace-scoped, so a single mint authorizes every crate whose
+/// revokes it (best-effort) after the loop. The issued token is
+/// workspace-scoped, so a single token authorizes every crate whose
 /// Trusted-Publisher config matches this repository/workflow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum CargoAuthMode {
     /// Use a token when one is available (`CARGO_REGISTRY_TOKEN`); otherwise,
-    /// when an OIDC context is present, mint a Trusted-Publishing token.
+    /// when an OIDC context is present, create a Trusted-Publishing token.
     /// Errors only when neither is available.
     #[default]
     Auto,
@@ -416,8 +416,8 @@ pub enum CargoAuthMode {
 /// propagation of their upstream deps.
 ///
 /// Complementary to `cargo.index_timeout`: this gate runs BEFORE publish
-/// (waits for *upstream* deps to land), while `index_timeout` runs AFTER
-/// publish (waits for the *just-published* crate to land before the next
+/// (waits for *upstream* deps to arrive), while `index_timeout` runs AFTER
+/// publish (waits for the *just-published* crate to arrive before the next
 /// dependent in the same run starts).
 ///
 /// ```yaml
@@ -445,7 +445,7 @@ pub struct WaitForWorkspaceDepsConfig {
 
 impl WaitForWorkspaceDepsConfig {
     /// Default poll interval — short enough to feel snappy when the
-    /// upstream's publish lands quickly, long enough that a 5-minute
+    /// upstream's publish arrives quickly, long enough that a 5-minute
     /// wait window costs at most 60 HTTP probes.
     pub const DEFAULT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 

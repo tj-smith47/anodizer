@@ -1,6 +1,6 @@
 //! Integration tests for `anodizer check determinism --preserve-dist=<path>`.
 //!
-//! The harness must, on a green run, copy `<worktree>/dist/**` from
+//! The harness must, on a passing run, copy `<worktree>/dist/**` from
 //! run-0 to the operator-supplied destination and emit a `context.json`
 //! manifest describing the artifact set. These tests synthesize a
 //! minimal cargo workspace, drive the harness end-to-end with
@@ -259,7 +259,7 @@ fn preserve_dist_bytes_match_determinism_report_hashes() {
             expected_misses += 1;
             continue;
         }
-        // Files copied by preserve_raw_binaries land at
+        // Files copied by preserve_raw_binaries end up at
         // `_preserved-bin/<triple>/<basename>`, but determinism.json records
         // them under the cargo `target/<triple>/release/<basename>` shape.
         // Map back so the hash lookup hits.

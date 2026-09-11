@@ -17,7 +17,7 @@ publisher; a no-op unless `attestations.enabled` is `true`.
 ## Two modes
 
 GitHub's [`actions/attest-build-provenance`](https://github.com/actions/attest-build-provenance)
-is OIDC-bound to the Actions run, so anodizer cannot mint a GitHub-trusted
+is OIDC-bound to the Actions run, so anodizer cannot create a GitHub-trusted
 attestation itself. The `mode:` field selects how anodizer participates.
 
 | Mode | Who attests | Trust | Output |
@@ -44,7 +44,7 @@ attestations:
 ### What gets attested
 
 When `artifacts:` is **omitted**, anodizer attests **every release artifact** —
-the full set that lands on the GitHub release, minus signatures/certificates
+the full set that reaches the GitHub release, minus signatures/certificates
 (which sign other artifacts) and the attestation outputs themselves (no
 self-attestation). A `.deb`, SBOM, or installer you ship is attested by default
 rather than silently dropped.

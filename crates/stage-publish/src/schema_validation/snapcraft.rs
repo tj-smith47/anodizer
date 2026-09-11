@@ -238,7 +238,7 @@ mod tests {
     }
 
     /// (a) Single-crate mode: one crate, one tag. Every snap-affecting option
-    /// set; the rendered snap.yaml must conform with zero findings and land
+    /// set; the rendered snap.yaml must conform with zero findings and put
     /// each option in the schema-expected field.
     #[test]
     fn single_crate_every_option_validates_and_lands_in_fields() {

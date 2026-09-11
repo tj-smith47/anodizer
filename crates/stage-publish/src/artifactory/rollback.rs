@@ -12,7 +12,7 @@ use crate::util::ROLLBACK_PARALLELISM;
 
 /// Aliased to the core-owned snapshot so the evidence schema lives in
 /// [`anodizer_core::publish_evidence`] and credential-shaped fields
-/// have no slot to land in. The rollback path resolves credentials
+/// have no slot to fill. The rollback path resolves credentials
 /// from env at call time via the existing `ARTIFACTORY_<NAME>_*`
 /// ladder; nothing about that flow persists in evidence.
 pub(crate) type ArtifactoryTarget = anodizer_core::publish_evidence::ArtifactoryTargetSnapshot;
@@ -189,7 +189,7 @@ pub(crate) struct RollbackJob {
 
 /// Fan out per-URL DELETE requests under [`ROLLBACK_PARALLELISM`], applying
 /// the resolved auth per request. Each request's outcome is classified via
-/// [`classify_delete_status`] so 404 / 410 land in `already_absent` instead
+/// [`classify_delete_status`] so 404 / 410 end up in `already_absent` instead
 /// of `failed`. Returns `(deleted, already_absent, failed)` counts.
 pub(crate) fn parallel_delete(
     client: &reqwest::blocking::Client,

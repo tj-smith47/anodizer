@@ -165,7 +165,7 @@ pub struct InstallScriptConfig {
     pub filename: Option<String>,
     /// Binary names to install out of the extracted archive (default: a
     /// single-element list of the project name). Every name is installed, so
-    /// an archive shipping multiple binaries lands them all.
+    /// an archive shipping multiple binaries ships them all.
     pub binaries: Option<Vec<String>>,
     /// GitHub `owner/name` slug the script downloads releases from
     /// (default: derived from the git `origin` remote).

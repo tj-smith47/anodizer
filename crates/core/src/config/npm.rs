@@ -170,13 +170,13 @@ pub struct NpmConfig {
     pub bins: Option<BTreeMap<String, String>>,
 
     /// Per-platform binary subdirectory inside each `optional-deps` package
-    /// (e.g. `bin`). When set, the platform binary lands at
+    /// (e.g. `bin`). When set, the platform binary ends up at
     /// `<platform_bin_dir>/<binary>` rather than the package root, the metapackage
     /// shim resolves it at that path, and the package's `files` allowlist covers
     /// it. Required by external shims that hard-code a nested resolve path — for
     /// example git-cliff's own wrapper resolves
     /// `git-cliff-<os>-<arch>/bin/git-cliff`, so a `skip_metapackage` layout must
-    /// place the binary under `bin/`. When unset (the default), the binary lands
+    /// place the binary under `bin/`. When unset (the default), the binary arrives
     /// at the package root (`<binary>`). Ignored in `postinstall` mode.
     pub platform_bin_dir: Option<String>,
 
@@ -288,7 +288,7 @@ pub struct NpmConfig {
     /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`).
     /// When set, an amd64 artifact is included only when its `amd64_variant`
     /// metadata matches (artifacts without the metadata always pass). Steers
-    /// which tuned build lands in each platform package. Typed as
+    /// which tuned build ends up in each platform package. Typed as
     /// [`Amd64Variant`], so any value outside `v1`..`v4` is rejected at parse
     /// time. Default `v1`, mirroring the homebrew/winget/krew/nix/aur peers.
     pub amd64_variant: Option<Amd64Variant>,

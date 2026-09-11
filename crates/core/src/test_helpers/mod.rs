@@ -77,7 +77,7 @@ use std::path::{Path, PathBuf};
 /// binary touches cwd, since changing cwd is a process-wide side effect.
 /// Within ONE test binary, *every* cwd-touching test — a swapper like this
 /// guard, or a test that spawns a cwd-sensitive subprocess (e.g. `rustc -vV`
-/// in `partial.rs`) — must share a SINGLE serial key. If two cwd swappers land
+/// in `partial.rs`) — must share a SINGLE serial key. If two cwd swappers run
 /// in different serial groups they run concurrently and one captures the
 /// other's soon-to-be-deleted tempdir as its restore target, so the restore
 /// fails `NotFound`. The workspace-canonical key is

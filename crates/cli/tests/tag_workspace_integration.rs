@@ -1044,7 +1044,7 @@ util = { path = "../util", version = "0.1.0" }
     );
 }
 
-/// The stranded-bump topology: a bump commit lands its tag but never reaches
+/// The stranded-bump topology: a bump commit gets its tag but never reaches
 /// the branch, so the branch keeps a floor that references a sibling at a
 /// version the sibling's manifest has already moved past. The next run's bump
 /// commit must heal it even though that sibling is not part of the run.
@@ -1352,7 +1352,7 @@ workspaces:
     let config = root.join(".anodizer.yaml");
     let res = tag_dry_run_from(root, &config);
     assert!(res.success, "mixed tag --dry-run failed: {}", res.stdout);
-    // One aggregate group: both members land on the SAME 0.2.0 (feat wins).
+    // One aggregate group: both members reach the SAME 0.2.0 (feat wins).
     assert!(
         res.stdout.contains("\"alpha\":\"0.2.0\"") && res.stdout.contains("\"beta\":\"0.2.0\""),
         "alpha and beta must share one 0.2.0 version, got:\n{}",
@@ -1511,7 +1511,7 @@ fn repo_level_tag_prefers_the_crate_template_over_the_tag_prefix() {
 
 /// A one-crate `crates:` repo with no explicit `tag.tag_prefix` must tag in
 /// that crate's own family (`app-v0.1.1`), not in the `v` family the
-/// repo-level default would otherwise mint — every other surface (bump,
+/// repo-level default would otherwise create — every other surface (bump,
 /// changelog, `--crate app`, the release stage) resolves the crate's
 /// `tag_family_template()`.
 #[test]

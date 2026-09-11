@@ -238,7 +238,7 @@ pub(crate) struct RepoLevelBump<'a> {
 
 /// The repo-level (no `--crate`, no lockstep workspace) bump: write
 /// `new_version` into the manifest, rewrite the enrolled `version_files`, and
-/// land both in one commit before the tag is created — the shape every other
+/// go into one commit before the tag is created — the shape every other
 /// tag path produces.
 ///
 /// Refuses a manifest that declares no version rather than inventing a
@@ -410,7 +410,7 @@ fn check_rewrite_pair(a: &FileRewrite, b: &FileRewrite) -> Result<()> {
     // however many entries express it and whoever enrolled them: every entry
     // selects its occurrences from the original content and each occurrence is
     // claimed once, so a bare entry beside an anchored one on the same bump
-    // lands exactly the same bytes as either alone. Only DIFFERENT pairs can
+    // writes exactly the same bytes as either alone. Only DIFFERENT pairs can
     // hold two new versions for one old one, or chain.
     if a.old == b.old && a.new == b.new {
         return Ok(());

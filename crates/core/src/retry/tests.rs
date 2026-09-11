@@ -1722,7 +1722,7 @@ fn publisher_scope_anchor_is_stable_for_the_whole_invocation() {
 
 #[test]
 fn nested_publisher_scope_inherits_rather_than_widening_the_budget() {
-    // The hole this closes: a publisher helper that mints its own budget
+    // The hole this closes: a publisher helper that creates its own budget
     // hands a wedged remote `retry.max_elapsed` a second time. Nothing
     // reachable from inside an invocation — not even a fresh guard of this
     // same type — may re-anchor.

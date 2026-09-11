@@ -1934,7 +1934,7 @@ binstall = { pkg-url = "https://example/x", custom = "keep" }
     /// A `binary:` that is itself a template resolves per target in the build
     /// stage, which seeds `Os`/`Arch`/`Target` before rendering it. Rendering
     /// it here against the previous target's values derives one name and
-    /// produces another — the broken-download class this seam exists to close.
+    /// produces another — the broken-download class this check exists to close.
     #[test]
     fn a_templated_binary_name_derives_each_targets_own_value() {
         let templated = BuildConfig {

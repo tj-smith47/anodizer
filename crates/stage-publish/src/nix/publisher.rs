@@ -25,7 +25,7 @@ simple_publisher!(
 
 /// Aliased to the core-owned snapshot so the evidence schema lives in
 /// [`anodizer_core::publish_evidence`] and credential-shaped fields
-/// have no slot to land in.
+/// have no slot to fill.
 type NixTarget = anodizer_core::publish_evidence::NixTargetSnapshot;
 
 fn decode_nix_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<NixTarget> {
@@ -180,7 +180,7 @@ pub(crate) fn build_nix_reconcile_target(
     let token =
         crate::util::resolve_repo_token(ctx, nix_cfg.repository.as_ref(), Some("NIX_PKGS_TOKEN"));
     // run() submits through `maybe_submit_pr`, which resolves base-else-fork.
-    // Probing the bare fork searches a repo the PR never lands in whenever
+    // Probing the bare fork searches a repo the PR never ends up in whenever
     // `pull_request.base` is set.
     let (upstream_owner, upstream_repo) = crate::util::resolve_upstream_coords(
         nix_cfg.repository.as_ref(),

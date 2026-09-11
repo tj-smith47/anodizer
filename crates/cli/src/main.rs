@@ -374,7 +374,7 @@ fn run() {
             allow_snapshot_publish,
             no_env_preflight,
             // Removed flags: the clap value parser rejects them before any
-            // value can land here, so there is nothing to dispatch on.
+            // value can end up here, so there is nothing to dispatch on.
             removed_rollback: _,
             removed_rollback_only: _,
             removed_from_run: _,

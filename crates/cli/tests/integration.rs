@@ -4925,7 +4925,7 @@ fn test_strict_mode_cross_axis_smoke() {
     // milestones[].close=true with an explicit repo so pre-flight can
     // resolve owner/name without a token or git remote.
     // A single sbom block triggers the builtin Cargo.lock-based SBOM
-    // emitter (no syft dependency) so the Sbom artifact lands in the
+    // emitter (no syft dependency) so the Sbom artifact ends up in the
     // checksum source-list.
     let config = format!(
         r##"project_name: test-project
@@ -5014,7 +5014,7 @@ crates:
         notes
     );
 
-    // The SBOM artifact must land in the checksums source-list. The
+    // The SBOM artifact must end up in the checksums source-list. The
     // checksum filename is parsed structurally to avoid substring
     // false-positives between e.g. `foo.cdx.json` and `foo.cdx.json.sig`.
     let checksums = fs::read_to_string(dist.join("checksums.txt"))
@@ -6045,7 +6045,7 @@ fn test_release_skip_announce_still_writes_summary_json() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // The audit-trail contract: summary.json lands on disk even though
+    // The audit-trail contract: summary.json reaches disk even though
     // announce was operator-skipped. Pre-I1 this assertion would fail
     // because emit_summary lived inside AnnounceStage::run.
     assert!(

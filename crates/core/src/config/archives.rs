@@ -642,7 +642,7 @@ impl ChecksumConfig {
     /// Resolve the hash algorithm, falling back to the project default
     /// when the user did not specify one. Stages MUST call this rather
     /// than reading `self.algorithm` directly, so a future default change
-    /// (or user-facing override resolution) lands in one place.
+    /// (or user-facing override resolution) ends up in one place.
     pub fn resolved_algorithm(&self) -> &str {
         self.algorithm.as_deref().unwrap_or(Self::DEFAULT_ALGORITHM)
     }

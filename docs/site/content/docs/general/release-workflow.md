@@ -88,7 +88,7 @@ Neither is being deprecated. Prefer `continue` for the resume-after-failure use 
 `release --publish-only` is safe to re-run against a `dist/` that already
 has a `<dist>/run-<id>/report.json`. Publishers converge: each one
 reconciles against its own upstream before dispatching and skips itself
-when this exact version is already landed there.
+when this exact version is already published there.
 
 ```text
 $ anodizer release --publish-only

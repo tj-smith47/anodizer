@@ -450,7 +450,7 @@ mod tests {
     //
     // Drive `send_opencollective` (the real two-step createUpdate →
     // publishUpdate GraphQL POST path) against a scripted responder via the
-    // `ANODIZE_OPENCOLLECTIVE_API_BASE` seam. Mutating process env requires
+    // `ANODIZE_OPENCOLLECTIVE_API_BASE` override. Mutating process env requires
     // `#[serial]` + the shared env_mutex.
 
     use anodizer_core::test_helpers::env::env_mutex;

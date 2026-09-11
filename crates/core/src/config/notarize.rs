@@ -174,7 +174,7 @@ impl MacOSNotarizeApiConfig {
 
     /// Longest notarization wait window Apple's authentication accepts.
     ///
-    /// The App Store Connect token minted for the submission takes its
+    /// The App Store Connect token issued for the submission takes its
     /// lifetime from this timeout, and Apple refuses a token that lives
     /// longer, so a bigger value is not a longer wait — it is an
     /// authentication failure whose message says nothing about the timeout.

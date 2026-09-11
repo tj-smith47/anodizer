@@ -13,7 +13,7 @@
 /// structural `{}[]"` only count when they are *outside* both.
 ///
 /// JSON structural characters are all ASCII, so byte iteration is safe and the
-/// recorded indices always land on UTF-8 char boundaries. `catalog.json` has
+/// recorded indices always reach UTF-8 char boundaries. `catalog.json` has
 /// no comments (so comment-skipping is inert there); `schema-validation.jsonc`
 /// does, and a `]` inside a `//` comment must not be mistaken for structural.
 pub(crate) struct JsonScan {

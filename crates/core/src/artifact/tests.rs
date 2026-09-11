@@ -714,7 +714,7 @@ fn test_to_artifacts_json_with_artifacts() {
 /// `/tmp/anodizer-determinism-11193-0` vs `…-22847-0`) and CARGO_TARGET_DIR
 /// is an absolute per-worktree path; `Artifact.path` for raw cargo binaries
 /// is therefore absolute. Without the `add()`-time relativization, the
-/// worktree prefix would land in `artifacts.json` and the two runs would
+/// worktree prefix would end up in `artifacts.json` and the two runs would
 /// disagree on that byte sequence even when every other artifact matches.
 /// Normalizes the artifact path relative to the working directory.
 #[test]
@@ -1711,6 +1711,6 @@ fn group_by_target_variant_splits_amd64_micro_architectures() {
     assert_eq!(groups[&key_v1].len(), 1);
     assert_eq!(groups[&key_v1][0].name, "myapp-v1");
     assert_eq!(groups[&key_v3][0].name, "myapp-v3");
-    // A binary with no triple lands under `unknown`.
+    // A binary with no triple ends up under `unknown`.
     assert_eq!(groups[&("unknown".to_string(), None)][0].name, "myapp-host");
 }

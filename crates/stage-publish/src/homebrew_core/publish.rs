@@ -2,7 +2,7 @@
 //!
 //! Per `homebrew_cores[]` entry: evaluate the skip gates, locate the existing
 //! formula, rewrite its `url`/`sha256`/`version` (or `tag:`/`revision:`), and
-//! land it as a direct commit or a fork-based pull request, accumulating a
+//! push it as a direct commit or a fork-based pull request, accumulating a
 //! rollback-evidence snapshot for each formula it touches.
 
 use anodizer_core::context::Context;

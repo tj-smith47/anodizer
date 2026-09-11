@@ -42,7 +42,7 @@ pub struct RunSummary {
     /// in the world: `succeeded`, `pending-moderation`,
     /// `pending-validation`, `published-no-rollback`,
     /// `rollback-failed` AND `rollback-skipped-no-scope` (in both, the
-    /// publish landed and nothing withdrew it — the state is presumed
+    /// publish succeeded and nothing withdrew it — the state is presumed
     /// live). The counting is intentionally conservative: when in
     /// doubt, an outcome counts as published.
     ///
@@ -53,13 +53,13 @@ pub struct RunSummary {
     /// Count of publishers with a `failed` outcome.
     #[serde(default)]
     pub publishers_failed: u32,
-    /// True when any Submitter-group publisher's publish action landed
+    /// True when any Submitter-group publisher's publish action published
     /// at the remote — the one-way door. Submitter targets (crates.io,
     /// chocolatey, winget, snapcraft, ...) never accept the same
     /// version twice, so once this is true the version is burned and a
     /// same-version re-cut is impossible: recovery tooling must refuse
     /// destructive rollback (tag delete, revert push) and fix forward
-    /// instead. Counts EVERY landed outcome, including `rolled-back` —
+    /// instead. Counts EVERY published outcome, including `rolled-back` —
     /// a cargo yank withdraws the artifact but does NOT reopen the
     /// version slot. Reversible groups (Assets, Manager) never set
     /// this; their state can be deleted and the same version re-cut.
@@ -147,7 +147,7 @@ pub struct RunSummaryResult {
     /// summary-side copy of
     /// [`anodizer_core::publish_report::PublisherResult::entry_skips`].
     /// Reported alongside `status`, never folded into it: a publisher that
-    /// landed some entries keeps its landed status here.
+    /// published some entries keeps its published status here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entry_skips: Vec<String>,
 }
@@ -299,7 +299,7 @@ impl RunSummary {
 }
 
 impl RunSummary {
-    /// Names of Submitter-group publishers whose publish action landed —
+    /// Names of Submitter-group publishers whose publish action published —
     /// the version-burning set behind
     /// [`irreversibly_published`](Self::irreversibly_published).
     ///
@@ -330,7 +330,7 @@ fn status_landed(status: &str) -> bool {
 /// "Succeeded" means durable published state exists somewhere in the
 /// world that a destructive recovery (tag delete, revert push) would
 /// orphan. `RollbackFailed` and `RollbackSkippedNoScope` count as
-/// succeeded for that reason: the publish landed and nothing withdrew
+/// succeeded for that reason: the publish succeeded and nothing withdrew
 /// it, so the published state is presumed live. `RolledBack` does NOT
 /// count — the state was published and then verifiably withdrawn.
 fn count_publish_state(results: &[anodizer_core::publish_report::PublisherResult]) -> (u32, u32) {
@@ -351,12 +351,12 @@ fn count_publish_state(results: &[anodizer_core::publish_report::PublisherResult
     (succeeded, failed)
 }
 
-/// True when the outcome records that the publish ACTION landed at the
+/// True when the outcome records that the publish ACTION ended up at the
 /// remote at some point — regardless of any later rollback. Only
-/// `skipped-*` (never ran) and `failed` (ran, did not land) are
-/// non-landed. Distinct from [`count_publish_state`]'s "durable state"
+/// `skipped-*` (never ran) and `failed` (ran, published nothing) are
+/// unpublished. Distinct from [`count_publish_state`]'s "durable state"
 /// rule: a `rolled-back` publisher has no live state left, but for a
-/// Submitter target the landing itself burned the version slot.
+/// Submitter target the publish itself burned the version slot.
 fn outcome_landed(outcome: &PublisherOutcome) -> bool {
     !matches!(
         outcome,
@@ -615,8 +615,8 @@ pub fn status_table_rows(
             // "required" and "optional" are both 8 chars, so the status
             // column aligns without padding the requirement cell.
             let requirement = if r.required { "required" } else { "optional" };
-            // A landed publisher that disqualified some entries keeps its
-            // landed status, so the skip count is what makes the
+            // A published publisher that disqualified some entries keeps its
+            // published status, so the skip count is what makes the
             // misconfigured entry visible on the row.
             let skips = match r.entry_skips.len() {
                 0 => String::new(),
@@ -983,7 +983,7 @@ mod tests {
         out
     }
 
-    /// Whether the publish action landed, answered variant by variant rather
+    /// Whether the publish action published, answered variant by variant rather
     /// than by restating the production rule: a new outcome must be
     /// classified here before this module compiles.
     fn expect_landed(outcome: &PublisherOutcome) -> bool {
@@ -1257,8 +1257,8 @@ mod tests {
         }
     }
 
-    /// Landed = the publish action reached the remote at some point. Only
-    /// never-ran (skipped) and ran-but-did-not-land (failed) are non-landed;
+    /// Published = the publish action reached the remote at some point. Only
+    /// never-ran (skipped) and ran-but-published-nothing (failed) are unpublished;
     /// a rolled-back Submitter publish still burned its version slot. Walked
     /// over the whole outcome space, so a new variant is classified before it
     /// can reach a rollback decision unseen.
@@ -1292,7 +1292,7 @@ mod tests {
         }
     }
 
-    /// The two rows an operator sees when one publisher landed with a
+    /// The two rows an operator sees when one publisher published with a
     /// misconfigured entry beside it and another's every entry disqualified
     /// itself. The block in `docs/advanced/release-resilience.md` is this
     /// fixture's rendering.
@@ -1322,7 +1322,7 @@ mod tests {
         }
     }
 
-    /// A publisher that landed keeps its own status, and the skip count is
+    /// A publisher that published keeps its own status, and the skip count is
     /// what makes the misconfigured entry visible on its row.
     #[test]
     fn a_landed_publisher_with_entry_skips_shows_its_outcome_and_the_count() {
@@ -1356,7 +1356,7 @@ mod tests {
     }
 
     /// A publisher whose every entry disqualified itself carries the count
-    /// too: the status says nothing landed, the count says how much did not.
+    /// too: the status says nothing published, the count says how much did not.
     #[test]
     fn a_skipped_publisher_row_shows_the_skip_count_beside_its_status() {
         let rows = status_table_rows(&entry_skip_summary(), PublishDisposition::Ran);
@@ -1511,7 +1511,7 @@ mod tests {
         // A fully-successful run of REVERSIBLE publishers (Assets,
         // Manager) must not flag the version as burned — every one of
         // them can be deleted and the same version re-cut. The flag
-        // flips only when a Submitter (one-way-door) publish landed.
+        // flips only when a Submitter (one-way-door) publish succeeded.
         let mut ctx = anodizer_core::context::Context::test_fixture();
         ctx.publish_report = Some(PublishReport {
             submitter_gated: false,

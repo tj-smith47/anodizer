@@ -5,9 +5,9 @@
 //! Classification:
 //! * **Group**: Submitter — a PyPI filename is an immutable registry slot
 //!   that can NEVER be re-uploaded (even after deletion), so pypi belongs
-//!   with the other one-way doors (cargo, chocolatey, winget) whose landed
+//!   with the other one-way doors (cargo, chocolatey, winget) whose published
 //!   publish burns the version. This is what arms the rollback guard: a
-//!   landed pypi upload counts toward `irreversibly_published`, refusing a
+//!   published pypi upload counts toward `irreversibly_published`, refusing a
 //!   same-version re-cut that would silently `skip_existing` the stale
 //!   wheels. (It is NOT Manager: Manager is server-side-deletable
 //!   package-manager state — homebrew/scoop/nix — which pypi is not.)
@@ -51,7 +51,7 @@ simple_publisher!(
 
 /// Aliased to the core-owned snapshot so the evidence schema lives in
 /// [`anodizer_core::publish_evidence`] and credential-shaped fields have no
-/// slot to land in.
+/// slot to fill.
 pub(crate) type PypiFileSnapshot = anodizer_core::publish_evidence::PypiFileSnapshot;
 
 /// Env var fallback ladder for the upload token: `PYPI_TOKEN`, then
@@ -238,7 +238,7 @@ pub(crate) fn build_spec_base(
     version: &str,
     crate_name: &str,
 ) -> Result<WheelSpec> {
-    // Template errors PROPAGATE: these fields land in immutable published
+    // Template errors PROPAGATE: these fields end up in immutable published
     // METADATA, so a broken template must abort the release rather than ship
     // its raw source (every other render in this file propagates the same
     // way).
@@ -379,7 +379,7 @@ fn select_binaries<'a>(
 /// Top-level publish entrypoint. Iterates each `pypis[]` entry, assembles
 /// its wheels (+ optional sdist) into `<dist>/pypi/<entry>/`, and uploads
 /// each file. `files` is an out-param so a mid-loop error still yields
-/// evidence for what already landed.
+/// evidence for what already published.
 pub(crate) fn publish_to_pypi(
     ctx: &Context,
     log: &StageLogger,
@@ -738,10 +738,10 @@ impl anodizer_core::Publisher for PypiPublisher {
     /// Index-inventory reconcile: `Complete` only when EVERY wheel this run
     /// would build is already a released file of `<project>@<version>` on the
     /// target index — filename-exact, so a partially-uploaded version (some
-    /// wheels landed, the run died) stays `Absent` and `run()` keeps owning
-    /// convergence (`skip_existing` folds the landed files, the missing ones
+    /// wheels published, the run died) stays `Absent` and `run()` keeps owning
+    /// convergence (`skip_existing` folds the published files, the missing ones
     /// upload). An sdist entry is never `Complete`: its filename is maturin's
-    /// to mint and cannot be derived without building. Anything unenumerable
+    /// to create and cannot be derived without building. Anything unenumerable
     /// stays `Absent`; an unreachable index is `Unknown`.
     fn reconcile(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::ReconcileState> {
         use anodizer_core::ReconcileState;
@@ -826,11 +826,11 @@ impl anodizer_core::Publisher for PypiPublisher {
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
-        // Accumulate every file that lands BEFORE a mid-loop failure so the
+        // Accumulate every file that arrives BEFORE a mid-loop failure so the
         // evidence still names the already-live (one-way) uploads. On Err the
         // evidence is built from the partial set, the Failed outcome is
         // recorded, and Ok(evidence) is returned — bubbling Err would make
-        // dispatch drop the evidence and orphan the landed files from the
+        // dispatch drop the evidence and orphan the published files from the
         // run report.
         let mut files: Vec<PypiFileSnapshot> = Vec::new();
         let publish_err = publish_to_pypi(ctx, &log, &mut files).err();

@@ -63,7 +63,7 @@ use std::process::Command;
 ///   about byte-stability of whatever cargo emits.
 ///
 /// `cargo_target_dir` is set as `CARGO_TARGET_DIR` (already exported
-/// via `env`) so the `.crate` lands at
+/// via `env`) so the `.crate` ends up at
 /// `<cargo_target_dir>/package/<name>-<version>.crate` — the location
 /// the harness's discover step walks to pick up the artifacts.
 ///

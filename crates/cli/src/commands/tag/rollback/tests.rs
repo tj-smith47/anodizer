@@ -413,7 +413,7 @@ fn no_push_skips_remote_ops_but_does_local_revert() {
         "expected no tags at bump_sha; got {tags:?}"
     );
 
-    // Revert commit landed on top of the bump.
+    // Revert commit sits on top of the bump.
     let subj = git::commit_subject_in(dir, "HEAD").unwrap();
     assert!(
         subj.starts_with("chore(release): rollback v1.0.0"),
@@ -670,7 +670,7 @@ fn immutable_probe_untouched(_: &str, _: &str, _: &str) -> Result<bool> {
     panic!("npm/pypi burn probe must not be consulted on this path")
 }
 
-/// Wrap a crates.io index probe into the full [`BurnProbes`] seam with
+/// Wrap a crates.io index probe into the full [`BurnProbes`] set with
 /// clear npm/pypi + moderated-registry probes.
 fn probes_with_crates_io(index: &(dyn Fn(&str, &str) -> Result<bool> + Sync)) -> BurnProbes<'_> {
     BurnProbes {
@@ -683,7 +683,7 @@ fn probes_with_crates_io(index: &(dyn Fn(&str, &str) -> Result<bool> + Sync)) ->
 }
 
 /// Wrap an npm + a pypi immutable-registry probe into the full
-/// [`BurnProbes`] seam with a clear (never-burned) crates.io probe and
+/// [`BurnProbes`] set with a clear (never-burned) crates.io probe and
 /// clear moderated-registry probes.
 fn probes_with_npm_pypi<'a>(
     npm: &'a (dyn Fn(&str, &str, &str) -> Result<bool> + Sync),
@@ -1286,7 +1286,7 @@ fn guard_refuses_when_summary_shows_irreversible_publish() {
 fn guard_permits_when_summary_shows_only_reversible_publishers() {
     use anodizer_core::publish_report::PublisherGroup;
     // The gh stub reports a published release (would REFUSE), but
-    // the summary proves only reversible publishers landed — a
+    // the summary proves only reversible publishers published — a
     // same-version re-cut is still possible, so rollback proceeds
     // and the probe is never consulted for this tag.
     let tmp = tempfile::tempdir().unwrap();
@@ -1948,7 +1948,7 @@ fn npm_pypi_probes_summarized_tag_catching_recorded_failed_landing() {
     use anodizer_core::publish_report::PublisherGroup;
     // The immutable-door verification race: this run's summary for v1.0.0
     // records only a reversible publisher — npm is ABSENT because the
-    // publish landed at the registry but a read-timeout after the 201 made
+    // publish reached the registry but a read-timeout after the 201 made
     // anodizer record it as failed. Layer 1 sees no burned Submitter and
     // would permit the rollback; only the live npm probe proves the version
     // is burned. A summarized tag must therefore STILL be probed (parity
@@ -2130,7 +2130,7 @@ fn npm_pypi_summarized_clean_tag_probed_and_permitted() {
     use anodizer_core::publish_report::PublisherGroup;
     // A tag WITH a clean run summary is STILL probed live (parity with the
     // crates.io sibling — the summary alone cannot rule out the
-    // recorded-failed-but-actually-landed immutable-door race). When the
+    // recorded-failed-but-actually-published immutable-door race). When the
     // live probe confirms the version is NOT on the registry, rollback is
     // permitted. The probe returning Ok(false) here (rather than being
     // untouched) is the point: it fires, and its negative answer is what

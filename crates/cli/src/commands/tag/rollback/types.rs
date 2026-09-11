@@ -91,7 +91,7 @@ pub struct RollbackOpts {
     pub no_push: bool,
     /// `--force`: override the published-state guard. Without it,
     /// rollback refuses when the tag's run summary shows a one-way-door
-    /// (Submitter) publisher landed — the version is burned at a
+    /// (Submitter) publisher published — the version is burned at a
     /// registry that never accepts the same version twice — when the
     /// crates.io index shows the tag's crate@version live (GLOBAL state:
     /// a prior run may have published it; an unreachable index fails

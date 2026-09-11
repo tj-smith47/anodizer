@@ -30,13 +30,13 @@ section explains why each one is safe.
 
 | Situation | What you type | Why it works |
 |---|---|---|
-| A release failed partway | the **identical** `anodizer release` command — same tag, same flags | publishers that already landed this exact version `reconcile()` to `Complete` and skip themselves; the failed ones retry |
+| A release failed partway | the **identical** `anodizer release` command — same tag, same flags | publishers that already published this exact version `reconcile()` to `Complete` and skip themselves; the failed ones retry |
 | This version should not exist at all | `anodizer tag rollback` | deletes the anodizer-managed tag(s), reverts the bump commit, and unwinds every publisher recorded `Succeeded` |
 | A publisher reports `Diverged` | bump the version, then release again | the version is already published upstream with *different* bytes, and that registry slot is immutable — no re-run and no rollback can overwrite it |
 
 > **Re-running is for a failed PUBLISHER; `anodizer continue` is for a failed
 > STAGE.** A re-run reconciles each publisher against its upstream and
-> self-skips what already landed. `continue` resumes a pipeline that stalled
+> self-skips what already published. `continue` resumes a pipeline that stalled
 > before publishing — it skips the stages that already completed rather than
 > the publishers that already published. See
 > [`publish` vs `continue`](@/docs/general/release-workflow.md#publish-vs-continue).
@@ -123,7 +123,7 @@ is safe.
 
 The "Rollback action" column below is invoked only by `anodizer tag rollback`
 — never automatically. A release run that fails leaves published state exactly
-where it landed; withdrawing it is always an explicit operator command (see
+where it stopped; withdrawing it is always an explicit operator command (see
 [Recovering a poisoned tag with `tag rollback`](#recovering-a-poisoned-tag-with-tag-rollback)).
 
 | Publisher | Group | required (default) | Rollback action | Token scope |
@@ -506,7 +506,7 @@ read, simply absent going forward.
 `publishers_succeeded` / `publishers_failed` count outcomes that left durable
 published state (respectively, a `failed` outcome).
 `irreversibly_published` is the recovery verdict: `true` when any
-Submitter-group publisher's publish landed. Submitter targets (crates.io, npm,
+Submitter-group publisher's publish succeeded. Submitter targets (crates.io, npm,
 PyPI, chocolatey, winget, snapcraft, ...) never accept the same version twice, so
 once it flips the version is burned — a tag rollback can only orphan the live
 release, never enable a clean same-version re-cut. Even a `rolled-back`
@@ -523,7 +523,7 @@ $ anodizer tag rollback
 Error: refusing to roll back — one-way-door publisher(s) already accepted these version(s):
   v0.8.0: version burned at cargo, chocolatey
 Those registries never accept the same version twice, so deleting the tag(s) and reverting the bump cannot lead to a clean same-version re-cut — tags kept to protect the published state.
-next step: fix the failure and cut the NEXT version (auto-tag mints it from the next push). To override anyway: `anodizer tag rollback --force`.
+next step: fix the failure and cut the NEXT version (auto-tag creates it from the next push). To override anyway: `anodizer tag rollback --force`.
 ```
 
 For workflows that add their own destructive recovery steps anyway, the
@@ -561,7 +561,7 @@ produces them itself, since it never rolls anything back automatically. See
 
 `AlreadyPublished` (`skipped-already-published` in the run summary and
 `--summary-json` output) fires when a publisher's [`reconcile()`](#convergent-re-run)
-found this exact version already landed upstream — see Convergent re-run
+found this exact version already published upstream — see Convergent re-run
 above for the full skip/abort table.
 
 `ConfigSkipped` (`skipped-config` in the run summary and `--summary-json`
@@ -577,8 +577,8 @@ reported as `Succeeded` for work it never did.
 `--summary-json` output) fires when `run()` did execute, at least one entry it
 iterated disqualified itself — a missing `name:`/`target:`, a half-set
 username/password pair, a half-set `client_x509_cert`/`client_x509_key` pair —
-and **nothing landed**. A publisher that landed anything keeps the outcome of
-what it landed; `skipped-entries-skipped` means no entry ran. Distinct from
+and **nothing published**. A publisher that published anything keeps the outcome of
+what it published; `skipped-entries-skipped` means no entry ran. Distinct from
 `ConfigSkipped`, which is decided before `run()` from `skip:`/`if:` alone; here
 the defects are per-entry and only the run itself can see them.
 
@@ -755,7 +755,7 @@ anodizer tag rollback --no-push "$GITHUB_SHA"
 | `--dry-run` | off | Print what would happen — no tag delete, no commit, no push |
 | `--no-push` | off | Mutate locally; skip the remote tag-delete and revert-commit push |
 | `--scope` | `all` | `all` (lockstep + per-crate) \| `lockstep` (`vX.Y.Z` only) \| `per-crate` (`<crate>-vX.Y.Z` only) |
-| `--mode` | `revert` | `revert` (history-preserving `git revert --no-edit`, default) \| `reset` (history-rewriting `git reset --hard <sha>~1`; requires force-push to land) |
+| `--mode` | `revert` | `revert` (history-preserving `git revert --no-edit`, default) \| `reset` (history-rewriting `git reset --hard <sha>~1`; requires a force-push) |
 | `--force` | off | Override the published-state guard (below). For operators who are CERTAIN nothing irreversible shipped — e.g. offline recovery of a release that died before publish |
 | `--branch` | auto | Branch to push the revert to. Auto-resolved from `git branch -r --contains <bump_sha>` so the bump SHA itself (not "the default branch right now") drives the lookup — race-immune to default-branch movement. Falls back to `HEAD` resolution for local-only repos. Pass `--branch` to override |
 
@@ -770,7 +770,7 @@ one-way-door publisher, by evidence strength:
 
 1. **Run summaries** (`<dist>/run-*/summary.json`, per-crate
    `<dist>/<crate>/run-*/summary.json`) whose `tag` matches a tag being
-   rolled back. A landed Submitter-group publisher → refuse, naming the
+   rolled back. A published Submitter-group publisher → refuse, naming the
    publishers; only-reversible publishers → proceed to the next layer.
 2. **crates.io index probe** — for every tag whose crate tag family (from
    the config's `tag_template`s) maps to a crates.io-targeting
@@ -838,12 +838,12 @@ mcp             PATCH the server's registry status; degrades to a warn on reject
 gemfury         DELETE each pushed package version
 cargo           cargo yank (version stays reserved; consumers cannot install fresh)
 npm             npm unpublish per target; warn once outside npm's unpublish window
-homebrew-core   close the bump PR; warn when the bump landed as a direct commit
+homebrew-core   close the bump PR; warn when the bump was pushed as a direct commit
 pypi / chocolatey / winget / snapcraft / upstream-aur  warn-only (no programmatic path)
 ```
 
 The published-state guard above still applies first: a Submitter-group
-publisher that already landed (crates.io, npm, PyPI, chocolatey, winget,
+publisher that already published (crates.io, npm, PyPI, chocolatey, winget,
 snapcraft, ...) blocks the whole rollback unless `--force` is passed, because
 those registries never reopen the version slot — `cargo yank` and
 `npm unpublish` are best-effort withdrawals, not un-publishes.
@@ -976,7 +976,7 @@ leak into a notification unless you explicitly opt out.
 
 - **Outbound body** (what the channel receives): redacted by default;
   `--allow-secrets` opts out.
-- **anodizer's own logs / stderr** (what lands in GitHub Actions logs):
+- **anodizer's own logs / stderr** (what ends up in GitHub Actions logs):
   redacted **always**, with no opt-out — even under `--allow-secrets`.
 
 ### Control matrix

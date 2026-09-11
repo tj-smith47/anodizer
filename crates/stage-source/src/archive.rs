@@ -40,7 +40,7 @@ fn zip_datetime_from_epoch(epoch_secs: u64) -> Option<zip::DateTime> {
 /// format the stage is writing.
 ///
 /// One rule for every format: a `dst` renames literally, a `dst` under
-/// `strip_parent` names the directory the basename lands in, and an absent
+/// `strip_parent` names the directory the basename ends up in, and an absent
 /// `dst` preserves the file's layout relative to the repository root. An
 /// absolute path outside the repository has no relative form, so its basename
 /// is the only destination that does not write the machine's own directory

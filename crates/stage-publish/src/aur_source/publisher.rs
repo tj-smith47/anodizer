@@ -49,7 +49,7 @@ simple_publisher!(
 /// references. `git_url` is the `ssh://aur@aur.archlinux.org/...`
 /// Aliased to the core-owned snapshot so the evidence schema lives in
 /// [`anodizer_core::publish_evidence`] and credential-shaped fields
-/// (`private_key` / `git_ssh_command`) have no slot to land in. See
+/// (`private_key` / `git_ssh_command`) have no slot to fill. See
 /// the Submitter rustdoc above for the credential-handling rationale.
 pub(super) type AurSourceTarget = anodizer_core::publish_evidence::AurSourceTargetSnapshot;
 

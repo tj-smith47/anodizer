@@ -162,7 +162,7 @@ pub(super) fn summarize_drift(
 ///
 /// Returns `None` when:
 ///   - `head.len() + tail.len() < size` (real coverage gap — drift
-///     might land in the un-sampled middle and cannot be decoded),
+///     might end up in the un-sampled middle and cannot be decoded),
 ///   - `size` exceeds `usize::MAX` on the host (a 32-bit corner case
 ///     for hypothetical >4 GiB artifacts; the harness's hashing path
 ///     already buffers the file fully, so 32-bit hosts couldn't get
@@ -214,7 +214,7 @@ fn looks_textual(name: &str, head: &[u8]) -> bool {
 
 /// Locate the line containing `abs_offset` in `bytes`. Returns the
 /// 1-indexed line number plus the line content (UTF-8 lossy, trailing
-/// `\n` excluded). When the offset lands past EOF (e.g. one run is
+/// `\n` excluded). When the offset falls past EOF (e.g. one run is
 /// shorter), returns the last line.
 fn line_at_offset(bytes: &[u8], abs_offset: usize) -> (usize, String) {
     let clamped = abs_offset.min(bytes.len().saturating_sub(1));
@@ -293,7 +293,7 @@ pub(super) fn pick_first_artifact_for_stage<'a>(
 /// archives and the harness reports no drift.
 ///
 /// The earlier `/dev/urandom`-or-`subsec_nanos()` source was flaky on
-/// Windows runners: no `/dev/urandom`, and consecutive runs can land
+/// Windows runners: no `/dev/urandom`, and consecutive runs can produce
 /// in the same nanos-mod-256 window (100 ns clock resolution × u8
 /// truncation), producing identical injected bytes. The counter is
 /// monotonic per-process and platform-uniform, eliminating the flake.
@@ -491,7 +491,7 @@ mod tests {
         use super::super::artifacts::{HEAD_SAMPLE_BYTES, TAIL_SAMPLE_BYTES};
         // 40 KiB — large enough that head/tail are non-overlapping and
         // there IS an un-sampled middle. Drift at the very last byte
-        // lands in the tail.
+        // ends up in the tail.
         let size = HEAD_SAMPLE_BYTES + TAIL_SAMPLE_BYTES + 8 * 1024;
         let mut run0 = vec![0x55u8; size];
         let mut run1 = run0.clone();

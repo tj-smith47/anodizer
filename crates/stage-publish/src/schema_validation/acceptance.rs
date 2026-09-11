@@ -25,7 +25,7 @@ use super::{validate_publisher_schemas, validators};
 const VERSION: &str = "1.0.0";
 
 /// A `WingetConfig` whose schema-constrained fields all carry registry-valid
-/// values. `publisher_url` is the seam the malformed case rewrites to a
+/// values. `publisher_url` is the field the malformed case rewrites to a
 /// non-URL, which the locale manifest's `PublisherUrl` URL pattern rejects.
 fn winget_cfg(publisher_url: &str) -> WingetConfig {
     WingetConfig {

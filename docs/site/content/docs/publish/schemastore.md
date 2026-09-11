@@ -21,7 +21,7 @@ See [Release resilience](../advanced/release-resilience.md) for the full classif
 
 Field presence selects the mode. Set **exactly one** of `url` or `schema_file` per entry:
 
-| Field | Mode | What lands in SchemaStore |
+| Field | Mode | What ends up in SchemaStore |
 |-------|------|--------------------------|
 | `url` | **External** | Catalog entry only — points at a URL you host |
 | `schema_file` | **Vendor** | Schema file copied to `src/schemas/json/<slug>.json` + catalog entry |
@@ -251,7 +251,7 @@ SchemaStore's validator rejects a schema that uses a `format` its ajv does not r
 
 For a `versioned` entry, every other option in the previous version's block (`unknownKeywords`, `strict`, …) carries forward to the new filename's block, and an `externalSchema` reference to an older file of the same schema family is re-pointed at the version being published. The previous version's block is left in place, because its vendored file stays in the repo. A schema whose formats are all known gets no `options` block at all.
 
-> A failed `$schema` check on one entry fails the **entire PR**, including any good entries. Anodizer catches dialect mismatches at preflight so the PR lands clean.
+> A failed `$schema` check on one entry fails the **entire PR**, including any good entries. Anodizer catches dialect mismatches at preflight so the PR is clean.
 
 ## Authentication
 

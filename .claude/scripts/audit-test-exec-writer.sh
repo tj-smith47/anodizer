@@ -4,7 +4,7 @@
 #
 # Contract: `execve` refuses a file that any process still holds open for
 # writing (`ETXTBSY`). Under `--test-threads=N` a sibling test thread's `fork`
-# landing inside another thread's write window inherits that writable
+# ending up inside another thread's write window inherits that writable
 # descriptor and keeps it until its own `exec` — the descriptor is `CLOEXEC`,
 # which releases at `exec`, not at `fork`. So a test that writes a stub and
 # spawns it can fail with "Text file busy" no matter how promptly the writer

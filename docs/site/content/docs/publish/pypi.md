@@ -26,7 +26,7 @@ The platform tag is **derived by inspecting each binary**, never guessed:
 
 Because the `manylinux` tag comes from the binary's *real* glibc floor, a wheel never claims broader compatibility than the executable actually has.
 
-**Fully-static gnu binaries** (anodizer's default linux build — no `PT_INTERP`, no dynamic loader, no glibc dependency) legitimately declare no `GLIBC_*` requirement, so they cannot derive a glibc floor. They run on *any* glibc host, so anodizer tags them at the arch's lowest recognized `manylinux` profile: `manylinux_2_5` (the manylinux1 baseline) for x86_64/i686, and `manylinux_2_17` (manylinux2014, the first profile to include aarch64) for aarch64. A *dynamically linked* gnu binary that declares no glibc requirement is still a hard error — that means the wrong binary (or one with a stripped version-needed table) landed under that target. Likewise a darwin-target artifact that is **not** a Mach-O object is a hard error (the Mach-O analogue of the missing-glibc case). When a Mach-O carries no version load command, the tag falls back to `10_12` (x86_64) / `11_0` (arm64 and universal). macOS 11+ deployment targets always tag `macosx_<major>_0` (e.g. an 11.2 minos wheel tags `macosx_11_0`), matching what pip/packaging enumerate. A binary whose only glibc requirement is the ancient x86_64 baseline (`GLIBC_2.2.5`) floors to `manylinux_2_5` rather than the unrecognized `manylinux_2_2`.
+**Fully-static gnu binaries** (anodizer's default linux build — no `PT_INTERP`, no dynamic loader, no glibc dependency) legitimately declare no `GLIBC_*` requirement, so they cannot derive a glibc floor. They run on *any* glibc host, so anodizer tags them at the arch's lowest recognized `manylinux` profile: `manylinux_2_5` (the manylinux1 baseline) for x86_64/i686, and `manylinux_2_17` (manylinux2014, the first profile to include aarch64) for aarch64. A *dynamically linked* gnu binary that declares no glibc requirement is still a hard error — that means the wrong binary (or one with a stripped version-needed table) ended up under that target. Likewise a darwin-target artifact that is **not** a Mach-O object is a hard error (the Mach-O analogue of the missing-glibc case). When a Mach-O carries no version load command, the tag falls back to `10_12` (x86_64) / `11_0` (arm64 and universal). macOS 11+ deployment targets always tag `macosx_<major>_0` (e.g. an 11.2 minos wheel tags `macosx_11_0`), matching what pip/packaging enumerate. A binary whose only glibc requirement is the ancient x86_64 baseline (`GLIBC_2.2.5`) floors to `manylinux_2_5` rather than the unrecognized `manylinux_2_2`.
 
 ### One binary per platform per entry
 
@@ -220,7 +220,7 @@ short-lived upload token. Requires `id-token: write` on the release job and a
 [Trusted Publisher](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/)
 (or a *pending* publisher, for a brand-new project) configured on PyPI for
 this repository and workflow. Supported for `pypi.org` and `test.pypi.org`
-only — a custom index has no mint endpoint.
+only — a custom index has no token endpoint.
 
 ```yaml
 pypis:

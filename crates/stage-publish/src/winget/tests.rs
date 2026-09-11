@@ -249,7 +249,7 @@ fn winget_scoped_dependency_attaches_only_to_matching_installer() {
 /// Regression for the original bug: an `x64`-scoped VCRedist must NOT
 /// attach to the native `arm64` installer (which would pull the wrong
 /// runtime → STATUS_DLL_NOT_FOUND on a clean arm64 box). The dependency
-/// must land under the x64 installer entry, and the arm64 entry must
+/// must end up under the x64 installer entry, and the arm64 entry must
 /// carry no Dependencies block.
 #[test]
 fn winget_arm64_installer_does_not_get_x64_scoped_dependency() {
@@ -1914,7 +1914,7 @@ mod live_pr {
 
         publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish ok");
 
-        // (1) The versioned branch landed in the bare repo.
+        // (1) The versioned branch ended up in the bare repo.
         let branch = "AcmeCo.widget-1.0.0";
         let branches = git_stdout(bare.path(), &["branch", "--list"]);
         assert!(
@@ -1922,7 +1922,7 @@ mod live_pr {
             "publish must push the versioned branch; bare branches:\n{branches}"
         );
 
-        // The 3-file manifest set landed at the canonical winget path.
+        // The 3-file manifest set ended up at the canonical winget path.
         let dir = "manifests/a/AcmeCo/widget/1.0.0";
         let ver = manifest_show(bare.path(), branch, &format!("{dir}/AcmeCo.widget.yaml"));
         assert!(
@@ -2128,7 +2128,7 @@ mod live_pr {
     }
 
     /// Workspace per-crate mode: two winget crates sharing one bare fork
-    /// must each land their OWN 3-file manifest set under their OWN
+    /// must each push their OWN 3-file manifest set under their OWN
     /// `<package_id>` path on their OWN `<package_id>-<version>` branch —
     /// proving per-crate name/package-id/branch resolution is not
     /// clobbered by a sibling.
@@ -2188,7 +2188,7 @@ mod live_pr {
     /// The canonical-upstream fallback: with `pull_request.enabled` unset,
     /// `submit_winget_pr` submits the PR against `microsoft/winget-pkgs`
     /// (the live winget index) via the `gh pr create` CLI, head =
-    /// fork:branch. The branch still lands in the local bare fork.
+    /// fork:branch. The branch still ends up in the local bare fork.
     ///
     /// Transport reality: this arm calls `submit_pr_via_gh_with_opts`,
     /// which dispatches via `classify_pr_transport(gh_is_available(),
@@ -2604,7 +2604,7 @@ mod live_pr {
 
     /// A `winget.description` template that fails to render (undefined
     /// field) falls back to its raw `{{ }}` text via `render_or_warn` and
-    /// lands in the locale manifest — `guard_no_unrendered` must hard-fail
+    /// ends up in the locale manifest — `guard_no_unrendered` must hard-fail
     /// the real publish before any branch is pushed, naming the manifest.
     #[test]
     #[serial(path_env)]
@@ -2679,7 +2679,7 @@ mod live_pr {
     /// A broken `winget.url_template` (referencing an undefined field)
     /// fails `render_url_template_with_ctx`'s Tera pass and falls back to
     /// its own raw `{{ }}` text (the silent, non-strict-aware fallback in
-    /// `resolve_installer_url`), landing the residual in the InstallerUrl
+    /// `resolve_installer_url`), putting the residual in the InstallerUrl
     /// of the INSTALLER manifest only — never the version or locale
     /// manifest. `guard_no_unrendered` must hard-fail the real publish
     /// before the fork clone, naming `"winget installer manifest"`.

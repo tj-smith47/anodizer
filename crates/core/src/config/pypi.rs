@@ -194,7 +194,7 @@ pub struct PypiConfig {
     /// API token for the upload (templated). Falls back to the `PYPI_TOKEN`
     /// env var, then `MATURIN_PYPI_TOKEN`, when unset. Sent as HTTP Basic
     /// auth with the literal username `__token__` and NEVER logged. Unused
-    /// when `auth: oidc` (Trusted Publishing mints its own short-lived token).
+    /// when `auth: oidc` (Trusted Publishing creates its own short-lived token).
     pub token: Option<String>,
 
     /// Skip this publisher. Accepts bool or template string.
@@ -265,7 +265,7 @@ impl Default for PypiConfig {
 }
 
 /// How a `pypis[]` entry authenticates its upload: a long-lived API token, or
-/// GitHub Actions OIDC (PyPI Trusted Publishing, which mints a short-lived
+/// GitHub Actions OIDC (PyPI Trusted Publishing, which creates a short-lived
 /// upload token per run — no stored secret).
 ///
 /// Unlike npm, PyPI is uploaded directly over HTTP rather than through a CLI,
@@ -277,7 +277,7 @@ impl Default for PypiConfig {
 #[serde(rename_all = "kebab-case")]
 pub enum PypiAuthMode {
     /// Use a token when one is available (`cfg.token` / `PYPI_TOKEN` /
-    /// `MATURIN_PYPI_TOKEN`); otherwise, when an OIDC context is present, mint
+    /// `MATURIN_PYPI_TOKEN`); otherwise, when an OIDC context is present, create
     /// a Trusted-Publishing token. Errors only when neither is available.
     #[default]
     Auto,

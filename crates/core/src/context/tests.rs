@@ -5,7 +5,7 @@ use crate::git::{GitInfo, SemVer};
 use crate::test_helpers::env::{EnvGuard, env_mutex};
 use std::collections::BTreeSet;
 
-/// A `StageLogger` built via `Context::logger` before a secret is minted
+/// A `StageLogger` built via `Context::logger` before a secret is issued
 /// into `env_source` (e.g. crates.io Trusted Publishing overlaying
 /// `CARGO_REGISTRY_TOKEN` mid-run via `begin_cargo_trusted_publishing`)
 /// must still redact that secret: the logger holds a live handle to the
@@ -619,7 +619,7 @@ fn test_previous_tag_empty_when_none() {
 /// commit otherwise emit `dist/metadata.json` files that differ in
 /// the embedded `date` field, drifting `metadata.json` AND its
 /// `.sha256` sidecar across runs. CI run 25975073213 surfaced this
-/// drift on every platform shard before the fix landed.
+/// drift on every platform shard before the fix went in.
 #[test]
 fn populate_time_vars_uses_source_date_epoch_when_set() {
     // 1_715_000_000 = 2024-05-06T12:53:20+00:00 — picked to be safely
@@ -1541,7 +1541,7 @@ fn test_populate_metadata_var_full_description_from_file() {
 fn test_populate_metadata_var_full_description_from_url_resolves() {
     // `from_url` routes through the shared `content_source::resolve`
     // helper. A oneshot HTTP responder keeps the test
-    // hermetic (no real network) and verify the body lands in the
+    // hermetic (no real network) and verify the body ends up in the
     // rendered Metadata.FullDescription variable.
     use crate::config::ContentSource;
     use crate::test_helpers::responder::spawn_oneshot_http_responder;
@@ -2052,17 +2052,17 @@ fn retry_deadline_defaults_to_the_built_in_budget_when_config_omits_retry() {
         .retry_deadline()
         .expect("an omitted retry config must still yield the default budget");
     let after = std::time::Instant::now() + crate::retry::DEFAULT_MAX_ELAPSED;
-    // The deadline anchors at call time + the 15m default, so it lands within
+    // The deadline anchors at call time + the 15m default, so it ends up within
     // the [before, after] window bracketing this call.
     assert!(deadline >= before && deadline <= after);
 }
 
 #[test]
 fn retry_deadline_is_one_value_for_a_whole_publisher_invocation() {
-    // The gap this pins: `retry_deadline` used to mint `now + budget` on every
-    // call, so a publisher resolving it at three seams got three budgets and a
-    // wedged registry could burn `retry.max_elapsed` once per seam. Inside a
-    // `PublisherRetryScope` the deadline is a READ of one anchor, so every seam
+    // The gap this pins: `retry_deadline` used to create `now + budget` on every
+    // call, so a publisher resolving it at three points got three budgets and a
+    // wedged registry could burn `retry.max_elapsed` once per point. Inside a
+    // `PublisherRetryScope` the deadline is a READ of one anchor, so every point
     // sees the same instant no matter how much time passed between them.
     let mut config = Config::default();
     config.retry = Some(crate::config::RetryConfig {

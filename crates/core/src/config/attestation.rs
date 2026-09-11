@@ -13,7 +13,7 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 ///
 /// - [`AttestationMode::Subjects`] (the default) emits a **subjects manifest**
 ///   (`dist/attestation-subjects.json`) that `anodizer-action` feeds to
-///   GitHub's `actions/attest-build-provenance`. anodizer does NOT mint a
+///   GitHub's `actions/attest-build-provenance`. anodizer does NOT create a
 ///   GitHub-trusted attestation itself in this mode — the Action's OIDC
 ///   identity does. This is the path fd / biome / gping use.
 /// - [`AttestationMode::Emit`] generates a self-contained in-toto v1 statement
@@ -62,7 +62,7 @@ pub enum AttestationMode {
 /// A selectable artifact KIND for attestation. Each variant maps to one or
 /// more concrete [`crate::artifact::ArtifactKind`] values at subject-collection
 /// time; together the variants cover the full release-uploadable surface so any
-/// artifact that lands on the release can be attested.
+/// artifact that reaches the release can be attested.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum AttestationArtifactKind {

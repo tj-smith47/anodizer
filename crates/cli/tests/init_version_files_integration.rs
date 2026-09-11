@@ -414,7 +414,7 @@ fn block_not_at_eof_inserts_within_block() {
     assert!(run.success, "stderr: {}", run.stderr);
 
     let cfg = read(root, ".anodizer.yaml");
-    // New item lands under the block, BEFORE the trailing `dist:` key.
+    // New item ends up under the block, BEFORE the trailing `dist:` key.
     let install_pos = cfg.find("- docs/install.md").expect("new item missing");
     let dist_pos = cfg.find("\ndist: ./dist").expect("trailing key gone");
     assert!(

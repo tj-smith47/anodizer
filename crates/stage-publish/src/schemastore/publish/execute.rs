@@ -494,7 +494,7 @@ pub(super) fn sync_to_upstream(
 ///
 /// Shared by the change-decision (which byte-compares this against the upstream
 /// copy) and the write path, so the content that gates the no-op and the
-/// content that lands in the PR are derived identically.
+/// content that ends up in the PR are derived identically.
 pub(super) fn read_local_vendor_schema(
     project_root: &std::path::Path,
     entry: &SchemaEntry,
@@ -562,7 +562,7 @@ pub(super) fn write_vendor_schema(
         vendor_rel.display()
     ));
 
-    // Two `schema-validation.jsonc` obligations land in this same PR, or
+    // Two `schema-validation.jsonc` obligations end up in this same PR, or
     // SchemaStore CI rejects the schema: a 2019-09 / 2020-12 dialect must be
     // listed under `highSchemaVersion`, and any `format` its validator does not
     // know must be declared in the file's `options` block. The `$schema` and

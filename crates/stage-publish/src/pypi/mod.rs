@@ -17,7 +17,7 @@
 //! maturin's `bindings = "bin"` mode emits. An optional source distribution
 //! is delegated to `maturin sdist`. Uploads speak PyPI's legacy
 //! (twine-protocol) multipart API with `__token__` Basic auth, using either a
-//! stored API token or a short-lived token minted via PyPI Trusted Publishing
+//! stored API token or a short-lived token issued via PyPI Trusted Publishing
 //! (GitHub Actions OIDC) — see [`publisher::PypiPublisher`] and `oidc`.
 
 pub(crate) mod oidc;

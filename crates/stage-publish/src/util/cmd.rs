@@ -211,7 +211,7 @@ pub(crate) fn replace_bytes(haystack: &[u8], needle: &[u8], replacement: &[u8]) 
 ///
 /// Bundled rather than passed as two parameters because they are only
 /// meaningful together — a policy handed around without its budget lets every
-/// seam of one invocation spend the whole ceiling again, which is exactly what
+/// point of one invocation spend the whole ceiling again, which is exactly what
 /// [`anodizer_core::context::Context::retry_deadline`] exists to prevent.
 #[derive(Clone, Copy)]
 pub(crate) struct PushLadder<'a> {
@@ -238,7 +238,7 @@ pub(crate) struct PushLadder<'a> {
 /// `--force-with-lease` — matches no needle and fast-fails on the first
 /// attempt, so a push that can never succeed is not held behind a ladder.
 ///
-/// One consequence worth naming: if a push lands server-side and the
+/// One consequence worth naming: if a push arrives server-side and the
 /// connection drops before git sees the ack, the next attempt on a
 /// `--force-with-lease` refspec fails the lease and stops. That is the
 /// intended outcome — the remote already holds the desired state, and the

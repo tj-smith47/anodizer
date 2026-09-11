@@ -32,7 +32,7 @@ else
   # No nextest either: plain `cargo test` runs the full suite incl. doctests,
   # keeping the shared-process flake risk until nextest is provisioned. The
   # gate stays correct — it can produce a false RED under extreme load, never a
-  # false GREEN.
+  # false pass.
   echo "[suite] cargo nextest not found — falling back to cargo test --workspace"
   cargo test --workspace --no-fail-fast || exit 1
 fi

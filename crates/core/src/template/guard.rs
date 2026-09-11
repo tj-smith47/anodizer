@@ -45,7 +45,7 @@ fn find_unrendered_raw(text: &str) -> Option<String> {
         Some(close) => (close + 2).min(MAX_SNIPPET),
         None => rest.len().min(MAX_SNIPPET),
     };
-    // `end` is a raw byte index that the MAX_SNIPPET clamp can land mid-codepoint
+    // `end` is a raw byte index that the MAX_SNIPPET clamp can cut mid-codepoint
     // when an unbalanced `{{` is followed by multibyte content (emoji/CJK/accent)
     // — slicing there would panic. Walk back to the nearest char boundary first.
     while end > 0 && !rest.is_char_boundary(end) {
@@ -204,7 +204,7 @@ mod tests {
         // An unbalanced `{{` followed by multibyte content straddling the
         // MAX_SNIPPET byte clamp must not panic on a non-char-boundary slice.
         // Each "日本語" is 9 bytes; ~30 copies overruns the 120-byte clamp so the
-        // cut lands mid-codepoint unless the boundary walk-back applies.
+        // cut falls mid-codepoint unless the boundary walk-back applies.
         let runaway = format!("{{{{ {}", "日本語".repeat(40));
         let residual = assert_no_unrendered(&runaway, "x", false, identity)
             .unwrap()

@@ -327,7 +327,7 @@ pub(crate) fn upload_single_artifact_prepared(
 /// JSON decoding fails or the envelope shape doesn't match.
 pub(crate) fn decode_artifactory_error_body(body: &str) -> String {
     // Defense-in-depth: if Artifactory echoes the Authorization header back
-    // in the error envelope, scrub the token before it lands in the
+    // in the error envelope, scrub the token before it ends up in the
     // user-visible log. Applied at the fallback / joined-output boundary so
     // redaction runs once regardless of which path produces the message.
     let Ok(json) = serde_json::from_str::<serde_json::Value>(body) else {

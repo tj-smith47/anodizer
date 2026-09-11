@@ -170,7 +170,7 @@ impl InTotoStatement {
 ///
 /// Between them the variants reach every release-uploadable kind (the
 /// `release_uploadable_kinds()` set minus signatures/certificates), so an
-/// explicit `artifacts:` selection can name anything that lands on the release.
+/// explicit `artifacts:` selection can name anything that reaches the release.
 fn concrete_kinds(kind: AttestationArtifactKind) -> &'static [ArtifactKind] {
     match kind {
         // archive: packaged + self-extracting archives + AppImages (a single
@@ -429,7 +429,7 @@ impl Stage for AttestStage {
             let subjects = collect_subjects(ctx, crate_name, selected.as_deref(), dry_run)?;
             if subjects.is_empty() {
                 // Enabled but nothing matched: surface a warn (not a silent
-                // verbose line) so a misconfigured filter doesn't ship a green
+                // verbose line) so a misconfigured filter doesn't ship a passing
                 // run with zero attestation output. Mirrors the empty-match
                 // warn convention in stage-archive / stage-nfpm.
                 log.warn(&format!(
@@ -460,7 +460,7 @@ impl Stage for AttestStage {
                     ));
                     // Metadata kind: the manifest is consumed by
                     // anodizer-action, not uploaded as a release asset (the
-                    // Action mints the GitHub-trusted attestation from it).
+                    // Action creates the GitHub-trusted attestation from it).
                     new_artifacts.push(manifest_artifact(path, name, crate_name));
                 }
                 AttestationMode::Emit => {

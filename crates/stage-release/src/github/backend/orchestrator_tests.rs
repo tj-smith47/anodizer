@@ -1645,7 +1645,7 @@ fn missing_token_errs_before_any_http_call() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
 
-    // Spawn the responder with no routes; ANY HTTP call lands in the
+    // Spawn the responder with no routes; ANY HTTP call ends up in the
     // request log and fails the test.
     let (_addr2, log) = spawn_scripted_responder_on(listener, |_| Vec::new());
 

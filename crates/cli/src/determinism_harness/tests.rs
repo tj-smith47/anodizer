@@ -1044,7 +1044,7 @@ fn docker_stage_declared_but_all_skipped_warns_not_errors_even_when_explicit() {
 /// Explicitly-requested (`--stages=…,docker`): the harness must HARD
 /// ERROR rather than warn-and-skip. Silently skipping a stage the
 /// caller asked it to byte-verify is false coverage — a
-/// non-reproducible image could ship while the gate reports green.
+/// non-reproducible image could ship while the gate reports success.
 #[test]
 fn docker_stage_podman_explicit_request_is_hard_error() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1071,7 +1071,7 @@ fn docker_stage_podman_explicit_request_is_hard_error() {
 /// whose tool is absent must HARD ERROR at the harness gate, mirroring
 /// the docker contract above. Silently warn-skipping a stage the
 /// caller asked it to byte-verify is false coverage — a
-/// non-reproducible installer could ship while the gate reports green.
+/// non-reproducible installer could ship while the gate reports success.
 ///
 /// Drives the real [`Harness::gate_installer_stages`] (the smallest
 /// entry that invokes the gate `run()` itself calls) with an
@@ -1338,7 +1338,7 @@ fn docker_context_staging_lays_out_os_arch_bin_and_dockerfile() {
 }
 
 /// A THIN configured dockerfile (distinct from any repo-root `Dockerfile`)
-/// plus `extra_files` must all land in the context: the RENDERED dockerfile
+/// plus `extra_files` must all end up in the context: the RENDERED dockerfile
 /// at the staging root, each per-triple binary at `<os>/<arch>/<bin>`, and
 /// every extra_file at its structure-preserving relative path. This is the
 /// regression guard for the harness building the wrong (fat repo-root)

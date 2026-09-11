@@ -1136,7 +1136,7 @@ impl anodizer_core::Publisher for StubPublisher {
 fn preflight_invokes_publisher_preflight_warning() {
     // Direct unit test of the Publisher::preflight() return-value
     // routing: invoking the stub through the same match the extension
-    // uses must land the message in `report.warnings` prefixed by the
+    // uses must put the message in `report.warnings` prefixed by the
     // publisher name.
     let stub = StubPublisher {
         outcome: anodizer_core::PreflightCheck::Warning("foo".into()),
@@ -1158,7 +1158,7 @@ fn preflight_invokes_publisher_preflight_warning() {
     assert_eq!(report.warnings, vec!["stub: foo".to_string()]);
     assert!(report.blockers.is_empty());
 
-    // Blocker variant: must land in blockers, not warnings.
+    // Blocker variant: must end up in blockers, not warnings.
     let stub_b = StubPublisher {
         outcome: anodizer_core::PreflightCheck::Blocker("bar".into()),
     };
@@ -1620,7 +1620,7 @@ mod publish_simulation {
         assert!(report.blockers.is_empty());
     }
 
-    /// Regression: `run_preflight_with_factory` (the test seam used by the
+    /// Regression: `run_preflight_with_factory` (the test hook used by the
     /// rollback-scope / publisher-state tests) must NOT spawn cargo or hit
     /// the network for a configured cargo crate. The injected factory
     /// reports the crate Clean; the default no-op dry-run runner contributes
@@ -1904,7 +1904,7 @@ mod publish_simulation {
             .build();
         let log = quiet_log();
         let mut report = PreflightReport::new();
-        // Neither seam may run: the plan fails before any state query.
+        // Neither call may run: the plan fails before any state query.
         let index = |krate: &str, _v: &str| -> PublisherState {
             panic!("index must not be queried when the plan fails (queried {krate})")
         };
@@ -2019,7 +2019,7 @@ mod publish_simulation_spawn {
         // absent / not on PATH). The runner must degrade to
         // Unavailable — never abort the release on a missing
         // toolchain — and carry the spawn-error reason so the warn
-        // line is honest. Driven through the binary-path seam:
+        // line is honest. Driven through the binary-path point:
         // emptying the process-wide PATH instead would make every
         // concurrent PATH-resolved spawn in this binary flaky.
         let tmp = tempfile::TempDir::new().expect("temp dir");

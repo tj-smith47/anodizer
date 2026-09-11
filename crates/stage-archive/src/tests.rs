@@ -4818,7 +4818,7 @@ fn run_with_hook_sentinels(
     let bin_path = crate_dir.join("myapp");
     fs::write(&bin_path, b"fake binary").unwrap();
 
-    // Templated paths so {{ Format }} lands in the touch target — that is how
+    // Templated paths so {{ Format }} ends up in the touch target — that is how
     // per-format firing is verified.
     let before_p = fwd(before_sentinel);
     let after_p = fwd(after_sentinel);
@@ -6161,7 +6161,7 @@ mod archive_name_guard {
     fn binary_format_names_each_binary_by_template() {
         // `format: binary` emits ONE output per binary, named by rendering the
         // name template with that binary's `.Binary` — so two binaries across
-        // two targets land at four distinct paths in dist/ instead of two
+        // two targets end up at four distinct paths in dist/ instead of two
         // basename copies clobbering each other.
         let tmp = TempDir::new().unwrap();
         let cfgs = [cfg("default", None, &["binary"])];
@@ -6572,7 +6572,7 @@ mod archive_name_guard {
     #[test]
     fn binary_format_names_each_binary_by_template_per_crate() {
         // The per-crate-workspaces shape: each crate's binary is named from
-        // its own `.Binary`, so two workspace members across two targets land
+        // its own `.Binary`, so two workspace members across two targets end up
         // at four distinct dist/ paths — the same contract the top-level
         // `crates:` shape gets, on the config layout that reaches the stage
         // through `workspaces[]`.

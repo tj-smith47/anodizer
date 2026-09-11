@@ -87,7 +87,7 @@ fn subjects_manifest_digest_equals_checksum_sidecar() {
         b"the archive bytes",
     );
 
-    // Run the REAL checksum stage so `sha256` lands in artifact metadata and a
+    // Run the REAL checksum stage so `sha256` ends up in artifact metadata and a
     // combined `checksums.txt` exists, then attest.
     anodizer_stage_checksum::ChecksumStage
         .run(&mut ctx)
@@ -856,7 +856,7 @@ fn attestation_outputs_are_not_self_attested() {
 }
 
 /// Enabled but no artifacts match → a WARN fires (not a silent verbose line),
-/// so a misconfigured filter can't ship a green run with zero output.
+/// so a misconfigured filter can't ship a passing run with zero output.
 #[test]
 fn empty_match_emits_warn() {
     use anodizer_core::log::LogCapture;

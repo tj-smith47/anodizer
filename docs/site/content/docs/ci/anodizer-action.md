@@ -123,7 +123,7 @@ the caller needing to know the harness CLI. See
 | `part` | Semver part bumped: `major` / `minor` / `patch` / `none` / `custom`. |
 | `tagged` | `'true'` when this run cut a new tag (`new-tag` non-empty and differs from `old-tag`), `'false'` on a no-op. Gate downstream release jobs on `if: needs.<job>.outputs.tagged == 'true'` for single-crate / lockstep repos (the lockstep counterpart to the per-crate `crates != '[]'` gate). |
 | `head-sha` | Commit at HEAD after `anodizer tag --push` (the tag target — the version-sync bump commit, or the original HEAD when no bump was needed). Check this out in downstream jobs so the tree matches the tag. |
-| `irreversibly_published` | `'true'` when the run summary records a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) whose publish landed — the version is burned. anodizer never rolls anything back automatically (`on_failure: hold` is the only behavior), so most workflows never need this; it exists for **custom** destructive recovery steps you wire yourself. Gate any such step on `steps.<id>.outputs.irreversibly_published != 'true'`. |
+| `irreversibly_published` | `'true'` when the run summary records a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) whose publish succeeded — the version is burned. anodizer never rolls anything back automatically (`on_failure: hold` is the only behavior), so most workflows never need this; it exists for **custom** destructive recovery steps you wire yourself. Gate any such step on `steps.<id>.outputs.irreversibly_published != 'true'`. |
 
 ## Common patterns
 
@@ -156,7 +156,7 @@ jobs:
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
 ```
 
-No failure-handling steps are needed: `anodizer release` runs a config-derived [preflight](@/docs/general/preflight.md) before any stage, and on a pipeline failure it leaves everything exactly where it landed ([`on_failure: hold`](@/docs/advanced/release-resilience.md#release-on-failure)). Recover by fixing the cause and re-running the identical `anodizer release` command — publishers [converge](@/docs/advanced/release-resilience.md#convergent-re-run).
+No failure-handling steps are needed: `anodizer release` runs a config-derived [preflight](@/docs/general/preflight.md) before any stage, and on a pipeline failure it leaves everything exactly where it stopped ([`on_failure: hold`](@/docs/advanced/release-resilience.md#release-on-failure)). Recover by fixing the cause and re-running the identical `anodizer release` command — publishers [converge](@/docs/advanced/release-resilience.md#convergent-re-run).
 
 ### Auto-tag on push to main
 
@@ -372,7 +372,7 @@ jobs:
 
 ### Test an un-released branch of anodizer
 
-For integration testing a downstream project against an in-flight anodizer PR — or dogfooding a feature branch before it lands — use `from-branch`. The action shallow-clones `tj-smith47/anodizer` at the branch you name, builds it from source, and puts it on `PATH`:
+For integration testing a downstream project against an in-flight anodizer PR — or dogfooding a feature branch before it arrives — use `from-branch`. The action shallow-clones `tj-smith47/anodizer` at the branch you name, builds it from source, and puts it on `PATH`:
 
 ```yaml
 - uses: actions/checkout@v6
@@ -409,7 +409,7 @@ runs them exactly once:
 
 - `release --publish-only` — every publisher reconciles against its own
   upstream before dispatching and skips itself when this exact version is
-  already landed there (PR-based publishers included: homebrew, scoop, nix,
+  already published there (PR-based publishers included: homebrew, scoop, nix,
   krew, MCP each look for an already-open PR and skip rather than open a
   duplicate), so a manual re-run of the identical command is always safe.
   The action still avoids an automatic in-step retry so a real failure

@@ -73,7 +73,7 @@ pub struct TagConfig {
     pub none_string_token: Option<String>,
     /// When true, use the GitHub/GitLab API for tagging instead of git CLI.
     ///
-    /// Mutually exclusive with `sign` on a pushed tag: the API mints the tag
+    /// Mutually exclusive with `sign` on a pushed tag: the API creates the tag
     /// object server-side and cannot apply your local GPG/SSH signature, so
     /// anodizer errors rather than shipping a silently-unsigned tag. Use local
     /// tagging (drop `git_api_tagging`) to create signed tags.

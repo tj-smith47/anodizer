@@ -526,11 +526,11 @@ fn a_rendered_but_invalid_package_identifier_still_fails_validation() {
     );
 }
 
-/// `package_identifier` is rendered in exactly one place — the derive seam —
-/// and every consumer reads the field the seam wrote: the one-way-door
+/// `package_identifier` is rendered in exactly one place — the derive helper —
+/// and every consumer reads the field that helper wrote: the one-way-door
 /// preflight probe, the emission-validate render, the manifest bodies and the
 /// publish branch. A raw `{{ … }}` reaching a search URL or a manifest is the
-/// failure the seam exists to prevent.
+/// failure that helper exists to prevent.
 #[test]
 fn package_identifier_is_rendered_at_one_seam_only() {
     let crate_cfg = winget_crate_with("demo", "v{{ .Version }}", "{{ .Env.WINGET_OWNER }}.tool");
@@ -606,7 +606,7 @@ fn package_identifier_is_rendered_at_one_seam_only() {
         "the one-way-door probe searches the rendered identifier"
     );
 
-    // Structural half: the behavioural assertions above all read the seam's
+    // Structural half: the behavioural assertions above all read the helper's
     // output, so they cannot see a SECOND render appearing elsewhere. A render
     // of this field cannot exist without naming it, and no formatting moves a
     // string literal, so the label is counted rather than the lines around a
@@ -631,7 +631,7 @@ fn package_identifier_is_rendered_at_one_seam_only() {
     );
 }
 
-/// The repository owner is a template too, and the derive seam is the one
+/// The repository owner is a template too, and the derive point is the one
 /// place it is rendered: an owner that cannot render warns once for the crate,
 /// not once per consumer that re-renders the same field.
 #[test]
@@ -679,7 +679,7 @@ fn the_repository_owner_is_rendered_once_per_crate() {
 
 /// The preflight probe reads the same derived config the publish path does, so
 /// an unrenderable owner warns once there too. The render moved to the derive
-/// seam to make that true, and this is the path that would otherwise repeat the
+/// point to make that true, and this is the path that would otherwise repeat the
 /// line for every publisher it probes.
 #[test]
 fn a_preflight_run_warns_once_for_an_unrenderable_winget_owner() {
@@ -1093,7 +1093,7 @@ fn an_all_skipped_run_does_not_warn_about_a_missing_config_block() {
 }
 
 /// A dry run submits nothing. A mixed dry run — one entry disqualified, one
-/// healthy — therefore landed nothing, so the publisher reports itself skipped
+/// healthy — therefore published nothing, so the publisher reports itself skipped
 /// rather than claiming an outcome a rollback would have something to unwind.
 /// Both crates are still counted as considered: the count is of publish calls
 /// reached, not of submissions.
@@ -1140,7 +1140,7 @@ fn a_dry_run_winget_submission_records_no_landed_entry() {
 /// A dry run opens no pull request, so it must carry no target for a rollback
 /// to decode: a later required failure in the same run would otherwise tell
 /// the operator to close pull requests this run never created. The evidence
-/// set and the landing answer are one property, asserted from both ends.
+/// set and the rollback answer are one property, asserted from both ends.
 #[test]
 fn a_dry_run_records_no_winget_rollback_evidence() {
     let mut ctx = TestContextBuilder::new()
@@ -1235,7 +1235,7 @@ fn winget_preflight_defaults_to_pass() {
     ));
 }
 
-/// Every winget publish lands as a PR against the upstream index;
+/// Every winget publish opens a PR against the upstream index;
 /// `gh pr create` is the preferred transport with a full REST-API
 /// fallback, so `gh` is ADVISORY — recommended, never a blocker.
 #[test]
@@ -1714,7 +1714,7 @@ fn portable_installer_command_falls_back_to_the_file_name_without_exe() {
 
 /// A crate the publish path skipped opens no PR, so the run records no target
 /// for it. Without the submitted flag the run collects a target for every
-/// configured crate: the run reads as landed and `tag rollback` tells the
+/// configured crate: the run reads as published and `tag rollback` tells the
 /// operator to close pull requests that were never opened.
 #[test]
 fn a_skipped_crate_records_no_pull_request_target() {

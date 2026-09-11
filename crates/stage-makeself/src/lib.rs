@@ -424,7 +424,7 @@ fn makeself_artifact_metadata(job: &MakeselfJob) -> HashMap<String, String> {
 ///
 /// The key carries the binary's `amd64_variant` metadata alongside the os/arch
 /// platform string so two amd64 builds of one target (a baseline `v1` and a
-/// `-Ctarget-cpu=x86-64-v3` tune) land in separate groups and produce two
+/// `-Ctarget-cpu=x86-64-v3` tune) end up in separate groups and produce two
 /// distinct `.run` files instead of one silently clobbering the other.
 ///
 /// `BTreeMap` (not `HashMap`) so iteration order is deterministic across
@@ -1826,7 +1826,7 @@ crates:
         // The stage shelled out to `makeself` exactly once.
         assert_eq!(tools.call_count("makeself"), 1);
 
-        // Output landed at dist/<filename> (renamed out of the work dir).
+        // Output ended up at dist/<filename> (renamed out of the work dir).
         let out = fx.dist.join(linux_amd64_run_name());
         assert!(
             out.exists(),
@@ -2161,7 +2161,7 @@ crates:
     #[serial_test::serial(path_env)]
     fn test_makeself_live_run_custom_filename_template_and_compression() {
         // A templated `filename:` (without .run) gets `.run` appended; an
-        // explicit `compression: gzip` lands `--gzip` in argv; the output
+        // explicit `compression: gzip` puts `--gzip` in argv; the output
         // is written under the rendered name.
         let fx = MakeselfFixture::new();
         let mut ctx = fx.ctx(&[("x86_64-unknown-linux-gnu", "proj")]);

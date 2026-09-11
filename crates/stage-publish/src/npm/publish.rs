@@ -144,7 +144,7 @@ fn is_transient_npm_publish_stderr(stderr: &str) -> bool {
 
 /// Write a per-run `.npmrc` under `cfg_dir` (0600). For [`NpmAuth::Token`] the
 /// `_authToken` line carries the credential; for [`NpmAuth::Oidc`] no token line
-/// is written (npm mints a short-lived credential via the OIDC exchange). The
+/// is written (npm creates a short-lived credential via the OIDC exchange). The
 /// caller keeps `cfg_dir` alive across `npm publish`.
 pub(crate) fn write_npmrc(
     cfg_dir: &Path,
@@ -670,7 +670,7 @@ pub(crate) fn build_npm_publish_command(
 /// registry failures retry until either the attempt count is exhausted or the
 /// optional wall-clock `deadline` (from `retry.max_elapsed`) would be crossed
 /// by the next backoff. A token is read from
-/// `.npmrc`, never argv; under OIDC the npm CLI mints a short-lived credential
+/// `.npmrc`, never argv; under OIDC the npm CLI creates a short-lived credential
 /// from the threaded `ACTIONS_ID_TOKEN_REQUEST_*` env. Transient registry
 /// failures retry; others break.
 #[allow(clippy::too_many_arguments)]

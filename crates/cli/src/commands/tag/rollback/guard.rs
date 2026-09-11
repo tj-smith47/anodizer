@@ -7,7 +7,7 @@ use super::types::{RollbackRefusal, refusal_next_step};
 use anodizer_core::log::StageLogger;
 use anyhow::Result;
 
-/// Registry probes the published-state guard consults, injected as seams so
+/// Registry probes the published-state guard consults, injected as hooks so
 /// tests can script registry state without a network (same convention as
 /// `gh_binary`).
 ///
@@ -84,7 +84,7 @@ pub(super) enum ModeratedProbe {
 /// Refuse rollback when any tag's configured chocolatey / winget package is
 /// already visible on those registries at the tag's version. Both are true
 /// one-way doors (a moderation queue submission or a merged manifest PR
-/// blocks re-submitting the same version), and a burn landed by another
+/// blocks re-submitting the same version), and a burn published by another
 /// runner leaves no local summary and no GitHub release — this probe is the
 /// only evidence path that can see it.
 ///
@@ -254,7 +254,7 @@ pub(super) fn check_not_burned_on_moderated_registries(
 ///    `<dist>/<crate>/run-*/summary.json` in per-crate workspaces)
 ///    whose `tag` matches a tag about to be deleted — the
 ///    per-publisher truth written by the release run itself, including
-///    failed runs. A summary that shows a landed Submitter REFUSES.
+///    failed runs. A summary that shows a published Submitter REFUSES.
 /// 2. The immutable one-way-door registries — the crates.io sparse index,
 ///    the npm registry, and the PyPI index — for every tag that maps (via
 ///    the repo config's crate tag families) to a crate/entry publishing to
@@ -285,7 +285,7 @@ pub(super) fn check_not_burned_on_moderated_registries(
 ///
 /// `probes` carries the injected registry probes ([`BurnProbes`]) —
 /// production wires the stage-publish probe functions; tests inject stubs
-/// (same seam convention as `gh_binary`).
+/// (same injection convention as `gh_binary`).
 ///
 /// On success returns the subset of `tags` that had NO matching run summary
 /// (the "unattributed" tags). The caller uses that to decide release cleanup:

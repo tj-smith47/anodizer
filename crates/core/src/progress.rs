@@ -90,7 +90,7 @@ pub fn run_ticker(
 /// For a single opaque future (a forge asset upload) there is no intermediate
 /// progress signal, so the heartbeat ticks on pure elapsed time and cancels the
 /// instant the future completes — the `select!` drops the timer arm as soon as
-/// the `fut` arm wins. The first heartbeat lands one full interval in (the
+/// the `fut` arm wins. The first heartbeat fires one full interval in (the
 /// immediate zeroth `interval` tick is consumed before the loop), so a fast
 /// upload never prints one. Suppressed at verbose or when the cadence is
 /// disabled: the future is simply awaited.

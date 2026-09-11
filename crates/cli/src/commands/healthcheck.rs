@@ -154,7 +154,7 @@ pub(crate) fn run() -> Result<()> {
                 };
                 // A tool that runs but reports a version below its floor is
                 // not available for anodizer's purposes; reporting it with a
-                // green tick sends the operator away from the real cause.
+                // success tick sends the operator away from the real cause.
                 let outdated = below_min_version(tool.min_version, version.as_deref());
                 let parenthetical = version
                     .map(|v| format!(" ({})", v.dimmed()))

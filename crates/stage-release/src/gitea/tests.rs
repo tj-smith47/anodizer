@@ -1536,7 +1536,7 @@ use anodizer_core::test_helpers::TestContextBuilder;
 
 /// Build a Gitea-flavoured Context: token_type=Gitea, a fast retry policy,
 /// and `gitea_urls.{api,download}` pointed at the loopback base so the URL
-/// builder's `/api/v1/...` suffix lands on the scripted responder.
+/// builder's `/api/v1/...` suffix reaches the scripted responder.
 fn build_gitea_ctx(api_base: &str) -> Context {
     let mut ctx = TestContextBuilder::new()
         .project_name("demo")

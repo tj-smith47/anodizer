@@ -6,7 +6,7 @@
 //! synthesizes a minimal cargo workspace and exercises the full
 //! harness end-to-end; it is feature-gated on `cargo` being present on
 //! `PATH` and skipped (with an eprintln) otherwise to keep the suite
-//! green on hosts without a Rust toolchain.
+//! passing on hosts without a Rust toolchain.
 //!
 //! ## Manual integration runs (not driven by `cargo test`)
 //!
@@ -191,7 +191,7 @@ fn inject_drift_hidden_from_help() {
 // well under a 30s "fast" budget.
 //
 // Skipped (with a `cargo test` warning line) when `cargo`/`git` aren't
-// on PATH so the suite stays green on minimal hosts.
+// on PATH so the suite keeps passing on minimal hosts.
 
 mod common;
 use common::{bootstrap_minimal_cargo_repo, host_triple, run_git, tool_on_path};
@@ -202,7 +202,7 @@ use common::{bootstrap_minimal_cargo_repo, host_triple, run_git, tool_on_path};
 ///
 /// Requires `cargo` and `git` on PATH (the harness spawns both). Asserts their
 /// presence and fails loud rather than skipping — a determinism test that
-/// reports green on a toolless host is exactly the false coverage this suite
+/// reports success on a toolless host is exactly the false coverage this suite
 /// exists to prevent.
 #[test]
 fn inject_drift_archive_reports_drift_on_minimal_workspace() {
@@ -521,7 +521,7 @@ workspaces:
 /// `run N of M` bullets — and propagate to the child release
 /// subprocesses so their section headers are silenced too. Errors stay
 /// audible (separate path: `log.error` / `render_error` are
-/// unconditional), so a green quiet run produces an (almost) empty
+/// unconditional), so a passing quiet run produces an (almost) empty
 /// stderr.
 #[test]
 fn quiet_flag_silences_harness_run_bullets_and_children() {

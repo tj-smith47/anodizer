@@ -38,7 +38,7 @@ pub(crate) struct VerifyRun {
 /// An axis being enabled and in-surface proves only that it was in scope;
 /// these counters prove it inspected ≥1 artifact — the difference between
 /// "verified" and "had nothing to verify". The aggregation site refuses to
-/// stamp a green verdict off all-zero counters, so a run that proved nothing
+/// stamp a passing verdict off all-zero counters, so a run that proved nothing
 /// never fabricates passing evidence.
 #[derive(Default)]
 pub(crate) struct CrateVerifyOutcome {

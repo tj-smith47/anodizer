@@ -27,7 +27,7 @@ pub enum PublisherGroup {
     /// slot, or a channel position that cannot be reclaimed. Gated behind the
     /// Submitter gate. Rollback is informational-only for most members
     /// (chocolatey, winget, snapcraft, upstream-AUR force-push); **cargo**,
-    /// **npm**, and **pypi** are immutable registries whose landed publish
+    /// **npm**, and **pypi** are immutable registries whose completed publish
     /// burns the version (npm/pypi rollback is warn-only; cargo has a real
     /// programmatic `yank`). The one exception with a programmatic rollback
     /// is **cargo**: a multi-crate `cargo publish` that succeeds on crate A
@@ -195,9 +195,9 @@ pub struct PublisherResult {
     pub outcome: PublisherOutcome,
     pub evidence: Option<PublishEvidence>,
     /// One reason per entry this publisher disqualified during its run, in
-    /// first-seen order. Independent of `outcome`: a publisher that landed
-    /// some of its entries keeps the outcome of what it landed and still
-    /// lists here what it skipped, so a rollback and the landed accounting
+    /// first-seen order. Independent of `outcome`: a publisher that published
+    /// some of its entries keeps the outcome of what it published and still
+    /// lists here what it skipped, so a rollback and the published accounting
     /// read the truth while the misconfigured entry stays visible. Empty
     /// (and absent from the JSON) for a run that skipped no entry.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -393,7 +393,7 @@ pub fn ensure_verify_gate_evaluated(
 /// the pipeline body ran to completion.
 ///
 /// One definition serves both layers of the defense — the publish stage's
-/// in-stage bail (so any embedding of the stage cannot report green over a
+/// in-stage bail (so any embedding of the stage cannot report success over a
 /// failed required publisher) and the CLI's end-of-pipeline gate (so shell
 /// / CI callers see a non-zero exit). `ran_context` is the caller-specific
 /// sentence describing what completed before this error; everything else —

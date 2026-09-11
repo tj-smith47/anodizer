@@ -167,7 +167,7 @@ myapp-install: error: unknown argument: --bogus (try --help)
 
 5. Installs every binary in `binaries` with `install -m 0755` into the install
    directory — trying `sudo` when the directory is not writable, then falling
-   back to `$HOME/.local/bin`. Whichever directory the binary lands in, the
+   back to `$HOME/.local/bin`. Whichever directory the binary ends up in, the
    script warns when it is not on `$PATH`.
 6. Cleans up the temp directory on exit via a `trap`.
 

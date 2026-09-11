@@ -27,7 +27,7 @@ use anodizer_core::config::SignVerifyConfig;
 use anodizer_core::log::StageLogger;
 
 /// OIDC issuer of GitHub Actions workflow identity tokens — the issuer
-/// Fulcio records in every certificate minted from an Actions job.
+/// Fulcio records in every certificate issued from an Actions job.
 pub(crate) const GITHUB_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.com";
 
 /// Fallback server URL when `GITHUB_ACTIONS` is set but `GITHUB_SERVER_URL`

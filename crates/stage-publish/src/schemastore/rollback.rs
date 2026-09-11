@@ -233,7 +233,7 @@ mod tests {
     // resolve their GitHub API base through the injected env source's
     // `ANODIZER_GITHUB_API_BASE` override, so these tests redirect the whole
     // flow at an in-process responder WITHOUT mutating the process env — no
-    // `#[serial]` / env_mutex needed (the seam is per-`Context`, not global).
+    // `#[serial]` / env_mutex needed (the override is per-`Context`, not global).
     // Credentials come from the same injected `MapEnvSource`.
     // -------------------------------------------------------------------------
 

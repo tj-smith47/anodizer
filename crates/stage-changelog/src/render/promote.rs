@@ -369,7 +369,7 @@ pub(crate) fn bucket_curated_bullets(
 
     let mut buckets: Vec<Vec<&str>> = vec![Vec::new(); compiled.len()];
     let mut unmatched: Vec<&str> = Vec::new();
-    // Where the previous bullet landed, so a wrapped continuation line (no list
+    // Where the previous bullet ended, so a wrapped continuation line (no list
     // marker) follows its parent bullet instead of being re-classified.
     let mut last: Option<usize> = None;
 

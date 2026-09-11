@@ -103,7 +103,7 @@ pub(crate) fn is_transient_network_failure(stderr: &str) -> bool {
 /// This is defense-in-depth on top of [`poll_crates_io_index`] and cargo's
 /// own internal transport retries. Even after the wait sees the just-published
 /// dep on the crates.io sparse index, the dependent crate's own `cargo publish`
-/// may race against Fastly's inter-edge fan-out and land on a stale edge; and a
+/// may race against Fastly's inter-edge fan-out and reach a stale edge; and a
 /// momentary TCP/TLS/HTTP blip can exhaust cargo's bounded internal retries
 /// mid-publish (the v0.11.3 `HTTP2 framing layer` abort). Retrying exclusively
 /// on those two narrow signature sets recovers both windows without masking
@@ -149,7 +149,7 @@ pub(crate) fn run_cargo_publish_with_retry(
         |_attempt| -> RetryStep<std::process::Output, PublishFailure> {
             let mut command = Command::new(&cmd[0]);
             command.args(&cmd[1..]);
-            // Trusted Publishing: inject the minted token via env only. Passing
+            // Trusted Publishing: inject the issued token via env only. Passing
             // it as `--token` on the argv would expose it in the process list.
             if let Some(tok) = registry_token {
                 command.env("CARGO_REGISTRY_TOKEN", tok);

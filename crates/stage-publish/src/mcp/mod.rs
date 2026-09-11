@@ -53,11 +53,11 @@ use manifest::{
 ///
 /// Constructed only on the success path of [`publish_with_registry`] —
 /// dry-run, skip-true, and missing-name short-circuits return `None` so
-/// no phantom evidence ever lands in [`anodizer_core::PublishEvidence::extra`].
+/// no phantom evidence ever ends up in [`anodizer_core::PublishEvidence::extra`].
 ///
 /// Aliased to the core-owned snapshot so the evidence schema lives
 /// in [`anodizer_core::publish_evidence`] and credential-shaped
-/// fields (`token`, `password`, `pat`) have no slot to land in. See
+/// fields (`token`, `password`, `pat`) have no slot to fill. See
 /// [`publisher`] module rustdoc for the credential-handling
 /// rationale.
 pub(crate) type McpTarget = anodizer_core::publish_evidence::McpTargetSnapshot;
@@ -269,7 +269,7 @@ pub(crate) fn publish_with_registry(
     )? {
         McpPublishOutcome::Published => {
             // Only construct the target on the freshly-published path so
-            // rollback evidence tracks exactly what landed on the registry
+            // rollback evidence tracks exactly what reached the registry
             // THIS run. `server.name` is the rendered name; `registry_url` is
             // the resolved endpoint.
             Ok(Some(McpTarget {
@@ -843,7 +843,7 @@ fn publish_payload(
             *last_error.borrow_mut() = Some((status.as_u16(), response.to_string()));
             // Defense-in-depth: if the registry echoes the Authorization
             // header back in an error body, scrub the token before it
-            // lands in the user-visible log. No evidence the registry
+            // ends up in the user-visible log. No evidence the registry
             // does this today, but the cost of redacting is one regex's
             // worth of CPU vs. the cost of leaking a token to logs.
             //

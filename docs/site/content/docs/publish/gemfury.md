@@ -97,7 +97,7 @@ and only require the wider API token in the rollback flow.
 - Format detection is by file extension: `.deb`, `.rpm`, `.apk`.
 - Idempotency probe: `GET https://api.fury.io/<account>/packages/<name>/versions/<version>` before push; if already present, the push is skipped (matches the immutable-releases policy).
 - Multi-format archive guard: when an `archives:` block declares
-  multiple formats AND more than one extension lands in the configured
+  multiple formats AND more than one extension ends up in the configured
   gemfury formats filter, the publisher hard-errors with the offending
   crate name + format list so the operator narrows `formats:`.
 - Retry: transient `5xx`/`429` failures retry with exponential backoff

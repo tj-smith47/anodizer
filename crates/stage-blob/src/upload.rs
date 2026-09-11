@@ -222,9 +222,9 @@ pub(crate) fn collect_artifacts<'a>(
 /// single tokio thread pool serves all uploads instead of one per job.
 ///
 /// Returns the list of fully-qualified object keys that successfully
-/// landed in the store. On failure the `Err` payload carries the keys
+/// ended up in the store. On failure the `Err` payload carries the keys
 /// that succeeded BEFORE the first failure so `BlobPublisher` can record
-/// only landed uploads in `PublishEvidence::artifact_paths` — the prior
+/// only published uploads in `PublishEvidence::artifact_paths` — the prior
 /// pre-upload capture produced a rollback checklist that referenced
 /// files which were never uploaded.
 // Eight params is over clippy's default of 7 — the caller fan-out lives
@@ -384,7 +384,7 @@ pub(crate) fn upload_files_owned(
                     // the push, so contention is negligible. Use the poison-
                     // recovering helper so one panicked sibling task doesn't
                     // forfeit every other worker's recorded upload — partial
-                    // success must still land in PublishEvidence for rollback.
+                    // success must still end up in PublishEvidence for rollback.
                     anodizer_core::parallel::lock_recover(&uploaded, &task_log, "blob upload")
                         .push(object_key);
                     Ok::<(), anyhow::Error>(())
@@ -457,7 +457,7 @@ pub(crate) fn format_remote_path(
 /// Format the single default-verbosity summary line for one blob upload job,
 /// collapsing the per-file `uploading …` / `skipping …` firehose into one
 /// line. `destination` is the `provider://bucket/dir` prefix the objects
-/// landed under. Skips are objects already present byte-identical (no PUT
+/// ended up under. Skips are objects already present byte-identical (no PUT
 /// issued); uploads are objects this run actually wrote.
 pub(crate) fn blob_upload_summary(uploaded: usize, skipped: usize, destination: &str) -> String {
     format!("uploaded {uploaded} object(s), skipped {skipped} (identical) → {destination}")

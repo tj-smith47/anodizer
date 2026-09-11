@@ -49,7 +49,7 @@ impl Announcer for WebhookAnnouncer {
             }
         };
         // Strip embedded userinfo (`https://user:pass@host`) before the URL
-        // lands in any operator-facing error message — handled inside the
+        // ends up in any operator-facing error message — handled inside the
         // shared validator, which the pre-publish guard also calls.
         validate_webhook_endpoint_url(&url)?;
         // webhook uses a JSON-envelope

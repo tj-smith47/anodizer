@@ -41,7 +41,7 @@ simple_publisher!(
 ///
 /// Aliased to the core-owned snapshot so the evidence schema lives in
 /// [`anodizer_core::publish_evidence`] and credential-shaped fields
-/// have no slot to land in. `slug` stays `Option` because evidence
+/// have no slot to fill. `slug` stays `Option` because evidence
 /// emitted before slug-capture didn't carry it; rollback falls back
 /// to the warn-only path (see [`cloudsmith_manual_cleanup_msg`]) for
 /// any target whose slug is absent.

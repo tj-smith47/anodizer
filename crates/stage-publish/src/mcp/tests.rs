@@ -932,7 +932,7 @@ fn truncate_response_snippet_at_cap_returned_verbatim() {
 
 #[test]
 fn truncate_response_snippet_oversized_ascii_marks_truncated() {
-    // ASCII path: every byte is a char boundary so the cut lands on
+    // ASCII path: every byte is a char boundary so the cut falls on
     // exactly `MAX_RESPONSE_SNIPPET_BYTES` and the suffix announces
     // the trim.
     let body = "x".repeat(MAX_RESPONSE_SNIPPET_BYTES * 2);
@@ -950,7 +950,7 @@ fn truncate_response_snippet_walks_back_to_utf8_char_boundary() {
     // codepoint — not mid-sequence.
     let mut body = "a".repeat(MAX_RESPONSE_SNIPPET_BYTES - 2);
     // U+1F600 GRINNING FACE is 4 bytes in UTF-8. With 510 leading 'a's
-    // the char straddles bytes 510..514, so a 512-byte cut lands inside
+    // the char straddles bytes 510..514, so a 512-byte cut ends up inside
     // it and the loop must walk back to byte 510.
     body.push('\u{1F600}');
     body.push_str(&"b".repeat(20));
@@ -963,7 +963,7 @@ fn truncate_response_snippet_walks_back_to_utf8_char_boundary() {
         snippet.len()
     );
     // The smiley straddles the cap, so it must NOT appear in the snippet
-    // — otherwise the cut landed past the boundary, not before it.
+    // — otherwise the cut published past the boundary, not before it.
     assert!(
         !snippet.contains('\u{1F600}'),
         "the multi-byte char straddling the cap must be dropped wholesale, not split"
@@ -1072,7 +1072,7 @@ fn mcp_skips_for_non_owning_crate_pass() {
 #[test]
 fn mcp_non_owning_pass_records_skipped_not_applicable() {
     // The non-owning pass must surface `Skipped(NotApplicable)` so the
-    // publisher summary reads "Skipped" rather than a green "Succeeded" —
+    // publisher summary reads "Skipped" rather than a passing "Succeeded" —
     // mcp did not publish for this crate.
     let mut ctx = owning_ctx(vec!["cfgd-core"], "ghcr.io/tj-smith47/cfgd:{{ .Version }}");
     let log = ctx.logger("mcp-test");

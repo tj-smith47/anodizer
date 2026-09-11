@@ -225,7 +225,7 @@ changelog:
 
 ## Changelog destination
 
-In a workspace, `changelog:` chooses **where** released sections land: a shared
+In a workspace, `changelog:` chooses **where** released sections arrive: a shared
 root `CHANGELOG.md`, a per-crate `crates/<name>/CHANGELOG.md`, or both. Two
 fields drive it:
 

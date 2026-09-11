@@ -401,7 +401,7 @@ mod tests {
         assert_eq!(ok, 3, "all three targets should report success");
         assert_eq!(err, 0, "no failures expected on clean bare remotes");
 
-        // Independently verify a revert commit landed on each bare. Fresh
+        // Independently verify a revert commit reached each bare. Fresh
         // shallow clone + log -1 — same shape as git_revert.rs's
         // verification pattern.
         for (url, _, _) in &remotes {

@@ -8,7 +8,7 @@
 //! guard over the whole plan and only then hands it to the execute pass in
 //! `archive_config.rs`, so a name template that collides anywhere in the run
 //! — across two binaries of one entry, two targets, or two crates — is
-//! refused before the first output lands in `dist/`.
+//! refused before the first output ends up in `dist/`.
 //!
 //! [`ArchPathGuard`]: anodizer_core::arch_path_guard::ArchPathGuard
 

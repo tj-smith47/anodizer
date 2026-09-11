@@ -78,7 +78,7 @@ pub(crate) fn compose_release_trailer(link: Option<&str>, footer: &str) -> Optio
 ///
 /// The repo is the one this release publishes to, NOT the `origin` remote: a
 /// `release.provider:` cross-publish must link against the forge the release
-/// lands on. A nightly `publish_repo` override is applied inside the GitHub
+/// reaches. A nightly `publish_repo` override is applied inside the GitHub
 /// backend, after this runs, and is deliberately not honoured here — the tags
 /// being compared live in the source repo.
 pub(crate) fn full_changelog_element(
@@ -414,7 +414,7 @@ pub(crate) fn compose_body_for_mode(
                 // The new body ends with the derived Full-Changelog link and
                 // the attribution footer, and `build_release_body` already
                 // fit it under the limit. So the EXISTING half absorbs the
-                // cut: truncating the joined string would land on the tail,
+                // cut: truncating the joined string would reach the tail,
                 // which is exactly where that trailer lives.
                 let budget = GITHUB_RELEASE_BODY_MAX_CHARS
                     .saturating_sub(new_body.len() + BODY_SEPARATOR.len());

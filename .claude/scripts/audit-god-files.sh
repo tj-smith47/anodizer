@@ -10,7 +10,7 @@
 # two concerns stop sharing a file.
 #
 # Without this guard the rule is a census a human remembers to re-run, so a new
-# god file lands green and is only noticed long after the commit that created
+# god file passes the audit and is only noticed long after the commit that created
 # it.
 #
 # ── what counts as test code ───────────────────────────────────────────────
@@ -69,7 +69,7 @@ GOD_FILE_LIMIT=1000
 # it would make the code worse, so it is not going to shrink.
 #
 # GOD_FILE_DEBT — a real violation that predates this guard. It is NOT blessed:
-# it is pinned at its current size and printed on every green run so it stays
+# it is pinned at its current size and printed on every passing run so it stays
 # visible until it is split.
 #
 # Both are PINNED ceilings, never blank cheques: the file may shrink freely, but

@@ -35,7 +35,7 @@ pub struct StagedTarball {
 ///
 /// `provenance_override` is forwarded to `render_package_json` so the live
 /// publish can downgrade `publishConfig.provenance` on a runner that cannot
-/// mint an npm attestation.
+/// create an npm attestation.
 pub fn assemble_postinstall_tarball(
     ctx: &Context,
     log: &StageLogger,

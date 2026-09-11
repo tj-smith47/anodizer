@@ -589,7 +589,7 @@ pub(super) fn find_top_level_cask_artifact<'a>(
         }
         // `is_macos` (genuine `*-apple-darwin` only), NOT the broad
         // `contains("apple")`: the latter also selects `*-apple-ios`/`-watchos`/
-        // `-tvos`, which carry no `brew`-installable binary and would land in the
+        // `-tvos`, which carry no `brew`-installable binary and would end up in the
         // cask's `url`/`sha256` (a 404-class cask install). Mirrors the formula.
         a.target
             .as_deref()

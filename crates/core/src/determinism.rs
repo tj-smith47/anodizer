@@ -224,18 +224,18 @@ impl DeterminismState {
     ///
     /// - `docker-manifest-descriptor` / `docker-image-blob`: the docker
     ///   stage is in [`crate::determinism_runner::SIDE_EFFECT_STAGES`]
-    ///   and skipped by the harness; the only docker file that lands in
+    ///   and skipped by the harness; the only docker file that ends up in
     ///   `dist/` is a `.digest` text file written by buildx (a
     ///   deterministic sha256). No need for an allow-list entry.
     /// - `apple-notarization-receipt`: the notarize stage mutates
     ///   existing artifacts in-place (staples) rather than emitting new
-    ///   files; no separate "receipt" artifact lands in `dist/`.
+    ///   files; no separate "receipt" artifact ends up in `dist/`.
     /// - The NSIS installer (`*-setup.exe` / `*_setup.exe`) is GATED, not
     ///   allow-listed. makensis honors `SOURCE_DATE_EPOCH` for the embedded
     ///   build timestamp, so two builds over identical inputs are
     ///   byte-identical — proven by
     ///   stage-nsis::nsis_setup_is_byte_reproducible_across_time. Under the
-    ///   A′ shard routing the installer now lands in `dist/windows/` on the
+    ///   A′ shard routing the installer now ends up in `dist/windows/` on the
     ///   Windows determinism shard (it builds the windows-msvc payload
     ///   binary), so the harness DOES see and byte-compare it. The classifier
     ///   keys on the `setup.exe` name tail so the installer is attributed to
@@ -907,7 +907,7 @@ mod tests {
         // makensis honors SOURCE_DATE_EPOCH, so the NSIS installer is byte-
         // reproducible — proven by
         // stage-nsis::nsis_setup_is_byte_reproducible_across_time. Under A′ it
-        // lands in dist/windows/ on the Windows determinism shard and is byte-
+        // ends up in dist/windows/ on the Windows determinism shard and is byte-
         // compared, so it must be GATED, NEVER allow-listed. Neither the
         // configured `-setup.exe` name nor the stage-default `_setup.exe` tail
         // may resolve to an allow-list reason.

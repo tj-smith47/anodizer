@@ -669,7 +669,7 @@ mod tests {
 
     /// (a) Single-crate mode: one crate, every option set, formula AND same-tap
     /// cask. Both rendered Ruby files must clear the structural floor with zero
-    /// findings, and each option must land in its expected stanza.
+    /// findings, and each option must end up in its expected stanza.
     #[test]
     fn single_crate_every_option_validates_and_lands_in_stanzas() {
         let cfg = every_option_homebrew_cfg();

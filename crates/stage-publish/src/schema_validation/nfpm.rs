@@ -459,7 +459,7 @@ fn compare_control(
 /// the expected upstream version under nfpm's packager-grammar rewrites.
 fn version_matches(actual: &str, expected: &str) -> bool {
     // nfpm rewrites the upstream version into each packager's grammar before it
-    // lands in the control metadata: deb and rpm reserve `-` as the
+    // ends up in the control metadata: deb and rpm reserve `-` as the
     // version/release delimiter, so they substitute a `-` in the version core
     // with `~` (pre-release sort order) or `_`; deb additionally prepends an
     // `epoch:` and appends a numeric `-release` revision. Reduce both operands
@@ -880,7 +880,7 @@ mod tests {
     }
 
     /// (a) Single-crate, every option set: every rendered nfpm config must
-    /// conform with zero findings, and the key fields must land in the
+    /// conform with zero findings, and the key fields must end up in the
     /// schema-expected places.
     #[test]
     fn single_crate_every_option_validates_and_lands_in_fields() {

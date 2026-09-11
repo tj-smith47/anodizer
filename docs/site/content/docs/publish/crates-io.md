@@ -78,7 +78,7 @@ The `auth` field selects how anodizer authenticates the publish:
 
 | `auth` | Behaviour |
 |---|---|
-| `auto` (default) | Uses `CARGO_REGISTRY_TOKEN` when it is set; otherwise, under GitHub Actions with `id-token: write`, mints a short-lived token via Trusted Publishing. Errors only when neither is available. |
+| `auto` (default) | Uses `CARGO_REGISTRY_TOKEN` when it is set; otherwise, under GitHub Actions with `id-token: write`, creates a short-lived token via Trusted Publishing. Errors only when neither is available. |
 | `token` | Always uses `CARGO_REGISTRY_TOKEN`. anodizer's historical behaviour. |
 | `oidc` | Always uses Trusted Publishing; never falls back to a stored token. Fails loudly if the GitHub Actions OIDC request env is absent. |
 
@@ -121,7 +121,7 @@ needed — name that workflow directly. The same constraint applies to a reusabl
 `workflow_call` workflow: it inherits the caller's event and cannot be a Trusted
 Publisher, so the OIDC publish must live in a standalone `workflow_dispatch` workflow.
 
-anodizer mints **one** token before the dependency-order publish loop, injects it into every `cargo publish` via `CARGO_REGISTRY_TOKEN` (never on the command line), and revokes it after the loop — the token is workspace-scoped, so a single mint authorizes every crate whose Trusted-Publisher config matches this repository/workflow. A minted token also self-expires in ~30 minutes, so even a failed revoke leaves nothing long-lived behind. Trusted Publishing targets crates.io only; an `oidc` block against a custom `registry:`/`index:` is a config error — use a token there.
+anodizer creates **one** token before the dependency-order publish loop, injects it into every `cargo publish` via `CARGO_REGISTRY_TOKEN` (never on the command line), and revokes it after the loop — the token is workspace-scoped, so a single token authorizes every crate whose Trusted-Publisher config matches this repository/workflow. An issued token also self-expires in ~30 minutes, so even a failed revoke leaves nothing long-lived behind. Trusted Publishing targets crates.io only; an `oidc` block against a custom `registry:`/`index:` is a config error — use a token there.
 
 ## Common gotchas
 

@@ -36,7 +36,7 @@ pub(crate) use anodizer_core::rollback_empty_warning_msg;
 
 /// Why an entry is disqualified when its `repository:` names no `owner`/`name`
 /// pair: the index it pushes to (tap, bucket, overlay, plugin index, winget
-/// fork) has nowhere to land, but every sibling entry can still publish, so
+/// fork) has nowhere to go, but every sibling entry can still publish, so
 /// the entry is skipped rather than failing the publisher.
 ///
 /// One spelling for every publisher, so the same defect reads the same way in
@@ -179,7 +179,7 @@ pub(crate) fn no_config_block_message(publisher: &str, crate_name: &str) -> Stri
 /// alone.
 ///
 /// `Err` carrying an [`anodizer_core::pipe_skip::EntrySkip`] means the entry
-/// is disqualified but its siblings are not: the reason lands in the run's
+/// is disqualified but its siblings are not: the reason ends up in the run's
 /// intentional-skip summary and the caller receives `Ok(None)` so it can move
 /// to the next entry. Any other error is returned unchanged.
 pub(crate) fn absorb_entry_skip<T>(
@@ -220,7 +220,7 @@ pub(crate) fn record_entry_skip(
 /// Whether an entry skip recorded under the stage label `stage` belongs to
 /// `publisher`.
 ///
-/// A skip lands under the publisher's own name or under a `<publisher>-<sub>`
+/// A skip ends up under the publisher's own name or under a `<publisher>-<sub>`
 /// sub-label (`homebrew-cask` belongs to the `homebrew` publisher), so both
 /// spellings count. A stage that is itself a publisher token is never another
 /// publisher's sub-label: `homebrew-core` is its own publisher, and its skips
@@ -257,15 +257,15 @@ pub(crate) fn entry_skip_reasons(
 pub(crate) enum RunLanding {
     /// Something reached the publisher's remote.
     Landed,
-    /// Nothing landed, and the run had entries that could have published.
+    /// Nothing published, and the run had entries that could have published.
     NothingLanded,
-    /// Nothing landed because nothing the run configured applied at all —
+    /// Nothing published because nothing the run configured applied at all —
     /// the reason that outranks entries disqualifying themselves.
     NothingApplicable,
 }
 
 impl RunLanding {
-    /// The landing of a publisher with no aggregate applicability of its own:
+    /// The outcome of a publisher with no aggregate applicability of its own:
     /// it either put something at its remote or it did not.
     pub(crate) fn from_landed(landed: bool) -> Self {
         if landed {
@@ -282,16 +282,16 @@ impl RunLanding {
 ///
 /// Mirrors GoReleaser's `pipe.SkipMemento.Evaluate()`
 /// (`internal/pipe/pipe.go`) in making a misconfigured entry impossible to
-/// miss, without letting the report lie about what landed:
+/// miss, without letting the report lie about what published:
 ///
-/// - nothing landed — the publisher is skipped with the joined reasons and
+/// - nothing published — the publisher is skipped with the joined reasons and
 ///   records [`anodizer_core::SkipReason::EntriesSkipped`];
-/// - something landed — the terminal outcome is left alone (a rollback and
-///   the landed accounting must still see the work the run really did) and
+/// - something published — the terminal outcome is left alone (a rollback and
+///   the published accounting must still see the work the run really did) and
 ///   the reasons are reported alongside it as a skip count.
 ///
 /// A publisher that already recorded a more specific terminal outcome keeps
-/// it: `NotApplicable` and `AlreadyPublished` answer *why* nothing landed,
+/// it: `NotApplicable` and `AlreadyPublished` answer *why* nothing published,
 /// where `EntriesSkipped` only says that entries disqualified themselves.
 /// The reasons are still reported in that case, as the skip-count line.
 pub(crate) fn evaluate_entry_skips(
@@ -304,7 +304,7 @@ pub(crate) fn evaluate_entry_skips(
     let reasons = entry_skip_reasons(ctx, publisher);
     // The precedence between the two terminal reasons is a function of the
     // landing and the reasons, never of the order two statements are written
-    // in: nothing-applicable answers WHY nothing landed, where entries-skipped
+    // in: nothing-applicable answers WHY nothing published, where entries-skipped
     // only says that entries disqualified themselves.
     let outcome = match landing {
         RunLanding::NothingApplicable => Some(anodizer_core::SkipReason::NotApplicable),
@@ -1017,7 +1017,7 @@ mod tests {
     /// starting just after its opening parenthesis. Bounded by the call's
     /// parentheses, never by a line count — a lookahead that runs past the
     /// closing paren attributes the next statement's literal to this call,
-    /// which is how the helper DEFINITIONS' parameter names were arriving.
+    /// which is how the helper DEFINITIONS' parameter names were being picked up.
     fn literal_arguments(tail: &str) -> Vec<String> {
         let mut depth = 1usize;
         let mut chars = tail.char_indices();

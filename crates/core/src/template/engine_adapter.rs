@@ -168,7 +168,7 @@ impl JsonRegisterExt for tera::Tera {
 /// always EVEN, independent of whether N itself was even or odd. tera 2.0's
 /// escape-aware lexer resolves an even run of backslashes as N/2 paired
 /// escapes with nothing left over, so the character right after the run is
-/// never itself consumed as an escape target — it lands on the delimiter as
+/// never itself consumed as an escape target — it falls on the delimiter as
 /// an ordinary, unescaped byte, closing the string at EXACTLY the position
 /// 1.x's first-occurrence rule chose on the original (undoubled) text. The
 /// two engines agree on the boundary by construction, for every backslash
@@ -276,7 +276,7 @@ pub(super) fn double_string_literal_backslashes(template: &str) -> std::borrow::
                     // shared raw rule (first next occurrence of the same
                     // delimiter, no escape awareness; unterminated runs to
                     // EOF). Delimiters are ASCII, so `raw_string_end` always
-                    // lands on a char boundary. The literal's span — a
+                    // falls on a char boundary. The literal's span — a
                     // possible `}}`/`%}` inside it included — is emitted
                     // here wholesale, so block-close detection below never
                     // sees string contents.

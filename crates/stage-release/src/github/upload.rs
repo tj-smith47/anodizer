@@ -647,7 +647,7 @@ mod tests {
     }
 
     /// `GET /releases/{id}` fixture whose `upload_url` targets the
-    /// responder itself, so the follow-up POST lands on the next scripted
+    /// responder itself, so the follow-up POST reaches the next scripted
     /// response.
     fn release_json(addr: SocketAddr) -> String {
         let body = format!(

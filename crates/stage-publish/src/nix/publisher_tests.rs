@@ -59,7 +59,7 @@ fn build_nix_reconcile_target_probes_the_pull_request_base_not_the_fork() {
         .build();
     let t = nix_target(&ctx, "x").expect("target built");
     // run() submits base-else-fork; probing the bare fork searches a repo the
-    // PR never lands in, so reconcile would re-open a duplicate.
+    // PR never ends up in, so reconcile would re-open a duplicate.
     assert_eq!(t.upstream_owner, "nixos-org");
     assert_eq!(t.upstream_repo, "nixpkgs");
 }

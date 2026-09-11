@@ -58,7 +58,7 @@ tag:
   initial_version: "0.1.0"
   # Tagging rewrites Cargo.toml versions and re-locks; a lockfile already out
   # of sync with the manifests would silently ride into the tag commit, so
-  # refuse to mint one from an inconsistent workspace.
+  # refuse to create one from an inconsistent workspace.
   tag_pre_hooks:
     - "cargo metadata --locked --no-deps --format-version=1 > /dev/null"
 
@@ -119,7 +119,7 @@ defaults:
   # for that crate (DEC-9). `index_timeout` defaults to 300s in the publisher,
   # so it is omitted here (keeping the empty `{}` is the explicit opt-in).
   # Every live publisher carries `required: true`: a failed publisher must
-  # block the release instead of vanishing into a green run — re-runs are
+  # block the release instead of vanishing into a passing run — re-runs are
   # idempotent for the publishers configured here (republish levers set
   # below), and the workflow_dispatch republish path recovers a partial
   # release safely. `required` also arms the irreversible-publisher
@@ -720,7 +720,7 @@ crates:
         # a snap that installs but can't run a release. devmode runs unconfined
         # (tool works) and uploads without review, but the Store only permits it
         # on beta/edge and its uniqueness-check backend has been faulting these
-        # uploads, so no devmode revision ever landed. Re-enable with
+        # uploads, so no devmode revision ever published. Re-enable with
         # `confinement: classic` + `latest/stable` once the store-request for the
         # `anodizer` classic snap is approved.
         confinement: devmode
@@ -945,7 +945,7 @@ changelog:
     exclude:
       # Every pattern carries the optional-scope group. Filters match the raw
       # subject, so a bare "^docs:" misses "docs(metadata): ..." and the commit
-      # lands in Others; a bare "^test" matches any subject merely starting with
+      # ends up in Others; a bare "^test" matches any subject merely starting with
       # those letters. The explicit form is wrong in neither direction.
       - "^docs(\\(.*\\))?!?:"
       - "^ci(\\(.*\\))?!?:"
@@ -1050,7 +1050,7 @@ nightly:
   # `release.name_template` renders "anodizer {{ Tag }}", which a nightly's
   # per-commit tag would make unique per run.
   name_template: "{{ ProjectName }} nightly"
-  # No `tag_name`: the crate's own `v{{ Version }}` template mints the tag from
+  # No `tag_name`: the crate's own `v{{ Version }}` template creates the tag from
   # the nightly version, which carries the short commit, so two nightlies at
   # different commits stay distinguishable instead of moving one rolling ref.
   publish_release: true

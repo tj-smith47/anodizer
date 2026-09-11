@@ -128,7 +128,7 @@ pub(crate) fn request_id_token(
 ///
 /// `deadline` is the caller's wall-clock retry budget
 /// ([`anodizer_core::context::Context::retry_deadline`]), resolved ONCE for the
-/// whole exchange: a wedged mint endpoint stops when the next backoff would
+/// whole exchange: a wedged token endpoint stops when the next backoff would
 /// cross it, rather than running the full attempt ladder after hop 1 already
 /// spent part of the budget.
 pub(crate) fn post_mint_token(

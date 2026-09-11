@@ -16,7 +16,7 @@ impl Context {
     /// A publisher whose eligible artifact is legitimately absent on a
     /// restricted build (e.g. a Windows-only publisher on a Linux single-target
     /// snapshot) must self-skip its schema validation rather than error: the
-    /// artifact lands on another target, not a misconfiguration. On a FULL build
+    /// artifact reaches another target, not a misconfiguration. On a FULL build
     /// the same absence IS a misconfiguration and must surface. `--single-target`
     /// (`single_target`) is clap-exclusive with `--targets` / `--host-targets`
     /// (which populate `partial_target`), but NOT with `--split` (a split shard

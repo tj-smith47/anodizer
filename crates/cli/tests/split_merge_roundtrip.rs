@@ -34,7 +34,7 @@ fn run_anodizer(dir: &Path, args: &[&str]) -> std::process::Output {
         .expect("invoke anodizer")
 }
 
-/// Split with `split_flags`, then merge, asserting the shard landed under
+/// Split with `split_flags`, then merge, asserting the shard ended up under
 /// `expected_subdir` and the merge loaded it.
 fn split_then_merge(split_flags: &[&str], expected_subdir: &str) {
     split_then_merge_expecting(

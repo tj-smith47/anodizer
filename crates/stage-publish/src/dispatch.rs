@@ -50,7 +50,7 @@
 //! `opts.fail_fast` stops iteration at the first publisher failure within
 //! the current group; the partial report is still returned via `Ok`.
 //! `Err` is reserved for catastrophic non-publisher errors (impossible
-//! IO, malformed config); per-publisher failures land in the report.
+//! IO, malformed config); per-publisher failures end up in the report.
 //!
 //! [`dispatch`] is the production publish path: `PublishStage::run` →
 //! `run_with_publishers` calls it for every release, seeding its report from
@@ -281,7 +281,7 @@ pub fn dispatch(
             // `run()` unconditionally returns `Ok(evidence)` even with zero
             // active entries can never be recorded as `Succeeded` — the
             // failure mode that let a config-skipped cargo/winget count as a
-            // landed one-way-door publish and poison burn evidence.
+            // completed one-way-door publish and poison burn evidence.
             if p.config_fully_inactive(ctx) {
                 ctx.logger("publish").status(&format!(
                     "skipping {} — every configured entry is inactive (skip/if evaluates false)",
@@ -506,7 +506,7 @@ pub fn dispatch(
                 let _ = ctx.take_pending_evidence();
                 // Attribute any retry backoff this publisher incurs to its name
                 // so the run summary can name the flaky remote, and anchor the
-                // one wall-clock retry budget every seam inside `run` observes.
+                // one wall-clock retry budget every point inside `run` observes.
                 // Serial dispatch makes the scope exact — one publisher runs at
                 // a time.
                 let _retry_scope = anodizer_core::retry::PublisherRetryScope::enter(p.name());
@@ -543,8 +543,8 @@ pub fn dispatch(
             let failed = matches!(outcome, PublisherOutcome::Failed(_));
             let result = PublisherResult {
                 // Reported beside the outcome, never instead of it: a
-                // publisher that landed part of its entries keeps the
-                // outcome of what landed.
+                // publisher that published part of its entries keeps the
+                // outcome of what published.
                 entry_skips: crate::publisher_helpers::entry_skip_reasons(ctx, p.name()),
                 name: p.name().into(),
                 group,
@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn reconcile_diverged_required_records_failure_and_closes_gate() {
         // Err from dispatch is reserved for catastrophic non-publisher
-        // failures: a required divergence must land in the REPORT (so the
+        // failures: a required divergence must end up in the REPORT (so the
         // pipeline's rollback/on_error/persistence machinery still runs) and
         // close the one-way-door gate for later submitters.
         let mut ctx = Context::test_fixture();
@@ -1736,7 +1736,7 @@ mod tests {
     fn dispatch_drains_stale_override_between_publishers() {
         // The override slot is single-shot: an earlier publisher's
         // override must not bleed into a later publisher whose `run`
-        // recorded nothing. Without the drain at the top of every
+        // recorded nothing. Without the slot drain at the top of every
         // `run` invocation, a chocolatey moderation skip would
         // contaminate the next publisher's row.
         let mut ctx = Context::test_fixture();
@@ -2037,7 +2037,7 @@ mod tests {
         );
     }
 
-    /// The `Deselected` skip lands in `report.results` so the run summary
+    /// The `Deselected` skip ends up in `report.results` so the run summary
     /// counts it (never a silent drop).
     #[test]
     fn deselected_skip_is_recorded_in_report_results() {
@@ -2700,7 +2700,7 @@ mod tests {
 
     // -- one retry budget per publisher invocation ----------------------
 
-    /// A publisher that resolves `ctx.retry_deadline()` at several seams of
+    /// A publisher that resolves `ctx.retry_deadline()` at several points of
     /// one `run` — an auth exchange, the request it authenticates, and a
     /// cleanup that enters its own retry scope — recording each observation.
     struct DeadlineProbe {
@@ -2743,9 +2743,9 @@ mod tests {
 
     #[test]
     fn every_seam_of_one_publisher_run_shares_a_single_retry_budget() {
-        // The hole this closes: `retry_deadline` used to mint `now + budget`
-        // per call, so a publisher touching three seams got three budgets and
-        // a wedged registry could spend `retry.max_elapsed` once per seam.
+        // The hole this closes: `retry_deadline` used to create `now + budget`
+        // per call, so a publisher touching three points got three budgets and
+        // a wedged registry could spend `retry.max_elapsed` once per point.
         // Re-anchoring anywhere inside `run` — including via a fresh
         // `PublisherRetryScope` — makes the observations diverge and this
         // fails.

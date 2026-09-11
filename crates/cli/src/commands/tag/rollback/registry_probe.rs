@@ -183,7 +183,7 @@ pub(super) fn check_not_burned_on_crates_io(
     }
     if !burned.is_empty() {
         // A local run summary is per-runner and ephemeral: a fresh CI runner
-        // holds no summary for a burn a prior runner landed, so its absence
+        // holds no summary for a burn a prior runner published, so its absence
         // is expected for a legitimate own-publish and is NOT evidence of
         // foreign ownership. The note leads with that likely case and offers
         // the crates.io page only so the rare squatting possibility can be
@@ -267,8 +267,8 @@ pub(super) enum ImmutableProbe {
 /// applies: a prior run on another runner may have burned the version, leaving
 /// no local summary. Every tag is probed live — matching the crates.io
 /// sibling. A summarized tag is NOT skipped: layer 1 only refuses when the
-/// summary *records* the Submitter publish as landed, so it misses the
-/// immutable-door verification race (the version landed at the registry but was
+/// summary *records* the Submitter publish as done, so it misses the
+/// immutable-door verification race (the version reached the registry but was
 /// recorded as failed — a read timeout after the 201). The live probe is
 /// exactly what closes that race, so it must run for summarized tags too.
 ///
@@ -301,7 +301,7 @@ pub(super) fn check_not_burned_on_npm_pypi(
     }
     // Pass 1 — resolve every deduplicated probe up front so the network
     // round-trips run concurrently. Every tag is probed (like crates.io): the
-    // live index is the only evidence that catches an immutable-door landing
+    // live index is the only evidence that catches an immutable-door publish
     // the run summary recorded as a failure.
     let mut pending: Vec<ImmutableProbe> = Vec::new();
     let mut unresolvable: Vec<String> = Vec::new();

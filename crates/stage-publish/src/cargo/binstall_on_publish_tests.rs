@@ -549,7 +549,7 @@ fn guard_clean_check_runs_once_not_per_crate() {
     write_manifest(&dir_b, "beta", "1.0.0");
     let mut crate_a = binstall_crate_for_publish("alpha", "alpha", dir_a.to_str().unwrap());
     // b depends on a → topological order processes a first, so a's binstall
-    // write lands before b's iteration.
+    // write arrives before b's iteration.
     crate_a.depends_on = Some(vec![]);
     let mut crate_b = binstall_crate_for_publish("beta", "beta", dir_b.to_str().unwrap());
     crate_b.depends_on = Some(vec!["alpha".to_string()]);

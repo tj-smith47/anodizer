@@ -18,7 +18,7 @@ use super::*;
 /// push to `master` (AUR's only branch).
 ///
 /// SECURITY NOTE: [`AurOurTarget`]'s SSH credentials (`private_key`,
-/// `git_ssh_command`) carry `#[serde(skip)]` so they never land in
+/// `git_ssh_command`) carry `#[serde(skip)]` so they never end up in
 /// persisted evidence (`dist/run-<id>/report.json`, the run-summary
 /// JSON, or the announce-time release-body summary). Rollback
 /// re-reads them from the live `ctx.config` at yank time so a
@@ -95,7 +95,7 @@ pub(crate) fn resolve_aur_credentials_from_config(
         };
         if ac.git_url.as_deref() == Some(git_url) {
             // Render the SSH credentials before they reach the rollback
-            // clone, or a templated `{{ .Env.AUR_SSH_KEY }}` lands as the
+            // clone, or a templated `{{ .Env.AUR_SSH_KEY }}` arrives as the
             // literal string in the key file and ssh fails.
             let pk = ac
                 .private_key

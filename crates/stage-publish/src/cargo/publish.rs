@@ -175,14 +175,14 @@ pub fn publish_to_cargo(
     record: &mut Vec<CargoYankTarget>,
 ) -> Result<()> {
     // Resolve the workspace-level auth decision ONCE, before the publish loop.
-    // `Some(token)` means Trusted Publishing minted a short-lived crates.io
+    // `Some(token)` means Trusted Publishing issued a short-lived crates.io
     // token to inject via `CARGO_REGISTRY_TOKEN` for every crate; `None` keeps
     // today's ambient-env behavior byte-identical (the token/Auto-with-token
     // path). Skipped in dry-run and under `--skip=cargo`: neither reaches a
-    // real publish, so there is nothing to mint (and no network round-trip).
+    // real publish, so there is nothing to request (and no network round-trip).
     let retry_policy = ctx.retry_policy();
     // One wall-clock budget for the whole cargo publish sequence — the OIDC
-    // mint, the publish loop, the index probes and the token revoke share it.
+    // token request, the publish loop, the index probes and the token revoke share it.
     // Resolved once and threaded, so the helpers that have no `Context` to ask
     // still read the same value.
     let retry_deadline = ctx.retry_deadline();
@@ -192,7 +192,7 @@ pub fn publish_to_cargo(
         resolve_workspace_cargo_token(ctx, &retry_policy, retry_deadline, log)?
     };
 
-    // Overlay the minted token onto the context as `CARGO_REGISTRY_TOKEN` for
+    // Overlay the issued token onto the context as `CARGO_REGISTRY_TOKEN` for
     // the publish+rollback lifecycle. The child `cargo publish` still reads the
     // token via the explicit per-child `registry_token` thread below (it does
     // not consult `ctx.env_source()`), but the overlay makes the token visible
@@ -214,14 +214,14 @@ pub fn publish_to_cargo(
         minted.as_deref(),
     );
 
-    // Revoke timing for a minted (OIDC) token:
+    // Revoke timing for an issued (OIDC) token:
     // - success, or failure with NOTHING published → revoke + restore the base
     //   env source now; no rollback yank will run.
     // - failure with crates already live (non-empty `record`, the same signal
     //   `rollback()` decodes via `decode_cargo_yank_targets`) → LEAVE the
     //   overlay and the marker in place so `rollback()` can yank with the
     //   token and revoke it afterward.
-    // A `?` between mint and this decision would leak the token past its
+    // A `?` between the token request and this decision would leak the token past its
     // release; there is none — the loop's error is captured in `result`.
     if minted.is_some() {
         let published_something = !record.is_empty();
@@ -235,20 +235,20 @@ pub fn publish_to_cargo(
 
 /// Resolve the workspace-level crates.io credential decision for the run,
 /// mirroring pypi's `resolve_upload_credential` collapsed to one
-/// per-workspace choice (the minted token authorizes every crate matching the
+/// per-workspace choice (the issued token authorizes every crate matching the
 /// repo's Trusted Publisher, so it is resolved once and reused).
 ///
-/// Returns `Some(minted)` only when Trusted Publishing actually minted a
+/// Returns `Some(minted)` only when Trusted Publishing actually issued a
 /// token; `None` for the token/ambient path, which must stay behaviorally
 /// identical to today (inherit the ambient `CARGO_REGISTRY_TOKEN`, no
 /// injection, no revoke).
 ///
 /// * `auth: token` → `None` (ambient `CARGO_REGISTRY_TOKEN`, as today).
-/// * `auth: oidc` → mint (strict); error if no OIDC context, or if the block
+/// * `auth: oidc` → request a token (strict); error if no OIDC context, or if the block
 ///   targets a non-crates.io registry (which has no Trusted-Publishing
 ///   contract).
 /// * `auth: auto` → ambient token present → `None`; else OIDC context present
-///   → mint; else a hard error naming both paths.
+///   → request a token; else a hard error naming both paths.
 pub(crate) fn resolve_workspace_cargo_token(
     ctx: &Context,
     policy: &anodizer_core::retry::RetryPolicy,
@@ -278,8 +278,8 @@ pub(crate) fn resolve_workspace_cargo_token(
     let oidc_available = oidc::oidc_context_available(ctx);
 
     // A strict `oidc` block against a non-crates.io registry cannot be honored
-    // — Trusted Publishing only mints crates.io tokens. Fail loud rather than
-    // silently minting an unusable token or falling back to a stored one.
+    // — Trusted Publishing only creates crates.io tokens. Fail loud rather than
+    // silently creating an unusable token or falling back to a stored one.
     for (cargo, is_crates_io) in &active {
         if cargo.resolved_auth() == CargoAuthMode::Oidc && !is_crates_io {
             anyhow::bail!(
@@ -294,9 +294,9 @@ pub(crate) fn resolve_workspace_cargo_token(
         }
     }
 
-    // Strict OIDC anywhere forces a mint (the run refuses to fall back to a
+    // Strict OIDC anywhere forces a token request (the run refuses to fall back to a
     // token). Otherwise Auto decides per the ambient-token / OIDC-context
-    // ladder. Token-mode never mints. The workspace is assumed uniform, so a
+    // ladder. Token-mode never requests one. The workspace is assumed uniform, so a
     // single decision covers every crate.
     let any_strict_oidc = active
         .iter()
@@ -325,7 +325,7 @@ pub(crate) fn resolve_workspace_cargo_token(
     Ok(None)
 }
 
-/// Test seam for [`publish_to_cargo`] that injects only the crates.io
+/// Test hook for [`publish_to_cargo`] that injects only the crates.io
 /// already-published index check; the content-vs-version guard's local
 /// `.crate` checksum is wired to the production [`local_crate_cksum`].
 ///
@@ -366,7 +366,7 @@ pub(crate) fn publish_to_cargo_with(
     )
 }
 
-/// Full test seam: both the crates.io already-published index check AND the
+/// Full test hook: both the crates.io already-published index check AND the
 /// content-vs-version guard's local `.crate` checksum computer are injected.
 ///
 /// The local-cksum stub returns `(crate_name, crate_cfg, cargo_cfg) ->
@@ -414,7 +414,7 @@ pub(crate) fn publish_to_cargo_with_guard(
     // Production wires `crate_exists_on_index`; tests inject a stub.
     crate_exists: impl Fn(&str) -> CrateIndexExistence,
     // Registry token override for each spawned `cargo publish`: `Some` only
-    // when Trusted Publishing minted a short-lived crates.io token, injected as
+    // when Trusted Publishing issued a short-lived crates.io token, injected as
     // `CARGO_REGISTRY_TOKEN` on the child. `None` inherits the ambient env
     // unchanged (the token/Auto-with-token path).
     registry_token: Option<&str>,
@@ -490,7 +490,7 @@ pub(crate) fn publish_to_cargo_with_guard(
     // above already handled that path.)
     //
     // The index probe routes through the SAME injected `already_published_check`
-    // seam the publish loop uses, so the guard shares one mockable index path:
+    // point the publish loop uses, so the guard shares one mockable index path:
     // `Ok(Some)` = present, `Ok(None)` = positively absent, `Err` = inconclusive
     // (never fails the guard).
     {
@@ -509,10 +509,10 @@ pub(crate) fn publish_to_cargo_with_guard(
 
     // Second hard backstop, same placement rationale: crates.io Trusted
     // Publishing cannot CREATE a crate (the TP config attaches to an existing
-    // one), so under a minted OIDC token a brand-new workspace member is
+    // one), so under an issued OIDC token a brand-new workspace member is
     // guaranteed a 403 partway through the loop — after its dependencies
-    // already landed at the release version. `registry_token.is_some()` is
-    // exactly "TP minted a token this run"; the token/ambient-env path never
+    // already published at the release version. `registry_token.is_some()` is
+    // exactly "TP issued a token this run"; the token/ambient-env path never
     // consults the probe. Only a definitive index 404 blocks; transport
     // failures fail open inside the guard.
     if registry_token.is_some() {
@@ -657,7 +657,7 @@ pub(crate) fn publish_to_cargo_with_guard(
 
         // Pre-publish gate: in multi-tag-multi-crate workspaces (e.g. cfgd)
         // per-crate tags fire independent Release.yml runs, so the upstream
-        // crate's publish may not have landed on crates.io by the time this
+        // crate's publish may not have reached crates.io by the time this
         // downstream's publish starts. The wait_for_workspace_deps block,
         // when enabled, polls crates.io for every workspace-internal dep at
         // its pinned version and blocks until each appears. Disabled by
@@ -696,7 +696,7 @@ pub(crate) fn publish_to_cargo_with_guard(
         log.verbose(&format!("running {}", cmd.join(" ")));
 
         // Defense in depth: even though poll_crates_io_index already waits
-        // for the prior crate to land on the index edge anodizer queries,
+        // for the prior crate to reach the index edge anodizer queries,
         // cargo's own resolution may hit a stale Fastly edge a beat later.
         // run_cargo_publish_with_retry narrows retry exclusively to the
         // sparse-index propagation failure signatures so real errors still

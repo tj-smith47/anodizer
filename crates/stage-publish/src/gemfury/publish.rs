@@ -220,7 +220,7 @@ fn preflight_multi_format_unambiguous(ctx: &Context, cfg: &GemFuryConfig) -> Res
                 continue;
             };
             // Only fail when MORE than one of the multi-format archive
-            // variants would actually land in gemfury (i.e. is in the
+            // variants would actually end up in gemfury (i.e. is in the
             // configured formats filter). Two-format archives where only
             // one extension is in the gemfury filter (e.g. `tar.gz` + `deb`)
             // do NOT trip — the publisher pushes only the `deb`.
@@ -261,7 +261,7 @@ pub(crate) fn resolve_formats(cfg: &GemFuryConfig) -> Vec<String> {
 /// non-404 HTTP shape (5xx, auth failure, rate-limit) surfaces an `Err`
 /// rather than `Ok(false)`. A Fury push can be irreversible for up to 72h
 /// after upload, so a probe that *cannot prove* the version is absent must
-/// not green-light the push — assuming "not published" on an outage would
+/// not approve the push — assuming "not published" on an outage would
 /// re-push over an existing version the moment the registry recovers. The
 /// caller aborts this artifact's push and records the failure for the
 /// operator instead.
@@ -344,14 +344,14 @@ struct PushJob<'a> {
 /// Terminal state of one artifact's push, folded back into the rollback
 /// `pushed` list in submission order by the caller.
 enum PushOutcome {
-    /// Bytes landed this run — becomes a rollback target.
+    /// Bytes published this run — becomes a rollback target.
     Pushed(GemFuryTarget),
     /// Already on Fury (idempotency probe hit or 409/422 conflict-as-success);
     /// NOT a rollback target — this run did not place it.
     AlreadyPresent,
 }
 
-/// Probe-then-push one artifact to Fury, returning whether it landed (a
+/// Probe-then-push one artifact to Fury, returning whether it published (a
 /// rollback target) or was an idempotent no-op. Self-contained so the account
 /// loop can run it under bounded parallelism: it builds its own multipart
 /// body, carries its own retry budget (floored to
@@ -446,7 +446,7 @@ fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
             }
             // Idempotent conflict: a 409 (Conflict) / 422 (Unprocessable) means the
             // version already exists on Fury — a re-run on an already-published
-            // tag, or a racing concurrent uploader. The operator's intent ("land
+            // tag, or a racing concurrent uploader. The operator's intent ("publish
             // this artifact") is satisfied, so treat it as success rather than a
             // hard failure (mirrors the cloudsmith conflict-as-success guard).
             if matches!(status.as_u16(), 409 | 422) {
@@ -498,11 +498,11 @@ fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
 /// Top-level publish entrypoint. Iterates each `gemfury[]` entry and pushes
 /// every matching artifact via `POST push.fury.io/<account>` with HTTP Basic
 /// auth, appending one [`GemFuryTarget`] to `pushed` per artifact that
-/// actually landed.
+/// actually published.
 ///
 /// `pushed` is an out-param (rather than the return value) so that on a
 /// mid-loop error the caller still holds the partial set of artifacts that
-/// DID land before the failure — those must be rolled back, not orphaned.
+/// DID upload before the failure — those must be rolled back, not orphaned.
 /// A `?` on the previous `Result<Vec<_>>` signature discarded that evidence.
 pub fn publish_to_gemfury(
     ctx: &Context,
@@ -640,7 +640,7 @@ pub fn publish_to_gemfury(
 
         // Pre-validate every artifact's existence + format serially so a
         // missing file or unrecognized extension fails fast before any push
-        // fans out (and before partial pushes can land).
+        // fans out (and before partial pushes can complete).
         let mut jobs: Vec<PushJob<'_>> = Vec::with_capacity(artifacts.len());
         for artifact in &artifacts {
             let path = &artifact.path;
@@ -678,7 +678,7 @@ pub fn publish_to_gemfury(
         // Unlike the order-preserving-but-fail-fast `run_parallel_chunks`, the
         // rollback contract here demands EVERY artifact that actually POSTed be
         // recorded — even a sibling that succeeded concurrently with a failing
-        // push must land in `pushed` so the partial set can be rolled back. So
+        // push must end up in `pushed` so the partial set can be rolled back. So
         // each chunk runs to completion, ALL `Pushed` outcomes are recorded in
         // submission order, and only then is the first error surfaced.
         let parallelism = ctx.options.parallelism.clamp(1, MAX_PUSH_CONCURRENCY);
@@ -730,7 +730,7 @@ pub fn publish_to_gemfury(
                     })
                     .collect()
             });
-            // Record landed targets in submission order before propagating any
+            // Record published targets in submission order before propagating any
             // error, so a concurrent success is never dropped from rollback.
             for result in chunk_results {
                 match result {

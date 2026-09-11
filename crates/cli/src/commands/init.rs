@@ -297,7 +297,7 @@ fn render_yaml(project_name: &str, crates: &[&CrateInfo]) -> Result<String> {
     for c in crates {
         out.push_str(&format!("  - name: {}\n", c.name));
         out.push_str(&format!("    path: {}\n", c.path));
-        // The generated template must mint tags in the same family the
+        // The generated template must create tags in the same family the
         // no-template fallback scans, so compose it from the shared
         // fallback-prefix convention rather than restating `{name}-v`.
         out.push_str(&format!(

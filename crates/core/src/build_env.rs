@@ -410,7 +410,7 @@ pub fn config_time_amd64_variant(
     // group is named by its first binary in artifact-registration order,
     // which is not raw config order: prebuilt imports register during
     // planning, compile jobs are registered in planned order after them, and
-    // copy_from jobs drain last. Walk the builds in the same three passes so
+    // copy_from jobs run last. Walk the builds in the same three passes so
     // the projected variant belongs to a group that is really produced.
     let pass_matches = |pass: usize, b: &BuildConfig| -> bool {
         let prebuilt = matches!(b.builder, Some(BuilderKind::Prebuilt));

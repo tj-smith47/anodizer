@@ -22,7 +22,7 @@ use anodizer_core::stage::Stage;
 /// artifact path); makensis resolves a relative `OutFile` against the script's
 /// directory, which is an ephemeral staging dir, so it must be absolute.
 /// `ProgramFiles` resolves to `$PROGRAMFILES64` on 64-bit targets and
-/// `$PROGRAMFILES` on 32-bit targets, so the installer lands in the correct
+/// `$PROGRAMFILES` on 32-bit targets, so the installer ends up in the correct
 /// directory on all Windows variants.
 pub fn default_nsi_script() -> &'static str {
     r#"!include "MUI2.nsh"
@@ -108,7 +108,7 @@ pub(crate) fn map_arch_to_nsis(arch: &str) -> &str {
 /// Return the correct NSIS `$PROGRAMFILESxx` constant for the given arch.
 ///
 /// 64-bit targets use `$PROGRAMFILES64`; all others use `$PROGRAMFILES`.
-/// This prevents installers from landing in the WOW6432-redirected path
+/// This prevents installers from ending up in the WOW6432-redirected path
 /// (`Program Files (x86)`) on 64-bit Windows.
 pub(crate) fn program_files_for_arch(nsis_arch: &str) -> &str {
     if nsis_arch == "x64" || nsis_arch == "arm64" {
@@ -406,7 +406,7 @@ impl Stage for NsisStage {
                         // makensis chdir's to the .nsi script's directory (an
                         // ephemeral staging tempdir) before resolving a relative
                         // `OutFile`. Under the default `dist: ./dist`, `exe_path` is
-                        // relative, so a relative OutFile would land the installer
+                        // relative, so a relative OutFile would put the installer
                         // inside the staging tempdir (which then vanishes). The
                         // absolute path is cwd-independent and points makensis at the
                         // real `dist/windows/` location regardless of its chdir.
@@ -2018,7 +2018,7 @@ crates:
     /// config), the path makensis is told to write — `NsisOutputFile`, derived
     /// from the same `exe_path` `absolutize_output_path` produces — must be
     /// ABSOLUTE. makensis chdir's to the .nsi script's staging tempdir before
-    /// resolving a relative `OutFile`, so a relative path would land the
+    /// resolving a relative `OutFile`, so a relative path would put the
     /// installer in that tempdir (which then vanishes). The recorded
     /// `Artifact.path` is separately relativized to cwd by the registry for a
     /// stable `artifacts.json`; the absolute OutFile resolves to that same
@@ -2151,7 +2151,7 @@ crates:
         // OutFile is the absolute NsisOutputFile, never a bare relative filename.
         assert!(out.contains("OutFile \"/dist/windows/myapp_x64_setup.exe\""));
         assert!(!out.contains("OutFile \"myapp_x64_setup.exe\""));
-        // 64-bit target lands in PROGRAMFILES64 (not the WOW6432 redirect)
+        // 64-bit target ends up in PROGRAMFILES64 (not the WOW6432 redirect)
         assert!(out.contains("InstallDir \"$PROGRAMFILES64\\myapp\""));
         assert!(!out.contains("$PROGRAMFILES\\myapp"));
         assert!(out.contains("RequestExecutionLevel admin"));

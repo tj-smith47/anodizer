@@ -28,7 +28,7 @@ use crate::log::StageLogger;
 /// 4. the crate's [`tag_family_template`](crate::config::CrateConfig::tag_family_template).
 ///
 /// A `nightly.tag_name` is prefixed with the crate's own tag family in a
-/// workspace that mints more than one (`operator-v` + `edge` →
+/// workspace that creates more than one (`operator-v` + `edge` →
 /// `operator-vedge`): one tag cannot carry three tracks' releases, and a tag
 /// inside the family is also what scopes the retention sweep to this track.
 /// The prefix comes from the same `tag_family_scope` the retention matcher
@@ -151,7 +151,7 @@ fn declared_tag_for_crate(ctx: &Context, crate_cfg: &CrateConfig) -> Option<Stri
         .map(str::to_string)
 }
 
-/// The tag TEMPLATE a crate's release is minted from: an explicit
+/// The tag TEMPLATE a crate's release is issued from: an explicit
 /// `release.tag` override, else the crate's own tag family.
 ///
 /// An override that is present but empty is returned as-is: `release.tag: ""`
@@ -164,7 +164,7 @@ fn declared_tag_for_crate(ctx: &Context, crate_cfg: &CrateConfig) -> Option<Stri
 /// and cargo-binstall's `pkg_url` both resolve a version at install time and
 /// reconstruct the tag from it. They deliberately stop short of the
 /// `nightly.tag_name` rung: both point at whatever the project's newest STABLE
-/// release is, which is never the rolling tag a nightly run mints.
+/// release is, which is never the rolling tag a nightly run creates.
 pub fn release_tag_template(crate_cfg: &CrateConfig) -> String {
     crate_cfg
         .release_tag_override()
@@ -173,7 +173,7 @@ pub fn release_tag_template(crate_cfg: &CrateConfig) -> String {
 }
 
 /// Put a literal `nightly.tag_name` inside this crate's tag family when the
-/// workspace mints more than one, leaving it verbatim otherwise.
+/// workspace creates more than one, leaving it verbatim otherwise.
 fn scope_to_tag_family(ctx: &Context, crate_cfg: &CrateConfig, rendered: String) -> String {
     if rendered.is_empty() || !ctx.config.mints_multiple_tag_families() {
         return rendered;
@@ -191,7 +191,7 @@ fn scope_to_tag_family(ctx: &Context, crate_cfg: &CrateConfig, rendered: String)
 /// Re-anchor `Tag` and `PreviousTag` to one crate's own release tag.
 ///
 /// A run-wide `Tag` is whichever family the version base came from, so in a
-/// workspace minting several families every crate but that one would render
+/// workspace creating several families every crate but that one would render
 /// `{{ Tag }}` — release header, blob directory, announce body, compare link
 /// — against a tag its release was never created on. Both variables move
 /// together: a `PreviousTag` left behind from another family would bound a
@@ -289,7 +289,7 @@ mod tests {
     }
 
     /// An INFERRED tag is a guess the template must still win over: it is the
-    /// crate's own family that decides what this run mints.
+    /// crate's own family that decides what this run creates.
     #[test]
     fn an_inferred_tag_still_goes_through_the_template() {
         let cfg = crate_cfg("app", "v{{ Version }}");

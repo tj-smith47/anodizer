@@ -684,7 +684,7 @@ mod id_binding_tests {
     #[test]
     fn grouping_keys_on_target_and_amd64_variant() {
         // Two amd64 builds of one triple (baseline + v3) share Os/Arch but must
-        // land in separate groups so each renders its own snap.
+        // end up in separate groups so each renders its own snap.
         let v1 = bin_variant("dist/anodizer-v1", "x86_64-unknown-linux-gnu", None);
         let v3 = bin_variant("dist/anodizer-v3", "x86_64-unknown-linux-gnu", Some("v3"));
         let all = vec![&v1, &v3];

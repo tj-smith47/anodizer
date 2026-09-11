@@ -3154,7 +3154,7 @@ crates: []
 fn test_legacy_docker_field_rejected() {
     // `crates[].docker:` is no longer a recognized field. Any value
     // parses (CrateConfig isn't deny_unknown_fields) but it has nowhere
-    // to land — confirm via explicit absence.
+    // to arrive — confirm via explicit absence.
     let yaml = r#"
 project_name: test
 crates:
@@ -8476,7 +8476,7 @@ fn test_makeself_file_accepts_src_dst_aliases() {
 #[test]
 fn test_appimages_parse_full_block_from_top_level_config() {
     // End-to-end: the top-level `appimages:` key flows through the Config
-    // deserializer (single object → vec of one) and every field lands.
+    // deserializer (single object → vec of one) and every field arrives.
     let yaml = r#"
 project_name: helix
 appimages:
@@ -8533,7 +8533,7 @@ fn test_appimage_extra_accepts_source_destination_aliases() {
 fn test_nfpm_config_accepts_builds_alias_into_ids() {
     // The legacy NFPM config keeps a deprecated `builds []string` aliasing
     // `ids`. With `deny_unknown_fields` on NfpmConfig it would hard-reject
-    // unless aliased — assert `builds:` lands in `ids`.
+    // unless aliased — assert `builds:` ends up in `ids`.
     let cfg: super::NfpmConfig = serde_yaml_ng::from_str("builds: [foo, bar]\n").unwrap();
     assert_eq!(
         cfg.ids.as_deref(),

@@ -236,7 +236,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
 
 /// Aliased to the core-owned snapshot so the evidence schema lives in
 /// [`anodizer_core::publish_evidence`] and credential-shaped fields
-/// have no slot to land in. See the homebrew publisher for the same
+/// have no slot to fill. See the homebrew publisher for the same
 /// pattern.
 pub(crate) type ScoopTarget = anodizer_core::publish_evidence::ScoopTargetSnapshot;
 

@@ -149,7 +149,7 @@ pub(crate) fn shared_root_aggregate_name<'a>(
 
 /// Group a crate list by extracted tag prefix: every subset of crates whose
 /// `tag_template`s yield the same concrete prefix (via
-/// [`git::extract_tag_prefix`]) forms ONE group — those crates mint tags into
+/// [`git::extract_tag_prefix`]) forms ONE group — those crates create tags into
 /// one shared namespace and must release as a lockstep aggregate. A crate
 /// with a unique prefix, or with no extractable prefix at all (the per-crate
 /// `{crate}-v` fallback keeps such crates in distinct namespaces), stays a

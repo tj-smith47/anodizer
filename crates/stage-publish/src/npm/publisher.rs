@@ -5,7 +5,7 @@
 //! * **Group**: Submitter — a published npm version number is a burned slot:
 //!   npm rejects re-publishing a version that has ever been used (a 24h lock
 //!   survives even an `npm unpublish`, and unpublish itself is refused after
-//!   72h or once a package has dependents). So a landed npm publish cannot be
+//!   72h or once a package has dependents). So a completed npm publish cannot be
 //!   cleanly re-cut at the same version, which is exactly what the rollback
 //!   guard must see — it counts toward `irreversibly_published` and refuses a
 //!   same-version tag re-cut. (It is NOT Manager: Manager is
@@ -37,7 +37,7 @@ simple_publisher!(
 
 /// Aliased to the core-owned snapshot so the evidence schema lives in
 /// [`anodizer_core::publish_evidence`] and credential-shaped fields have no
-/// slot to land in.
+/// slot to fill.
 pub(crate) type NpmTarget = anodizer_core::publish_evidence::NpmTargetSnapshot;
 
 /// The GitHub Actions OIDC request pair, as an all-of preflight requirement.
@@ -413,7 +413,7 @@ impl anodizer_core::Publisher for NpmPublisher {
                 }
             };
             // Rollback (`npm unpublish`) requires a long-lived token — OIDC
-            // mints short-lived publish-only credentials that cannot unpublish.
+            // creates short-lived publish-only credentials that cannot unpublish.
             // The empty-token skip above already routes OIDC-published packages
             // to the manual-unpublish warning.
             let auth = super::publish::NpmAuth::Token(token);
@@ -463,7 +463,7 @@ impl anodizer_core::Publisher for NpmPublisher {
     ///   Warning (npm forbids republishing a version; unpublish is a 72h window).
     ///
     /// The token probe runs only when a token resolves: an OIDC-only entry has
-    /// no long-lived token to validate here (Trusted Publishing mints its
+    /// no long-lived token to validate here (Trusted Publishing creates its
     /// credential at publish time), so probing it would false-block.
     fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         use crate::publisher_preflight::{
@@ -472,7 +472,7 @@ impl anodizer_core::Publisher for NpmPublisher {
         use anodizer_core::PreflightCheck;
 
         // Shallow probe policy: best-effort pre-publish gate, not a write that
-        // must land (see `RetryPolicy::PREFLIGHT`).
+        // must succeed (see `RetryPolicy::PREFLIGHT`).
         let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
         let crate_name = ctx
             .config

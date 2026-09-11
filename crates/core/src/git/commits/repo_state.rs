@@ -153,7 +153,7 @@ pub fn has_commits_since_tag_in(cwd: &Path, tag: &str) -> Result<bool> {
 ///
 /// Resolves the last tag with `git describe --tags --abbrev=0 HEAD`, then
 /// returns `git rev-list --count <tag>..HEAD`. When HEAD has no reachable
-/// tag (a repo whose first version tag has not landed yet), the total
+/// tag (a repo whose first version tag does not exist yet), the total
 /// commit count on HEAD is returned instead (`git rev-list --count HEAD`).
 ///
 /// `monorepo_prefix` constrains the `describe` to tags matching
@@ -162,7 +162,7 @@ pub fn has_commits_since_tag_in(cwd: &Path, tag: &str) -> Result<bool> {
 /// subproject. `None` considers all tags.
 ///
 /// This is the stateless basis for the `{{ .NightlyBuild }}` template var:
-/// the count resets to a small number the moment a new version tag lands,
+/// the count resets to a small number the moment a new version tag arrives,
 /// so a nightly build counter increments per base version with no state
 /// anodizer must persist.
 ///

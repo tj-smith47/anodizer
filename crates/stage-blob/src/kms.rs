@@ -92,7 +92,7 @@ pub(crate) fn preflight_kms_cli(provider: KmsProvider) -> Result<()> {
 /// Production passes `Path::new(<tool>)` (PATH lookup); tests point at
 /// a nonexistent path to exercise the missing-CLI branch without
 /// clobbering the process-wide `PATH` (which would make every
-/// concurrent PATH-resolved spawn in the test binary flaky). Same seam
+/// concurrent PATH-resolved spawn in the test binary flaky). Same injection point
 /// convention as `stage-publish`'s `run_cargo_dry_run_with_binary`.
 fn preflight_kms_cli_with_binary(binary: &std::path::Path, tool: &str) -> Result<()> {
     std::process::Command::new(binary)
@@ -403,7 +403,7 @@ mod tests {
     fn preflight_errors_when_cli_missing() {
         // A nonexistent binary path exercises the spawn-failure branch
         // and must surface the "not found on PATH" context. Driven
-        // through the binary-path seam: replacing the process-wide PATH
+        // through the binary-path override: replacing the process-wide PATH
         // instead would make every concurrent PATH-resolved spawn in
         // this test binary flaky.
         let tmp = tempfile::TempDir::new().expect("temp dir");

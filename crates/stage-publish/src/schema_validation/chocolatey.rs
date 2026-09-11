@@ -381,7 +381,7 @@ mod tests {
     }
 
     /// Parse a rendered nuspec and return its `<metadata>` node's child text by
-    /// element name, for asserting each option lands in the schema-expected
+    /// element name, for asserting each option ends up in the schema-expected
     /// element.
     fn meta_text<'a>(doc: &'a roxmltree::Document<'a>, name: &str) -> Option<String> {
         doc.root_element()
@@ -394,7 +394,7 @@ mod tests {
     }
 
     /// (a) Single-crate mode: one crate, every option set. The rendered nuspec
-    /// must clear the structural floor with zero findings and land each option
+    /// must clear the structural floor with zero findings and put each option
     /// in its schema-expected element.
     #[test]
     fn single_crate_every_option_validates_and_lands_in_fields() {
@@ -481,7 +481,7 @@ mod tests {
             Some("Initial release")
         );
 
-        // The dependency lands as `metadata/dependencies/dependency/@id`.
+        // The dependency arrives as `metadata/dependencies/dependency/@id`.
         let dep_id = doc
             .descendants()
             .find(|n| n.is_element() && n.tag_name().name() == "dependency")
@@ -636,7 +636,7 @@ mod tests {
     /// A TARGET-RESTRICTED determinism shard that built no Windows artifact for a
     /// chocolatey-configured crate must still validate the nuspec but SKIP the
     /// artifact-dependent install-mode check (zero findings, no error) — the
-    /// Windows archive legitimately landed on another shard. The skip is gated on
+    /// Windows archive legitimately reached another shard. The skip is gated on
     /// `partial_target`, so this holds only on a shard.
     #[test]
     fn partial_shard_without_windows_artifact_is_skipped_not_failed() {

@@ -154,7 +154,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
     )?;
 
     // Honor `cask_cfg.directory:` so the tap can place casks in a sub-tree
-    // (e.g. `Casks/versioned/`) instead of always landing under `Casks/`.
+    // (e.g. `Casks/versioned/`) instead of always ending up under `Casks/`.
     // Directory defaults to "Casks".
     let directory = super::resolve_cask_directory(cask_cfg.directory.as_deref(), ctx)?;
     let casks_dir = repo_path.join(&directory);

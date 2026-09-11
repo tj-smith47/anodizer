@@ -19,7 +19,7 @@ pub(crate) struct AppDirEntry {
 /// Assemble the AppDir on disk: copy the binary, desktop file, icon, the
 /// harvested runtime tree (if any), and arbitrary extra entries into
 /// `appdir`. Returns the absolute paths of the desktop file and icon as they
-/// land inside the AppDir (linuxdeploy is pointed at the in-tree copies so a
+/// end up inside the AppDir (linuxdeploy is pointed at the in-tree copies so a
 /// per-run worktree prefix never leaks into its argv).
 pub(crate) fn assemble_appdir(appdir: &Path, job: &AppImageJob) -> Result<(PathBuf, PathBuf)> {
     std::fs::create_dir_all(appdir)
@@ -38,7 +38,7 @@ pub(crate) fn assemble_appdir(appdir: &Path, job: &AppImageJob) -> Result<(PathB
         )
     })?;
 
-    // Desktop file + icon land at the AppDir root (linuxdeploy moves them into
+    // Desktop file + icon end up at the AppDir root (linuxdeploy moves them into
     // usr/share/applications and usr/share/icons during assembly).
     let desktop_dst = appdir.join(file_basename(&job.desktop_src, "app.desktop"));
     std::fs::copy(&job.desktop_src, &desktop_dst).with_context(|| {

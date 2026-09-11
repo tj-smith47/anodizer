@@ -41,7 +41,7 @@ pub use publisher::NpmPublisher;
 /// (absent), `Err` = the registry could not be consulted (5xx, transport
 /// failure). Landing verification must NOT treat that `Err` as "not visible":
 /// an npm version is immutable once published, so folding an outage into a
-/// hard finding would fail an already-landed, one-way-door release.
+/// hard finding would fail an already published, one-way-door release.
 pub fn version_visible_on_registry(
     registry: &str,
     package: &str,
@@ -120,7 +120,7 @@ pub fn static_published_name(
 /// `cfg.registry` when set and not templated (trailing slash trimmed), else
 /// the default npm registry. Returns `None` when `cfg.registry` is a template
 /// expression — its host is unknown outside a release run, so the guard cannot
-/// name where the package would land and must fail closed.
+/// name where the package would be published and must fail closed.
 pub fn static_registry(cfg: &anodizer_core::config::NpmConfig) -> Option<String> {
     match cfg
         .registry

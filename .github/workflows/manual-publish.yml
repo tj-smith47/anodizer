@@ -1,7 +1,7 @@
 # Manual one-shot publish of a single publisher — determinism-free.
 #
 # Re-publishes a single publisher (default npm) for an ALREADY-RELEASED tag
-# whose other publishers landed but this one did not (e.g. npm fell behind
+# whose other publishers published but this one did not (e.g. npm fell behind
 # cargo because a publish-only preflight aborted it). Unlike the main Release
 # pipeline this runs NO determinism harness: the binaries the publisher wraps
 # come from the byte-proven `dist-*` artifacts a prior Release run already

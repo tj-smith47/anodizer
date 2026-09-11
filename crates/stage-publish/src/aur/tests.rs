@@ -2027,7 +2027,7 @@ fn make_bare_aur_repo() -> (String, tempfile::TempDir) {
     (bare.path().to_string_lossy().into_owned(), bare)
 }
 
-/// Read a file as it landed on the bare repo's `master` ref.
+/// Read a file as it reached the bare repo's `master` ref.
 #[cfg(unix)]
 fn aur_show(bare: &std::path::Path, path: &str) -> String {
     git_stdout(bare, &["show", &format!("master:{path}")])
@@ -2230,7 +2230,7 @@ fn publish_to_aur_second_run_no_changes_returns_false() {
     drop(bare);
 }
 
-/// With `install:` set, the `.install` file lands on `master` alongside
+/// With `install:` set, the `.install` file reaches `master` alongside
 /// PKGBUILD/.SRCINFO and the PKGBUILD references it.
 #[cfg(unix)]
 #[test]
@@ -2248,7 +2248,7 @@ fn publish_to_aur_writes_install_file() {
 }
 
 /// `directory:` renders a subdirectory inside the cloned repo and the
-/// PKGBUILD lands under it (the `aur_resolve_output_dir` create-subdir
+/// PKGBUILD ends up under it (the `aur_resolve_output_dir` create-subdir
 /// branch).
 #[cfg(unix)]
 #[test]
@@ -2309,7 +2309,7 @@ fn aur_publisher_run_pushes_and_rollback_reverts() {
     assert_eq!(targets[0].git_url, bare_url);
     assert_eq!(targets[0].target, "mytool-bin");
 
-    // A commit landed on master before rollback.
+    // A commit reached master before rollback.
     let before = git_stdout(
         std::path::Path::new(&bare_url),
         &["rev-list", "--count", "master"],

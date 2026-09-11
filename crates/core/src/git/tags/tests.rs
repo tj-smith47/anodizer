@@ -366,7 +366,7 @@ mod tag_family_tests {
     /// same tag, not alternatives: dropping either one makes the family span a
     /// neighbouring subproject or a neighbouring crate. Pinned on both halves
     /// — the matcher that tests membership and the prefix the minter glues a
-    /// literal tag onto — because a drift between them mints a tag outside the
+    /// literal tag onto — because a drift between them creates a tag outside the
     /// family that is later swept for it.
     #[test]
     fn monorepo_prefix_composes_with_the_template_prefix() {
@@ -401,7 +401,7 @@ mod tag_family_tests {
             tag_family_prefix("sub/core-v{{ Version }}", Some("sub/")).as_deref(),
             Some("sub/core-v")
         );
-        // Minter half: the prefix a rolling nightly tag is glued onto lands
+        // Minter half: the prefix a rolling nightly tag is glued onto ends up
         // inside the family the matcher tests.
         let minted = format!(
             "{}edge",

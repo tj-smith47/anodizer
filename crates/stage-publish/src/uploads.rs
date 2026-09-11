@@ -1165,7 +1165,7 @@ mod tests {
         );
     }
 
-    /// A publisher that landed NOTHING is skipped, and a skipped publisher
+    /// A publisher that published NOTHING is skipped, and a skipped publisher
     /// has nothing to roll back: it is absent from the rollback candidates
     /// the dispatched report yields.
     #[test]
@@ -1914,7 +1914,7 @@ mod live_http_tests {
     }
 
     /// Default method (PUT) with basic-auth from `UPLOAD_<NAME>_SECRET`:
-    /// the absence probe (HEAD) returns 404, then the PUT lands the bytes
+    /// the absence probe (HEAD) returns 404, then the PUT writes the bytes
     /// carrying the `Authorization: Basic …` header and the default
     /// `X-Checksum-Sha256` header. Proves the request construction +
     /// success path end to end.
@@ -2225,7 +2225,7 @@ mod live_http_tests {
             del_b.headers
         );
     }
-    /// Routes for one artifact that is absent and then lands: the absence
+    /// Routes for one artifact that is absent and then arrives: the absence
     /// probe 404s, the PUT is created.
     fn landing_routes() -> Vec<ScriptedRoute> {
         vec![
@@ -2258,7 +2258,7 @@ mod live_http_tests {
     }
 
     /// A run that PUT one entry's artifact while another entry disqualified
-    /// itself keeps the outcome of what it landed. The skipped entry is
+    /// itself keeps the outcome of what it published. The skipped entry is
     /// reported beside that outcome — a count on the publisher's own line
     /// and a reason on the result — never by overwriting it, because the
     /// upload that happened is still live at the remote.

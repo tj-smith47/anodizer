@@ -45,7 +45,7 @@ Each split job determines which targets to build using this priority chain:
 3. Host auto-detection via `rustc -vV`, interpreted according to `partial.by`.
 
 `--single-target` is the first rung spelled as a flag: it pins `TARGET` to the
-host triple, so the shard lands under `dist/<triple>/` even when `partial.by`
+host triple, so the shard ends up under `dist/<triple>/` even when `partial.by`
 is `os`. That does not change how the merge sees it. `matrix.json` is keyed on
 the `partial.by` axis, and `--merge` identifies every shard by the targets its
 artifacts were built for, folded onto that same axis, so a shard written by

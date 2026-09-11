@@ -848,7 +848,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1, "4xx must not retry");
     }
 
-    // -- wall-clock budget: every seam, both directions ----------------------
+    // -- wall-clock budget: every call site, both directions ----------------------
 
     /// A ladder long enough that reaching its end would take ~9s, so a test
     /// finishing in milliseconds proves the DEADLINE stopped it, not the

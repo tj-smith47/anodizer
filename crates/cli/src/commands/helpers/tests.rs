@@ -1565,7 +1565,7 @@ fn write_metadata_and_artifacts_leaves_dist_empty_in_dry_run() {
 
 /// `metadata.mod_timestamp` (when it renders non-empty) must be parsed and
 /// stamped onto both metadata.json and artifacts.json. Assert the files
-/// land and the mtime matches the parsed epoch — proving the stamp arm
+/// are written and the mtime matches the parsed epoch — proving the stamp arm
 /// (not just the write) ran.
 #[test]
 fn write_metadata_and_artifacts_applies_mod_timestamp() {
@@ -2624,7 +2624,7 @@ fn with_tagged_commits_repo_cwd(commits: &[&[&str]], body: impl FnOnce()) {
 }
 
 /// The cfgd shape: three tracks, and the FIRST-declared one lags far behind
-/// its siblings. A nightly mints its version from a base rather than from a
+/// its siblings. A nightly creates its version from a base rather than from a
 /// tag at HEAD, so taking the first crate's base stamped every track with
 /// `0.5.2` (incpatch of `crd-v0.5.1`) while the repo had shipped `v0.10.0`.
 #[cfg(unix)]
@@ -2731,7 +2731,7 @@ fn resolve_git_context_stable_run_keeps_the_selected_crates_family() {
     });
 }
 
-/// A lockstep workspace mints ONE family, so every crate answers the same
+/// A lockstep workspace creates ONE family, so every crate answers the same
 /// probe and the nightly base is unchanged by the sweep.
 #[cfg(unix)]
 #[test]
@@ -2848,7 +2848,7 @@ fn resolve_git_context_nightly_with_no_tags_at_all_falls_back_to_zero() {
 }
 
 /// A LATER-declared track is the one that is ahead. Every track is stamped
-/// with that track's base — one nightly run mints one version, and the
+/// with that track's base — one nightly run creates one version, and the
 /// newest tag in the repository is the only base that is never stale for
 /// any track.
 #[cfg(unix)]

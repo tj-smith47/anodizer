@@ -56,7 +56,7 @@ pub struct VerifyReleaseConfig {
     /// already knows the produced set and can fetch the release's asset list).
     /// Independent of Docker and the network smoke-test.
     pub assert_assets: bool,
-    /// Assert that every publisher that succeeded this run actually LANDED:
+    /// Assert that every publisher that succeeded this run is actually VISIBLE upstream:
     /// each published crate version is visible on the crates.io sparse index,
     /// each npm package version is visible on its registry, each uploaded
     /// blob object exists in its bucket, and each uploaded snap is live in

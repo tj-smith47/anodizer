@@ -16,7 +16,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 /// the rollback PATCH body, so an empty string the repo did not have is
 /// never invented.
 ///
-/// CREDENTIAL CONTRACT: this struct is the payload that lands in
+/// CREDENTIAL CONTRACT: this struct is the payload that ends up in
 /// [`anodizer_core::PublishEvidence::extra`], which is persisted to
 /// `dist/run-<id>/report.json` and may surface in the announce body.
 /// `username` is operator-public (the DockerHub login appears on every
@@ -24,7 +24,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 /// the NAME of the env var the rollback path re-resolves the password
 /// from — never the password VALUE. Aliased to the core-owned snapshot so
 /// the evidence schema lives in [`anodizer_core::publish_evidence`] and
-/// resolved password values have no slot to land in.
+/// resolved password values have no slot to fill.
 type DockerhubTarget = anodizer_core::publish_evidence::DockerhubTargetSnapshot;
 
 /// Decode the `dockerhub_targets` array from
@@ -45,7 +45,7 @@ fn decode_dockerhub_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<
 /// pass [`anodizer_core::ProcessEnvSource`] and the var is unset. A
 /// trailing `/` is stripped so the caller can append a `/`-prefixed suffix
 /// without producing a double slash. Mirrors the
-/// `ANODIZER_GITHUB_API_BASE` seam used by the GitHub release backend.
+/// `ANODIZER_GITHUB_API_BASE` override used by the GitHub release backend.
 fn dockerhub_api_base<E: anodizer_core::EnvSource + ?Sized>(env: &E) -> String {
     env.var("ANODIZER_DOCKERHUB_API_BASE")
         .unwrap_or_else(|| "https://hub.docker.com".to_string())
@@ -855,7 +855,7 @@ impl anodizer_core::Publisher for DockerhubPublisher {
 
     /// Live pre-publish gate. For every active `dockerhub[]` entry whose login
     /// credentials resolve, POST `{api_base}/v2/users/login/` with
-    /// `{username, password}` — the exact login the publish path performs to mint
+    /// `{username, password}` — the exact login the publish path performs to create
     /// its JWT. A rejected login (401/403) or an unreachable host surfaces as a
     /// Warning (this publisher is OPTIONAL — a failed description sync must not
     /// abort the release). Logins are de-duplicated per `(username, secret_name)`
@@ -1019,7 +1019,7 @@ mod tests {
     /// back to the project-level `metadata.description` so a single source
     /// of truth covers every entry. Mirrors the same fallback shape used
     /// by the homebrew cask + MCP publishers (`effective_description` is
-    /// the dockerhub-specific seam).
+    /// the dockerhub-specific override).
     #[test]
     fn dockerhub_uses_meta_description_when_unset() {
         use anodizer_core::config::MetadataConfig;
@@ -1941,7 +1941,7 @@ dockerhub:
 /// Live-mode (`dry_run: false`) coverage for `publish_to_dockerhub` and
 /// `restore_dockerhub_target_with_env`. Every test redirects the
 /// hard-coded `https://hub.docker.com` host to an in-process scripted
-/// responder via the `ANODIZER_DOCKERHUB_API_BASE` env seam (mirroring
+/// responder via the `ANODIZER_DOCKERHUB_API_BASE` env override (mirroring
 /// the `ANODIZER_GITHUB_API_BASE` pattern used by the GitHub backend), so
 /// the login / snapshot-GET / PATCH request shapes — method, path, and
 /// JSON body — and the response→outcome mapping are asserted against
@@ -2095,7 +2095,7 @@ mod live_http_tests {
 
     /// PATCH body carries BOTH `description` and `full_description` when a
     /// `full_description.from_file` is configured. Pins that the resolved
-    /// file content lands verbatim in the `full_description` key.
+    /// file content is copied verbatim into the `full_description` key.
     #[test]
     fn publish_live_patches_description_and_full_description() {
         let (addr, log) = spawn_scripted_responder(flow_routes("", ""));

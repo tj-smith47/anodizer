@@ -75,7 +75,7 @@ pub(super) fn flush_pending() {
 ///
 /// The single source of truth shared by both header-emitting paths — the
 /// deferred section header in [`flush_pending`] and the direct
-/// [`StageLogger::step`](crate::log::StageLogger::step) — so interleaved headers and steps land in
+/// [`StageLogger::step`](crate::log::StageLogger::step) — so interleaved headers and steps end up in
 /// byte-identical columns for the same depth. A single-word phrase (empty
 /// `msg`) renders the bare gutter verb with no trailing space, so headers
 /// never carry stray whitespace.
@@ -87,7 +87,7 @@ pub(super) fn render_header(depth: usize, verb: &str, msg: &str) -> String {
 /// (painted by `paint`) after `prefix`, then a space and `msg` — or, when `msg`
 /// is empty, the bare painted label with no trailing space. The single column
 /// system shared by section headers and the Warning/Error/Note status labels,
-/// so a status label's message lands in the same column as a header's.
+/// so a status label's message ends up in the same column as a header's.
 pub(super) fn render_gutter(
     prefix: &str,
     label: &str,
@@ -281,7 +281,7 @@ pub fn indent() -> String {
 ///
 /// A label is a body-level event, but unlike a `•` detail line it renders
 /// through the right-aligned [`render_gutter`] system (like a section header),
-/// so to land its label in the verb column and its message in the header's
+/// so to place its label in the verb column and its message in the header's
 /// message column it must sit at the ENCLOSING header's depth — one level
 /// shallower than [`indent`] (which tracks the deeper body depth). Using the
 /// body indent here would push the gutter-aligned label two columns past both

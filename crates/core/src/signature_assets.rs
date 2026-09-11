@@ -4,7 +4,7 @@
 //! Signature bytes (GPG/cosign) are non-reproducible by construction — a
 //! resign of byte-identical input yields different output (embedded
 //! timestamp/nonce) — and a keyless cosign certificate (`signs[].certificate`)
-//! is equally per-invocation (Fulcio mints a fresh short-lived cert every
+//! is equally per-invocation (Fulcio creates a fresh short-lived cert every
 //! sign). Any consumer that compares an asset's bytes across two points in
 //! time (the determinism harness's drift allow-list, release verification's
 //! published-vs-local digest check) needs to know which asset names are

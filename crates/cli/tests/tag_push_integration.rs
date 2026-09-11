@@ -7,7 +7,7 @@
 //!   * default (no `--push`): fully local — neither the tag nor the branch
 //!     reaches the remote, and the run says so;
 //!   * `--push`: remote branch HEAD == tag target == local HEAD;
-//!   * `--push-tags-only`: the tag lands, the branch does not (the
+//!   * `--push-tags-only`: the tag arrives, the branch does not (the
 //!     deferred-branch CI pattern);
 //!   * a no-op run (no version change) creates no bump commit even with
 //!     `--push`;
@@ -429,7 +429,7 @@ fn git_api_tagging_push_dry_run_previews_without_calling_the_api() {
 
 #[test]
 fn lockstep_push_tags_only_pushes_tag_without_branch() {
-    // The explicit deferred-branch CI pattern: the tag lands on the remote
+    // The explicit deferred-branch CI pattern: the tag reaches the remote
     // (triggering tag-driven pipelines) while the bump commit stays local
     // until the caller fast-forwards the branch post-publish.
     let (work, bare) = lockstep_with_origin();
@@ -562,7 +562,7 @@ version = "0.1.0"
 fn push_non_fast_forward_leaves_no_orphan_branch_or_tag() {
     // Atomic guarantee: when the remote branch has advanced past local (the
     // push is a non-fast-forward), the whole push fails and NEITHER the branch
-    // tip NOR the tag lands on the remote.
+    // tip NOR the tag reaches the remote.
     let (work, bare) = lockstep_with_origin();
 
     // Advance the bare remote's master past the local tip via a second clone so
@@ -692,7 +692,7 @@ fn per_crate_no_push_pushes_nothing() {
 
 #[test]
 fn per_crate_push_tags_only_pushes_tags_without_branch() {
-    // The deferred-branch pattern in per-crate dispatch: tags land, the bump
+    // The deferred-branch pattern in per-crate dispatch: tags arrive, the bump
     // commit does not.
     let (work, bare) = per_crate_with_origin();
     let remote_master_before = remote_branch_sha(bare.path(), "master").unwrap();
@@ -1193,7 +1193,7 @@ fn delete_remote_tag(bare: &Path, tag: &str) {
 #[test]
 fn lockstep_recut_after_remote_tag_delete_remints_same_version() {
     // The documented re-cut recipe: delete the remote tag, push fixes, and the
-    // next tag run must mint the SAME version — even from a clone that still
+    // next tag run must create the SAME version — even from a clone that still
     // holds the deleted tag locally. Previous-tag resolution must follow the
     // REMOTE's tag list, not this clone's.
     let (work, bare) = lockstep_with_origin();
@@ -1208,7 +1208,7 @@ fn lockstep_recut_after_remote_tag_delete_remints_same_version() {
     assert!(remote_tag_target(bare.path(), "v0.1.1").is_some());
     delete_remote_tag(bare.path(), "v0.1.1");
 
-    // A follow-up fix lands; the clone still holds the stale local v0.1.1.
+    // A follow-up fix arrives; the clone still holds the stale local v0.1.1.
     fs::write(work.path().join("crates/a/src/lib.rs"), "// fixed again\n").unwrap();
     git_add_commit(work.path(), "fix: the real fix");
 
@@ -1272,7 +1272,7 @@ fn single_crate_recut_after_remote_tag_delete_remints_same_version() {
 fn per_crate_recut_after_remote_tag_delete_remints_same_version() {
     let (work, bare) = per_crate_with_origin();
 
-    // Land core-v0.1.1 on the remote (explicit --push) so the re-cut path has a
+    // Push core-v0.1.1 to the remote (explicit --push) so the re-cut path has a
     // remote tag to delete.
     let out = anodizer()
         .current_dir(work.path())
@@ -1457,7 +1457,7 @@ fn tag_no_sign_overrides_config_to_unsigned() {
 
 #[test]
 fn tag_sign_with_git_api_tagging_pushed_is_rejected() {
-    // A signed tag cannot be created via the GitHub API: the API mints the tag
+    // A signed tag cannot be created via the GitHub API: the API creates the tag
     // object server-side, out of reach of the local signing key. Rather than
     // ship a silently-unsigned tag, the run must hard-error before creating any
     // tag. `--push-dry-run` enters push mode (push_mode=true), so the guard

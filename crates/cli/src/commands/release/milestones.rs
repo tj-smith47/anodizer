@@ -1214,7 +1214,7 @@ mod tests {
         // A crate whose preferred (matching) block exists but has empty
         // owner/name returns those empty strings directly — the caller
         // (resolve_milestone_for_close) treats that as unresolvable. This
-        // is the seam config_with_empty_release_block() relies on.
+        // is the behaviour config_with_empty_release_block() relies on.
         let config = Config {
             crates: vec![crate_with(release_with(Some(("", "")), None, None))],
             ..Default::default()

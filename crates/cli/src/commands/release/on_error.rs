@@ -2,7 +2,7 @@
 //!
 //! A release-pipeline failure — build, sign, package, publish, anything the
 //! dispatched mode ran — leaves every tag, commit, and published artifact
-//! exactly where it landed. The one thing it fires is the operator's root
+//! exactly where it stopped. The one thing it fires is the operator's root
 //! `on_error:` hook list, so notification / cleanup automation still sees
 //! the failure.
 

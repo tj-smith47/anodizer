@@ -230,7 +230,7 @@ pub fn resolve_release_repo(
     ctx: &Context,
 ) -> Result<Option<ScmRepoConfig>> {
     // Explicit `release.provider:` wins over token-type inference. This
-    // is the cross-platform publishing seam: a project hosted on GitLab
+    // is the cross-platform publishing point: a project hosted on GitLab
     // (so `GITLAB_TOKEN` is the active token) can declare
     // `provider: github` to redirect publish output to GitHub.
     let raw = match release_cfg.provider {

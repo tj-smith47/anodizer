@@ -26,7 +26,7 @@
 //! `RollbackFailed(err)` on its `PublisherResult`, but the next step still
 //! runs. `anodizer tag rollback` is the sole caller — deliberate
 //! withdrawal, once per deletable tag (`run_id` is that tag's string).
-//! Forward recovery — a publish that merely failed, with nothing landed —
+//! Forward recovery — a publish that merely failed, with nothing published —
 //! is re-running `anodizer release`; `Publisher::reconcile` makes that
 //! convergent rather than duplicating work, so there is no separate
 //! "resume" mode here.
@@ -1494,7 +1494,7 @@ mod tests {
     }
 
     /// A non-firing disposition — a `retain_on_rollback: true` publisher, whose
-    /// step returns before the firing seam — must fire ZERO `on_rollback` hooks.
+    /// step returns before the firing point — must fire ZERO `on_rollback` hooks.
     /// A probe-ABSENT assertion so a future refactor that relocates the fire
     /// calls above the early `return`s is caught.
     #[test]

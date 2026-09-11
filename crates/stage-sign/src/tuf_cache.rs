@@ -12,7 +12,7 @@
 //! The host-side guard is therefore [`TufInitLock`] — an advisory file lock
 //! keyed on the cache directory's canonical path and held across a whole
 //! keyless run, so two anodizer *processes* on one host queue rather than
-//! race. Two seams take it: [`keyless_cosign_host_locks`] for a run whose
+//! race. Two points take it: [`keyless_cosign_host_locks`] for a run whose
 //! jobs can name several stores (a `TUF_ROOT` templated per artifact or per
 //! image), which locks every distinct one in sorted path order, and
 //! [`keyless_cosign_host_lock`] for a run with a single config-level env.
@@ -372,7 +372,7 @@ mod tests {
         assert!(root.join(LOCK_SENTINEL).is_file());
     }
 
-    /// The singular seam keys its sentinel on the canonical cache dir: a
+    /// The singular point keys its sentinel on the canonical cache dir: a
     /// child env spelling the store as `<tmp>/sub/../root` holds the lock
     /// under `<tmp>/root`, so a sibling process naming the store plainly
     /// contends the same file.

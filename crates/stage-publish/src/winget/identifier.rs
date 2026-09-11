@@ -143,7 +143,7 @@ fn auto_identifier_for(
 ///
 /// [`derive_winget_config`] fills the field for every config it returns, so
 /// every consumer reads one value; the empty string is what a config that
-/// never went through that seam yields.
+/// never went through that point yields.
 pub(crate) fn package_identifier_of(cfg: &anodizer_core::config::WingetConfig) -> String {
     cfg.package_identifier.clone().unwrap_or_default()
 }

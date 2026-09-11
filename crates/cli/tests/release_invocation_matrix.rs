@@ -517,7 +517,7 @@ fn publish_only_bypasses_dist_precheck_requires_context_json() {
 
 /// `continue --merge` is the split-merge resume path: it consumes a preserved
 /// dist tree rather than recompiling. Pins the negative invariant — no build,
-/// archive, or nfpm banner appears — and confirms dispatch lands on the merge
+/// archive, or nfpm banner appears — and confirms dispatch reaches the merge
 /// branch rather than the full-release dist pre-check.
 #[test]
 fn continue_merge_does_not_trigger_build_pipeline() {

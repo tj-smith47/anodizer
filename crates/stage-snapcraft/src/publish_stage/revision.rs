@@ -83,7 +83,7 @@ pub(crate) fn resolve_snap_name(
 ///   from the upload itself.
 /// - `Some((revision, missing))` where `missing` is empty → the revision
 ///   already occupies every requested channel — a true re-run at an
-///   already-published version → skip (re-uploading would only mint a
+///   already-published version → skip (re-uploading would only create a
 ///   duplicate Snap Store revision, or hit the content-dedup rejection).
 /// - `Some((revision, missing))` where `missing` is non-empty → the bytes
 ///   were already uploaded (by this run's own earlier attempt, or a prior
@@ -144,7 +144,7 @@ pub(crate) fn revision_missing_channels(
 ///
 /// A dedup rejection at the SAME version most commonly means an earlier
 /// attempt (this run's own retry loop, or a prior failed run) already
-/// landed those exact bytes server-side as an orphaned, unreleased
+/// published those exact bytes server-side as an orphaned, unreleased
 /// revision — the client observed a transient failure (e.g. a 5xx) and
 /// retried, but the Store had already ingested the upload. Naming that
 /// revision here is what lets the caller promote it instead of reporting a
@@ -152,7 +152,7 @@ pub(crate) fn revision_missing_channels(
 /// perspective, never actually changed.
 ///
 /// `arch` scopes the match to the artifact's own architecture-specific
-/// revision — a dual-arch snap mints one revision per arch per version, so
+/// revision — a dual-arch snap creates one revision per arch per version, so
 /// matching on `version` alone could name a different arch's revision and
 /// have the caller promote (or skip re-uploading) the wrong artifact.
 ///
@@ -220,7 +220,7 @@ fn probe_revision_for_version(
 /// Promote `revision` into every channel in `channels` via `snapcraft
 /// release`, stopping at the first failure. Used to recover a dedup
 /// rejection whose colliding revision matches the version being published
-/// — the bytes already landed, they just were never released.
+/// — the bytes already published, they just were never released.
 pub(crate) fn promote_revision(
     snap_name: &str,
     revision: &str,

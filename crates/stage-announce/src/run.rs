@@ -1116,7 +1116,7 @@ mod summary_tests {
         // The regression this fix targets: every publisher SUCCEEDED, but the
         // verify-release gate found a defect and bailed. The emitted summary
         // must record verify_release.passed == false (not a uniform false
-        // green) while the publisher rows stay `succeeded`.
+        // passing) while the publisher rows stay `succeeded`.
         let tmp = tempfile::tempdir().expect("tempdir");
         let summary_path = tmp.path().join("summary.json");
 
@@ -1170,7 +1170,7 @@ mod summary_tests {
     #[test]
     fn emit_summary_defaults_to_dist_run_dir_when_path_unset() {
         // summary_json_path = None on a real (non-snapshot, non-dry-run)
-        // release => the summary still lands at the derived
+        // release => the summary still ends up at the derived
         // `<dist>/run-<id>/summary.json` default. Without git info the
         // run id falls back to "local" (derive_run_id's documented
         // final fallback).
@@ -1271,7 +1271,7 @@ mod summary_tests {
     #[test]
     fn emit_summary_after_failed_release_preserves_burn_evidence() {
         // The clobber sequence: a failed release left a summary with a
-        // landed Submitter (burn evidence) at the default path; a
+        // published Submitter (burn evidence) at the default path; a
         // standalone `announce` for the same tag then runs report-less.
         // The original summary must survive byte-for-byte — the
         // write-side preserve guard (results-bearing summaries are never
@@ -1280,7 +1280,7 @@ mod summary_tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
 
-        // The failed release run: cargo (Submitter) landed.
+        // The failed release run: cargo (Submitter) published.
         let mut release_ctx = ctx_with(ContextOptions::default(), None, None);
         release_ctx.config.dist = tmp.path().to_path_buf();
         release_ctx.publish_report = Some(PublishReport {

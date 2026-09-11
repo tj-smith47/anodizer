@@ -81,7 +81,7 @@ impl Stage for NotarizeStage {
 
         // Attribute the notarytool / rcodesign retry backoff to the notarize
         // scope. Apple's notary service is a common source of long transient
-        // waits; without an active scope that wait lands in the retry summary's
+        // waits; without an active scope that wait ends up in the retry summary's
         // "(unattributed)" bucket instead of naming the stage that incurred it.
         let _retry_scope = anodizer_core::retry::RetryScope::enter(self.name());
 

@@ -43,7 +43,7 @@ fn test_generate_manifest_description() {
 #[test]
 fn compound_spdx_license_emitted_verbatim() {
     // Scoop passes the SPDX license through unchanged: a dual
-    // `MIT OR Apache-2.0` expression must land in the manifest's `license`
+    // `MIT OR Apache-2.0` expression must end up in the manifest's `license`
     // field as the exact string, not split or reshaped.
     let manifest = generate_manifest(
         "my-tool",

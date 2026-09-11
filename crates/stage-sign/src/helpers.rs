@@ -108,7 +108,7 @@ pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<b
         "checksum" => Ok(kind == ArtifactKind::Checksum),
         // The "windows" selector (Authenticode backend) is a two-step filter:
         // the kind pre-filter here admits the container kinds that a Windows
-        // PE/MSI/DLL can land in (.exe → Binary, .msi/NSIS → Installer,
+        // PE/MSI/DLL can end up in (.exe → Binary, .msi/NSIS → Installer,
         // .dll → Library), and the EXTENSION refinement happens in
         // `process_sign_configs` where the artifact path is in scope. The kind
         // alone is insufficient (a Linux ELF is also Binary), so this MUST be
@@ -235,7 +235,7 @@ pub(crate) fn build_authenticode_argv(
 /// `sign` subcommand), so the slot-based approach is both exact and password-
 /// value-independent.
 ///
-/// Used by the dry-run `(dry-run) would run:` echo so the password never lands
+/// Used by the dry-run `(dry-run) would run:` echo so the password never arrives
 /// in logs verbatim. The spawn path relies on `redact::string` (fed the
 /// password via `SignJob::redact_extra`) instead; this helper covers the
 /// dry-run path where no process runs.

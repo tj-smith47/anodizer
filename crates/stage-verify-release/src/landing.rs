@@ -2,7 +2,7 @@
 //!
 //! A publisher reporting `Succeeded` proves its client call returned OK — not
 //! that consumers can actually SEE the published artifact. This module closes
-//! that gap for the publishers whose landed surface is independently
+//! that gap for the publishers whose published surface is independently
 //! probeable with coordinates the run already recorded in its own publish
 //! report:
 //!
@@ -17,7 +17,7 @@
 //!   honest probe available.
 //!
 //! Only publishers whose recorded outcome is `Succeeded` are PROBED: a
-//! skipped / deselected / rolled-back publisher landed nothing this run, so
+//! skipped / deselected / rolled-back publisher published nothing this run, so
 //! there is nothing to verify (and probing it would report defects the
 //! publish never claimed to avoid). A probe that cannot run — network
 //! failure, store build failure — is itself reported as an issue: this
@@ -27,7 +27,7 @@
 //! A publisher that was ATTEMPTED and reported `Failed` is a different case:
 //! the run tried to ship it and did not. That is a landing defect on its own
 //! merits — recorded without a network probe. How a landing finding (a failed
-//! publish attempt, or a probe that could not confirm the upload landed) is
+//! publish attempt, or a probe that could not confirm the upload published) is
 //! reported follows the publisher's `required` flag: a REQUIRED publisher's
 //! landing finding is a gate-failing issue; an advisory (`required: false`)
 //! publisher's is a loud, recorded WARNING that never fails the release.
@@ -263,7 +263,7 @@ fn check_npm_landing(
             // Indeterminate: the registry could not be consulted. An npm
             // version is immutable once published, so a transient outage must
             // fail closed as "unverifiable", never as "not visible" — the
-            // latter would fail an already-landed one-way-door release.
+            // latter would fail an already published one-way-door release.
             Err(e) => issues.push(format!(
                 "npm: could not confirm {}@{} on {}: {e:#}",
                 t.package,
@@ -515,7 +515,7 @@ mod tests {
 
     #[test]
     fn skipped_and_rolled_back_publishers_are_never_probed_or_flagged() {
-        // Genuine skips / an intentionally-reverted publish landed nothing
+        // Genuine skips / an intentionally-reverted publish published nothing
         // this run — no probe, no issue.
         let report = PublishReport {
             results: vec![
@@ -847,7 +847,7 @@ mod tests {
     fn npm_indeterminate_probe_is_a_distinct_issue_not_not_visible() {
         // A registry that could not be consulted (5xx/transport) must fail
         // closed as "could not confirm", never as "not visible" — an npm
-        // version is immutable, so the latter would fail an already-landed
+        // version is immutable, so the latter would fail an already published
         // release on a transient outage.
         let report = PublishReport {
             results: vec![result_with(

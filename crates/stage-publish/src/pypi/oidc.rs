@@ -1,4 +1,4 @@
-//! PyPI Trusted Publishing (OIDC): mint a short-lived upload token from a
+//! PyPI Trusted Publishing (OIDC): create a short-lived upload token from a
 //! GitHub Actions OIDC identity, so a release can publish without a stored
 //! long-lived `PYPI_TOKEN`.
 //!
@@ -10,7 +10,7 @@
 //!    Both env vars are set automatically by a GitHub Actions runner granted
 //!    `id-token: write`.
 //! 2. POST the JWT to the index's `/_/oidc/mint-token` endpoint →
-//!    `{"success": true, "token": "pypi-…"}`. That minted token is then used
+//!    `{"success": true, "token": "pypi-…"}`. That issued token is then used
 //!    as the `__token__` Basic-auth password for the legacy upload API,
 //!    exactly like a stored token.
 //!
@@ -115,7 +115,7 @@ pub(crate) fn mint_trusted_publishing_token(
     let mint_body = actions_oidc::post_mint_token(
         &client, &mint_url, &body_json, policy, deadline, log, "pypi",
     )
-    // A refused mint that Warehouse returns as HTTP 4xx (e.g. 422) fast-fails
+    // A refused token request that Warehouse returns as HTTP 4xx (e.g. 422) fast-fails
     // here rather than reaching the success:false branch below, so the
     // actionable Trusted-Publisher guidance is attached at both exits.
     .context(

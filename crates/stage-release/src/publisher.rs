@@ -190,7 +190,7 @@ impl GithubReleasePublisher {
         }
     }
 
-    /// Construct with a caller-provided client — the seam tests use to inject
+    /// Construct with a caller-provided client — the injection point tests use to inject
     /// anodizer-core's `test-helpers`-gated `MockGitHubClient`.
     pub fn with_client(client: Arc<dyn GitHubClient + Send + Sync>) -> Self {
         Self {
@@ -1569,7 +1569,7 @@ mod publisher_tests {
     fn capture_release_ids_swallows_lookup_errors_to_none() {
         // A transport/auth error during the post-publish enrichment must NOT
         // fail the run; the id clears to None (rollback skips the delete) and
-        // the publish's already-landed evidence is preserved.
+        // the publish's already published evidence is preserved.
         let mock = MockGitHubClient::new();
         mock.set_get_release_by_tag_response(Err("HTTP 503 Service Unavailable".to_string()));
         let mock = Arc::new(mock);

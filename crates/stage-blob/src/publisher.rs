@@ -24,7 +24,7 @@
 //! via the cloud console or a prior partial rollback already ran).
 //!
 //! Legacy evidence (written before the structured-target capture
-//! landed) carries only `artifact_paths` with no `blob_targets` payload;
+//! published) carries only `artifact_paths` with no `blob_targets` payload;
 //! the rollback path falls back to a per-object warn-only manual-cleanup
 //! checklist for those runs (see `blob_manual_cleanup_msg`). The
 //! warn-only fallback is also reached when `decode_blob_targets`
@@ -64,7 +64,7 @@ pub(crate) type BlobTarget = anodizer_core::publish_evidence::BlobTargetSnapshot
 /// [`BlobTarget`]. Used by the publisher to populate
 /// [`anodizer_core::PublishEvidence`]`.artifact_paths` so the text
 /// `anodizer tag rollback` summary keeps rendering the same shape that
-/// shipped before the structured-target capture landed.
+/// shipped before the structured-target capture published.
 ///
 /// Free function rather than an inherent impl because [`BlobTarget`]
 /// is a type alias for a core-owned struct — Rust does not allow
@@ -94,7 +94,7 @@ pub(crate) fn decode_blob_targets(extra: &anodizer_core::PublishEvidenceExtra) -
 
 /// [`anodizer_core::Publisher`] adapter over [`BlobStage`]'s `run`.
 ///
-/// Evidence records ONLY files that actually landed in the store (via
+/// Evidence records ONLY files that actually ended up in the store (via
 /// `BlobStage::run_with_evidence`). The prior pre-upload capture would
 /// have given an operator running `anodizer tag rollback` a checklist of paths
 /// that never existed when a mid-stream upload failed; the post-upload
@@ -133,7 +133,7 @@ impl Default for BlobPublisher {
 /// emits for one recorded object key when structured `blob_targets` evidence
 /// is absent
 /// (`anodizer tag rollback` against a run written before the structured-target
-/// capture landed). Exposed as a helper so tests can pin the wording
+/// capture published). Exposed as a helper so tests can pin the wording
 /// without intercepting stderr.
 ///
 /// The PRIMARY rollback path issues a real
@@ -171,7 +171,7 @@ impl anodizer_core::Publisher for BlobPublisher {
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
-        // Capture only files that actually landed. On failure the
+        // Capture only files that actually uploaded. On failure the
         // returned error is re-raised (so the dispatch path treats the
         // publisher as failed) but the partial-success list inside
         // `run_with_evidence` is already discarded by `?` — that's the
@@ -214,7 +214,7 @@ impl anodizer_core::Publisher for BlobPublisher {
         // Fallback path: legacy evidence with only `artifact_paths` and
         // no structured `blob_targets` — emit the per-object manual
         // cleanup checklist. Reached for runs written before the
-        // structured-target capture landed, and for any future evidence
+        // structured-target capture published, and for any future evidence
         // shape that doesn't surface the targets list.
         if evidence.artifact_paths.is_empty() && evidence.primary_ref.is_none() {
             log.warn(&anodizer_core::rollback_empty_warning_msg(
@@ -406,7 +406,7 @@ fn rollback_via_object_store(
 /// Whether the object a [`BlobTargetSnapshot`] points at exists in its
 /// bucket, via a `HEAD` through the SAME `ObjectStore` backend (and ambient
 /// credential chain) the upload used — the strongest honest post-publish
-/// landing probe for buckets with no public read URL.
+/// presence probe for buckets with no public read URL.
 ///
 /// Returns `Ok(true)` when the object exists, `Ok(false)` on a definitive
 /// not-found, and `Err(_)` when the store could not be built or the HEAD
@@ -470,7 +470,7 @@ mod publisher_tests {
 
     #[test]
     fn blob_object_exists_unknown_provider_is_an_error_not_absent() {
-        // A landing probe that cannot even build a store must surface Err —
+        // A presence probe that cannot even build a store must surface Err —
         // mapping it to "absent" would fabricate a missing-object finding.
         let ctx = TestContextBuilder::new().build();
         let target = anodizer_core::publish_evidence::BlobTargetSnapshot {

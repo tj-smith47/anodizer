@@ -358,7 +358,7 @@ impl anodizer_core::Publisher for CargoPublisher {
             ));
             return Ok(());
         }
-        // Credential for the yank: the overlaid minted token under `auth: oidc`
+        // Credential for the yank: the overlaid issued token under `auth: oidc`
         // (installed by `publish_to_cargo` and left live for this rollback), or
         // the ambient `CARGO_REGISTRY_TOKEN` under `auth: token`. Read through
         // the context env source so both paths resolve uniformly; injected via
@@ -400,7 +400,7 @@ impl anodizer_core::Publisher for CargoPublisher {
             yanked, failed
         ));
 
-        // A minted OIDC token was kept live so this yank could run; revoke it
+        // An issued OIDC token was kept live so this yank could run; revoke it
         // (best-effort) now that the unwind is done, and restore the base env
         // source. Under `auth: token` the ambient token is the operator's
         // long-lived credential — `end_cargo_trusted_publishing` returns `None`
@@ -517,7 +517,7 @@ pub(crate) fn build_yank_invocation(
 /// Authoritative per-crate record of a `cargo publish` that SUCCEEDED
 /// during this run. Aliased to the core-owned snapshot so the evidence
 /// schema lives in [`anodizer_core::publish_evidence`] and no
-/// credential-shaped field can land in it.
+/// credential-shaped field can end up in it.
 pub(crate) type CargoYankTarget = anodizer_core::publish_evidence::CargoYankTargetSnapshot;
 
 /// Encode the recorded yank targets into the typed

@@ -826,7 +826,7 @@ mod tests {
         let work = TempDir::new().unwrap();
         let bin = tools.tool_path("rcodesign").to_string_lossy().to_string();
         let args = vec![bin, "notary-submit".to_string()];
-        // Run from `work` so the `.attempted` marker lands in a temp dir.
+        // Run from `work` so the `.attempted` marker ends up in a temp dir.
         // CwdGuard restores cwd on Drop (panic-safe); declared after `work` so
         // cwd is restored before the tempdir is deleted. This is the one test
         // here contending on BOTH resources, so it names both keys — the

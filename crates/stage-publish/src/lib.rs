@@ -218,7 +218,7 @@ fn matches_artifact_pattern(pattern: &str, artifact: &str) -> bool {
 /// Placed after the packaging + checksum stages so `ctx.artifacts` carries the
 /// archive set the cross-checks compare against, and before the publishers so
 /// a broken emission aborts the snapshot before any (skipped-anyway) publish
-/// work is reported as green.
+/// work is reported as passing.
 pub struct EmissionValidateStage;
 
 impl Stage for EmissionValidateStage {
@@ -266,7 +266,7 @@ impl PublishStage {
     /// the public API surface: `#[doc(hidden)]` marks that downstream
     /// crates must not couple to this signature; production consumers
     /// should invoke `<PublishStage as Stage>::run` instead. The
-    /// integration test depends on this seam by design (writer/reader
+    /// integration test depends on this injection point by design (writer/reader
     /// contract for `report.json`), so visibility cannot tighten to
     /// `pub(crate)` without breaking that test.
     #[doc(hidden)]
@@ -371,11 +371,11 @@ impl PublishStage {
         //
         // Last, AFTER every dispatch / rollback / persistence / polling
         // obligation above has observed final state: the stage itself
-        // fails when any required publisher landed in a failure state.
+        // fails when any required publisher ended up in a failure state.
         // The CLI's end-of-pipeline `gate_required_failures` remains as
         // the outer layer of the same defense — this inner gate ensures
         // any embedding of the stage (publish-only, per-crate loops,
-        // future pipelines) cannot report a green publish stage over a
+        // future pipelines) cannot report a passing publish stage over a
         // failed required publisher.
         bail_on_required_failures(ctx)
     }
@@ -758,7 +758,7 @@ mod tests {
     /// in-stage defense-in-depth gate — while every bookkeeping obligation
     /// still completes first: all publishers dispatch (no early abort of
     /// siblings, no automatic rollback), and report.json + summary.json
-    /// land on disk. The error must name the failed required publisher.
+    /// reach disk. The error must name the failed required publisher.
     /// Re-running the pipeline is how a Succeeded sibling converges;
     /// deliberate withdrawal is `anodizer tag rollback`.
     #[test]
@@ -1416,7 +1416,7 @@ mod tests {
     /// gated out of `run_post_publish_pollers` by
     /// `publisher_deselected("chocolatey")`.
     ///
-    /// The observable seam is the same one the sibling skip-path test uses:
+    /// The observable injection point is the same one the sibling skip-path test uses:
     /// with `skip_post_publish_poll: true`, each eligible publisher records a
     /// `NotPolled` row in `ctx.stage_outputs.post_publish_results`. A row is
     /// only ever produced inside the per-publisher
@@ -1489,7 +1489,7 @@ mod tests {
 
     /// A chocolatey block pushing to a non-community feed must never be
     /// polled: moderation polling scrapes the community gallery's version
-    /// page, which carries no signal for a private feed. The observable seam
+    /// page, which carries no signal for a private feed. The observable point
     /// is the same network-free one the allowlist test uses: with
     /// `skip_post_publish_poll: true` an eligible publisher records a
     /// `NotPolled` row, so the absence of a chocolatey row proves the gate

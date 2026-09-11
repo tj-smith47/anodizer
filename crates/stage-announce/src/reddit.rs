@@ -248,7 +248,7 @@ mod tests {
         max_delay: std::time::Duration::from_millis(0),
     };
 
-    /// Point BOTH reddit seams (token + oauth host) at one mock; the two POSTs
+    /// Point BOTH reddit overrides (token + oauth host) at one mock; the two POSTs
     /// distinguish themselves by path. Both are restored when the guards drop.
     fn set_bases(addr: std::net::SocketAddr) -> [anodizer_core::test_helpers::env::EnvGuard; 2] {
         let base = format!("http://{addr}");

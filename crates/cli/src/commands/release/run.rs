@@ -135,7 +135,7 @@ pub(crate) fn run(mut opts: ReleaseOpts) -> Result<()> {
     // warnings, milestone preflight) into one section so it renders as a
     // collapsible stage in CI rather than ungrouped flush-left output ahead
     // of the first `::group::`. Opened BEFORE `resolve_project_root` so its
-    // bare-filename fallback warnings land inside the section too. The scope
+    // bare-filename fallback warnings end up inside the section too. The scope
     // block drops the guard before the mode dispatch below, so each mode
     // opens its own sections cleanly.
     let project_root;
@@ -268,8 +268,8 @@ pub(crate) fn run(mut opts: ReleaseOpts) -> Result<()> {
     }
 
     // A pipeline failure leaves every tag, commit, and published artifact
-    // exactly where it landed: recovery is re-running this same command
-    // (publishers reconcile and skip what already landed), and deliberate
+    // exactly where it stopped: recovery is re-running this same command
+    // (publishers reconcile and skip what already published), and deliberate
     // withdrawal is `anodizer tag rollback`.
     //
     // `on_error:` stays scoped to a dispatched-mode failure — the boundary

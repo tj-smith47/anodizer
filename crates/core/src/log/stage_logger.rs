@@ -49,8 +49,8 @@ pub struct StageLogger {
     /// a shared `Arc<Mutex<_>>` cell rather than a frozen `Arc<Vec<_>>`.
     /// [`crate::context::Context::logger`] hands every `StageLogger` a clone
     /// of the SAME cell it refreshes on every `env_source` mutation (e.g.
-    /// the crates.io Trusted-Publishing token mint), so a logger constructed
-    /// before a mid-run credential mint still redacts secrets minted
+    /// the crates.io Trusted-Publishing token request), so a logger constructed
+    /// before a mid-run credential request still redacts secrets issued
     /// afterward — [`StageLogger::redact`] reads the cell at call time, not
     /// a snapshot taken at construction. `StageLogger::with_env` wraps its
     /// argument in a private, never-mutated cell, so manual construction
@@ -128,7 +128,7 @@ impl StageLogger {
     /// Used exclusively by [`crate::context::Context::logger`], which hands
     /// out clones of its own live redaction cell — refreshed on every
     /// `env_source` mutation — so a logger built before a mid-run
-    /// credential mint (e.g. crates.io Trusted Publishing's
+    /// credential issuer (e.g. crates.io Trusted Publishing's
     /// `CARGO_REGISTRY_TOKEN`) still redacts it.
     pub(crate) fn with_shared_env(mut self, env: RedactionEnv) -> Self {
         self.env = Some(env);

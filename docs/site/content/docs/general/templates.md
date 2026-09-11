@@ -472,7 +472,7 @@ collection also keeps it identical to every other array in the engine;
 special-casing `list` alone would leave `{{ list "a" "b" }}` and
 `{{ split "a.b" "." }}` printing two different shapes.
 
-Choose the separator explicitly whenever the value lands in consumer-visible
+Choose the separator explicitly whenever the value ends up in consumer-visible
 text (a changelog entry, a release note, an announcement body). The Go
 positional form of the constructor works here too, so a config copied from a
 `.goreleaser.yaml` needs no rewrite:

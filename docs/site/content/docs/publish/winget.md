@@ -247,7 +247,7 @@ Each entry in the `dependencies` list has:
 
 A package built for several Windows architectures produces one installer entry
 per architecture inside the installer manifest. By default a dependency is
-manifest-wide: it lands on *every* installer entry. `architectures` scopes a
+manifest-wide: it reaches *every* installer entry. `architectures` scopes a
 dependency to specific installers so an architecture-specific runtime only
 attaches where it belongs.
 

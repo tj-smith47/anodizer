@@ -5,7 +5,7 @@ weight = 3
 template = "docs.html"
 +++
 
-This is the production-grade release pipeline anodizer runs against itself, generalized for any consumer. It is the most hardened shape — a secret gate that runs *before a tag exists*, a commit-driven auto-tag, a sharded byte-for-byte reproducibility proof, a publish step that ships the **proven** artifacts (never a rebuild), and an npm leg split out so npm provenance can be minted from a GitHub-hosted OIDC token.
+This is the production-grade release pipeline anodizer runs against itself, generalized for any consumer. It is the most hardened shape — a secret gate that runs *before a tag exists*, a commit-driven auto-tag, a sharded byte-for-byte reproducibility proof, a publish step that ships the **proven** artifacts (never a rebuild), and an npm leg split out so npm provenance can be issued from a GitHub-hosted OIDC token.
 
 If you just want a release on tag-push, start with [GitHub Actions](@/docs/ci/github-actions.md). Reach for this topology when you publish to one-way-door registries (crates.io, chocolatey, winget, snapcraft) and want every byte proven reproducible before it ships.
 
@@ -47,7 +47,7 @@ The release job **publishes the shards' preserved dist — it never rebuilds.** 
 
 ### 1. `preflight` — gate secrets before tagging
 
-Tagging is a half-irreversible act: once `vX.Y.Z` is pushed, a downstream release fires. The preflight job validates that **every** runner-agnostic publish secret and key blob the later jobs need is present and well-formed **before** the tag is minted, so a truncated `COSIGN_KEY` or a missing `CARGO_REGISTRY_TOKEN` aborts the run with nothing published and no orphan tag.
+Tagging is a half-irreversible act: once `vX.Y.Z` is pushed, a downstream release fires. The preflight job validates that **every** runner-agnostic publish secret and key blob the later jobs need is present and well-formed **before** the tag is issued, so a truncated `COSIGN_KEY` or a missing `CARGO_REGISTRY_TOKEN` aborts the run with nothing published and no orphan tag.
 
 ```yaml
   preflight:
@@ -183,11 +183,11 @@ The publish job downloads and merges all four shards' preserved dist, asserts ev
           # …the same publish-secret env block the preflight gate validated…
 ```
 
-There is **no workflow-side rollback step**: a pipeline failure leaves the tag and everything published exactly where it landed ([`on_failure: hold`](@/docs/advanced/release-resilience.md#release-on-failure)). Recovery is re-running the identical `release` command — publishers [converge](@/docs/advanced/release-resilience.md#convergent-re-run) — or `anodizer tag rollback` for deliberate withdrawal.
+There is **no workflow-side rollback step**: a pipeline failure leaves the tag and everything published exactly where it stopped ([`on_failure: hold`](@/docs/advanced/release-resilience.md#release-on-failure)). Recovery is re-running the identical `release` command — publishers [converge](@/docs/advanced/release-resilience.md#convergent-re-run) — or `anodizer tag rollback` for deliberate withdrawal.
 
 ### 5. `dispatch-oidc` → `publish-oidc.yml` — OIDC publishers on a hosted runner
 
-Three publishers authenticate from a GitHub Actions OIDC identity that the registry only honours from a github-hosted runner: **npm** provenance (minted from the id-token; a self-hosted runner 422s and degrades to a non-provenance publish), **pypi** [Trusted Publishing](@/docs/publish/pypi.md), and **cargo** [crates.io Trusted Publishing](@/docs/publish/crates-io.md#trusted-publishing-oidc) (`auth: oidc` exchanges the id-token for a short-lived upload token — no stored `PYPI_TOKEN` / `CARGO_REGISTRY_TOKEN`). The main publish skips all three.
+Three publishers authenticate from a GitHub Actions OIDC identity that the registry only honours from a github-hosted runner: **npm** provenance (issued from the id-token; a self-hosted runner 422s and degrades to a non-provenance publish), **pypi** [Trusted Publishing](@/docs/publish/pypi.md), and **cargo** [crates.io Trusted Publishing](@/docs/publish/crates-io.md#trusted-publishing-oidc) (`auth: oidc` exchanges the id-token for a short-lived upload token — no stored `PYPI_TOKEN` / `CARGO_REGISTRY_TOKEN`). The main publish skips all three.
 
 These do **not** run as a job inside `release.yml`. crates.io and PyPI Trusted Publishing accept only `push`, `release`, and `workflow_dispatch` — they **reject the `workflow_run` event** `release.yml` fires on (`400 "does not support the workflow_run event trigger"`), and the OIDC `event_name` claim is fixed per workflow-run, so no job inside `release.yml` can present an accepted trigger. So the OIDC publishers live in a standalone **`publish-oidc.yml`** (`on: workflow_dispatch`), and a small `dispatch-oidc` job triggers it via the Actions API and waits on its verdict — the release run still reflects the OIDC leg's pass/fail. A reusable `workflow_call` workflow would not work either: it inherits the caller's `workflow_run` event.
 
@@ -241,7 +241,7 @@ These do **not** run as a job inside `release.yml`. crates.io and PyPI Trusted P
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}   # first-publish fallback; pypi/cargo under auth: oidc need no token
 ```
 
-> **`dist_run_id` on a fresh cut.** When the tag is freshly minted, `dist_run_id` is empty and the preserved `dist-*` artifacts live under the release run's own `github.run_id` — so `release.yml` passes `dist_run_id || github.run_id`. The dispatched run has a different id and cannot fall back on its own; the caller must hand it the right run to download from.
+> **`dist_run_id` on a fresh cut.** When the tag is freshly issued, `dist_run_id` is empty and the preserved `dist-*` artifacts live under the release run's own `github.run_id` — so `release.yml` passes `dist_run_id || github.run_id`. The dispatched run has a different id and cannot fall back on its own; the caller must hand it the right run to download from.
 
 ## The version-bump model (consumer level)
 

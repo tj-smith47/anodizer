@@ -227,7 +227,7 @@ mod tests {
     }
 
     /// (a) Single-crate mode: one crate, one tag. Every exposed option set; the
-    /// rendered manifest must conform with zero findings and land each option in
+    /// rendered manifest must conform with zero findings and put each option in
     /// the krew-expected field.
     #[test]
     fn single_crate_every_option_validates_and_lands_in_fields() {
@@ -282,7 +282,7 @@ mod tests {
                 .is_some_and(|c| c.contains("kubectl widget --help")),
             "caveats lands under spec.caveats"
         );
-        // The Linux archive lands as a platform entry with its selector,
+        // The Linux archive arrives as a platform entry with its selector,
         // uri, sha256, and bin.
         let os = value
             .pointer("/spec/platforms/0/selector/matchLabels/os")
@@ -436,7 +436,7 @@ mod tests {
     /// A TARGET-RESTRICTED determinism shard that built no archive for a
     /// krew-configured crate must SKIP it (zero findings, no error) rather than
     /// trip the publisher's "no archive artifacts" guard — the archive
-    /// legitimately landed on another shard. The self-skip is gated on
+    /// legitimately reached another shard. The self-skip is gated on
     /// `partial_target`, so this holds only on a shard.
     #[test]
     fn partial_shard_without_artifact_is_skipped_not_failed() {

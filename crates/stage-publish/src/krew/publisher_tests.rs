@@ -910,7 +910,7 @@ fn build_krew_reconcile_target_defaults_to_the_canonical_krew_index() {
         .crates(vec![krew_crate_with("x", repo, None)])
         .build();
     let t = krew_target(&ctx, "x").expect("target built");
-    // The PR lands against the canonical index, never the fork — probing the
+    // The PR is opened against the canonical index, never the fork — probing the
     // fork would find no open PR and re-submit a duplicate.
     assert_eq!(t.upstream_owner, "kubernetes-sigs");
     assert_eq!(t.upstream_repo, "krew-index");

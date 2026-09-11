@@ -6,7 +6,7 @@ name: Publish OIDC
 # workflow_run event trigger" — the OIDC event_name claim is fixed per
 # workflow-run, so no job inside release.yml can present an accepted trigger).
 # workflow_dispatch is on their accepted list (push / release / workflow_dispatch),
-# so the id-token minted here carries an event_name the registries honour.
+# so the id-token issued here carries an event_name the registries honour.
 # release.yml's `dispatch-oidc` job invokes this after its `release` job succeeds
 # and polls it to a verdict, so the release run still reflects this leg's result.
 #

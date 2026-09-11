@@ -112,7 +112,7 @@ fn scoop_target_extra_carries_no_secret_material() {
     // assert (a) no credential-shaped keys appear AND (b) the
     // operator-public shape is preserved. The type system pins
     // the negative half — the snapshot struct has no token field
-    // to land in.
+    // to end up in.
     let mut e = PublishEvidence::new("scoop");
     e.extra =
         anodizer_core::PublishEvidenceExtra::Scoop(anodizer_core::publish_evidence::ScoopExtra {

@@ -435,7 +435,7 @@ pub(super) fn hash_verify_preserved_dist(
 /// Scope is limited to the `artifacts` family on purpose:
 /// `run_post_pipeline` re-writes the un-suffixed `artifacts.json` from
 /// the merged in-memory context, which makes the per-shard
-/// `artifacts-<shard>.json` files stale the instant that write lands.
+/// `artifacts-<shard>.json` files stale the instant that write happens.
 /// The `context` family has no equivalent un-suffixed re-writer — only
 /// the harness emits `write_preserved_dist_context`, and that only
 /// produces shard-suffixed files. Cleaning `context-<shard>.json` here

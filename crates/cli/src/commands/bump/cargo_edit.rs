@@ -621,7 +621,7 @@ fn heal_dep_table(
         let Some(path) = item.get("path").and_then(|p| p.as_str()) else {
             continue;
         };
-        // A registry dep may share a member's name; only a `path` that lands on
+        // A registry dep may share a member's name; only a `path` that reaches
         // that member's directory is an internal floor.
         if std::fs::canonicalize(scope.manifest_dir.join(path))
             .ok()

@@ -423,7 +423,7 @@ fn burn_search_query(
 /// not mask an open or merged one further down.
 ///
 /// - `Ok(Some(detail))` — an open or merged PR exists; the version is
-///   consumed (or reserved) and a same-version re-cut cannot land cleanly.
+///   consumed (or reserved) and a same-version re-cut cannot succeed cleanly.
 /// - `Ok(None)` — no PR matches, or every match was closed unmerged or a
 ///   removal PR.
 /// - `Err` — the GitHub search API could not be consulted (transport

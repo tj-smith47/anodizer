@@ -1166,7 +1166,7 @@ mod tests {
     }
 
     /// Release re-verification spawns keyless cosign, so it must take the
-    /// shared host TUF lock — the sentinel lands in the cache directory the
+    /// shared host TUF lock — the sentinel ends up in the cache directory the
     /// config's `env:` names.
     #[test]
     fn verify_signature_assets_keyless_takes_host_lock() {

@@ -134,9 +134,9 @@ fn is_deb_artifact(artifact: &Artifact) -> bool {
 /// Reject a configured Debian matrix-param slug that would break the
 /// semicolon-delimited Artifactory upload matrix.
 ///
-/// The value lands raw in `;deb.<key>=<value>`, so any `;` injects a rogue
+/// The value is written raw in `;deb.<key>=<value>`, so any `;` injects a rogue
 /// matrix param and any whitespace malforms the URL — either way the `.deb`
-/// lands at the wrong path and never indexes (the exact failure this feature
+/// ends up at the wrong path and never indexes (the exact failure this feature
 /// exists to prevent). Allow only the conservative Debian
 /// distribution/component slug charset (ASCII alphanumerics plus `-`, `.`,
 /// `_`); `/` is rejected too because an Artifactory deb matrix distribution is
@@ -218,7 +218,7 @@ pub(crate) fn validate_artifactory_deb_slugs(
 /// Fallible: a build target whose architecture has no known Debian spelling
 /// (an exotic or user-supplied `prebuilt` triple) hard-errors rather than
 /// injecting a raw triple fragment as `deb.architecture=` — a silent wrong
-/// value would land the `.deb` in the wrong (or an empty-named) repository
+/// value would put the `.deb` in the wrong (or an empty-named) repository
 /// slice. The derived value is also re-checked against the matrix-param slug
 /// charset as defense-in-depth.
 ///

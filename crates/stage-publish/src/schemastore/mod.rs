@@ -79,7 +79,7 @@ impl anodizer_core::Publisher for SchemastorePublisher {
     }
 
     fn advisory_requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        // Every SchemaStore publish lands as a PR against
+        // Every SchemaStore publish opens a PR against
         // `SchemaStore/schemastore`; `gh pr create` is the preferred
         // transport with a full REST-API fallback, so `gh` is a
         // recommendation, never a gate failure. Same activity gate as

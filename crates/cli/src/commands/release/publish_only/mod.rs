@@ -235,7 +235,7 @@ pub(super) fn run_per_crate(
     // * `dist`: downstream metadata writers
     //   (`write_pre_release_metadata`, the GitHub uploader's
     //   relative-path resolver) read `ctx.config.dist` directly;
-    //   without scoping every crate's metadata.json would land at
+    //   without scoping every crate's metadata.json would end up at
     //   the workspace-root `dist/` instead of its preserved subdir.
     let mut guard = PerCrateOverlayGuard::capture(ctx);
     // The saved baseline lives on the guard; copy it out once so the
@@ -307,7 +307,7 @@ pub(super) fn run_per_crate(
         // INDEPENDENT-version mode each crate carries its own version in
         // its preserved `context.json`. Without re-anchoring, a crate's
         // `tag_template` / release-title / artifact-name would render
-        // against the wrong version and mint a mis-tagged GitHub release
+        // against the wrong version and create a mis-tagged GitHub release
         // (irreversible). Best-effort: a missing/unparseable preserved
         // version leaves the upstream `Version` in place.
         apply_per_crate_version(ctx, &crate_dist, crate_name, log);

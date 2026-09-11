@@ -247,7 +247,7 @@ pub(crate) fn publish_to_cloudsmith(
 
         // Per-entry tallies for the single default-verbosity summary line; the
         // per-file upload/skip detail below is verbose-only. `uploaded_count`
-        // increments per landed package-create (per distro slug, matching the
+        // increments per published package-create (per distro slug, matching the
         // verbose `uploaded …` lines); `skipped_count` per already-present
         // idempotent skip.
         let mut uploaded_count = 0usize;
@@ -363,7 +363,7 @@ pub(crate) fn publish_to_cloudsmith(
             // configured. For formats CloudSmith requires a distribution on
             // (`deb`, `alpine`), fall back to the accept-all catch-all slug so
             // the package still indexes and stays installable; an empty slug
-            // for those would land the bytes unindexed. Formats that don't
+            // for those would upload the bytes unindexed. Formats that don't
             // require a distribution (`rpm`/`srpm`/`raw`) keep the
             // empty-slug "no override" behaviour.
             let upload_slugs: Vec<String> = if distro_slugs.is_empty() {
@@ -478,7 +478,7 @@ pub(crate) fn publish_to_cloudsmith(
                         // same name+version between the pre-check (or
                         // first-attempt step-3) and this step-3, returning
                         // 409/422 here. Without recovery, the upload aborts
-                        // even though the operator's intent — "land this
+                        // even though the operator's intent — "publish this
                         // artifact on the registry" — was satisfied by the
                         // racing process. Re-query the remote: if it now
                         // exists with the local md5, treat as idempotent skip; if
@@ -516,7 +516,7 @@ pub(crate) fn publish_to_cloudsmith(
                                     art_name
                                 );
                                 if republish {
-                                    // A racing uploader landing the same bytes
+                                    // A racing uploader writing the same bytes
                                     // while republish was requested is a real
                                     // surprise worth surfacing at default
                                     // verbosity.
@@ -544,7 +544,7 @@ pub(crate) fn publish_to_cloudsmith(
                             CloudsmithPackageState::Unverifiable => {
                                 // The re-query shows the filename present but
                                 // with no checksum to compare — cannot confirm
-                                // the racing upload landed OUR bytes. Surface
+                                // the racing upload published OUR bytes. Surface
                                 // the conflict rather than claim an idempotent
                                 // skip that cannot be proven.
                                 log.warn(&format!(

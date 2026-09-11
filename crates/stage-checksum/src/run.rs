@@ -8,7 +8,7 @@
 //!
 //! `refresh_combined_checksums` is invoked by `stage-release` after signing
 //! to rewrite combined files so signature artifacts that happen to be
-//! uploadable land in the final sums (the refresh hook).
+//! uploadable end up in the final sums (the refresh hook).
 
 use std::collections::HashMap;
 use std::fs::File;

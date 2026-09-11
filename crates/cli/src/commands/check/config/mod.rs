@@ -36,7 +36,7 @@ pub(crate) fn run(
 
     // Resolve the overlaid config ONCE when `--workspace` is given: both the
     // publisher-allowlist validation and the resolved-config check pass below
-    // must see the SAME overlay, so building it twice would be a drift seam.
+    // must see the SAME overlay, so building it twice would risk drift.
     let overlaid: Option<(&str, Config)> = match workspace {
         Some(ws_name) => {
             let ws = helpers::resolve_workspace(&config, ws_name)?;

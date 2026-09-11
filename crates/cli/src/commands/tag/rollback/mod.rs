@@ -20,7 +20,7 @@
 //!   per-crate). Non-matching tags are skipped with a reason printed.
 //! - Hard-fail when non-anodizer commits sit between the target SHA and
 //!   HEAD in `--mode=revert` (protects against rolling back a bump
-//!   after unrelated work landed on top). Use `--mode=reset` to force.
+//!   after unrelated work was committed on top). Use `--mode=reset` to force.
 
 mod deletion;
 mod guard;

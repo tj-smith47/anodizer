@@ -121,7 +121,7 @@ sboms:
 | `.rpm` | ✅ Verified | [`anodizer_0.23.0_linux_amd64.rpm`](https://github.com/tj-smith47/anodizer/releases/download/v0.23.0/anodizer_0.23.0_linux_amd64.rpm) (amd64 + arm64) |
 | `.apk` | ✅ Verified | [`anodizer_0.23.0_linux_amd64.apk`](https://github.com/tj-smith47/anodizer/releases/download/v0.23.0/anodizer_0.23.0_linux_amd64.apk) |
 | `.src.rpm` | ✅ Verified | [`anodizer-0.23.0-1.src.rpm`](https://github.com/tj-smith47/anodizer/releases/download/v0.23.0/anodizer-0.23.0-1.src.rpm) |
-| `.snap` | ⏳ Pending | Dogfooded through 0.9.1: [snapcraft.io/anodizer](https://snapcraft.io/anodizer) serves that revision from 2026-06-13, the newest either project ever landed. Current releases don't upload — anodizer execs host cargo/docker/gpg, which needs `classic` confinement, and the Snap Store denied the request, so `snapcrafts[].publish` is `false`. See [Where you install it](../install/) |
+| `.snap` | ⏳ Pending | Dogfooded through 0.9.1: [snapcraft.io/anodizer](https://snapcraft.io/anodizer) serves that revision from 2026-06-13, the newest either project ever published. Current releases don't upload — anodizer execs host cargo/docker/gpg, which needs `classic` confinement, and the Snap Store denied the request, so `snapcrafts[].publish` is `false`. See [Where you install it](../install/) |
 | `archlinux`, `ipk`, `termux.deb` | 🤝 Help wanted | nFPM dispatch covered; not shipped live |
 
 | Key | Status | Notes |

@@ -29,7 +29,7 @@ fn telegram_api_base() -> String {
 /// Composes with [`anodizer_core::redact::redact_url_credentials`] for
 /// defense-in-depth: callers should apply both so any URL-shaped
 /// secret (userinfo segment) is also scrubbed before the message
-/// lands in a log or error chain.
+/// ends up in a log or error chain.
 fn redact_bot_token(message: &str, bot_token: &str) -> String {
     let token_stripped = if bot_token.is_empty() {
         message.to_string()
@@ -264,7 +264,7 @@ mod tests {
     // ---- live send over a mock HTTP server -----------------------------
     //
     // These drive `send_telegram` (the real production POST path) against a
-    // scripted responder via the `ANODIZE_TELEGRAM_API_BASE` seam. Mutating
+    // scripted responder via the `ANODIZE_TELEGRAM_API_BASE` override. Mutating
     // process env requires `#[serial]` + the shared env_mutex so concurrent
     // tests don't observe each other's override.
 

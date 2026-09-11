@@ -277,7 +277,7 @@ const PREFETCH_BACKOFF: Duration = Duration::from_secs(3);
 /// The prefetch passes NO `--target`: a plain `cargo fetch` resolves and
 /// downloads the dependency superset for EVERY platform in the manifest's cfg
 /// graph (host + all cross targets at once — empirically `windows-sys`,
-/// `core-foundation-sys`, `cpufeatures`, … all land in the cache even from a
+/// `core-foundation-sys`, `cpufeatures`, … all end up in the cache even from a
 /// Linux host). That all-platform superset is exactly what a hermetic offline
 /// rebuild needs, on any shard: the explicit-target Windows shards, the
 /// multi-arch `targets:''` macOS/Ubuntu shards, and the host-side man-page

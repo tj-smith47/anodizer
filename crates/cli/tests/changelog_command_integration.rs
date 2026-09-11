@@ -1377,7 +1377,7 @@ fn same_prefix_shared_root_release_notes_is_one_aggregate() {
             "spurious `{c}` graft in release-notes: {out}"
         );
     }
-    // Both members' commits land in the single aggregate body (whole-repo).
+    // Both members' commits end up in the single aggregate body (whole-repo).
     assert!(
         out.contains("aggregate change in core") && out.contains("aggregate change in cli"),
         "release-notes aggregate body must span every member's commits: {out}"
@@ -2739,7 +2739,7 @@ workspaces:
 /// End-to-end pin for the release-notes workspace overlay: `--crate` naming a
 /// `workspaces[].crates` member must resolve THAT workspace's track — its
 /// per-workspace `changelog` config (here a `groups` title only the overlay
-/// can supply) shapes the rendered notes, and the pending commit lands in it.
+/// can supply) shapes the rendered notes, and the pending commit ends up in it.
 #[test]
 fn release_notes_crate_filter_applies_workspace_overlay() {
     let tmp = workspaces_member_repo();

@@ -258,7 +258,7 @@ mod tests {
     }
 
     /// (a) Single-crate mode: one crate, one tag. Every exposed option set; the
-    /// rendered manifest must conform with zero findings and land each option in
+    /// rendered manifest must conform with zero findings and put each option in
     /// the schema-expected field.
     #[test]
     fn single_crate_every_option_validates_and_lands_in_fields() {
@@ -294,7 +294,7 @@ mod tests {
             Some("https://acme.example/widget")
         );
         assert_eq!(obj.get("license").and_then(|v| v.as_str()), Some("MIT"));
-        // The Windows zip lands as `architecture.64bit.url` with its sha256.
+        // The Windows zip arrives as `architecture.64bit.url` with its sha256.
         let url64 = value
             .pointer("/architecture/64bit/url")
             .and_then(|v| v.as_str());
@@ -317,7 +317,7 @@ mod tests {
             .and_then(|v| v.as_array())
             .expect("bin array");
         assert!(bin.iter().any(|b| b.as_str() == Some("widget.exe")));
-        // The optional array fields land at the document root.
+        // The optional array fields end up at the document root.
         assert_eq!(
             obj.get("persist").and_then(|v| v.as_array()).map(Vec::len),
             Some(2)
@@ -448,7 +448,7 @@ mod tests {
     /// A TARGET-RESTRICTED determinism shard that built no Windows archive for a
     /// scoop-configured crate must SKIP it (zero findings, no error) rather than
     /// trip the publisher's "no Windows archive" guard — the archive
-    /// legitimately landed on another shard. The self-skip is gated on
+    /// legitimately reached another shard. The self-skip is gated on
     /// `partial_target`, so this holds only on a shard.
     #[test]
     fn partial_shard_without_windows_artifact_is_skipped_not_failed() {

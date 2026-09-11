@@ -208,7 +208,7 @@ impl Stage for BinarySignStage {
         let binary_sign_configs = ctx.config.binary_signs.clone();
         // Attribute cosign's transient-failure backoff to the binary-sign
         // scope. Without an active scope a flaky Fulcio/Rekor endpoint's wait
-        // lands in the retry summary's "(unattributed)" bucket, so the operator
+        // ends up in the retry summary's "(unattributed)" bucket, so the operator
         // sees the total but not which stage stalled.
         let _retry_scope = anodizer_core::retry::RetryScope::enter(self.name());
         process_sign_configs(
@@ -236,7 +236,7 @@ impl Stage for SignStage {
         validate_sign_config_ids(&ctx.config.binary_signs, "binary-sign", "binary_signs")?;
 
         // Attribute cosign's transient-failure backoff to the sign scope.
-        // Without an active scope a flaky Fulcio/Rekor endpoint's wait lands in
+        // Without an active scope a flaky Fulcio/Rekor endpoint's wait ends up in
         // the retry summary's "(unattributed)" bucket, so the operator sees the
         // total but not which stage stalled.
         let _retry_scope = anodizer_core::retry::RetryScope::enter(self.name());
@@ -342,7 +342,7 @@ impl Stage for DockerSignStage {
 
         // Attribute cosign's transient-failure backoff to the docker-sign
         // scope. Without an active scope a flaky registry or Rekor endpoint's
-        // wait lands in the retry summary's "(unattributed)" bucket, so the
+        // wait ends up in the retry summary's "(unattributed)" bucket, so the
         // operator sees the total but not which stage stalled.
         let _retry_scope = anodizer_core::retry::RetryScope::enter(self.name());
 

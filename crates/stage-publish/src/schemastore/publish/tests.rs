@@ -787,7 +787,7 @@ fn schemastore_evidence_carries_pr_target_with_env_var_name_not_value() {
 // I/O shell: the PUBLISH flow that touches git + the filesystem.
 //
 // These exercise the helpers `run_real` orchestrates — the file
-// read/format/write seams, the upstream-sync git plumbing, and the
+// read/format/write points, the upstream-sync git plumbing, and the
 // pre-clone guards — against a local bare repo (no network). The
 // pattern mirrors `util/pr.rs`: a `file://`-equivalent local git repo
 // reached through `repository.git.url`, a failing `gh`/network surface
@@ -920,7 +920,7 @@ fn read_cloned_jsonc_returns_allowlist_when_present_else_none() {
 #[test]
 fn write_vendor_schema_creates_parent_dirs_and_writes_formatted_bytes() {
     // The cloned repo has no `src/schemas/json/` dir yet — the writer
-    // must mkdir -p the parents and land the formatted bytes there.
+    // must mkdir -p the parents and write the formatted bytes there.
     let repo = tempfile::tempdir().expect("repo");
     let entry = vendor_entry();
     let plan = plan_schema(&entry, "cfgd machine config", false, None, None).unwrap();
@@ -1136,7 +1136,7 @@ fn run_real_aborts_when_fork_clone_fails() {
     // git repo makes `clone_repo` (SSH/local-path branch) fail — purely
     // local, no network — so `run_real` aborts at the clone, BEFORE the
     // live upstream sync / any splice / push / PR. This proves the clone
-    // seam's error gates the rest of the flow without depending on the
+    // point's error gates the rest of the flow without depending on the
     // (reachable, public) SchemaStore upstream or a push to a fixture.
     let bogus = tempfile::tempdir().expect("scratch");
     let bogus_url = bogus
@@ -1792,7 +1792,7 @@ fn a_probe_with_a_vendor_entry_still_requests_the_dialect_allowlist() {
 //
 // `run_real` clones the fork, then `sync_to_upstream` fetches the
 // hardcoded PUBLIC github.com/SchemaStore upstream (network). The
-// genuinely hermetic seam these gate is the change-decision short-
+// genuinely hermetic point these gate is the change-decision short-
 // circuit: when EVERY effective schema is already current against the
 // cloned tree, `run_real` returns the "nothing to publish" evidence
 // WITHOUT a push or a PR. The splice/write/change-decision helpers it
@@ -1843,7 +1843,7 @@ fn seed_clone(plan: &SchemaPlan, vendor_bytes: &str) -> tempfile::TempDir {
 /// already match (draft-07 ⇒ no allowlist) is a CERTAIN no-op, so
 /// `run_real` would `continue` past it and (if it were the only schema)
 /// publish nothing. Proven against a real on-disk clone tree built by
-/// the same `read_cloned_*` readers `run_real` uses — the seam between
+/// the same `read_cloned_*` readers `run_real` uses — the step between
 /// the network sync and the push.
 #[cfg(unix)]
 #[test]
@@ -1903,8 +1903,8 @@ fn cloned_tree_vendor_drift_needs_change_via_run_real_readers() {
 }
 
 /// `write_vendor_schema` + `splice_entry` compose to the exact tree
-/// `run_real` stages: the formatted schema lands at the vendor path AND
-/// the catalog gains the desired entry. Drives the two write seams
+/// `run_real` stages: the formatted schema ends up at the vendor path AND
+/// the catalog gains the desired entry. Drives the two write points
 /// `run_real`'s apply-loop calls, asserting the staged bytes.
 #[cfg(unix)]
 #[test]
@@ -1949,7 +1949,7 @@ fn write_then_splice_stages_vendor_file_and_catalog_entry() {
 /// `schema-validation.jsonc` lacks the `highSchemaVersion` array makes
 /// `add_high_schema_version` fail — the `write_vendor_schema` allowlist
 /// step must propagate that error (`schemastore: allowlist high-dialect
-/// schema` context) rather than landing the schema with no allowlist
+/// schema` context) rather than publishing the schema with no allowlist
 /// entry (which SchemaStore CI would then reject).
 #[cfg(unix)]
 #[test]
@@ -2125,7 +2125,7 @@ fn change_needed_when_the_options_block_is_missing() {
 }
 
 /// `write_vendor_schema` stages the options block into the cloned tree's
-/// `schema-validation.jsonc` — the seam `run_real` calls — carrying the prior
+/// `schema-validation.jsonc` — the helper `run_real` calls — carrying the prior
 /// version's sibling options and preserving the file's comments.
 #[cfg(unix)]
 #[test]

@@ -1160,7 +1160,7 @@ mod tests {
     #[test]
     fn promote_bails_when_the_flip_patch_fails() {
         // GET locate succeeds (200), PATCH fails with a non-retryable 4xx: the
-        // repo lands in `failed`, and with nothing promoted the run bails with
+        // repo ends up in `failed`, and with nothing promoted the run bails with
         // the partial-promotion error naming the failed target.
         let (addr, _calls) = spawn_oneshot_http_responder(vec![
             ok_release(release_json(42, "v1.2.3", true, false)),

@@ -125,7 +125,7 @@ pub struct Context {
     /// `Ok` path `run` returns its evidence directly; on the `Err` path
     /// dispatch consumes this slot via [`Context::take_pending_evidence`]
     /// and records it on the failed publisher's report row so rollback has
-    /// something to act on. Single-shot — drained at the start of every
+    /// something to act on. Single-shot — the slot is drained at the start of every
     /// `run` and cleared on the `Ok` path.
     pub pending_evidence: Option<crate::PublishEvidence>,
     /// Distinct set of crate names the build stage actually built — i.e.
@@ -153,18 +153,18 @@ pub struct Context {
     /// [`Context::env_for_redact`] by [`Context::refresh_secret_env`] at every
     /// `env_source` mutation point (`set_env_source`, `set_env_source_arc`,
     /// `begin_cargo_trusted_publishing`, `end_cargo_trusted_publishing`), so a
-    /// logger constructed BEFORE a mid-run credential mint — e.g. crates.io
-    /// Trusted Publishing minting `CARGO_REGISTRY_TOKEN` into `env_source`
+    /// logger constructed BEFORE a mid-run credential request — e.g. crates.io
+    /// Trusted Publishing creating `CARGO_REGISTRY_TOKEN` into `env_source`
     /// partway through `publish_to_cargo` — still redacts it: `StageLogger::
     /// redact` reads this cell live rather than a frozen construction-time
     /// snapshot.
     secret_env: crate::log::RedactionEnv,
     /// Live crates.io Trusted-Publishing overlay state, set for the duration
-    /// of a cargo publish that minted a short-lived token via OIDC. Holds the
-    /// minted token (the revoke + yank-injection credential) and the base env
+    /// of a cargo publish that issued a short-lived token via OIDC. Holds the
+    /// issued token (the revoke + yank-injection credential) and the base env
     /// source captured before the overlay was installed (restored on
     /// teardown). `None` on the ambient `auth: token` path and outside a
-    /// mint. Managed exclusively through
+    /// token request. Managed exclusively through
     /// [`Context::begin_cargo_trusted_publishing`] /
     /// [`Context::end_cargo_trusted_publishing`].
     cargo_trusted_publishing: Option<CargoTrustedPublishing>,
@@ -314,7 +314,7 @@ impl Context {
         self.refresh_secret_env();
     }
 
-    /// Overlay a minted crates.io Trusted-Publishing token as
+    /// Overlay an issued crates.io Trusted-Publishing token as
     /// `CARGO_REGISTRY_TOKEN` for the cargo publish+rollback lifecycle.
     ///
     /// The current env source is captured as the base, then wrapped in a
@@ -323,7 +323,7 @@ impl Context {
     /// env-driven paths that read through [`Context::env_source`] — notably
     /// the rollback scope-availability gate — so a partial OIDC publish can
     /// still yank, even though no ambient token exists. The token is also
-    /// retained as a marker so a later `rollback()` knows a minted token is
+    /// retained as a marker so a later `rollback()` knows an issued token is
     /// live and must be revoked after the yank.
     ///
     /// Paired with [`Context::end_cargo_trusted_publishing`], which restores
@@ -338,8 +338,8 @@ impl Context {
         self.refresh_secret_env();
     }
 
-    /// The minted crates.io Trusted-Publishing token, if an overlay is active.
-    /// `rollback()` reads this to learn (i) that the yank must inject a minted
+    /// The issued crates.io Trusted-Publishing token, if an overlay is active.
+    /// `rollback()` reads this to learn (i) that the yank must inject an issued
     /// token, and (ii) that the token must be revoked once the yank completes.
     pub fn cargo_trusted_publishing_token(&self) -> Option<&str> {
         self.cargo_trusted_publishing
@@ -348,9 +348,9 @@ impl Context {
     }
 
     /// Tear down the Trusted-Publishing overlay: restore the captured base env
-    /// source, drop the marker, and return the minted token so the caller can
+    /// source, drop the marker, and return the issued token so the caller can
     /// revoke it (best-effort). Returns `None` when no overlay is active (the
-    /// `auth: token` / ambient path never mints, so its long-lived token is
+    /// `auth: token` / ambient path never requests one, so its long-lived token is
     /// neither overlaid nor revoked).
     pub fn end_cargo_trusted_publishing(&mut self) -> Option<String> {
         let state = self.cargo_trusted_publishing.take()?;
@@ -413,7 +413,7 @@ impl Context {
     /// [`Context::secret_env`], the live cell every [`StageLogger`] produced
     /// by [`Context::logger`] shares. Called at every `env_source` mutation
     /// point so a logger built earlier in the run still redacts a secret
-    /// minted afterward (see the `secret_env` field doc for the concrete
+    /// issued afterward (see the `secret_env` field doc for the concrete
     /// crates.io Trusted-Publishing scenario this closes).
     fn refresh_secret_env(&self) {
         let fresh = self.env_for_redact();

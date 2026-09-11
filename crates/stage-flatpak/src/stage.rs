@@ -170,7 +170,7 @@ pub(crate) fn process_binary_iteration(
     // resolve *under* work_dir (`<work_dir>/dist/flatpak/...`) and the bundle
     // write fails with `opendir(...): No such file or directory`. Absolutize
     // against the process cwd — `std::path::absolute` is purely lexical and
-    // needs no filesystem access — so the bundle lands at the real dist path.
+    // needs no filesystem access — so the bundle ends up at the real dist path.
     let bundle_output_path =
         std::path::absolute(&output_path).unwrap_or_else(|_| output_path.clone());
 

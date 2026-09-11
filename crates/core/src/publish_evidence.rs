@@ -294,8 +294,8 @@ pub struct SnapcraftTargetSnapshot {
     pub package_name: String,
     #[serde(default)]
     pub channel: Option<String>,
-    /// The snapcraft architecture this entry's revision was minted for
-    /// (`amd64`, `arm64`, …). A dual-arch snap mints one Snap Store revision
+    /// The snapcraft architecture this entry's revision was issued for
+    /// (`amd64`, `arm64`, …). A dual-arch snap creates one Snap Store revision
     /// per architecture, so the evidence carries one entry per arch and a
     /// `promote --from-run` releases every arch's recorded revision. `None`
     /// on a planned-but-unprocessed snapshot or an older report predating the
@@ -496,7 +496,7 @@ pub struct HomebrewCoreTargetSnapshot {
     /// the fork+PR path, the upstream owner on the same-repo-branch path.
     pub head_owner: String,
     /// Branch carrying the bump commit (the PR head branch). Empty on the
-    /// `direct_commit` path, where the bump landed on the base branch.
+    /// `direct_commit` path, where the bump reached the base branch.
     pub branch: String,
     /// `true` when the bump was committed straight to the base branch
     /// (`direct_commit: true`) — nothing to close on rollback.
@@ -524,7 +524,7 @@ pub struct HomebrewCoreExtra {
 ///
 /// **CREDENTIAL CONTRACT**: every variant's inner struct exposes ONLY
 /// operator-public fields. Credential VALUES (token bytes, passwords,
-/// SSH key material) have no field to land in — the type system rejects
+/// SSH key material) have no field to end up in — the type system rejects
 /// any future leak attempt at the compile boundary. Per-publisher
 /// runtime credentials (resolved from env / config at publish time)
 /// live in crate-local `*Target` structs with `#[serde(skip)]`
@@ -594,7 +594,7 @@ pub struct PublishEvidence {
     /// stage. It carries only operator-public identifiers (URLs,
     /// env-var NAMES, PR numbers, tag strings, branch names). Token
     /// VALUES, private keys, passwords, OAuth secrets, SSH key
-    /// material have no variant field to land in — the
+    /// material have no variant field to end up in — the
     /// [`PublishEvidenceExtra`] enum's per-variant struct list is the
     /// schema, and serde rejects fields it does not name.
     ///
@@ -609,7 +609,7 @@ pub struct PublishEvidence {
 
 /// Deserialize the `extra:` field with backwards-compatibility for
 /// reports written before the typed [`PublishEvidenceExtra`] enum
-/// landed. Those reports carried `extra: {}` (an empty object) where
+/// published. Those reports carried `extra: {}` (an empty object) where
 /// the typed enum's [`Empty`](PublishEvidenceExtra::Empty) variant
 /// serializes as `null`. With `#[serde(untagged)]` neither null nor
 /// the typed struct variants match `{}`, so a literal `{}` from an
@@ -784,7 +784,7 @@ mod tests {
 
     #[test]
     fn empty_variant_deserializes_from_null() {
-        // Untagged enum: null lands on Empty (the unit variant is the
+        // Untagged enum: null reaches Empty (the unit variant is the
         // only one that accepts a null payload). Pin the wire shape
         // so a future variant addition that breaks this path fails
         // here.
@@ -846,7 +846,7 @@ mod tests {
 
         // The same blob must deserialize through the full untagged
         // `PublishEvidenceExtra` dispatch (the path rollback actually
-        // takes), landing in the Krew variant.
+        // takes), ending up in the Krew variant.
         let via_enum: PublishEvidenceExtra =
             serde_json::from_str(blob).expect("untagged dispatch must tolerate orphan key");
         assert!(matches!(via_enum, PublishEvidenceExtra::Krew(_)));

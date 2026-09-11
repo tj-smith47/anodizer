@@ -1589,7 +1589,7 @@ fn test_integration_changelog_stage_with_real_git_repo() {
 
 /// A lockstep workspace's GitHub release body must span the WHOLE workspace,
 /// not the release crate's own directory. Regression guard for the empty
-/// "No notable changes" body that shipped when a release's commits landed under
+/// "No notable changes" body that shipped when a release's commits ended up under
 /// a non-release crate (e.g. `crates/core`) while the `release:` block lived on
 /// the binary crate (`crates/cli`).
 ///

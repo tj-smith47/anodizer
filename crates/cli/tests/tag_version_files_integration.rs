@@ -505,7 +505,7 @@ crates:
 }
 
 /// Two per-crate crates bumping FROM DIFFERENT old versions may share one
-/// enrolled file: each pair rewrites only its own literal, so both land.
+/// enrolled file: each pair rewrites only its own literal, so both are rewritten.
 #[test]
 fn per_crate_distinct_old_versions_both_rewrite() {
     let tmp = TempDir::new().unwrap();
@@ -624,7 +624,7 @@ fn per_crate_shared_file_chain_bails() {
 }
 
 /// The chain check also runs under `--dry-run`, writing nothing — so the
-/// preview never green-lights a config the real run would reject.
+/// preview never approves a config the real run would reject.
 #[test]
 fn per_crate_shared_file_chain_bails_in_dry_run() {
     let tmp = TempDir::new().unwrap();
@@ -1626,7 +1626,7 @@ fn tag_and_check_agree_in_every_config_mode() {
 /// A lockstep workspace that ALSO declares its crate under `crates:`, where the
 /// crate enrolls its own file and a stale top-level list enrolls another. Only
 /// the crate's own list is the enrollment — the top-level list is the fallback
-/// for crates that declare none — so both commands must land on `OWN.md` and
+/// for crates that declare none — so both commands must reach `OWN.md` and
 /// leave `TOP.md` alone.
 fn lockstep_with_crates_fixture(root: &Path) {
     fs::write(
@@ -1753,7 +1753,7 @@ fn assert_bump_leaves_check_in_sync(root: &Path, mode: &str, tag_args: &[&str]) 
     );
 }
 
-/// Every shape a bump can take leaves `check version-files` green, because
+/// Every shape a bump can take leaves `check version-files` passing, because
 /// every shape writes the new version into the manifest `check` reads.
 #[test]
 fn every_bump_leaves_check_version_files_in_sync() {

@@ -6,7 +6,7 @@ use anyhow::{Context as _, Result};
 //
 // The original `generate_source_srcinfo` and `generate_source_pkgbuild`
 // functions took 12 and 19 positional arguments respectively. Bundle them
-// so each public entry point lands well under clippy's threshold and so
+// so each public entry point stays well under clippy's threshold and so
 // fields that are truly identical between the two render paths
 // (`AurMeta`, `AurDeps`) are guaranteed to stay in lock-step.
 

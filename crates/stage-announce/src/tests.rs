@@ -2306,7 +2306,7 @@ fn test_mattermost_renders_channel_template() {
     // Structural assertion against anodizer-controlled wrapping strings only:
     // "mattermost:" is the per-announcer error tag; "failed to render
     // template" is the template engine's `with_context` wrapper. Neither
-    // depends on Tera's internal error wording, so this stays green if Tera
+    // depends on Tera's internal error wording, so this keeps passing if Tera
     // renames "syntax error" → "parse error" (or similar) upstream.
     assert!(
         warns

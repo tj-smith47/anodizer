@@ -253,7 +253,7 @@ fn tag_clusters_by_prefix_then_semver_desc() {
     let groups = feat_fix_groups();
     // Tag v0.7.0 into a Tag-ordered timeline (core-v0.5.0, core-v0.4.0,
     // v0.6.0). Tag ordering clusters `core-` (asc lexical) before `v`,
-    // semver-desc within each cluster, so v0.7.0 lands at the head of the
+    // semver-desc within each cluster, so v0.7.0 ends up at the head of the
     // `v` cluster (before v0.6.0) and after the whole `core-` cluster.
     let out = promote(
         &five_release_tag_ordered_fixture(),

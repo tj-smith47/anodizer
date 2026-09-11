@@ -316,7 +316,7 @@ fn process_nfpm_format(
         dry_run,
     )?;
 
-    // msix is a Windows package; it lands next to the MSI/NSIS outputs.
+    // msix is a Windows package; it is written next to the MSI/NSIS outputs.
     let output_dir = if format == "msix" {
         dist.join("windows")
     } else {

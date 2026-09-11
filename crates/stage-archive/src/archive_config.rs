@@ -264,7 +264,7 @@ pub(crate) fn write_crate_archives(
                     let base_name = if let Some(ref dst) = ef.dst {
                         dst.clone()
                     } else {
-                        // Either way the file lands at the archive root (or
+                        // Either way the file ends up at the archive root (or
                         // directly under wrap_in_directory): `strip_parent`
                         // drops the parent components, and a bare glob match
                         // keeps only its file name.

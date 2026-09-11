@@ -431,7 +431,7 @@ pub(crate) fn build_subprocess_env_with_env(
     // pipeline build.
 
     // When the host running this harness is itself windows-msvc, the host
-    // build (e.g. `cargo run --release` invoked by a `before:` hook) lands at
+    // build (e.g. `cargo run --release` invoked by a `before:` hook) ends up at
     // `target/release/anodizer.exe`. Cargo's host build reads global
     // `RUSTFLAGS` (not the per-target `CARGO_TARGET_<HOST>_RUSTFLAGS`, which
     // only applies when `--target=<HOST>` is explicit), so the global set
@@ -657,7 +657,7 @@ mod tests {
 
     /// `build_with` with an explicit host-windows-msvc decision so the
     /// global-RUSTFLAGS MSVC injection can be exercised on any host (the
-    /// injectable seam that lets the Windows regression run on Linux CI).
+    /// injection point that lets the Windows regression run on Linux CI).
     fn build_with_host(
         scratch: &Path,
         host: &[(&str, &str)],
@@ -1233,7 +1233,7 @@ mod tests {
     /// windows-msvc, global RUSTFLAGS must ALSO carry the MSVC determinism
     /// flags so the host build (e.g. `cargo run --release` invoked by a
     /// `before:` hook, which has no `--target` and therefore reads global
-    /// RUSTFLAGS) lands a byte-stable `target/release/anodizer.exe`.
+    /// RUSTFLAGS) produces a byte-stable `target/release/anodizer.exe`.
     ///
     /// Linux-runnable: the host-windows decision is INJECTED, not read from
     /// `cfg!(windows)`. The original guard was `#[cfg(windows)]`-gated and

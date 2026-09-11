@@ -726,7 +726,7 @@ impl BlobStage {
         // object keys into structured `BlobTarget` tuples (provider,
         // bucket, key, region, endpoint) before appending to the shared
         // list. On failure the partial list is preserved so
-        // PublishEvidence captures only files that landed — and carries
+        // PublishEvidence captures only files that uploaded — and carries
         // the structured shape needed for the rollback DELETE path.
         let uploaded_targets: std::sync::Arc<std::sync::Mutex<Vec<BlobTarget>>> =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));

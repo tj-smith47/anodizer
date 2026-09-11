@@ -723,7 +723,7 @@ pub(crate) fn decide_already_published(
         CrateContentMatch::Equivalent { normalized } => {
             // `normalized` is non-empty whenever this arm is reached from the
             // real pipeline (byte-identical archives take the fast path), but
-            // an injected local cksum in tests can land here with no delta —
+            // an injected local cksum in tests can end up here with no delta —
             // describe that honestly rather than index into an empty list.
             let applied = if normalized.is_empty() {
                 "none (archives are byte-identical)".to_string()

@@ -139,7 +139,7 @@ fn test_nested_groups_flush_in_ancestor_order() {
 ///
 /// Unix-only. The fd-2 swap is process-global across the WHOLE
 /// `anodizer-core` test binary, so a caller must exclude every other test
-/// whose output could land in the capture: itself and its `stderr_fd`
+/// whose output could end up in the capture: itself and its `stderr_fd`
 /// peers, plus the two groups in this binary whose tests spawn
 /// subprocesses that inherit fd 2 — hence
 /// `#[serial_test::serial(cwd, path_env, stderr_fd)]`.
@@ -336,7 +336,7 @@ fn test_single_word_header_emits_no_trailing_space() {
 #[test]
 fn test_status_labels_gutter_aligned_without_colon() {
     // Regression guard: Warning/Error/Note must render as right-aligned
-    // gutter labels with NO trailing colon, and their message must land in
+    // gutter labels with NO trailing colon, and their message must end up in
     // the same column as a section header's message (both follow the
     // VERB_COLUMN gutter + one space). The old format open-coded
     // "Warning:" at BODY_INDENT, which faked Cargo alignment with an
@@ -360,7 +360,7 @@ fn test_status_labels_gutter_aligned_without_colon() {
         // proves the shared renderer rather than re-stating its shape.
         assert_eq!(line, strip_ansi(&render_header(0, label, msg)));
         // Column-invariance across differing label widths: every label's
-        // message lands in the same column as the "Building" header's,
+        // message ends up in the same column as the "Building" header's,
         // regardless of how long the verb is.
         assert_eq!(
             line.find(msg),

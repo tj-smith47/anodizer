@@ -163,7 +163,7 @@ mod tests {
     /// non-empty password), then asserts the load is adaptive on the password:
     /// the correct password LOADS the key (`Loaded`); a wrong password FAILS
     /// (`Failed`). Skips cleanly when cosign is absent so CI without cosign
-    /// stays green.
+    /// keeps passing.
     #[test]
     fn correct_password_loads_wrong_password_fails() {
         let (present, reason) = cosign_present();
@@ -177,7 +177,7 @@ mod tests {
             .expect("provision ephemeral cosign keypair");
 
         // env://COSIGN_KEY load with the CORRECT password must succeed. Secrets
-        // are injected through the EnvSource seam, not the process env, so the
+        // are injected through the EnvSource injection point, not the process env, so the
         // test never races a parallel test over the global env.
         let good_env = MapEnvSource::new()
             .with("COSIGN_KEY", &keys.cosign_key_contents)
@@ -231,7 +231,7 @@ mod tests {
         let pem = std::fs::read_to_string(tmp.path().join("cosign.key"))
             .expect("read generated unencrypted cosign.key");
 
-        // Secrets injected through the EnvSource seam (not the process env): an
+        // Secrets injected through the EnvSource injection point (not the process env): an
         // empty COSIGN_PASSWORD is forwarded explicitly so cosign loads the
         // unencrypted key without an interactive prompt.
         let env = MapEnvSource::new()

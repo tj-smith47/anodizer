@@ -181,7 +181,7 @@ fn commit_plan(
     }
 
     // Bundle changelog edits: render + persist each non-skip crate's section
-    // for its new version so the files land in the same `git add` + `git commit`
+    // for its new version so the files end up in the same `git add` + `git commit`
     // as the Cargo.toml edits. The previous tag bounds each crate's commit range.
     //
     // Gated by the shared opt-in + `changelog:`-presence + `skip:` resolution so
@@ -311,7 +311,7 @@ fn commit_plan(
     }
 
     // Provenance markers ride in the bump commit even when the tag is later
-    // minted outside `anodizer tag` (a manual-tag workflow): the publish
+    // issued outside `anodizer tag` (a manual-tag workflow): the publish
     // guard's forgiveness keys on the bump commit that last touched each
     // crate's CHANGELOG.md, regardless of which command created the tag.
     let cl_markers = crate::commands::changelog_sync::changelog_provenance_markers(

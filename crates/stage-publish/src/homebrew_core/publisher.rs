@@ -34,7 +34,7 @@ simple_publisher!(
 
 /// Aliased to the core-owned snapshot so the evidence schema lives in
 /// [`anodizer_core::publish_evidence`] and credential-shaped fields have no
-/// slot to land in.
+/// slot to fill.
 pub(crate) type HomebrewCoreTargetSnapshot =
     anodizer_core::publish_evidence::HomebrewCoreTargetSnapshot;
 
@@ -213,7 +213,7 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
 
     /// Close every PR this run opened (find-by-head + PATCH close — the
     /// krew/schemastore rollback shape). `direct_commit` bumps have no PR;
-    /// those are warn-only with the landed branch named.
+    /// those are warn-only with the published branch named.
     fn rollback(
         &self,
         ctx: &mut Context,

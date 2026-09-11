@@ -41,7 +41,7 @@ pub enum PreflightScope {
     /// `build_publish_only_pipeline`. Membership is DERIVED from that
     /// builder (see [`PreflightScope::included_stage_set`]) so a stage
     /// added to the publish-only pipeline is preflighted here
-    /// automatically instead of passing green and aborting at runtime.
+    /// automatically instead of reporting success and aborting at runtime.
     PublishOnly,
     /// `anodizer release --announce-only`: re-fires announcers against a
     /// prior run's report — announce is the only stage that runs, so only
@@ -893,7 +893,7 @@ pub fn run(opts: PreflightOpts) -> Result<()> {
     // Two independent gates, reported in the order an operator fixes them: a
     // missing credential is a runner problem, a divergence is a version
     // problem. Only a REQUIRED publisher's `Diverged` blocks on the publisher
-    // axis — `Complete` is the green light a resumed release wants, `Unknown`
+    // axis — `Complete` is the approval a resumed release wants, `Unknown`
     // must never let an unreachable registry veto a release, and an optional
     // publisher's divergence does not abort the release either.
     if !report.ok() {
@@ -1944,7 +1944,7 @@ builds:
 
     /// When cosign is NOT on PATH, an active cosign-key config must WARN (load
     /// verification deferred to sign time) and NOT hard-fail. The absent outcome
-    /// is injected via the load-resolver seam so the WARN branch runs on every
+    /// is injected via the load-resolver hook so the WARN branch runs on every
     /// shard — including CI shards that DO carry cosign — rather than self-skipping.
     #[test]
     fn verify_cosign_keys_load_warns_when_cosign_absent() {
@@ -1976,7 +1976,7 @@ builds:
     }
 
     /// A genuinely bad key (cosign installed, load fails) must FAIL the gate
-    /// and emit an Error. Injected via the seam so it runs deterministically
+    /// and emit an Error. Injected via the hook so it runs deterministically
     /// regardless of PATH.
     #[test]
     fn verify_cosign_keys_load_fails_on_bad_key() {

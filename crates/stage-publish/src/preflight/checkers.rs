@@ -605,7 +605,7 @@ pub fn run_preflight(ctx: &mut Context, log: &StageLogger) -> Result<PreflightRe
 /// [`run_preflight`] with the checker construction injected — exposed so
 /// tests can drive the orchestration without spawning HTTP servers.
 ///
-/// The publish-simulation dry-run runner is a NO-OP here: this seam exists for
+/// The publish-simulation dry-run runner is a NO-OP here: this hook exists for
 /// publisher-state / rollback-scope tests, none of which configure real
 /// workspace crates, so spawning `cargo publish --dry-run` would only produce
 /// spurious "package ID did not match" noise. Tests that target the simulation
@@ -622,7 +622,7 @@ pub fn run_preflight_with_factory(
 /// A dry-run runner that never spawns and always reports the simulation
 /// unavailable, so the caller degrades to the index-only partial-publish
 /// check (which contributes no blocker on a clean/single-crate fixture).
-/// Used by every preflight seam except the production [`run_preflight`].
+/// Used by every preflight entry point except the production [`run_preflight`].
 pub(super) fn noop_dry_run_runner(_krate: &str) -> DryRunOutcome {
     DryRunOutcome::Unavailable("dry-run simulation disabled in this preflight path".into())
 }
@@ -640,7 +640,7 @@ fn run_preflight_inner(
 ) -> Result<PreflightReport> {
     let mut report = PreflightReport::new();
     // Pre-publish state queries are an advisory gate, not a write that must
-    // land; the shallow probe policy keeps a wedged endpoint from stalling the
+    // succeed; the shallow probe policy keeps a wedged endpoint from stalling the
     // gate across every configured publisher (the prod ladder is ~27min worst
     // case). Per-request HTTP timeouts still bound each attempt.
     let policy = RetryPolicy::PREFLIGHT;

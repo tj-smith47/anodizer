@@ -49,13 +49,13 @@ env:
   # commit than the tag actually tags.
   RELEASE_REF: ${{ inputs.tag || github.event.workflow_run.head_sha || github.sha }}
   # Publishers peeled off the self-hosted release job onto the github-hosted
-  # publish-oidc job. Both mint from a GitHub Actions OIDC identity that the
+  # publish-oidc job. Both authenticate with a GitHub Actions OIDC identity that the
   # registry only honours from a github-hosted runner: npm provenance
   # attestations 422 on the self-hosted arc-anodizer runner; PyPI Trusted
   # Publishing exchanges the Actions id-token for a short-lived upload token
   # (auth: oidc); and crates.io Trusted Publishing (auth: oidc) likewise
   # exchanges the id-token for a short-lived crates.io token, which the
-  # self-hosted runner cannot mint. The main job --skip=s this set; the hosted
+  # self-hosted runner cannot obtain. The main job --skip=s this set; the hosted
   # job --publishers=es it — one place keeps the two selectors exact
   # complements (a mismatch double-publishes or silently drops a publisher).
   HOSTED_PUBLISHERS: npm,pypi,cargo
@@ -73,7 +73,7 @@ jobs:
   # that every runner-agnostic publish secret / credential the downstream
   # `release` + `publish-oidc` jobs need is present (and key material is
   # well-formed) WITHOUT checking host-local tools, so a missing CI secret
-  # aborts before a tag is ever minted. Carries the full secret env block the
+  # aborts before a tag is ever issued. Carries the full secret env block the
   # `release` job uses so the check is meaningful — the two blocks are held
   # byte-equal by audit-workflow-lockstep.sh, so a secret added to the publish
   # job can never be forgotten here and fail post-tag on the irreversible leg.
@@ -127,7 +127,7 @@ jobs:
         # see them and must not demand them (it would false-fail and block
         # every release). Blob's creds are validated in-pipeline on arc, where
         # they live. Every OTHER publish secret IS a registered repo secret and
-        # is validated here, before the tag is minted.
+        # is validated here, before the tag is issued.
         uses: tj-smith47/anodizer-action@v1
         with:
           from-source: true
@@ -283,7 +283,7 @@ jobs:
           artifact-workflow: ci.yml
           artifact-run-id: auto
           # --push routes through the atomic branch+tag push: the bump commit
-          # and the tag land together or not at all, so neither an orphan tag
+          # and the tag are pushed together or not at all, so neither an orphan tag
           # nor a bump commit stranded off master is representable. A push that
           # races master is rejected here, before anything is published.
           args: tag --changelog --push
@@ -402,7 +402,7 @@ jobs:
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
           # The OIDC publishers (npm, pypi, cargo) are peeled onto the
-          # github-hosted publish-oidc job below: all mint from a GitHub-hosted
+          # github-hosted publish-oidc job below: all authenticate from a GitHub-hosted
           # Actions OIDC identity that the registry only honours off a
           # github-hosted runner (npm provenance 422s on the self-hosted
           # arc-anodizer runner; PyPI and crates.io Trusted Publishing exchange
@@ -430,8 +430,8 @@ jobs:
           UPLOAD_JARVISPRO_USERNAME: ${{ secrets.UPLOAD_JARVISPRO_USERNAME }}
 
       # No workflow-side rollback step: a failed run holds everything
-      # exactly where it landed. Recovery is re-running the same release
-      # command (publishers reconcile and skip what already landed);
+      # exactly where it stopped. Recovery is re-running the same release
+      # command (publishers reconcile and skip what already published);
       # `anodizer tag rollback` withdraws the release deliberately after
       # reading the uploaded summary.
       - name: Upload run summary

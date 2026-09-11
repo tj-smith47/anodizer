@@ -405,7 +405,7 @@ impl Stage for SrpmStage {
 /// prerelease tag arrives as e.g. `0.5.0-rc.1`, and a branch-derived
 /// prerelease can carry a slash (`0.5.0-feature/x`).
 ///
-/// Algorithm (semver-aware so the tilde lands on the prerelease separator,
+/// Algorithm (semver-aware so the tilde falls on the prerelease separator,
 /// never on a metadata dash):
 /// - Split at the FIRST `+` into `head` (core + prerelease) and `tail`
 ///   (build metadata, possibly absent).
@@ -1073,7 +1073,7 @@ mod tests {
 
     /// Direct unit coverage of the version sanitizer's transform rules,
     /// independent of the spec emission path. Asserts the TOTAL guarantee:
-    /// only `[A-Za-z0-9._+~^]` survives, the tilde lands on the prerelease
+    /// only `[A-Za-z0-9._+~^]` survives, the tilde reaches the prerelease
     /// separator (never a metadata dash), and degenerate inputs are handled.
     #[test]
     fn test_rpm_version_field_transform() {
@@ -1258,7 +1258,7 @@ mod tests {
             &resolved,
             &anodizer_core::env_source::MapEnvSource::new(),
         );
-        // Both install paths land in %files, sorted by binary name
+        // Both install paths end up in %files, sorted by binary name
         // (myapp before myapp-helper).
         let files_idx = spec.find("%files").expect("spec has %files");
         let files_tail = &spec[files_idx..];
@@ -1329,7 +1329,7 @@ mod tests {
     /// The default `%files` derivation runs the SAME project-global
     /// `ctx.artifacts.by_kind(Binary)` query the stage uses — NOT a stubbed
     /// iterator. The source RPM is project-global, so binaries from EVERY
-    /// crate land in the one `.spec` regardless of crate identity. The same
+    /// crate end up in the one `.spec` regardless of crate identity. The same
     /// binary across two targets dedupes to one entry, in deterministic key
     /// order.
     #[test]
@@ -1413,7 +1413,7 @@ mod tests {
         assert_eq!(effective_bins, expected);
     }
 
-    /// A `Binary` artifact carrying no `binary` metadata still lands in
+    /// A `Binary` artifact carrying no `binary` metadata still ends up in
     /// `%files` — under its file name, the same name every other stage
     /// gives it.
     #[test]

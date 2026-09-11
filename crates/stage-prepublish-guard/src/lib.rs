@@ -87,7 +87,7 @@ fn guard_checks(
 
     // Render strictly for the duration of the guard's in-memory pass: every
     // publisher/announce template the validators render must PROPAGATE a
-    // malformed-template error (so it lands in `errors` and aborts the
+    // malformed-template error (so it ends up in `errors` and aborts the
     // release) instead of being swallowed into a warn + raw fallback.
     // Production publish renders stay lenient unless the user passed the
     // global `--strict`. Both checks accumulate their `Err` into `errors`
@@ -168,7 +168,7 @@ mod tests {
 
     /// A scoped context whose `Version`/`Tag`/`ReleaseURL` are set the way a
     /// real release stamps them after `ReleaseStage`, so the per-crate render
-    /// resolver (test-mode: derives the scoped version) lands a real version.
+    /// resolver (test-mode: derives the scoped version) produces a real version.
     fn scope(ctx: &mut Context, version: &str) {
         ctx.template_vars_mut().set("Version", version);
         ctx.template_vars_mut().set("RawVersion", version);

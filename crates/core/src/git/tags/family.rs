@@ -3,7 +3,7 @@
 //! The vocabulary every other submodule filters with: the version-placeholder
 //! forms a `tag_template` may use, the `ignore_tags` / `ignore_tag_prefixes` /
 //! nightly exclusions, and [`TagFamilyScope`] — the release track a template
-//! mints, which scopes both the git-side (`--match=<glob>`) and Rust-side
+//! creates, which scopes both the git-side (`--match=<glob>`) and Rust-side
 //! (list + parse) tag searches so a multi-track workspace never answers a
 //! `core-v` question with a `v` tag.
 
@@ -181,7 +181,7 @@ pub fn extract_tag_prefix(template: &str) -> Option<String> {
     tag_prefix_slice(template).map(str::to_string)
 }
 
-/// The set of tags one `tag_template` mints, as a filter both the git-side
+/// The set of tags one `tag_template` creates, as a filter both the git-side
 /// (`--match=<glob>`) and the Rust-side (list + parse) previous-tag paths can
 /// apply.
 ///
@@ -198,7 +198,7 @@ pub fn extract_tag_prefix(template: &str) -> Option<String> {
 pub(super) enum TagFamilyScope {
     /// Tags starting with a literal prefix.
     Prefix(String),
-    /// Tags that are a bare version (`0.6.0`), minted by a template whose
+    /// Tags that are a bare version (`0.6.0`), issued by a template whose
     /// version placeholder sits at position zero.
     BareVersion,
 }
@@ -229,7 +229,7 @@ impl TagFamilyScope {
     }
 }
 
-/// The glob describing the tag family `tag_template` mints — literally the
+/// The glob describing the tag family `tag_template` creates — literally the
 /// filter [`find_previous_tag_in_family`](crate::git::find_previous_tag_in_family)
 /// applies, so a diagnostic quoting it cannot drift from the search that was
 /// actually performed. `None` when
@@ -246,11 +246,11 @@ pub fn tag_family_glob(tag_template: &str, monorepo_prefix: Option<&str>) -> Opt
     tag_family_scope(tag_template, monorepo_prefix).map(|s| s.describe_glob())
 }
 
-/// Whether `tag` belongs to the family `tag_template` mints — the membership
+/// Whether `tag` belongs to the family `tag_template` creates — the membership
 /// half of [`tag_family_glob`], for callers holding tag names rather than a
 /// git search (the GitHub retention sweep enumerates releases over the API).
 ///
-/// `false` when the template mints no family at all (a literal tag name with
+/// `false` when the template creates no family at all (a literal tag name with
 /// no version placeholder, outside any monorepo namespace): such a template
 /// names one tag, not a track.
 ///
@@ -267,13 +267,13 @@ pub fn tag_in_family(tag: &str, tag_template: &str, monorepo_prefix: Option<&str
     tag_family_scope(tag_template, monorepo_prefix).is_some_and(|s| s.contains(tag))
 }
 
-/// The literal prefix of the family `tag_template` mints, honouring
+/// The literal prefix of the family `tag_template` creates, honouring
 /// `monorepo.tag_prefix` exactly as [`tag_in_family`] does — so a tag built
-/// by gluing this prefix onto a literal name lands inside the family the
+/// by gluing this prefix onto a literal name ends up inside the family the
 /// matcher will later test it against.
 ///
 /// `Some("")` for a bare-version family (nothing to glue on); `None` when the
-/// template mints no family at all.
+/// template creates no family at all.
 ///
 /// # Examples
 /// ```
@@ -294,7 +294,7 @@ pub fn tag_family_prefix(tag_template: &str, monorepo_prefix: Option<&str>) -> O
     }
 }
 
-/// Whether `tag` belongs to the family `tag_template` mints **and** to no
+/// Whether `tag` belongs to the family `tag_template` creates **and** to no
 /// narrower family in `sibling_templates`.
 ///
 /// A bare `v` prefix is a proper prefix of every `<name>-v` sibling only in
@@ -308,7 +308,7 @@ pub fn tag_family_prefix(tag_template: &str, monorepo_prefix: Option<&str>) -> O
 /// inside its own track.
 ///
 /// Exclusion sees only the families this workspace CONFIGURES. A tag left
-/// behind by a crate that has since been renamed or removed — or minted by a
+/// behind by a crate that has since been renamed or removed — or issued by a
 /// tool outside anodizer — has no sibling template to claim it, so it stays
 /// in whichever configured family its prefix matches.
 pub fn tag_in_family_excluding_siblings(
@@ -361,7 +361,7 @@ pub fn excluded_sibling_prefixes(
     out
 }
 
-/// Resolve the family a crate's `tag_template` mints, COMPOSED with the
+/// Resolve the family a crate's `tag_template` creates, COMPOSED with the
 /// monorepo namespace rather than replaced by it.
 ///
 /// A monorepo namespace and a per-crate track are two independent coordinates
@@ -382,7 +382,7 @@ pub(super) fn tag_family_scope(
         // A bare `{{ Version }}` under a monorepo namespace still lives inside
         // that namespace (`subproject1/0.6.0`), so the namespace is the family.
         Some(_) if namespace.is_empty() => Some(TagFamilyScope::BareVersion),
-        // A template with no version placeholder mints one literal tag, not a
+        // A template with no version placeholder creates one literal tag, not a
         // track; only the namespace can still scope it.
         None if namespace.is_empty() => None,
         _ => Some(TagFamilyScope::Prefix(namespace.to_string())),
@@ -409,7 +409,7 @@ pub fn compose_prefix(prefix: &str, value: &str) -> String {
 /// `tag_template`, falling back to the `<name>-v` convention when the
 /// template is empty or carries no recognised version placeholder.
 ///
-/// Every surface that scans or mints per-crate tags (`tag`, `bump` range
+/// Every surface that scans or creates per-crate tags (`tag`, `bump` range
 /// inference, `changelog` tag-owner resolution and crate selection) must
 /// resolve the SAME family from the same inputs: a drifted fallback makes
 /// the last-tag probe come up empty and silently widens the commit range

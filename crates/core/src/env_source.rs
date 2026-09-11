@@ -124,7 +124,7 @@ impl EnvSource for MapEnvSource {
 ///
 /// A lookup returns the override value when the name is present **and
 /// non-empty**; otherwise it delegates to the base source. This lets a caller
-/// inject one or two synthetic variables (e.g. a short-lived credential minted
+/// inject one or two synthetic variables (e.g. a short-lived credential issued
 /// at runtime) so that env-driven code paths — scope-availability probes,
 /// token resolvers — observe the injected value without mutating the process
 /// environment or discarding the base source's other variables.
@@ -206,7 +206,7 @@ mod tests {
         let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let key = "ANODIZER_T3_PROCESS_ENV_FIXTURE";
         // This is the contract test for ProcessEnvSource — it must observe the
-        // *real* process env, so there is no injection seam to route through.
+        // *real* process env, so there is no injection point to route through.
         let _env = EnvGuard::set(key, "from-process-env");
         assert_eq!(
             ProcessEnvSource.var(key),

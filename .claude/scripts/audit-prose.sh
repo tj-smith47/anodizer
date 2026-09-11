@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Guard: comments speak in the third person, and the tool is called anodizer.
 #
-# Contract (.claude/rules, rule 8): a comment is written for whoever reads the
+# Contract: a comment is written for whoever reads the
 # code next, never as a record of the session that produced it. Rustdoc renders
 # on a docs site and states WHAT the item does; an inline comment states the
 # non-obvious WHY. Neither register has an author in it, so "we", "our", "us",
@@ -20,9 +20,10 @@
 #      whole-line `#` comment in a shell script, a workflow, or the Taskfile.
 #   2. The tool name spelled `anodize`.
 #   3. A figurative metaphor from the banned list (`load-bearing`, `blast
-#      radius`, `bolted on`, `keystone`), in a comment or a doc page.
+#      radius`, `bolted on`, `keystone`, `seam`, `mint`, `drain`, `green`,
+#      `land`), in a comment or a doc page.
 #
-# Prose in markdown is NOT scanned: rule 8 governs comments, and the docsite's
+# Prose in markdown is NOT scanned: the contract above governs comments, and the docsite's
 # first person is deliberate project voice.
 #
 # A pronoun inside a string literal is CODE, so it cannot trip scan 1: the
@@ -119,16 +120,32 @@ for hit in "${NAME_HITS[@]}"; do
     name_violations+="$hit"$'\n'
 done
 
-# Scan 3, figurative jargon. `load-bearing`, `blast radius`, `bolted on` and
-# `keystone` are metaphors that say nothing the plain word does not: a field a
-# comment calls "load-bearing" is required, a rollback with a small "blast
-# radius" touches less state. They read as filler to anyone who has not heard
-# them, and rustdoc ships them to users. Markdown IS scanned here (unlike the
-# voice scan) because the docsite renders the same metaphors to the same
-# readers. The audit's own path is excluded: the pattern necessarily spells
-# every word it looks for.
+# Scan 3, figurative jargon. These are metaphors that say nothing the plain
+# word does not: a field a comment calls "load-bearing" is required, a rollback
+# with a small "blast radius" touches less state, a test that went "green"
+# passed, a token that was "minted" was issued, a place a stub is injected is a
+# hook. They read as filler to anyone who has not heard them, and rustdoc ships
+# them to users. Markdown IS scanned here (unlike the voice scan) because the
+# docsite renders the same metaphors to the same readers; a fenced code block
+# is skipped because the code inside it is code. The audit's own path is
+# excluded: the pattern necessarily spells every word it looks for.
+#
+# Four of the words never appear in code, so they are matched on the whole
+# line. The other five have a literal sense that is plain English and must
+# survive:
+#
+#   * `green` naming a real colour (`log.success` renders a green tick),
+#     recognized by another colour word on the same line;
+#   * `drain` for emptying a reader, a queue or a task set, recognized by the
+#     name of the thing drained on the same line;
+#   * a line carrying a `prose-ok: <why>` marker, on the line itself or the one
+#     above, for the literal use the two lists above cannot see.
+#
+# `landing` is exempt from the `land` family: it is the name of the
+# verify-release check that asks whether a published version is visible
+# upstream.
 collect_files JARGON_HITS -rnEi --exclude-dir=target --exclude-dir=.git \
-    --exclude-dir=fixtures --exclude='audit-prose.sh' \
+    --exclude-dir=fixtures --exclude-dir=dist --exclude='audit-prose.sh' \
     -- 'load[- _]bearing|blast radius|bolted on|keystone' \
     crates docs/site/content .github/workflows .claude/scripts .claude/rules \
     Taskfile.yml README.md INCIDENT_RESPONSE.md .anodizer.yaml
@@ -137,6 +154,57 @@ jargon_violations=""
 if ((${#JARGON_HITS[@]} > 0)); then
     printf -v jargon_violations '%s\n' "${JARGON_HITS[@]}"
 fi
+
+JARGON_B='(^|[^A-Za-z0-9_-])'
+JARGON_E='([^A-Za-z0-9_-]|$)'
+JARGON_FLAT="${JARGON_B}([Ss]eams?|[Mm]int(s|ed|ing)?|[Ll]ands?|[Ll]anded)${JARGON_E}"
+JARGON_GREEN="${JARGON_B}[Gg]reen(s|ed|ing|-?light[a-z-]*)?${JARGON_E}"
+JARGON_DRAIN="${JARGON_B}[Dd]rain(s|ed|ing)?${JARGON_E}"
+# A colour word on the line is the evidence that `green` names a real colour.
+JARGON_COLOUR='colou?r|cyan|yellow|hex|ANSI|✓|✗|marker|Rendered|dimmed|theme'
+# The things this workspace literally drains.
+JARGON_IO='stdout|stderr|read|output|body|error|report|spawn|fetch|hang|String|cadence|buffer|byte|pipe|channel|queue|task|slot|worker|pool|runner|handler|collector|straggler|receiver|stream|socket|connection|zombie|child|subtree|stack|memento|job|capture|stdin|retry|retries|window|evidence|override|argument|skip|reap|vec|ready|done|log|line|phase|attempt|send'
+
+collect_files JARGON_RS -rl --include='*.rs' --exclude-dir=target --exclude-dir=fixtures \
+    --exclude-dir=dist -- '//' crates
+collect_files JARGON_MD -rl --include='*.md' -- '' docs/site/content README.md INCIDENT_RESPONSE.md
+collect_files JARGON_TXT -rl --include='*.sh' --include='*.yml' --include='*.md' \
+    --exclude='audit-prose.sh' -- '#' .claude/scripts .claude/rules .github/workflows
+run_scanner jargon_prose \
+    -v FLAT_RE="$JARGON_FLAT" -v GREEN_RE="$JARGON_GREEN" -v DRAIN_RE="$JARGON_DRAIN" \
+    -v COLOUR_RE="$JARGON_COLOUR" -v IO_RE="$JARGON_IO" \
+    -f "$LIB_DIR/rust-lex.awk" -f - \
+    "${JARGON_RS[@]}" "${JARGON_MD[@]}" "${JARGON_TXT[@]}" /dev/null <<'AWK'
+    FNR == 1 { reset_lex(); fence = 0; prev = "" }
+    {
+        if (FILENAME ~ /\.rs$/) text = comment_part($0)
+        else if (FILENAME ~ /\.md$/) {
+            if ($0 ~ /^[ \t]*(```|~~~)/) { fence = !fence; prev = $0; next }
+            text = fence ? "" : $0
+        }
+        else text = ($0 ~ /^[ \t]*#/) ? $0 : ""
+
+        if (text != "" && ($0 " " prev) !~ /prose-ok:/) {
+            body = blanked(text)
+            hit = (body ~ FLAT_RE)
+            if (body ~ GREEN_RE && $0 !~ COLOUR_RE) hit = 1
+            if (body ~ DRAIN_RE && $0 !~ IO_RE) hit = 1
+            if (hit) printf("%s:%d: %s\n", FILENAME, FNR, trim($0))
+        }
+        prev = $0
+    }
+
+    function blanked(t) {
+        gsub(/https?:\/\/[^ \t>)\]]+/, " ", t)
+        gsub(/`[^`]*`/, " ", t)
+        gsub(/"[^"]*"/, " ", t)
+        return t
+    }
+
+    function trim(l) { sub(/^[ \t]+/, "", l); return l }
+AWK
+
+jargon_violations+="$jargon_prose"
 
 status=0
 
@@ -173,7 +241,10 @@ if [[ -n "$jargon_violations" ]]; then
     echo
     echo "A field is required, not 'load-bearing'; a change touches less state, it"
     echo "does not have a smaller 'blast radius'; a feature was added, not 'bolted"
-    echo "on'; a test pins an invariant, it is not a 'keystone'."
+    echo "on'; a test pins an invariant, it is not a 'keystone'. A run passed, it"
+    echo "did not go 'green'; a token was issued, not 'minted'; a stub goes in at a"
+    echo "hook, not a 'seam'; a release published, it did not 'land'. A literal use"
+    echo "the word lists cannot see carries a 'prose-ok: <why>' marker."
     status=1
 fi
 

@@ -73,7 +73,7 @@ fn show_head(dir: &Path, rel: &str) -> String {
 }
 
 /// Full message of the commit at HEAD (the version-bump commit right after a
-/// `tag` run) — where changelog-provenance markers land.
+/// `tag` run) — where changelog-provenance markers are written.
 fn head_commit_message(dir: &Path) -> String {
     let out = anodizer_core::test_helpers::output_with_spawn_retry(
         || {
@@ -142,7 +142,7 @@ crates:
     assert!(stdout.contains("new_tag=v0.2.0"), "stdout: {stdout}");
 
     // A bare `changelog: {}` resolves to the root destination (the deliberate
-    // default), so the single-crate section lands in the workspace-root
+    // default), so the single-crate section ends up in the workspace-root
     // CHANGELOG.md rather than a per-crate file.
     let changelog = read(root, "CHANGELOG.md");
     assert!(
@@ -1375,7 +1375,7 @@ fn multitrack_root_date_promotes_only_tagged_track_subsection() {
 
 /// Multi-track per-crate root, `chronology: tag`: with a seeded
 /// newer-dated OTHER-track section present, the newly promoted `core` section
-/// must land in its tag-prefix cluster (semver-desc) rather than on top — the
+/// must end up in its tag-prefix cluster (semver-desc) rather than on top — the
 /// observable divergence from `date`, which would slot newest-by-date first.
 #[test]
 fn multitrack_root_tag_clusters_by_prefix_not_date() {
@@ -1384,7 +1384,7 @@ fn multitrack_root_tag_clusters_by_prefix_not_date() {
     // Seed a NEWER-dated cli-track release below the curated Unreleased
     // block. Under `date`, today's core section would jump above it; under
     // `tag`, core-v* clusters before cli-v* (lexical prefix ascending), so the
-    // new core section lands ABOVE the existing core release and the cli release
+    // new core section is written ABOVE the existing core release and the cli release
     // stays in its own cluster.
     let extra = "## [cli-v0.9.0] - 2099-01-01\n\
 \n\
@@ -1438,7 +1438,7 @@ fn multitrack_root_tag_clusters_by_prefix_not_date() {
     );
     // Divergence vs `date`: under `date` today's section would be the file's
     // newest and sit above the 2099 cli release; under `tag` the cli cluster
-    // stays on top, so core-v0.2.0 lands between the cli cluster and the older
+    // stays on top, so core-v0.2.0 is written between the cli cluster and the older
     // core release rather than at the top.
     assert!(
         new_idx > cli_idx && new_idx < old_core_idx,
@@ -1517,7 +1517,7 @@ fn both_destination_writes_per_crate_and_root_in_one_commit() {
 /// left untouched and no `## [cli-v...]` heading appears).
 #[test]
 fn root_crates_subset_filters_excluded_track_from_root() {
-    // First: the INCLUDED crate (core) → its section lands in the root.
+    // First: the INCLUDED crate (core) → its section ends up in the root.
     let tmp_inc = TempDir::new().unwrap();
     let inc = tmp_inc.path();
     multitrack_root_fixture(
@@ -1662,7 +1662,7 @@ crates:
     );
 
     // The hand edit: rewrite the generated bullet to a unique sentinel, then
-    // commit the curated file (the operator's curation lands in git).
+    // commit the curated file (the operator's curation ends up in git).
     const SENTINEL: &str = "HAND CURATED SENTINEL 7f3a";
     sentinel_edit(root, "CHANGELOG.md", "generated bullet text", SENTINEL);
     git_add_commit(root, "docs: curate changelog");

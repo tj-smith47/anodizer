@@ -127,7 +127,7 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
     );
 
     // A one-entry `crates:` repo tags in that crate's OWN family. Without
-    // this the repo-level path minted `v<version>` from `tag.tag_prefix`'s
+    // this the repo-level path issued `v<version>` from `tag.tag_prefix`'s
     // default while `bump`, `changelog`, `--crate <name>` and the release
     // stage all resolved the crate's `tag_family_template()` — one crate with
     // two answers, so the tag `tag` cut was in a family nothing else scanned.
@@ -219,7 +219,7 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
 
     // Previous-tag resolution must reflect the REMOTE's tag reality, not this
     // clone's: a tag deleted on the remote for a re-cut can survive locally
-    // (in this or another clone) and would otherwise silently mint the NEXT
+    // (in this or another clone) and would otherwise silently create the NEXT
     // version instead of re-minting the SAME one. One ls-remote call per
     // invocation; every previous-tag lookup below shares the result. A network
     // failure falls back to local tags with a warning rather than blocking
@@ -370,7 +370,7 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
         !opts.push_tags_only && (resolve_effective_push(&opts, config_push) || opts.push_dry_run);
 
     // A signed tag and API tagging on a pushed tag are mutually exclusive: the
-    // API path mints the tag object on the remote, where the user's local
+    // API path creates the tag object on the remote, where the user's local
     // GPG/SSH signing key cannot reach it, so honoring `--sign` there would
     // silently ship an UNSIGNED tag. Since signing is opt-in, an explicit
     // signature request must hard-error rather than downgrade.
@@ -421,7 +421,7 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
         // reference a commit the remote doesn't yet have).
         if cfg.git_api_tagging && push_mode {
             log.verbose("using GitHub API for tagging (git_api_tagging=true)");
-            // Push the branch first so the bump commit lands on the remote,
+            // Push the branch first so the bump commit reaches the remote,
             // THEN create the tag via the API (which references the
             // now-pushed HEAD commit).
             git::push_branch_and_tags_atomic_in(

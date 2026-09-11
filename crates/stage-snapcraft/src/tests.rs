@@ -1150,7 +1150,7 @@ fn missing_channels_for_version_matches_track_qualified_channel_argument() {
 
 #[test]
 fn missing_channels_for_version_dual_arch_does_not_cross_report() {
-    // A dual-arch snap mints one revision per arch per version: amd64 has
+    // A dual-arch snap creates one revision per arch per version: amd64 has
     // already been released to stable, arm64's own revision has not.
     let output = "Rev  Uploaded              Arches  Version  Channels\n\
                    6    2026-07-01T00:00:00Z  arm64   1.0.0    -\n\

@@ -564,7 +564,7 @@ fn run_per_crate_lifecycle_with_resolver(
 /// scoping without a git fixture (production passes
 /// [`crate::crate_scope::resolve_crate_tag`] via
 /// [`before_publish_stage_inner`]). Mirrors the `with_published_crate_scope`
-/// test seam used by the publisher stages.
+/// test hook used by the publisher stages.
 fn run_per_crate_before_publish_with_resolver(
     ctx: &mut crate::context::Context,
     dry_run: bool,
@@ -1254,7 +1254,7 @@ mod tests {
 
         let log = test_logger();
         let hooks = vec![HookEntry::Structured(StructuredHook {
-            // Single quotes so a masked `$DEPLOY_TOKEN` would land in the
+            // Single quotes so a masked `$DEPLOY_TOKEN` would end up in the
             // file literally instead of being re-expanded by the shell from
             // the hook's own env.
             cmd: format!("printf '%s' '{{{{ .Env.DEPLOY_TOKEN }}}}' > {out_fwd}"),
@@ -1949,7 +1949,7 @@ mod tests {
     /// hook that appends `<phase>:<name>:{{ Version }}` to `out_file`, so a
     /// test can assert which phase fired, for which crate, under which
     /// version scope. `phase` is the label written by the hook ("before" /
-    /// "after"); whether it lands in `.before` or `.after` is the caller's
+    /// "after"); whether it ends up in `.before` or `.after` is the caller's
     /// choice via `set_before`.
     fn crate_with_lifecycle(name: &str, out_file: &str, set_before: bool) -> CrateConfig {
         let phase = if set_before { "before" } else { "after" };

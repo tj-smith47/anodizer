@@ -154,7 +154,7 @@ Enrollment is idempotent (already-enrolled paths are never re-added) and
 preserves the existing comments and key order in `.anodizer.yaml`. Discovery has
 no basis to infer an anchor, so `init` only ever writes bare `- <path>` items —
 but it reads both forms, so a file already enrolled with a `match` anchor is
-never re-offered, and a new item lands after the anchored mapping, not inside
+never re-offered, and a new item arrives after the anchored mapping, not inside
 it.
 
 ## Config modes

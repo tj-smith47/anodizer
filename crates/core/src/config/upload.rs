@@ -42,7 +42,7 @@ pub struct UploadConfig {
     ///
     /// Strongly prefer `{{ Env.UPLOAD_PASSWORD }}` (or any other env-var
     /// template) over an in-config literal — plaintext values here are NOT
-    /// redacted from dry-run output and will land in `dist/config.yaml`
+    /// redacted from dry-run output and will end up in `dist/config.yaml`
     /// when the pipeline runs with `--dry-run` / `--snapshot`. Resolution
     /// order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`.
     /// Password-resolution cascade.

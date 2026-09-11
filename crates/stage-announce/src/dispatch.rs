@@ -1,4 +1,4 @@
-//! Concurrent announce dispatch: the per-provider log/enqueue seam
+//! Concurrent announce dispatch: the per-provider log/enqueue point
 //! ([`dispatch`]) and the bounded fan-out runner ([`run_queue`]).
 //!
 //! Announce is a best-effort post-publish notification. Each provider's `send`
@@ -338,12 +338,12 @@ mod tests {
         // sent → re-fires as a duplicate on the next run. The final
         // non-blocking `try_recv` drain closes that window.
         //
-        // The window is a timing race (a result landing in the narrow gap
+        // The window is a timing race (a result ending up in the narrow gap
         // between the collector's last `recv` decision and loop exit), so this
         // drives `done` to complete right around a co-queued straggler's
         // deadline across many trials. The invariant the drain guarantees: a
         // send that REPORTED success is NEVER also listed `abandoned`, and is
-        // ALWAYS in `succeeded`. A regression (dropping the drain) makes some
+        // ALWAYS in `succeeded`. A regression (dropping the final channel drain) makes some
         // trial misclassify the completed `done`.
         for trial in 0..200 {
             // `done` finishes a hair before the deadline; `slow` outlives it.
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn final_drain_harvests_a_pre_buffered_completed_result() {
-        // Deterministic complement to the racy trial above: prove the drain
+        // Deterministic complement to the racy trial above: prove the channel drain
         // path itself harvests a completed result that is sitting on the
         // channel when the collector loop exits. A `ready` send completes
         // immediately and a `slow` straggler trips the 80ms deadline. Whether

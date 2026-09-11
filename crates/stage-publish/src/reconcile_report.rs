@@ -15,7 +15,7 @@
 //!
 //! # Exit contract
 //!
-//! Only [`ReconcileState::Diverged`] blocks. `Complete` is the green light a
+//! Only [`ReconcileState::Diverged`] blocks. `Complete` is the approval a
 //! resumed release wants (the version is already upstream with matching
 //! bytes), `Absent` is the ordinary pre-publish state, and `Unknown` never
 //! blocks — an unreachable registry must not stand between an operator and a

@@ -16,7 +16,7 @@ const DEFAULT_INDEX_TIMEOUT_SECS: u64 = 300;
 /// that smells like sparse-index propagation lag (see
 /// [`is_index_propagation_failure`]). Three total attempts (the initial
 /// publish plus two retries) covers the common case where the dependent's
-/// `cargo publish` lands on a stale CDN edge a beat after [`poll_crates_io_index`]
+/// `cargo publish` reaches a stale CDN edge a beat after [`poll_crates_io_index`]
 /// already saw the previous crate confirmed on a different edge. Higher
 /// attempt counts buy nothing: by then either Fastly has fanned out or the
 /// failure isn't propagation-related.

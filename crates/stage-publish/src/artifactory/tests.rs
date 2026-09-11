@@ -903,7 +903,7 @@ fn deb_matrix_params_noop_for_non_deb() {
 
 /// A distribution/component slug containing matrix-param-breaking
 /// characters (`;`, whitespace, `/`) hard-errors with an actionable
-/// message, before any upload — so a corrupt slug can't silently land the
+/// message, before any upload — so a corrupt slug can't silently upload the
 /// .deb at the wrong path.
 #[test]
 fn deb_matrix_slug_validation_rejects_breaking_chars() {

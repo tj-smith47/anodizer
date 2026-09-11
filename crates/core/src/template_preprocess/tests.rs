@@ -996,7 +996,7 @@ fn test_numeric_index_after_bracket_index() {
 #[test]
 fn test_numeric_index_optional_chaining() {
     // tera 2.0 lexes `?[` as its optional-index token (the `?.` sibling),
-    // so the 1.x-era `a?.0` must land on `a?[0]`.
+    // so the 1.x-era `a?.0` must map to `a?[0]`.
     assert_eq!(preprocess("{{ a?.0 }}"), "{{ a?[0] }}");
 }
 

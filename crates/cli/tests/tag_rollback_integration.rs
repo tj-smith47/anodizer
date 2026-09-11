@@ -1,7 +1,7 @@
 //! Integration test for `anodizer tag rollback`.
 //!
 //! Fixture: bare-bones repo with an initial commit + a "bump" commit
-//! that lands a tag. Run `anodizer tag rollback --no-push` against
+//! that creates a tag. Run `anodizer tag rollback --no-push` against
 //! HEAD and assert:
 //! - the tag at HEAD is gone,
 //! - a revert commit replaces HEAD,
@@ -87,7 +87,7 @@ fn git_init(dir: &Path) {
 /// `user.name` writes so the test mirrors a CI host where
 /// `actions/checkout@v6` cloned the repo without committer identity
 /// configured. The rollback path must fall back to the committer-env
-/// injection so the revert commit still lands.
+/// injection so the revert commit is still created.
 ///
 /// The setup commits still need *some* identity (the repo itself
 /// has none) — those are provided per-spawn via env. The eventual
@@ -249,7 +249,7 @@ fn tag_rollback_dry_run_makes_no_mutations() {
 /// B-R1: simulate a bare-CI host. The repo's git config has neither
 /// `user.email` nor `user.name`, and the anodizer subprocess is
 /// spawned without inherited `GIT_AUTHOR_*` / `GIT_COMMITTER_*` env.
-/// `anodizer tag rollback` must still land the revert commit by
+/// `anodizer tag rollback` must still create the revert commit by
 /// injecting a synthetic identity for the spawn — without that
 /// fallback the CI rollback step would die with "Author identity
 /// unknown".

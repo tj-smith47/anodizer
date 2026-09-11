@@ -1168,7 +1168,7 @@ mod e2e {
         let pushed = publish_to_scoop(&mut ctx, "widget", &quiet()).expect("publish ok");
         assert!(pushed, "a fresh manifest push must report pushed=true");
 
-        // The manifest landed on main under the default `bucket/`
+        // The manifest reached main under the default `bucket/`
         // subdirectory with the real sha256.
         let manifest_in_repo = git_stdout(bare.path(), &["show", "main:bucket/widget.json"]);
         let json: serde_json::Value =
@@ -1314,7 +1314,7 @@ mod e2e {
     }
 
     /// `directory:` places the manifest under a custom subdirectory of the
-    /// bucket; the pushed file lands at `<dir>/<name>.json`.
+    /// bucket; the pushed file ends up at `<dir>/<name>.json`.
     #[test]
     #[serial(path_env)]
     fn publish_to_scoop_honors_directory_subdir() {

@@ -472,7 +472,7 @@ fn init_repo_with_tags(dir: &std::path::Path, tags: &[&str]) {
 
 #[test]
 fn is_nightly_tag_matches_minted_shapes_only() {
-    // anodizer's own minted shapes (default + per-crate prefix + nushell-style).
+    // anodizer's own issued shapes (default + per-crate prefix + nushell-style).
     for t in [
         "nightly",
         "v0.5.1-9a0d7ed0-nightly",
@@ -684,7 +684,7 @@ fn test_smartsemver_skips_candidate_on_the_current_tags_commit() {
     std::fs::write(dir.join("CHANGE"), "work").unwrap();
     run(&["add", "."]);
     run(&["commit", "-m", "feat: work"]);
-    // Both tags land on this second commit: a stray higher tag co-located with
+    // Both tags reach this second commit: a stray higher tag co-located with
     // the release being cut.
     run(&["tag", "v0.2.0"]);
     run(&["tag", "v0.3.0"]);
@@ -1040,7 +1040,7 @@ fn init_repo_with_tagged_commits(dir: &std::path::Path, tags: &[&str]) {
 }
 
 /// `--match=v*` covers `vault-v1.5.0` too, so without the sibling exclusion
-/// the `v` family's look-back lands on another track and the changelog
+/// the `v` family's look-back reaches another track and the changelog
 /// range spans both.
 #[test]
 #[serial(path_env)]
@@ -2176,7 +2176,7 @@ fn push_branch_and_tags_atomic_in_lands_branch_and_tags_on_origin() {
     let log = tags_quiet_log();
     let tags = vec!["v1.0.0".to_string()];
 
-    // Real atomic push of branch HEAD + the tag: both refs must land on origin.
+    // Real atomic push of branch HEAD + the tag: both refs must reach origin.
     push_branch_and_tags_atomic_in(
         tmp.path(),
         &AtomicPushSpec {
@@ -2232,7 +2232,7 @@ fn push_branch_and_tags_atomic_in_branch_only_empty_tags_pushes_branch() {
     let bare = tags_add_bare_origin(tmp.path());
     let log = tags_quiet_log();
     // branch = Some + empty tags: the tags-empty fork does a plain (non-atomic)
-    // branch push. The branch ref must land on origin.
+    // branch push. The branch ref must reach origin.
     push_branch_and_tags_atomic_in(
         tmp.path(),
         &AtomicPushSpec {

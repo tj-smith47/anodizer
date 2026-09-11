@@ -18,7 +18,7 @@
 //!   so a sign/SBOM stage that silently produced nothing still fails the
 //!   gate with the exact missing names.
 //! - **publisher landing checks** — every publisher that succeeded this run
-//!   actually landed: published crate versions are visible on the crates.io
+//!   actually published: published crate versions are visible on the crates.io
 //!   sparse index, npm package versions answer a registry GET, uploaded
 //!   blob objects answer a `HEAD` through the upload's own store backend,
 //!   and uploaded snaps are live in the Snap Store's public channel map —
@@ -344,7 +344,7 @@ impl Stage for VerifyReleaseStage {
 
         // Distinguish "everything verified" from "nothing was in scope to
         // verify": stamping a passing verdict when no check actually ran
-        // would fabricate green evidence for a run that proved nothing.
+        // would fabricate passing evidence for a run that proved nothing.
         let any_check_ran = totals.any_inspected() || landing_probed > 0;
         if !any_check_ran && issues.is_empty() {
             log.verbose("no check ran against the selected publish surface — no verdict recorded");
@@ -365,7 +365,7 @@ impl Stage for VerifyReleaseStage {
         }
         // Stamp the failing verdict BEFORE bailing so the summary (emit_summary
         // fires after this stage returns Err) reflects the defects instead of a
-        // uniform false all-`succeeded` green. The publishes genuinely landed;
+        // uniform false all-`succeeded` passing. The publishes genuinely succeeded;
         // this records the SEPARATE post-publish verification failure.
         ctx.verify_release = Some(anodizer_core::VerifyReleaseSummary {
             issues: issues.clone(),

@@ -62,7 +62,7 @@ pub(crate) struct RevertTarget {
     /// rollback works without re-resolving config. `None` means use
     /// the system's git credential helper / unauthenticated clone.
     ///
-    /// SECURITY: the token never lands in `PublishEvidence.extra` —
+    /// SECURITY: the token never ends up in `PublishEvidence.extra` —
     /// rollback resolves it from the env at rollback time via
     /// [`crate::util::resolve_repo_token`]. This struct's `token`
     /// field is populated only in the in-process call shape passed
@@ -88,7 +88,7 @@ pub(crate) struct RevertTarget {
 /// 2. `git revert HEAD --no-edit` fails (empty repo, merge conflict).
 /// 3. `git push` fails (branch protection, race, auth revoked).
 ///
-/// Success path on a clean repo: a single new commit lands on the
+/// Success path on a clean repo: a single new commit reaches the
 /// branch, formatted by `git revert` as `Revert "<subject>"`.
 pub(crate) fn run_git_revert_and_push(
     target: &RevertTarget,

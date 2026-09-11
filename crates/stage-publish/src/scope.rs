@@ -135,7 +135,7 @@ mod tests {
         use anodizer_core::{EnvSource, LayeredEnvSource};
         use std::sync::Arc;
 
-        // Base has NO ambient CARGO_REGISTRY_TOKEN (the OIDC case); the minted
+        // Base has NO ambient CARGO_REGISTRY_TOKEN (the OIDC case); the issued
         // token is overlaid on top. The rollback gate must see it as available.
         let base: Arc<dyn EnvSource> = Arc::new(MapEnvSource::new());
         let overlaid = LayeredEnvSource::new(base, [("CARGO_REGISTRY_TOKEN", "cio-minted-xyz")]);

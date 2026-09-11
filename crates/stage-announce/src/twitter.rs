@@ -268,7 +268,7 @@ mod tests {
     // ---- live send over a mock HTTP server -----------------------------
     //
     // Drive `send_twitter` (the real OAuth-signing POST path) against a
-    // scripted responder via the `ANODIZE_TWITTER_API_BASE` seam. Mutating
+    // scripted responder via the `ANODIZE_TWITTER_API_BASE` override. Mutating
     // process env requires `#[serial]` + the shared env_mutex.
 
     use anodizer_core::test_helpers::env::env_mutex;

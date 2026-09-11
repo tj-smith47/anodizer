@@ -1412,7 +1412,7 @@ mod subprocess {
     /// Bare overlay repo seeded with one commit on `branch`, usable as a
     /// local `git clone` URL. The publisher clones it, writes the
     /// derivation + flake, commits, and pushes back — the bare repo is the
-    /// assertion surface (inspect the landed `default.nix` / `flake.nix`).
+    /// assertion surface (inspect the published `default.nix` / `flake.nix`).
     fn make_bare_repo(branch: &str) -> (String, tempfile::TempDir) {
         let bare = tempfile::tempdir().expect("bare tempdir");
         let seed = tempfile::tempdir().expect("seed tempdir");
@@ -1443,7 +1443,7 @@ mod subprocess {
         (bare.path().to_string_lossy().into_owned(), bare)
     }
 
-    /// Read a file's content as landed on the bare repo's `branch` ref.
+    /// Read a file's content as it reached the bare repo's `branch` ref.
     fn show(bare: &Path, branch: &str, path: &str) -> String {
         git_stdout(bare, &["show", &format!("{branch}:{path}")])
     }
@@ -1685,7 +1685,7 @@ mod subprocess {
     fn publish_to_nix_formatter_absent_errors_and_pushes_nothing() {
         // A configured formatter that is absent from PATH must abort the
         // crate's nix publish BEFORE flake write / commit / push — nothing
-        // lands on the overlay branch. The FakeToolDir installs NO
+        // reaches the overlay branch. The FakeToolDir installs NO
         // alejandra (prepend, not empty, so the file-URL clone's git still
         // resolves), so the presence probe fails after clone+write.
         let (bare_url, bare) = make_bare_repo("main");
@@ -1703,7 +1703,7 @@ mod subprocess {
 
         let err = res.expect_err("missing formatter must abort the publish");
         assert!(format!("{err}").contains("not found on PATH"), "{err}");
-        // The overlay branch is untouched: same tip, no default.nix landed.
+        // The overlay branch is untouched: same tip, no default.nix published.
         let after = git_stdout(bare_path, &["rev-parse", "main"]);
         assert_eq!(before, after, "no commit must reach the overlay branch");
         let drv_present = anodizer_core::test_helpers::output_with_spawn_retry(
@@ -1754,7 +1754,7 @@ mod subprocess {
             !default_path.success(),
             "derivation must live at the configured path, not the default"
         );
-        // The configured commit_author must drive the landed author —
+        // The configured commit_author must drive the published author —
         // proving the identity is applied via the GIT_AUTHOR_* child env
         // (which overrides inherited env + repo config), not via
         // `-c user.name=` (which git's precedence defeats whenever an
@@ -1839,7 +1839,7 @@ mod subprocess {
     fn publish_to_nix_pull_request_enabled_records_outcome() {
         // With `pull_request.enabled = true`, finalize_publish drives
         // maybe_submit_pr, which yields Some(outcome) and is recorded on
-        // the context. The direct push still lands; the PR attempt (no gh
+        // the context. The direct push still arrives; the PR attempt (no gh
         // resolvable against a fake fork) surfaces a recorded outcome —
         // proving the `if let Some(pr_outcome)` branch ran (a non-PR
         // publish records nothing).
@@ -1859,7 +1859,7 @@ mod subprocess {
             ctx.take_pending_outcome().is_some(),
             "an enabled pull_request must record a publisher outcome"
         );
-        // The landed derivation is still correct.
+        // The published derivation is still correct.
         let drv = show(Path::new(&bare_url), "main", "pkgs/mytool/default.nix");
         assert!(drv.contains("pname = \"mytool\";"), "{drv}");
         drop(bare);
@@ -1897,7 +1897,7 @@ mod subprocess {
     #[test]
     fn publish_to_nix_embeds_post_install_and_custom_install_lines() {
         // Exercises the install_lines / post_install_lines plumbing of
-        // render_nix_derivation_inner end-to-end: both land verbatim in
+        // render_nix_derivation_inner end-to-end: both appear verbatim in
         // the rendered derivation.
         let (bare_url, bare) = make_bare_repo("main");
         let mut nix = nix_cfg_local(&bare_url, "main");
@@ -1919,7 +1919,7 @@ mod subprocess {
 
     /// A `nix.description` template that fails to render (undefined
     /// field) falls back to its raw `{{ }}` text via `render_or_warn` and
-    /// lands in the derivation — `guard_no_unrendered` must hard-fail the
+    /// ends up in the derivation — `guard_no_unrendered` must hard-fail the
     /// real publish before anything is written to the overlay branch.
     #[test]
     fn publish_residual_description_template_errors_before_push() {

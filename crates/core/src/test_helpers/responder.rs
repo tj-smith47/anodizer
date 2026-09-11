@@ -29,7 +29,7 @@
 //! Read the full HTTP request (request line + headers up to the
 //! `\r\n\r\n` terminator, then exactly `Content-Length` bytes of body)
 //! before writing the response. If `Content-Length` is missing or
-//! unparseable, fall back to a best-effort drain bounded by a generous
+//! unparseable, fall back to a best-effort body drain bounded by a generous
 //! deadline. Per-connection read timeout is also bumped from 500 ms to
 //! 5 s since 500 ms is too tight for scheduling jitter on shared CI
 //! runners.

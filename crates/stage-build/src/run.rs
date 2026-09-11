@@ -104,7 +104,7 @@ impl Stage for super::BuildStage {
         // Record which crates actually received an in-scope build/copy job so
         // the binary-artifact guard can tell "no in-scope target in this
         // shard" (skip) from "built but produced no binary" (real mis-scope).
-        // A crate filtered out by `--targets` / `build.ignore` lands here with
+        // A crate filtered out by `--targets` / `build.ignore` ends up here with
         // zero jobs and is therefore absent from this set.
         let built_crate_names: std::collections::HashSet<String> = build_jobs
             .iter()
@@ -184,7 +184,7 @@ pub(crate) struct PlanInputs<'a> {
 /// `BuildCommand`s the executor will spawn.
 ///
 /// Returns `(build_jobs, copy_jobs)`; the latter cover `copy_from:` jobs
-/// that wait for their source build to land before being copied.
+/// that wait for their source build to arrive before being copied.
 fn plan_build_jobs(
     ctx: &mut Context,
     log: &anodizer_core::log::StageLogger,

@@ -910,7 +910,7 @@ changelog:
 
     // The crate lives at the workspace root, so the regenerated root
     // CHANGELOG.md is its OWN crate-root file — the bump commit must carry
-    // the crate-scoped provenance marker even when the tag is later minted
+    // the crate-scoped provenance marker even when the tag is later issued
     // outside `anodizer tag` (manual-tag workflow).
     let msg = anodizer_core::test_helpers::output_with_spawn_retry(
         || {
@@ -930,7 +930,7 @@ changelog:
 
 /// The new default: `bump --commit` WITHOUT `--changelog` writes no CHANGELOG.md
 /// even though `changelog:` is configured (the refresh is opt-in). The bump
-/// commit still lands the Cargo.toml edit; it just never touches CHANGELOG.md.
+/// commit still carries the Cargo.toml edit; it just never touches CHANGELOG.md.
 #[test]
 fn commit_default_no_flag_skips_changelog() {
     let tmp = TempDir::new().unwrap();

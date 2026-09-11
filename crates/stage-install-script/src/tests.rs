@@ -614,7 +614,7 @@ fn config_skip_accepts_bool_and_template() {
 /// End-to-end execution of the generated installer, fully offline. A fake
 /// release (tarball + checksums file) is served through `curl`/`uname` PATH
 /// stubs so the script's real download → sha256-verify → extract → install path
-/// runs under `set -eu`. Asserts the binary lands installed.
+/// runs under `set -eu`. Asserts the binary ends up installed.
 #[cfg(unix)]
 #[test]
 fn installs_binary_end_to_end_offline() {
@@ -641,7 +641,7 @@ fn installs_binary_end_to_end_offline() {
     assert_installed(&dest, "myapp", "fake-myapp");
 }
 
-/// Multi-binary install: an archive shipping two binaries lands both when the
+/// Multi-binary install: an archive shipping two binaries installs both when the
 /// config lists them (the correctness fix over the old singular `binary`).
 #[cfg(unix)]
 #[test]
@@ -886,7 +886,7 @@ fn dual_libc_ctx(dist: &Path, cfg: InstallScriptConfig) -> Context {
 }
 
 /// A single-libc release must keep the exact script it had before the arms
-/// learned about libc: no probe, no suffix, not one byte of drift. The golden
+/// learned about libc: no probe, no suffix, byte-identical output. The golden
 /// carries the rendered output captured before the split was built, and moves
 /// only for a deliberate edit to the template itself.
 #[test]
@@ -1200,7 +1200,7 @@ fn build_release_tarball(release: &Path, asset: &str, binaries: &[&str]) {
 
 /// Run `install.sh` with `curl`/`uname` PATH stubs that serve `$FAKE_RELEASE`
 /// by basename and pin the host to Linux/x86_64. Returns the install dir and
-/// the script's own stderr (where every `info` line lands).
+/// the script's own stderr (where every `info` line arrives).
 #[cfg(unix)]
 fn run_installer(
     script: &Path,

@@ -43,7 +43,7 @@ fn push_publish_tail(p: &mut Pipeline) {
     // publisher-manifest or announce template aborts with no one-way door
     // already through.
     p.add(Box::new(PrePublishGuardStage));
-    // Docker build+sign land between the GitHub release and PublishStage: the
+    // Docker build+sign run between the GitHub release and PublishStage: the
     // mcp publisher (inside PublishStage) validates that the OCI image its
     // manifest references already exists in the registry, so the image must be
     // built and pushed first. DockerSignStage follows so the image exists.
@@ -261,13 +261,13 @@ pub fn build_publish_pipeline() -> Pipeline {
 /// - `ChangelogStage` runs first. It is a pure GitHub API call with
 ///   no artifact dependency, and `ReleaseStage::build_release_json`
 ///   reads `ctx.stage_outputs.changelogs` to populate the GitHub
-///   release body — so it MUST land before `ReleaseStage`. Placing
+///   release body — so it MUST run before `ReleaseStage`. Placing
 ///   it at the head also means a GitHub API failure aborts before
 ///   any signing work is performed.
 /// - `AnnounceStage` runs last, matching `build_merge_pipeline` and
 ///   `build_release_pipeline`. The stage's internal
 ///   `required_publishers` gate then sees the final publish report
-///   and only fires notifications on a green publish.
+///   and only fires notifications on a passing publish.
 ///
 /// **Idempotence requirement on SignStage**: must be safe to re-run
 /// on a dist whose existing `.sig`/`.asc` files are already
@@ -284,7 +284,7 @@ pub fn build_publish_pipeline() -> Pipeline {
 /// that the harness's default stage list doesn't cover are expected
 /// to have run in the upstream harness pipeline before preserve-dist
 /// captured the tree — those stages are added to the harness's stage
-/// list in CI and their outputs land under `dist/`. The publish-only
+/// list in CI and their outputs end up under `dist/`. The publish-only
 /// pipeline therefore consumes the full artifact set as-is and does
 /// not re-run any artifact-producing stages.
 pub(crate) fn build_publish_only_pipeline() -> Pipeline {
@@ -353,7 +353,7 @@ mod tests {
 
     /// `Pipeline::run` ends with a default summary write to
     /// `<dist>/run-<id>/summary.json`; with the default relative
-    /// `./dist` and the crate root as test cwd that would land in the
+    /// `./dist` and the crate root as test cwd that would end up in the
     /// working tree. Point `dist` at a tempdir; the returned guard
     /// keeps it alive across the run.
     fn isolate_dist(ctx: &mut anodizer_core::context::Context) -> TempDir {
@@ -411,7 +411,7 @@ mod tests {
         );
     }
 
-    /// Release-critical: the blob upload must land BEFORE PublishStage in every
+    /// Release-critical: the blob upload must run BEFORE PublishStage in every
     /// publishing pipeline. Ordered after publish, a required-blob failure can
     /// only gate stages that run later still — never the one-way-door publishers
     /// that already fired — which burned three production releases. This test
@@ -501,7 +501,7 @@ mod tests {
     // the run instead of a consumer's `cargo binstall`. The release-vs-merge
     // and release-vs-publish sequence comparisons cannot catch its removal:
     // the stage lives in `push_artifact_stages`, so deleting it drops it from
-    // BOTH sides of every comparison at once and they stay green. Presence and
+    // BOTH sides of every comparison at once and they keep passing. Presence and
     // placement therefore need their own assertion.
     // -----------------------------------------------------------------------
 
@@ -653,7 +653,7 @@ mod tests {
     #[test]
     fn publish_only_pipeline_runs_sign_before_release() {
         // SignStage must be at the HEAD of the publish-only pipeline
-        // so production signatures land on the preserved archives
+        // so production signatures reach the preserved archives
         // BEFORE ReleaseStage uploads them.
         let p = build_publish_only_pipeline();
         let names = p.stage_names();
@@ -765,7 +765,7 @@ mod tests {
 
     /// Assert the terminal-stage invariant shared by every publishing
     /// pipeline (release / merge / publish-only): AnnounceStage follows the
-    /// publisher chain so it only fires on a green release and the
+    /// publisher chain so it only fires on a passing release and the
     /// `required_publishers` gate sees the final publish report, and it is the
     /// last stage of the *publish phase* — immediately before the
     /// `verify-release` post-publish report. `verify-release` runs AFTER
@@ -1652,7 +1652,7 @@ before_publish:
         // The inner-fn scope-guard shape in `Pipeline::run` must
         // invoke `emit_summary` on Err too, not just on Ok. Without
         // this test, only the doc line pinned the contract; this
-        // puts a bisectable green/red signal on the Err path.
+        // puts a bisectable pass/fail signal on the Err path.
         use anodizer_core::context::ContextOptions;
 
         let tmp = TempDir::new().expect("tempdir");
@@ -1691,7 +1691,7 @@ before_publish:
     fn pipeline_writes_default_summary_with_publish_state_on_post_publish_failure() {
         // The 2026-06-11 v0.8.0 incident: `release --publish-only` ran
         // every publisher to success, then the verify-release stage
-        // failed — and NO summary.json landed on disk because nothing
+        // failed — and NO summary.json reached disk because nothing
         // passed `--summary-json`. CI then had no machine-readable
         // publish state and rolled back a fully-published release.
         // Pin the fix: without an explicit path, a failing pipeline
@@ -1759,7 +1759,7 @@ before_publish:
             parsed.irreversibly_published,
             "a landed Submitter (cargo) must mark the version burned"
         );
-        // The publish landed, but verify-release failed: the summary must
+        // The publish succeeded, but verify-release failed: the summary must
         // record the defect on its own axis (not a false all-green).
         let vr = parsed
             .verify_release
@@ -1773,7 +1773,7 @@ before_publish:
         // The 2026-06-11 v0.9.0 incident: the RELEASE stage failed on an
         // asset upload AFTER the GitHub release was created, the publish
         // stage never ran (publish_report = None), and no summary.json
-        // landed on disk — CI's "Upload run summary" step found nothing
+        // reached disk — CI's "Upload run summary" step found nothing
         // and recovery had no machine-readable state. Pin the fix: any
         // real (non-snapshot) pipeline failure after tag resolution
         // writes the default summary, carrying the tag, an EMPTY
@@ -1838,7 +1838,7 @@ before_publish:
         let summary_path = tmp.path().join("summary.json");
 
         // Build a pipeline whose only stage is AnnounceStage and skip
-        // it via `--skip=announce`. The summary still lands on disk
+        // it via `--skip=announce`. The summary still reaches disk
         // because Pipeline::run owns emit_summary and invokes it after
         // the stage loop, regardless of whether the stage ran.
         let mut p = Pipeline::new();

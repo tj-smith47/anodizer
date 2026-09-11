@@ -34,7 +34,7 @@ pub fn snapcraft_command(prime_dir: &str, output_path: &str) -> Vec<String> {
 /// Construct the `snapcraft list-revisions <name>` command used to probe
 /// whether a given version already has a revision in the Snap Store.
 ///
-/// The Snap Store mints a brand-new revision on every `snapcraft upload`, even
+/// The Snap Store creates a brand-new revision on every `snapcraft upload`, even
 /// for an identical `.snap` at the same version — uploads are NOT idempotent.
 /// Listing the snap's revisions before uploading lets the publisher detect a
 /// re-run at an already-published version and skip the duplicate upload.
@@ -109,13 +109,13 @@ fn revision_table_column(output: &str, column: &str) -> Option<(Vec<String>, usi
 
 /// Parse `snapcraft list-revisions` output and return the revision number whose
 /// `Version` column equals `version`. When several revisions share the version
-/// (each re-upload mints a fresh revision), the numerically highest revision
+/// (each re-upload creates a fresh revision), the numerically highest revision
 /// wins so a re-promotion targets the latest upload of that version. Returns
 /// `None` when no row matches or the table is unparseable — the caller then
 /// reports "nothing to promote" rather than releasing a wrong revision.
 ///
 /// `arch` narrows the search to rows whose `Arches` column matches (each row
-/// is minted by one architecture-specific `snapcraft upload`, so a dual-arch
+/// is issued by one architecture-specific `snapcraft upload`, so a dual-arch
 /// snap has one row per arch per version) — pass `Some(arch)` when the
 /// caller is scoped to a single build artifact. `None` searches every arch,
 /// which is the correct behavior for the store-wide `promote` verb: it has
@@ -151,7 +151,7 @@ pub fn snap_revision_for_version(
 
 /// Parse `snapcraft list-revisions` output and return the numerically highest
 /// revision of `version` **for each distinct architecture** present in the
-/// table. A dual-arch snap mints one revision per arch per version, so a
+/// table. A dual-arch snap creates one revision per arch per version, so a
 /// store-wide `promote --version` must release every arch's revision rather
 /// than a single global maximum (which would leave the lower-numbered arch on
 /// the source channel). Revisions are returned ascending and de-duplicated.
@@ -328,7 +328,7 @@ pub(crate) fn validate_snap_channel(channel: &str) -> anyhow::Result<()> {
 }
 
 /// Return `true` when a `list-revisions` data row's `Arches` column matches
-/// `arch` (case-insensitive, exact). Each row is minted by one
+/// `arch` (case-insensitive, exact). Each row is issued by one
 /// architecture-specific `snapcraft upload`, so the column holds exactly one
 /// token per row — unlike `Channels`, no comma/slash splitting is needed.
 fn row_matches_arch(cols: &[&str], arch_col: usize, arch: &str) -> bool {
@@ -363,7 +363,7 @@ fn row_occupies_channel(cols: &[&str], chan_col: usize, channel: &str) -> bool {
 /// `channels` it is NOT currently released to.
 ///
 /// `arch` scopes the match to one architecture-specific upload: a dual-arch
-/// snap mints one revision per arch per version, so matching on `version`
+/// snap creates one revision per arch per version, so matching on `version`
 /// alone would find an unrelated arch's revision and wrongly report the
 /// caller's own arch as already published.
 ///
@@ -520,7 +520,7 @@ pub fn is_retriable_snap_push(combined_output: &str) -> bool {
 ///
 /// This rejection is permanent for the given bytes: the Store deduplicates
 /// on content, not on the caller-supplied version string, so no number of
-/// retries changes the outcome — the fix is to PROMOTE the already-landed
+/// retries changes the outcome — the fix is to PROMOTE the already published
 /// revision, or (if none is at the current version) ship byte-different
 /// `.snap` contents.
 ///
@@ -537,7 +537,7 @@ pub fn is_retriable_snap_push(combined_output: &str) -> bool {
 /// scanning), same reasoning as [`is_retriable_snap_push`]. Callers must
 /// check [`is_retriable_snap_push`] FIRST: a response can carry both a
 /// transient marker and a genuine dedup marker (observed in the wild — the
-/// Store returns a 503 on the attempt that actually landed the bytes, then
+/// Store returns a 503 on the attempt that actually published the bytes, then
 /// rejects the client's automatic retry as a duplicate of what it already
 /// ingested) and the transient classification must win so the retry ladder
 /// gets a chance to resolve it before this permanent classification

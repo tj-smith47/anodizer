@@ -21,7 +21,7 @@ use super::*;
 
 // ---------------------------------------------------------------------------
 // Upload loop, extracted from `Stage::run` so the
-// (attempted, exec_result) seam is testable in isolation.
+// (attempted, exec_result) injection point is testable in isolation.
 // ---------------------------------------------------------------------------
 
 /// Resolve the version a crate publishes under: its own release tag when one
@@ -70,7 +70,7 @@ pub(crate) fn run_uploads(
     let mut skipped_already_published = 0usize;
     let mut held_for_review: Vec<String> = Vec::new();
     // One evidence entry per (crate, snap config, architecture) actually
-    // processed, each carrying the Snap Store revision minted/resolved for
+    // processed, each carrying the Snap Store revision issued/resolved for
     // that arch. A dual-arch snap therefore records two revisions so a later
     // `promote --from-run` can release every architecture.
     let mut recorded: Vec<SnapcraftTarget> = Vec::new();
@@ -129,7 +129,7 @@ pub(crate) fn run_uploads(
                     let snap_path = artifact.path.to_string_lossy();
                     // Scopes the idempotency/dedup probes below to this
                     // artifact's own architecture — a dual-arch snap config
-                    // (`crates:` targeting both x86_64 and aarch64) mints one
+                    // (`crates:` targeting both x86_64 and aarch64) creates one
                     // `list-revisions` row per arch per version, and matching
                     // on version alone would let one arch's already-released
                     // revision falsely skip a sibling arch's upload.
@@ -228,7 +228,7 @@ pub(crate) fn run_uploads(
                         continue;
                     }
 
-                    // Idempotency probe: the Snap Store mints a fresh revision
+                    // Idempotency probe: the Snap Store creates a fresh revision
                     // on every upload, so re-running a release at an
                     // already-published version would create a duplicate
                     // revision (and, since the Store dedups on content, the
@@ -412,7 +412,7 @@ pub(crate) fn run_uploads(
                             // ahead of the dedup classifier: the two are not
                             // mutually exclusive. Observed in the wild — the
                             // attempt that returns a 5xx can still have
-                            // landed the bytes server-side, so the very next
+                            // published the bytes server-side, so the very next
                             // (automatic) retry gets rejected as a duplicate
                             // of what it already ingested, and its output
                             // carries both markers. Checking dedup first
@@ -430,7 +430,7 @@ pub(crate) fn run_uploads(
                                 //
                                 // 1. An EARLIER attempt (this run's own retry
                                 //    loop, or a prior failed run) already
-                                //    landed these exact bytes server-side as
+                                //    published these exact bytes server-side as
                                 //    an orphaned revision that was never
                                 //    released to any channel — the fix is to
                                 //    PROMOTE that revision, not repack.
@@ -514,7 +514,7 @@ pub(crate) fn run_uploads(
                         },
                     )?;
                     let held = review_hold.get();
-                    // Capture the arch's minted revision for the run evidence.
+                    // Capture the arch's issued revision for the run evidence.
                     // A dedup recovery already knows the promoted revision; a
                     // fresh upload/hold resolves it via a scoped post-upload
                     // `list-revisions` probe (best-effort — `None` when the
@@ -566,7 +566,7 @@ pub(crate) fn run_uploads(
 /// Append one per-arch evidence entry for a processed artifact, cloning the
 /// channel/version base from the matching planned target so the recorded
 /// coordinates stay consistent with `collect_snapcraft_targets`. `revision` is
-/// the Snap Store revision minted/resolved for `arch` (`None` when a probe
+/// the Snap Store revision issued/resolved for `arch` (`None` when a probe
 /// could not name it); `held` marks a manual-review hold.
 fn push_recorded(
     recorded: &mut Vec<SnapcraftTarget>,

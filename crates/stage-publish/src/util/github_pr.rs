@@ -477,7 +477,7 @@ mod tests {
     /// The lookup must surface an `Err` variant (not panic, not silently
     /// return `Ok(Vec::new())`) when the request fails — auth-blindness
     /// (the bug `FindPrError` exists to prevent) must never collapse to
-    /// `Ok(empty)`. Driven through the `_with_env` seam with the API base
+    /// `Ok(empty)`. Driven through the `_with_env` point with the API base
     /// pointed at a guaranteed-dead local URL (`127.0.0.1:1`) so the
     /// transport always errors into `FindPrError::Network`. Firing at the
     /// real `api.github.com` made the variant environment-dependent
@@ -505,7 +505,7 @@ mod tests {
 
     /// `close_pr_via_api` against an unreachable target must bucket into
     /// `Failed(_)` (transport-error variant), not panic. Driven through
-    /// the `_with_env` seam with the GitHub API base pointed at a
+    /// the `_with_env` point with the GitHub API base pointed at a
     /// guaranteed-dead local URL (`127.0.0.1:1`) so the transport always
     /// errors — firing at the real `api.github.com` made this flaky, since
     /// a reachable host returning 404 classifies as `AlreadyClosed`, not

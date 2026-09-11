@@ -178,7 +178,7 @@ mcp:
     type: github-oidc
 ```
 
-In a workflow, give the job permission to mint the id-token:
+In a workflow, give the job permission to create the id-token:
 
 ```yaml
 permissions:

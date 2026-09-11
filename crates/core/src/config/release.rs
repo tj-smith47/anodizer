@@ -69,6 +69,10 @@ pub struct ReleaseConfig {
     /// When true, replace an existing draft release instead of failing.
     pub replace_existing_draft: Option<bool>,
     /// When true, replace existing release artifacts with the same name.
+    ///
+    /// A nightly run with `nightly.tag_name` set behaves as if this were
+    /// `true`: the pinned tag is rolling, so every run after the first meets
+    /// the assets its predecessor uploaded onto the same release.
     pub replace_existing_artifacts: Option<bool>,
     /// Skip the release stage. Accepts bool or template string
     /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip).
@@ -162,7 +166,7 @@ pub struct ReleaseConfig {
     ///
     /// Use this for **cross-platform publishing**
     /// pattern: source repo on one provider (e.g. GitLab) but releases
-    /// land on another (e.g. GitHub). Without it, the publish target
+    /// reach another (e.g. GitHub). Without it, the publish target
     /// is inferred from which `*_TOKEN` env-var is set — fine for
     /// single-provider setups but ambiguous when both tokens are
     /// available.

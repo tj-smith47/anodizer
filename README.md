@@ -29,7 +29,7 @@ Your release is a Cargo workspace — not a bag of loose binaries. anodizer is b
 - **crates.io, published in the right order.** Dependency-aware ordering with sparse-index polling holds each crate until the ones it depends on have propagated — so a workspace publish never races itself into a transient "version not found."
 - **Cross-compiles without the toolchain tax.** musl, glibc, Windows, and macOS from one machine via `cargo-zigbuild` or `cross`. No `rustup target add` rituals, no per-target CI shards to babysit.
 - **Reproducible — and it proves it.** Deterministic artifacts by default, then `anodizer check determinism` rebuilds them and byte-compares. "Reproducible" becomes a fact your CI enforces, not a claim in your release notes.
-- **Signing and attestation are first-class.** cosign + GPG for binaries, archives, checksums, and images, plus SLSA-style build provenance — wired in a few lines, not added after a CVE scare.
+- **Signing and attestation are first-class.** cosign + GPG for binaries, archives, checksums, and images, plus SLSA-style build provenance — wired in a few lines of config.
 
 Then the long tail that Rust authors actually hit: generated per-crate READMEs, `cargo-binstall` metadata derived straight from your config (no hand-maintained `pkg-url` that 404s), `version_files` to pin your docs and install scripts to the released version, and post-release install smoke tests that catch a broken artifact before your users do.
 
@@ -350,7 +350,7 @@ anodizer healthcheck   Probe external tools (nfpm, cosign, ...)
 Failure handling is in-process: a failed `anodizer release` executes the
 `release.on_failure` policy itself (`rollback` by default — delete the tag,
 revert the bump — auto-degrading to `hold` once a one-way-door publisher like
-crates.io has landed), so release workflows need no `if: failure()` recovery
+crates.io has published), so release workflows need no `if: failure()` recovery
 steps. `anodizer tag rollback "$GITHUB_SHA"` is the manual recovery command
 for killed or held runs. See
 [Release resilience](https://tj-smith47.github.io/anodizer/docs/advanced/release-resilience/)

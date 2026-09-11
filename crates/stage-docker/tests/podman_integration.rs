@@ -150,7 +150,7 @@ fn podman_v2_command_shape_matches_spec() {
 /// (NOT `--tag`). Per the podman-build docs, a multi-platform `--tag` build
 /// does not assemble a local manifest list, so the subsequent
 /// `podman manifest push --all` would publish nothing valid. This test fails
-/// before the `--manifest` fix lands (the build emitted `--tag`).
+/// before the `--manifest` fix went in (the build emitted `--tag`).
 #[cfg(target_os = "linux")]
 #[test]
 fn podman_multi_platform_build_uses_manifest_not_tag() {

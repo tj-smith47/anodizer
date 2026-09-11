@@ -297,7 +297,7 @@ fn host_docker_platform() -> Option<String> {
     host_docker_platform_for(std::env::consts::ARCH, cfg!(target_endian = "little"))
 }
 
-/// Pure mapping seam for [`host_docker_platform`]: Rust `target_arch` name →
+/// Pure mapping helper for [`host_docker_platform`]: Rust `target_arch` name →
 /// Docker platform spec.
 ///
 /// The arch token comes from the shared
@@ -813,7 +813,7 @@ mod tests {
     #[test]
     fn shell_metacharacters_are_quoted_not_injected() {
         // A binary / package name carrying shell metacharacters must be
-        // splice-safe: it lands inside single quotes as one inert literal,
+        // splice-safe: it ends up inside single quotes as one inert literal,
         // never as executable syntax in the `sh -c` body.
         let job = SmokeJob {
             image: "debian:12".to_string(),
@@ -1464,7 +1464,7 @@ mod tests {
 
     #[test]
     fn tail_truncates_on_a_char_boundary_for_multibyte_streams() {
-        // A stream whose MAX-byte cut point lands mid-multibyte-char must be
+        // A stream whose MAX-byte cut point falls mid-multibyte-char must be
         // advanced to the next char boundary — never sliced through a code point
         // (which would panic). `é` is two bytes, so the cut alternates between
         // lead and continuation bytes across the buffer.

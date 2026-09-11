@@ -50,13 +50,13 @@ pub(super) type DryRunRunner<'a> = dyn Fn(&str) -> DryRunOutcome + 'a;
 /// Applies the real-release gate, then delegates to
 /// [`run_cargo_publish_simulation_with`].
 ///
-/// Both side-effecting seams are injected by the caller (the `run_preflight*`
+/// Both side-effecting calls are injected by the caller (the `run_preflight*`
 /// entry points), so no test path ever hits the network or spawns cargo here:
 /// - the partial-publish index query routes through the supplied
 ///   [`CheckerFactory`] — production uses [`RealCheckerFactory`] (a real
 ///   sparse-index GET); tests inject a mock factory returning canned states;
 /// - the dry-run runner is the real `cargo publish --dry-run` spawn in
-///   production and [`noop_dry_run_runner`] in every test seam.
+///   production and [`noop_dry_run_runner`] in every test hook.
 pub(super) fn run_cargo_publish_simulation(
     ctx: &mut Context,
     log: &StageLogger,
@@ -321,7 +321,7 @@ fn simulate_dry_run_publishes(
             DryRunOutcome::Ok => {}
             DryRunOutcome::BenignSiblingMissing(detail) => {
                 // Benign ONLY when the unresolved crate is itself in the
-                // to-publish set (a sibling the real publish lands first). A
+                // to-publish set (a sibling the real publish uploads first). A
                 // missing crate that is NOT in the set is a genuine resolution
                 // failure that would also break the real publish — abort.
                 if in_set.iter().any(|sib| detail.contains(sib)) {
@@ -372,7 +372,7 @@ pub(super) fn run_cargo_dry_run(crate_name: &str, log: &StageLogger) -> DryRunOu
 /// lookup); tests point at a nonexistent path to exercise the
 /// spawn-failure branch without clobbering the process-wide `PATH`
 /// (which would make every concurrent PATH-resolved spawn in the test
-/// binary flaky). Same seam convention as
+/// binary flaky). Same injection point convention as
 /// `core::git::gh_api_get_with_binary`.
 pub(super) fn run_cargo_dry_run_with_binary(
     cargo_binary: &std::path::Path,
@@ -539,7 +539,7 @@ pub(super) fn run_publisher_preflight_extension(
     report: &mut PreflightReport,
     // Publisher `preflight()` hooks can perform live credential / repo probes
     // (cargo/npm token validity, GitHub-repo write scope, AUR ssh auth). The
-    // production `run_preflight` enables them; the injected-factory test seams
+    // production `run_preflight` enables them; the injected-factory test hooks
     // disable them so unit tests stay hermetic (the rollback-scope branch below
     // is pure and always runs).
     live_publisher_preflight: bool,

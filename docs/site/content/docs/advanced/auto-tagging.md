@@ -25,7 +25,7 @@ inspect the bump before anything reaches the remote, exactly like `git tag`.
 Reaching the remote is always an explicit opt-in:
 
 - **`--push`** pushes the bump commit to the release branch **atomically with
-  the tag** (`git push --atomic`) — branch HEAD and tag land together or not at
+  the tag** (`git push --atomic`) — branch HEAD and tag arrive together or not at
   all, so this mode can never leave an orphan tag (a remote tag whose bump
   commit is absent from the remote branch).
 - **`--push-tags-only`** pushes the tag(s) but *not* the bump commit — the
@@ -169,7 +169,7 @@ tagging too.
 
 A non-fast-forward rejection is the most likely `--push` failure (someone
 pushed to the release branch after your checkout). Because the push is atomic,
-neither the branch nor the tag lands when it's rejected, and the error names
+neither the branch nor the tag arrives when it's rejected, and the error names
 the stale ref and tells you to pull/rebase and re-run.
 
 ## Commit message directives
@@ -461,7 +461,7 @@ own `release.yml` run:
   run: |
     for crate in my-core my-cli my-operator my-plugin; do
       echo "--- tagging $crate ---"
-      # --push lands each crate's version_sync bump commit atomically with its
+      # --push pushes each crate's version_sync bump commit atomically with its
       # tag, so tagged commits are never orphaned from master and the manual
       # `git push origin HEAD` below is unnecessary.
       if anodizer tag --crate "$crate" --push; then

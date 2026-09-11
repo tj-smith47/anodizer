@@ -675,7 +675,7 @@ mod tests {
         );
 
         // No key sidecar may remain next to the clone target (the historical
-        // leak location: a sibling of a tempdir-root clone target lands in
+        // leak location: a sibling of a tempdir-root clone target ends up in
         // the SHARED system temp dir and was never cleaned up).
         let siblings: Vec<_> = std::fs::read_dir(parent.path())
             .unwrap()
@@ -964,7 +964,7 @@ mod tests {
     /// A non-"github" `token_type` triggers a warn but does NOT abort
     /// dispatch — anodizer currently only implements GitHub, but the
     /// user-facing contract is "warn, don't fail". Asserts the warn
-    /// landed in the capture sink, AND that the call proceeded into the
+    /// ended up in the capture sink, AND that the call proceeded into the
     /// SSH path (succeeds against the local bare remote).
     #[test]
     fn clone_repo_warns_on_non_github_token_type_but_proceeds() {

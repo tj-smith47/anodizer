@@ -215,7 +215,7 @@ simple_publisher!(
 
 /// Aliased to the core-owned snapshot so the evidence schema lives in
 /// [`anodizer_core::publish_evidence`] and credential-shaped fields
-/// have no slot to land in. See the Submitter rustdoc above for the
+/// have no slot to fill. See the Submitter rustdoc above for the
 /// credential-handling rationale.
 pub(crate) type WingetTarget = anodizer_core::publish_evidence::WingetTargetSnapshot;
 
@@ -495,7 +495,7 @@ impl anodizer_core::Publisher for WingetPublisher {
     }
 
     fn advisory_requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        // Every winget publish lands as a PR against the upstream index;
+        // Every winget publish opens a PR against the upstream index;
         // `gh pr create` is the preferred transport with a full REST-API
         // fallback, so `gh` is a recommendation, never a gate failure.
         if active_winget_configs(ctx).is_empty() {
@@ -611,7 +611,7 @@ impl anodizer_core::Publisher for WingetPublisher {
             &log,
             "winget",
             // A target is recorded only for a crate that really submitted, so
-            // a dry run and a run whose every crate skipped both land nothing.
+            // a dry run and a run whose every crate skipped both publish nothing.
             crate::publisher_helpers::RunLanding::from_landed(!targets.is_empty()),
             selected.len(),
         );

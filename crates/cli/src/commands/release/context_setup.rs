@@ -50,7 +50,7 @@ pub(crate) fn apply_prepare_mode_to_skip(skip: &mut Vec<String>) {
 }
 
 /// Installs the pre-submitter verify-release gate onto `ctx.verify_gate`.
-/// Extracted to a named seam (rather than an inline closure at the call
+/// Extracted to a named function (rather than an inline closure at the call
 /// site) so wiring — not just [`anodizer_stage_verify_release::run_asset_gate`]'s
 /// own behavior, which is unit-tested directly in that crate — has its own
 /// falsifiable test: deleting the call to this function, or swapping it for

@@ -19,8 +19,8 @@
 # HEAD is shipped to each host as a git bundle (not fetched from origin) because
 # a pre-push gate must verify the commit about to ship — which is not on origin
 # yet — and the validation hosts hold no registry credentials. Each remote
-# hard-verifies it landed on $SHA before testing, so a bad checkout can never
-# masquerade as a green run of the wrong tree.
+# hard-verifies it reached $SHA before testing, so a bad checkout can never
+# masquerade as a passing run of the wrong tree.
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

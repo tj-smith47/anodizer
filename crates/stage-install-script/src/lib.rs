@@ -415,7 +415,7 @@ struct ScriptParams<'a> {
 /// and the shell-expandable `@INSTALL_DIR@` pass through verbatim by design.
 ///
 /// `@NAME@`, `@SCRIPT_NAME@`, `@TAG_PREFIX@` and `@SUPPORTED_PLATFORMS@` also
-/// land inside the `--help` heredoc, an unquoted `<<EOF` body whose escape
+/// end up inside the `--help` heredoc, an unquoted `<<EOF` body whose escape
 /// context is the same as a double-quoted string. The file name therefore
 /// reaches the heredoc through `@SCRIPT_NAME@` ([`shell_dq_escape`]) while the
 /// `#` comment header takes `@FILENAME@` ([`comment_sanitize`]): that helper
@@ -423,7 +423,7 @@ struct ScriptParams<'a> {
 /// in a comment and unsafe in a heredoc. `@DESCRIPTION@` and `@HOMEPAGE@`
 /// carry the same restriction and never appear there.
 fn render_script(params: &ScriptParams) -> String {
-    // Human free-text metadata: escaped for its shell context (@NAME@ lands in
+    // Human free-text metadata: escaped for its shell context (@NAME@ ends up in
     // double-quoted strings and a comment; description/homepage are comment-only).
     let name = shell_dq_escape(params.name);
     let description = comment_sanitize(params.description);
@@ -506,7 +506,7 @@ fn comment_sanitize(s: &str) -> String {
 /// marker position is substituted exactly once from `map`, so no replacement
 /// value can contain a marker that a later pass would rewrite — re-substitution
 /// is structurally impossible in either direction. An `@...@` run that matches
-/// no known marker is emitted verbatim. UTF-8 safe: all slicing lands on the
+/// no known marker is emitted verbatim. UTF-8 safe: all slicing falls on the
 /// ASCII `@` byte or a marker's byte length.
 fn single_pass_replace(template: &str, map: &[(&str, &str)]) -> String {
     let mut out = String::with_capacity(template.len() + 512);

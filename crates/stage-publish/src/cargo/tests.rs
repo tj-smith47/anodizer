@@ -275,10 +275,17 @@ fn test_expand_transitive_deps_ignores_external_deps() {
 /// Sparse-index URL must follow the cargo registry layout:
 /// 1-char names live under `/1/<name>`, 2-char under `/2/<name>`,
 /// 3-char under `/3/<first>/<name>`, 4+ under `/<first2>/<next2>/<name>`.
-/// Mismatch here means we'd query a URL that always 404s and silently
-/// re-publish every release.
+/// A mismatch here queries a URL that always 404s, which silently re-publishes
+/// every release.
 #[test]
 fn test_sparse_index_url_shape() {
+    // The base is env-overridable for hermetic tests, so this one pins the
+    // production spelling with the override removed and the env mutex held.
+    let _env = anodizer_core::test_helpers::env::env_mutex()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let _base =
+        anodizer_core::test_helpers::env::EnvGuard::remove("ANODIZER_TEST_CRATES_IO_INDEX_BASE");
     // 1-char crate name.
     assert_eq!(sparse_index_url("a"), "https://index.crates.io/1/a");
     // 2-char.
@@ -3018,12 +3025,12 @@ fn resolve_token_mode_returns_none_without_any_env() {
     .expect("token mode never errors during resolution");
     assert_eq!(
         got, None,
-        "token mode inherits the ambient token; nothing minted"
+        "token mode inherits the ambient token; nothing issued"
     );
 }
 
 /// `auth: auto` with an ambient `CARGO_REGISTRY_TOKEN` takes the token path
-/// (Ok(None)) — no mint attempted.
+/// (Ok(None)) — no token request attempted.
 #[test]
 fn resolve_auto_with_ambient_token_returns_none() {
     use anodizer_core::config::CargoAuthMode;
@@ -3065,7 +3072,7 @@ fn resolve_auto_without_token_or_oidc_bails() {
 }
 
 /// `auth: oidc` against a CUSTOM registry (Trusted Publishing is crates.io-only)
-/// bails on the registry check BEFORE any mint attempt — even with a full OIDC
+/// bails on the registry check BEFORE any token request — even with a full OIDC
 /// context present.
 #[test]
 fn resolve_oidc_against_custom_registry_bails() {
@@ -3113,7 +3120,7 @@ fn resolve_no_active_cargo_config_returns_none() {
 /// DESELECTED sibling `y` is `auth: oidc` with no OIDC context available.
 /// The resolver must apply the same `selected_crates` scoping as
 /// `active_cargo_configs` and never even look at `y` — Ok(None) via the
-/// token path, no mint attempt and no error attributable to the
+/// token path, no token request and no error attributable to the
 /// out-of-scope sibling.
 #[test]
 fn resolve_ignores_deselected_sibling_oidc_block() {
@@ -3141,9 +3148,9 @@ fn resolve_ignores_deselected_sibling_oidc_block() {
 }
 
 /// `auth: auto` with NO ambient token but a PRESENT OIDC context routes to the
-/// mint path, NOT the credential-less bail. The mint fails here (the OIDC
+/// token path, NOT the credential-less bail. The request fails here (the OIDC
 /// endpoint is an unreachable localhost sentinel), which is exactly the point:
-/// the error is a mint failure, proving the ladder CHOSE to mint.
+/// the error is a token-request failure, proving the ladder CHOSE to request one.
 #[test]
 fn resolve_auto_without_token_but_oidc_context_routes_to_mint() {
     use anodizer_core::config::CargoAuthMode;
@@ -3713,7 +3720,7 @@ fn cargo_publish_plan_falsy_if_drops_crate() {
 }
 
 /// Empty selection (no `--crate`) means "all eligible crates": every
-/// crate with a publish.cargo block lands in the plan, ordered topo.
+/// crate with a publish.cargo block ends up in the plan, ordered topo.
 #[test]
 fn cargo_publish_plan_empty_selection_takes_all_eligible() {
     let mut ctx = TestContextBuilder::new()
@@ -3816,7 +3823,7 @@ fn decode_cargo_yank_targets_empty_for_non_cargo_variant() {
 
 /// Dry-run rollback takes the `is_dry_run` branch: it returns Ok WITHOUT
 /// spawning `cargo`. "No spawn" is proven by shadowing `cargo` with the
-/// argv-recording stub: any reached `cargo yank` would land in the argv
+/// argv-recording stub: any reached `cargo yank` would end up in the argv
 /// log, so an empty log witnesses the dry-run short-circuit firing
 /// before the loop. The stub is PREPENDED to PATH (never a wholesale
 /// replacement, which would make every concurrent PATH-resolved spawn

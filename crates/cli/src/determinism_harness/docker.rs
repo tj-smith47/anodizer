@@ -35,7 +35,7 @@ impl Harness {
     /// - `true` (operator typed `--stages=…,docker`): a hard ERROR. A
     ///   determinism gate that silently skips a stage the caller asked it
     ///   to byte-verify is false coverage — a non-reproducible image could
-    ///   ship while the gate reports green. The release pipeline's ubuntu
+    ///   ship while the gate reports success. The release pipeline's ubuntu
     ///   shard requests docker explicitly and provisions a
     ///   `docker-container` buildx driver, so this error fires only when
     ///   that provisioning regressed.

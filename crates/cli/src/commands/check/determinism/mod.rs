@@ -120,7 +120,7 @@ pub(crate) fn run(
     // `--preserve-dist=<path>` may be relative; resolve against the
     // repo root so the harness has an absolute target. The repo_root
     // is `current_dir`, so a relative `--preserve-dist=./preserved-dist`
-    // lands at `<cwd>/preserved-dist` — what a CI step expects when
+    // ends up at `<cwd>/preserved-dist` — what a CI step expects when
     // passing the flag verbatim.
     //
     // The per-crate subdir append (`<base>/<crate>`) for multi-crate

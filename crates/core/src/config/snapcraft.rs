@@ -99,7 +99,7 @@ pub struct SnapcraftConfig {
     /// `report.required_failures()` so the CLI exits non-zero.
     ///
     /// Default: `false` — a failed snap upload does not abort the pipeline.
-    /// It is still reported as a post-publish landing issue by
+    /// It is still reported as a post-publish delivery issue by
     /// `verify-release` regardless of this setting: `required` governs only
     /// whether the run ABORTS mid-pipeline, never whether an attempted
     /// failure gets certified as a clean release.

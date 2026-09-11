@@ -168,7 +168,7 @@ fn host_missing_error(id: &str) -> anyhow::Error {
 ///
 /// The key carries the binary's `amd64_variant` metadata alongside the os/arch
 /// platform string so two amd64 builds of one triple (a baseline `v1` and a
-/// `-Ctarget-cpu=x86-64-v3` tune) land in separate groups and produce two
+/// `-Ctarget-cpu=x86-64-v3` tune) end up in separate groups and produce two
 /// distinct `.AppImage` files instead of one silently clobbering the other.
 ///
 /// Uses a `BTreeMap` (not `HashMap`) so iteration order is deterministic

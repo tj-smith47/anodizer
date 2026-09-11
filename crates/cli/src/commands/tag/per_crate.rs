@@ -636,7 +636,7 @@ pub(crate) fn run_per_crate_tag(
     // crates are tagged and pushed". Emitting before the atomic push would
     // advertise a successful tagging even when the push then fails (the `?`
     // below aborts mid-command, leaving the consumer believing the tags
-    // landed). Defer the `println!`s until after the push returns Ok.
+    // published). Defer the `println!`s until after the push returns Ok.
     let crates_json =
         serde_json::to_string(&all_tagged_crates).unwrap_or_else(|_| "[]".to_string());
 

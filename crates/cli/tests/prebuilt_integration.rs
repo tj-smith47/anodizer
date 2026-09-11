@@ -4,7 +4,7 @@
 //!
 //! Each test stages a fake binary outside `dist/` (per the warning
 //! that the release pipeline removes `dist/` between runs), points the
-//! config's `prebuilt.path` template at it, and asserts the artifact lands
+//! config's `prebuilt.path` template at it, and asserts the artifact is produced
 //! with the expected metadata. Negative tests cover the four config-load
 //! validations (missing path, missing targets, mutual-exclusion with
 //! `cross_tool`, `cross:` crate-level strategy).

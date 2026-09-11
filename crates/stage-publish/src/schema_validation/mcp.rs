@@ -151,7 +151,7 @@ mod tests {
         ctx
     }
 
-    /// The every-option `server.json` must conform with zero findings AND land
+    /// The every-option `server.json` must conform with zero findings AND put
     /// each option where the registry schema expects it.
     #[test]
     fn every_option_validates_and_lands_in_fields() {
@@ -186,7 +186,7 @@ mod tests {
         assert_eq!(v["repository"]["source"], "github");
 
         // The npm package carries the global version; its registryType +
-        // identifier + transport land where the schema's Package def expects.
+        // identifier + transport arrive where the schema's Package def expects.
         let npm = &v["packages"][0];
         assert_eq!(npm["registryType"], "npm");
         assert_eq!(npm["identifier"], "@acme/widget");
@@ -436,7 +436,7 @@ mod tests {
     /// schema violation: the registry's remote subschemas require `url`. The
     /// emitter drops the empty `url` key (the stdio shape), so the document
     /// fails the `streamable-http`/`sse` `required: [type, url]` branch — the
-    /// finding must land under the package transport. Locks the contract that
+    /// finding must end up under the package transport. Locks the contract that
     /// a misconfigured remote transport is caught before a publish.
     #[test]
     fn remote_transport_without_url_is_reported() {

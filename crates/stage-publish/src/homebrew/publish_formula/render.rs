@@ -246,7 +246,7 @@ pub(super) fn render_install_and_test_blocks(
 /// [`is_macos`](anodizer_core::target::is_macos) (genuine `*-apple-darwin` only),
 /// NOT the broad [`is_darwin`](anodizer_core::target::is_darwin)="apple" — the latter also
 /// admits `aarch64-apple-ios`/`-tvos`/`-watchos`, which are buildable targets
-/// but carry no `brew`-installable binary and would otherwise land in the
+/// but carry no `brew`-installable binary and would otherwise end up in the
 /// formula's untyped `# platform:` url block (a 404-class install). It also makes
 /// [`crate_has_homebrew_archives`](super::publish::crate_has_homebrew_archives)
 /// report a non-eligible-only artifact set as

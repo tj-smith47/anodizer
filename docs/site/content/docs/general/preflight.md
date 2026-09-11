@@ -148,7 +148,7 @@ version:
 $ ANODIZER_CURRENT_TAG=v0.20.0 anodizer preflight --publish-only
 ```
 
-`complete` is deliberately not an error: it is the green light a resumed
+`complete` is deliberately not an error: it is the approval a resumed
 release wants. `unknown` is deliberately not an error either — an
 unreachable registry must not veto a release, and the registry's own
 conflict handling is the backstop. A `diverged` **optional** publisher is
@@ -223,7 +223,7 @@ requirements — env vars and env-borne key material (`COSIGN_KEY`,
 host-local requirement (CLI tools, the docker daemon, endpoint
 reachability, and on-disk key *files*, which may not be materialized on
 the gate runner). Env-borne key material is still structurally validated,
-so a malformed secret key is caught before a tag is minted; on-disk key
+so a malformed secret key is caught before a tag is issued; on-disk key
 *files* are not checked by this gate. The check runs zero mutations: no
 `before:` hooks, no network probes, no pipeline.
 
@@ -263,7 +263,7 @@ jobs:
   tag:
     needs: [preflight]
     if: needs.preflight.result == 'success'
-    # …auto-tag only once the secret gate is green…
+    # …auto-tag only once the secret gate passes…
 ```
 
 The gate runs even when HEAD carries no release tag (it is a *pre-tag*

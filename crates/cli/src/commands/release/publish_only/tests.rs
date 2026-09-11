@@ -456,7 +456,7 @@ fn hash_verify_preserved_dist_skips_pem_and_asc() {
 /// Regression: cross-shard duplicate paths with diverging recorded
 /// hashes (e.g. `anodizer-<ver>-source.tar.gz` produced
 /// independently on every shard with subtle git/tar/locale variance)
-/// land in the merged context multiple times. Only ONE shard's bytes
+/// end up in the merged context multiple times. Only ONE shard's bytes
 /// survive `download-artifact merge-multiple` on disk; the others'
 /// claims cannot match. hash-verify must accept the path as soon as
 /// the disk bytes match ANY shard's recorded hash, not bail because
@@ -788,7 +788,7 @@ fn merge_workspace_skip_propagates_cfgd_core_announce_skip() {
 /// relative-path resolver) sees the active crate's preserved
 /// location. The pre-fix code left `ctx.config.dist` pointing at
 /// the workspace-root `./dist`, so cfgd's per-crate metadata.json
-/// landed in the wrong place. The save/restore must hold even
+/// ended up in the wrong place. The save/restore must hold even
 /// when the iteration body errors out — otherwise a partial
 /// publish-only run would leak the per-iteration dist into the
 /// caller's context.
@@ -1877,7 +1877,7 @@ mod per_crate_tag {
         );
     }
 
-    /// `write_metadata_json` must land `metadata.json` under
+    /// `write_metadata_json` must write `metadata.json` under
     /// `ctx.config.dist` (the per-crate subdir the loop re-anchored
     /// to), NOT the flat `config.dist` the `config` param still
     /// carries. The release stage's existence gate reads

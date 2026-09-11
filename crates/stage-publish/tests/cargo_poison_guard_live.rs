@@ -369,6 +369,6 @@ fn binstall_crate_guard_requires_the_prepublish_mutation() {
     // guard-cksum == publish-cksum holds there (the leaf
     // `local_package_reproduces_published_crates_io_cksum` proves the byte-exact
     // path on a dep-stable crate). What this test proves is the central
-    // claim the unit tests assert at the seam: the binstall mutation changes the
+    // claim the unit tests assert at the injection point: the binstall mutation changes the
     // cksum and must be applied — deterministically — before the guard packages.
 }

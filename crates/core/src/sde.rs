@@ -1,7 +1,7 @@
 //! SDE-aware "now" resolver shared across stages.
 //!
 //! The determinism harness exports `SOURCE_DATE_EPOCH` into every child
-//! build subprocess, and any timestamp that lands in a release-pipeline
+//! build subprocess, and any timestamp that ends up in a release-pipeline
 //! artifact (filename, embedded date field, RPM changelog header, ...)
 //! must honor that env var instead of reading wall-clock time. Stages
 //! that ignored SDE silently caused harness drift before

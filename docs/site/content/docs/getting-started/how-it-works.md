@@ -13,7 +13,7 @@ When you run `anodizer release`, the following stages execute in order:
 build → changelog → archive → nfpm → checksum → sign → release → docker → blob → publish → announce
 ```
 
-Artifacts are signed **before** the release stage uploads them, and Docker images and blob uploads land **before** the package-manager publishers — so a required blob or image failure gates the one-way-door registries (crates.io, chocolatey, winget) rather than firing after they have already published.
+Artifacts are signed **before** the release stage uploads them, and Docker images and blob uploads arrive **before** the package-manager publishers — so a required blob or image failure gates the one-way-door registries (crates.io, chocolatey, winget) rather than firing after they have already published.
 
 Each stage is independent — if you skip a stage with `--skip`, downstream stages still work with whatever artifacts exist.
 

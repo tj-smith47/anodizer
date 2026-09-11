@@ -423,7 +423,7 @@ fn check_workspace_membership_discriminates_distinct_cargo_workspace_roots() {
     let root = tmp.path();
     // Two SEPARATE physical Cargo workspaces, each rooted below `root`
     // (no Cargo.toml at `root` itself) — proves `find_cargo_workspace_root`
-    // climbs per-crate rather than coincidentally landing on `base_dir`,
+    // climbs per-crate rather than coincidentally reaching `base_dir`,
     // and that `member_cache` keys on the resolved root without
     // cross-contaminating the two workspaces' member sets.
     write_disk_workspace(

@@ -235,7 +235,7 @@ fn test_conventional_scoped_breaking_shorthand_triggers_major() {
 fn test_conventional_chore_only_range_noops_with_none_default() {
     // This is the cfgd dogfood scenario: a stable lib crate gets a test/chore
     // touch but no release-worthy commit. default_bump=none means autotag
-    // should NOT mint a new tag — matches the intent.
+    // should NOT create a new tag — matches the intent.
     let messages = vec![
         "chore: bump dep".to_string(),
         "test: new harness".to_string(),
@@ -1766,7 +1766,7 @@ fn coherence_guard_rejects_divergent_flat_prefix_subset() {
 }
 
 /// An agreeing shared-prefix subset passes even when the independent
-/// crate's version differs — `gamma` mints tags into its OWN namespace,
+/// crate's version differs — `gamma` creates tags into its OWN namespace,
 /// so its version never conflicts with the `v*` aggregate.
 #[test]
 fn coherence_guard_passes_agreeing_flat_subset_with_divergent_singleton() {

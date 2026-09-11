@@ -109,7 +109,7 @@ impl RetryPolicy {
     ///
     /// Pre-publish probes (token `whoami`, registry index GET, GitHub repo
     /// scope, npm duplicate-version) are an advisory warning gate, not a
-    /// write that must land. They run sequentially across every configured
+    /// write that must arrive. They run sequentially across every configured
     /// publisher, so the production write-ladder (10 attempts / 10s base /
     /// 5m cap) would let a single wedged endpoint stall the gate for tens of
     /// minutes. A shallow bound keeps the probe responsive while still
@@ -153,7 +153,7 @@ impl RetryPolicy {
     ///
     /// An idempotent PUT/POST to a fixed target (an Artifactory/generic upload,
     /// a GemFury push, a Snap Store upload, a bucket blob PUT, a GitHub asset
-    /// upload) lands the same bytes at the same path on every re-issue, so a
+    /// upload) writes the same bytes at the same path on every re-issue, so a
     /// transient 5xx/429 or dropped connection must retry a bounded number of
     /// times even when a stateful mode (`--publish-only`) resolves the
     /// configured policy down to `attempts: 1`. The floor is a `max()` — it
@@ -220,7 +220,7 @@ pub const DEFAULT_MAX_ELAPSED: Duration = Duration::from_secs(15 * 60);
 static RETRY_BACKOFF_MILLIS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Per-scope retry tally (backoff sleeps + summed wait), keyed by the label of
-/// the enclosing [`RetryScope`]. Backoff recorded with no active scope lands
+/// the enclosing [`RetryScope`]. Backoff recorded with no active scope ends up
 /// under [`UNATTRIBUTED_SCOPE`] so the per-scope rows always sum to the global
 /// total. A `Mutex` (not a lock-free map) is ample: retry sleeps are seconds
 /// apart, so contention among the parallel upload workers is negligible.
@@ -270,7 +270,7 @@ struct ScopeRetry {
 /// enclosing scope on drop, so nested/sequential scopes compose. Install one
 /// around each publisher's `run` and around a stage's whole retrying section,
 /// and one per fan-out worker (via [`RetryScope::inherit`]) so the worker's
-/// backoff lands under the same label as its parent's.
+/// backoff ends up under the same label as its parent's.
 #[must_use = "the scope only applies while the guard is alive"]
 pub struct RetryScope {
     /// Guards are LIFO within one thread's [`SCOPE_STACK`]; the struct carries
@@ -355,12 +355,12 @@ pub fn current_budget_anchor() -> Option<std::time::Instant> {
 /// attribution label (a [`RetryScope`]) and anchors the wall-clock retry budget
 /// that [`crate::context::Context::retry_deadline`] reports for the whole invocation.
 ///
-/// Install exactly one at every seam that calls into a publisher —
+/// Install exactly one at every point that calls into a publisher —
 /// `run`, `reconcile`, `rollback`, `preflight`. The budget belongs to the
 /// invocation, not to the call that happens to ask for it: a publisher that
-/// resolves the deadline at three seams (an auth exchange, the publish request,
+/// resolves the deadline at three points (an auth exchange, the publish request,
 /// a cleanup) gets one budget covering all three, so a wedged registry cannot
-/// spend `retry.max_elapsed` once per seam.
+/// spend `retry.max_elapsed` once per point.
 ///
 /// Entering while a budget is already open INHERITS it rather than replacing
 /// it, so nothing reachable from inside a publisher — including a nested guard

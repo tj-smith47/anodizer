@@ -163,7 +163,7 @@ Warning: 1 snap upload(s) HELD for Snap Store manual review — store release NO
 The hold is also recorded in the run's publish evidence, and the
 [verify-release gate](@/docs/advanced/verify-release.md) probes the store's
 public channel map — a held (or otherwise absent) version fails the gate with
-the dashboard URL, so the unresolved state cannot ride a green pipeline.
+the dashboard URL, so the unresolved state cannot ride a passing pipeline.
 
 ## Full example
 

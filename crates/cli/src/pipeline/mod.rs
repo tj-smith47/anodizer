@@ -404,7 +404,7 @@ mod tests {
 
     /// `Pipeline::run` ends with a default summary write to
     /// `<dist>/run-<id>/summary.json`; with the default relative
-    /// `./dist` and the crate root as test cwd that would land in the
+    /// `./dist` and the crate root as test cwd that would end up in the
     /// working tree. Point `dist` at a tempdir; the returned guard
     /// keeps it alive across the run.
     fn isolate_dist(ctx: &mut Context) -> tempfile::TempDir {
@@ -574,7 +574,7 @@ mod tests {
 
     /// A stage whose body logs one status line through the context's
     /// logger, so capture order can pin where the consolidated skip row
-    /// lands relative to a running stage's output.
+    /// is resolved relative to a running stage's output.
     struct ChattyStage;
     impl Stage for ChattyStage {
         fn name(&self) -> &str {

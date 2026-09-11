@@ -335,7 +335,7 @@ mod tests {
 
     /// A real (non-dry-run) unwind drives the engine and persists its
     /// verdict. The fixture names a publisher no registry carries, so the
-    /// row lands as `RollbackFailed(publisher not found ...)` — the
+    /// row is recorded as `RollbackFailed(publisher not found ...)` — the
     /// documented diagnostic, and proof the engine actually ran.
     #[test]
     fn unwind_dispatches_and_persists_rollback_state() {

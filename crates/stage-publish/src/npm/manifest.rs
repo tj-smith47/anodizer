@@ -566,7 +566,7 @@ pub(crate) fn insert_engines(root: &mut BTreeMap<String, serde_json::Value>, cfg
 ///
 /// `provenance_override` lets the live publish path force the emitted value:
 /// `Some(v)` writes `v` regardless of `cfg.provenance` (used to degrade to
-/// `false` on a runner that cannot mint an npm provenance attestation — see
+/// `false` on a runner that cannot create an npm provenance attestation — see
 /// [`runner_supports_npm_provenance`]), while `None` emits the configured
 /// value unchanged (the manifest-only / non-publish path keeps the operator's
 /// choice). The override is publish-time only and never reaches the
@@ -588,7 +588,7 @@ pub(crate) fn insert_publish_config(
 /// Whether the current runner can produce an npm provenance / Trusted
 /// Publishing attestation that the npm registry will accept.
 ///
-/// npm provenance is minted from a GitHub Actions OIDC token and the registry
+/// npm provenance is issued from a GitHub Actions OIDC token and the registry
 /// only verifies the sigstore bundle for **GitHub-hosted** runners; on a
 /// self-hosted runner the publish is rejected with an `E422 Unprocessable
 /// Entity` whose body reads `Error verifying sigstore provenance bundle:
@@ -668,7 +668,7 @@ pub(crate) fn insert_files(
                 derived_entries.iter().cloned().collect();
             for pattern in resolve_extra_files(cfg) {
                 // The published basename of an `extra_files` glob (e.g.
-                // `README*` / `LICENSE*`) is what lands in the package dir;
+                // `README*` / `LICENSE*`) is what ends up in the package dir;
                 // emit the trailing path component, dropping any glob dir.
                 let base = pattern.rsplit('/').next().unwrap_or(&pattern);
                 set.insert(base.to_string());
@@ -736,7 +736,7 @@ pub(crate) fn postinstall_commands(cfg: &NpmConfig, pkg_name: &str) -> Vec<(Stri
 /// (`pkg_name` is the published npm name, which may be a scoped alias that
 /// shares nothing with the crate name). `provenance_override` is threaded into
 /// [`insert_publish_config`] so the live publish can degrade provenance on a
-/// runner that cannot mint an attestation.
+/// runner that cannot create an attestation.
 pub(crate) fn render_package_json(
     ctx: &Context,
     cfg: &NpmConfig,

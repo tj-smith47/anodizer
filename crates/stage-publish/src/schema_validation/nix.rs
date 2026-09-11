@@ -503,7 +503,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // (a) single-crate mode — every option, zero findings + attrs land.
+    // (a) single-crate mode — every option, zero findings + the attrs appear.
     // -----------------------------------------------------------------
 
     #[test]
@@ -527,7 +527,7 @@ mod tests {
             "every-option single-crate derivation + flake must conform, got: {findings:?}"
         );
 
-        // Parse the rendered derivation and assert each key attribute landed.
+        // Parse the rendered derivation and assert each key attribute published.
         let render = render_nix_for_validation(&ctx, "widget", &ctx.logger("publish"))
             .expect("render ok")
             .expect("not skipped");
@@ -698,7 +698,7 @@ mod tests {
     /// A TARGET-RESTRICTED determinism shard that built no Nix-mappable archive
     /// for a nix-configured crate must SKIP it (zero findings, no error) rather
     /// than trip the publisher's "no Linux/Darwin archive" guard — the archive
-    /// legitimately landed on another shard. The self-skip is gated on the
+    /// legitimately reached another shard. The self-skip is gated on the
     /// restricted-build signal, so this holds only on a shard.
     #[test]
     fn partial_shard_without_artifact_is_skipped_not_failed() {
@@ -979,7 +979,7 @@ stdenvNoCC.mkDerivation {
     /// after, opaque because the scanner stays inside the string — must still
     /// CLEAR the floor (the too-strict false-rejection trap this guards). If
     /// the scanner ended the string early on `'''`/`''${`, the trailing `}`
-    /// would land in code context and trip a bogus "(root)" imbalance.
+    /// would end up in code context and trip a bogus "(root)" imbalance.
     #[test]
     fn derivation_indented_string_escapes_do_not_miscount() {
         let with_escapes = r#"{ lib, stdenvNoCC, fetchurl }:

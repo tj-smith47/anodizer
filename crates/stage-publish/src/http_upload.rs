@@ -127,7 +127,7 @@ pub(crate) fn resolve_http_credentials(
 /// collapsing the per-artifact `uploaded …` / `skipped …` firehose into one
 /// line. `uploaded` counts artifacts this run PUT/POSTed (fresh or
 /// overwritten); `skipped` counts artifacts already present byte-identical (no
-/// request issued). `destination` is the entry name the bytes landed under.
+/// request issued). `destination` is the entry name the bytes ended up under.
 pub(crate) fn upload_summary(uploaded: usize, skipped: usize, destination: &str) -> String {
     format!("uploaded {uploaded} artifact(s), skipped {skipped} (already present) → {destination}")
 }

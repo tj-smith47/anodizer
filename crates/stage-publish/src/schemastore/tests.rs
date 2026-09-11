@@ -373,7 +373,7 @@ fn find_array_close_ignores_escaped_quotes() {
     let catalog = "{\n  \"schemas\": [\n    {\n      \"name\": \"Quoted\",\n      \"description\": \"a \\\"quote\\\" with } brace\",\n      \"fileMatch\": [\"q\"],\n      \"url\": \"https://x/q.json\"\n    }\n  ]\n}\n";
     let entry = serde_json::json!({ "name": "New", "description": "z", "fileMatch": ["z"], "url": "https://x/z.json" });
     let out = splice_entry(catalog, &entry).unwrap();
-    // Append path: the new entry lands inside the array, before the closing `]`.
+    // Append path: the new entry ends up inside the array, before the closing `]`.
     assert!(
         out.contains("\"name\": \"Quoted\""),
         "existing entry preserved"
@@ -535,7 +535,7 @@ fn add_high_schema_version_handles_empty_array() {
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0], "cfgd-module");
     // Formatting is pinned, not just JSON-validity: the key line is indented 2
-    // spaces, so the element lands at 4 and the closing `]` at 2 (prettier).
+    // spaces, so the element ends up at 4 and the closing `]` at 2 (prettier).
     assert!(
         out.contains("\n    \"cfgd-module\"\n  ]"),
         "element at key-indent+2, closing ] at key-indent; got:\n{out}"
@@ -916,7 +916,7 @@ fn format_vendor_schema_preserves_key_order() {
     );
 }
 
-/// The SchemaStore publish always lands as a PR against
+/// The SchemaStore publish always opens a PR against
 /// `SchemaStore/schemastore`; `gh pr create` is the preferred transport with
 /// a full REST-API fallback, so `gh` is ADVISORY — recommended, never a
 /// blocker.

@@ -218,7 +218,7 @@ pub(crate) fn apply_workspace_bump(
 
     // Provenance markers derived from the actually-written paths across ALL
     // members (not just the per-crate targets): a root-only aggregate config
-    // regenerates no member's own CHANGELOG.md and mints no marker, while a
+    // regenerates no member's own CHANGELOG.md and creates no marker, while a
     // member whose directory is the workspace root owns the root file and
     // does.
     let marker_crates: Vec<(String, PathBuf, String)> = ws

@@ -17,7 +17,7 @@ use octocrab::repos::releases::MakeLatest;
 /// Bundles the four "ambient" handles every backend call needs: the
 /// shared tokio runtime, the global anodizer [`Context`], the per-stage
 /// logger, and the resolved GitHub token. Pulling them into a struct
-/// drains four positional arguments off the call site.
+/// removes four positional arguments from the call site.
 pub(crate) struct BackendEnv<'a> {
     pub rt: &'a tokio::runtime::Runtime,
     pub ctx: &'a Context,
@@ -203,7 +203,7 @@ fn digests_match(remote_digest: &str, local_hex: &str) -> bool {
 /// Every track of a multitrack workspace renders the SAME nightly release
 /// name, so a sweep keyed on the name alone deletes its siblings' releases —
 /// and the git tags behind them. The track's identity lives in its tag
-/// instead: the family the crate's `tag_template` mints
+/// instead: the family the crate's `tag_template` creates
 /// ([`anodizer_core::git::tag_in_family`]), which anchors on the template's
 /// literal prefix and so keeps `v…-nightly` apart from `operator-v…-nightly`
 /// where a suffix rule would alias them.
@@ -217,7 +217,7 @@ pub(crate) struct NightlyRetentionFamily<'a> {
     pub(crate) sibling_templates: &'a [String],
     /// `monorepo.tag_prefix`, when configured.
     pub(crate) monorepo_prefix: Option<&'a str>,
-    /// Whether the workspace mints more than one tag family.
+    /// Whether the workspace creates more than one tag family.
     pub(crate) multitrack: bool,
 }
 
@@ -226,9 +226,9 @@ impl NightlyRetentionFamily<'_> {
     ///
     /// Only a multitrack workspace has siblings to protect, and narrowing
     /// where there are none would strand every release cut under an earlier
-    /// tag scheme (a repo that used to pin `nightly.tag_name` and now mints
+    /// tag scheme (a repo that used to pin `nightly.tag_name` and now creates
     /// version-derived tags) — the name alone is already unambiguous there.
-    /// A literal `nightly.tag_name` likewise mints a tag outside every
+    /// A literal `nightly.tag_name` likewise creates a tag outside every
     /// family, leaving the name as the only key there is.
     pub(crate) fn scopes(&self) -> bool {
         self.multitrack && self.contains(self.tag)
@@ -799,7 +799,7 @@ mod spec_struct_surface_tests {
     }
 
     /// A retention family that scopes NOTHING — a literal `nightly.tag_name`
-    /// mints a tag outside every crate's family, so the release name stays the
+    /// creates a tag outside every crate's family, so the release name stays the
     /// only key. The arithmetic pins below predate family scoping and must be
     /// unchanged by it.
     fn unscoped(tag: &str) -> NightlyRetentionFamily<'_> {
@@ -812,7 +812,7 @@ mod spec_struct_surface_tests {
         }
     }
 
-    /// The family a per-crate `tag_template` mints, for the multitrack pins.
+    /// The family a per-crate `tag_template` creates, for the multitrack pins.
     fn family<'a>(tag: &'a str, tag_template: &'a str) -> NightlyRetentionFamily<'a> {
         NightlyRetentionFamily {
             tag,
@@ -831,7 +831,7 @@ mod spec_struct_surface_tests {
         }
     }
 
-    /// A workspace whose crates leave `tag_template` UNSET still mints one
+    /// A workspace whose crates leave `tag_template` UNSET still creates one
     /// family per crate (the `<name>-v` convention), so the sweep narrows —
     /// and a bare `v` sibling cannot claim `vault-v…`.
     #[test]
@@ -1084,7 +1084,7 @@ mod spec_struct_surface_tests {
         );
     }
 
-    /// A literal `nightly.tag_name` mints a tag no family contains; the
+    /// A literal `nightly.tag_name` creates a tag no family contains; the
     /// sweep then falls back to the name-only set it has always used.
     #[test]
     fn nightly_retention_falls_back_to_name_when_tag_is_outside_every_family() {

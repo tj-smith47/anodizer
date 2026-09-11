@@ -191,7 +191,7 @@ pub fn resolve_git_context(
             override_tag.clone()
         } else {
             let monorepo_prefix = config.monorepo_tag_prefix();
-            // A synthesized version (`--nightly` / `--snapshot`) is minted FROM
+            // A synthesized version (`--nightly` / `--snapshot`) is issued FROM
             // a base rather than read off a tag at HEAD, so the base must not
             // depend on which crate is declared first: a multi-track workspace
             // whose first crate lags its siblings would stamp every track with

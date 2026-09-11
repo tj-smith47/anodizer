@@ -31,9 +31,9 @@ When `.anodizer.yaml` contains a non-empty `workspaces:` block, that wins over `
 | `anodizer release --preserve-dist` | — | hermetic dist tree; per-crate subdir when `--crate` is also set |
 | `anodizer release --publish-only` | preserved-dist `context.json` (flat or per-crate subdirs) | consume existing dist, publish in topo order |
 
-`anodizer tag` detects which crates have changed since their last tag, bumps versions, and creates per-crate tags in one commit — locally by default. Pass `--push` (as every recipe below does) to advance the branch and land the tags atomically so the release job can see them. The `crates` step output (a JSON array of crate names) lets downstream jobs skip entirely when nothing changed and drive matrix entries when something did.
+`anodizer tag` detects which crates have changed since their last tag, bumps versions, and creates per-crate tags in one commit — locally by default. Pass `--push` (as every recipe below does) to advance the branch and push the tags atomically so the release job can see them. The `crates` step output (a JSON array of crate names) lets downstream jobs skip entirely when nothing changed and drive matrix entries when something did.
 
-Every strategy below is two steps end-to-end: tag, then release. Environment validation is in-process — `anodizer release` runs a config-derived [preflight](@/docs/general/preflight.md) before any stage — and a pipeline failure leaves everything exactly where it landed ([`on_failure: hold`](@/docs/advanced/release-resilience.md#release-on-failure), the only accepted value). Recovery is re-running the identical command; publishers [converge](@/docs/advanced/release-resilience.md#convergent-re-run) instead of double-publishing. No preflight or rollback steps belong in the workflow YAML:
+Every strategy below is two steps end-to-end: tag, then release. Environment validation is in-process — `anodizer release` runs a config-derived [preflight](@/docs/general/preflight.md) before any stage — and a pipeline failure leaves everything exactly where it stopped ([`on_failure: hold`](@/docs/advanced/release-resilience.md#release-on-failure), the only accepted value). Recovery is re-running the identical command; publishers [converge](@/docs/advanced/release-resilience.md#convergent-re-run) instead of double-publishing. No preflight or rollback steps belong in the workflow YAML:
 
 ```yaml
 # .anodizer.yaml
@@ -348,7 +348,7 @@ running; each survivor then resolves the *previous* release's tag and aborts
 on a tag-vs-HEAD mismatch, or worse, races the rollback's push to the release
 branch. The failure mode is masked by GitHub's skip semantics: a failed leg
 makes its dependent resolve `skipped`, and a naive
-`result == 'success' || result == 'skipped'` check treats that as green.
+`result == 'success' || result == 'skipped'` check treats that as passing.
 
 ```yaml
     # publish-bins must not run when publish-lib FAILED (rollback racing),
@@ -712,7 +712,7 @@ permissions:
 
 ## Anti-patterns
 
-**Tag-fanout concurrency keyed per-tag-ref.** `group: release-${{ github.ref_name }}` creates a separate concurrency group for every tag, allowing N parallel release runs when N tags land simultaneously. Parallel crates.io publishes of `core` and `bin` race the sparse-index propagation window.
+**Tag-fanout concurrency keyed per-tag-ref.** `group: release-${{ github.ref_name }}` creates a separate concurrency group for every tag, allowing N parallel release runs when N tags arrive simultaneously. Parallel crates.io publishes of `core` and `bin` race the sparse-index propagation window.
 
 **Leader election among parallel triggered runs.** Using a lock artifact or environment variable to elect one "winner" among N simultaneously triggered runs still pays the N× resource cost (checkout, toolchain, cache hydration) before the losers bail out.
 

@@ -146,7 +146,7 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
     // summary instead of silently narrowing the polled set.
     let mut errors: Vec<(usize, post_publish::PostPublishResult)> = Vec::new();
     // The three row classes are filled by one walk but finished at different
-    // times, so each row records the position it was minted at and the classes
+    // times, so each row records the position it was issued at and the classes
     // are merged back on it — an unresolvable candidate keeps its place in the
     // listing instead of sinking to the end.
     let mut ord = 0usize;

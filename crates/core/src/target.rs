@@ -197,7 +197,7 @@ impl std::error::Error for UnknownDebianArch {}
 /// This differs from [`map_target`]'s GoReleaser-style arch in the names
 /// Debian spells differently: `386` → `i386`, `armv7` → `armhf`,
 /// `armv5` → `armel`, `ppc64le` → `ppc64el`. The result is suitable for the
-/// `deb.architecture=` Artifactory matrix param so an uploaded `.deb` lands in
+/// `deb.architecture=` Artifactory matrix param so an uploaded `.deb` ends up in
 /// the correct architecture slice of the repo index.
 ///
 /// *Fallible by design*: an architecture with no known Debian spelling returns

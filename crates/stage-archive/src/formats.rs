@@ -483,7 +483,7 @@ pub fn create_zip(
 
 /// Copy one binary directly to `output` (the `binary` archive format — no
 /// archiving). `output` carries the rendered `name_template` for this binary,
-/// so each build target's copy lands at its own path.
+/// so each build target's copy ends up at its own path.
 pub fn copy_binary(src: &Path, output: &Path) -> Result<()> {
     if !src.exists() {
         anyhow::bail!("binary: source does not exist: {}", src.display());

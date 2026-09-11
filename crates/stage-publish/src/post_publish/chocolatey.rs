@@ -315,7 +315,7 @@ const NO_CALLOUT_DETAIL: &str = "status callout not yet present on page";
 /// The probe refuses only on POSITIVE evidence:
 ///
 /// - `Ok(Some(detail))` — the page carries a verified approved / in-moderation
-///   callout; the version is consumed and a same-version re-cut cannot land
+///   callout; the version is consumed and a same-version re-cut cannot succeed
 ///   cleanly.
 /// - `Ok(None)` — the version was never submitted: the gallery returns 404,
 ///   OR redirects away from the requested version page (redirects are NOT

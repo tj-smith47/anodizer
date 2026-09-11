@@ -913,7 +913,7 @@ fn cloudsmith_classify_picks_first_matching_filename() {
 // ---- live 3-step upload path (scripted_responder) --------------------
 //
 // These tests redirect ALL Cloudsmith API traffic to an in-process TCP
-// responder via the `ANODIZE_CLOUDSMITH_API_BASE` env seam, then drive a
+// responder via the `ANODIZE_CLOUDSMITH_API_BASE` env override, then drive a
 // real `publish_to_cloudsmith` and assert on the recorded request log
 // (method / path / body). The base override is injected per-test through
 // each Context's `MapEnvSource` (`cloudsmith_api_base_from` reads it via
@@ -1739,7 +1739,7 @@ fn conflict_recovery_routes(base: &str, recheck_body: &'static str) -> Vec<Scrip
     ]
 }
 
-/// step-3 409 + a re-query showing the same md5 already landed (a
+/// step-3 409 + a re-query showing the same md5 already published (a
 /// concurrent uploader won the race) ⇒ idempotent skip: Ok, no target
 /// recorded, and the recovery re-query actually fired (2 GETs).
 #[test]
@@ -1764,7 +1764,7 @@ fn live_step3_409_recovers_as_idempotent_skip() {
 }
 
 /// step-3 409 + a re-query showing a DIFFERENT md5 ⇒ surface the conflict
-/// (a concurrent uploader landed different bytes under the same name).
+/// (a concurrent uploader published different bytes under the same name).
 #[test]
 fn live_step3_409_recovery_bails_on_md5_mismatch() {
     let (result, _log) = run_deb_with_routes(
@@ -2046,7 +2046,7 @@ fn live_prune_list_4xx_is_nonfatal_and_deletes_nothing() {
             times: None,
         }]
     });
-    // The upload itself still landed (run_prune asserts Ok); the prune
+    // The upload itself still published (run_prune asserts Ok); the prune
     // list failed → nothing deleted.
     assert_eq!(count_calls(&log, "GET", PRUNE_LIST_PATH), 1);
     assert_eq!(

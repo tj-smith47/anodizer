@@ -3583,7 +3583,7 @@ fn publish_top_level_homebrew_casks_non_default_directory_warns() {
 fn publish_top_level_homebrew_casks_second_run_is_noop_no_changes() {
     let (bare_url, bare) = make_bare_cask_tap("main");
 
-    // First publish lands the cask on `main`.
+    // First publish puts the cask on `main`.
     let mut ctx1 = cask_publish_ctx(local_cask_cfg(&bare_url, "main"));
     let first = super::publish_top_level_homebrew_casks(&mut ctx1, &quiet_log())
         .expect("first publish lands the cask");
@@ -3613,7 +3613,7 @@ fn publish_top_level_homebrew_casks_second_run_is_noop_no_changes() {
 /// `maybe_submit_pr` (recording its outcome). A `gh` stub forced absent makes
 /// the PR transport resolve to the in-process no-credential fallback — no live
 /// `gh pr create` / GitHub API call — while still exercising the
-/// update_existing_pr eval + submit + record_publisher_outcome seam.
+/// update_existing_pr eval + submit + record_publisher_outcome path.
 #[test]
 #[serial_test::serial(path_env)]
 fn publish_top_level_homebrew_casks_pr_enabled_pushes_and_records_outcome() {
@@ -3646,7 +3646,7 @@ fn publish_top_level_homebrew_casks_pr_enabled_pushes_and_records_outcome() {
         landed.contains("cask \"mycask\""),
         "the cask must be pushed to the tap; got:\n{landed}"
     );
-    // The PR-submission seam ran: with `gh` absent and no token the transport
+    // The PR-submission path ran: with `gh` absent and no token the transport
     // resolves to a no-credential outcome that `maybe_submit_pr` returns and
     // the loop records — distinguishing this from the PR-disabled path, which
     // records nothing.

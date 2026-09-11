@@ -256,7 +256,7 @@ impl anodizer_core::Publisher for McpPublisher {
         let log = ctx.logger("publish");
         // The publish path returns Some(McpTarget) only on the success
         // path of the POST; dry-run, skip-true, and missing-name all
-        // return None so no phantom target ever lands in evidence. A
+        // return None so no phantom target ever ends up in evidence. A
         // mid-publish failure on the POST surfaces as Err and aborts
         // before evidence assembly — the rollback contract is therefore
         // "if there's a target in evidence, the version exists on the

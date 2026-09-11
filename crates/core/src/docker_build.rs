@@ -30,7 +30,7 @@
 //!   harness exports `SOURCE_DATE_EPOCH` via its hermetic env block so
 //!   the attribute has a value to rewrite to. The attribute is a
 //!   BuildKit *output*-side feature, NOT a top-level `--rewrite-timestamp`
-//!   flag (early BuildKit drafts considered the flag form but landed on
+//!   flag (early BuildKit drafts considered the flag form but settled on
 //!   the exporter attribute; buildx itself does not surface a top-level
 //!   flag).
 //! - **Provenance attestation**: `--provenance=false` suppresses BuildKit's
@@ -137,7 +137,7 @@ pub fn oci_build_fixture(
         // rewrites every layer entry's mtime to SOURCE_DATE_EPOCH (which
         // the caller exports in `env`). The attribute lives on the
         // `--output` exporter, not as a separate top-level flag — the
-        // top-level form was proposed but never landed in buildx.
+        // top-level form was proposed but never ended up in buildx.
         .arg(format!(
             "--output=type=oci,rewrite-timestamp=true,dest={}",
             oci_tar.to_string_lossy()
@@ -159,7 +159,7 @@ pub fn oci_build_fixture(
     // default; at default verbosity it must not flood the harness log.
     // `run_checked` captures both streams (surfacing the tail on failure) and
     // tees them live only under `-v`, so build errors still reach the operator
-    // without leaking BuildKit chatter into every green run.
+    // without leaking BuildKit chatter into every passing run.
     crate::run::run_checked(&mut cmd, log, "docker buildx build")
         .with_context(|| format!("`docker buildx build` failed in {}", context_dir.display()))?;
 

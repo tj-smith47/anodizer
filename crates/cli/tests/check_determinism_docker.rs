@@ -10,7 +10,7 @@
 //! discovery walker picks them up.
 //!
 //! Skips cleanly when `docker buildx` or `git` are missing from PATH so
-//! the suite stays green on minimal hosts (the documentation-build job,
+//! the suite keeps passing on minimal hosts (the documentation-build job,
 //! containers without docker installed, etc.). When the tools are
 //! available but the harness skips internally (no Dockerfile / buildx
 //! unreachable), the report still has to parse and `--stages=docker`
@@ -165,7 +165,7 @@ fn docker_oci_tar_is_byte_stable_on_minimal_dockerfile() {
         return;
     }
     // `docker buildx version` exit 0 => buildx is reachable. Skip
-    // otherwise so the test stays green on hosts without docker.
+    // otherwise so the test keeps passing on hosts without docker.
     let buildx_ok = Command::new("docker")
         .args(["buildx", "version"])
         .output()

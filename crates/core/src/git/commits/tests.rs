@@ -230,7 +230,7 @@ fn count_commits_since_last_tag_resets_on_newer_tag() {
         git_in(dir, &["commit", "-m", f]);
     }
     assert_eq!(count_commits_since_last_tag_in(dir, None).unwrap(), 2);
-    // A newer version tag lands -> counter resets to 0 at the tag.
+    // A newer version tag arrives -> counter resets to 0 at the tag.
     git_in(dir, &["tag", "v1.1.0"]);
     assert_eq!(count_commits_since_last_tag_in(dir, None).unwrap(), 0);
     std::fs::write(dir.join("d"), "x").unwrap();
@@ -421,7 +421,7 @@ fn get_current_branch_in_rejects_tag_shaped_github_ref_name() {
     run(&["commit", "-m", "c2"]);
     run(&["checkout", "--detach", &sha]);
 
-    // GITHUB_REF_NAME is injected via the env seam, so each branch of the
+    // GITHUB_REF_NAME is injected via the env injection point, so each branch of the
     // fallback is driven without mutating process-global env.
 
     // Tag-shaped: must NOT be accepted; bail surfaces.

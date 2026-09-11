@@ -454,7 +454,7 @@ pub type TargetVariantKey = (String, Option<String>);
 /// Group binary artifacts by `(target triple, amd64_variant)` — one output per
 /// platform-variant.
 ///
-/// A binary with no target lands under the `unknown` key (a host-target build
+/// A binary with no target ends up under the `unknown` key (a host-target build
 /// with no triple). `BTreeMap` (not `HashMap`) so iteration order is
 /// deterministic across runs: callers iterate the map to register one artifact
 /// per key, and `HashMap`'s randomised order would bake per-run order into

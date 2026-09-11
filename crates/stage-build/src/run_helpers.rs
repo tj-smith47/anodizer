@@ -398,7 +398,7 @@ pub(crate) fn run_dry_run(
     Ok(())
 }
 
-/// Resolve the profile directory (`target/<triple>/release/`) a binary lands
+/// Resolve the profile directory (`target/<triple>/release/`) a binary is built
 /// in, mirroring where the executor's [`resolve_binary_path`] finds the
 /// produced binary — but EXISTENCE-INDEPENDENTLY.
 ///
@@ -435,7 +435,7 @@ fn resolved_profile_dir(bin_path: &Path, crate_path: &str) -> Option<PathBuf> {
 /// there — `pending` is empty and `note_build_complete` never prunes.
 struct IntermediateReaper {
     /// Remaining job count keyed by the resolved profile dir each job's binary
-    /// lands in (via [`resolved_profile_dir`] over the job's PLANNED
+    /// ends up in (via [`resolved_profile_dir`] over the job's PLANNED
     /// `bin_path` + `crate_path`). The key is computed from the SAME planned
     /// inputs at both seed and completion, so the workspace-root fallback can
     /// never produce a seed-vs-lookup mismatch. Decremented as each job
@@ -826,7 +826,7 @@ pub(crate) fn run_parallel(
                 &r.amd64_variant,
             )?;
 
-            // Free this triple's cargo scratch once its last job lands — see
+            // Free this triple's cargo scratch once its last job finishes — see
             // the sequential path for the disk-ceiling rationale. No-op
             // outside the harness rebuild.
             reaper.note_build_complete(job, exec.log);
@@ -3004,7 +3004,7 @@ mod run_exec_tests {
         profile
     }
 
-    /// A build job whose binary lands IN-PLACE at the planned
+    /// A build job whose binary is produced IN-PLACE at the planned
     /// `<root>/target/<triple>/release/<binary>` (planned == resolved).
     ///
     /// Each job gets its OWN stub tool (named after `binary`) that `creates`
@@ -3057,7 +3057,7 @@ mod run_exec_tests {
     }
 
     /// With the marker present (the hermetic harness rebuild), each triple's
-    /// cargo intermediates are freed once its build lands; the binary stays.
+    /// cargo intermediates are freed once its build finishes; the binary stays.
     #[test]
     fn run_sequential_prunes_intermediates_under_harness_marker() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3237,7 +3237,7 @@ mod run_exec_tests {
         assert!(profile.join("app").exists());
     }
 
-    /// With the marker, run_parallel prunes each triple after its build lands.
+    /// With the marker, run_parallel prunes each triple after its build finishes.
     #[test]
     fn run_parallel_prunes_intermediates_under_harness_marker() {
         let tmp = tempfile::tempdir().unwrap();

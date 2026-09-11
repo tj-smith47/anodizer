@@ -13,7 +13,7 @@ pub(crate) enum CloudsmithPackageState {
     /// `remote` is the md5 reported by Cloudsmith.
     Md5Mismatch { remote: String },
     /// A package with this filename exists but Cloudsmith reported no
-    /// `checksum_md5` to compare against (still syncing, partially landed, or
+    /// `checksum_md5` to compare against (still syncing, partially published, or
     /// a checksum-less format). Presence-by-filename is NOT proof the remote
     /// bytes match the local ones, so the caller must upload rather than
     /// skip-and-claim-match — mirroring artifactory's `Unknown` and blob's

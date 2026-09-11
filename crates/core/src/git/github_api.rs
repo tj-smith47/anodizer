@@ -384,7 +384,7 @@ fn gh_api_post_with_binary(
 }
 
 /// Error shown when a signed tag is requested on the GitHub-API path: the API
-/// mints the tag object server-side, out of reach of any local GPG/SSH key, so
+/// creates the tag object server-side, out of reach of any local GPG/SSH key, so
 /// the request is rejected rather than downgraded to a silently-unsigned tag.
 /// Shared by the real-run guard and the dry-run preview so the two cannot
 /// diverge on wording or on whether the case errors at all.
@@ -517,7 +517,7 @@ pub fn create_tag_via_github_api_in(
                 log.warn("gh CLI not found, falling back to local git tag + push");
                 // Contract: the API path proper rejects `sign == true` (guarded
                 // below, before the `gh api` POST); only THIS local fallback can
-                // honor signing, because the API-created tag object is minted
+                // honor signing, because the API-created tag object is issued
                 // server-side and cannot carry a local GPG/SSH signature.
                 return create_and_push_tag_in(cwd, tag, message, dry_run, sign, log, strict);
             }
@@ -525,7 +525,7 @@ pub fn create_tag_via_github_api_in(
         }
     };
 
-    // API path proper: `gh` is present and the tag object was minted
+    // API path proper: `gh` is present and the tag object was issued
     // server-side, where a local GPG/SSH key cannot reach it. A caller that
     // requested a signature here would otherwise get a silently-unsigned tag,
     // so reject rather than downgrade. The gh-missing branch above already

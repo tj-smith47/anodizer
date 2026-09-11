@@ -38,7 +38,7 @@ simple_publisher!(
 
 /// Aliased to the core-owned snapshot so the evidence schema lives in
 /// [`anodizer_core::publish_evidence`] and credential-shaped fields
-/// have no slot to land in. One entry per crate whose publish path
+/// have no slot to fill. One entry per crate whose publish path
 /// successfully pushed a branch to its fork.
 pub(super) type KrewPrTarget = anodizer_core::publish_evidence::KrewTargetSnapshot;
 
@@ -271,7 +271,7 @@ impl anodizer_core::Publisher for KrewPublisher {
         // No `pull_request_enabled` gate here (unlike nix/winget): krew has
         // no direct-push mode. Both flows — the bot webhook for a plugin
         // already in the index, and the pr-direct clone+push for a new one —
-        // land as a PR against the upstream index, so every active entry is
+        // open a PR against the upstream index, so every active entry is
         // worth probing. A bot-created PR's title may not match the search
         // below; that only yields `Absent` (never a false `Complete`), and
         // `run()`'s own `webhook_body_is_already_submitted` handling covers

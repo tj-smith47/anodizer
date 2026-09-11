@@ -45,7 +45,7 @@ pub(super) fn render_platform_name(
 /// `os`/`cpu`/`libc` selectors (libc only when `libc_aware` and present).
 ///
 /// `crate_name` drives the per-crate metadata resolvers; `bin_subpaths` are the
-/// package-relative paths the embedded binaries land under, emitted as the
+/// package-relative paths the embedded binaries end up under, emitted as the
 /// package's `files` allowlist (so every `platform_bin_dir` binary is included
 /// at its subdir — one entry for a single-command tool, one per command for a
 /// multi-command `bins:` package).

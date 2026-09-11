@@ -49,7 +49,7 @@ const GIT_FORCE_PUSH_TIMEOUT: Duration = Duration::from_secs(600);
 /// a warn rather than failing the publisher, and neither has a `&Context` in
 /// scope without threading one through every PR-mode publisher. Three attempts
 /// matches the `gh pr create` ladder in the same function, so a transient drop
-/// is absorbed at both seams on the same terms; a rejected push still fast-fails
+/// is absorbed at both points on the same terms; a rejected push still fast-fails
 /// on the first attempt via the shared retriability classification.
 const PR_BRANCH_PUSH_RETRY: RetryPolicy = RetryPolicy {
     max_attempts: 3,
@@ -1135,7 +1135,7 @@ mod tests {
 
     /// `maybe_submit_pr` with `pull_request.enabled = Some(false)` must
     /// short-circuit to `None`. Pins the explicit opt-out branch:
-    /// configuring the block but leaving it disabled is NOT a green-light.
+    /// configuring the block but leaving it disabled is NOT an approval.
     #[test]
     fn maybe_submit_pr_returns_none_when_pull_request_disabled() {
         let log = quiet_log();
@@ -1774,7 +1774,7 @@ mod tests {
             "201 PR create is success; got {outcome:?}"
         );
 
-        // (1) Force-push side effect: the release branch landed in origin.
+        // (1) Force-push side effect: the release branch ended up in origin.
         let refs = git_stdout(bare.path(), &["branch", "--list"]);
         assert!(
             refs.contains("release/v9.9.9"),

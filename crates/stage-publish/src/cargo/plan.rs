@@ -247,7 +247,7 @@ pub(crate) fn resolve_default_targets(ctx: &Context) -> Vec<String> {
 /// the per-crate var scoping — and the resulting override set — can be exercised
 /// without a git fixture. Mirrors the build stage's
 /// `apply_source_mutations_with_resolver`
-/// seam so both paths are testable the same way.
+/// injection point so both paths are testable the same way.
 pub(crate) fn ensure_binstall_metadata_with(
     ctx: &mut Context,
     crate_cfg: &CrateConfig,

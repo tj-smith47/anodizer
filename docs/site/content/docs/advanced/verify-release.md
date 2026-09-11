@@ -144,7 +144,7 @@ verify_release:
 ```
 
 Every publisher that **succeeded this run** is probed to confirm the publish
-actually landed — using the coordinates the run's own publish report recorded,
+actually published — using the coordinates the run's own publish report recorded,
 so no extra config is needed:
 
 | Publisher | Probe |
@@ -163,7 +163,7 @@ One result line per publisher:
 [verify-release] snapcraft: myapp 1.0.0 live in the Snap Store channel map
 ```
 
-A publisher that was skipped, deselected, or failed is not probed — it landed
+A publisher that was skipped, deselected, or failed is not probed — it published
 nothing this run. A probe that **cannot run** (index unreachable, store build
 failure) is reported as an issue, never silently passed: an unverifiable
 landing is a finding.

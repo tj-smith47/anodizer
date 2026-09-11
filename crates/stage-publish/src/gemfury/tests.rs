@@ -20,7 +20,7 @@ fn basic_cfg() -> GemFuryConfig {
 
 /// Drive `publish_to_gemfury` with a fresh out-param vec and fold the
 /// `(Result<()>, partial-vec)` pair back into the `Result<Vec<_>>` shape the
-/// assertions read — on success the landed targets, on error the partial set.
+/// assertions read — on success the published targets, on error the partial set.
 fn run_publish(
     ctx: &anodizer_core::context::Context,
     log: &anodizer_core::log::StageLogger,
@@ -525,7 +525,7 @@ impl From<GemFuryTarget> for anodizer_core::publish_evidence::GemFuryTargetSnaps
 // -----------------------------------------------------------------------------
 // Probe classifier: a 404 from the API base means "version not present" and
 // must surface as Ok(false) so the publish path proceeds. Hermetic via the
-// ANODIZE_GEMFURY_API_BASE seam pointing at a local responder.
+// ANODIZE_GEMFURY_API_BASE override pointing at a local responder.
 // -----------------------------------------------------------------------------
 
 #[test]
@@ -573,7 +573,7 @@ fn version_already_published_returns_false_on_404() {
 
 /// A non-404 HTTP error (registry outage) must FAIL CLOSED: the probe cannot
 /// prove the version is absent, so it bails rather than returning Ok(false)
-/// and green-lighting a push to a registry that is irreversible for up to 72h.
+/// and approving a push to a registry that is irreversible for up to 72h.
 #[test]
 fn version_already_published_bails_on_non_404() {
     use super::publish::version_already_published;
@@ -615,7 +615,7 @@ fn version_already_published_bails_on_non_404() {
 }
 
 /// A transport/connect failure (registry unreachable) must FAIL CLOSED for the
-/// same reason: an unproven absence cannot green-light an irreversible push.
+/// same reason: an unproven absence cannot approve an irreversible push.
 #[test]
 fn version_already_published_bails_on_transport_failure() {
     use super::publish::version_already_published;
@@ -977,9 +977,9 @@ fn gemfury_push_transient_503_retries_under_single_attempt_policy() {
     );
 }
 
-/// When a mid-loop push fails after an earlier artifact already landed, the
+/// When a mid-loop push fails after an earlier artifact already published, the
 /// out-param must still hold the partial set so the caller can roll back what
-/// landed. The `?`-on-`Result<Vec<_>>` signature discarded that evidence,
+/// published. The `?`-on-`Result<Vec<_>>` signature discarded that evidence,
 /// orphaning the first artifact on a second-artifact failure.
 #[test]
 fn gemfury_partial_push_records_landed_target_on_later_failure() {
@@ -993,7 +993,7 @@ fn gemfury_partial_push_records_landed_target_on_later_failure() {
     std::fs::write(&art2, b"fake-deb-2").unwrap();
 
     // Two artifacts, two probe+push round-trips. Probes both 404 (not yet
-    // published); first push lands (200), second push hard-fails (400).
+    // published); first push arrives (200), second push hard-fails (400).
     let probe_404 = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
     let push_200 = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
     let push_400 = "HTTP/1.1 400 Bad Request\r\nContent-Length: 7\r\n\r\nbad req";
@@ -1015,8 +1015,8 @@ fn gemfury_partial_push_records_landed_target_on_later_failure() {
         .build();
     ctx.config = config;
     // Pin serial so the sequential responder's first-200-then-400 script maps
-    // deterministically to alpha (lands) then beta (fails): this test asserts
-    // the EXACT partial that landed, which only a serial push order fixes.
+    // deterministically to alpha (arrives) then beta (fails): this test asserts
+    // the EXACT partial that published, which only a serial push order fixes.
     // Concurrent-failure recording (a sibling success kept despite a failing
     // push) is covered separately and does not depend on which one fails.
     ctx.options.parallelism = 1;
@@ -1061,12 +1061,12 @@ fn gemfury_partial_push_records_landed_target_on_later_failure() {
     );
 }
 
-/// Concurrent partial-evidence: with parallel pushes, an artifact that lands
+/// Concurrent partial-evidence: with parallel pushes, an artifact that arrives
 /// (200) CONCURRENTLY with a sibling that fails (400) must still be recorded
-/// for rollback — the fan-out folds every landed target before surfacing the
+/// for rollback — the fan-out folds every published target before surfacing the
 /// first error, so a concurrent success is never dropped. Which artifact gets
 /// the 200 vs 400 is nondeterministic under parallelism, so the assertion is
-/// order-agnostic: exactly one landed, and it is one of the two candidates.
+/// order-agnostic: exactly one published, and it is one of the two candidates.
 #[test]
 fn gemfury_concurrent_push_records_landed_target_despite_sibling_failure() {
     use anodizer_core::log::{StageLogger, Verbosity};
@@ -1098,7 +1098,7 @@ fn gemfury_concurrent_push_records_landed_target_despite_sibling_failure() {
         .tag("v1.2.3")
         .build();
     ctx.config = config;
-    // Force concurrency so a landing push overlaps a failing one.
+    // Force concurrency so a succeeding push overlaps a failing one.
     ctx.options.parallelism = 4;
     ctx.set_env_source(
         anodizer_core::MapEnvSource::new()
@@ -1255,7 +1255,7 @@ fn gemfury_push_wire_uses_basic_auth_and_account_path() {
 // HTTP Basic auth (API token as username). These cover the previously
 // unmeasured `delete_recorded_targets` / `delete_version` branches. The API
 // base is injected via the context's `MapEnvSource` (read through the
-// `api_base_from` seam), so each test stays hermetic and needs no `#[serial]`.
+// `api_base_from` injection point), so each test stays hermetic and needs no `#[serial]`.
 // -----------------------------------------------------------------------------
 
 /// A 1-attempt, zero-delay retry policy so a rollback DELETE that 500s gives up

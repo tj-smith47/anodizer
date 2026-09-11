@@ -113,7 +113,7 @@ pub fn find_previous_tag_with_prefix_in(
 }
 
 /// Find the tag preceding `current_tag` **inside the tag family that
-/// `tag_template` mints**.
+/// `tag_template` creates**.
 ///
 /// This is the previous-tag counterpart of
 /// [`find_latest_tag_matching_with_prefix`](crate::git::find_latest_tag_matching_with_prefix):
@@ -129,7 +129,7 @@ pub fn find_previous_tag_with_prefix_in(
 ///
 /// `sibling_templates` are the workspace's OTHER configured families. A
 /// family's prefix test alone is a `starts_with`, so a `v` family's look-back
-/// would land on a nested `vault-v1.5.0` and bound a range spanning two
+/// would reach a nested `vault-v1.5.0` and bound a range spanning two
 /// tracks; every configured sibling strictly narrower than this family is
 /// excluded, through the same
 /// [`excluded_sibling_prefixes`] rule

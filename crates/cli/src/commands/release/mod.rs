@@ -88,7 +88,7 @@ pub(crate) struct ReleaseOpts {
     pub strict: bool,
     /// `--prepare`: run local build/archive/sign/checksum/sbom
     /// stages but NOT release/publish/announce. Implemented by augmenting `skip` with
-    /// those three stages at the top of `run()`; artifacts still land under `dist/`.
+    /// those three stages at the top of `run()`; artifacts still end up under `dist/`.
     pub prepare: bool,
     /// `--announce-only`: re-fire the announce stage after loading a
     /// prior run's `<dist>/run-<id>/report.json`. Use case: a

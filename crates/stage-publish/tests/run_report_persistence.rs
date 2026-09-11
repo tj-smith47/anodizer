@@ -57,7 +57,7 @@ fn publish_stage_writes_report_and_rollback_run_can_read_it() {
     // Synthetic publishers — `PublishStage::run` reads the registry
     // from config, which would skip these fakes, so the test drives the
     // doc-hidden `run_with_publishers` entry point that production
-    // also uses (it's the seam every dispatcher test in the crate
+    // also uses (it's the injection point every dispatcher test in the crate
     // takes). The doc-hidden writer is then called the same way
     // `PublishStage::run` does, end-of-pipeline.
     let publishers: Vec<Box<dyn Publisher>> = vec![

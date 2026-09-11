@@ -125,7 +125,7 @@ pub(super) async fn find_release_by_tag(
 /// One asset currently stored on a published GitHub release, as the
 /// verify-release stage consumes it: the name plus the content coordinates
 /// (byte size, server-computed digest, API download URL) it needs to verify
-/// the landed bytes match the local artifact.
+/// the published bytes match the local artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishedAsset {
     /// Uploaded asset name (the basename shown on the release page).

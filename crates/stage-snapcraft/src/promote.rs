@@ -164,7 +164,7 @@ impl Promotable for SnapcraftPromoter {
 }
 
 /// Resolve and release one snap's selector-matched revisions — **one per
-/// architecture**. A dual-arch snap mints one Snap Store revision per arch, so
+/// architecture**. A dual-arch snap creates one Snap Store revision per arch, so
 /// releasing a single global maximum would leave the other arch stranded on
 /// the source channel; this releases every arch's revision. Returns the list
 /// of released revisions (empty = nothing to promote for this snap); `Err` =

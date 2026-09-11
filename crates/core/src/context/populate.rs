@@ -156,7 +156,7 @@ impl Context {
 
         // `NightlyBuild`: stateless per-base-version build counter derived
         // from `git rev-list --count <last-tag>..HEAD`. Resets automatically
-        // when a new version tag lands (no state anodizer persists). Set
+        // when a new version tag arrives (no state anodizer persists). Set
         // unconditionally (it is just a count), but intended for nightly /
         // snapshot `version_template`s such as
         // `"{{ .Base }}-nightly.{{ .NightlyBuild }}+{{ .ShortCommit }}"`.

@@ -839,7 +839,7 @@ mod tests {
     #[test]
     fn tag_template_falls_back_to_the_name_v_convention_when_nothing_set() {
         // No defaults.crates block at all, and the crate itself omits
-        // tag_template — resolution must land on the `<name>-v` convention
+        // tag_template — resolution must reach the `<name>-v` convention
         // rather than an empty prefix or a bare `v` that collides with
         // every sibling.
         let defaults = Defaults::default();

@@ -82,7 +82,7 @@ pub(super) fn resolve_child_snapshot(snapshot: bool, no_snapshot: bool, head_at_
 /// Signatures are non-reproducible by nature: cosign signs with a random
 /// ECDSA nonce, so its bundle/signature bytes differ on every signing of
 /// byte-identical input; a keyless certificate is equally per-invocation
-/// (Fulcio mints a fresh short-lived cert every sign). `infer_stage_from_path`
+/// (Fulcio creates a fresh short-lived cert every sign). `infer_stage_from_path`
 /// already classifies the default `.sig` / `.pem` / `.cert` suffixes as the
 /// `sign` stage (which the harness auto-allow-lists), but both templates are
 /// user-configurable, so a custom suffix (cfgd's `.cosign.bundle`) would

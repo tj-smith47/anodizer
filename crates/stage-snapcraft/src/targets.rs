@@ -21,7 +21,7 @@ use anodizer_core::context::Context;
 ///
 /// Aliased to the core-owned snapshot so the evidence schema lives in
 /// [`anodizer_core::publish_evidence`] and credential-shaped fields
-/// (`SNAPCRAFT_LOGIN`, token, auth) have no slot to land in.
+/// (`SNAPCRAFT_LOGIN`, token, auth) have no slot to fill.
 pub(crate) type SnapcraftTarget = anodizer_core::publish_evidence::SnapcraftTargetSnapshot;
 
 /// Walk the crate universe's `snapcrafts[]` (top-level `crates` plus every
@@ -87,7 +87,7 @@ pub(crate) fn collect_snapcraft_targets(ctx: &Context) -> Vec<SnapcraftTarget> {
                 package_name,
                 channel,
                 // Planned (pre-upload) snapshot has no arch/revision yet; the
-                // upload loop stamps one per-arch entry with its minted
+                // upload loop stamps one per-arch entry with its issued
                 // revision, cloning this base's channel/version.
                 arch: None,
                 revision: None,

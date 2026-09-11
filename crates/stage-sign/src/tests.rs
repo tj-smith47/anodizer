@@ -2705,7 +2705,7 @@ fn keyed_cosign_is_not_skipped_under_harness() {
 
 /// cosign invocations must carry the non-interactive consent (`COSIGN_YES`) so
 /// the sigstore privacy banner / `y/N` prompt never blocks or pollutes CI
-/// output. The seam exports it in the child env, idempotently, for any
+/// output. The point exports it in the child env, idempotently, for any
 /// `cosign`/`cosign-*` basename.
 #[test]
 fn cosign_consent_env_is_injected_for_cosign() {
@@ -5634,7 +5634,7 @@ mod cosign_tuf_race {
     }
 
     /// Assert no two cosign invocations overlapped: with both sequences
-    /// sorted, every start must land at or after the preceding end.
+    /// sorted, every start must end up at or after the preceding end.
     fn assert_no_overlap(state: &Path, expected: usize) {
         let (mut starts, mut ends) = read_events(state);
         assert_eq!(starts.len(), expected, "one start per artifact");
@@ -6148,7 +6148,7 @@ mod cosign_tuf_race {
 
     /// A keyless run must wait for the host lock before spawning any
     /// cosign: while a neighbour holds it, no invocation may start. The
-    /// holder releases after 400ms; every cosign start must land after that
+    /// holder releases after 400ms; every cosign start must begin after that
     /// release.
     #[test]
     fn keyless_sign_waits_for_host_init_lock() {

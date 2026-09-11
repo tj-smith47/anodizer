@@ -301,7 +301,7 @@ impl Default for CrateConfig {
 }
 
 impl CrateConfig {
-    /// The tag template this crate mints and scans under: its own value when
+    /// The tag template this crate creates and scans under: its own value when
     /// set, else the `<name>-v{{ Version }}` convention.
     ///
     /// Two folds fill `self.tag_template` at config load before this is ever

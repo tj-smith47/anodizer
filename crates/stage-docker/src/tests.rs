@@ -3815,7 +3815,7 @@ fn test_buildx_version_check_increments_counter_on_v2_probe_outcome() {
     // stage-level wiring. The stage path (`DockerStage.run`) currently
     // resolves the probe via the live `docker_buildx_version_probe()`
     // function, so end-to-end probe-injection from a unit test would need
-    // a seam refactor on `run.rs::76-86` (tracked separately).
+    // a structural refactor on `run.rs::76-86` (tracked separately).
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -3838,7 +3838,7 @@ fn test_buildx_version_check_increments_counter_on_v2_probe_outcome() {
 
 #[test]
 fn test_dockerstage_run_invokes_injected_buildx_probe_for_v2_crate() {
-    // End-to-end seam check: when a `Context` has at least one crate with a
+    // End-to-end check: when a `Context` has at least one crate with a
     // `docker_v2` config and `dry_run = true` (so no real `docker buildx
     // build` shells out), `DockerStage::with_probe(...).run(&mut ctx)` MUST
     // route the buildx-version probe through the injected closure. The gate
@@ -3867,7 +3867,7 @@ fn test_dockerstage_run_invokes_injected_buildx_probe_for_v2_crate() {
         dockerfile: dockerfile.to_string_lossy().into_owned(),
         platforms: Some(vec!["linux/amd64".to_string()]),
         // Short-circuit per-config build work; the probe gate runs before
-        // the per-config skip check, so this still exercises the probe seam.
+        // the per-config skip check, so this still exercises the probe injection point.
         skip: Some(StringOrBool::String("true".to_string())),
         ..Default::default()
     };
