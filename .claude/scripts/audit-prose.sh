@@ -161,7 +161,7 @@ JARGON_FLAT="${JARGON_B}([Ss]eams?|[Mm]int(s|ed|ing)?|[Ll]ands?|[Ll]anded)${JARG
 JARGON_GREEN="${JARGON_B}[Gg]reen(s|ed|ing|-?light[a-z-]*)?${JARGON_E}"
 JARGON_DRAIN="${JARGON_B}[Dd]rain(s|ed|ing)?${JARGON_E}"
 # A colour word on the line is the evidence that `green` names a real colour.
-JARGON_COLOUR='colou?r|cyan|yellow|hex|ANSI|✓|✗|marker|Rendered|dimmed|theme'
+JARGON_COLOUR='colou?r|COLOR|cyan|yellow|hex|ANSI|✓|✗|marker|Rendered|dimmed|theme'
 # The things this workspace literally drains.
 JARGON_IO='stdout|stderr|read|output|body|error|report|spawn|fetch|hang|String|cadence|buffer|byte|pipe|channel|queue|task|slot|worker|pool|runner|handler|collector|straggler|receiver|stream|socket|connection|zombie|child|subtree|stack|memento|job|capture|stdin|retry|retries|window|evidence|override|argument|skip|reap|vec|ready|done|log|line|phase|attempt|send'
 
@@ -169,12 +169,13 @@ collect_files JARGON_RS -rl --include='*.rs' --exclude-dir=target --exclude-dir=
     --exclude-dir=dist -- '//' crates
 collect_files JARGON_MD -rl --include='*.md' -- '' docs/site/content README.md INCIDENT_RESPONSE.md
 collect_files JARGON_TXT -rl --include='*.sh' --include='*.yml' --include='*.md' \
-    --exclude='audit-prose.sh' -- '#' .claude/scripts .claude/rules .github/workflows
+    --exclude='audit-prose.sh' -- '' .claude/scripts .claude/rules .github/workflows
+collect_files JARGON_YML -l -- '' Taskfile.yml .anodizer.yaml
 run_scanner jargon_prose \
     -v FLAT_RE="$JARGON_FLAT" -v GREEN_RE="$JARGON_GREEN" -v DRAIN_RE="$JARGON_DRAIN" \
     -v COLOUR_RE="$JARGON_COLOUR" -v IO_RE="$JARGON_IO" \
     -f "$LIB_DIR/rust-lex.awk" -f - \
-    "${JARGON_RS[@]}" "${JARGON_MD[@]}" "${JARGON_TXT[@]}" /dev/null <<'AWK'
+    "${JARGON_RS[@]}" "${JARGON_MD[@]}" "${JARGON_TXT[@]}" "${JARGON_YML[@]}" /dev/null <<'AWK'
     FNR == 1 { reset_lex(); fence = 0; prev = "" }
     {
         if (FILENAME ~ /\.rs$/) text = comment_part($0)
@@ -182,10 +183,10 @@ run_scanner jargon_prose \
             if ($0 ~ /^[ \t]*(```|~~~)/) { fence = !fence; prev = $0; next }
             text = fence ? "" : $0
         }
-        else text = ($0 ~ /^[ \t]*#/) ? $0 : ""
+        else text = $0
 
         if (text != "" && ($0 " " prev) !~ /prose-ok:/) {
-            body = blanked(text)
+            body = (FILENAME ~ /\.rs$|\.md$/) ? blanked(text) : shell_blanked(text)
             hit = (body ~ FLAT_RE)
             if (body ~ GREEN_RE && $0 !~ COLOUR_RE) hit = 1
             if (body ~ DRAIN_RE && $0 !~ IO_RE) hit = 1
@@ -198,6 +199,23 @@ run_scanner jargon_prose \
         gsub(/https?:\/\/[^ \t>)\]]+/, " ", t)
         gsub(/`[^`]*`/, " ", t)
         gsub(/"[^"]*"/, " ", t)
+        return t
+    }
+
+    # A shell or yaml line is scanned whole, so a `desc:`, an `echo` and a yaml
+    # block scalar are read as the prose they are. Quoted runs are NOT blanked
+    # here — they are exactly the text the operator sees. What is blanked is the
+    # code around them: a URL, a backtick span, a `$VAR`/`${…}` expansion, a
+    # `--flag`, a path segment, and a shell/yq/awk identifier carrying the word
+    # inside a longer name.
+    function shell_blanked(t) {
+        gsub(/https?:\/\/[^ \t>)\]]+/, " ", t)
+        gsub(/`[^`]*`/, " ", t)
+        gsub(/\$\{[^}]*\}/, " ", t)
+        gsub(/\$[A-Za-z_][A-Za-z0-9_]*/, " ", t)
+        gsub(/--[A-Za-z0-9_-]+/, " ", t)
+        gsub(/[A-Za-z0-9_.-]*\/[A-Za-z0-9_.\/-]+/, " ", t)
+        gsub(/[A-Za-z0-9_]*(mint|seam|drain|land|green)[A-Za-z0-9_]*[:=]/, " ", t)
         return t
     }
 
