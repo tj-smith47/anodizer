@@ -182,8 +182,8 @@ fn scope_to_tag_family(ctx: &Context, crate_cfg: &CrateConfig, rendered: String)
         ctx.config.monorepo_tag_prefix(),
     );
     match prefix {
-        Some(p) if !p.is_empty() && !rendered.starts_with(&p) => format!("{p}{rendered}"),
-        _ => rendered,
+        Some(p) => crate::git::compose_prefix(&p, &rendered),
+        None => rendered,
     }
 }
 
@@ -223,10 +223,16 @@ pub fn anchor_crate_tag(ctx: &mut Context, crate_cfg: &CrateConfig, tag: &str, l
         Ok(None) => {
             ctx.template_vars_mut().unset("PreviousTag");
         }
-        Err(e) => log.verbose(&format!(
-            "previous-tag lookup for crate '{}' failed: {e}",
-            crate_cfg.name
-        )),
+        Err(e) => {
+            // A failed lookup must degrade to "no previous tag", never to the
+            // run-wide value inherited from another family: that would bound a
+            // changelog range spanning two tracks.
+            ctx.template_vars_mut().unset("PreviousTag");
+            log.verbose(&format!(
+                "previous-tag lookup for crate '{}' failed: {e}",
+                crate_cfg.name
+            ));
+        }
     }
 }
 
@@ -388,5 +394,40 @@ mod tests {
             ctx.template_vars().get("Tag").map(String::as_str),
             Some("operator-v2.4.0"),
         );
+    }
+
+    /// Both variables move together. When the lookup itself fails, the crate
+    /// keeps its own `Tag` but a `PreviousTag` inherited from another family
+    /// must go — leaving it would bound a changelog range across two tracks.
+    #[test]
+    #[serial_test::serial(cwd)]
+    fn a_failed_previous_tag_lookup_drops_the_inherited_previous_tag() {
+        let dir = tempfile::tempdir().unwrap();
+        let _cwd = crate::test_helpers::CwdGuard::new(dir.path()).unwrap();
+        let cfg = crate_cfg("operator", "operator-v{{ Version }}");
+        let config = Config {
+            crates: vec![cfg.clone()],
+            // `smartsemver` lists the tags up front, so a directory that is no
+            // repository surfaces as an error rather than "no previous tag".
+            git: Some(crate::config::GitConfig {
+                tag_sort: Some("smartsemver".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v0.10.0");
+        ctx.template_vars_mut().set("PreviousTag", "v0.9.0");
+        anchor_crate_tag(
+            &mut ctx,
+            &cfg,
+            "operator-v2.4.0",
+            crate::test_helpers::test_logger(),
+        );
+        assert_eq!(
+            ctx.template_vars().get("Tag").map(String::as_str),
+            Some("operator-v2.4.0"),
+        );
+        assert_eq!(ctx.template_vars().get("PreviousTag"), None);
     }
 }

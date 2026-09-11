@@ -200,9 +200,7 @@ impl std::error::Error for RepositoryUnreadable {}
 /// with process-env secrets masked and any credential-bearing URL stripped.
 ///
 /// Named rather than inlined so the guarantee the field's doc states has one
-/// place to be checked — `redact_process_env` composes both halves, and
-/// `a_refused_repository_message_masks_url_credentials` fails if either stops
-/// being applied instead of the doc quietly becoming aspirational.
+/// place to be checked: `redact_process_env` composes both halves.
 fn redacted_git_detail(stderr: &str) -> String {
     crate::redact::redact_process_env(stderr.trim())
 }
