@@ -1182,6 +1182,70 @@ mod tests {
     }
 
     #[test]
+    fn resolve_release_flags_rolling_nightly_tag_permits_replacing_assets() {
+        // A pinned nightly.tag_name re-creates the release on the same tag
+        // every run, so the second run always meets the first run's assets.
+        let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
+        ctx.options.nightly = true;
+        ctx.config.nightly = Some(NightlyConfig {
+            tag_name: Some("nightly".to_string()),
+            ..Default::default()
+        });
+        let release_cfg = ReleaseConfig::default();
+        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly")
+            .expect("resolve_release_flags returns Ok");
+        assert!(
+            flags.replace_existing_artifacts,
+            "a rolling nightly.tag_name must permit replacing the prior run's assets"
+        );
+        assert!(
+            crate::github::check_existing_assets_block_upload(
+                false,
+                false,
+                flags.replace_existing_artifacts,
+                &["anodizer_0.1.0_linux_amd64.tar.gz"],
+            )
+            .is_none(),
+            "a rolling nightly must not bail on the assets its own prior run uploaded"
+        );
+    }
+
+    #[test]
+    fn resolve_release_flags_nightly_without_tag_name_keeps_assets_protected() {
+        // Without a pinned tag each run cuts its own tag, so an existing
+        // release with assets really is debris and must still stop the run.
+        let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
+        ctx.options.nightly = true;
+        ctx.config.nightly = Some(NightlyConfig::default());
+        let release_cfg = ReleaseConfig::default();
+        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "nightly")
+            .expect("resolve_release_flags returns Ok");
+        assert!(
+            !flags.replace_existing_artifacts,
+            "a nightly with no pinned tag must leave replace_existing_artifacts off"
+        );
+    }
+
+    #[test]
+    fn resolve_release_flags_tag_name_outside_a_nightly_run_changes_nothing() {
+        // nightly.tag_name is nightly-only config; a stable release must not
+        // inherit asset replacement from it.
+        let ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
+        let mut ctx = ctx;
+        ctx.config.nightly = Some(NightlyConfig {
+            tag_name: Some("nightly".to_string()),
+            ..Default::default()
+        });
+        let release_cfg = ReleaseConfig::default();
+        let flags = resolve_release_flags(&ctx, &release_cfg, "demo", "v1.0.0")
+            .expect("resolve_release_flags returns Ok");
+        assert!(
+            !flags.replace_existing_artifacts,
+            "a stable run must not read nightly.tag_name"
+        );
+    }
+
+    #[test]
     fn resolve_release_flags_retention_keep_last_honored_when_nightly() {
         // nightly.retention.keep_last = N propagates directly to flags.
         let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
@@ -1643,7 +1707,7 @@ mod tests {
     }
 
     /// A `monorepo.tag_prefix` namespace is part of the family, so a literal
-    /// `nightly.tag_name` must land inside it too — the same scope the
+    /// `nightly.tag_name` must end up inside it too — the same scope the
     /// retention matcher tests membership against.
     #[test]
     fn nightly_tag_name_is_prefixed_with_the_monorepo_namespace() {

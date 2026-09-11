@@ -48,13 +48,13 @@ pub struct NightlyConfig {
     /// `tag_template` (and any `release.tag` override) on nightly runs only.
     /// Templates allowed.
     ///
-    /// Unset — the default — leaves the crate's own `tag_template` to mint
+    /// Unset — the default — leaves the crate's own `tag_template` to create
     /// the tag from the nightly version (`v{{ Version }}` →
     /// `v1.2.4-abc1234-nightly`), which keeps two nightlies at different
     /// commits distinguishable.
     ///
     /// Set it to pin one rolling tag instead (`tag_name: nightly` → tag
-    /// `nightly`, moved each run). In a workspace that mints more than one
+    /// `nightly`, moved each run). In a workspace that creates more than one
     /// tag family the value is prefixed with the publishing crate's family so
     /// the tracks do not collide on a single tag: with `operator-v{{ Version }}`,
     /// `tag_name: edge` yields `operator-vedge`.
@@ -112,11 +112,13 @@ pub struct NightlyConfig {
     /// Mark the nightly release as a prerelease. Default: `true`.
     ///
     /// Unlike [`Self::draft`], `None` does NOT fall through to
-    /// `release.prerelease` — that field resolves to `false` for a nightly
-    /// (an unset config is `false`, and `prerelease: auto` cannot help
-    /// because the default `nightly` tag is not a parseable semver tag), so
-    /// falling through would publish every nightly as a stable release.
-    /// Set `false` to opt out.
+    /// `release.prerelease`: that field resolves to `false` for a nightly, so
+    /// falling through would publish every nightly as a stable release. An
+    /// unset `release.prerelease` is `false`, and `prerelease: auto` does not
+    /// rescue it either — `auto` reads the tag the run cuts, which answers
+    /// `true` only while that tag parses as a semver carrying a prerelease
+    /// part, and a pinned [`Self::tag_name`] (`nightly`, `edge`) parses as no
+    /// semver at all. Set `false` to opt out.
     pub prerelease: Option<bool>,
     /// Override `release.make_latest` for nightly runs only. Default:
     /// `false` — a rolling nightly must not displace the newest stable

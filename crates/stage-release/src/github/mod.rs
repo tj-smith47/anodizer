@@ -39,6 +39,12 @@ pub(crate) use backend::run_github_backend;
 pub use lookup::{PublishedAsset, fetch_published_assets};
 pub(crate) use spec::{BackendEnv, GithubReleaseSpec, UploadOpts};
 
+// The existing-assets pre-check is exercised from the crate's own
+// `#[cfg(test)] tests` module, which asserts that a rolling nightly tag
+// resolves to flags the pre-check lets through.
+#[cfg(test)]
+pub(crate) use spec::check_existing_assets_block_upload;
+
 // `upload_retry_locals` is exercised only by `crate::github::upload_retry_locals`
 // in the crate's `#[cfg(test)] tests` module; re-export it under the same gate
 // so a non-test build doesn't flag the path as unused.

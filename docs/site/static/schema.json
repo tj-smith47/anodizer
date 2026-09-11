@@ -1700,7 +1700,7 @@
       "additionalProperties": false
     },
     "AttestationArtifactKind": {
-      "description": "A selectable artifact KIND for attestation. Each variant maps to one or more concrete [`crate::artifact::ArtifactKind`] values at subject-collection time; together the variants cover the full release-uploadable surface so any artifact that lands on the release can be attested.",
+      "description": "A selectable artifact KIND for attestation. Each variant maps to one or more concrete [`crate::artifact::ArtifactKind`] values at subject-collection time; together the variants cover the full release-uploadable surface so any artifact that reaches the release can be attested.",
       "oneOf": [
         {
           "description": "Packaged archives (`.tar.gz`, `.zip`, ...) and self-extracting archives.",
@@ -1740,7 +1740,7 @@
       ]
     },
     "AttestationConfig": {
-      "description": "SLSA build-provenance / attestation configuration for binaries and archives.\n\nTwo modes select how anodizer participates in attestation:\n\n- [`AttestationMode::Subjects`] (the default) emits a **subjects manifest** (`dist/attestation-subjects.json`) that `anodizer-action` feeds to GitHub's `actions/attest-build-provenance`. anodizer does NOT mint a GitHub-trusted attestation itself in this mode — the Action's OIDC identity does. This is the path fd / biome / gping use. - [`AttestationMode::Emit`] generates a self-contained in-toto v1 statement carrying an SLSA provenance v1 predicate over the selected artifacts, writes it as a release asset (`attestation.intoto.jsonl`), and lets the existing `signs:` stage sign it (keyed, not OIDC). This is for users who can't run the Action (the `--with-provenance` toggle).\n\nYAML:\n\n```yaml\nattestations:\n  enabled: true\n  mode: subjects          # or: emit ; default = subjects\n  artifacts: [archive, binary, checksum]\n```",
+      "description": "SLSA build-provenance / attestation configuration for binaries and archives.\n\nTwo modes select how anodizer participates in attestation:\n\n- [`AttestationMode::Subjects`] (the default) emits a **subjects manifest** (`dist/attestation-subjects.json`) that `anodizer-action` feeds to GitHub's `actions/attest-build-provenance`. anodizer does NOT create a GitHub-trusted attestation itself in this mode — the Action's OIDC identity does. This is the path fd / biome / gping use. - [`AttestationMode::Emit`] generates a self-contained in-toto v1 statement carrying an SLSA provenance v1 predicate over the selected artifacts, writes it as a release asset (`attestation.intoto.jsonl`), and lets the existing `signs:` stage sign it (keyed, not OIDC). This is for users who can't run the Action (the `--with-provenance` toggle).\n\nYAML:\n\n```yaml\nattestations:\n  enabled: true\n  mode: subjects          # or: emit ; default = subjects\n  artifacts: [archive, binary, checksum]\n```",
       "type": "object",
       "properties": {
         "artifacts": {
@@ -3139,10 +3139,10 @@
       ]
     },
     "CargoAuthMode": {
-      "description": "How a `publish.cargo` block authenticates its `cargo publish`: a long-lived crates.io API token, or GitHub Actions OIDC (crates.io Trusted Publishing, which mints a short-lived token per run — no stored secret).\n\ncrates.io publishes through the `cargo` CLI, but the Trusted-Publishing exchange (Actions id-token → crates.io mint-token) is performed by anodizer itself: it mints one token before the dependency-order publish loop, supplies it to every `cargo publish` via `CARGO_REGISTRY_TOKEN`, and revokes it (best-effort) after the loop. The minted token is workspace-scoped, so a single mint authorizes every crate whose Trusted-Publisher config matches this repository/workflow.",
+      "description": "How a `publish.cargo` block authenticates its `cargo publish`: a long-lived crates.io API token, or GitHub Actions OIDC (crates.io Trusted Publishing, which creates a short-lived token per run — no stored secret).\n\ncrates.io publishes through the `cargo` CLI, but the Trusted-Publishing exchange (Actions id-token → crates.io mint-token) is performed by anodizer itself: it creates one token before the dependency-order publish loop, supplies it to every `cargo publish` via `CARGO_REGISTRY_TOKEN`, and revokes it (best-effort) after the loop. The issued token is workspace-scoped, so a single token authorizes every crate whose Trusted-Publisher config matches this repository/workflow.",
       "oneOf": [
         {
-          "description": "Use a token when one is available (`CARGO_REGISTRY_TOKEN`); otherwise, when an OIDC context is present, mint a Trusted-Publishing token. Errors only when neither is available.",
+          "description": "Use a token when one is available (`CARGO_REGISTRY_TOKEN`); otherwise, when an OIDC context is present, create a Trusted-Publishing token. Errors only when neither is available.",
           "type": "string",
           "const": "auto"
         },
@@ -3179,7 +3179,7 @@
           ]
         },
         "auth": {
-          "description": "Whether the publish authenticates with a long-lived API token (`CARGO_REGISTRY_TOKEN`) or with GitHub Actions OIDC (crates.io Trusted Publishing). Default [`Auto`]: a token when one is present, otherwise a Trusted-Publishing exchange when an OIDC context is available.\n\n`oidc` mints a short-lived crates.io token from a GitHub Actions id-token — no stored `CARGO_REGISTRY_TOKEN` is needed — and revokes it after the publish loop. The mint is workspace-scoped: one token authorizes every crate whose Trusted-Publisher config matches this repository/workflow, so a lockstep workspace mints once and reuses it for all crates.\n\nWhen omitted, resolves to [`Auto`]. Optional (rather than a bare enum with `#[serde(default)]`) so a `defaults.publish.cargo.auth` value is inherited by a per-crate `publish.cargo` block that omits `auth`: a bare enum always serializes to a concrete value, and the defaults deep-merge (fill-by-missing-key) never overwrites a present scalar, so a strict `oidc` default would silently degrade to `auto`. Read through [`CargoPublishConfig::resolved_auth`] so every call site agrees on the `None` → `Auto` collapse.\n\n[`Auto`]: CargoAuthMode::Auto",
+          "description": "Whether the publish authenticates with a long-lived API token (`CARGO_REGISTRY_TOKEN`) or with GitHub Actions OIDC (crates.io Trusted Publishing). Default [`Auto`]: a token when one is present, otherwise a Trusted-Publishing exchange when an OIDC context is available.\n\n`oidc` creates a short-lived crates.io token from a GitHub Actions id-token — no stored `CARGO_REGISTRY_TOKEN` is needed — and revokes it after the publish loop. The token is workspace-scoped: one token authorizes every crate whose Trusted-Publisher config matches this repository/workflow, so a lockstep workspace creates one token and reuses it for all crates.\n\nWhen omitted, resolves to [`Auto`]. Optional (rather than a bare enum with `#[serde(default)]`) so a `defaults.publish.cargo.auth` value is inherited by a per-crate `publish.cargo` block that omits `auth`: a bare enum always serializes to a concrete value, and the defaults deep-merge (fill-by-missing-key) never overwrites a present scalar, so a strict `oidc` default would silently degrade to `auto`. Read through [`CargoPublishConfig::resolved_auth`] so every call site agrees on the `None` → `Auto` collapse.\n\n[`Auto`]: CargoAuthMode::Auto",
           "anyOf": [
             {
               "$ref": "#/definitions/CargoAuthMode"
@@ -4315,7 +4315,7 @@
           ]
         },
         "use_github_app_token": {
-          "description": "When true, omit the explicit `-c user.name=` / `-c user.email=` overrides at commit time and let the running git client use the invoking GitHub App's identity (i.e. the `<app-slug>[bot]@users.noreply.github.com` account that the GitHub Actions checkout step has already configured in the repo's local git config).\n\nThe use-github-app-token toggle uses the local git identity; the canonical use-case is PRs against `homebrew/homebrew-core` / `kubernetes-sigs/krew-index` / `microsoft/winget-pkgs` opened from a GitHub App workflow, where EasyCLA / DCO / signed-commit policies require the App's identity (rather than a per-user bot identity) to land the merge.",
+          "description": "When true, omit the explicit `-c user.name=` / `-c user.email=` overrides at commit time and let the running git client use the invoking GitHub App's identity (i.e. the `<app-slug>[bot]@users.noreply.github.com` account that the GitHub Actions checkout step has already configured in the repo's local git config).\n\nThe use-github-app-token toggle uses the local git identity; the canonical use-case is PRs against `homebrew/homebrew-core` / `kubernetes-sigs/krew-index` / `microsoft/winget-pkgs` opened from a GitHub App workflow, where EasyCLA / DCO / signed-commit policies require the App's identity (rather than a per-user bot identity) to complete the merge.",
           "default": false,
           "type": "boolean"
         }
@@ -8190,7 +8190,7 @@
           ]
         },
         "binaries": {
-          "description": "Binary names to install out of the extracted archive (default: a single-element list of the project name). Every name is installed, so an archive shipping multiple binaries lands them all.",
+          "description": "Binary names to install out of the extracted archive (default: a single-element list of the project name). Every name is installed, so an archive shipping multiple binaries ships them all.",
           "default": null,
           "type": [
             "array",
@@ -11290,7 +11290,7 @@
           ]
         },
         "prerelease": {
-          "description": "Mark the nightly release as a prerelease. Default: `true`.\n\nUnlike [`Self::draft`], `None` does NOT fall through to `release.prerelease` — that field resolves to `false` for a nightly (an unset config is `false`, and `prerelease: auto` cannot help because the default `nightly` tag is not a parseable semver tag), so falling through would publish every nightly as a stable release. Set `false` to opt out.",
+          "description": "Mark the nightly release as a prerelease. Default: `true`.\n\nUnlike [`Self::draft`], `None` does NOT fall through to `release.prerelease`: that field resolves to `false` for a nightly, so falling through would publish every nightly as a stable release. An unset `release.prerelease` is `false`, and `prerelease: auto` does not rescue it either — `auto` reads the tag the run cuts, which answers `true` only while that tag parses as a semver carrying a prerelease part, and a pinned [`Self::tag_name`] (`nightly`, `edge`) parses as no semver at all. Set `false` to opt out.",
           "default": null,
           "type": [
             "boolean",
@@ -11334,7 +11334,7 @@
           ]
         },
         "tag_name": {
-          "description": "The tag the nightly release is created on, replacing the crate's `tag_template` (and any `release.tag` override) on nightly runs only. Templates allowed.\n\nUnset — the default — leaves the crate's own `tag_template` to mint the tag from the nightly version (`v{{ Version }}` → `v1.2.4-abc1234-nightly`), which keeps two nightlies at different commits distinguishable.\n\nSet it to pin one rolling tag instead (`tag_name: nightly` → tag `nightly`, moved each run). In a workspace that mints more than one tag family the value is prefixed with the publishing crate's family so the tracks do not collide on a single tag: with `operator-v{{ Version }}`, `tag_name: edge` yields `operator-vedge`.",
+          "description": "The tag the nightly release is created on, replacing the crate's `tag_template` (and any `release.tag` override) on nightly runs only. Templates allowed.\n\nUnset — the default — leaves the crate's own `tag_template` to create the tag from the nightly version (`v{{ Version }}` → `v1.2.4-abc1234-nightly`), which keeps two nightlies at different commits distinguishable.\n\nSet it to pin one rolling tag instead (`tag_name: nightly` → tag `nightly`, moved each run). In a workspace that creates more than one tag family the value is prefixed with the publishing crate's family so the tracks do not collide on a single tag: with `operator-v{{ Version }}`, `tag_name: edge` yields `operator-vedge`.",
           "default": null,
           "type": [
             "string",
@@ -11680,7 +11680,7 @@
           ]
         },
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, an amd64 artifact is included only when its `amd64_variant` metadata matches (artifacts without the metadata always pass). Steers which tuned build lands in each platform package. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected at parse time. Default `v1`, mirroring the homebrew/winget/krew/nix/aur peers.",
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). When set, an amd64 artifact is included only when its `amd64_variant` metadata matches (artifacts without the metadata always pass). Steers which tuned build ends up in each platform package. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected at parse time. Default `v1`, mirroring the homebrew/winget/krew/nix/aur peers.",
           "default": null,
           "anyOf": [
             {
@@ -11916,7 +11916,7 @@
           ]
         },
         "platform_bin_dir": {
-          "description": "Per-platform binary subdirectory inside each `optional-deps` package (e.g. `bin`). When set, the platform binary lands at `<platform_bin_dir>/<binary>` rather than the package root, the metapackage shim resolves it at that path, and the package's `files` allowlist covers it. Required by external shims that hard-code a nested resolve path — for example git-cliff's own wrapper resolves `git-cliff-<os>-<arch>/bin/git-cliff`, so a `skip_metapackage` layout must place the binary under `bin/`. When unset (the default), the binary lands at the package root (`<binary>`). Ignored in `postinstall` mode.",
+          "description": "Per-platform binary subdirectory inside each `optional-deps` package (e.g. `bin`). When set, the platform binary ends up at `<platform_bin_dir>/<binary>` rather than the package root, the metapackage shim resolves it at that path, and the package's `files` allowlist covers it. Required by external shims that hard-code a nested resolve path — for example git-cliff's own wrapper resolves `git-cliff-<os>-<arch>/bin/git-cliff`, so a `skip_metapackage` layout must place the binary under `bin/`. When unset (the default), the binary arrives at the package root (`<binary>`). Ignored in `postinstall` mode.",
           "default": null,
           "type": [
             "string",
@@ -12970,10 +12970,10 @@
       "additionalProperties": false
     },
     "PypiAuthMode": {
-      "description": "How a `pypis[]` entry authenticates its upload: a long-lived API token, or GitHub Actions OIDC (PyPI Trusted Publishing, which mints a short-lived upload token per run — no stored secret).\n\nUnlike npm, PyPI is uploaded directly over HTTP rather than through a CLI, so the Trusted-Publishing exchange (Actions id-token → PyPI mint-token) is performed by anodizer itself. Trusted Publishing also creates brand-new projects when a *pending* publisher is configured on PyPI, so there is no per-package \"must already exist\" caveat as there is for npm.",
+      "description": "How a `pypis[]` entry authenticates its upload: a long-lived API token, or GitHub Actions OIDC (PyPI Trusted Publishing, which creates a short-lived upload token per run — no stored secret).\n\nUnlike npm, PyPI is uploaded directly over HTTP rather than through a CLI, so the Trusted-Publishing exchange (Actions id-token → PyPI mint-token) is performed by anodizer itself. Trusted Publishing also creates brand-new projects when a *pending* publisher is configured on PyPI, so there is no per-package \"must already exist\" caveat as there is for npm.",
       "oneOf": [
         {
-          "description": "Use a token when one is available (`cfg.token` / `PYPI_TOKEN` / `MATURIN_PYPI_TOKEN`); otherwise, when an OIDC context is present, mint a Trusted-Publishing token. Errors only when neither is available.",
+          "description": "Use a token when one is available (`cfg.token` / `PYPI_TOKEN` / `MATURIN_PYPI_TOKEN`); otherwise, when an OIDC context is present, create a Trusted-Publishing token. Errors only when neither is available.",
           "type": "string",
           "const": "auto"
         },
@@ -13230,7 +13230,7 @@
           }
         },
         "token": {
-          "description": "API token for the upload (templated). Falls back to the `PYPI_TOKEN` env var, then `MATURIN_PYPI_TOKEN`, when unset. Sent as HTTP Basic auth with the literal username `__token__` and NEVER logged. Unused when `auth: oidc` (Trusted Publishing mints its own short-lived token).",
+          "description": "API token for the upload (templated). Falls back to the `PYPI_TOKEN` env var, then `MATURIN_PYPI_TOKEN`, when unset. Sent as HTTP Basic auth with the literal username `__token__` and NEVER logged. Unused when `auth: oidc` (Trusted Publishing creates its own short-lived token).",
           "default": null,
           "type": [
             "string",
@@ -13484,7 +13484,7 @@
           ]
         },
         "provider": {
-          "description": "Explicit publish target — the SCM provider whose `release.<provider>` block the publisher uses. When set, overrides the implicit token-type fallback chain in [`crate::scm::resolve_token_type`].\n\nUse this for **cross-platform publishing** pattern: source repo on one provider (e.g. GitLab) but releases land on another (e.g. GitHub). Without it, the publish target is inferred from which `*_TOKEN` env-var is set — fine for single-provider setups but ambiguous when both tokens are available.\n\n```yaml\nrelease:\n  provider: github\n  github:\n    owner: my-org\n    name: my-app\n```",
+          "description": "Explicit publish target — the SCM provider whose `release.<provider>` block the publisher uses. When set, overrides the implicit token-type fallback chain in [`crate::scm::resolve_token_type`].\n\nUse this for **cross-platform publishing** pattern: source repo on one provider (e.g. GitLab) but releases reach another (e.g. GitHub). Without it, the publish target is inferred from which `*_TOKEN` env-var is set — fine for single-provider setups but ambiguous when both tokens are available.\n\n```yaml\nrelease:\n  provider: github\n  github:\n    owner: my-org\n    name: my-app\n```",
           "anyOf": [
             {
               "$ref": "#/definitions/ForceTokenKind"
@@ -13495,7 +13495,7 @@
           ]
         },
         "replace_existing_artifacts": {
-          "description": "When true, replace existing release artifacts with the same name.",
+          "description": "When true, replace existing release artifacts with the same name.\n\nA nightly run with `nightly.tag_name` set behaves as if this were `true`: the pinned tag is rolling, so every run after the first meets the assets its predecessor uploaded onto the same release.",
           "default": null,
           "type": [
             "boolean",
@@ -15147,7 +15147,7 @@
           ]
         },
         "required": {
-          "description": "When `true`, a failed snap upload counts as a required-publisher failure: trips the submitter gate and surfaces in `report.required_failures()` so the CLI exits non-zero.\n\nDefault: `false` — a failed snap upload does not abort the pipeline. It is still reported as a post-publish landing issue by `verify-release` regardless of this setting: `required` governs only whether the run ABORTS mid-pipeline, never whether an attempted failure gets certified as a clean release.\n\nWhen multiple snapcraft configs exist, the stage records ONE aggregated `PublisherResult`: `required = true` if ANY config opted in.",
+          "description": "When `true`, a failed snap upload counts as a required-publisher failure: trips the submitter gate and surfaces in `report.required_failures()` so the CLI exits non-zero.\n\nDefault: `false` — a failed snap upload does not abort the pipeline. It is still reported as a post-publish delivery issue by `verify-release` regardless of this setting: `required` governs only whether the run ABORTS mid-pipeline, never whether an attempted failure gets certified as a clean release.\n\nWhen multiple snapcraft configs exist, the stage records ONE aggregated `PublisherResult`: `required = true` if ANY config opted in.",
           "default": null,
           "type": [
             "boolean",
@@ -15804,7 +15804,7 @@
           ]
         },
         "git_api_tagging": {
-          "description": "When true, use the GitHub/GitLab API for tagging instead of git CLI.\n\nMutually exclusive with `sign` on a pushed tag: the API mints the tag object server-side and cannot apply your local GPG/SSH signature, so anodizer errors rather than shipping a silently-unsigned tag. Use local tagging (drop `git_api_tagging`) to create signed tags.",
+          "description": "When true, use the GitHub/GitLab API for tagging instead of git CLI.\n\nMutually exclusive with `sign` on a pushed tag: the API creates the tag object server-side and cannot apply your local GPG/SSH signature, so anodizer errors rather than shipping a silently-unsigned tag. Use local tagging (drop `git_api_tagging`) to create signed tags.",
           "default": null,
           "type": [
             "boolean",
@@ -16381,7 +16381,7 @@
           ]
         },
         "password": {
-          "description": "Password for HTTP basic auth.\n\nStrongly prefer `{{ Env.UPLOAD_PASSWORD }}` (or any other env-var template) over an in-config literal — plaintext values here are NOT redacted from dry-run output and will land in `dist/config.yaml` when the pipeline runs with `--dry-run` / `--snapshot`. Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Password-resolution cascade.",
+          "description": "Password for HTTP basic auth.\n\nStrongly prefer `{{ Env.UPLOAD_PASSWORD }}` (or any other env-var template) over an in-config literal — plaintext values here are NOT redacted from dry-run output and will end up in `dist/config.yaml` when the pipeline runs with `--dry-run` / `--snapshot`. Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Password-resolution cascade.",
           "default": null,
           "type": [
             "string",
@@ -16547,7 +16547,7 @@
           "type": "boolean"
         },
         "assert_landing": {
-          "description": "Assert that every publisher that succeeded this run actually LANDED: each published crate version is visible on the crates.io sparse index, each npm package version is visible on its registry, each uploaded blob object exists in its bucket, and each uploaded snap is live in the Snap Store's channel map (catching a manual-review hold that parked the revision outside every channel). Default `true` (no extra config: the run's own publish report already carries every coordinate the probes need). Publishers that did not run — or did not succeed — are skipped.",
+          "description": "Assert that every publisher that succeeded this run is actually VISIBLE upstream: each published crate version is visible on the crates.io sparse index, each npm package version is visible on its registry, each uploaded blob object exists in its bucket, and each uploaded snap is live in the Snap Store's channel map (catching a manual-review hold that parked the revision outside every channel). Default `true` (no extra config: the run's own publish report already carries every coordinate the probes need). Publishers that did not run — or did not succeed — are skipped.",
           "default": true,
           "type": "boolean"
         },
@@ -16618,7 +16618,7 @@
       "additionalProperties": false
     },
     "WaitForWorkspaceDepsConfig": {
-      "description": "Pre-publish polling gate for `cargo publish`. When `enabled`, the cargo publisher reads its crate's manifest, identifies every dep that points at another crate in the same anodizer workspace, and polls `https://index.crates.io/<prefix>/<name>` until each `(name, version)` pair is queryable. Only then does `cargo publish` run.\n\nDefault: disabled. Anodizer's own workspaces publish lockstep with one tag; this feature only kicks in for multi-tag-multi-crate workspaces like cfgd where downstream crates can otherwise race the sparse-index propagation of their upstream deps.\n\nComplementary to `cargo.index_timeout`: this gate runs BEFORE publish (waits for *upstream* deps to land), while `index_timeout` runs AFTER publish (waits for the *just-published* crate to land before the next dependent in the same run starts).\n\n```yaml\npublish:\n  cargo:\n    wait_for_workspace_deps:\n      enabled: true\n      poll_interval: 5s\n      max_wait: 5m\n```",
+      "description": "Pre-publish polling gate for `cargo publish`. When `enabled`, the cargo publisher reads its crate's manifest, identifies every dep that points at another crate in the same anodizer workspace, and polls `https://index.crates.io/<prefix>/<name>` until each `(name, version)` pair is queryable. Only then does `cargo publish` run.\n\nDefault: disabled. Anodizer's own workspaces publish lockstep with one tag; this feature only kicks in for multi-tag-multi-crate workspaces like cfgd where downstream crates can otherwise race the sparse-index propagation of their upstream deps.\n\nComplementary to `cargo.index_timeout`: this gate runs BEFORE publish (waits for *upstream* deps to arrive), while `index_timeout` runs AFTER publish (waits for the *just-published* crate to arrive before the next dependent in the same run starts).\n\n```yaml\npublish:\n  cargo:\n    wait_for_workspace_deps:\n      enabled: true\n      poll_interval: 5s\n      max_wait: 5m\n```",
       "type": "object",
       "properties": {
         "enabled": {

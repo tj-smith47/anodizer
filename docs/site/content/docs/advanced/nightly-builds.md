@@ -45,7 +45,7 @@ selection, `release` falls back to reading the tags that point at HEAD:
 
 In a lockstep workspace (one shared `tag_template`) that subset is still every
 crate, so the fallback is harmless. In an **independent-version workspace** it
-is not: the day a release tag lands on master, the nightly narrows to that one
+is not: the day a release tag reaches master, the nightly narrows to that one
 crate — and with it the union of build targets, so any shard whose targets all
 belonged to the dropped crates fails with *no matching targets*.
 
@@ -60,10 +60,12 @@ selection, so the two must agree.
 
 Nightly-shaped tags are excluded from crate selection and from stable
 semver resolution automatically, so a nightly can never narrow a *later*
-release. That exclusion landed after v0.22.2; on earlier versions
+release. That exclusion was added after v0.22.2; on earlier versions
 `--all --force` is what keeps a nightly deterministic.
 
 ## Config
+
+One rolling release — `tag_name` pins the tag, and every run moves it:
 
 ```yaml
 nightly:
@@ -73,20 +75,32 @@ nightly:
   publish_release: true       # default true — create a GitHub Release for each nightly run
   skip_if_no_changes: true    # default false — no-op when the changelog range is empty
   publish_repo: nushell/nightly  # optional — publish to a DIFFERENT repo than the source
+  draft: false                # optional — override release.draft for nightly runs only
+```
+
+A tag per commit, with the older releases swept — leave `tag_name` unset:
+
+```yaml
+nightly:
+  version_template: "{{ Base }}-nightly.{{ NightlyBuild }}+{{ ShortCommit }}"
+  name_template: "{{ Version }}-nightly.{{ Now | date(format='%Y%m%d') }}"
   retention:
     keep_last: 10             # keep the 10 newest nightly releases, delete the rest (+ tags)
-  draft: false                # optional — override release.draft for nightly runs only
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `nightly.tag_name` | `string` | (unset — the crate's `tag_template` mints the tag) | Pins ONE rolling git tag, moved on each run rather than cutting a tag per commit. In a workspace minting more than one tag family the value is prefixed with the publishing crate's family (`operator-v{{ Version }}` + `edge` → `operator-vedge`), so the tracks cannot collide on a single tag. |
+| `nightly.tag_name` | `string` | (unset — the crate's `tag_template` creates the tag) | Pins ONE rolling git tag, moved on each run rather than cutting a tag per commit. In a workspace creating more than one tag family the value is prefixed with the publishing crate's family (`operator-v{{ Version }}` + `edge` → `operator-vedge`), so the tracks cannot collide on a single tag. |
 | `nightly.name_template` | `string` | (inherits `release.name_template`) | Template for the nightly release name, replacing `release.name_template` on nightly runs only. Distinct from `version_template`, which renders the version string. |
 | `nightly.version_template` | `string` | `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"` | Template for the rendered nightly version. May reference `{{ NightlyBuild }}` and `{{ Base }}` (see below). |
 | `nightly.publish_release` | `bool` | `true` | Whether to create a GitHub Release at all. Set `false` to build and publish packages without creating a release entry. |
 | `nightly.publish_repo` | `string` | (source repo) | Publish the nightly release to a different `"owner/repo"` than the one resolved from `release.github` (e.g. a dedicated `org/nightly` repo). The release create, asset upload, and retention deletes all target this repo. The active token must have write access to it. GitHub-only. |
-| `nightly.retention.keep_last` | `int` | (none) | Keep the N newest nightly releases (matched by the rendered nightly release name) and delete the older ones, including the git tags anodizer created for them. In a workspace that mints more than one tag family the name-matched set is narrowed to the publishing crate's family first, so the tracks — which all render the same name — do not delete each other. Operates on `publish_repo` when set. |
+| `nightly.retention.keep_last` | `int` | (none) | Keep the N newest nightly releases (matched by the rendered nightly release name) and delete the older ones, including the git tags anodizer created for them. In a workspace that creates more than one tag family the name-matched set is narrowed to the publishing crate's family first, so the tracks — which all render the same name — do not delete each other. Operates on `publish_repo` when set. |
 | `nightly.keep_single_release` | `bool` | `false` | Back-compat alias for `retention: { keep_last: 1 }` (a single rolling nightly release). When both are set, `retention` wins. |
+
+`retention` only has something to sweep while `tag_name` is unset. A pinned
+`tag_name` re-creates one release on one tag every run, so there is never more
+than a single nightly release for `keep_last` to keep.
 | `nightly.skip_if_no_changes` | `bool` | `false` | Skip the nightly release when the run's changelog resolved to zero notable entries — a nightly becomes a no-op on a quiet day instead of re-cutting the last release's content. Decided per crate in a per-crate workspace. A run with `--skip=changelog` has no signal and never skips. |
 | `nightly.draft` | `bool` | (inherits `release.draft`) | Override the draft flag for nightly runs only. |
 
@@ -98,7 +112,7 @@ Two template vars support nushell-style nightly versioning
 | Var | Source | Resets when |
 |---|---|---|
 | `{{ Base }}` | The numeric base semver (no prerelease / build metadata), captured before nightly templating overwrites `Version`. | Never within a tag; reflects the current tag's `MAJOR.MINOR.PATCH`. |
-| `{{ NightlyBuild }}` | Stateless per-base build counter — `git rev-list --count <last-tag>..HEAD`. | A new version tag lands (the count returns to a small number automatically — no state anodizer persists). |
+| `{{ NightlyBuild }}` | Stateless per-base build counter — `git rev-list --count <last-tag>..HEAD`. | A new version tag arrives (the count returns to a small number automatically — no state anodizer persists). |
 
 ```yaml
 # nushell-style: 0.103.0-nightly.42+a1b2c3
@@ -153,7 +167,7 @@ on:
 permissions:
   contents: write          # create/replace the rolling `nightly` release + tag
   id-token: write          # keyless cosign signing via Fulcio/OIDC
-  attestations: write      # mint SLSA build provenance
+  attestations: write      # issue SLSA build provenance
 
 jobs:
   nightly:
