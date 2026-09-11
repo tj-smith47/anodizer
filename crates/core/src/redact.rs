@@ -758,7 +758,7 @@ mod tests {
         assert!(is_secret_env("ANYTHING", "glpat-1234567890"));
         // Fine-grained GitHub PAT and Google API/OAuth keys, exported under a
         // name the suffix list does not catch, are matched by exact-case value
-        // prefix. `AIza`/`ya29.` casing is load-bearing: the match is
+        // prefix. `AIza`/`ya29.` keep their case: the match is
         // case-sensitive, so an `AIZA` prefix would catch zero real keys.
         assert!(is_secret_env("GH_PAT", "github_pat_11ABCDE0000000000"));
         assert!(is_secret_env(

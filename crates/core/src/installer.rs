@@ -451,14 +451,7 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
     // renders one filename for both triples, so splitting there would advertise
     // a `-musl` platform the release never uploads and hand every host the same
     // download behind a probe that decides nothing.
-    let by_key: BTreeMap<String, Vec<&'static str>> = arms.keys().fold(
-        BTreeMap::new(),
-        |mut acc: BTreeMap<String, Vec<&'static str>>, (key, libc)| {
-            acc.entry(key.clone()).or_default().push(libc);
-            acc
-        },
-    );
-    for (key, libcs) in by_key {
+    for (key, libcs) in libcs_per_key(&arms) {
         if libcs.len() < 2 {
             continue;
         }
@@ -482,13 +475,12 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
     // platform string the script cannot match, and report their targets as
     // stranded. A key that did NOT split is unaffected: its single arm is
     // rendered from the key alone.
-    let mut arms_per_key: BTreeMap<String, usize> = BTreeMap::new();
-    for (key, _) in arms.keys() {
-        *arms_per_key.entry(key.clone()).or_default() += 1;
-    }
+    let split = libcs_per_key(&arms);
     let undetectable_libc_keys: Vec<(String, &'static str)> = arms
         .keys()
-        .filter(|(key, libc)| libc.is_empty() && arms_per_key.get(key).copied().unwrap_or(0) > 1)
+        .filter(|(key, libc)| {
+            libc.is_empty() && split.get(key).is_some_and(|libcs| libcs.len() > 1)
+        })
         .cloned()
         .collect();
     for arm in &undetectable_libc_keys {
@@ -511,15 +503,13 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
     // reduce to the same `os-arch` key AND upload different files. Only then do
     // the arms need a libc suffix — and only then does the script need a probe
     // to produce one.
-    let mut per_key: BTreeMap<&str, usize> = BTreeMap::new();
-    for (key, _) in arms.keys() {
-        *per_key.entry(key.as_str()).or_default() += 1;
-    }
-    let any_split = per_key.values().any(|n| *n > 1);
+    let per_key = libcs_per_key(&arms);
+    let key_splits = |key: &str| per_key.get(key).is_some_and(|libcs| libcs.len() > 1);
+    let any_split = per_key.values().any(|libcs| libcs.len() > 1);
     // With a suffixed subject every arm must carry a third segment, so the
     // platforms that did NOT split match any libc the probe can report.
     let arm_key = |key: &str, libc: &'static str| -> String {
-        match (per_key.get(key).copied().unwrap_or(0) > 1, any_split) {
+        match (key_splits(key), any_split) {
             (true, _) => format!("{key}-{libc}"),
             (false, true) => format!("{key}-*"),
             (false, false) => key.to_string(),
@@ -528,7 +518,7 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
     // The operator-facing list names the split platforms by libc but leaves
     // the rest unsuffixed: a `*` glob is arm syntax, not a platform.
     let listed_key = |key: &str, libc: &'static str| -> String {
-        if per_key.get(key).copied().unwrap_or(0) > 1 {
+        if key_splits(key) {
             format!("{key}-{libc}")
         } else {
             key.to_string()
@@ -571,7 +561,7 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
             "installer script cannot detect released target(s) {}: the platform \
              ships more than one libc class, and the installer's libc probe \
              cannot select a build that links neither glibc nor musl — matching \
-             hosts get the build for the libc they do report",
+             hosts get whichever build(s) the platform still lists",
             libc_stranded.join(", ")
         ));
     }
@@ -699,6 +689,25 @@ const RANK_UNIVERSAL: u8 = 2;
 /// darwin universal asset landing on a key a native build already claimed; an
 /// equal-rank collision holds the incumbent, which is the
 /// lexicographically-smaller target (assets arrive in sorted-target order).
+/// The libc classes each `os-arch` key holds an arm for.
+///
+/// One fold, asked three times as `arms` shrinks: to decide which keys carry
+/// two arms naming the same asset, to find the arms whose libc the script
+/// cannot probe, and to decide which keys still split once those are gone.
+/// The answer changes with every removal, so it is recomputed rather than
+/// carried.
+fn libcs_per_key(
+    arms: &BTreeMap<(String, &'static str), (u8, String, String)>,
+) -> BTreeMap<String, Vec<&'static str>> {
+    arms.keys().fold(
+        BTreeMap::new(),
+        |mut acc: BTreeMap<String, Vec<&'static str>>, (key, libc)| {
+            acc.entry(key.clone()).or_default().push(libc);
+            acc
+        },
+    )
+}
+
 fn record_arm(
     arms: &mut BTreeMap<(String, &'static str), (u8, String, String)>,
     key: (String, &'static str),
@@ -1678,6 +1687,25 @@ mod tests {
                 .iter()
                 .any(|m| m.contains("armv7-unknown-linux-uclibceabihf")),
             "warn must name the target the probe cannot select: {:?}",
+            capture.warn_messages()
+        );
+        // With the uclibc arm gone the key holds one build, so a musl host
+        // gets the gnu archive. The warn must not promise a per-libc choice
+        // the remaining arms cannot make.
+        assert!(
+            capture
+                .warn_messages()
+                .iter()
+                .all(|m| !m.contains("for the libc they do report")),
+            "warn must not claim a per-libc selection: {:?}",
+            capture.warn_messages()
+        );
+        assert!(
+            capture
+                .warn_messages()
+                .iter()
+                .any(|m| m.contains("whichever build(s) the platform still lists")),
+            "warn must say what the script actually does: {:?}",
             capture.warn_messages()
         );
     }

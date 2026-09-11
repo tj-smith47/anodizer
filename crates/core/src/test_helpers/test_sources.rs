@@ -571,7 +571,7 @@ mod tests {
 
     /// The walk detector must see both ways a source names the extension. A
     /// `.ends_with(".rs")` walker contains no `"rs"` token, so a detector
-    /// spelled only the first way welcomes it with a green suite.
+    /// spelled only the first way lets it through with a passing suite.
     #[test]
     fn the_walk_detector_reads_both_extension_spellings() {
         assert!(is_rust_source_walk(
