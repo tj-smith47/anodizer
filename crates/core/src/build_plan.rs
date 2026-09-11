@@ -504,7 +504,9 @@ mod tests {
     /// | `configured_build_targets` (`env_preflight.rs`) | hands the field to the shared `entry_inactive` predicate |
     #[test]
     fn every_build_skip_read_belongs_to_a_named_owner() {
-        use crate::test_helpers::test_sources::{function_bodies, production_half, rust_sources};
+        use crate::test_helpers::test_sources::{
+            function_bodies, production_half, workspace_production_sources,
+        };
 
         const OWNERS: &[&str] = &[
             "build_is_skipped",
@@ -514,21 +516,7 @@ mod tests {
             "configured_build_targets",
         ];
 
-        let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("crates/ above crates/core");
-        let mut sources: Vec<std::path::PathBuf> = Vec::new();
-        for entry in std::fs::read_dir(crates_dir).expect("crates dir") {
-            let src = entry.expect("crate entry").path().join("src");
-            if src.is_dir() {
-                sources.extend(rust_sources(&src));
-            }
-        }
-        assert!(
-            sources.len() > 100,
-            "the walk must cover every crate's production sources, found {}",
-            sources.len()
-        );
+        let sources = workspace_production_sources();
 
         let mut strays: Vec<String> = Vec::new();
         for source in &sources {
@@ -571,23 +559,11 @@ mod tests {
     /// mirrors. Six consumers spelled it themselves before they routed here.
     #[test]
     fn the_context_skip_adapter_is_spelled_once() {
-        use crate::test_helpers::test_sources::{function_bodies, production_half, rust_sources};
+        use crate::test_helpers::test_sources::{
+            function_bodies, production_half, workspace_production_sources,
+        };
 
-        let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("crates/ above crates/core");
-        let mut sources: Vec<std::path::PathBuf> = Vec::new();
-        for entry in std::fs::read_dir(crates_dir).expect("crates dir") {
-            let src = entry.expect("crate entry").path().join("src");
-            if src.is_dir() {
-                sources.extend(rust_sources(&src));
-            }
-        }
-        assert!(
-            sources.len() > 100,
-            "the walk must cover every crate's production sources, found {}",
-            sources.len()
-        );
+        let sources = workspace_production_sources();
 
         let mut strays: Vec<String> = Vec::new();
         for source in &sources {
@@ -610,7 +586,8 @@ mod tests {
         }
         assert!(
             strays.is_empty(),
-            "bind the skip gate to a context through `build_plan::skipped_in`,              not a local closure: {strays:#?}"
+            "bind the skip gate to a context through `build_plan::skipped_in`, \
+             not a local closure: {strays:#?}"
         );
     }
 

@@ -305,8 +305,7 @@ fn expected_platform_identities(
         // targets must not inflate the expected set either. Empty
         // `selected_crates` means "every crate is in scope" (single-crate and
         // lockstep runs), mirroring `publisher_helpers::effective_publish_crates`.
-        if !ctx.options.selected_crates.is_empty() && !ctx.options.selected_crates.contains(&c.name)
-        {
+        if !anodizer_core::config::crate_is_selected(&ctx.options.selected_crates, &c.name) {
             continue;
         }
 

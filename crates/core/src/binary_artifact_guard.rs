@@ -59,11 +59,7 @@ pub fn check(
     selected_crates: &[String],
     built_crate_names: Option<&HashSet<String>>,
 ) -> anyhow::Result<()> {
-    for krate in config.crate_universe() {
-        if !selected_crates.is_empty() && !selected_crates.contains(&krate.name) {
-            continue;
-        }
-
+    for krate in config.selected_crates(selected_crates) {
         // Target-aware skip: the build stage ran but produced no in-scope
         // build target for this crate, so it was never this shard's job to
         // build it. Absent only when `built_crate_names` is `Some`.

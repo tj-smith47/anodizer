@@ -763,12 +763,11 @@ fn a_scanner_that_cannot_load_its_awk_library_fails_loudly() {
 /// ones — both wrong.
 #[test]
 fn every_named_test_source_is_declared_cfg_test() {
-    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut undeclared = Vec::new();
     let mut seen = 0usize;
-    for src in std::fs::read_dir(&crates)
-        .expect("crates dir")
-        .map(|e| e.expect("crate entry").path().join("src"))
+    for src in anodizer_core::test_helpers::test_sources::workspace_crate_dirs()
+        .into_iter()
+        .map(|krate| krate.join("src"))
         .filter(|src| src.is_dir())
     {
         for file in test_sources(&src) {
@@ -778,11 +777,7 @@ fn every_named_test_source_is_declared_cfg_test() {
             }
         }
     }
-    assert!(
-        seen > 0,
-        "no name-matched test file under {}",
-        crates.display()
-    );
+    assert!(seen > 0, "no name-matched test file in the workspace");
     assert!(
         undeclared.is_empty(),
         "name-matched test files not declared `#[cfg(test)] mod …;` by their parent: {undeclared:?}"

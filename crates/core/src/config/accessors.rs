@@ -548,6 +548,101 @@ mod tests {
         assert!(config.selected_crates(&["nope".to_string()]).is_empty());
     }
 
+    /// A source fragment with every space that does not separate two word
+    /// characters removed, so `a . is_empty ( )` and `a.is_empty()` read the
+    /// same. The surviving spaces keep `if selected` from reading as one
+    /// identifier named `ifselected`.
+    fn flatten(text: &str) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        let mut out = String::with_capacity(chars.len());
+        for (i, &c) in chars.iter().enumerate() {
+            if !c.is_whitespace() {
+                out.push(c);
+                continue;
+            }
+            let before = chars[..i].iter().rev().find(|c| !c.is_whitespace());
+            let after = chars[i + 1..].iter().find(|c| !c.is_whitespace());
+            if let (Some(&b), Some(&a)) = (before, after)
+                && is_word(b)
+                && is_word(a)
+            {
+                out.push(' ');
+            }
+        }
+        out
+    }
+
+    /// The identifier path immediately left of `text`'s end: `selected`,
+    /// `selected_crates`, `ctx.options.selected_crates`. Anything that cannot
+    /// be part of a path — an operator, a bracket, a space already stripped —
+    /// ends it.
+    fn identifier_path_before(text: &str) -> &str {
+        let start = text
+            .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+            .map_or(0, |i| i + 1);
+        text[start..].trim_start_matches('.')
+    }
+
+    /// Whether a whitespace-stripped source fragment re-types the selection
+    /// predicate: an emptiness test on some path, followed by a membership
+    /// test on the SAME path, whose subject is a crate `name`. Either
+    /// polarity counts.
+    ///
+    /// Keyed on the shape rather than on what the local binding is called. A
+    /// check that looked for the name `selected` was blind to the same
+    /// predicate written over `selected_crates` or over
+    /// `ctx.options.selected_crates`, which is how four sites survived the
+    /// sweep it was meant to close. The `.name` subject is what separates
+    /// this question from the other emptiness-then-membership pairs in the
+    /// tree — a publisher allowlist, a string suffix — which have their own
+    /// answers and must not be dragged onto this accessor.
+    fn retypes_the_selection_predicate(flat: &str) -> bool {
+        for separator in [".is_empty()||", ".is_empty()&&!"] {
+            for (idx, _) in flat.match_indices(separator) {
+                let path = identifier_path_before(&flat[..idx]);
+                if path.is_empty() {
+                    continue;
+                }
+                let rest = &flat[idx + separator.len()..];
+                let Some(after) = rest.strip_prefix(path) else {
+                    continue;
+                };
+                let membership =
+                    after.starts_with(".contains(") || after.starts_with(".iter().any(");
+                if membership && after.contains(".name") {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// The four sites that survived the first sweep, spelled as they were
+    /// before they were converted. Each must be visible to the shape check,
+    /// or the pin guards a naming habit instead of the rule.
+    #[test]
+    fn the_shape_check_sees_the_predicate_under_any_binding_name() {
+        for line in [
+            "if !selected_crates.is_empty() && !selected_crates.contains(&krate.name) {",
+            ".filter(|c| selected_crates.is_empty() || selected_crates.contains(&c.name))",
+            "if !ctx.options.selected_crates.is_empty() \
+             && !ctx.options.selected_crates.contains(&c.name)",
+            "if selected.is_empty() || selected.iter().any(|s| s == &c.name) {",
+        ] {
+            assert!(
+                retypes_the_selection_predicate(&flatten(line)),
+                "the shape check cannot see: {line}"
+            );
+        }
+        assert!(
+            !retypes_the_selection_predicate(&flatten(
+                "if names.is_empty() || other.contains(&c.name) {"
+            )),
+            "two different paths are not the selection predicate"
+        );
+    }
+
     /// "Is this crate in the run's selection" is one question with one answer.
     /// It was re-typed at nearly fifty production sites, in two spellings and
     /// two polarities, so a change to what `--crate` selects had to be made
@@ -555,23 +650,9 @@ mod tests {
     /// [`crate_is_selected`]; this walk fails the moment a new one does not.
     #[test]
     fn the_selection_predicate_is_spelled_once() {
-        use crate::test_helpers::test_sources::{production_half, rust_sources};
+        use crate::test_helpers::test_sources::{production_half, workspace_production_sources};
 
-        let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("crates/ above crates/core");
-        let mut sources: Vec<std::path::PathBuf> = Vec::new();
-        for entry in std::fs::read_dir(crates_dir).expect("crates dir") {
-            let src = entry.expect("crate entry").path().join("src");
-            if src.is_dir() {
-                sources.extend(rust_sources(&src));
-            }
-        }
-        assert!(
-            sources.len() > 100,
-            "the walk must cover every crate's production sources, found {}",
-            sources.len()
-        );
+        let sources = workspace_production_sources();
 
         let this_file = std::path::Path::new(file!())
             .file_name()
@@ -583,11 +664,13 @@ mod tests {
             }
             let text = std::fs::read_to_string(source).expect("read source");
             let production = production_half(&text);
-            for (index, line) in production.lines().enumerate() {
-                let flat = line.replace(' ', "");
-                if flat.contains("selected.is_empty()||selected")
-                    || flat.contains("!selected.is_empty()&&!selected")
-                {
+            let lines: Vec<&str> = production.lines().collect();
+            for (index, line) in lines.iter().enumerate() {
+                // rustfmt wraps a long condition, so the emptiness test and
+                // the membership test can land on consecutive lines; joining
+                // the pair reads them as the one expression they are.
+                let joined = format!("{line}{}", lines.get(index + 1).unwrap_or(&""));
+                if retypes_the_selection_predicate(&flatten(&joined)) {
                     strays.push(format!("{}:{}", source.display(), index + 1));
                 }
             }

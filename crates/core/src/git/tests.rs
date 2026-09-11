@@ -2618,39 +2618,6 @@ mod column_ui {
         );
     }
 
-    /// Every crate's `src/`, from the workspace members list, so a `git tag`
-    /// spawn added in any crate is in the population.
-    fn workspace_sources() -> Vec<std::path::PathBuf> {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|p| p.parent())
-            .expect("repo root above crates/core");
-        let manifest =
-            std::fs::read_to_string(root.join("Cargo.toml")).expect("workspace manifest");
-        let members: Vec<String> = manifest
-            .lines()
-            .skip_while(|l| !l.starts_with("members"))
-            .skip(1)
-            .take_while(|l| !l.starts_with(']'))
-            .filter_map(|l| {
-                l.trim()
-                    .trim_end_matches(',')
-                    .strip_prefix('"')?
-                    .strip_suffix('"')
-                    .map(str::to_string)
-            })
-            .collect();
-        assert!(!members.is_empty(), "no workspace members parsed");
-        let mut sources = Vec::new();
-        for member in members {
-            let src = root.join(member).join("src");
-            if src.is_dir() {
-                sources.extend(crate::test_helpers::test_sources::rust_sources(&src));
-            }
-        }
-        sources
-    }
-
     /// Whether an argv literal in `body` spawns a `git tag` form that LISTS —
     /// the forms whose stdout git will columnize. `git tag -d` and tag
     /// creation print nothing a caller parses, so they are not in the class.
@@ -2684,7 +2651,7 @@ mod column_ui {
         const WRAPPERS: [&str; 2] = ["git_output_in(", "collect_semver_tags_in("];
         let mut checked = 0usize;
         let mut offenders = Vec::new();
-        for source in workspace_sources() {
+        for source in crate::test_helpers::test_sources::workspace_production_sources() {
             let text = std::fs::read_to_string(&source).expect("read source");
             let production = crate::test_helpers::test_sources::production_half(&text);
             for body in crate::test_helpers::test_sources::function_bodies(production) {

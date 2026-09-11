@@ -22,11 +22,7 @@ pub fn collect_build_targets(config: &Config, selected_crates: &[String]) -> Vec
     // host filter / `anodizer targets` must see it too.
     let default_targets = config.effective_default_targets();
 
-    for krate in config.crate_universe() {
-        if !selected_crates.is_empty() && !selected_crates.contains(&krate.name) {
-            continue;
-        }
-
+    for krate in config.selected_crates(selected_crates) {
         // Enumerate exactly what the planner compiles for this crate via the
         // shared SSOT: a non-empty `builds:` list as-is, else a synthesized
         // default build when the crate declares a `--bin <name>`, else nothing.

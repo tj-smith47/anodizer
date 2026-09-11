@@ -21,6 +21,10 @@
 //!   `partition_sources`, the one directory walk in the workspace.
 //! - [`function_bodies`] splits a source into per-function bodies, the grain a
 //!   structural guard needs to ask what one function does.
+//! - [`workspace_crate_dirs`] lists the workspace's crates, and
+//!   [`workspace_production_sources`] is the population a repo-wide pin walks:
+//!   the production half of every one of them. A pin asks for the crate list
+//!   rather than listing `crates/` for itself.
 
 use std::path::{Path, PathBuf};
 
@@ -399,6 +403,45 @@ fn top_level_terms(terms: &str) -> impl Iterator<Item = &str> {
     out.into_iter()
 }
 
+/// Every crate directory in this workspace.
+///
+/// The one spelling of the `crates/` listing. Two copies disagree the moment
+/// one of them learns a filter the other does not, and six had accumulated.
+pub fn workspace_crate_dirs() -> Vec<PathBuf> {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates/ above crates/core");
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(crates)
+        .expect("crates dir")
+        .map(|entry| entry.expect("crate entry").path())
+        .collect();
+    dirs.sort();
+    dirs
+}
+
+/// The production half of every workspace crate's `src/`.
+///
+/// The population a repo-wide structural pin walks. Enumerating `crates/`
+/// per pin had drifted once already — one copy listed the directory and
+/// another parsed the manifest's `members`, so a crate directory that is not
+/// a member was in one population and not the other. The sanity floor here
+/// fails a pin that would otherwise pass vacuously over an empty walk.
+pub fn workspace_production_sources() -> Vec<PathBuf> {
+    let mut sources: Vec<PathBuf> = Vec::new();
+    for krate in workspace_crate_dirs() {
+        let src = krate.join("src");
+        if src.is_dir() {
+            sources.extend(rust_sources(&src));
+        }
+    }
+    assert!(
+        sources.len() > 100,
+        "the walk must cover every crate's production sources, found {}",
+        sources.len()
+    );
+    sources
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,10 +460,8 @@ mod tests {
                 }
             }
         }
-        let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let mut out = Vec::new();
-        for entry in std::fs::read_dir(&crates).expect("crates dir") {
-            let krate = entry.expect("crate entry").path();
+        for krate in workspace_crate_dirs() {
             let src = krate.join("src");
             if src.is_dir() {
                 out.extend(rust_sources(&src));
@@ -439,7 +480,7 @@ mod tests {
                 expand(&tests, &mut out);
             }
         }
-        assert!(!out.is_empty(), "no source under {}", crates.display());
+        assert!(!out.is_empty(), "the workspace ships no source");
         out
     }
 
@@ -450,12 +491,20 @@ mod tests {
     /// this guard existed. Any function that both reads a directory and tests
     /// for the Rust file extension fails here until it goes through this walk.
     /// Whether a function body is a Rust-source directory walk: it reads a
-    /// directory AND tests for the extension. Both spellings count — an
+    /// directory AND either tests for the extension or feeds what it read to
+    /// one of this module's scanners. Both extension spellings count — an
     /// `extension() == "rs"` compare and a `ends_with(".rs")` one — because a
     /// detector that knows only the first is blind to the second, which
-    /// contains no `"rs"` token at all.
+    /// contains no `"rs"` token at all. The scanner-call clause is what sees
+    /// a pin listing `crates/` itself and handing each `src/` to
+    /// [`rust_sources`]: five of those had accumulated, and none of them
+    /// names a file extension.
     fn is_rust_source_walk(body: &str) -> bool {
-        body.contains("read_dir(") && (body.contains("\"rs\"") || body.contains("\".rs\""))
+        body.contains("read_dir(")
+            && (body.contains("\"rs\"")
+                || body.contains("\".rs\"")
+                || body.contains("rust_sources(")
+                || body.contains("test_sources("))
     }
 
     /// The renderer internals a documented-render pin needs are re-exported
@@ -531,10 +580,15 @@ mod tests {
         assert!(is_rust_source_walk(
             "fn b(d: &Path) { for e in std::fs::read_dir(d)? { if e.path().to_string_lossy().ends_with(\".rs\") {} } }"
         ));
-        // A directory read that never asks about the extension is not a
-        // Rust-source walk.
+        // A crate listing that hands each `src/` to a shared scanner never
+        // names an extension, and is the shape five pins had re-spelled.
+        assert!(is_rust_source_walk(
+            "fn c(d: &Path) { for e in std::fs::read_dir(d)? { out.extend(rust_sources(&e)); } }"
+        ));
+        // A directory read that neither asks about the extension nor collects
+        // sources is not a Rust-source walk.
         assert!(!is_rust_source_walk(
-            "fn c(d: &Path) { std::fs::read_dir(d) }"
+            "fn d(d: &Path) { std::fs::read_dir(d) }"
         ));
     }
 
@@ -614,8 +668,12 @@ unsafe impl Send for NotAFn {
         // `crate_has_binary_target` lists one crate's `src/bin` to answer
         // whether a binary target exists at all; it collects no source to
         // scan, so it is not a walk this module can serve.
-        const ALLOWED: [&str; 2] = [
+        // `is_rust_source_walk` is the detector and its own test fixture
+        // carries the needles it looks for, so both match themselves.
+        const ALLOWED: [&str; 4] = [
+            "core/src/test_helpers/test_sources.rs: is_rust_source_walk",
             "core/src/test_helpers/test_sources.rs: partition_sources",
+            "core/src/test_helpers/test_sources.rs: the_walk_detector_reads_both_extension_spellings",
             "stage-build/src/command.rs: crate_has_binary_target",
         ];
         let mut found: Vec<String> = walks
