@@ -104,18 +104,6 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
     format!("starting per-crate nix publish for '{}'", crate_name)
 }
 
-/// Final summary emitted at publisher exit. `considered` is the count of
-/// crates the publisher actually invoked `publish_to_nix` on (not the
-/// count of successful overlay pushes — `publish_to_nix` has its own
-/// skip paths for skip_upload/dry-run/etc., each of which logs its own
-/// status line).
-pub(crate) fn run_done_message(considered: usize) -> String {
-    format!(
-        "finished nix publish — {} configured crate(s) considered",
-        considered
-    )
-}
-
 /// Decision predicate for the no-eligible-crates warning. True when the
 /// publisher walked the selection but the configured-predicate filtered
 /// every crate out — distinct from "ran successfully in dry-run mode".
@@ -128,26 +116,6 @@ pub(crate) fn run_done_message(considered: usize) -> String {
 /// though the correct code path ran.
 pub(crate) fn should_warn_no_eligible(processed: usize, selected_len: usize) -> bool {
     processed == 0 && selected_len > 0
-}
-
-/// Warning emitted when the publisher was registered (at least one crate
-/// has a `publish.nix` block at the config level) but the run path
-/// processed zero crates.
-///
-/// With the implicit-all default in
-/// [`crate::publisher_helpers::effective_publish_crates`], an empty
-/// `selected_crates` resolves to every crate carrying a `publish.nix`
-/// block — so a zero-processed run means `--crate`/`--all` matrix
-/// selection was non-empty AND filtered every nix-configured crate out.
-/// Operators must see this — otherwise the publisher's `succeeded` status
-/// hides the fact that nothing was pushed.
-pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
-    format!(
-        "nix publisher registered but 0 of {} effective crate(s) had a nix \
-         config block — nothing pushed. Check that --crate / --all selects a \
-         crate whose publish.nix block is set.",
-        selected_total
-    )
 }
 
 /// Nix entries across the crate universe whose `skip:`/`skip_upload:`/
@@ -379,14 +347,14 @@ impl anodizer_core::Publisher for NixPublisher {
             selected.len(),
         ));
         // `processed` counts crates whose configured predicate passed and
-        // whose `publish_to_nix` invocation reached its work WITHOUT
-        // disqualifying the entry — NOT crates that pushed. The dry-run /
-        // skip_upload paths inside `publish_to_nix` return Ok(false) without
-        // pushing; that's still a successful run of the correct code path, so
-        // it must not trigger the no-eligible-crates warning. An entry the
-        // call skipped does not count, so a run that skipped every crate is
-        // distinguishable from one that published them all. `any_pushed` (below) tracks the
-        // orthogonal "did we mutate an overlay" question used to gate
+        // whose `publish_to_nix` invocation was reached — NOT crates that
+        // pushed, and not only crates that got past their own gate: a crate
+        // that disqualified itself inside the call is still counted, which is
+        // why the done line says "considered". The dry-run / skip_upload paths
+        // inside `publish_to_nix` return Ok(false) without pushing; that is
+        // still a successful run of the correct code path, so it must not
+        // trigger the no-eligible-crates warning. `any_pushed` (below) tracks
+        // the orthogonal "was an overlay mutated" question used to gate
         // evidence recording.
         let mut processed = 0usize;
         let mut any_pushed = false;
@@ -423,9 +391,14 @@ impl anodizer_core::Publisher for NixPublisher {
             selected.len(),
         );
         if entry_skips == 0 && should_warn_no_eligible(processed, selected.len()) {
-            log.warn(&run_no_eligible_crates_warning(selected.len()));
+            log.warn(&crate::publisher_helpers::run_no_eligible_crates_warning(
+                "nix",
+                selected.len(),
+            ));
         } else {
-            log.status(&run_done_message(processed));
+            log.status(&crate::publisher_helpers::run_done_message(
+                "nix", processed,
+            ));
         }
         let mut evidence = anodizer_core::PublishEvidence::new("nix");
         if any_pushed {
@@ -1077,14 +1050,14 @@ mod publisher_tests {
 
     #[test]
     fn run_done_message_reports_considered_count() {
-        let msg = run_done_message(2);
+        let msg = crate::publisher_helpers::run_done_message("nix", 2);
         assert!(msg.starts_with("finished nix publish"), "{msg}");
         assert!(msg.contains("2 configured crate(s) considered"), "{msg}");
     }
 
     #[test]
     fn run_no_eligible_crates_warning_names_remediation() {
-        let msg = run_no_eligible_crates_warning(5);
+        let msg = crate::publisher_helpers::run_no_eligible_crates_warning("nix", 5);
         assert!(msg.starts_with("nix publisher registered"), "{msg}");
         assert!(msg.contains("0 of 5 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");

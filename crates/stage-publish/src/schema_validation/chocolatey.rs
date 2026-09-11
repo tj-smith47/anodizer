@@ -15,7 +15,7 @@
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
 use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, with_validated_crate_scope};
 use crate::chocolatey::{
@@ -89,7 +89,12 @@ impl PublisherSchemaValidator for ChocolateySchemaValidator {
                 // target-restricted shard (skip) but a genuine misconfiguration
                 // on a FULL build (ERROR).
                 let partial_shard = ctx.is_target_restricted_build();
-                if !validate_install_mode_for_crate(ctx, crate_name, partial_shard, &log)? {
+                // Here the check is a validation verdict, not a publish: the
+                // entry-skip reason is bare because the publish path's skip
+                // line supplies the label, so this caller adds it.
+                if !validate_install_mode_for_crate(ctx, crate_name, partial_shard, &log)
+                    .with_context(|| format!("chocolatey: '{crate_name}'"))?
+                {
                     log.verbose(&format!(
                         "skipped chocolatey install-mode validation for crate '{}' — produced \
                          no Windows artifact in this target-restricted shard",

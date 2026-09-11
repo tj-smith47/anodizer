@@ -143,17 +143,6 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
     format!("starting per-crate krew publish for '{}'", crate_name)
 }
 
-/// Final summary emitted at publisher exit. `considered` is the count of
-/// crates the publisher actually invoked `publish_to_krew` on (not the
-/// count of successful PRs — `publish_to_krew` has its own skip paths for
-/// skip_upload/dry-run/etc., each of which logs its own status line).
-pub(crate) fn run_done_message(considered: usize) -> String {
-    format!(
-        "finished krew publish — {} configured crate(s) considered",
-        considered
-    )
-}
-
 /// Decision predicate for the no-eligible-crates warning. True when the
 /// publisher walked the selection but the configured-predicate filtered
 /// every crate out — distinct from "ran successfully in dry-run mode".
@@ -163,26 +152,6 @@ pub(crate) fn run_done_message(considered: usize) -> String {
 /// `selected_len` is the size of the implicit-all-resolved selection.
 pub(crate) fn should_warn_no_eligible(processed: usize, selected_len: usize) -> bool {
     processed == 0 && selected_len > 0
-}
-
-/// Warning emitted when the publisher was registered (at least one crate
-/// has a `publish.krew` block at the config level) but the run path
-/// processed zero crates.
-///
-/// With the implicit-all default in
-/// [`crate::publisher_helpers::effective_publish_crates`], an empty
-/// `selected_crates` resolves to every crate carrying a `publish.krew`
-/// block — so a zero-processed run means `--crate`/`--all` matrix
-/// selection was non-empty AND filtered every krew-configured crate out.
-/// Operators must see this — otherwise the publisher's `succeeded` status
-/// hides the fact that nothing was pushed.
-pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
-    format!(
-        "krew publisher registered but 0 of {} effective crate(s) had a krew \
-         config block — nothing pushed. Check that --crate / --all selects a \
-         crate whose publish.krew block is set.",
-        selected_total
-    )
 }
 
 /// Krew entries across the crate universe whose `skip:`/`skip_upload:`/
@@ -405,9 +374,14 @@ impl anodizer_core::Publisher for KrewPublisher {
             selected.len(),
         );
         if entry_skips == 0 && should_warn_no_eligible(processed, selected.len()) {
-            log.warn(&run_no_eligible_crates_warning(selected.len()));
+            log.warn(&crate::publisher_helpers::run_no_eligible_crates_warning(
+                "krew",
+                selected.len(),
+            ));
         } else {
-            log.status(&run_done_message(processed));
+            log.status(&crate::publisher_helpers::run_done_message(
+                "krew", processed,
+            ));
         }
         let mut evidence = anodizer_core::PublishEvidence::new("krew");
         // Record rollback evidence only for the PrDirect flow, which

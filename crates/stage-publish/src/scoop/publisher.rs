@@ -42,18 +42,6 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
     format!("starting per-crate scoop publish for '{}'", crate_name)
 }
 
-/// Final summary emitted at publisher exit. `considered` is the count of
-/// crates the publisher actually invoked `publish_to_scoop` on (not the
-/// count of successful bucket pushes — `publish_to_scoop` has its own
-/// skip paths for skip_upload/dry-run/etc., each of which logs its own
-/// status line).
-pub(crate) fn run_done_message(considered: usize) -> String {
-    format!(
-        "finished scoop publish — {} configured crate(s) considered",
-        considered
-    )
-}
-
 /// Decision predicate for the no-eligible-crates warning. True when the
 /// publisher walked the selection but the configured-predicate filtered
 /// every crate out — distinct from "ran successfully in dry-run mode".
@@ -66,26 +54,6 @@ pub(crate) fn run_done_message(considered: usize) -> String {
 /// though the correct code path ran.
 pub(crate) fn should_warn_no_eligible(processed: usize, selected_len: usize) -> bool {
     processed == 0 && selected_len > 0
-}
-
-/// Warning emitted when the publisher was registered (at least one crate
-/// has a `publish.scoop` block at the config level) but the run path
-/// processed zero crates.
-///
-/// With the implicit-all default in
-/// [`crate::publisher_helpers::effective_publish_crates`], an empty
-/// `selected_crates` resolves to every crate carrying a `publish.scoop`
-/// block — so a zero-processed run means `--crate`/`--all` matrix
-/// selection was non-empty AND filtered every scoop-configured crate out.
-/// Operators must see this — otherwise the publisher's `succeeded` status
-/// hides the fact that nothing was pushed.
-pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
-    format!(
-        "scoop publisher registered but 0 of {} effective crate(s) had a scoop \
-         config block — nothing pushed. Check that --crate / --all selects a \
-         crate whose publish.scoop block is set.",
-        selected_total
-    )
 }
 
 /// Scoop entries across the crate universe whose `skip_upload:`/`if:`
@@ -311,9 +279,14 @@ impl anodizer_core::Publisher for ScoopPublisher {
             selected.len(),
         );
         if entry_skips == 0 && should_warn_no_eligible(processed, selected.len()) {
-            log.warn(&run_no_eligible_crates_warning(selected.len()));
+            log.warn(&crate::publisher_helpers::run_no_eligible_crates_warning(
+                "scoop",
+                selected.len(),
+            ));
         } else {
-            log.status(&run_done_message(processed));
+            log.status(&crate::publisher_helpers::run_done_message(
+                "scoop", processed,
+            ));
         }
         let mut evidence = anodizer_core::PublishEvidence::new("scoop");
         if any_pushed {

@@ -582,7 +582,9 @@ pub fn publish_top_level_homebrew_casks(
             "homebrew-cask",
             &cask_name,
             crate::util::resolve_repo_owner_name(repo_cfg).ok_or_else(|| {
-                anodizer_core::pipe_skip::entry_skip(super::MISSING_REPOSITORY_REASON)
+                anodizer_core::pipe_skip::entry_skip(
+                    crate::publisher_helpers::MISSING_REPOSITORY_REASON,
+                )
             }),
         )?
         else {

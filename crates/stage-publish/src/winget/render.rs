@@ -253,18 +253,15 @@ pub(crate) struct WingetIdentity {
 }
 
 /// Resolve a crate's WinGet identity (repo, name, publisher, validated
-/// `PackageIdentifier`), or `Ok(None)` when the publisher would skip the crate
-/// (`skip_upload` / a falsy `if`). Errors when the crate carries no `winget`
-/// block — callers must guarantee the block is present.
+/// `PackageIdentifier`) from its DERIVED `publish.winget` block (see
+/// [`super::identifier::derive_winget_config`]), or `Ok(None)` when the
+/// publisher would skip the crate (`skip_upload` / a falsy `if`).
 pub(crate) fn resolve_winget_identity(
     ctx: &Context,
     crate_name: &str,
     winget_cfg: &anodizer_core::config::WingetConfig,
     log: &StageLogger,
 ) -> Result<Option<WingetIdentity>> {
-    // Derive the config first so every field read below — the identifier
-    // included — is the value the run resolved, not a raw template.
-    let winget_cfg = &super::identifier::derive_winget_config(ctx, log, winget_cfg, crate_name)?;
     let label = format!("winget publisher for crate '{}'", crate_name);
     if crate::util::should_skip_publisher_with_if(
         ctx,
@@ -279,10 +276,9 @@ pub(crate) fn resolve_winget_identity(
 
     let (repo_owner, repo_name) =
         crate::util::resolve_repo_owner_name(winget_cfg.repository.as_ref()).ok_or_else(|| {
-            anodizer_core::pipe_skip::entry_skip(format!(
-                "winget: no repository config for '{}'",
-                crate_name
-            ))
+            anodizer_core::pipe_skip::entry_skip(
+                crate::publisher_helpers::MISSING_REPOSITORY_REASON,
+            )
         })?;
 
     let name_raw = winget_cfg.name.as_deref().unwrap_or(crate_name);
@@ -324,12 +320,13 @@ pub(crate) fn render_winget_manifests_for_crate(
         .winget
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("winget: no winget config for '{}'", crate_name))?;
+    let derived = super::identifier::derive_winget_config(ctx, log, winget_cfg, crate_name)?;
 
-    let Some(identity) = resolve_winget_identity(ctx, crate_name, winget_cfg, log)? else {
+    let Some(identity) = resolve_winget_identity(ctx, crate_name, &derived, log)? else {
         return Ok(None);
     };
     Ok(Some(render_winget_manifests_with_identity(
-        ctx, crate_name, winget_cfg, &identity, log,
+        ctx, crate_name, &derived, &identity, log,
     )?))
 }
 

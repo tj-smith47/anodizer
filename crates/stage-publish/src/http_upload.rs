@@ -19,9 +19,10 @@ use crate::artifactory::{UploadAuth, UploadHeaders, UploadOutcome, render_artifa
 /// anonymous uploads from upload's tolerance for them, plus the env-var
 /// prefix used to look up secrets.
 pub(crate) struct CredentialResolveSpec<'a> {
-    /// Publisher label used in error messages ("artifactory" / "upload").
+    /// Publisher label the recorded skip is filed under ("artifactory" /
+    /// "upload").
     pub publisher: &'a str,
-    /// Entry name; appears in error messages and joined into env-var keys.
+    /// Entry name; labels the recorded skip and is joined into env-var keys.
     pub entry_name: &'a str,
     /// Optional `username:` value from the publisher entry config.
     pub config_username: Option<&'a str>,
@@ -30,9 +31,9 @@ pub(crate) struct CredentialResolveSpec<'a> {
     /// Env-var prefix (e.g. "ARTIFACTORY", "UPLOAD"). Joined with the
     /// upper-cased entry name and `_USERNAME` / `_SECRET`.
     pub env_prefix: &'a str,
-    /// When false (artifactory), an unresolved credential pair bails. When
-    /// true (upload), an entirely empty pair is acceptable for anonymous
-    /// targets and only the half-set state is refused.
+    /// When false (artifactory), an unresolved credential pair disqualifies
+    /// the entry. When true (upload), an entirely empty pair is acceptable
+    /// for anonymous targets and only the half-set state disqualifies it.
     pub anonymous_ok: bool,
 }
 
@@ -42,9 +43,12 @@ pub(crate) struct CredentialResolveSpec<'a> {
 /// `<PREFIX>_<NAME>_SECRET` env var. Empty-after-render falls through to
 /// env so a half-edited YAML does not silently ship anonymous.
 ///
-/// Refuses (with a clear "set X or env Y" message):
-/// - Half-set credential pair under any spec.
-/// - Empty pair when `anonymous_ok = false` (artifactory).
+/// Disqualifies the ENTRY — an `Err` carrying
+/// [`anodizer_core::pipe_skip::entry_skip`], which callers route through
+/// [`crate::publisher_helpers::absorb_entry_skip`] so the entry's siblings
+/// still publish — with a "set X or env Y" reason when:
+/// - the credential pair is half-set under any spec;
+/// - the pair is empty and `anonymous_ok = false` (artifactory).
 ///
 /// Skipped in dry-run so config previews do not require real secrets.
 pub(crate) fn resolve_http_credentials(
@@ -95,24 +99,21 @@ pub(crate) fn resolve_http_credentials(
         match (username.is_empty(), password.is_empty()) {
             (false, true) => {
                 return Err(anodizer_core::pipe_skip::entry_skip(format!(
-                    "{}: '{}' has username set but no password \
-                     (set 'password:' in config or {} in env)",
-                    spec.publisher, spec.entry_name, password_env
+                    "username set but no password \
+                     (set 'password:' in config or {password_env} in env)"
                 )));
             }
             (true, false) => {
                 return Err(anodizer_core::pipe_skip::entry_skip(format!(
-                    "{}: '{}' has password set but no username \
-                     (set 'username:' in config or {} in env)",
-                    spec.publisher, spec.entry_name, username_env
+                    "password set but no username \
+                     (set 'username:' in config or {username_env} in env)"
                 )));
             }
             (true, true) if !spec.anonymous_ok => {
                 return Err(anodizer_core::pipe_skip::entry_skip(format!(
-                    "{}: '{}' resolved with no credentials \
-                     (set username/password in config or {} / {} in env; \
-                     anonymous upload is refused)",
-                    spec.publisher, spec.entry_name, username_env, password_env
+                    "resolved with no credentials \
+                     (set username/password in config or {username_env} / \
+                     {password_env} in env; anonymous upload is refused)"
                 )));
             }
             _ => {}
@@ -257,19 +258,18 @@ pub(crate) fn upload_artifact_set(
     Ok(counts)
 }
 
-/// Refuse a half-set mTLS pair. Both crates need the same exact check.
-pub(crate) fn validate_mtls_pair(
-    publisher: &str,
-    entry_name: &str,
-    cert: Option<&str>,
-    key: Option<&str>,
-) -> Result<()> {
+/// Check the mTLS pair is whole.
+///
+/// A half-set pair disqualifies the ENTRY — an `Err` carrying
+/// [`anodizer_core::pipe_skip::entry_skip`], which callers route through
+/// [`crate::publisher_helpers::absorb_entry_skip`] so the entry's siblings
+/// still publish.
+pub(crate) fn validate_mtls_pair(cert: Option<&str>, key: Option<&str>) -> Result<()> {
     if cert.is_some() != key.is_some() {
-        return Err(anodizer_core::pipe_skip::entry_skip(format!(
-            "{}: '{}' has only one of client_x509_cert / client_x509_key set \
+        return Err(anodizer_core::pipe_skip::entry_skip(
+            "only one of client_x509_cert / client_x509_key is set \
              (set both to enable mTLS, or leave both empty)",
-            publisher, entry_name
-        )));
+        ));
     }
     Ok(())
 }

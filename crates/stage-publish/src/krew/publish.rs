@@ -69,8 +69,11 @@ pub fn publish_to_krew(
         log,
         "krew",
         crate_name,
-        crate::util::resolve_repo_owner_name(krew_cfg.repository.as_ref())
-            .ok_or_else(|| anodizer_core::pipe_skip::entry_skip(MISSING_REPOSITORY_REASON)),
+        crate::util::resolve_repo_owner_name(krew_cfg.repository.as_ref()).ok_or_else(|| {
+            anodizer_core::pipe_skip::entry_skip(
+                crate::publisher_helpers::MISSING_REPOSITORY_REASON,
+            )
+        }),
     )?
     else {
         return Ok(KrewPublishOutcome::skipped());

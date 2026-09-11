@@ -34,6 +34,15 @@
 /// through this single helper.
 pub(crate) use anodizer_core::rollback_empty_warning_msg;
 
+/// Why an entry is disqualified when its `repository:` names no `owner`/`name`
+/// pair: the index it pushes to (tap, bucket, overlay, plugin index, winget
+/// fork) has nowhere to land, but every sibling entry can still publish, so
+/// the entry is skipped rather than failing the publisher.
+///
+/// One spelling for every publisher, so the same defect reads the same way in
+/// the run summary whichever publisher hit it.
+pub(crate) const MISSING_REPOSITORY_REASON: &str = "repository.name is not set";
+
 /// Canonical `is_X_configured` shape for a top-level publisher block whose
 /// presence on [`anodizer_core::config::Config`] is `Option<Vec<T>>`.
 ///
@@ -93,6 +102,67 @@ pub(crate) fn run_start_message(publisher: &str, selected_total: usize) -> Strin
     format!(
         "starting {publisher} publish — scanning {selected_total} selected crate(s) \
          for {article} {publisher} config block"
+    )
+}
+
+/// Final summary a per-crate publisher emits at exit. `considered` counts the
+/// crates whose configured predicate passed and whose publish call was
+/// reached — NOT the crates that pushed, since the dry-run and skip paths
+/// inside that call are still a successful run of the right code path.
+///
+/// One format string for every publisher, for the same reason as
+/// [`run_start_message`]: per-file copies drifted (`selected crate(s)` in one,
+/// `configured crate(s)` in the other seven) while naming the same event.
+pub(crate) fn run_done_message(publisher: &str, considered: usize) -> String {
+    run_done_message_detailed(publisher, considered, "crate", None)
+}
+
+/// As [`run_done_message`], for a publisher that counts something other than
+/// crates (`unit_noun`) or breaks its count down (`detail`, rendered in
+/// parentheses) — homebrew counts formula crates and casks together.
+pub(crate) fn run_done_message_detailed(
+    publisher: &str,
+    considered: usize,
+    unit_noun: &str,
+    detail: Option<&str>,
+) -> String {
+    let breakdown = detail.map(|d| format!(" ({d})")).unwrap_or_default();
+    format!(
+        "finished {publisher} publish — {considered} configured {unit_noun}(s) \
+         considered{breakdown}"
+    )
+}
+
+/// Warning a per-crate publisher emits when it was registered (some crate
+/// carries its config block) but the run path reached zero crates: the
+/// `--crate` / `--all` selection filtered every configured crate out, and
+/// without this line the publisher's `succeeded` status hides that nothing was
+/// pushed.
+pub(crate) fn run_no_eligible_crates_warning(publisher: &str, selected_total: usize) -> String {
+    run_no_eligible_crates_warning_with(publisher, selected_total, None, None)
+}
+
+/// As [`run_no_eligible_crates_warning`], for a publisher with a second
+/// configuration surface: `also_missing` extends the diagnosis clause and
+/// `also_fix` the remediation clause, so an operator on that surface learns it
+/// satisfies the publisher too.
+pub(crate) fn run_no_eligible_crates_warning_with(
+    publisher: &str,
+    selected_total: usize,
+    also_missing: Option<&str>,
+    also_fix: Option<&str>,
+) -> String {
+    let article = if publisher.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    };
+    let missing = also_missing.map(|m| format!(" {m}")).unwrap_or_default();
+    let fix = also_fix.map(|f| format!(", {f}")).unwrap_or_default();
+    format!(
+        "{publisher} publisher registered but 0 of {selected_total} effective crate(s) \
+         had {article} {publisher} config block{missing} — nothing pushed. Check that \
+         --crate / --all selects a crate whose publish.{publisher} block is set{fix}."
     )
 }
 
@@ -223,6 +293,7 @@ impl RunLanding {
 /// A publisher that already recorded a more specific terminal outcome keeps
 /// it: `NotApplicable` and `AlreadyPublished` answer *why* nothing landed,
 /// where `EntriesSkipped` only says that entries disqualified themselves.
+/// The reasons are still reported in that case, as the skip-count line.
 pub(crate) fn evaluate_entry_skips(
     ctx: &mut anodizer_core::context::Context,
     log: &anodizer_core::log::StageLogger,
@@ -260,13 +331,17 @@ pub(crate) fn evaluate_entry_skips(
         }
     }
     let joined = distinct.join(", ");
-    if matches!(landing, RunLanding::Landed) {
+    // A reason is reported whatever outcome the run recorded. The per-entry
+    // lines are gated by `--show-skipped`, so an outcome that pre-empted
+    // `EntriesSkipped` (`AlreadyPublished`, nothing-applicable) used to leave
+    // the misconfigured entries with no reason anywhere at default verbosity.
+    if recorded_entries_skipped {
+        log.status(&format!("skipping {publisher} — {joined}"));
+    } else {
         log.status(&format!(
             "{publisher} skipped {} of {total} entries — {joined}",
             reasons.len(),
         ));
-    } else if recorded_entries_skipped {
-        log.status(&format!("skipping {publisher} — {joined}"));
     }
     reasons.len()
 }
@@ -846,6 +921,35 @@ pub(crate) fn targets_allowlist_check(
 mod tests {
     use super::*;
 
+    /// The reasons reach the run log even when the publisher already
+    /// recorded a different terminal outcome. The per-entry lines are gated
+    /// by `--show-skipped`, so without this line a misconfigured entry leaves
+    /// nothing but a bare count in the summary table.
+    #[test]
+    fn a_pre_recorded_outcome_still_reports_the_entry_reasons() {
+        let (log, capture) = anodizer_core::log::StageLogger::with_capture(
+            "publish",
+            anodizer_core::log::Verbosity::Normal,
+        );
+        let mut ctx = anodizer_core::test_helpers::TestContextBuilder::new().build();
+        ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
+            anodizer_core::SkipReason::AlreadyPublished,
+        ));
+        ctx.remember_skip("uploads", "half", "username set but no password");
+
+        let skipped = evaluate_entry_skips(&mut ctx, &log, "uploads", RunLanding::NothingLanded, 2);
+
+        assert_eq!(skipped, 1);
+        let status: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+        assert!(
+            status
+                .iter()
+                .any(|m| m.contains("uploads skipped 1 of 2 entries")
+                    && m.contains("username set but no password")),
+            "the reason must be reported whatever outcome was recorded; got: {status:?}"
+        );
+    }
+
     /// A publisher whose own name is prefixed by a neighbour's is not
     /// covered by that neighbour: the rule that pairs a label to an evaluator
     /// is the rule that collects it, so `homebrew-core` skips reaching no
@@ -1027,6 +1131,47 @@ mod tests {
                  evaluate_entry_skips; evaluated={evaluated:?}"
             );
         }
+    }
+
+    /// An entry-skip reason names the DEFECT only. `record_entry_skip`
+    /// renders `skipped <publisher> for '<label>' — <reason>` and
+    /// `evaluate_entry_skips` prefixes its joined line with the publisher, so
+    /// a reason that repeats either produces `skipped uploads for 'half' —
+    /// uploads: 'half' has username set but no password`.
+    #[test]
+    fn no_entry_skip_reason_repeats_the_publisher_token() {
+        use anodizer_core::test_helpers::test_sources::{production_half, rust_sources};
+
+        let tokens: Vec<&str> = anodizer_core::PublisherKind::all()
+            .map(|k| k.token())
+            .collect();
+        let mut checked = 0usize;
+        let mut offenders = Vec::new();
+        for path in rust_sources(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")) {
+            let text = std::fs::read_to_string(&path).expect("readable source");
+            let prod = production_half(&text);
+            for (idx, _) in prod.match_indices("entry_skip(") {
+                let Some(reason) = first_literal_argument(&prod[idx + "entry_skip(".len()..])
+                else {
+                    continue;
+                };
+                checked += 1;
+                if let Some(token) = tokens.iter().find(|t| reason.starts_with(&format!("{t}:"))) {
+                    offenders.push(format!("{}: {token}: …", path.display()));
+                }
+            }
+        }
+        assert!(
+            checked >= 10,
+            "the entry_skip reason population shrank to {checked}; a rename \
+             likely slipped the walk"
+        );
+        assert!(
+            offenders.is_empty(),
+            "these entry-skip reasons restate the publisher the skip line \
+             already names; keep only the defect text:\n{}",
+            offenders.join("\n")
+        );
     }
 
     /// A missing `repository:` disqualifies ONE entry, never the run: every

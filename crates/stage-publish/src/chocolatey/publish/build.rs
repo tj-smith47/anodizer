@@ -258,15 +258,18 @@ pub(super) fn select_windows_artifacts<'a>(
         })
         .collect();
 
-    // When a format is required, order present-and-matching artifacts ahead of
-    // format-less ones so the first-wins partition below prefers a definite
-    // match. Stable so same-format artifacts keep their discovery order.
-    if let Some(want) = required_format {
-        win_artifacts.sort_by_key(|a| match a.metadata.get("format") {
-            Some(have) if have == want => 0u8,
+    // One rank for both readers: the sort that orders present-and-matching
+    // artifacts ahead of format-less ones, and the ambiguity check below that
+    // only reports a genuine tie. Two spellings of the rank would let a change
+    // to one silently make the other report the wrong pair. With no required
+    // format the rank is constant, so the sort is a no-op. Stable, so
+    // same-rank artifacts keep their discovery order.
+    let format_rank =
+        |a: &anodizer_core::artifact::Artifact| match (required_format, a.metadata.get("format")) {
+            (Some(want), Some(have)) if have == want => 0u8,
             _ => 1u8,
-        });
-    }
+        };
+    win_artifacts.sort_by_key(|a| format_rank(a));
 
     // Chocolatey only ships amd64 + 386 install scripts; arm64 (and any
     // other architecture) MUST be filtered out before the per-architecture
@@ -278,11 +281,6 @@ pub(super) fn select_windows_artifacts<'a>(
     // Classify by the canonical arch token (`amd64` / `386`) from
     // `map_target`, not by string-substring on the triple, so future
     // triple variations can't slip through.
-    let format_rank =
-        |a: &anodizer_core::artifact::Artifact| match (required_format, a.metadata.get("format")) {
-            (Some(want), Some(have)) if have == want => 0u8,
-            _ => 1u8,
-        };
     let mut slot_32: Vec<&anodizer_core::artifact::Artifact> = Vec::new();
     let mut slot_64: Vec<&anodizer_core::artifact::Artifact> = Vec::new();
     for a in win_artifacts {
@@ -315,8 +313,7 @@ pub(super) fn select_windows_artifacts<'a>(
             && format_rank(first) == format_rank(second)
         {
             return Err(anodizer_core::pipe_skip::entry_skip(format!(
-                "chocolatey: found multiple archives for the same platform ({arch}) for \
-                 '{crate_name}': '{}' and '{}'",
+                "found multiple archives for the same platform ({arch}): '{}' and '{}'",
                 first.name(),
                 second.name()
             )));

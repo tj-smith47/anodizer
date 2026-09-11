@@ -19,7 +19,7 @@
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
 use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, with_validated_crate_scope};
 use crate::aur::{
@@ -103,8 +103,12 @@ impl PublisherSchemaValidator for AurSchemaValidator {
                     return Ok(out);
                 }
 
+                // Here the render is a validation verdict, not a publish: the
+                // entry-skip reason is bare because the publish path's skip
+                // line supplies the label, so this caller adds it.
                 if let Some(rendered) =
-                    render_aur_pkgbuild_and_srcinfo_for_crate(ctx, crate_name, &log)?
+                    render_aur_pkgbuild_and_srcinfo_for_crate(ctx, crate_name, &log)
+                        .with_context(|| format!("aur: '{crate_name}'"))?
                 {
                     validate_rendered(&mut out, &rendered, strict, &log)?;
                 }

@@ -171,11 +171,11 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// `0 unit(s) considered` even after pushing its cask, which reads as a
 /// no-op to operators scanning the log.
 pub(crate) fn run_done_message(considered: usize, casks: usize) -> String {
-    format!(
-        "finished homebrew publish — {} configured unit(s) considered ({} formula crate(s), {} cask(s))",
+    crate::publisher_helpers::run_done_message_detailed(
+        "homebrew",
         considered + casks,
-        considered,
-        casks,
+        "unit",
+        Some(&format!("{considered} formula crate(s), {casks} cask(s)")),
     )
 }
 
@@ -224,12 +224,11 @@ pub(crate) fn should_warn_no_eligible(
 /// pushed. Names both surfaces (`publish.homebrew` formula and
 /// `homebrew_casks:` cask) since either would satisfy the publisher.
 pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
-    format!(
-        "homebrew publisher registered but 0 of {} effective crate(s) had a homebrew \
-         config block and no top-level `homebrew_casks:` were configured — nothing \
-         pushed. Check that --crate / --all selects a crate whose `publish.homebrew` \
-         block is set, or configure a top-level `homebrew_casks:` entry.",
-        selected_total
+    crate::publisher_helpers::run_no_eligible_crates_warning_with(
+        "homebrew",
+        selected_total,
+        Some("and no top-level `homebrew_casks:` were configured"),
+        Some("or configure a top-level `homebrew_casks:` entry"),
     )
 }
 
@@ -569,13 +568,15 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             selected.len(),
         ));
         // `processed` counts crates whose configured predicate passed and
-        // whose `publish_to_homebrew` invocation reached its work WITHOUT
-        // disqualifying the entry — NOT crates that pushed. The dry-run / skip_upload paths inside
-        // `publish_to_homebrew` return Ok(false) without pushing; that's
-        // still a successful run of the correct code path, so it must
-        // not trigger the no-eligible-crates warning. `any_pushed` (below)
-        // tracks the orthogonal "did we mutate a tap" question used to
-        // gate evidence recording.
+        // whose `publish_to_homebrew` invocation was reached — NOT crates that
+        // pushed, and not only crates that got past their own gate: a crate
+        // that disqualified itself inside the call is still counted, which is
+        // why the done line says "considered". The dry-run / skip_upload paths
+        // inside `publish_to_homebrew` return Ok(false) without pushing; that
+        // is still a successful run of the correct code path, so it must not
+        // trigger the no-eligible-crates warning. `any_pushed` (below) tracks
+        // the orthogonal "was a tap mutated" question used to gate evidence
+        // recording.
         let mut processed = 0usize;
         let mut any_pushed = false;
         for crate_name in &selected {

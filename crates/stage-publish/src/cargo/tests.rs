@@ -2732,14 +2732,14 @@ fn run_start_and_done_messages_carry_counts() {
         "starting per-crate cargo publish for 'cfgd-core'"
     );
     assert_eq!(
-        run_done_message(2),
-        "finished cargo publish — 2 selected crate(s) considered"
+        crate::publisher_helpers::run_done_message("cargo", 2),
+        "finished cargo publish — 2 configured crate(s) considered"
     );
 }
 
 #[test]
 fn run_no_eligible_crates_warning_names_the_total() {
-    let w = run_no_eligible_crates_warning(5);
+    let w = crate::publisher_helpers::run_no_eligible_crates_warning("cargo", 5);
     assert!(w.starts_with("cargo publisher registered but 0 of 5 effective crate(s)"));
     assert!(w.contains("--crate / --all"));
 }

@@ -272,8 +272,8 @@ fn select_windows_artifacts_skips_the_entry_on_two_archives_for_one_arch() {
     assert_eq!(
         anodizer_core::pipe_skip::entry_skip_reason(&err),
         Some(
-            "chocolatey: found multiple archives for the same platform (amd64) for \
-             'mytool': 'b-amd64.zip' and 'c-amd64-dup.zip'"
+            "found multiple archives for the same platform (amd64): \
+             'b-amd64.zip' and 'c-amd64-dup.zip'"
         ),
         "the ambiguity is an entry skip, not a publisher failure: {err:#}"
     );

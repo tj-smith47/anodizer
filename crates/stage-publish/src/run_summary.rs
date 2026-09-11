@@ -1307,9 +1307,7 @@ mod tests {
                     required: false,
                     status: "succeeded".to_string(),
                     evidence: None,
-                    entry_skips: vec![
-                        "uploads: entry 'mirror' is missing required 'target' URL".to_string(),
-                    ],
+                    entry_skips: vec!["entry is missing required 'target' URL".to_string()],
                 },
                 RunSummaryResult {
                     name: "winget".to_string(),
@@ -1317,7 +1315,7 @@ mod tests {
                     required: false,
                     status: "skipped-entries-skipped".to_string(),
                     evidence: None,
-                    entry_skips: vec!["winget: no repository config for 'widget'".to_string()],
+                    entry_skips: vec!["repository.name is not set".to_string()],
                 },
             ],
             ..populated_summary()
@@ -1345,7 +1343,7 @@ mod tests {
         let mut summary = entry_skip_summary();
         summary.results[0]
             .entry_skips
-            .push("uploads: entry 'backup' is missing required 'target' URL".to_string());
+            .push("entry is missing required 'name' field".to_string());
         let rows = status_table_rows(&summary, PublishDisposition::Ran);
         assert_eq!(
             rows[0],

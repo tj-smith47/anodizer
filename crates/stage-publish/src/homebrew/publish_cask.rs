@@ -110,8 +110,11 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         log,
         "homebrew-cask",
         crate_name,
-        crate::util::resolve_repo_owner_name(hb_cfg.repository.as_ref())
-            .ok_or_else(|| anodizer_core::pipe_skip::entry_skip(super::MISSING_REPOSITORY_REASON)),
+        crate::util::resolve_repo_owner_name(hb_cfg.repository.as_ref()).ok_or_else(|| {
+            anodizer_core::pipe_skip::entry_skip(
+                crate::publisher_helpers::MISSING_REPOSITORY_REASON,
+            )
+        }),
     )?
     else {
         return Ok(());

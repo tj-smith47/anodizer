@@ -410,11 +410,16 @@ pub fn publish_to_artifactory(
     // `retryx` policy is captured once per pipe invocation).
     let policy = ctx.retry_policy();
 
-    for entry in entries {
-        let label = format!(
-            "artifactory entry '{}'",
-            entry.name.as_deref().unwrap_or("<unnamed>")
-        );
+    for (idx, entry) in entries.iter().enumerate() {
+        // A nameless entry is named by its position so two of them stay
+        // distinguishable in the skip line and the run summary.
+        let positional = format!("artifactories[{idx}]");
+        let entry_label = entry
+            .name
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .unwrap_or(&positional);
+        let label = format!("artifactory entry '{entry_label}'");
         if crate::util::should_skip_publisher_with_if(
             ctx,
             entry.skip.as_ref(),
@@ -435,8 +440,8 @@ pub fn publish_to_artifactory(
                     ctx,
                     log,
                     "artifactory",
-                    "<unnamed>",
-                    "artifactory: entry is missing required 'name' field",
+                    entry_label,
+                    "entry is missing required 'name' field",
                 );
                 continue;
             }
@@ -465,10 +470,7 @@ pub fn publish_to_artifactory(
                     log,
                     "artifactory",
                     name,
-                    &format!(
-                        "artifactory: entry '{}' is missing required 'target' URL",
-                        name
-                    ),
+                    "entry is missing required 'target' URL",
                 );
                 continue;
             }
@@ -626,8 +628,6 @@ pub fn publish_to_artifactory(
             "artifactory",
             name,
             crate::http_upload::validate_mtls_pair(
-                "artifactory",
-                name,
                 entry.client_x509_cert.as_deref(),
                 entry.client_x509_key.as_deref(),
             ),

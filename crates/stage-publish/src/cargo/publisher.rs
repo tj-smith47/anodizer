@@ -47,31 +47,6 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
     format!("starting per-crate cargo publish for '{}'", crate_name)
 }
 
-/// Operator-visible done line, emitted after `publish_to_cargo` returns
-/// Ok. `considered` counts crates whose publish path was actually
-/// invoked (skipped-by-already-published, skipped-by-skip-template, and
-/// dry-run paths all count as considered — they're successful runs of
-/// the correct code path).
-pub(crate) fn run_done_message(considered: usize) -> String {
-    format!(
-        "finished cargo publish — {} selected crate(s) considered",
-        considered
-    )
-}
-
-/// Warning emitted when the publisher was registered (at least one
-/// crate has a `publish.cargo` block) but `publish_to_cargo` resolved
-/// zero publishable crates (every cargo-configured crate was filtered
-/// out by `--crate` / `--all` selection).
-pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
-    format!(
-        "cargo publisher registered but 0 of {} effective crate(s) had a cargo \
-         config block — nothing pushed. Check that --crate / --all selects a \
-         crate whose publish.cargo block is set.",
-        selected_total
-    )
-}
-
 /// Cargo entries across the crate universe whose `skip:`/`if:` evaluates
 /// active right now AND whose crate is in scope for `--crate` / `--all`
 /// selection. Shared by [`anodizer_core::Publisher::requirements`],
@@ -311,7 +286,10 @@ impl anodizer_core::Publisher for CargoPublisher {
         // would also emit a "no crates configured ..." status, duplicating
         // the canonical no-eligible warn the wrapper owns.
         if eligible == 0 {
-            log.warn(&run_no_eligible_crates_warning(selected.len()));
+            log.warn(&crate::publisher_helpers::run_no_eligible_crates_warning(
+                "cargo",
+                selected.len(),
+            ));
             return Ok(anodizer_core::PublishEvidence::new("cargo"));
         }
         // `record` accumulates one entry per crate whose `cargo publish`
@@ -335,7 +313,9 @@ impl anodizer_core::Publisher for CargoPublisher {
 
         match publish_result {
             Ok(()) => {
-                log.status(&run_done_message(eligible));
+                log.status(&crate::publisher_helpers::run_done_message(
+                    "cargo", eligible,
+                ));
                 Ok(evidence)
             }
             Err(e) => {

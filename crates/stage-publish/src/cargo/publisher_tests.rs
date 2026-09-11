@@ -181,14 +181,14 @@ fn run_per_crate_start_message_names_crate() {
 
 #[test]
 fn run_done_message_reports_considered_count() {
-    let msg = run_done_message(2);
+    let msg = crate::publisher_helpers::run_done_message("cargo", 2);
     assert!(msg.starts_with("finished cargo publish"), "{msg}");
-    assert!(msg.contains("2 selected crate(s) considered"), "{msg}");
+    assert!(msg.contains("2 configured crate(s) considered"), "{msg}");
 }
 
 #[test]
 fn run_no_eligible_crates_warning_names_remediation() {
-    let msg = run_no_eligible_crates_warning(5);
+    let msg = crate::publisher_helpers::run_no_eligible_crates_warning("cargo", 5);
     assert!(msg.starts_with("cargo publisher registered"), "{msg}");
     assert!(msg.contains("0 of 5 effective"), "{msg}");
     assert!(msg.contains("nothing pushed"), "{msg}");

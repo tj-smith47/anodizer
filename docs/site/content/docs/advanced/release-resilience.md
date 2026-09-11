@@ -484,7 +484,7 @@ Shape:
       "required": false,
       "status": "failed",
       "evidence": null,
-      "entry_skips": ["homebrew: no repository config for 'widget'"]
+      "entry_skips": ["repository.name is not set"]
     }
   ],
   "determinism_allowlist": { "compile_time": [], "runtime": [] }
@@ -600,7 +600,7 @@ the summary's publisher row appends the count to the status:
   "required": false,
   "outcome": "Succeeded",
   "evidence": null,
-  "entry_skips": ["uploads: entry 'mirror' is missing required 'target' URL"]
+  "entry_skips": ["entry is missing required 'target' URL"]
 }
 ```
 

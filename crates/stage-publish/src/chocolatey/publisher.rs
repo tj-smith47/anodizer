@@ -94,39 +94,6 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
     format!("starting per-crate chocolatey publish for '{}'", crate_name)
 }
 
-/// Final summary emitted at publisher exit. `considered` is the count of
-/// crates the publisher actually invoked `publish_to_chocolatey` on (not
-/// the count of successful pushes — `publish_to_chocolatey` has its own
-/// skip paths for moderation/hash-match/dry-run/etc., each of which logs
-/// its own status line).
-pub(crate) fn run_done_message(considered: usize) -> String {
-    format!(
-        "finished chocolatey publish — {} configured crate(s) considered",
-        considered
-    )
-}
-
-/// Warning emitted when the publisher was registered (at least one
-/// crate has a `publish.chocolatey` block at the config level) but the
-/// run path processed zero crates.
-///
-/// With the implicit-all default in
-/// [`crate::publisher_helpers::effective_publish_crates`], an empty
-/// `selected_crates` resolves to every crate carrying a
-/// `publish.chocolatey` block — so a zero-processed run means
-/// `--crate`/`--all` matrix selection was non-empty AND filtered every
-/// chocolatey-configured crate out. Operators must see this — otherwise
-/// the publisher's `succeeded` status hides the fact that nothing was
-/// pushed.
-pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
-    format!(
-        "chocolatey publisher registered but 0 of {} effective crate(s) had a chocolatey \
-         config block — nothing pushed. Check that --crate / --all selects a \
-         crate whose publish.chocolatey block is set.",
-        selected_total
-    )
-}
-
 /// Chocolatey entries across the crate universe whose `skip:`/`if:`
 /// evaluates active right now AND whose crate is in scope for `--crate` /
 /// `--all` selection (same semantics as
@@ -389,9 +356,15 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
             selected.len(),
         );
         if entry_skips == 0 && processed == 0 {
-            log.warn(&run_no_eligible_crates_warning(selected.len()));
+            log.warn(&crate::publisher_helpers::run_no_eligible_crates_warning(
+                "chocolatey",
+                selected.len(),
+            ));
         } else {
-            log.status(&run_done_message(processed));
+            log.status(&crate::publisher_helpers::run_done_message(
+                "chocolatey",
+                processed,
+            ));
         }
         let mut evidence = anodizer_core::PublishEvidence::new("chocolatey");
         if let Some(first) = targets.first() {
@@ -1099,14 +1072,14 @@ mod publisher_tests {
 
     #[test]
     fn run_done_message_reports_considered_count() {
-        let msg = run_done_message(2);
+        let msg = crate::publisher_helpers::run_done_message("chocolatey", 2);
         assert!(msg.starts_with("finished chocolatey publish"), "{msg}");
         assert!(msg.contains("2 configured crate(s) considered"), "{msg}");
     }
 
     #[test]
     fn run_no_eligible_crates_warning_names_remediation() {
-        let msg = run_no_eligible_crates_warning(5);
+        let msg = crate::publisher_helpers::run_no_eligible_crates_warning("chocolatey", 5);
         assert!(msg.starts_with("chocolatey publisher registered"), "{msg}");
         assert!(msg.contains("0 of 5 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
@@ -1122,7 +1095,7 @@ mod publisher_tests {
         // block) must produce the remediation string with a 0/0 count.
         // The warn helper must not panic or omit the remediation text in
         // this shape.
-        let msg = run_no_eligible_crates_warning(0);
+        let msg = crate::publisher_helpers::run_no_eligible_crates_warning("chocolatey", 0);
         assert!(msg.starts_with("chocolatey publisher registered"), "{msg}");
         assert!(msg.contains("0 of 0 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
@@ -1219,7 +1192,7 @@ mod publisher_tests {
     /// shape, produced by `release --publish-only` with no
     /// `--crate`/`--all`) MUST resolve to implicit-all over every crate
     /// carrying a `publish.chocolatey` block. Without this the publisher
-    /// would emit `run_done_message(0)` and silently report success.
+    /// would emit `crate::publisher_helpers::run_done_message("chocolatey", 0)` and silently report success.
     ///
     /// Asserted via the non-dry-run path: in dry-run, target snapshots
     /// aren't recorded (push didn't happen), so the most direct probe

@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use crate::artifactory::{
     ArtifactoryTarget, CollectFlags, build_reqwest_client, collect_target_artifacts_best_effort,
-    collect_upload_artifacts_owned, render_artifact_url, validate_upload_mode_for,
+    collect_upload_artifacts_owned, render_artifact_url, validate_upload_mode,
 };
 
 /// Tally of what a generic-uploads publish run did, so the caller can decide
@@ -73,11 +73,16 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
     // for every entry's per-artifact upload.
     let policy = ctx.retry_policy();
 
-    for entry in entries {
-        let label = format!(
-            "uploads entry '{}'",
-            entry.name.as_deref().unwrap_or("<unnamed>")
-        );
+    for (idx, entry) in entries.iter().enumerate() {
+        // A nameless entry is named by its position so two of them stay
+        // distinguishable in the skip line and the run summary.
+        let positional = format!("uploads[{idx}]");
+        let entry_label = entry
+            .name
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .unwrap_or(&positional);
+        let label = format!("uploads entry '{entry_label}'");
         if crate::util::should_skip_publisher_with_if(
             ctx,
             entry.skip.as_ref(),
@@ -99,8 +104,8 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
                     ctx,
                     log,
                     "uploads",
-                    "<unnamed>",
-                    "uploads: entry is missing required 'name' field",
+                    entry_label,
+                    "entry is missing required 'name' field",
                 );
                 continue;
             }
@@ -113,7 +118,7 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
             log,
             "uploads",
             name,
-            validate_upload_mode_for("uploads", mode),
+            validate_upload_mode(mode),
         )?
         .is_none()
         {
@@ -129,7 +134,7 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
                     log,
                     "uploads",
                     name,
-                    &format!("uploads: entry '{}' is missing required 'target' URL", name),
+                    "entry is missing required 'target' URL",
                 );
                 continue;
             }
@@ -281,8 +286,6 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
             "uploads",
             name,
             crate::http_upload::validate_mtls_pair(
-                "uploads",
-                name,
                 entry.client_x509_cert.as_deref(),
                 entry.client_x509_key.as_deref(),
             ),
@@ -1025,7 +1028,7 @@ mod tests {
 
         let events = ctx.skip_memento.snapshot();
         assert_eq!(events.len(), 1, "{events:?}");
-        assert_eq!(events[0].label, "<unnamed>");
+        assert_eq!(events[0].label, "uploads[0]");
         let logged: String = capture
             .all_messages()
             .into_iter()
@@ -1212,7 +1215,7 @@ mod tests {
         let events = ctx.skip_memento.snapshot();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].stage, "uploads");
-        assert_eq!(events[0].label, "<unnamed>");
+        assert_eq!(events[0].label, "uploads[0]");
         assert!(
             events[0].reason.contains("missing required 'name'"),
             "unexpected reason: {}",
@@ -1256,9 +1259,7 @@ mod tests {
         let events = ctx.skip_memento.snapshot();
         assert_eq!(events.len(), 1);
         assert!(
-            events[0]
-                .reason
-                .contains("uploads: invalid upload mode 'bogus'"),
+            events[0].reason.contains("invalid upload mode 'bogus'"),
             "{}",
             events[0].reason
         );
