@@ -1029,6 +1029,42 @@ mod tests {
     /// count — a lookahead that runs past the closing paren attributes the
     /// next statement's literal to this publisher, which is how the helper
     /// DEFINITIONS' parameter names were arriving.
+    /// The LAST string literal in an argument list, for a call whose reason
+    /// comes after the publisher and the entry label.
+    fn last_literal_argument(tail: &str) -> Option<String> {
+        let mut depth = 1usize;
+        let mut chars = tail.char_indices();
+        let mut lit_start = None;
+        let mut last = None;
+        while let Some((i, c)) = chars.next() {
+            if let Some(start) = lit_start {
+                match c {
+                    '\\' => {
+                        chars.next();
+                    }
+                    '"' => {
+                        last = Some(tail[start..i].to_string());
+                        lit_start = None;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            match c {
+                '"' => lit_start = Some(i + 1),
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return last;
+                    }
+                }
+                _ => {}
+            }
+        }
+        last
+    }
+
     fn first_literal_argument(tail: &str) -> Option<String> {
         let mut depth = 1usize;
         let mut chars = tail.char_indices();
@@ -1145,25 +1181,54 @@ mod tests {
         let tokens: Vec<&str> = anodizer_core::PublisherKind::all()
             .map(|k| k.token())
             .collect();
-        let mut checked = 0usize;
+        let mut raised = 0usize;
+        let mut recorded = 0usize;
         let mut offenders = Vec::new();
+        let mut check = |path: &std::path::Path, reason: String, counter: &mut usize| {
+            *counter += 1;
+            if let Some(token) = tokens.iter().find(|t| reason.starts_with(&format!("{t}:"))) {
+                offenders.push(format!("{}: {token}: …", path.display()));
+            }
+        };
         for path in rust_sources(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")) {
             let text = std::fs::read_to_string(&path).expect("readable source");
             let prod = production_half(&text);
+            // `entry_skip(` is also the tail of `record_entry_skip(` and
+            // `absorb_entry_skip(`, whose first literal is the publisher token
+            // — counting those inflates the population with hits that can
+            // never offend.
             for (idx, _) in prod.match_indices("entry_skip(") {
+                if prod[..idx]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                {
+                    continue;
+                }
                 let Some(reason) = first_literal_argument(&prod[idx + "entry_skip(".len()..])
                 else {
                     continue;
                 };
-                checked += 1;
-                if let Some(token) = tokens.iter().find(|t| reason.starts_with(&format!("{t}:"))) {
-                    offenders.push(format!("{}: {token}: …", path.display()));
-                }
+                check(&path, reason, &mut raised);
+            }
+            // A recorded skip takes the reason LAST, after the publisher and
+            // the entry label.
+            for (idx, _) in prod.match_indices("record_entry_skip(") {
+                let Some(reason) = last_literal_argument(&prod[idx + "record_entry_skip(".len()..])
+                else {
+                    continue;
+                };
+                check(&path, reason, &mut recorded);
             }
         }
         assert!(
-            checked >= 10,
-            "the entry_skip reason population shrank to {checked}; a rename \
+            raised >= 10,
+            "the raised entry_skip population shrank to {raised}; a rename \
+             likely slipped the walk"
+        );
+        assert!(
+            recorded >= 4,
+            "the recorded entry-skip population shrank to {recorded}; a rename \
              likely slipped the walk"
         );
         assert!(
