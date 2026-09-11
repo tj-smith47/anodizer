@@ -553,7 +553,7 @@ pub(crate) fn check_publish_set_completeness(
             } else {
                 String::new()
             };
-            // In the publish set → the real publish lands it first (topological
+            // In the publish set → the real publish uploads it first (topological
             // order guarantees dependency-before-dependent). Safe.
             if in_set.contains(dep_name.as_str()) {
                 continue;
@@ -634,7 +634,7 @@ pub(crate) type CrateExistenceProbe<'a> = dyn Fn(&str) -> CrateIndexExistence + 
 /// already exist — the TP config attaches to an existing crate, and the
 /// first-ever publish of a name requires an API token. A brand-new workspace
 /// member in a TP (OIDC) run is therefore guaranteed to 403 partway through
-/// the topological publish loop, AFTER its dependencies already landed at the
+/// the topological publish loop, AFTER its dependencies already published at the
 /// release version. This guard probes the sparse index for every
 /// crates.io-targeting crate in the publish set and aborts BEFORE the first
 /// publish when any name has never been published, naming the crates and the

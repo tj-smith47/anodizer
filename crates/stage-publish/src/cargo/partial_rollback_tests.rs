@@ -240,6 +240,7 @@ fn partial_publish_records_only_succeeded_crate() {
     let _env = anodizer_core::test_helpers::env::env_mutex()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    let _index = local_index_guards();
     let _path = anodizer_core::test_helpers::env::EnvGuard::set("PATH", &new_path);
     let result = publish_to_cargo_with(
         &mut ctx,
@@ -319,6 +320,7 @@ fn run_failure_then_rollback_yanks_only_succeeded_crate() {
     let _env = anodizer_core::test_helpers::env::env_mutex()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    let _index = local_index_guards();
     let _path = anodizer_core::test_helpers::env::EnvGuard::set("PATH", &new_path);
 
     let mut record: Vec<CargoYankTarget> = Vec::new();
@@ -386,6 +388,7 @@ fn rollback_is_clean_noop_when_nothing_published() {
     let _env = anodizer_core::test_helpers::env::env_mutex()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    let _index = local_index_guards();
     let _path = anodizer_core::test_helpers::env::EnvGuard::set("PATH", &new_path);
 
     let publisher = CargoPublisher::new();
@@ -419,6 +422,26 @@ fn install_yank_failing_stub(dir: &Path, argv_log: &Path) -> String {
     format!("{}:{}", dir.display(), prev)
 }
 
+/// Point the sparse-index base at a local responder whose empty route table
+/// answers every request with 404 ("this version is not published"), so no
+/// index probe made by the call under test leaves this host. The caller must
+/// already hold the env mutex; hold the returned guards for the call.
+fn local_index_guards() -> (
+    anodizer_core::test_helpers::env::EnvGuard,
+    anodizer_core::test_helpers::env::EnvGuard,
+) {
+    use anodizer_core::test_helpers::env::EnvGuard;
+    let (addr, _log) =
+        anodizer_core::test_helpers::scripted_responder::spawn_scripted_responder(vec![]);
+    (
+        EnvGuard::set("ANODIZE_TEST_HARNESS", "1"),
+        EnvGuard::set(
+            "ANODIZER_TEST_CRATES_IO_INDEX_BASE",
+            format!("http://{addr}"),
+        ),
+    )
+}
+
 /// Run `f` with `PATH` set to `new_path` under the serial guard. The guards
 /// restore `PATH` and release the mutex on drop, so a panicking `f` cannot
 /// hand the stub to whichever test runs next in the process.
@@ -426,6 +449,7 @@ fn with_path<R>(new_path: &str, f: impl FnOnce() -> R) -> R {
     let _env = anodizer_core::test_helpers::env::env_mutex()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    let _index = local_index_guards();
     let _path = anodizer_core::test_helpers::env::EnvGuard::set("PATH", new_path);
     f()
 }
@@ -707,11 +731,10 @@ fn index_check_error_fails_closed() {
 }
 
 /// `wait_for_workspace_deps` integration: when enabled and the crate has
-/// a literal-pinned workspace dep, the loop polls crates.io for that dep.
-/// Serving a crate name whose sparse-index URL points at a local responder
-/// is impossible (the gate computes the real index URL), so the pin instead
-/// uses a tiny max_wait and asserts the gate's TIMEOUT error surfaces
-/// through the publish loop's context — proving the wiring fires.
+/// a literal-pinned workspace dep, the loop polls the sparse index for that
+/// dep. The index base is pointed at a local responder for the duration, so
+/// the poll stays on this host; a tiny max_wait then makes the gate's TIMEOUT
+/// error surface through the publish loop's context, proving the wiring fires.
 #[test]
 #[serial(cargo_stub_path)]
 fn wait_for_workspace_deps_gate_is_wired_into_publish_loop() {
@@ -764,12 +787,10 @@ fn wait_for_workspace_deps_gate_is_wired_into_publish_loop() {
     let mut record: Vec<CargoYankTarget> = Vec::new();
     let new_path = install_cargo_stub(tmp.path(), &argv_log, "never");
     init_clean_repo(tmp.path());
-    // The dep-completeness guard runs first; inject `always_published` so
-    // it treats `dep-crate` as live on crates.io (the legitimate multi-tag
-    // case the wait-gate is for) and the wait-gate TIMEOUT — not the guard
-    // — is the failure under test. The wait-gate itself polls the REAL
-    // index for the bogus `0.0.0-never-exists` version, so it still times
-    // out as intended.
+    // The dep-completeness guard runs first; inject `always_published` so it
+    // treats `dep-crate` as live on crates.io (the legitimate multi-tag case
+    // the wait-gate is for), leaving the wait-gate TIMEOUT as the failure
+    // under test.
     let result = with_path(&new_path, || {
         publish_to_cargo_with(
             &mut ctx,
@@ -806,7 +827,7 @@ fn run_failure_stashes_partial_evidence_on_context() {
     let argv_log = tmp.path().join("argv.log");
 
     // `CargoPublisher::run` performs TWO ambient-dependent steps before it
-    // publishes, and exposes no injection seam for either — so both must be
+    // publishes, and exposes no injection point for either — so both must be
     // pinned or the test passes only on a host that happens to carry a cargo
     // token and can reach crates.io:
     //   • auth: Token → the workspace credential resolver returns Ok(None)
@@ -913,6 +934,7 @@ fn manifest_read_failure_does_not_skip_publish() {
     let _env = anodizer_core::test_helpers::env::env_mutex()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    let _index = local_index_guards();
     let _path = anodizer_core::test_helpers::env::EnvGuard::set("PATH", &new_path);
 
     let mut record: Vec<CargoYankTarget> = Vec::new();
@@ -1221,7 +1243,7 @@ fn guard_fails_closed_when_index_unreachable() {
     let mut record: Vec<CargoYankTarget> = Vec::new();
 
     // The dep-completeness probe at the top of the loop also consults this
-    // seam; an Err there is treated as Unknown (never fails the guard), so
+    // point; an Err there is treated as Unknown (never fails the guard), so
     // an unreachable index for a no-deps crate is benign until the skip
     // decision, where it must fail closed.
     let index_unreachable =
@@ -1317,7 +1339,7 @@ fn guard_fails_closed_when_local_cksum_uncomputable() {
 
 /// Custom (non-crates.io) registry → the crates.io index cksum is
 /// meaningless, so the guard is skipped and publish is attempted (the
-/// target registry's server governs idempotency). The local-cksum seam
+/// target registry's server governs idempotency). The local-cksum point
 /// must never be consulted.
 #[test]
 #[serial(cargo_stub_path)]
@@ -1492,10 +1514,10 @@ fn guard_per_crate_workspace_each_checked_independently() {
     );
 }
 
-/// Trusted-Publishing new-crate guard, wired: a minted TP token
+/// Trusted-Publishing new-crate guard, wired: an issued TP token
 /// (`registry_token = Some`) plus a crate the index has never seen aborts
 /// BEFORE any `cargo publish` spawns. Without the guard this exact shape
-/// 403s mid-loop — after earlier crates in topological order already landed
+/// 403s mid-loop — after earlier crates in topological order already published
 /// at the release version.
 #[test]
 #[serial(cargo_stub_path)]
@@ -1544,7 +1566,7 @@ fn tp_token_new_crate_aborts_before_any_publish() {
     assert!(record.is_empty(), "nothing published, nothing to yank");
 }
 
-/// False-positive proof for the TP guard's valid steady state: a minted TP
+/// False-positive proof for the TP guard's valid steady state: an issued TP
 /// token with every crate already on the index publishes exactly as before —
 /// the guard passes and the loop runs.
 #[test]

@@ -11,12 +11,34 @@ use super::*;
 ///
 /// Crate names per cargo are restricted to ASCII alphanumerics plus `-`/`_`
 /// (cargo reference: "Crate names ... must be ASCII"), so the byte slices
-/// below are guaranteed to land on character boundaries. The debug_assert
+/// below are guaranteed to fall on character boundaries. The debug_assert
 /// enforces the invariant — any caller passing a non-ASCII name
 /// would surface the violation in a debug build long before the slice
 /// could panic at runtime.
 pub(crate) fn sparse_index_url(crate_name: &str) -> String {
-    format!("https://index.crates.io/{}", sparse_index_path(crate_name))
+    format!(
+        "{}/{}",
+        crates_io_index_base(),
+        sparse_index_path(crate_name)
+    )
+}
+
+/// The crates.io sparse-index base every index probe is built on.
+///
+/// Twin of [`crates_io_api_base`]: unit tests and integration tests alike need
+/// the index probes to answer from a local responder instead of reaching the
+/// live registry, and routing the base through one function is what keeps
+/// EVERY caller of [`sparse_index_url`] hermetic — the already-published
+/// check, the workspace-dep wait gate and the propagation poll. Honored ONLY
+/// under `ANODIZE_TEST_HARNESS=1`, so no production run can point a
+/// published-state guard at a friendly index.
+pub(crate) fn crates_io_index_base() -> String {
+    match std::env::var("ANODIZER_TEST_CRATES_IO_INDEX_BASE") {
+        Ok(base) if std::env::var("ANODIZE_TEST_HARNESS").as_deref() == Ok("1") => {
+            base.trim_end_matches('/').to_string()
+        }
+        _ => "https://index.crates.io".to_string(),
+    }
 }
 
 /// 403 bodies from crates.io that mean the token AUTHENTICATED but the
@@ -28,9 +50,9 @@ pub(crate) fn sparse_index_url(crate_name: &str) -> String {
 ///
 /// Accepting scope denials means a token scoped too narrowly to publish (or
 /// scoped to a subset of workspace crates) passes this probe and fails at
-/// `cargo publish` — the publish API rejects before anything lands, so the
+/// `cargo publish` — the publish API rejects before anything is published, so the
 /// failure is orderly, but per-crate-scoped tokens in a multi-crate workspace
-/// can still land a subset before hitting an out-of-scope crate. That
+/// can still publish a subset before hitting an out-of-scope crate. That
 /// trade-off is inherent to supporting least-privilege scoped tokens: the
 /// probe cannot enumerate a token's scopes from any token-accessible endpoint.
 pub(crate) const CRATES_IO_AUTHENTICATED_DENIALS: &[&str] = &[
@@ -40,7 +62,7 @@ pub(crate) const CRATES_IO_AUTHENTICATED_DENIALS: &[&str] = &[
 
 /// The crates.io web-API base for the token-validity probe (`/api/v1/me`).
 ///
-/// Mirrors the sparse-index base override in [`published_on_crates_io`]:
+/// Mirrors the sparse-index base override in [`crates_io_index_base`]:
 /// integration tests drive the real binary across a process boundary, so an
 /// env-routed base pointing at a local responder is the only way to keep the
 /// live token probe hermetic there. Honored ONLY under `ANODIZE_TEST_HARNESS=1`
@@ -55,9 +77,8 @@ pub(crate) fn crates_io_api_base() -> String {
 }
 
 /// The registry-relative sparse-index path for a crate (`1/a`, `2/ab`,
-/// `3/a/abc`, `ab/cd/abcdef`), shared by [`sparse_index_url`] and the
-/// test-harness index-base override in [`published_on_crates_io`] so the
-/// sharding scheme exists exactly once.
+/// `3/a/abc`, `ab/cd/abcdef`). [`sparse_index_url`] joins it onto
+/// [`crates_io_index_base`], so the sharding scheme exists exactly once.
 fn sparse_index_path(crate_name: &str) -> String {
     debug_assert!(
         crate_name.is_ascii(),
@@ -115,18 +136,7 @@ pub fn published_on_crates_io(
     deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<bool> {
-    // Test-harness index-base override, mirroring `--simulate-failure`'s env
-    // gating: integration tests drive the real binary across a process
-    // boundary, so an env-routed base pointing at a local responder is the
-    // only way to keep this probe hermetic there. Honored ONLY under
-    // ANODIZE_TEST_HARNESS=1 so no production run can point the
-    // published-state guard at a friendly index.
-    let url = match std::env::var("ANODIZER_TEST_CRATES_IO_INDEX_BASE") {
-        Ok(base) if std::env::var("ANODIZE_TEST_HARNESS").as_deref() == Ok("1") => {
-            format!("{}/{}", base.trim_end_matches('/'), sparse_index_path(name))
-        }
-        _ => sparse_index_url(name),
-    };
+    let url = sparse_index_url(name);
     Ok(is_already_published_at(&url, name, version, policy, deadline, log)?.is_some())
 }
 
