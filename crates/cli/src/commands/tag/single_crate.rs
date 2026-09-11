@@ -29,15 +29,13 @@ pub(crate) fn sync_single_crate_manifests(
         log,
     )?;
 
-    let crate_name = std::fs::read_to_string(Path::new(&abs_crate_dir).join("Cargo.toml"))
-        .ok()
-        .and_then(|content| content.parse::<toml_edit::DocumentMut>().ok())
-        .and_then(|doc| {
-            doc.get("package")
-                .and_then(|p| p.get("name"))
-                .and_then(|n| n.as_str())
-                .map(str::to_string)
-        });
+    // An unreadable or malformed manifest is an error, not a silent skip of the
+    // sibling dep-spec update: the crate's own version was just rewritten, so a
+    // skipped propagation leaves siblings pinned to the version before it.
+    let crate_name = crate::commands::bump::cargo_edit::parse_member_manifest(
+        &Path::new(&abs_crate_dir).join("Cargo.toml"),
+    )?
+    .map(|m| m.name);
 
     // Update dependency version specs in other crates that belong to the SAME
     // Cargo workspace as the bumped crate. Scoping to the owning workspace

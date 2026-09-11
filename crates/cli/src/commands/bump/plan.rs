@@ -236,18 +236,17 @@ pub(crate) fn resolve_member_version(
     m: &cargo_edit::MemberInfo,
     ws: &cargo_edit::WorkspaceInfo,
 ) -> Result<String> {
-    if m.inherits_workspace_version {
-        ws.workspace_package_version.clone().context(
-            "crate inherits version.workspace = true but root [workspace.package].version is unset",
-        )
-    } else {
-        m.own_version.clone().with_context(|| {
+    cargo_edit::member_version(m, ws).with_context(|| {
+        if m.inherits_workspace_version {
+            "crate inherits version.workspace = true but root [workspace.package].version is unset"
+                .to_string()
+        } else {
             format!(
                 "crate '{}' has no [package].version and does not inherit from workspace",
                 m.name
             )
-        })
-    }
+        }
+    })
 }
 
 fn apply_level(cur: &Version, level: BumpLevel, pre: Option<&str>) -> Version {

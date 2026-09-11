@@ -133,7 +133,9 @@ fn expand_member_glob(pattern: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-fn parse_member_manifest(manifest_path: &Path) -> Result<Option<MemberInfo>> {
+/// The `[package]` facts one workspace member's manifest declares, or `None`
+/// when the manifest declares no package at all (a virtual manifest).
+pub(crate) fn parse_member_manifest(manifest_path: &Path) -> Result<Option<MemberInfo>> {
     let text = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("failed to read {}", manifest_path.display()))?;
     let doc = text
@@ -333,7 +335,7 @@ fn rewrite_member_dependencies(
         .parse::<DocumentMut>()
         .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
     let mut changed = false;
-    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+    for section in DEP_SECTIONS {
         if let Some(tbl) = doc.get_mut(section).and_then(|i| i.as_table_mut()) {
             for (dep_name, new_ver) in bumped {
                 if rewrite_dep_entry(tbl, dep_name, new_ver) {
@@ -353,7 +355,7 @@ fn rewrite_member_dependencies(
     if let Some(target) = doc.get_mut("target").and_then(|i| i.as_table_mut()) {
         for (_, item) in target.iter_mut() {
             if let Some(tt) = item.as_table_mut() {
-                for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                for section in DEP_SECTIONS {
                     if let Some(tbl) = tt.get_mut(section).and_then(|i| i.as_table_mut()) {
                         for (dep_name, new_ver) in bumped {
                             if rewrite_dep_entry(tbl, dep_name, new_ver) {
@@ -516,10 +518,14 @@ fn is_lower_bounded(op: semver::Op) -> bool {
     )
 }
 
-/// The lowest version a single-comparator requirement admits, or `None` when the
-/// requirement has no lower bound (`<`, `<=`, `*`), is unparseable, or carries
-/// more than one comparator.
-fn floor_minimum(spec: &str) -> Option<semver::Version> {
+/// The comparator operator and the lowest version a single-comparator
+/// requirement bounds itself by, or `None` when the requirement has no lower
+/// bound (`<`, `<=`, `*`), is unparseable, or carries more than one comparator.
+///
+/// The operator travels with the version because `>` EXCLUDES the bound it
+/// names: `>0.2.0` does not admit `0.2.0`, so the caller cannot decide
+/// staleness from the version alone.
+fn floor_minimum(spec: &str) -> Option<(semver::Op, semver::Version)> {
     let req = semver::VersionReq::parse(spec).ok()?;
     let [c] = req.comparators.as_slice() else {
         return None;
@@ -527,18 +533,25 @@ fn floor_minimum(spec: &str) -> Option<semver::Version> {
     if !is_lower_bounded(c.op) {
         return None;
     }
-    Some(semver::Version {
-        major: c.major,
-        minor: c.minor.unwrap_or(0),
-        patch: c.patch.unwrap_or(0),
-        pre: c.pre.clone(),
-        build: semver::BuildMetadata::EMPTY,
-    })
+    Some((
+        c.op,
+        semver::Version {
+            major: c.major,
+            minor: c.minor.unwrap_or(0),
+            patch: c.patch.unwrap_or(0),
+            pre: c.pre.clone(),
+            build: semver::BuildMetadata::EMPTY,
+        },
+    ))
 }
 
-/// Re-render `spec` at `new`, preserving the comparator operator and the
-/// component precision the author wrote (`"0.6"` → `"0.7"`, `"^0.6.1"` →
-/// `"^0.7.0"`, `"=0.6.1"` → `"=0.7.0"`).
+/// Re-render `spec` at `new`, preserving the component precision the author
+/// wrote (`"0.6"` → `"0.7"`, `"^0.6.1"` → `"^0.7.0"`, `"=0.6.1"` → `"=0.7.0"`).
+///
+/// The comparator operator is preserved too, with one exception: `>` is
+/// rendered as `>=`. A healed floor names the version the workspace just
+/// minted, and `>0.7.0` excludes exactly that version, so the path dependency
+/// the floor guards would no longer resolve.
 ///
 /// Returns `None` for a requirement `floor_minimum` also rejects.
 fn restyle_floor(spec: &str, new: &semver::Version) -> Option<String> {
@@ -551,7 +564,12 @@ fn restyle_floor(spec: &str, new: &semver::Version) -> Option<String> {
     }
     // Everything the author wrote before the first digit is the operator,
     // spacing included, so `">= 0.6.1"` keeps its space.
-    let op = &spec.trim()[..spec.trim().find(|ch: char| ch.is_ascii_digit())?];
+    let written = &spec.trim()[..spec.trim().find(|ch: char| ch.is_ascii_digit())?];
+    let op = if c.op == semver::Op::Greater {
+        format!(">={}", written.trim_start_matches('>'))
+    } else {
+        written.to_string()
+    };
     // A comparator that carries no pre-release identifier never matches a
     // pre-release version, so a pre-release target renders at full precision.
     if !new.pre.is_empty() {
@@ -615,7 +633,7 @@ fn heal_dep_table(
         let Some(spec) = dep_version_spec(item) else {
             continue;
         };
-        let Some(floor) = floor_minimum(spec) else {
+        let Some((floor_op, floor)) = floor_minimum(spec) else {
             match semver::VersionReq::parse(spec) {
                 Ok(req) if req.comparators.len() > 1 => log.warn(&format!(
                     "multi-comparator version requirement {dep_name} = \"{spec}\" in {}; dep floor left unchanged",
@@ -629,7 +647,9 @@ fn heal_dep_table(
             }
             continue;
         };
-        if floor >= *want {
+        // `>X` admits nothing at or below `X`, so a floor that merely EQUALS
+        // the wanted version is still stale: healing rewrites it to `>=X`.
+        if floor > *want || (floor == *want && floor_op != semver::Op::Greater) {
             continue;
         }
         let Some(next) = restyle_floor(spec, want) else {
@@ -840,12 +860,17 @@ mod tests {
 
     #[test]
     fn floor_minimum_reads_each_operator_form() {
-        assert_eq!(floor_minimum("0.6"), Some(ver("0.6.0")));
-        assert_eq!(floor_minimum("0.6.1"), Some(ver("0.6.1")));
-        assert_eq!(floor_minimum("^0.6.1"), Some(ver("0.6.1")));
-        assert_eq!(floor_minimum("~0.6.1"), Some(ver("0.6.1")));
-        assert_eq!(floor_minimum("=0.6.1"), Some(ver("0.6.1")));
-        assert_eq!(floor_minimum(">=0.6.1"), Some(ver("0.6.1")));
+        use semver::Op;
+        assert_eq!(floor_minimum("0.6"), Some((Op::Caret, ver("0.6.0"))));
+        assert_eq!(floor_minimum("0.6.1"), Some((Op::Caret, ver("0.6.1"))));
+        assert_eq!(floor_minimum("^0.6.1"), Some((Op::Caret, ver("0.6.1"))));
+        assert_eq!(floor_minimum("~0.6.1"), Some((Op::Tilde, ver("0.6.1"))));
+        assert_eq!(floor_minimum("=0.6.1"), Some((Op::Exact, ver("0.6.1"))));
+        assert_eq!(
+            floor_minimum(">=0.6.1"),
+            Some((Op::GreaterEq, ver("0.6.1")))
+        );
+        assert_eq!(floor_minimum(">0.6.1"), Some((Op::Greater, ver("0.6.1"))));
         assert_eq!(floor_minimum("<0.9"), None);
         assert_eq!(floor_minimum("*"), None);
         assert_eq!(floor_minimum(">=0.6, <0.8"), None);
@@ -873,8 +898,48 @@ mod tests {
             restyle_floor("^0.6.1", &ver("0.7.0-rc.1")).as_deref(),
             Some("^0.7.0-rc.1")
         );
+        // `>` heals to `>=`: the floor names the version just minted, and `>`
+        // would exclude it.
+        assert_eq!(restyle_floor(">0.6.1", &target).as_deref(), Some(">=0.7.0"));
+        assert_eq!(
+            restyle_floor("> 0.6.1", &target).as_deref(),
+            Some(">= 0.7.0")
+        );
         assert_eq!(restyle_floor("<0.9", &target), None);
         assert_eq!(restyle_floor("junk", &target), None);
+    }
+
+    /// A `>` floor is healed to `>=` at the new version, including the case
+    /// where it already names that version — `>0.7.0` beside a sibling at
+    /// `0.7.0` resolves to nothing at all.
+    #[test]
+    fn heal_dep_floors_rewrites_an_excluding_floor_to_include_the_new_version() {
+        for spec in [">0.6.1", ">0.7.0"] {
+            let dir = tmpdir();
+            write_workspace(
+                dir.path(),
+                &ws_root(&["b", "c"]),
+                &[
+                    ("b", &pkg("b", "0.7.0")),
+                    (
+                        "c",
+                        &format!(
+                            "{}\n[dependencies]\nb = {{ path = \"../b\", version = \"{spec}\" }}\n",
+                            pkg("c", "0.1.0")
+                        ),
+                    ),
+                ],
+            );
+            heal_dep_floors(
+                dir.path(),
+                Propagated::EveryTable(&no_pending()),
+                false,
+                &quiet_log(),
+            )
+            .unwrap();
+            let c = std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap();
+            assert!(c.contains("version = \">=0.7.0\""), "{spec}: {c}");
+        }
     }
 
     #[test]
