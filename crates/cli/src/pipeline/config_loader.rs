@@ -178,6 +178,17 @@ pub fn load_config(path: &Path) -> Result<Config> {
 
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config file: {}", path.display()))?;
+    load_config_from_str(path, &content)
+}
+
+/// [`load_config`] for config text that is not (yet) what `path` holds: the
+/// same include resolution, legacy folds, validators and derivations, run
+/// against `content` instead of the file's current bytes.
+///
+/// `path` still decides the format and anchors relative `includes:`, so a
+/// caller checking an edit it is about to write sees exactly the config that
+/// write would produce — an entry an include already declares included.
+pub(crate) fn load_config_from_str(path: &Path, content: &str) -> Result<Config> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     // Walk the raw YAML pre-parse for two checks that lose information
@@ -189,7 +200,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     //     "unknown field" error that does not point at `dockers_v2:`.
     // Best-effort — YAML parse failures are reported by the typed loader below.
     if (ext == "yaml" || ext == "yml")
-        && let Ok(raw) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&content)
+        && let Ok(raw) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(content)
     {
         anodizer_core::config::warn_on_legacy_snapshot_name_template(&raw);
         anodizer_core::config::warn_on_legacy_furies_alias(&raw);
@@ -202,8 +213,8 @@ pub fn load_config(path: &Path) -> Result<Config> {
     }
 
     let mut config = match ext {
-        "yaml" | "yml" => load_yaml_config_with_includes(path, &content)?,
-        "toml" => load_toml_config_with_includes(path, &content)?,
+        "yaml" | "yml" => load_yaml_config_with_includes(path, content)?,
+        "toml" => load_toml_config_with_includes(path, content)?,
         _ => {
             return Err(anodizer_core::error_class::deterministic_msg(format!(
                 "unsupported config format: {ext}"

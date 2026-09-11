@@ -371,7 +371,8 @@ pub fn enroll_version_files(
     let log = StageLogger::new("init", Verbosity::from_flags(quiet, verbose, debug));
 
     let config_path = ".anodizer.yaml";
-    if !Path::new(config_path).exists() {
+    let config_file = Path::new(config_path);
+    if !config_file.exists() {
         anyhow::bail!(
             "no '{config_path}' found — run `anodizer init` to scaffold one before enrolling version files"
         );
@@ -379,7 +380,7 @@ pub fn enroll_version_files(
     let config_text = std::fs::read_to_string(config_path)
         .with_context(|| format!("failed to read {config_path}"))?;
 
-    let already_enrolled = existing_version_files(&config_text)?;
+    let already_enrolled = existing_version_files(config_file, &config_text)?;
     let versions = scan_versions(Path::new("."))?;
     if versions.is_empty() {
         anyhow::bail!(
@@ -416,7 +417,7 @@ pub fn enroll_version_files(
         return Ok(());
     }
 
-    let (new_text, added) = add_version_files(&config_text, &selected)?;
+    let (new_text, added) = add_version_files(config_file, &config_text, &selected)?;
     if added.is_empty() {
         log.status("all selected files were already enrolled — nothing to do");
         return Ok(());
@@ -426,7 +427,7 @@ pub fn enroll_version_files(
     // before touching disk, and confirm every newly enrolled path is present
     // under `version_files`. Any line-editor edge case that produced invalid or
     // wrong YAML fails here as a clean error rather than a corrupted config.
-    validate_enrolled_yaml(&new_text, &added)
+    validate_enrolled_yaml(config_file, &new_text, &added)
         .context("refusing to write .anodizer.yaml: the enrolled config did not validate")?;
 
     std::fs::write(config_path, &new_text)
@@ -480,12 +481,15 @@ fn scan_versions(root: &Path) -> Result<Vec<String>> {
 }
 
 /// Extract the paths already listed under the top-level `version_files:` key,
-/// so discovery can drop them (idempotency). Reads the file through the typed
-/// `Config`, so both spellings (block and flow) and both entry forms (a bare
-/// path and a `path` + `match` mapping) resolve to the same path set — a
-/// line-scan cannot see past an anchored entry's continuation line.
-fn existing_version_files(config_text: &str) -> Result<HashSet<String>> {
-    let config: anodizer_core::config::Config = serde_yaml_ng::from_str(config_text).context(
+/// so discovery can drop them (idempotency). Reads the text through the CLI's
+/// own config loader, so both spellings (block and flow), both entry forms (a
+/// bare path and a `path` + `match` mapping) and an entry an `includes:` file
+/// declares all resolve to the same path set — a line-scan cannot see past an
+/// anchored entry's continuation line, and a raw parse cannot see an include
+/// at all, so its entries were offered for enrolment a second time.
+fn existing_version_files(config_path: &Path, config_text: &str) -> Result<HashSet<String>> {
+    let config = crate::pipeline::load_config_from_str(config_path, config_text)
+        .context(
         ".anodizer.yaml does not parse as an anodizer config; fix it before enrolling version files",
     )?;
     Ok(config
@@ -682,7 +686,11 @@ struct BlockInsertion {
 /// selection was already enrolled). Bails when the existing `version_files:`
 /// value is FLOW style (`[...]`), which the block writer cannot extend without
 /// corrupting the document.
-fn add_version_files(config_text: &str, selected: &[String]) -> Result<(String, Vec<String>)> {
+fn add_version_files(
+    config_path: &Path,
+    config_text: &str,
+    selected: &[String],
+) -> Result<(String, Vec<String>)> {
     if version_files_is_flow_style(config_text) {
         anyhow::bail!(
             "`version_files` is written as an inline (flow) list in .anodizer.yaml; \
@@ -691,7 +699,7 @@ fn add_version_files(config_text: &str, selected: &[String]) -> Result<(String, 
         );
     }
 
-    let existing = existing_version_files(config_text)?;
+    let existing = existing_version_files(config_path, config_text)?;
     let mut to_add: Vec<String> = Vec::new();
     for path in selected {
         if !existing.contains(path) && !to_add.contains(path) {
@@ -789,8 +797,8 @@ fn find_version_files_block(config_text: &str) -> Option<BlockInsertion> {
 /// behind the line-based writer: if the edit produced YAML that does not parse
 /// (or parses but dropped an enrolled path), this errors so the caller can bail
 /// WITHOUT writing — an invalid `.anodizer.yaml` can never ship.
-fn validate_enrolled_yaml(new_text: &str, added: &[String]) -> Result<()> {
-    let config: anodizer_core::config::Config = serde_yaml_ng::from_str(new_text)
+fn validate_enrolled_yaml(config_path: &Path, new_text: &str, added: &[String]) -> Result<()> {
+    let config = crate::pipeline::load_config_from_str(config_path, new_text)
         .context("rewritten config is not valid YAML / config schema")?;
     let enrolled = config.version_files.unwrap_or_default();
     for path in added {
@@ -1038,22 +1046,28 @@ path = "src/main.rs"
     // version_files enrollment write-back
     // -----------------------------------------------------------------------
 
+    /// The config text under test is not on disk; the path only names the
+    /// format and anchors a relative `includes:`.
+    fn cfg_file() -> &'static Path {
+        Path::new(".anodizer.yaml")
+    }
+
     #[test]
     fn existing_version_files_parses_block_flow_and_anchored() {
         let block = "project_name: app\nversion_files:\n  - a.md\n  - \"b c.md\"\n";
-        let got = existing_version_files(block).unwrap();
+        let got = existing_version_files(cfg_file(), block).unwrap();
         assert!(got.contains("a.md"));
         assert!(got.contains("b c.md"));
 
         let flow = "project_name: app\nversion_files: [a.md, \"b c.md\"]\n";
-        let got = existing_version_files(flow).unwrap();
+        let got = existing_version_files(cfg_file(), flow).unwrap();
         assert!(got.contains("a.md"), "flow members not parsed: {got:?}");
         assert!(got.contains("b c.md"), "flow members not parsed: {got:?}");
 
         // An anchored entry contributes its `path`, and a bare entry AFTER it
         // is still seen (a line scan breaks on the `match:` continuation line).
         let anchored = "project_name: app\nversion_files:\n  - path: chart/values.yaml\n    match: 'op:.*v{version}'\n  - after.md\n";
-        let got = existing_version_files(anchored).unwrap();
+        let got = existing_version_files(cfg_file(), anchored).unwrap();
         assert!(got.contains("chart/values.yaml"), "got: {got:?}");
         assert!(
             got.contains("after.md"),
@@ -1061,9 +1075,29 @@ path = "src/main.rs"
         );
     }
 
+    /// An entry an `includes:` file declares is already enrolled: re-offering
+    /// it writes a duplicate the drift check then reports twice.
+    #[test]
+    fn existing_version_files_sees_an_included_enrollment() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            tmp.path(),
+            "shared.yaml",
+            "version_files:\n  - shared/values.yaml\n",
+        );
+        let config_path = tmp.path().join(".anodizer.yaml");
+        let text = "project_name: app\nincludes:\n  - shared.yaml\nversion_files:\n  - own.md\n";
+        let got = existing_version_files(&config_path, text).unwrap();
+        assert!(got.contains("own.md"), "got: {got:?}");
+        assert!(
+            got.contains("shared/values.yaml"),
+            "an included enrollment is already enrolled: {got:?}"
+        );
+    }
+
     #[test]
     fn existing_version_files_errors_on_an_unparseable_config() {
-        let err = existing_version_files("project_name: [unclosed\n")
+        let err = existing_version_files(cfg_file(), "project_name: [unclosed\n")
             .unwrap_err()
             .to_string();
         assert!(
@@ -1075,7 +1109,7 @@ path = "src/main.rs"
     #[test]
     fn add_version_files_bails_on_flow_style() {
         let cfg = "project_name: app\nversion_files: [a.md]\n";
-        let err = add_version_files(cfg, &["b.md".to_string()]).unwrap_err();
+        let err = add_version_files(cfg_file(), cfg, &["b.md".to_string()]).unwrap_err();
         assert!(err.to_string().contains("inline"), "err: {err}");
         assert!(err.to_string().contains("block list"), "err: {err}");
     }
@@ -1083,7 +1117,7 @@ path = "src/main.rs"
     #[test]
     fn add_version_files_matches_four_space_indent() {
         let cfg = "project_name: app\nversion_files:\n    - a.md\n";
-        let (out, added) = add_version_files(cfg, &["b.md".to_string()]).unwrap();
+        let (out, added) = add_version_files(cfg_file(), cfg, &["b.md".to_string()]).unwrap();
         assert_eq!(added, vec!["b.md".to_string()]);
         assert!(out.contains("    - b.md"), "indent not matched:\n{out}");
         // Parses as valid YAML with both entries.
@@ -1101,7 +1135,7 @@ path = "src/main.rs"
     #[test]
     fn add_version_files_appends_block_when_absent() {
         let cfg = "project_name: app\n";
-        let (out, _) = add_version_files(cfg, &["a.md".to_string()]).unwrap();
+        let (out, _) = add_version_files(cfg_file(), cfg, &["a.md".to_string()]).unwrap();
         assert!(out.contains("version_files:\n  - a.md\n"), "out:\n{out}");
     }
 
@@ -1120,16 +1154,17 @@ path = "src/main.rs"
     #[test]
     fn add_version_files_quotes_spaced_path_and_validates() {
         let cfg = "project_name: app\n";
-        let (out, added) = add_version_files(cfg, &["with space.md".to_string()]).unwrap();
+        let (out, added) =
+            add_version_files(cfg_file(), cfg, &["with space.md".to_string()]).unwrap();
         assert!(out.contains("- \"with space.md\""), "not quoted:\n{out}");
-        validate_enrolled_yaml(&out, &added).unwrap();
+        validate_enrolled_yaml(cfg_file(), &out, &added).unwrap();
     }
 
     #[test]
     fn validate_enrolled_yaml_rejects_invalid() {
         // A bogus top-level key under deny_unknown_fields fails to deserialize.
         let bad = "project_name: app\nnot_a_real_key: true\n";
-        assert!(validate_enrolled_yaml(bad, &[]).is_err());
+        assert!(validate_enrolled_yaml(cfg_file(), bad, &[]).is_err());
     }
 
     // -----------------------------------------------------------------------
