@@ -22,7 +22,7 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::Result;
 
-use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, with_validated_crate_scope};
+use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, validate_crate_scoped};
 use crate::nix::{
     self, FlakePackage, crate_has_nix_archive, is_nix_per_crate_configured,
     render_nix_for_validation,
@@ -81,7 +81,7 @@ impl PublisherSchemaValidator for NixSchemaValidator {
             // crate's `version` against its own version, not the first crate's),
             // returning the flake package entry for the post-loop merged flake.
             let (crate_findings, flake_pkg) =
-                with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
+                validate_crate_scoped(ctx, self.publisher(), crate_name, resolve_tag, |ctx| {
                     let mut out = Vec::new();
                     let nix_cfg = ctx
                         .config

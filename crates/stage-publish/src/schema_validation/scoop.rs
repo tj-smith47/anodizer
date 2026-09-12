@@ -14,7 +14,7 @@ use anodizer_core::context::Context;
 use anyhow::Result;
 
 use super::{
-    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_json, with_validated_crate_scope,
+    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_crate_scoped, validate_json,
 };
 use crate::scoop::{
     crate_has_scoop_artifacts, is_scoop_per_crate_configured, reject_unsupported_use,
@@ -96,17 +96,20 @@ impl PublisherSchemaValidator for ScoopSchemaValidator {
             // Render + validate under THIS crate's own version (workspace
             // per-crate independent-version mode renders each crate's manifest
             // against its own version, not the first crate's).
-            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
-                // `None` means the publisher would skip this crate
-                // (skip_upload / falsy `if`) — nothing to validate.
-                let Some(manifest) = render_scoop_manifest_for_crate(ctx, crate_name, &log)? else {
-                    return Ok(Vec::new());
-                };
-                let value: serde_json::Value = serde_json::from_str(&manifest).map_err(|e| {
-                    anyhow::anyhow!("scoop: rendered manifest is not valid JSON: {e}")
+            let crate_findings =
+                validate_crate_scoped(ctx, self.publisher(), crate_name, resolve_tag, |ctx| {
+                    // `None` means the publisher would skip this crate
+                    // (skip_upload / falsy `if`) — nothing to validate.
+                    let Some(manifest) = render_scoop_manifest_for_crate(ctx, crate_name, &log)?
+                    else {
+                        return Ok(Vec::new());
+                    };
+                    let value: serde_json::Value =
+                        serde_json::from_str(&manifest).map_err(|e| {
+                            anyhow::anyhow!("scoop: rendered manifest is not valid JSON: {e}")
+                        })?;
+                    validate_json("scoop", &value, SCOOP_SCHEMA)
                 })?;
-                validate_json("scoop", &value, SCOOP_SCHEMA)
-            })?;
             findings.extend(crate_findings);
         }
 

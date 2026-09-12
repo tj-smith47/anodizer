@@ -19,8 +19,8 @@ use anodizer_core::context::Context;
 use anyhow::Result;
 
 use super::{
-    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_json,
-    with_validated_crate_scope, yaml_to_json,
+    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_crate_scoped, validate_json,
+    yaml_to_json,
 };
 
 /// The snap.yaml metadata schema (draft 2020-12), authored from snapd's own
@@ -76,34 +76,40 @@ impl PublisherSchemaValidator for SnapcraftSchemaValidator {
             // Render + validate under THIS crate's own version (workspace
             // per-crate independent-version mode renders each crate's snap.yaml
             // `version` against its own version, not the first crate's).
-            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
-                let mut out = Vec::new();
-                // The render walk returns one snap.yaml per (config, target). An
-                // empty Vec means there is nothing to validate — the crate's
-                // configs were all `skip:`/`if:`-suppressed, or no Linux binary
-                // was built for it in this snapshot shard (the same
-                // shard-tolerance case the build's "no Linux binaries → skip"
-                // guard hits).
-                let yamls =
-                    anodizer_stage_snapcraft::snapcraft_snap_yamls_for_crate(ctx, crate_name)?;
-                if yamls.is_empty() {
-                    log.verbose(&format!(
+            let crate_findings = validate_crate_scoped(
+                ctx,
+                self.publisher(),
+                crate_name,
+                resolve_tag,
+                |ctx| {
+                    let mut out = Vec::new();
+                    // The render walk returns one snap.yaml per (config, target). An
+                    // empty Vec means there is nothing to validate — the crate's
+                    // configs were all `skip:`/`if:`-suppressed, or no Linux binary
+                    // was built for it in this snapshot shard (the same
+                    // shard-tolerance case the build's "no Linux binaries → skip"
+                    // guard hits).
+                    let yamls =
+                        anodizer_stage_snapcraft::snapcraft_snap_yamls_for_crate(ctx, crate_name)?;
+                    if yamls.is_empty() {
+                        log.verbose(&format!(
                         "skipped snapcraft schema validation for crate '{}' — produced no snap.yaml \
                          in this snapshot shard (skipped or no Linux binary)",
                         crate_name
                     ));
-                    return Ok(out);
-                }
-                for yaml in &yamls {
-                    let value = yaml_to_json(yaml)?;
-                    out.extend(validate_json(
-                        "snapcraft",
-                        &value,
-                        SNAPCRAFT_SNAP_YAML_SCHEMA,
-                    )?);
-                }
-                Ok(out)
-            })?;
+                        return Ok(out);
+                    }
+                    for yaml in &yamls {
+                        let value = yaml_to_json(yaml)?;
+                        out.extend(validate_json(
+                            "snapcraft",
+                            &value,
+                            SNAPCRAFT_SNAP_YAML_SCHEMA,
+                        )?);
+                    }
+                    Ok(out)
+                },
+            )?;
             findings.extend(crate_findings);
         }
 

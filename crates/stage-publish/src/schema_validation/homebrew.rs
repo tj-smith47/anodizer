@@ -17,7 +17,7 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::Result;
 
-use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, with_validated_crate_scope};
+use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, validate_crate_scoped};
 use crate::homebrew::{
     CaskGenResult, crate_has_homebrew_archives, crate_has_macos_cask_artifact,
     is_homebrew_per_crate_configured, render_homebrew_cask_for_crate,
@@ -71,79 +71,80 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
             // each crate's `version`/`url` against its own version, not the
             // first crate's). The top-level `homebrew_casks:` loop below is
             // project-wide and stays under the global scope.
-            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
-                let mut findings = Vec::new();
-                let hb_cfg = ctx
-                    .config
-                    .find_crate(crate_name)
-                    .and_then(|c| c.publish.as_ref())
-                    .and_then(|p| p.homebrew.clone());
+            let crate_findings =
+                validate_crate_scoped(ctx, self.publisher(), crate_name, resolve_tag, |ctx| {
+                    let mut findings = Vec::new();
+                    let hb_cfg = ctx
+                        .config
+                        .find_crate(crate_name)
+                        .and_then(|c| c.publish.as_ref())
+                        .and_then(|p| p.homebrew.clone());
 
-                // FORMULA path. A real release always builds at least one
-                // macOS/Linux archive a formula can point at, but a
-                // target-restricted determinism shard may build none for this
-                // crate (e.g. a windows-only shard — homebrew installs only on
-                // macOS/Linux). The self-skip is gated on the partial-shard
-                // signal exactly as `validate_nix` gates its nix skip: on a
-                // FULL build, an empty homebrew-eligible set is a genuine
-                // misconfiguration (homebrew configured but nothing it can
-                // package), so it must fall through to the render and ERROR
-                // rather than silently skip. `crate_has_homebrew_archives` is
-                // presence-only and does NOT read url/sha256 — a
-                // present-but-broken (missing url/sha256) macOS/Linux artifact
-                // still reports present, so the render is called and its `Err`
-                // propagates (`?`) on a partial shard too. The OS filter only
-                // drops non-eligible-OS archives; it never swallows a broken
-                // eligible artifact.
-                if let Some(hb_cfg) = hb_cfg.as_ref() {
-                    if ctx.is_target_restricted_build()
-                        && !crate_has_homebrew_archives(ctx, hb_cfg, crate_name)
-                    {
-                        log.verbose(&format!(
-                            "skipped formula schema validation for crate '{}' — no macOS/Linux \
+                    // FORMULA path. A real release always builds at least one
+                    // macOS/Linux archive a formula can point at, but a
+                    // target-restricted determinism shard may build none for this
+                    // crate (e.g. a windows-only shard — homebrew installs only on
+                    // macOS/Linux). The self-skip is gated on the partial-shard
+                    // signal exactly as `validate_nix` gates its nix skip: on a
+                    // FULL build, an empty homebrew-eligible set is a genuine
+                    // misconfiguration (homebrew configured but nothing it can
+                    // package), so it must fall through to the render and ERROR
+                    // rather than silently skip. `crate_has_homebrew_archives` is
+                    // presence-only and does NOT read url/sha256 — a
+                    // present-but-broken (missing url/sha256) macOS/Linux artifact
+                    // still reports present, so the render is called and its `Err`
+                    // propagates (`?`) on a partial shard too. The OS filter only
+                    // drops non-eligible-OS archives; it never swallows a broken
+                    // eligible artifact.
+                    if let Some(hb_cfg) = hb_cfg.as_ref() {
+                        if ctx.is_target_restricted_build()
+                            && !crate_has_homebrew_archives(ctx, hb_cfg, crate_name)
+                        {
+                            log.verbose(&format!(
+                                "skipped formula schema validation for crate '{}' — no macOS/Linux \
                              (homebrew-eligible) archive in this target-restricted shard",
-                            crate_name
-                        ));
-                        ctx.emission_skips.remember(
-                            crate::snapshot_validation::EMISSION_SKIP_STAGE,
-                            &format!("{crate_name} homebrew"),
-                            "no macOS/Linux (homebrew-eligible) archive in this \
+                                crate_name
+                            ));
+                            ctx.emission_skips.remember(
+                                crate::snapshot_validation::EMISSION_SKIP_STAGE,
+                                &format!("{crate_name} homebrew"),
+                                "no macOS/Linux (homebrew-eligible) archive in this \
                              target-restricted shard",
-                        );
-                    } else if let Some(rendered) =
-                        render_homebrew_formula_for_crate(ctx, crate_name, &log)?
-                    {
-                        findings.extend(validate_ruby_structural(
-                            RubyKind::Formula,
-                            &rendered.formula,
-                        ));
-                        findings.extend(validate_ruby_syntax(&rendered.formula, strict, &log)?);
+                            );
+                        } else if let Some(rendered) =
+                            render_homebrew_formula_for_crate(ctx, crate_name, &log)?
+                        {
+                            findings.extend(validate_ruby_structural(
+                                RubyKind::Formula,
+                                &rendered.formula,
+                            ));
+                            findings.extend(validate_ruby_syntax(&rendered.formula, strict, &log)?);
+                        }
+
+                        // SAME-TAP CASK path. The render needs a macOS artifact. Gate
+                        // the not-applicable skip on darwin-artifact PRESENCE, then
+                        // call the render and propagate any `Err` — a missing
+                        // url/sha256 on a present artifact is a real defect, not a
+                        // not-applicable skip.
+                        if hb_cfg.cask.is_some()
+                            && crate_has_macos_cask_artifact(ctx, crate_name)
+                            && let Some(cask) =
+                                render_same_tap_cask_for_crate(ctx, hb_cfg, crate_name, &log)?
+                        {
+                            validate_cask_and_versioned(&mut findings, &cask, strict, &log)?;
+                        }
                     }
 
-                    // SAME-TAP CASK path. The render needs a macOS artifact. Gate
-                    // the not-applicable skip on darwin-artifact PRESENCE, then
-                    // call the render and propagate any `Err` — a missing
-                    // url/sha256 on a present artifact is a real defect, not a
-                    // not-applicable skip.
-                    if hb_cfg.cask.is_some()
-                        && crate_has_macos_cask_artifact(ctx, crate_name)
-                        && let Some(cask) =
-                            render_same_tap_cask_for_crate(ctx, hb_cfg, crate_name, &log)?
+                    // STANDALONE CASK path. Same darwin-presence gate over a render
+                    // whose `Err` propagates: a present-but-broken macOS artifact
+                    // must surface, only true absence skips.
+                    if crate_has_macos_cask_artifact(ctx, crate_name)
+                        && let Some(cask) = render_homebrew_cask_for_crate(ctx, crate_name, &log)?
                     {
                         validate_cask_and_versioned(&mut findings, &cask, strict, &log)?;
                     }
-                }
-
-                // STANDALONE CASK path. Same darwin-presence gate over a render
-                // whose `Err` propagates: a present-but-broken macOS artifact
-                // must surface, only true absence skips.
-                if crate_has_macos_cask_artifact(ctx, crate_name)
-                    && let Some(cask) = render_homebrew_cask_for_crate(ctx, crate_name, &log)?
-                {
-                    validate_cask_and_versioned(&mut findings, &cask, strict, &log)?;
-                }
-                Ok(findings)
-            })?;
+                    Ok(findings)
+                })?;
             findings.extend(crate_findings);
         }
 

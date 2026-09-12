@@ -31,8 +31,8 @@ use anyhow::{Context as _, Result};
 use serde_json::Value;
 
 use super::{
-    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_json,
-    with_validated_crate_scope, yaml_to_json,
+    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_crate_scoped, validate_json,
+    yaml_to_json,
 };
 
 /// nfpm's own config schema (draft 2020-12), pinned to the nfpm version
@@ -92,31 +92,32 @@ impl PublisherSchemaValidator for NfpmSchemaValidator {
             // `version:` from `artifact_version` (see
             // `render_build_matched_nfpm_configs`) so it equals what the build
             // stamped in every config mode.
-            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
-                let mut out = Vec::new();
-                // One rendered config per (config × target × format). An empty Vec
-                // means there is nothing to validate — the configs were all
-                // `if:`-suppressed / format-less, the `ids` filter admitted none,
-                // or no packaging-eligible artifact was built for the crate in
-                // this snapshot shard (the same shard-tolerance cases the build
-                // skips).
-                let configs =
-                    render_build_matched_nfpm_configs(ctx, crate_name, &artifact_version)?;
-                if configs.is_empty() {
-                    log.verbose(&format!(
+            let crate_findings =
+                validate_crate_scoped(ctx, self.publisher(), crate_name, resolve_tag, |ctx| {
+                    let mut out = Vec::new();
+                    // One rendered config per (config × target × format). An empty Vec
+                    // means there is nothing to validate — the configs were all
+                    // `if:`-suppressed / format-less, the `ids` filter admitted none,
+                    // or no packaging-eligible artifact was built for the crate in
+                    // this snapshot shard (the same shard-tolerance cases the build
+                    // skips).
+                    let configs =
+                        render_build_matched_nfpm_configs(ctx, crate_name, &artifact_version)?;
+                    if configs.is_empty() {
+                        log.verbose(&format!(
                         "skipped nfpm schema validation for crate '{}' — produced no nfpm config \
                          in this snapshot shard (skipped or no eligible artifact)",
                         crate_name
                     ));
-                    return Ok(out);
-                }
-                for cfg in &configs {
-                    let value = yaml_to_json(&cfg.yaml)?;
-                    out.extend(validate_json("nfpm", &value, NFPM_SCHEMA)?);
-                }
-                out.extend(validate_built_packages(ctx, crate_name, &configs, &log)?);
-                Ok(out)
-            })?;
+                        return Ok(out);
+                    }
+                    for cfg in &configs {
+                        let value = yaml_to_json(&cfg.yaml)?;
+                        out.extend(validate_json("nfpm", &value, NFPM_SCHEMA)?);
+                    }
+                    out.extend(validate_built_packages(ctx, crate_name, &configs, &log)?);
+                    Ok(out)
+                })?;
             findings.extend(crate_findings);
         }
 
@@ -547,6 +548,7 @@ fn parse_rpm_fields(text: &str) -> std::collections::BTreeMap<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::with_validated_crate_scope;
     use std::collections::HashMap;
     use std::path::PathBuf;
 

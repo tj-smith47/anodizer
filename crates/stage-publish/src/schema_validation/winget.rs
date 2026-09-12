@@ -14,8 +14,8 @@ use anodizer_core::context::Context;
 use anyhow::Result;
 
 use super::{
-    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_json,
-    with_validated_crate_scope, yaml_to_json,
+    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_crate_scoped, validate_json,
+    yaml_to_json,
 };
 use crate::winget::{
     crate_has_winget_installer_artifacts, is_winget_per_crate_configured,
@@ -94,46 +94,26 @@ impl PublisherSchemaValidator for WingetSchemaValidator {
             // Render + validate under THIS crate's own version so the manifest's
             // `PackageVersion` is the version a real release would stamp, not the
             // first crate's (workspace per-crate independent-version mode).
-            let scoped = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
-                let mut out = Vec::new();
-                // `None` means the publisher would skip this crate
-                // (skip_upload / falsy `if`) — nothing to validate.
-                if let Some(rendered) = render_winget_manifests_for_crate(ctx, crate_name, &log)? {
-                    out.extend(validate_manifest(&rendered.version_yaml, VERSION_SCHEMA)?);
-                    out.extend(validate_manifest(
-                        &rendered.installer_yaml,
-                        INSTALLER_SCHEMA,
-                    )?);
-                    out.extend(validate_manifest(
-                        &rendered.locale_yaml,
-                        DEFAULT_LOCALE_SCHEMA,
-                    )?);
-                }
-                Ok(out)
-            });
-            // A per-entry misconfiguration (no repository, missing publisher /
-            // license / short_description, an invalid identifier, colliding
-            // archives) disqualifies this crate's manifest, not the release: the
-            // live publisher records the same skip, so the validation pass must
-            // not turn it into a hard stop ahead of every other publisher.
-            let crate_findings = match scoped {
-                Ok(out) => out,
-                Err(err) => match anodizer_core::pipe_skip::entry_skip_reason(&err) {
-                    Some(reason) => {
-                        log.verbose(&format!(
-                            "skipped winget schema validation for crate '{}' — {}",
-                            crate_name, reason
-                        ));
-                        ctx.emission_skips.remember(
-                            crate::snapshot_validation::EMISSION_SKIP_STAGE,
-                            &format!("{crate_name} winget"),
-                            reason,
-                        );
-                        continue;
+            let crate_findings =
+                validate_crate_scoped(ctx, self.publisher(), crate_name, resolve_tag, |ctx| {
+                    let mut out = Vec::new();
+                    // `None` means the publisher would skip this crate
+                    // (skip_upload / falsy `if`) — nothing to validate.
+                    if let Some(rendered) =
+                        render_winget_manifests_for_crate(ctx, crate_name, &log)?
+                    {
+                        out.extend(validate_manifest(&rendered.version_yaml, VERSION_SCHEMA)?);
+                        out.extend(validate_manifest(
+                            &rendered.installer_yaml,
+                            INSTALLER_SCHEMA,
+                        )?);
+                        out.extend(validate_manifest(
+                            &rendered.locale_yaml,
+                            DEFAULT_LOCALE_SCHEMA,
+                        )?);
                     }
-                    None => return Err(err),
-                },
-            };
+                    Ok(out)
+                })?;
             findings.extend(crate_findings);
         }
 
@@ -269,6 +249,29 @@ mod tests {
             target: Some(target.to_string()),
             crate_name: crate_name.to_string(),
             metadata: bin_meta,
+            size: None,
+        });
+    }
+
+    /// A SECOND Windows x64 archive for the same crate: two archives claim one
+    /// architecture, which is what the installer collector disqualifies.
+    fn add_second_windows_zip(ctx: &mut Context, crate_name: &str) {
+        let target = "x86_64-pc-windows-msvc";
+        let name = format!("{crate_name}-{target}-extra.zip");
+        let mut meta = HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            format!("https://github.com/acme/widget/releases/download/v1.0.0/{name}"),
+        );
+        meta.insert("sha256".to_string(), "b".repeat(64));
+        meta.insert("format".to_string(), "zip".to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/dist/{name}")),
+            name,
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: meta,
             size: None,
         });
     }
@@ -888,6 +891,58 @@ mod tests {
             fallbacks.len(),
             1,
             "the publisher fallback warning must fire exactly once per render, got: {fallbacks:?}"
+        );
+    }
+
+    /// A crate whose Windows archives claim one architecture twice disqualifies
+    /// itself, not the pass: the reason is recorded as a skip and the crate
+    /// configured after it is still validated.
+    #[test]
+    fn an_ambiguous_crate_is_skipped_and_the_next_crate_is_still_validated() {
+        let widget = winget_crate("widget", "v{{ .Version }}", every_option_winget_cfg());
+        let gadget = winget_crate(
+            "gadget",
+            "v{{ .Version }}",
+            WingetConfig {
+                package_identifier: Some("AcmeCo.Gadget".to_string()),
+                // Past the registry schema's 256-character ShortDescription cap,
+                // so this crate's manifests produce a finding — which is only
+                // reachable if the pass carried on past the skipped crate.
+                short_description: Some("g".repeat(300)),
+                ..every_option_winget_cfg()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![widget, gadget])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        add_windows_zip(&mut ctx, "widget", "widget");
+        add_second_windows_zip(&mut ctx, "widget");
+        add_windows_zip(&mut ctx, "gadget", "gadget");
+
+        let findings = WingetSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("an ambiguous crate is a skip, never an abort");
+
+        let skips = ctx.skip_memento.snapshot();
+        let widget_skip = skips
+            .iter()
+            .find(|e| e.stage == "winget" && e.label == "widget")
+            .expect("the ambiguous crate is recorded as a skipped winget entry");
+        assert!(
+            widget_skip
+                .reason
+                .contains("multiple archives for the same platform"),
+            "the recorded reason names the ambiguity, got: {}",
+            widget_skip.reason
+        );
+        assert!(
+            findings.iter().any(|f| f.field == "/ShortDescription"),
+            "the crate configured after the skipped one is still validated, got: {findings:?}"
         );
     }
 }
