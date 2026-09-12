@@ -256,7 +256,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           # …every secret the downstream publish jobs consume as REGISTERED CI
           # secrets (exclude runner-ambient ones via --skip above)…
 

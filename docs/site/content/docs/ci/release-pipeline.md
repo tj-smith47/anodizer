@@ -73,8 +73,9 @@ Tagging is a half-irreversible act: once `vX.Y.Z` is pushed, a downstream releas
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           # …one line per publish secret your config references…
+          # A publisher under `auth: oidc` (or `auth: auto` on a job with
+          # `id-token: write`) needs no token here — see the npm and PyPI pages.
 ```
 
 `release --preflight-secrets` validates secret presence and key-material shape **without** probing host-local tools, so it runs cleanly on a github-hosted gate even when the real publish runs elsewhere. See [Preflight](@/docs/general/preflight.md) for the full check matrix.
@@ -238,7 +239,9 @@ These do **not** run as a job inside `release.yml`. crates.io and PyPI Trusted P
           args: release --publish-only --publishers npm,pypi,cargo
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}   # first-publish fallback; pypi/cargo under auth: oidc need no token
+          # No NPM_TOKEN: all three publishers authenticate through this job's
+          # OIDC context. Publish a brand-new npm package once with a token from
+          # a separate token-only workflow, then it publishes via OIDC here.
 ```
 
 > **`dist_run_id` on a fresh cut.** When the tag is freshly issued, `dist_run_id` is empty and the preserved `dist-*` artifacts live under the release run's own `github.run_id` — so `release.yml` passes `dist_run_id || github.run_id`. The dispatched run has a different id and cannot fall back on its own; the caller must hand it the right run to download from.

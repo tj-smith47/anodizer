@@ -221,6 +221,21 @@ The `auth` field selects the strategy:
 | `token` | Always use the token; never attempt OIDC. Errors if no token is set. The historical behaviour. |
 | `oidc` | Always use OIDC; never fall back to a token. Errors if no OIDC context is present. A failed exchange fails the release loudly. |
 
+### Preflight severity for a bad token
+
+`release --preflight-secrets` probes `GET <registry>/-/whoami` when a token resolves. The severity of a 401/403 depends on whether the run has another way to authenticate:
+
+| `auth` | OIDC context present | Preflight result |
+|--------|----------------------|------------------|
+| `token` | any | **Blocker** — the token is the only credential. |
+| `auto` | no | **Blocker** — same reason. |
+| `auto` | yes | **Warning**: `npm token invalid or expired; existing packages publish via OIDC (Trusted Publishing), a brand-new package would fail — rotate or remove NPM_TOKEN`. Every package that already exists still publishes. |
+| `oidc` | any | The token is never consulted, so the probe does not run. A token that is set gets a verbose "ignored" note. |
+
+The Warning row exists because a preflight Blocker aborts the **whole** check, including publishers that never touch the npm token — a stale `NPM_TOKEN` must not stop a PyPI or crates.io publish.
+
+An OIDC context means both `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` are set and non-empty; GitHub injects them into a job that grants `permissions: id-token: write`.
+
 ### Why per-package selection matters
 
 In `optional-deps` mode a single `npms[]` entry publishes a **metapackage plus one package per platform**. The metapackage often already exists (with a Trusted Publisher configured) while the per-platform sub-packages are brand new on a given release. With `auth: auto` and `NPM_TOKEN` set, anodizer publishes the **new sub-packages via the token** (Trusted Publishing cannot create them) and the **existing metapackage via OIDC** — in one run, no per-package config:
@@ -232,7 +247,7 @@ npms:
     auth: auto      # default — per-package selection
 ```
 
-Keep `NPM_TOKEN` set in the workflow; `auto` exercises Trusted Publishing wherever a package already exists and a Trusted Publisher is configured, and uses the token only where it must.
+Set `NPM_TOKEN` in the workflow for as long as an entry still publishes package names that do not exist yet; `auto` exercises Trusted Publishing wherever a package already exists and a Trusted Publisher is configured, and uses the token only where it must. Once every name exists, drop the secret from that workflow.
 
 ### OIDC failure fallback
 
@@ -332,8 +347,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write            # issues npm provenance + PyPI + crates.io upload tokens
-    env:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}   # first-publish fallback; pypi/cargo under auth: oidc need no token
     steps:
       - run: anodizer release --publish-only --publishers npm,pypi,cargo
 ```
@@ -345,7 +358,9 @@ The `--publishers`/`--skip` selectors that make this split possible are describe
 
 A Trusted Publisher cannot be attached to a package that does not yet exist, so the **first** publish that creates the package needs a token. Set the `NPM_TOKEN` env var (an [automation token](https://docs.npmjs.com/creating-and-viewing-access-tokens)); anodizer writes a process-private `.npmrc` carrying `//registry.npmjs.org/:_authToken=$NPM_TOKEN` and passes `--userconfig <that .npmrc>` to `npm publish`. The token is never placed on the argv and the `.npmrc` is deleted after publish completes.
 
-Under the default `auth: auto`, a token is used for **brand-new** packages and as the credential when no OIDC context is present; **existing** packages prefer OIDC when one is. So you can keep `NPM_TOKEN` set permanently and still exercise Trusted Publishing wherever a package already exists — there is no need to drop the secret. To force token-only auth regardless of existence, set `auth: token`.
+Under the default `auth: auto`, a token is used for **brand-new** packages and as the credential when no OIDC context is present; **existing** packages prefer OIDC when one is. To force token-only auth regardless of existence, set `auth: token`.
+
+Once every package an entry publishes exists, the token buys nothing on an OIDC job — drop it from that workflow and publish the first version of any new package name from a separate token-carrying workflow. A token left in place is one more secret to rotate, and a stale one shows up as the preflight Warning above.
 
 For a private registry (e.g. GitHub Packages):
 
