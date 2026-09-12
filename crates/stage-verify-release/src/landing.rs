@@ -1622,4 +1622,23 @@ mod tests {
         assert_eq!(probed, 0);
         assert!(issues.is_empty());
     }
+
+    #[test]
+    fn the_propagation_budget_never_outlives_the_run_deadline() {
+        use std::time::{Duration, Instant};
+        let retry = PropagationRetry::DEFAULT;
+
+        assert_eq!(retry.bounded_by(None).budget, Duration::from_secs(180));
+
+        let far = Instant::now() + Duration::from_secs(3600);
+        assert_eq!(retry.bounded_by(Some(far)).budget, Duration::from_secs(180));
+
+        let near = Instant::now() + Duration::from_secs(10);
+        let clamped = retry.bounded_by(Some(near)).budget;
+        assert!(clamped <= Duration::from_secs(10), "{clamped:?}");
+        assert!(clamped > Duration::from_secs(9), "{clamped:?}");
+
+        let passed = Instant::now() - Duration::from_secs(1);
+        assert_eq!(retry.bounded_by(Some(passed)).budget, Duration::ZERO);
+    }
 }
