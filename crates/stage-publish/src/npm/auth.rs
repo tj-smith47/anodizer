@@ -121,7 +121,7 @@ pub(crate) enum NpmAuth {
 /// Snapshot the GitHub Actions OIDC request env when BOTH variables are present
 /// and non-empty, returning every entry to thread into the publish subprocess.
 /// Returns `None` (no OIDC context) when either variable is missing/empty.
-fn resolve_oidc_env(ctx: &Context) -> Option<Vec<(String, String)>> {
+pub(crate) fn resolve_oidc_env(ctx: &Context) -> Option<Vec<(String, String)>> {
     let env = ctx.env_source();
     let mut out = Vec::with_capacity(OIDC_ENV_VARS.len());
     for name in OIDC_ENV_VARS {

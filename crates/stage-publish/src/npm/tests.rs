@@ -548,6 +548,7 @@ fn assemble_postinstall_tarball_residual_description_template_dry_run_stays_leni
 fn optional_deps_ctx() -> (tempfile::TempDir, anodizer_core::context::Context) {
     let tmp = tempfile::TempDir::new().expect("tmp");
     let mut ctx = TestContextBuilder::new()
+        .sealed_env()
         .project_name("demo")
         .tag("v1.2.3")
         .crates(vec![demo_crate()])
@@ -2441,7 +2442,7 @@ fn npm_publisher_required_override_honored() {
 
 #[test]
 fn npm_publisher_preflight_passes() {
-    let ctx = TestContextBuilder::new().build();
+    let ctx = TestContextBuilder::new().sealed_env().build();
     let p = NpmPublisher::new();
     assert!(matches!(
         p.preflight(&ctx).expect("preflight ok"),
@@ -2479,6 +2480,7 @@ fn preflight_skip_metapackage_without_artifacts_does_not_block() {
     // per-platform name probe is skipped, NOT folded into a false-clean pass
     // that hides real errors — and it must not itself Blocker.
     let mut ctx = TestContextBuilder::new()
+        .sealed_env()
         .project_name("demo")
         .tag("v1.2.3")
         .crates(vec![demo_crate()])
@@ -2520,9 +2522,119 @@ fn preflight_skip_metapackage_layout_error_blocks() {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Preflight token severity vs. auth mode
+// -----------------------------------------------------------------------------
+
+/// A canned HTTP response with a correct `Content-Length`.
+fn preflight_http(status_line: &str, body: &str) -> &'static str {
+    Box::leak(
+        format!(
+            "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .into_boxed_str(),
+    )
+}
+
+/// A sealed context with one npm entry pointed at `addr`, carrying a token and
+/// the given auth mode. `oidc` seeds the GitHub Actions OIDC request pair.
+fn preflight_ctx(
+    addr: std::net::SocketAddr,
+    auth: NpmAuthMode,
+    oidc: bool,
+) -> anodizer_core::context::Context {
+    let mut b = TestContextBuilder::new().project_name("proj").sealed_env();
+    if oidc {
+        b = b
+            .env(
+                "ACTIONS_ID_TOKEN_REQUEST_URL",
+                "https://example.invalid/tok",
+            )
+            .env("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "req-token");
+    }
+    let mut ctx = b.build();
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.config.npms = Some(vec![NpmConfig {
+        registry: Some(format!("http://{addr}")),
+        token: Some("stale-token".into()),
+        auth,
+        name: Some("pkg".into()),
+        ..Default::default()
+    }]);
+    ctx
+}
+
+/// `auth: token` has no OIDC fallback, so a dead token is fatal whatever the
+/// runner environment offers.
+#[test]
+fn preflight_invalid_token_blocks_under_auth_token() {
+    let (addr, _c) = spawn_oneshot_http_responder(vec![
+        preflight_http("401 Unauthorized", ""),
+        preflight_http("404 Not Found", ""),
+    ]);
+    let ctx = preflight_ctx(addr, NpmAuthMode::Token, true);
+    match NpmPublisher::new().preflight(&ctx).expect("preflight") {
+        PreflightCheck::Blocker(m) => assert!(m.contains("npm token invalid or expired"), "{m}"),
+        other => panic!("expected Blocker, got {other:?}"),
+    }
+}
+
+/// `auth: auto` outside an OIDC context has nothing but the token, so a dead
+/// token still blocks.
+#[test]
+fn preflight_invalid_token_blocks_under_auto_without_oidc() {
+    let (addr, _c) = spawn_oneshot_http_responder(vec![
+        preflight_http("401 Unauthorized", ""),
+        preflight_http("404 Not Found", ""),
+    ]);
+    let ctx = preflight_ctx(addr, NpmAuthMode::Auto, false);
+    match NpmPublisher::new().preflight(&ctx).expect("preflight") {
+        PreflightCheck::Blocker(m) => assert!(m.contains("npm token invalid or expired"), "{m}"),
+        other => panic!("expected Blocker, got {other:?}"),
+    }
+}
+
+/// The regression this severity split fixes: a stale `NPM_TOKEN` on a job with
+/// `id-token: write` blocked the whole preflight, so PyPI and crates.io — which
+/// never touch that token — did not publish either.
+#[test]
+fn preflight_invalid_token_warns_under_auto_with_oidc() {
+    let (addr, _c) = spawn_oneshot_http_responder(vec![
+        preflight_http("401 Unauthorized", ""),
+        preflight_http("404 Not Found", ""),
+    ]);
+    let ctx = preflight_ctx(addr, NpmAuthMode::Auto, true);
+    match NpmPublisher::new().preflight(&ctx).expect("preflight") {
+        PreflightCheck::Warning(m) => {
+            assert!(m.contains("existing packages publish via OIDC"), "{m}");
+            assert!(m.contains("rotate or remove NPM_TOKEN"), "{m}");
+        }
+        other => panic!("expected Warning, got {other:?}"),
+    }
+}
+
+/// `auth: oidc` never reads the token, so preflight must not spend a request
+/// validating it: only the version probe reaches the responder.
+#[test]
+fn preflight_skips_the_whoami_probe_under_auth_oidc() {
+    let (addr, calls) = spawn_oneshot_http_responder(vec![preflight_http("404 Not Found", "")]);
+    let ctx = preflight_ctx(addr, NpmAuthMode::Oidc, true);
+    match NpmPublisher::new().preflight(&ctx).expect("preflight") {
+        PreflightCheck::Pass => {}
+        other => panic!("expected Pass, got {other:?}"),
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "only the version probe may reach the registry under auth: oidc"
+    );
+}
+
 #[test]
 fn npm_publisher_run_with_no_npms_configured_is_noop() {
     let mut ctx = TestContextBuilder::new()
+        .sealed_env()
         .project_name("demo")
         .crates(vec![demo_crate()])
         .build();
