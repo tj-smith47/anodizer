@@ -23,11 +23,11 @@ runs:
       with:
         toolchain: stable
 
-    - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       with:
         cache-targets: ${{ inputs.cache-targets }}
 
-    - uses: go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa # v2.1.0
+    - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
       with:
         # Pin an exact go-task release. Without `version`, setup-task defaults
         # to `3.x` and resolves "latest 3.x" via the GitHub API at run time —
