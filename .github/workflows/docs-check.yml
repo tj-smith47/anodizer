@@ -37,12 +37,5 @@ jobs:
       - name: Check generated docs are up-to-date
         run: task docs:check
 
-      - name: Install Zola
-        uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2.87.9
-        with:
-          # The version the local `task docs:site` gate runs; zola 0.23 dropped
-          # the `concat` filter the sidebar uses.
-          tool: zola@0.22.1
-
       - name: Build the docsite
         run: task docs:site

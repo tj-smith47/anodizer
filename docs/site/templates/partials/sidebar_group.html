@@ -1,0 +1,22 @@
+{# One sidebar group: a section's own pages, then a group per nested
+   subsection. Included once per section by partials/sidebar.html, which sets
+   `section_path`. The sidebar renders the same markup for the `docs`
+   subsections and for `migration`, and Tera 2 (Zola 0.23) has no
+   array-concatenation filter to join those two lists into one loop, so the
+   shared markup lives here instead of being written twice. #}
+    {% set section = get_section(path=section_path) %}
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">{{ section.title }}</div>
+    {% for page in section.pages %}
+    <a href="{{ page.permalink }}" class="sidebar-link{% if current_path == page.path %} active{% endif %}">{{ page.title }}</a>
+    {% endfor %}
+  </div>
+    {% for nested_path in section.subsections %}
+      {% set nested = get_section(path=nested_path) %}
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">{{ nested.title }}</div>
+      {% for page in nested.pages %}
+    <a href="{{ page.permalink }}" class="sidebar-link{% if current_path == page.path %} active{% endif %}">{{ page.title }}</a>
+      {% endfor %}
+  </div>
+    {% endfor %}
