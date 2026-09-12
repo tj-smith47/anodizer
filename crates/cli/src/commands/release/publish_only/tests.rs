@@ -592,34 +592,38 @@ fn cleanup_shard_manifests_removes_only_artifacts_shards_leaves_context() {
     assert!(dist.join("context-macos-latest.json").is_file());
 }
 
-/// Filter contract for the inlined missing-file check: Binary +
-/// UniversalBinary kinds must be skipped (their paths live under
-/// `.det-tmp/target/...` and are not preserved into `dist/`),
-/// while every other kind flows through to
-/// `detect_missing_files`. Pin the filter shape so a refactor
-/// can't silently re-include Binary kinds and break the
-/// determinism-verified → publish flow.
+/// Filter contract for the inlined missing-file check, through the predicate
+/// the call site itself uses. A raw binary still pointing at the build
+/// worktree is skipped — the harness never carried it into `dist/`. One the
+/// harness preserved under `_preserved-bin/` flows through: `binary_signs:`
+/// signs that file and the release uploads it, so a missing one is a defect.
+/// Every other kind flows through as before.
 #[test]
-fn missing_file_check_skips_binary_and_universal_binary_kinds() {
+fn missing_file_check_skips_only_unpreserved_raw_binaries() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::context::{Context, ContextOptions};
 
     let config = Config::default();
     let mut ctx = Context::new(config, ContextOptions::default());
 
-    // Seed Binary + UniversalBinary (should be filtered out) and
-    // a couple of other kinds (should flow through).
-    let kinds = [
-        ArtifactKind::Binary,
-        ArtifactKind::UniversalBinary,
-        ArtifactKind::Archive,
-        ArtifactKind::Checksum,
+    let seeds: [(ArtifactKind, &str); 5] = [
+        (ArtifactKind::Binary, ".det-tmp/target/release/widget"),
+        (
+            ArtifactKind::UniversalBinary,
+            ".det-tmp/target/universal/widget",
+        ),
+        (
+            ArtifactKind::Binary,
+            "_preserved-bin/x86_64-unknown-linux-gnu/widget",
+        ),
+        (ArtifactKind::Archive, "widget-linux.tar.gz"),
+        (ArtifactKind::Checksum, "checksums.txt"),
     ];
-    for (i, k) in kinds.iter().enumerate() {
+    for (kind, path) in seeds {
         ctx.artifacts.add(Artifact {
-            kind: *k,
-            name: format!("art-{i}"),
-            path: std::path::PathBuf::from(format!("art-{i}")),
+            kind,
+            name: path.to_string(),
+            path: std::path::PathBuf::from(path),
             target: None,
             crate_name: String::new(),
             metadata: Default::default(),
@@ -627,17 +631,27 @@ fn missing_file_check_skips_binary_and_universal_binary_kinds() {
         });
     }
 
-    // Apply the same filter the run() call site uses and verify
-    // exactly the non-Binary kinds survive.
-    let kept: Vec<ArtifactKind> = ctx
+    let kept: Vec<String> = ctx
         .artifacts
         .all()
         .iter()
-        .filter(|a| !matches!(a.kind, ArtifactKind::Binary | ArtifactKind::UniversalBinary))
-        .map(|a| a.kind)
+        .filter(|a| {
+            !matches!(a.kind, ArtifactKind::Metadata)
+                && !super::per_crate::is_unpreserved_raw_binary(a)
+                && !anodizer_core::artifact::is_directory_bundle_artifact(a)
+        })
+        .map(|a| a.path.display().to_string())
         .collect();
 
-    assert_eq!(kept, vec![ArtifactKind::Archive, ArtifactKind::Checksum]);
+    assert_eq!(
+        kept,
+        vec![
+            "_preserved-bin/x86_64-unknown-linux-gnu/widget".to_string(),
+            "widget-linux.tar.gz".to_string(),
+            "checksums.txt".to_string(),
+        ],
+        "a preserved raw binary is checked; an unpreserved one is not"
+    );
 }
 
 // ── detect_dist_layout tests ──────────────────────────────────────────────
