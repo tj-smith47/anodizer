@@ -63,7 +63,7 @@ pub use anodizer_core::libc_check::{
     max_glibc_requirement,
 };
 pub use asset_check::{AssetDiff, ContentVerdict, check_asset_content, diff_assets};
-pub use landing::LandingProbes;
+pub use landing::{LandingProbes, PropagationRetry};
 pub use smoke::{
     PackageType, SmokeJob, SmokeOutcome, build_smoke_argv, docker_available, docker_platform,
     run_smoke,
@@ -334,6 +334,13 @@ impl Stage for VerifyReleaseStage {
                 )
             };
             let probes = LandingProbes {
+                // A dry run must not spend minutes waiting on propagation it
+                // never caused.
+                propagation: if ctx.options.dry_run {
+                    landing::PropagationRetry::IMMEDIATE
+                } else {
+                    landing::PropagationRetry::DEFAULT.bounded_by(deadline)
+                },
                 cargo_index: &cargo_probe,
                 npm_registry: &npm_probe,
                 blob_head: &blob_probe,
