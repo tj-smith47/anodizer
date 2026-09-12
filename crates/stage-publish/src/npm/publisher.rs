@@ -458,7 +458,12 @@ impl anodizer_core::Publisher for NpmPublisher {
     /// Live pre-publish gate. npm has no companion state-query checker, so this
     /// is its only guard against the two irreversible failure modes:
     ///
-    /// * token invalid/expired — `GET {registry}/-/whoami` 401/403 ⇒ Blocker.
+    /// * token invalid/expired — `GET {registry}/-/whoami` 401/403 ⇒ Blocker
+    ///   under `auth: token`, and under `auth: auto` with no OIDC context.
+    ///   Under `auth: auto` *in* an OIDC context it is a Warning: every
+    ///   existing package publishes through Trusted Publishing and only a
+    ///   brand-new package needs the token. Under `auth: oidc` the token is
+    ///   never consulted, so the probe does not run at all.
     /// * version already published — `GET {registry}/{pkg}/{version}` 200 ⇒
     ///   Warning (npm forbids republishing a version; unpublish is a 72h window).
     ///
@@ -510,7 +515,16 @@ impl anodizer_core::Publisher for NpmPublisher {
                     continue;
                 }
             };
-            if !token.is_empty() {
+            // `oidc` mode never consults the token, so validating one would
+            // block a publish on a credential the run cannot use.
+            if cfg.auth == anodizer_core::config::NpmAuthMode::Oidc {
+                if !token.is_empty() {
+                    ctx.logger("preflight").verbose(
+                        "npm: auth mode is `oidc` — the configured token is ignored and \
+                         not validated",
+                    );
+                }
+            } else if !token.is_empty() {
                 let outcome = match probe_token_auth(
                     &format!("{registry}/-/whoami"),
                     &format!("Bearer {token}"),
@@ -522,7 +536,24 @@ impl anodizer_core::Publisher for NpmPublisher {
                 ) {
                     TokenAuth::Valid => PreflightCheck::Pass,
                     TokenAuth::Invalid => {
-                        PreflightCheck::Blocker("npm token invalid or expired".into())
+                        // Under `auto` in an OIDC context every package that
+                        // already exists publishes through Trusted Publishing,
+                        // so a dead token only costs the brand-new-package
+                        // fallback. Blocking there aborts the whole preflight
+                        // and strands the sibling publishers (PyPI, crates.io)
+                        // that never touch this token.
+                        if cfg.auth == anodizer_core::config::NpmAuthMode::Auto
+                            && super::auth::resolve_oidc_env(ctx).is_some()
+                        {
+                            PreflightCheck::Warning(
+                                "npm token invalid or expired; existing packages publish via \
+                                 OIDC (Trusted Publishing), a brand-new package would fail — \
+                                 rotate or remove NPM_TOKEN"
+                                    .into(),
+                            )
+                        } else {
+                            PreflightCheck::Blocker("npm token invalid or expired".into())
+                        }
                     }
                     TokenAuth::Indeterminate(reason) => anodizer_core::git::indeterminate_check(
                         ctx.preflight_is_strict(),
@@ -810,6 +841,67 @@ mod config_fully_inactive_tests {
         assert!(
             !super::NpmPublisher::new().config_fully_inactive(&ctx),
             "an active npms[] entry must keep the publisher live"
+        );
+    }
+}
+
+#[cfg(test)]
+mod sealed_env_pin {
+    use anodizer_core::test_helpers::test_sources::{function_bodies, test_sources};
+    use std::path::Path;
+
+    /// The builder call that closes a context's env source, plus the two
+    /// spellings that already imply it (`env(...)` swaps to a closed map).
+    const SEALS: [&str; 2] = ["sealed_env()", ".env("];
+
+    /// Names of the helper functions in one source that build a sealed context,
+    /// so a test delegating its setup to one is accepted.
+    fn sealing_helpers(bodies: &[String]) -> Vec<String> {
+        bodies
+            .iter()
+            .filter(|b| SEALS.iter().any(|s| b.contains(s)))
+            .filter_map(|b| {
+                let head = b.lines().next()?.trim_start();
+                let name = head.split("fn ").nth(1)?.split('(').next()?;
+                Some(name.to_string())
+            })
+            .collect()
+    }
+
+    /// `preflight` and `run` read credentials and runner-detection variables.
+    /// A test whose context falls through to the process env probes the real
+    /// registry on any machine that exports `NPM_TOKEN`, so it passes on a
+    /// laptop and fails on a runner (and the other way round).
+    #[test]
+    fn every_npm_preflight_test_seals_its_env() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/npm");
+        let mut unsealed = Vec::new();
+        let mut total = 0usize;
+        for path in test_sources(&dir) {
+            let src = std::fs::read_to_string(&path).expect("read test source");
+            let bodies = function_bodies(&src);
+            let helpers = sealing_helpers(&bodies);
+            for body in &bodies {
+                if !body.contains(".preflight(") && !body.contains(".run(&mut ctx)") {
+                    continue;
+                }
+                total += 1;
+                let sealed = SEALS.iter().any(|s| body.contains(s))
+                    || helpers.iter().any(|h| body.contains(&format!("{h}(")));
+                if !sealed {
+                    let name = body.lines().next().unwrap_or_default().trim().to_string();
+                    unsealed.push(format!("{}: {name}", path.display()));
+                }
+            }
+        }
+        assert!(
+            total >= 5,
+            "the walk found only {total} preflight/run tests; it stopped seeing the population"
+        );
+        assert!(
+            unsealed.is_empty(),
+            "an npm preflight/run test must build its context with sealed_env() (or seed it \
+             with env(...)) so it never reads the ambient NPM_TOKEN; unsealed: {unsealed:?}"
         );
     }
 }
