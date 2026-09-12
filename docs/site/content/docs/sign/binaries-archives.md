@@ -60,9 +60,18 @@ binary_signs:
 ```
 
 The signature and certificate upload as release assets alongside the archives.
-Each is named after the archive built from the same binary — the raw binary is
-called `app` (or `app.exe`) under every target directory, so that name would
-collapse every target's signature onto one asset:
+Each is named from the crate's `archives:` **config** — never from which
+archives the run happens to have built, so `anodizer build` and
+`anodizer release` name the same binary's signature identically:
+
+| The binary's target | Asset name |
+|---|---|
+| Covered by the crate's primary `archives:` entry — the first entry in config order whose `ids:` / `binaries:` filters take this binary | That entry's `name_template` rendered for the target, plus the suffix the `signature:` / `certificate:` template appended to the binary's file name. `app-1.2.3-linux-amd64.sig`, `app-1.2.3-windows-amd64.sig` (from `app.exe.sig`), `app-1.2.3-linux-amd64.bundle.sig` |
+| Covered by no archive entry — a musl build that only feeds npm, say | `{{ Binary }}-{{ Version }}-{{ Target }}` plus that suffix: `app-1.2.3-x86_64-unknown-linux-musl.sig`. The whole triple is required, because `Os`/`Arch` render identically for a gnu and a musl build |
+| Published by a `formats: [binary]` entry | That uploaded executable's own name plus the suffix, so a `signs:` config covering the asset and a `binary_signs:` config covering the same bytes resolve to one name |
+
+The raw binary is called `app` (or `app.exe`) under every target's directory,
+so its own basename would collapse every target's signature onto one asset:
 
 ```
 app-1.2.3-linux-amd64.tar.gz
@@ -76,11 +85,8 @@ app-1.2.3-linux-amd64v3.sig        <- binary_signs, micro-arch variant
 ```
 
 A crate with several `archives:` entries builds several archives per target;
-the signature takes the stem of the first entry in config order, the primary
-archive that `chocolatey` and `scoop` bind to with `ids: [default]`. A target
-no archive entry covers keeps the raw binary's name qualified with its target
-triple (`app-x86_64-unknown-linux-musl.sig`), so every target still uploads
-one distinct signature:
+the signature takes the name of the first entry in config order, the primary
+archive that `chocolatey` and `scoop` bind to with `ids: [default]`:
 
 ```yaml
 archives:
@@ -94,12 +100,30 @@ archives:
 ```
 app-1.2.3-linux-amd64.tar.gz
 app-1.2.3-linux-amd64-extra.tar.xz
-app-1.2.3-linux-amd64.sig          <- binary_signs, the primary entry's stem
+app-1.2.3-linux-amd64.sig          <- binary_signs, the primary entry's name
 ```
 
-An archive entry with `formats: [binary]` publishes the executable itself, so a
-`signs:` config covering that asset and a `binary_signs:` config covering the
-same bytes resolve to one asset name; the release uploads it once.
+### Overriding the asset name
+
+`asset_name_template:` replaces the derived name. It renders the asset's BASE
+name in the same per-target scope an archive `name_template` renders under
+(`Os`, `Arch`, `Target`, the micro-architecture variants, `CrateName`,
+`Binary`); the `signature:` / `certificate:` suffix still carries over, so one
+template names both assets:
+
+```yaml
+binary_signs:
+  - artifacts: binary
+    cmd: cosign
+    args: ["sign-blob", "--key=cosign.key", "--output-signature=${signature}", "${artifact}"]
+    certificate: "{{ .Artifact }}.pem"
+    asset_name_template: "{{ Binary }}-{{ Version }}-{{ Target }}"
+```
+
+```
+app-1.2.3-x86_64-unknown-linux-gnu.sig
+app-1.2.3-x86_64-unknown-linux-gnu.pem
+```
 
 ## Cosign example
 

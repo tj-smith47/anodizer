@@ -138,8 +138,15 @@ pub const INSTALLER_AMD64_VARIANT_SUFFIX: &str =
 /// always produced — the contract every consumer of a derived name
 /// (binstall, nix, …) depends on.
 pub fn seed_target_vars(ctx: &mut Context, target: &str) {
+    seed_target_vars_in(ctx.template_vars_mut(), target);
+}
+
+/// [`seed_target_vars`] against the variable map directly, for a caller that
+/// renders a name off a CLONED variable set rather than the live context —
+/// the sign stage derives a binary signature's asset name without disturbing
+/// the vars the run's other templates render under.
+pub fn seed_target_vars_in(vars: &mut crate::template::TemplateVars, target: &str) {
     let (os, arch) = map_target(target);
-    let vars = ctx.template_vars_mut();
     vars.set("Os", &os);
     vars.set("Target", target);
 
@@ -245,6 +252,96 @@ pub fn seed_amd64_variant_var(
         None => "",
     };
     vars.set("Amd64", value);
+}
+
+/// Seed the COMPLETE per-target naming scope an archive `name_template`
+/// renders under: the target vars ([`seed_target_vars_in`]), the group's
+/// amd64 micro-architecture level overlaid on top, `CrateName`, and the
+/// `Binary` the entry names its output after.
+///
+/// The one spelling of that scope. The archive stage seeds it before
+/// rendering each entry's name, and the sign stage seeds the same scope on a
+/// cloned variable set to derive a binary signature's asset name — a second
+/// spelling on either side is a signature named after an archive the release
+/// never uploads.
+pub fn seed_archive_name_vars(
+    vars: &mut crate::template::TemplateVars,
+    target: &str,
+    crate_name: &str,
+    binary: &str,
+    amd64_variant: Option<&str>,
+) {
+    seed_target_vars_in(vars, target);
+    let (_, arch) = map_target(target);
+    seed_amd64_variant_var(vars, &arch, amd64_variant);
+    vars.set("CrateName", crate_name);
+    vars.set("Binary", binary);
+}
+
+/// The default `name_template` the archive stage applies to a crate that sets
+/// none: the multi-crate default when this run archives more than one crate,
+/// the single-crate default otherwise.
+pub fn default_archive_name_template(ctx: &Context) -> String {
+    if archives_more_than_one_crate(ctx) {
+        DEFAULT_NAME_TEMPLATE_MULTI_CRATE.to_string()
+    } else {
+        DEFAULT_NAME_TEMPLATE.to_string()
+    }
+}
+
+/// Whether this run archives more than one crate — the archive stage's
+/// `work.len() > 1`, which decides both the default `name_template` and
+/// whether `ProjectName` is rebound to the per-crate name while a name is
+/// rendered.
+pub fn archives_more_than_one_crate(ctx: &Context) -> bool {
+    crate::archive_selection::archive_producing_crates(
+        &ctx.config,
+        &ctx.artifacts,
+        &ctx.options.selected_crates,
+    )
+    .len()
+        > 1
+}
+
+/// The project-wide default archive format (`defaults.archives.formats[0]`,
+/// falling back to `tar.gz`). Used when an archive entry sets no `formats:`.
+pub fn global_default_archive_format(ctx: &Context) -> String {
+    ctx.config
+        .defaults
+        .as_ref()
+        .and_then(|d| d.archives.as_ref())
+        .and_then(|a| a.formats.as_ref())
+        .and_then(|f| f.first())
+        .cloned()
+        .unwrap_or_else(|| "tar.gz".to_string())
+}
+
+/// The archive format an entry produces for `target`: the first matching
+/// `format_overrides[]` entry's format (OS-prefix match, mirroring the archive
+/// stage), else the entry's own first `formats[]`, else `global_default`.
+pub fn archive_format_for_target(
+    archive: &crate::config::ArchiveConfig,
+    target: &str,
+    global_default: &str,
+) -> String {
+    let (os, _arch) = map_target(target);
+    if let Some(overrides) = archive.format_overrides.as_ref() {
+        for ov in overrides {
+            if !ov.os.is_empty()
+                && os.starts_with(&ov.os)
+                && let Some(fmts) = ov.formats.as_ref()
+                && let Some(first) = fmts.first()
+            {
+                return first.clone();
+            }
+        }
+    }
+    archive
+        .formats
+        .as_ref()
+        .and_then(|f| f.first())
+        .cloned()
+        .unwrap_or_else(|| global_default.to_string())
 }
 
 /// Render an archive's *stem* (filename without the format extension) for a

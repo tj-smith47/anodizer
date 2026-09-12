@@ -12,7 +12,7 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::target::map_target;
 
 use crate::helpers::{
-    archive_stem_for, binary_sign_asset_name, default_sign_cmd, expand_shell_vars,
+    binary_sign_asset_base, binary_sign_asset_name, default_sign_cmd, expand_shell_vars,
     prepare_stdin_from, resolve_sign_args, resolve_signature_path, should_sign_artifact,
 };
 
@@ -123,16 +123,9 @@ pub(crate) fn process_sign_configs(
             ));
         }
 
-        type ArtifactEntry = (
-            std::path::PathBuf,
-            String,
-            std::collections::HashMap<String, String>,
-            Option<String>,
-            ArtifactKind,
-        );
         let mut kind_matched = 0usize;
         let mut absent_binaries = 0usize;
-        let artifact_paths: Vec<ArtifactEntry> = {
+        let artifact_paths: Vec<anodizer_core::artifact::Artifact> = {
             let mut matched = Vec::new();
             for a in ctx.artifacts.all().iter() {
                 // The macOS `.app` directory bundle can never be cosign-blob /
@@ -186,13 +179,7 @@ pub(crate) fn process_sign_configs(
                 if !crate::helpers::sign_ids_match(&a.metadata, sign_cfg.ids.as_ref()) {
                     continue;
                 }
-                matched.push((
-                    a.path.clone(),
-                    a.crate_name.clone(),
-                    a.metadata.clone(),
-                    a.target.clone(),
-                    a.kind,
-                ));
+                matched.push(a.clone());
             }
             matched
         };
@@ -249,14 +236,12 @@ pub(crate) fn process_sign_configs(
             }
         };
 
-        for (
-            artifact_path,
-            artifact_crate_name,
-            artifact_metadata,
-            artifact_target,
-            artifact_kind,
-        ) in &artifact_paths
-        {
+        for signed_binary in &artifact_paths {
+            let artifact_path = &signed_binary.path;
+            let artifact_crate_name = &signed_binary.crate_name;
+            let artifact_metadata = &signed_binary.metadata;
+            let artifact_target = &signed_binary.target;
+            let artifact_kind = &signed_binary.kind;
             let artifact_str = artifact_path.to_string_lossy();
             let artifact_name = artifact_path
                 .file_name()
@@ -437,31 +422,18 @@ pub(crate) fn process_sign_configs(
             // the registry and on the release. Register them under the asset
             // name the target's archive was built from and carry the triple on
             // the artifact. The on-disk path is untouched.
-            let archive_stem = if is_binary_sign {
-                artifact_target.as_deref().and_then(|target| {
-                    archive_stem_for(
-                        ctx,
-                        artifact_crate_name,
-                        target,
-                        anodizer_core::artifact::binary_name_of(
-                            Some(*artifact_kind),
-                            artifact_metadata,
-                            artifact_path,
-                        )
-                        .as_deref(),
-                    )
-                })
-            } else {
-                None
+            let asset_base = match artifact_target.as_deref() {
+                Some(target) if is_binary_sign => Some(binary_sign_asset_base(
+                    ctx,
+                    sign_cfg,
+                    signed_binary,
+                    target,
+                )?),
+                _ => None,
             };
-            let (sig_name, registered_target) = match artifact_target {
-                Some(target) if is_binary_sign => (
-                    binary_sign_asset_name(
-                        &sig_name,
-                        artifact_name,
-                        archive_stem.as_deref(),
-                        target,
-                    ),
+            let (sig_name, registered_target) = match (artifact_target, &asset_base) {
+                (Some(target), Some(base)) => (
+                    binary_sign_asset_name(&sig_name, artifact_name, base, target),
                     Some(target.clone()),
                 ),
                 _ => (sig_name, None),
@@ -482,14 +454,11 @@ pub(crate) fn process_sign_configs(
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| cert_path.display().to_string());
-                let cert_name = match registered_target.as_deref() {
-                    Some(target) => binary_sign_asset_name(
-                        &cert_name,
-                        artifact_name,
-                        archive_stem.as_deref(),
-                        target,
-                    ),
-                    None => cert_name,
+                let cert_name = match (registered_target.as_deref(), &asset_base) {
+                    (Some(target), Some(base)) => {
+                        binary_sign_asset_name(&cert_name, artifact_name, base, target)
+                    }
+                    _ => cert_name,
                 };
                 let mut cert_metadata = std::collections::HashMap::new();
                 cert_metadata.insert("type".to_string(), "Certificate".to_string());
