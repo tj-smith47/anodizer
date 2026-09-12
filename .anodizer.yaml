@@ -898,11 +898,6 @@ homebrew_casks:
       - anodizer.1
     caveats: |
       Run `anodizer init` to scaffold a config in your repo.
-    # `verified:` asserts the download host so Homebrew skips the
-    # interactive "unverified cask" prompt; the download URL itself stays
-    # derived (no `template:` here), so the cask still emits `url :url`.
-    url:
-      verified: "github.com/tj-smith47/anodizer/releases/download"
     # Active version detection: anodizer tags releases on GitHub, so
     # `github_latest` against the cask's own `url` stanza (`url :url`, the
     # idiomatic cask shorthand) lets `brew livecheck` poll the latest tag.
