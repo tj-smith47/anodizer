@@ -772,9 +772,15 @@ fn guard_refuses_when_release_is_published() {
     init_github_origin_repo(tmp.path());
     let gh = write_gh_stub(tmp.path(), r#"echo '{"id": 1, "draft": false}'"#);
 
-    let err =
-        check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log(), &[])
-            .expect_err("published release must block rollback");
+    let err = check_no_published_releases(
+        tmp.path(),
+        &gh,
+        &["v1.0.0".to_string()],
+        &tmp.path().join("dist"),
+        &quiet_log(),
+        &[],
+    )
+    .expect_err("published release must block rollback");
     let msg = err.to_string();
     assert!(msg.contains("refusing to roll back"), "got: {msg}");
     assert!(msg.contains("v1.0.0"), "must name the blocking tag: {msg}");
@@ -790,6 +796,38 @@ fn guard_refuses_when_release_is_published() {
         msg.contains("ORPHAN"),
         "must warn the release may be an orphan of a pre-cleanup rollback: {msg}"
     );
+    let sha = anodizer_core::git::rev_verify_commit_in(tmp.path(), "v1.0.0").unwrap();
+    let hint = format!(
+        "gh run download <release-run-id> -n run-summary-{sha} -D {}",
+        tmp.path().join("dist").display()
+    );
+    assert!(
+        msg.contains(&hint),
+        "must name the run-summary artifact fetch for the tag's commit: {msg}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn published_release_refusal_keeps_a_placeholder_sha_for_an_unresolvable_tag() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_github_origin_repo(tmp.path());
+    let gh = write_gh_stub(tmp.path(), r#"echo '{"id": 1, "draft": false}'"#);
+
+    let err = check_no_published_releases(
+        tmp.path(),
+        &gh,
+        &["v9.9.9".to_string()],
+        &tmp.path().join("dist"),
+        &quiet_log(),
+        &[],
+    )
+    .expect_err("published release must block rollback");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("-n run-summary-<sha> -D"),
+        "a tag with no local commit keeps the <sha> placeholder: {msg}"
+    );
 }
 
 #[test]
@@ -799,8 +837,15 @@ fn guard_allows_when_release_is_draft() {
     init_github_origin_repo(tmp.path());
     let gh = write_gh_stub(tmp.path(), r#"echo '{"id": 1, "draft": true}'"#);
 
-    check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log(), &[])
-        .expect("draft release is reversible; rollback may proceed");
+    check_no_published_releases(
+        tmp.path(),
+        &gh,
+        &["v1.0.0".to_string()],
+        &tmp.path().join("dist"),
+        &quiet_log(),
+        &[],
+    )
+    .expect("draft release is reversible; rollback may proceed");
 }
 
 #[test]
@@ -810,9 +855,15 @@ fn guard_treats_missing_draft_field_as_published() {
     init_github_origin_repo(tmp.path());
     let gh = write_gh_stub(tmp.path(), r#"echo '{"id": 1}'"#);
 
-    let err =
-        check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log(), &[])
-            .expect_err("a release whose draft state is unknown must block");
+    let err = check_no_published_releases(
+        tmp.path(),
+        &gh,
+        &["v1.0.0".to_string()],
+        &tmp.path().join("dist"),
+        &quiet_log(),
+        &[],
+    )
+    .expect_err("a release whose draft state is unknown must block");
     assert!(err.to_string().contains("refusing to roll back"));
 }
 
@@ -826,8 +877,15 @@ fn guard_allows_when_no_release_exists() {
         r#"echo 'gh: HTTP 404: Not Found (https://api.github.com/...)' >&2; exit 1"#,
     );
 
-    check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log(), &[])
-        .expect("404 means no release; rollback may proceed");
+    check_no_published_releases(
+        tmp.path(),
+        &gh,
+        &["v1.0.0".to_string()],
+        &tmp.path().join("dist"),
+        &quiet_log(),
+        &[],
+    )
+    .expect("404 means no release; rollback may proceed");
 }
 
 #[test]
@@ -844,6 +902,7 @@ fn guard_fails_closed_on_indeterminate_probe() {
         tmp.path(),
         &missing,
         &["v1.0.0".to_string()],
+        &tmp.path().join("dist"),
         &quiet_log(),
         &[],
     )
@@ -867,9 +926,15 @@ fn guard_fails_closed_when_origin_unresolvable() {
     let _ = init_bump_repo(tmp.path(), 0);
     let gh = tmp.path().join("gh-never-spawned");
 
-    let err =
-        check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log(), &[])
-            .expect_err("unresolvable origin must fail closed");
+    let err = check_no_published_releases(
+        tmp.path(),
+        &gh,
+        &["v1.0.0".to_string()],
+        &tmp.path().join("dist"),
+        &quiet_log(),
+        &[],
+    )
+    .expect_err("unresolvable origin must fail closed");
     let msg = err.to_string();
     assert!(msg.contains("refusing to roll back"), "got: {msg}");
     assert!(msg.contains("'origin'"), "must name the remote: {msg}");
@@ -889,8 +954,15 @@ fn guard_proceeds_for_resolvable_non_github_origin() {
     );
     let gh = tmp.path().join("gh-never-spawned");
 
-    check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log(), &[])
-        .expect("non-github.com origin carries no probe signal; rollback may proceed");
+    check_no_published_releases(
+        tmp.path(),
+        &gh,
+        &["v1.0.0".to_string()],
+        &tmp.path().join("dist"),
+        &quiet_log(),
+        &[],
+    )
+    .expect("non-github.com origin carries no probe signal; rollback may proceed");
 }
 
 #[test]
@@ -905,9 +977,15 @@ fn guard_fails_closed_on_gh_auth_error() {
         r#"echo 'gh: HTTP 401: Bad credentials' >&2; exit 1"#,
     );
 
-    let err =
-        check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log(), &[])
-            .expect_err("auth-failed probe must fail closed");
+    let err = check_no_published_releases(
+        tmp.path(),
+        &gh,
+        &["v1.0.0".to_string()],
+        &tmp.path().join("dist"),
+        &quiet_log(),
+        &[],
+    )
+    .expect_err("auth-failed probe must fail closed");
     assert!(
         err.to_string().contains("401"),
         "must carry the probe error"
