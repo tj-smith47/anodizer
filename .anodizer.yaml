@@ -443,6 +443,11 @@ crates:
         repository:
           owner: tj-smith47
           name: anodizer
+        # Bind to the primary archive entry, as scoop does. The `extra` entry
+        # also emits a windows-amd64 archive (tgz), and two archives for one
+        # platform disqualify the crate from chocolatey.
+        ids:
+          - default
         # Title must differ from the package id (cpmr0050: TitleNotSameAsPackageId).
         title: "Anodizer Release Automation"
         summary: "A Rust-native release automation tool"
