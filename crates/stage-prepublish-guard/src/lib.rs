@@ -95,8 +95,14 @@ fn guard_checks(
     // publisher renders see exactly what the release stage will stamp. A repo
     // block that resolves nothing leaves them unset on purpose: the strict
     // render below then names the missing variable, which is the diagnosis the
-    // operator needs.
-    if let Err(e) = anodizer_stage_release::derive_release_urls(ctx) {
+    // operator needs. Gated on the release stage the same way each check below
+    // is gated on its own stage: when release is skipped (the determinism
+    // harness rebuilds with `--skip=release,publish,announce,...`) nothing
+    // stamps these vars in that run either, and seeding them would put URLs in
+    // a rebuild that the un-skipped run does not have.
+    if !ctx.should_skip("release")
+        && let Err(e) = anodizer_stage_release::derive_release_urls(ctx)
+    {
         errors.push(format!("{e:#}"));
     }
 
@@ -671,6 +677,31 @@ mod tests {
         assert!(
             msg.contains("ReleaseURL"),
             "the failure names the variable that could not be derived: {msg}"
+        );
+    }
+
+    /// The determinism harness rebuilds with `--skip=release,publish,announce`.
+    /// Nothing stamps `ReleaseURL` in that run, so the guard must not seed one
+    /// either — a rebuild carrying URLs the un-skipped run lacks is a
+    /// difference the harness would have to explain.
+    #[test]
+    fn a_skipped_release_stage_derives_no_release_url() {
+        let krate = crate_with("widget", "v{{ .Version }}", PublishConfig::default());
+        let mut ctx = TestContextBuilder::new()
+            .project_name("widget")
+            .crates(vec![krate])
+            .skip_stages(vec![
+                "release".to_string(),
+                "publish".to_string(),
+                "announce".to_string(),
+            ])
+            .build();
+        scope(&mut ctx, "1.0.0");
+
+        run_guard(&mut ctx, &test_version_resolver()).expect("a skipped release is a no-op");
+        assert!(
+            ctx.template_vars().get("ReleaseURL").is_none(),
+            "the guard derives no URL for a release that will not be created"
         );
     }
 }
