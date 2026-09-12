@@ -107,4 +107,8 @@ jobs:
           # while the job runs on master's up-to-date publisher binary.
           ANODIZER_CURRENT_TAG: ${{ inputs.tag }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # No NPM_TOKEN: every one of these publishers authenticates through
+          # this job's OIDC context. Carrying the secret only let a stale one
+          # fail the npm preflight and take PyPI and crates.io down with it.
+          # A brand-new npm package still needs a token — publish that first
+          # one through manual-publish.yml, then it publishes via OIDC here.

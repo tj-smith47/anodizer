@@ -150,7 +150,6 @@ jobs:
           FURY_PUSH_TOKEN: ${{ secrets.FURY_PUSH_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
           UPLOAD_JARVISPRO_SECRET: ${{ secrets.UPLOAD_JARVISPRO_SECRET }}
@@ -420,7 +419,6 @@ jobs:
           FURY_PUSH_TOKEN: ${{ secrets.FURY_PUSH_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
           UPLOAD_JARVISPRO_SECRET: ${{ secrets.UPLOAD_JARVISPRO_SECRET }}
