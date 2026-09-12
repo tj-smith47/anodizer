@@ -7,12 +7,15 @@
 //! expression) historically blew up only after a one-way door had already
 //! fired, leaving a half-published release no rollback could undo.
 //!
-//! [`PrePublishGuardStage`] sits immediately after the release is created and
-//! before the first publisher: it renders every configured publisher manifest
-//! and every enabled announcer's templates in-memory — sending nothing, writing
-//! nothing, reading no credentials — and aborts the release loud, listing every
-//! broken template across publishers AND announcers, BEFORE any irreversible
-//! publisher fires.
+//! [`PrePublishGuardStage`] sits before the release is created and before the
+//! first publisher: it renders every configured publisher manifest and every
+//! enabled announcer's templates in-memory — sending nothing, writing nothing,
+//! reading no credentials — and aborts the release loud, listing every broken
+//! template across publishers AND announcers. It derives `ReleaseURL` and the
+//! artifact download URLs itself
+//! ([`anodizer_stage_release::derive_release_urls`]), which are functions of
+//! the repo block and the tag, so an abort here leaves no release behind —
+//! neither draft nor live.
 
 use anodizer_core::config::CrateConfig;
 use anodizer_core::context::Context;
@@ -21,8 +24,9 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::stage::Stage;
 use anyhow::{Result, bail};
 
-/// Orchestrator stage that fails a release before any irreversible publisher
-/// fires if a publisher-manifest or announcer template cannot render.
+/// Orchestrator stage that fails a release before it is created, and before any
+/// irreversible publisher fires, if a publisher-manifest or announcer template
+/// cannot render.
 ///
 /// A no-op in snapshot / nightly (where no publisher or announcer dispatches),
 /// so the guard never spuriously fails a mode in which nothing publishes.
@@ -85,6 +89,17 @@ fn guard_checks(
 ) -> Result<()> {
     let mut errors: Vec<String> = vec![];
 
+    // The guard runs BEFORE the release is created, so nothing has stamped
+    // `ReleaseURL` or the artifacts' download URLs yet. Both are derived from
+    // the repo block and the tag, so deriving them here lets the announce and
+    // publisher renders see exactly what the release stage will stamp. A repo
+    // block that resolves nothing leaves them unset on purpose: the strict
+    // render below then names the missing variable, which is the diagnosis the
+    // operator needs.
+    if let Err(e) = anodizer_stage_release::derive_release_urls(ctx) {
+        errors.push(format!("{e:#}"));
+    }
+
     // Render strictly for the duration of the guard's in-memory pass: every
     // publisher/announce template the validators render must PROPAGATE a
     // malformed-template error (so it ends up in `errors` and aborts the
@@ -96,13 +111,11 @@ fn guard_checks(
     let prior_strict = ctx.set_render_strict(true);
 
     // Guard only what will actually fire. A skipped stage publishes nothing, so
-    // a template it would have rendered is not a release-blocking defect — and
-    // some of those templates reference release-phase vars (`{{ ReleaseURL }}`)
-    // that are only set once the `release` stage runs. The determinism harness
-    // rebuilds with `--skip=release,publish,announce,...` (and NOT `--snapshot`
-    // on a tag-push run, so `is_snapshot()` is false here): gating each check on
-    // its stage keeps the guard a clean no-op there while still firing on a real
-    // release where none of these are skipped and `ReleaseURL` is populated.
+    // a template it would have rendered is not a release-blocking defect. The
+    // determinism harness rebuilds with `--skip=release,publish,announce,...`
+    // (and NOT `--snapshot` on a tag-push run, so `is_snapshot()` is false
+    // here): gating each check on its stage keeps the guard a clean no-op there
+    // while still firing on a real release where none of these are skipped.
     if !ctx.should_skip("publish")
         && let Err(e) = anodizer_stage_publish::validate_publisher_schemas(ctx, log, resolve_tag)
     {
@@ -166,16 +179,14 @@ mod tests {
         }
     }
 
-    /// A scoped context whose `Version`/`Tag`/`ReleaseURL` are set the way a
-    /// real release stamps them after `ReleaseStage`, so the per-crate render
-    /// resolver (test-mode: derives the scoped version) produces a real version.
+    /// A scoped context whose `Version`/`Tag` are set the way the publish stage
+    /// stamps them, so the per-crate render resolver (test-mode: derives the
+    /// scoped version) produces a real version. `ReleaseURL` is deliberately
+    /// NOT set: the guard runs before the release and derives it itself.
     fn scope(ctx: &mut Context, version: &str) {
         ctx.template_vars_mut().set("Version", version);
         ctx.template_vars_mut().set("RawVersion", version);
         ctx.template_vars_mut().set("Tag", &format!("v{version}"));
-        ctx.set_release_url(&format!(
-            "https://github.com/acme/widget/releases/tag/v{version}"
-        ));
     }
 
     // ── Announce dry-render (single-crate) ────────────────────────────────
@@ -600,6 +611,66 @@ mod tests {
         assert!(
             msg.contains("scoop") || msg.contains("beta") || msg.contains("NoSuchVar"),
             "names the crate / publisher / failing var: {msg}"
+        );
+    }
+
+    // ── ReleaseURL derivation (the guard runs before the release) ─────────
+
+    /// The guard derives `ReleaseURL` from the crate's repo block and tag, so
+    /// an announce template that renders it passes with no release created.
+    #[test]
+    fn the_guard_derives_the_release_url_from_the_repo_block_and_tag() {
+        let krate = crate_with("widget", "v{{ .Version }}", PublishConfig::default());
+        let mut ctx = TestContextBuilder::new()
+            .project_name("widget")
+            .crates(vec![krate])
+            .build();
+        ctx.config.announce = Some(AnnounceConfig {
+            discord: Some(DiscordAnnounce {
+                enabled: enabled(),
+                message_template: Some("out now: {{ ReleaseURL }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        scope(&mut ctx, "1.0.0");
+
+        run_guard(&mut ctx, &test_version_resolver())
+            .expect("the guard derives ReleaseURL itself and the announce renders");
+        assert_eq!(
+            ctx.template_vars().get("ReleaseURL").map(String::as_str),
+            Some("https://github.com/acme/widget/releases/tag/v1.0.0"),
+            "the derived URL matches what the release stage stamps"
+        );
+    }
+
+    /// With no repo block there is nothing to derive a URL from, and the guard
+    /// must say so through the announce render — naming the variable — rather
+    /// than passing or panicking on an unset one.
+    #[test]
+    fn a_missing_repo_block_fails_the_announce_render_naming_the_variable() {
+        let mut krate = crate_with("widget", "v{{ .Version }}", PublishConfig::default());
+        krate.release = Some(ReleaseConfig::default());
+        let mut ctx = TestContextBuilder::new()
+            .project_name("widget")
+            .crates(vec![krate])
+            .build();
+        ctx.config.announce = Some(AnnounceConfig {
+            discord: Some(DiscordAnnounce {
+                enabled: enabled(),
+                message_template: Some("out now: {{ ReleaseURL }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        scope(&mut ctx, "1.0.0");
+
+        let err = run_guard(&mut ctx, &test_version_resolver())
+            .expect_err("an underivable ReleaseURL must abort before the release exists");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("ReleaseURL"),
+            "the failure names the variable that could not be derived: {msg}"
         );
     }
 }

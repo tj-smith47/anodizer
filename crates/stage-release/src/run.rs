@@ -364,6 +364,52 @@ fn warn_tag_override_divergence(
     }
 }
 
+/// Put the release's derived URLs in `ctx` without contacting the forge.
+///
+/// `ReleaseURL` and each artifact's `metadata["url"]` are functions of the SCM
+/// repo block and the tag, so a stage that renders publisher manifests or
+/// announce bodies can have both BEFORE the release exists. The pre-publish
+/// guard calls this and then runs ahead of [`super::ReleaseStage`], so a
+/// template that cannot render aborts with no release created — a guard that
+/// ran after the release left the tag and every asset live with no registry
+/// published.
+///
+/// Walks the same crates, in the same order, that the release stage releases.
+/// [`ensure_release_url`] leaves an already-set value alone, so the first crate
+/// that resolves a repo names the URL, exactly as the stage's own loop does,
+/// and the stage's authoritative post-create URL still overwrites this one.
+/// The artifact URLs are seeded, never overwritten, for the same reason.
+pub fn derive_release_urls(ctx: &mut Context) -> Result<()> {
+    if ctx.publisher_deselected("github-release") {
+        return Ok(());
+    }
+    let selected = ctx.options.selected_crates.clone();
+    let crates: Vec<_> = ctx
+        .config
+        .crate_universe()
+        .into_iter()
+        .filter(|c| c.release.is_some())
+        .filter(|c| anodizer_core::config::crate_is_selected(&selected, &c.name))
+        .cloned()
+        .collect();
+    // The release stage prints its own skip lines when it runs; a quiet logger
+    // keeps this earlier pass from printing them a second time.
+    let quiet =
+        anodizer_core::log::StageLogger::new("release", anodizer_core::log::Verbosity::Quiet);
+    for crate_cfg in &crates {
+        let Some(release_cfg) = crate_cfg.release.as_ref() else {
+            continue;
+        };
+        if should_skip_release(ctx, release_cfg, &crate_cfg.name, &quiet)? {
+            continue;
+        }
+        let tag = resolve_release_tag(ctx, crate_cfg, release_cfg.tag.as_deref())?;
+        ensure_release_url(ctx, release_cfg, &tag, &crate_cfg.name)?;
+        anodizer_core::download_url::seed_missing_download_urls_for_crate(ctx, crate_cfg)?;
+    }
+    Ok(())
+}
+
 /// Set a default `ReleaseURL` template var derived from the active SCM
 /// repo + tag when one is not already present.
 ///

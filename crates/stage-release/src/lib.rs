@@ -26,7 +26,7 @@ mod flags;
 pub mod publisher;
 mod release_body;
 mod run;
-pub use run::collect_release_upload_candidates;
+pub use run::{collect_release_upload_candidates, derive_release_urls};
 
 #[cfg(test)]
 mod test_support;

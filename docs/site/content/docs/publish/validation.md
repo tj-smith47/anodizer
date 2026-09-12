@@ -34,6 +34,14 @@ It is also exercised by `task prepush`, which drives the same snapshot pass, so
 a malformed publisher artifact fails the local pre-push gate before it can reach
 a real release.
 
+On a real release the same validators run a second time, in the pre-publish
+guard, which sits **before** the GitHub release is created: a template that
+cannot render aborts the run with no release behind it, draft or live. A single
+crate that disqualifies itself there — two archives claiming one platform, a
+`repository:` with no owner and name — is reported as a skip, exactly as the
+live publisher reports it, and the crates and publishers after it are still
+checked.
+
 ### On a sharded determinism build
 
 When determinism runs as a target-restricted shard matrix (a shard, or a
