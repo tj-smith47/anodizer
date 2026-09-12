@@ -186,7 +186,6 @@ pub(crate) fn collect_artifacts<'a>(
         .iter()
         .filter(|a| a.crate_name == crate_name)
         .filter(|a| uploadable_kinds.contains(&a.kind))
-        .filter(|a| !anodizer_core::artifact::is_binary_sign_output(a))
         .filter(|a| !anodizer_core::artifact::is_directory_bundle_artifact(a))
         .filter(|a| anodizer_core::artifact::matches_id_filter(a, config.ids.as_deref()))
         .collect();

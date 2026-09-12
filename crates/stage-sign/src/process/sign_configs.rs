@@ -12,25 +12,9 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::target::map_target;
 
 use crate::helpers::{
-    default_sign_cmd, expand_shell_vars, prepare_stdin_from, resolve_sign_args,
-    resolve_signature_path, should_sign_artifact,
+    archive_stem_for, binary_sign_asset_name, default_sign_cmd, expand_shell_vars,
+    prepare_stdin_from, resolve_sign_args, resolve_signature_path, should_sign_artifact,
 };
-
-/// Append a target triple to a basename while keeping its extension
-/// suffix: `anodizer.sig` + `aarch64-apple-darwin` →
-/// `anodizer-aarch64-apple-darwin.sig`, `anodizer.exe.sig` →
-/// `anodizer.exe-aarch64-pc-windows-msvc.sig`. A basename with no
-/// extension gets a plain `-<target>` suffix.
-fn qualify_basename_with_target(name: &str, target: &str) -> String {
-    let path = std::path::Path::new(name);
-    match (
-        path.file_stem().and_then(|s| s.to_str()),
-        path.extension().and_then(|e| e.to_str()),
-    ) {
-        (Some(stem), Some(ext)) => format!("{stem}-{target}.{ext}"),
-        _ => format!("{name}-{target}"),
-    }
-}
 
 /// Process a list of `SignConfig` entries against a set of artifacts, executing
 /// the signing command for each matching artifact.  This is the shared
@@ -147,6 +131,7 @@ pub(crate) fn process_sign_configs(
             ArtifactKind,
         );
         let mut kind_matched = 0usize;
+        let mut absent_binaries = 0usize;
         let artifact_paths: Vec<ArtifactEntry> = {
             let mut matched = Vec::new();
             for a in ctx.artifacts.all().iter() {
@@ -163,6 +148,17 @@ pub(crate) fn process_sign_configs(
                     }
                     ArtifactFilter::BinaryOnly => {
                         if a.kind != ArtifactKind::Binary {
+                            continue;
+                        }
+                        // A publish-only run rehydrates its registry from the
+                        // preserved dist, which carries the release assets but
+                        // not the raw cargo output the Binary entries point at
+                        // (`<worktree>/.det-tmp/target/...`, outside `dist/`).
+                        // Handing the signer a path that is not there would
+                        // abort the publish, so those binaries drop out here
+                        // and the config records a skip below.
+                        if !ctx.is_dry_run() && !a.path.exists() {
+                            absent_binaries += 1;
                             continue;
                         }
                     }
@@ -213,6 +209,20 @@ pub(crate) fn process_sign_configs(
                 label,
                 sub_label
             ));
+        }
+
+        // Every binary this config would have signed is absent from disk, so
+        // it produces no signature at all. Record that as the config's skip:
+        // the verify-release expectation derivation reads the same memento, so
+        // the run does not go on to demand assets it just decided not to make.
+        if artifact_paths.is_empty() && absent_binaries > 0 {
+            let reason = format!("{absent_binaries} registered binary path(s) are not on disk");
+            log.verbose(&format!(
+                "skipped {} config '{}' — {}",
+                label, sub_label, reason
+            ));
+            ctx.remember_skip(label, &sub_label, &reason);
+            continue;
         }
 
         // A config that matched nothing renders no per-artifact argv, so the
@@ -424,13 +434,34 @@ pub(crate) fn process_sign_configs(
             // Per-target binary signatures live in per-target directories
             // (the preserved-bin layout keys on the directory, not the
             // basename), so their bare basenames collide across targets in
-            // the registry. Register them under a target-qualified name —
-            // the same way per-target archives embed their target — and
-            // carry the triple on the artifact. The on-disk path is
-            // untouched.
+            // the registry and on the release. Register them under the asset
+            // name the target's archive was built from and carry the triple on
+            // the artifact. The on-disk path is untouched.
+            let archive_stem = if is_binary_sign {
+                artifact_target.as_deref().and_then(|target| {
+                    archive_stem_for(
+                        ctx,
+                        artifact_crate_name,
+                        target,
+                        anodizer_core::artifact::binary_name_of(
+                            Some(*artifact_kind),
+                            artifact_metadata,
+                            artifact_path,
+                        )
+                        .as_deref(),
+                    )
+                })
+            } else {
+                None
+            };
             let (sig_name, registered_target) = match artifact_target {
                 Some(target) if is_binary_sign => (
-                    qualify_basename_with_target(&sig_name, target),
+                    binary_sign_asset_name(
+                        &sig_name,
+                        artifact_name,
+                        archive_stem.as_deref(),
+                        target,
+                    ),
                     Some(target.clone()),
                 ),
                 _ => (sig_name, None),
@@ -452,7 +483,12 @@ pub(crate) fn process_sign_configs(
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| cert_path.display().to_string());
                 let cert_name = match registered_target.as_deref() {
-                    Some(target) => qualify_basename_with_target(&cert_name, target),
+                    Some(target) => binary_sign_asset_name(
+                        &cert_name,
+                        artifact_name,
+                        archive_stem.as_deref(),
+                        target,
+                    ),
                     None => cert_name,
                 };
                 let mut cert_metadata = std::collections::HashMap::new();

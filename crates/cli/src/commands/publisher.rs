@@ -360,9 +360,6 @@ pub fn matches_publisher_filter(artifact: &Artifact, publisher: &PublisherConfig
         artifact.kind,
         ArtifactKind::Signature | ArtifactKind::Certificate
     ) {
-        if anodizer_core::artifact::is_binary_sign_output(artifact) {
-            return false;
-        }
         return publisher.signature.unwrap_or(false);
     }
 
@@ -602,19 +599,23 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_excludes_binary_sign_outputs_even_with_signature_opt_in() {
-        // Binary-sign Signature/Certificate intermediates must never be picked
-        // up by a generic publisher, even when the publisher has opted in to
-        // signatures via `signature: true`.
-        let mut binary_sign_sig =
-            make_artifact(ArtifactKind::Signature, "dist/myapp_linux_amd64", None);
+    fn binary_signatures_follow_the_publisher_signature_opt_in() {
+        // A binary signature is an ordinary Signature asset: a publisher that
+        // opted in to signatures gets it, one that did not gets neither it nor
+        // an archive signature. The `binary_sign` marker records provenance and
+        // changes no publisher verdict.
+        let mut binary_sign_sig = make_artifact(
+            ArtifactKind::Signature,
+            "dist/target/x86_64-unknown-linux-gnu/release/myapp.sig",
+            None,
+        );
         binary_sign_sig
             .metadata
             .insert("binary_sign".to_string(), "true".to_string());
 
         let mut binary_sign_cert = make_artifact(
             ArtifactKind::Certificate,
-            "dist/myapp_linux_amd64.pem",
+            "dist/target/x86_64-unknown-linux-gnu/release/myapp.pem",
             None,
         );
         binary_sign_cert
@@ -625,19 +626,22 @@ mod tests {
 
         let mut pub_with_sig = make_publisher("echo", None, None);
         pub_with_sig.signature = Some(true);
+        let pub_without_sig = make_publisher("echo", None, None);
 
-        assert!(
-            !matches_publisher_filter(&binary_sign_sig, &pub_with_sig),
-            "binary-sign Signature must be excluded even with signature opt-in"
-        );
-        assert!(
-            !matches_publisher_filter(&binary_sign_cert, &pub_with_sig),
-            "binary-sign Certificate must be excluded even with signature opt-in"
-        );
-        assert!(
-            matches_publisher_filter(&archive_sig, &pub_with_sig),
-            "archive-sign Signature must still pass when signature opt-in is set"
-        );
+        for (artifact, label) in [
+            (&binary_sign_sig, "binary-sign Signature"),
+            (&binary_sign_cert, "binary-sign Certificate"),
+            (&archive_sig, "archive-sign Signature"),
+        ] {
+            assert!(
+                matches_publisher_filter(artifact, &pub_with_sig),
+                "{label} must be selected when the publisher sets signature: true"
+            );
+            assert!(
+                !matches_publisher_filter(artifact, &pub_without_sig),
+                "{label} must be skipped when the publisher never opted in"
+            );
+        }
     }
 
     #[test]

@@ -31,10 +31,9 @@ impl Context {
     /// Whether this run is `anodizer release --publish-only` (publishing a
     /// preserved dist rather than building from source).
     ///
-    /// Build-time concerns (notably the `binary_signs:` per-binary signing
-    /// loop, whose output is embedded into archives at build time and has no
-    /// publish-time consumer) are gated off this in publish-only mode, where
-    /// the runner carries only publish-time credentials.
+    /// The preserved dist holds the release assets, not the raw cargo output
+    /// they were built from, so a stage that reads a build-time path must
+    /// tolerate its absence here rather than assume the file is on disk.
     pub fn is_publish_only(&self) -> bool {
         self.options.publish_only
     }

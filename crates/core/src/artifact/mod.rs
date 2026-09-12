@@ -11,6 +11,7 @@ pub use filter::{
     SUBJECT_KIND_META, exclude_filter_eliminated_all, ids_filter_eliminated_all,
     is_binary_sign_output, is_combined_checksum_artifact, is_directory_bundle_artifact,
     matches_id_filter, name_passes_exclude_filter, passes_exclude_filter, subject_verdict_record,
+    upload_asset_name, upload_rename,
 };
 pub use kind::{
     ArtifactKind, checksummable_subject_kinds, is_derived_sidecar_kind, primary_subject_kinds,

@@ -929,75 +929,65 @@ fn test_collect_artifacts_includes_metadata_kind() {
 }
 
 #[test]
-fn test_collect_artifacts_excludes_binary_sign_outputs() {
-    // Binary-sign Signature/Certificate intermediates must never be uploaded
-    // to blob storage; only legitimate archive-sign signatures should pass.
+fn binary_sign_outputs_upload_under_their_registered_name() {
+    // A binary signature is an ordinary Signature artifact for blob upload
+    // too. Its object key is the registered archive-style name: the on-disk
+    // path is the same `anodizer.sig` beside every target's binary.
     let mut ctx = make_ctx();
 
-    let mut binary_sign_meta = std::collections::HashMap::new();
-    binary_sign_meta.insert("type".to_string(), "Signature".to_string());
-    binary_sign_meta.insert("binary_sign".to_string(), "true".to_string());
-    ctx.artifacts.add(anodizer_core::artifact::Artifact {
-        kind: ArtifactKind::Signature,
-        name: String::new(),
-        path: PathBuf::from("dist/anodizer_linux_amd64"),
-        target: None,
-        crate_name: "mycrate".to_string(),
-        metadata: binary_sign_meta,
-        size: None,
-    });
+    for (kind, name, path) in [
+        (
+            ArtifactKind::Signature,
+            "mycrate_1.0.0_linux_amd64.sig",
+            "target/x86_64-unknown-linux-gnu/release/anodizer.sig",
+        ),
+        (
+            ArtifactKind::Certificate,
+            "mycrate_1.0.0_linux_amd64.pem",
+            "target/x86_64-unknown-linux-gnu/release/anodizer.pem",
+        ),
+    ] {
+        ctx.artifacts.add(anodizer_core::artifact::Artifact {
+            kind,
+            name: name.to_string(),
+            path: PathBuf::from(path),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "mycrate".to_string(),
+            metadata: std::collections::HashMap::from([
+                ("type".to_string(), format!("{kind:?}")),
+                ("binary_sign".to_string(), "true".to_string()),
+            ]),
+            size: None,
+        });
+    }
 
-    let mut binary_sign_cert_meta = std::collections::HashMap::new();
-    binary_sign_cert_meta.insert("type".to_string(), "Certificate".to_string());
-    binary_sign_cert_meta.insert("binary_sign".to_string(), "true".to_string());
-    ctx.artifacts.add(anodizer_core::artifact::Artifact {
-        kind: ArtifactKind::Certificate,
-        name: String::new(),
-        path: PathBuf::from("dist/anodizer_linux_amd64.pem"),
-        target: None,
-        crate_name: "mycrate".to_string(),
-        metadata: binary_sign_cert_meta,
-        size: None,
-    });
-
-    let mut archive_sign_meta = std::collections::HashMap::new();
-    archive_sign_meta.insert("type".to_string(), "Signature".to_string());
     ctx.artifacts.add(anodizer_core::artifact::Artifact {
         kind: ArtifactKind::Signature,
         name: String::new(),
         path: PathBuf::from("dist/mycrate_1.0.0_linux_amd64.tar.gz.sig"),
         target: None,
         crate_name: "mycrate".to_string(),
-        metadata: archive_sign_meta,
+        metadata: std::collections::HashMap::from([("type".to_string(), "Signature".to_string())]),
         size: None,
     });
 
     let config = BlobConfig::default();
     let arts = collect_artifacts(&ctx, &config, "mycrate", &test_log());
-    let names: Vec<String> = arts
+    let keys: Vec<String> = arts
         .iter()
-        .map(|a| a.path.to_string_lossy().into_owned())
+        .map(|a| anodizer_core::artifact::upload_asset_name(a))
         .collect();
 
-    assert!(
-        !names.iter().any(|p| p.ends_with("anodizer_linux_amd64")),
-        "binary-sign Signature must not appear in blob upload set; got {:?}",
-        names
-    );
-    assert!(
-        !names
-            .iter()
-            .any(|p| p.ends_with("anodizer_linux_amd64.pem")),
-        "binary-sign Certificate must not appear in blob upload set; got {:?}",
-        names
-    );
-    assert!(
-        names
-            .iter()
-            .any(|p| p.ends_with("mycrate_1.0.0_linux_amd64.tar.gz.sig")),
-        "archive-sign Signature must appear in blob upload set; got {:?}",
-        names
-    );
+    for expected in [
+        "mycrate_1.0.0_linux_amd64.sig",
+        "mycrate_1.0.0_linux_amd64.pem",
+        "mycrate_1.0.0_linux_amd64.tar.gz.sig",
+    ] {
+        assert!(
+            keys.iter().any(|k| k == expected),
+            "{expected} must be in the blob upload set; got {keys:?}"
+        );
+    }
 }
 
 // -----------------------------------------------------------------------

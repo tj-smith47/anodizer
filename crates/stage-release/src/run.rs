@@ -797,14 +797,21 @@ fn dispatch_to_scm_backend(
 /// Filters applied (in order):
 /// 1. Kind must be in the release-uploadable set.
 /// 2. Crate must match `crate_name`.
-/// 3. Binary-sign intermediates are excluded (see `is_binary_sign_output`).
-/// 4. When `ids` is supplied, `matches_id_filter` is applied.
-/// 5. When `exclude` is supplied, an asset whose name matches any glob is
+/// 3. When `ids` is supplied, `matches_id_filter` is applied.
+/// 4. When `exclude` is supplied, an asset whose name matches any glob is
 ///    dropped (`passes_exclude_filter`); composes with the `ids` filter.
 ///
 /// Returned entries pair each artifact's path with an optional custom
-/// destination name (always `None` here; extra-files appending happens
-/// at the call site).
+/// destination name — `None` for the ordinary artifact whose registered name
+/// is already its basename, `Some(name)` for one that uploads under a
+/// different name (a `binary_signs:` output, named after the target's archive
+/// stem). Extra-files appending happens at the call site.
+///
+/// Entries are de-duplicated by that resolved asset name: a `formats: [binary]`
+/// target can have its binary signed twice — once as the raw binary by
+/// `binary_signs:`, once as the uploadable asset by `signs:` — and the two
+/// signatures cover the same bytes under the same name, so the release uploads
+/// the first and drops the second rather than failing on a duplicate asset.
 pub fn collect_release_upload_candidates(
     ctx: &Context,
     crate_name: &str,
@@ -817,22 +824,30 @@ pub fn collect_release_upload_candidates(
     if include_meta {
         upload_kinds.push(ArtifactKind::Metadata);
     }
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     upload_kinds
         .iter()
         .flat_map(|&kind| {
             ctx.artifacts
                 .by_kind_and_crate(kind, crate_name)
                 .into_iter()
-                .filter(|a| !anodizer_core::artifact::is_binary_sign_output(a))
                 // The raw macOS `.app` directory bundle is wrapped into a
                 // `.dmg`/`.pkg` (uploaded instead); a directory cannot be a
                 // release asset.
                 .filter(|a| !anodizer_core::artifact::is_directory_bundle_artifact(a))
                 .filter(|a| matches_id_filter(a, ids))
                 .filter(|a| anodizer_core::artifact::passes_exclude_filter(a, exclude))
-                .map(|a| (a.path.clone(), None))
+                .map(|a| {
+                    (
+                        anodizer_core::artifact::upload_asset_name(a),
+                        a.path.clone(),
+                        anodizer_core::artifact::upload_rename(a),
+                    )
+                })
                 .collect::<Vec<_>>()
         })
+        .filter(|(name, _, _)| seen.insert(name.clone()))
+        .map(|(_, path, rename)| (path, rename))
         .collect()
 }
 

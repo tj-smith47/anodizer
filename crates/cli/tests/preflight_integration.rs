@@ -255,16 +255,15 @@ fn preflight_publishers_allowlist_keeps_selected_drops_deselected_publisher() {
         !combined.contains("PF_COSIGN_KEY"),
         "--publishers npm must auto-deselect the signs surface (no --skip):\n{combined}"
     );
-    // The binary_signs slice self-skips in --publish-only (its output has no
-    // publish-time consumer), so its DISTINCT cosign key demand is ALSO gone
-    // WITHOUT a hand-skip — this is the second half of the npm-clean invariant.
+    // The binary_signs slice hangs off the SAME consumer set, so its DISTINCT
+    // cosign key demand is ALSO gone WITHOUT a hand-skip — this is the second
+    // half of the npm-clean invariant.
     assert!(
         !combined.contains("PF_BINARY_COSIGN_KEY"),
-        "--publish-only must auto-skip the binary_signs surface (no --skip):\n{combined}"
+        "--publishers npm must auto-deselect the binary_signs surface (no --skip):\n{combined}"
     );
-    // Neither sign slice contributes anything: with both signs: (deselected
-    // consumers) and binary_signs: (publish-only) skipped, no `stage:sign`
-    // requirement may appear at all.
+    // Neither sign slice contributes anything: every signature consumer is
+    // deselected, so no `stage:sign` requirement may appear at all.
     assert!(
         !combined.contains("stage:sign"),
         "the sign slices must contribute nothing under --publish-only --publishers npm:\n{combined}"
@@ -275,15 +274,13 @@ fn preflight_publishers_allowlist_keeps_selected_drops_deselected_publisher() {
     );
 }
 
-/// Under `--publish-only` with an EMPTY `--publishers` allowlist the `signs:`
-/// surface must SURVIVE (`publisher_deselected` short-circuits to the denylist,
-/// which never names a signs consumer) while the `binary_signs:` surface is
-/// SKIPPED (publish-only mode — its output has no publish-time consumer).
-/// Guards both directions: the signs gate must not over-fire and silently ship
-/// an unsigned release; the binary_signs gate must fire on publish-only
-/// regardless of allowlist.
+/// Under `--publish-only` with an EMPTY `--publishers` allowlist BOTH signature
+/// surfaces must survive: `publisher_deselected` short-circuits to the denylist,
+/// which never names a signature consumer, and a binary signature is a release
+/// asset of the same job. Guards the gate against over-firing and silently
+/// shipping a release with no signatures.
 #[test]
-fn preflight_publish_only_empty_allowlist_keeps_signs_skips_binary_signs() {
+fn preflight_publish_only_empty_allowlist_keeps_both_sign_surfaces() {
     if !tool_on_path("git") {
         eprintln!("skipping: git not on PATH");
         return;
@@ -292,10 +289,9 @@ fn preflight_publish_only_empty_allowlist_keeps_signs_skips_binary_signs() {
     bootstrap_minimal_cargo_repo(tmp.path(), FIXTURE_CRATE_NAME);
     write_fixture_config(tmp.path());
 
-    // No allowlist, no skip, publish-only: the signs slice runs (its consumers
-    // are not deselected), so its cosign key demand (malformed PF_COSIGN_KEY)
-    // still surfaces; the binary_signs slice is publish-only-skipped, so its
-    // distinct PF_BINARY_COSIGN_KEY demand is gone.
+    // No allowlist, no skip, publish-only: neither slice's consumers are
+    // deselected, so both cosign key demands (malformed PF_COSIGN_KEY and
+    // PF_BINARY_COSIGN_KEY) surface.
     let out = run_preflight(tmp.path(), &["--publish-only"]);
     let combined = format!(
         "{}{}",
@@ -307,16 +303,15 @@ fn preflight_publish_only_empty_allowlist_keeps_signs_skips_binary_signs() {
         "publish-only empty allowlist must keep the signs surface:\n{combined}"
     );
     assert!(
-        !combined.contains("PF_BINARY_COSIGN_KEY"),
-        "publish-only must skip the binary_signs surface regardless of allowlist:\n{combined}"
+        combined.contains("PF_BINARY_COSIGN_KEY"),
+        "publish-only empty allowlist must keep the binary_signs surface:\n{combined}"
     );
 }
 
 /// The MAIN-job invariant under the REAL binary: the full release pipeline
 /// (no `--publish-only`; the main job runs `release --skip=npm`, i.e. the FULL
 /// scope with an empty allowlist) must KEEP BOTH sign surfaces — `signs:` AND
-/// `binary_signs:` — so the binaries that ship are still signed. Proves the
-/// binary_signs publish-only gate does not weaken the main release.
+/// `binary_signs:` — so the binaries that ship are still signed.
 #[test]
 fn preflight_full_scope_keeps_both_sign_surfaces() {
     if !tool_on_path("git") {

@@ -513,6 +513,137 @@ pub(crate) fn resolve_sign_args(
         .collect()
 }
 
+/// Append a target triple to a basename while keeping its extension
+/// suffix: `anodizer.sig` + `aarch64-apple-darwin` →
+/// `anodizer-aarch64-apple-darwin.sig`, `anodizer.exe.sig` →
+/// `anodizer.exe-aarch64-pc-windows-msvc.sig`. A basename with no
+/// extension gets a plain `-<target>` suffix.
+pub(crate) fn qualify_basename_with_target(name: &str, target: &str) -> String {
+    let path = std::path::Path::new(name);
+    match (
+        path.file_stem().and_then(|s| s.to_str()),
+        path.extension().and_then(|e| e.to_str()),
+    ) {
+        (Some(stem), Some(ext)) => format!("{stem}-{target}.{ext}"),
+        _ => format!("{name}-{target}"),
+    }
+}
+
+/// The asset-name stem the run's other assets for `crate_name`/`target` are
+/// built from: the archive stage's rendered `name_template` for that target,
+/// read back from the archive it registered
+/// (`anodizer-0.26.0-linux-amd64.tar.gz` → `anodizer-0.26.0-linux-amd64`).
+///
+/// A `formats: [binary]` entry registers no archive, so the uploadable binary
+/// named after `binary_name` stands in — its own name IS the stem, which is
+/// what makes a `signs:` signature over that asset and a `binary_signs:`
+/// signature over the same bytes resolve to one name.
+///
+/// `None` when the run produced neither, which is `anodizer build`: it signs
+/// binaries before any archive exists and uploads nothing, so the caller keeps
+/// the target-qualified basename there.
+pub(crate) fn archive_stem_for(
+    ctx: &Context,
+    crate_name: &str,
+    target: &str,
+    binary_name: Option<&str>,
+) -> Option<String> {
+    let for_target = |a: &&anodizer_core::artifact::Artifact| {
+        a.crate_name == crate_name && a.target.as_deref() == Some(target)
+    };
+    let artifacts = ctx.artifacts.all();
+    if let Some(archive) = artifacts
+        .iter()
+        .filter(|a| a.kind == ArtifactKind::Archive)
+        .find(for_target)
+        && let Some(stem) = archive.metadata.get("name")
+        && !stem.is_empty()
+    {
+        return Some(stem.clone());
+    }
+    artifacts
+        .iter()
+        .filter(|a| a.kind == ArtifactKind::UploadableBinary)
+        .find(|a| for_target(a) && a.binary_name().as_deref() == binary_name)
+        .map(|a| a.name.clone())
+        .filter(|n| !n.is_empty())
+}
+
+/// The release-asset name a `binary_signs:` output registers under.
+///
+/// A binary signature uploads beside the archive built from the same binary,
+/// so it is named after that archive's stem: the raw binary's own basename
+/// repeats across every target (`anodizer.sig` eight times over). The suffix
+/// the `signature:` / `certificate:` template appended to the binary's file
+/// name carries over, so `anodizer.exe` → `anodizer.exe.sig` yields
+/// `<stem>.sig` and a cosign bundle `anodizer.bundle.sig` yields
+/// `<stem>.bundle.sig`.
+///
+/// Falls back to the target-qualified basename when the run built no archive
+/// for the target, or when the template renamed the file rather than suffixing
+/// it — both still unique per target.
+pub(crate) fn binary_sign_asset_name(
+    rendered_basename: &str,
+    binary_basename: &str,
+    stem: Option<&str>,
+    target: &str,
+) -> String {
+    if binary_basename.is_empty() {
+        return qualify_basename_with_target(rendered_basename, target);
+    }
+    match (stem, rendered_basename.strip_prefix(binary_basename)) {
+        (Some(stem), Some(suffix)) if !suffix.is_empty() => format!("{stem}{suffix}"),
+        _ => qualify_basename_with_target(rendered_basename, target),
+    }
+}
+
+#[cfg(test)]
+mod binary_sign_asset_name_tests {
+    use super::binary_sign_asset_name;
+
+    const TARGET: &str = "x86_64-pc-windows-msvc";
+
+    #[test]
+    fn the_suffix_after_the_binary_name_carries_onto_the_archive_stem() {
+        for (rendered, binary, expected) in [
+            ("app.sig", "app", "app-1.0.0-windows-amd64.sig"),
+            ("app.exe.sig", "app.exe", "app-1.0.0-windows-amd64.sig"),
+            (
+                "app.bundle.sig",
+                "app",
+                "app-1.0.0-windows-amd64.bundle.sig",
+            ),
+            ("app.pem", "app", "app-1.0.0-windows-amd64.pem"),
+        ] {
+            assert_eq!(
+                binary_sign_asset_name(rendered, binary, Some("app-1.0.0-windows-amd64"), TARGET),
+                expected,
+                "{rendered} over {binary}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_stem_or_no_suffix_falls_back_to_the_target_qualified_name() {
+        // `anodizer build` signs before any archive exists.
+        assert_eq!(
+            binary_sign_asset_name("app.sig", "app", None, TARGET),
+            format!("app-{TARGET}.sig")
+        );
+        // A `signature:` template that renamed the file rather than suffixing
+        // the binary's own name.
+        assert_eq!(
+            binary_sign_asset_name(
+                "detached.sig",
+                "app",
+                Some("app-1.0.0-windows-amd64"),
+                TARGET
+            ),
+            format!("detached-{TARGET}.sig")
+        );
+    }
+}
+
 #[cfg(test)]
 mod dist_joined_tests {
     use super::dist_joined;

@@ -560,16 +560,13 @@ fn signs_gate_honors_selected_custom_signature_publisher() {
     );
 }
 
-/// `binary_signs:` (raw-binary signing) self-skips in `--publish-only` mode:
-/// its output carries the `binary_sign` marker and is filtered out of every
-/// publish-time consumer, so signing in publish-only is discarded work that
-/// would demand cosign/GPG material a publish-time runner does not carry. The
-/// FULL build/release pipeline (`publish_only == false`) still signs — under
-/// ANY `--publishers` allowlist value, including the npm-only allowlist — so
-/// the main job's binary signing is never weakened. The empty allowlist (the
-/// main release job's invariant) ALWAYS signs.
+/// A binary signature uploads as a release asset, so the `binary_signs:` loop
+/// hangs off the same consumer set as `signs:`: it runs in publish-only just
+/// as it does in the full pipeline, and self-skips only when EVERY signature
+/// consumer is deselected (the npm-only provenance job). The empty allowlist —
+/// the main release job's invariant — always signs.
 #[test]
-fn binary_signs_loop_skips_only_in_publish_only_mode() {
+fn binary_signs_loop_follows_the_signature_consumer_set() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
 
     let cosign_sign = || SignConfig {
@@ -598,17 +595,16 @@ fn binary_signs_loop_skips_only_in_publish_only_mode() {
         // FULL pipeline, empty allowlist — the main release job's invariant:
         // binaries ARE signed.
         (false, &[], true),
-        // FULL pipeline, npm-only allowlist: `binary_signs:` is NOT gated on
-        // the publish-time allowlist (it is a build-time concern), so it still
-        // runs — a `--publishers` value never weakens binary signing.
-        (false, &["npm"], true),
-        // FULL pipeline, github-release allowlist: still signs.
+        // FULL pipeline, npm-only allowlist: every signature consumer is
+        // deselected, so nothing would read the signature — skip.
+        (false, &["npm"], false),
+        // FULL pipeline, github-release allowlist: the release uploads it.
         (false, &["github-release"], true),
-        // publish-only, npm-only allowlist (the npm provenance job): the loop
-        // self-skips — no consumer reads binary-sign output in publish-only.
+        // publish-only, npm-only allowlist (the npm provenance job): skip.
         (true, &["npm"], false),
-        // publish-only, empty allowlist: still publish-only, so it skips.
-        (true, &[], false),
+        // publish-only, empty allowlist (the main publish job): the binary
+        // signature is a release asset, so it is produced here too.
+        (true, &[], true),
     ];
 
     for (publish_only, allowlist, expect_signed) in cases {

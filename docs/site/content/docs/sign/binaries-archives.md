@@ -46,6 +46,39 @@ Inside `args` (and `signature`), these six `${…}` placeholders are expanded pe
 | `${artifactName}` | Basename of the artifact. |
 | `${artifactID}` | The producing build's `id` (empty when unset). |
 
+## Signing the raw binaries
+
+`binary_signs:` signs each built binary before it is packaged. Its `artifacts`
+field accepts only `binary` (or `none`); everything else about an entry matches
+a `signs:` entry.
+
+```yaml
+binary_signs:
+  - artifacts: binary
+    cmd: cosign
+    args: ["sign-blob", "--key=cosign.key", "--output-signature=${signature}", "${artifact}"]
+```
+
+The signature and certificate upload as release assets alongside the archives.
+Each is named after the archive built from the same binary — the raw binary is
+called `app` (or `app.exe`) under every target directory, so that name would
+collapse every target's signature onto one asset:
+
+```
+app-1.2.3-linux-amd64.tar.gz
+app-1.2.3-linux-amd64.sig          <- binary_signs
+app-1.2.3-linux-arm64.tar.gz
+app-1.2.3-linux-arm64.sig          <- binary_signs
+app-1.2.3-windows-amd64.zip
+app-1.2.3-windows-amd64.sig        <- binary_signs
+app-1.2.3-linux-amd64v3.tar.gz
+app-1.2.3-linux-amd64v3.sig        <- binary_signs, micro-arch variant
+```
+
+An archive entry with `formats: [binary]` publishes the executable itself, so a
+`signs:` config covering that asset and a `binary_signs:` config covering the
+same bytes resolve to one asset name; the release uploads it once.
+
 ## Cosign example
 
 ```yaml

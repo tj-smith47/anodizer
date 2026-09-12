@@ -4295,79 +4295,120 @@ fn test_retry_config_custom_values_flow_into_upload_constants() {
 }
 
 #[test]
-fn test_release_upload_candidates_exclude_binary_sign_outputs() {
-    // Construct a context with three signature artifacts:
-    //   1. A binary-sign output (metadata["binary_sign"] = "true") — must be excluded.
-    //   2. A binary-sign certificate output — must be excluded.
-    //   3. A normal archive-sign Signature (no binary_sign metadata) — must be included.
+fn binary_sign_outputs_upload_under_their_archive_style_name() {
+    // A binary signature is an ordinary release asset. Its on-disk path sits
+    // beside the raw binary (the same `anodizer.sig` under every target), so
+    // the upload renames it to the registered archive-style name; an archive
+    // signature, whose registered name already IS its basename, uploads with
+    // no rename.
     let mut ctx = TestContextBuilder::new().build();
 
-    let mut binary_sign_meta = std::collections::HashMap::new();
-    binary_sign_meta.insert("type".to_string(), "Signature".to_string());
-    binary_sign_meta.insert("binary_sign".to_string(), "true".to_string());
+    let binary_sign_meta = std::collections::HashMap::from([
+        ("type".to_string(), "Signature".to_string()),
+        ("binary_sign".to_string(), "true".to_string()),
+    ]);
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Signature,
-        path: "dist/anodizer_linux_amd64".into(),
-        name: "anodizer_linux_amd64".to_string(),
-        target: None,
+        path: "target/x86_64-unknown-linux-gnu/release/anodizer.sig".into(),
+        name: "myapp_1.0.0_linux_amd64.sig".to_string(),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
         crate_name: "myapp".to_string(),
-        metadata: binary_sign_meta,
+        metadata: binary_sign_meta.clone(),
         size: None,
     });
 
-    let mut binary_sign_cert_meta = std::collections::HashMap::new();
+    let mut binary_sign_cert_meta = binary_sign_meta.clone();
     binary_sign_cert_meta.insert("type".to_string(), "Certificate".to_string());
-    binary_sign_cert_meta.insert("binary_sign".to_string(), "true".to_string());
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Certificate,
-        path: "dist/anodizer_linux_amd64.pem".into(),
-        name: "anodizer_linux_amd64.pem".to_string(),
-        target: None,
+        path: "target/x86_64-unknown-linux-gnu/release/anodizer.pem".into(),
+        name: "myapp_1.0.0_linux_amd64.pem".to_string(),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
         crate_name: "myapp".to_string(),
         metadata: binary_sign_cert_meta,
         size: None,
     });
 
-    let mut archive_sign_meta = std::collections::HashMap::new();
-    archive_sign_meta.insert("type".to_string(), "Signature".to_string());
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Signature,
         path: "dist/myapp_1.0.0_linux_amd64.tar.gz.sig".into(),
         name: "myapp_1.0.0_linux_amd64.tar.gz.sig".to_string(),
         target: None,
         crate_name: "myapp".to_string(),
-        metadata: archive_sign_meta,
+        metadata: std::collections::HashMap::from([("type".to_string(), "Signature".to_string())]),
         size: None,
     });
 
-    // Call the production helper directly. If a future refactor drops the
-    // binary-sign filter from `collect_release_upload_candidates`, this test
-    // will fail.
     let candidates =
         super::run::collect_release_upload_candidates(&ctx, "myapp", None, None, false);
-    let paths: Vec<String> = candidates
+    let resolved: Vec<String> = candidates
         .iter()
-        .map(|(p, _)| p.to_string_lossy().into_owned())
+        .map(|(path, custom)| {
+            custom
+                .clone()
+                .unwrap_or_else(|| path.file_name().unwrap().to_string_lossy().into_owned())
+        })
         .collect();
 
+    for expected in [
+        "myapp_1.0.0_linux_amd64.sig",
+        "myapp_1.0.0_linux_amd64.pem",
+        "myapp_1.0.0_linux_amd64.tar.gz.sig",
+    ] {
+        assert!(
+            resolved.iter().any(|n| n == expected),
+            "{expected} must be a release upload candidate; got {resolved:?}"
+        );
+    }
     assert!(
-        !paths.iter().any(|p| p.ends_with("anodizer_linux_amd64")),
-        "binary-sign Signature must not appear in release upload candidates; got {:?}",
-        paths
+        candidates
+            .iter()
+            .any(|(path, custom)| path.ends_with("anodizer.sig")
+                && custom.as_deref() == Some("myapp_1.0.0_linux_amd64.sig")),
+        "the binary signature must upload under its registered name, not `anodizer.sig`: \
+         {candidates:?}"
     );
     assert!(
-        !paths
-            .iter()
-            .any(|p| p.ends_with("anodizer_linux_amd64.pem")),
-        "binary-sign Certificate must not appear in release upload candidates; got {:?}",
-        paths
+        candidates.iter().any(|(path, custom)| path
+            .ends_with("myapp_1.0.0_linux_amd64.tar.gz.sig")
+            && custom.is_none()),
+        "an artifact whose registered name is its basename needs no rename: {candidates:?}"
     );
-    assert!(
-        paths
-            .iter()
-            .any(|p| p.ends_with("myapp_1.0.0_linux_amd64.tar.gz.sig")),
-        "archive-sign Signature must appear in release upload candidates; got {:?}",
-        paths
+}
+
+/// Two signatures over the same bytes under one asset name — the
+/// `formats: [binary]` case, where `binary_signs:` covers the raw binary and
+/// `signs:` covers the uploadable copy of it — upload once instead of failing
+/// the release on a duplicate asset.
+#[test]
+fn one_asset_name_uploads_once() {
+    let mut ctx = TestContextBuilder::new().build();
+    for (path, binary_sign) in [
+        ("target/x86_64-unknown-linux-gnu/release/anodizer.sig", true),
+        ("dist/myapp_1.0.0_linux_amd64.sig", false),
+    ] {
+        let mut metadata =
+            std::collections::HashMap::from([("type".to_string(), "Signature".to_string())]);
+        if binary_sign {
+            metadata.insert("binary_sign".to_string(), "true".to_string());
+        }
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Signature,
+            path: path.into(),
+            name: "myapp_1.0.0_linux_amd64.sig".to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata,
+            size: None,
+        });
+    }
+
+    let candidates =
+        super::run::collect_release_upload_candidates(&ctx, "myapp", None, None, false);
+    assert_eq!(
+        candidates.len(),
+        1,
+        "one asset name must yield one upload candidate: {candidates:?}"
     );
 }
 
