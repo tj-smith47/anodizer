@@ -16555,7 +16555,7 @@
           "type": "boolean"
         },
         "assert_landing": {
-          "description": "Assert that every publisher that succeeded this run is actually VISIBLE upstream: each published crate version is visible on the crates.io sparse index, each npm package version is visible on its registry, each uploaded blob object exists in its bucket, and each uploaded snap is live in the Snap Store's channel map (catching a manual-review hold that parked the revision outside every channel). Default `true` (no extra config: the run's own publish report already carries every coordinate the probes need). Publishers that did not run — or did not succeed — are skipped.",
+          "description": "Assert that every publisher that succeeded this run is actually VISIBLE upstream: each published crate version is visible on the crates.io sparse index, each npm package version is visible on its registry, each uploaded blob object exists in its bucket, and each uploaded snap is live in the Snap Store's channel map (catching a manual-review hold that parked the revision outside every channel). Default `true` (no extra config: the run's own publish report already carries every coordinate the probes need). Publishers that did not run — or did not succeed — are skipped. Each probe retries while the registry propagates (5s backoff to a 30s cap, up to 3 minutes per target, bounded by `retry.max_elapsed`) before reporting an absence.",
           "default": true,
           "type": "boolean"
         },

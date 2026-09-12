@@ -64,7 +64,9 @@ pub struct VerifyReleaseConfig {
     /// parked the revision outside every channel). Default `true` (no extra
     /// config: the run's own publish report already carries every coordinate
     /// the probes need). Publishers that did not run — or did not succeed —
-    /// are skipped.
+    /// are skipped. Each probe retries while the registry propagates (5s
+    /// backoff to a 30s cap, up to 3 minutes per target, bounded by
+    /// `retry.max_elapsed`) before reporting an absence.
     pub assert_landing: bool,
     /// Per-package install smoke-test images. When `None`, smoke-testing is
     /// off. When present, each package type that produced an artifact is
