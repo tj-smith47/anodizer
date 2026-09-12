@@ -797,6 +797,12 @@ one-way-door publisher, by evidence strength:
    file path, a GitHub Enterprise host) proceeds with a warning — the
    probe targets the github.com Releases API, which cannot host a release
    for such a remote, so run summaries are the only evidence layer there.
+   A refusal here names the missing evidence and how to get it: the
+   Release workflow uploads every run's `dist/run-*/summary.json` as the
+   artifact `run-summary-<sha>` (the commit the tag points at), so
+   `gh run download <release-run-id> -n run-summary-<sha> -D dist` followed
+   by the same `tag rollback` re-runs the guard on layer 1 evidence instead
+   of `--force`.
 
 `--force` overrides the whole guard for genuinely-offline recovery.
 

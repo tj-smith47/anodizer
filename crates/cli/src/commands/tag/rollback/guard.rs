@@ -299,7 +299,8 @@ pub(super) fn check_not_irreversibly_published(
     probes: &BurnProbes<'_>,
     log: &StageLogger,
 ) -> Result<Vec<String>> {
-    let summaries = collect_run_summaries(&resolve_dist_dir(cwd, repo_config), log);
+    let dist = resolve_dist_dir(cwd, repo_config);
+    let summaries = collect_run_summaries(&dist, log);
     let mut burned: Vec<(String, Vec<String>)> = Vec::new();
     let mut unsummarized: Vec<String> = Vec::new();
     for tag in tags {
@@ -356,7 +357,7 @@ pub(super) fn check_not_irreversibly_published(
         return Ok(unsummarized);
     }
     let redact_env: Vec<(String, String)> = std::env::vars().collect();
-    check_no_published_releases(cwd, gh_binary, &unsummarized, log, &redact_env)?;
+    check_no_published_releases(cwd, gh_binary, &unsummarized, &dist, log, &redact_env)?;
     Ok(unsummarized)
 }
 

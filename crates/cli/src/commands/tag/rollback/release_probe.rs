@@ -71,10 +71,17 @@ pub(super) fn probe_release_for_tag(
 /// github.com Releases API, which cannot host a release for such a
 /// remote, so it carries no signal either way; run-summary evidence
 /// (layer 1 of the guard) remains the only signal for those hosts.
+///
+/// The refusal names the evidence that would settle the question: the
+/// Release workflow uploads each run's `dist/run-*/summary.json` as the
+/// artifact `run-summary-<sha>` (`sha` = the commit the tag points at),
+/// so the operator can fetch it into `dist` and retry instead of
+/// reaching for `--force`.
 pub(super) fn check_no_published_releases(
     cwd: &std::path::Path,
     gh_binary: &std::path::Path,
     tags: &[String],
+    dist: &std::path::Path,
     log: &StageLogger,
     redact_env: &[(String, String)],
 ) -> Result<()> {
@@ -126,6 +133,11 @@ pub(super) fn check_no_published_releases(
         );
     }
     if !published.is_empty() {
+        let fetch_summary = published
+            .iter()
+            .map(|tag| run_summary_fetch_hint(cwd, tag, dist))
+            .collect::<Vec<_>>()
+            .join("\n");
         return Err(RollbackRefusal {
             reason: format!(
                 "published GitHub release(s) exist for: {} \
@@ -134,16 +146,35 @@ pub(super) fn check_no_published_releases(
                  usually ship alongside a published release; if any did, the version is \
                  burned and deleting the tag(s) only orphans live published state — \
                  tags kept to protect it.\n\
+                 The run summary is the evidence this guard wants. A release cut by the \
+                 Release workflow uploaded it as a workflow artifact; fetch it into the \
+                 dist directory and re-run the rollback:\n{}\n\
                  Caveat: a release left behind by a rollback that predates automatic \
                  release cleanup may be an ORPHAN of a rolled-back attempt rather than \
                  real burn evidence — verify the release (and the one-way-door \
                  registries) before trusting it; if it is an orphan, delete it and \
                  re-run, or use --force.",
-                published.join(", ")
+                published.join(", "),
+                fetch_summary
             ),
             next_step: refusal_next_step(),
         }
         .into());
     }
     Ok(())
+}
+
+/// The `gh run download` line that fetches `tag`'s run summary artifact
+/// into `dist`. The artifact is named after the commit the tag points at
+/// (`run-summary-<sha>`, see the Release workflow's "Upload run summary"
+/// step); a tag that does not resolve locally keeps a `<sha>` placeholder
+/// so the hint is still actionable.
+fn run_summary_fetch_hint(cwd: &std::path::Path, tag: &str, dist: &std::path::Path) -> String {
+    let sha = git::rev_verify_commit_in(cwd, tag).unwrap_or_else(|_| "<sha>".to_string());
+    format!(
+        "  {tag}: gh run download <release-run-id> -n run-summary-{sha} -D {}\n  \
+         (the run id is the Release workflow run that cut {tag}: \
+         `gh run list --workflow release.yml`)",
+        dist.display()
+    )
 }
