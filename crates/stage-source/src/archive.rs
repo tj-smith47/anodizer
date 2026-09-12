@@ -35,6 +35,32 @@ fn zip_datetime_from_epoch(epoch_secs: u64) -> Option<zip::DateTime> {
     let (y, mo, d, h, mi, s) = anodizer_core::sde::zip_datetime_fields(epoch_secs)?;
     zip::DateTime::from_date_and_time(y, mo, d, h, mi, s).ok()
 }
+/// Extras that name an entry `git archive` already wrote. One `files:` glob
+/// over tracked sources produces hundreds of them, so the run prints one
+/// warning with the count and lists each path only under `-v`.
+#[derive(Default)]
+struct DuplicateExtras {
+    count: usize,
+}
+
+impl DuplicateExtras {
+    fn note(&mut self, repo_root: &Path, src: &Path, log: &anodizer_core::log::StageLogger) {
+        self.count += 1;
+        log.verbose(&format!(
+            "skipped extra file '{}' — already in the archive",
+            anodizer_core::path_util::display_under_root(repo_root, src)
+        ));
+    }
+
+    fn report(&self, log: &anodizer_core::log::StageLogger) {
+        if self.count > 0 {
+            log.warn(&format!(
+                "skipped {} extra file(s) already in the archive — git-tracked files need no `files:` entry (run with -v to list them)",
+                self.count
+            ));
+        }
+    }
+}
 
 /// The destination an extra file takes inside the archive prefix, in whichever
 /// format the stage is writing.
@@ -228,6 +254,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
             // differs between fresh worktrees (matches the tar path's sort).
             let mut sorted_extras: Vec<&SourceFileEntry> = extra_files.iter().collect();
             sorted_extras.sort_by(|a, b| a.src.cmp(&b.src));
+            let mut duplicates = DuplicateExtras::default();
 
             // Append extra files under prefix
             for file_entry in sorted_extras {
@@ -266,10 +293,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                     options = options.last_modified_time(t);
                 }
                 if !written.insert(archive_path.clone()) {
-                    log.warn(&format!(
-                        "skipped extra file '{}' — '{}' is already in the archive",
-                        file_entry.src, archive_path
-                    ));
+                    duplicates.note(repo_root, src, log);
                     continue;
                 }
                 zip_writer
@@ -279,6 +303,8 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                     .write_all(&file_data)
                     .context("source: write zip extra file")?;
             }
+
+            duplicates.report(log);
 
             zip_writer.finish().context("source: finish zip")?;
         }
@@ -325,6 +351,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
             // in inode order which differs between fresh worktrees.
             let mut sorted_extras: Vec<&SourceFileEntry> = extra_files.iter().collect();
             sorted_extras.sort_by(|a, b| a.src.cmp(&b.src));
+            let mut duplicates = DuplicateExtras::default();
 
             // Add extra files with metadata
             for entry in sorted_extras {
@@ -351,11 +378,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                 // names an entry `git archive` already wrote would ship twice
                 // and unpack in append order.
                 if !written.insert(archive_path.to_string_lossy().replace('\\', "/")) {
-                    log.warn(&format!(
-                        "skipped extra file '{}' — '{}' is already in the archive",
-                        entry.src,
-                        archive_path.display()
-                    ));
+                    duplicates.note(repo_root, src, log);
                     continue;
                 }
 
@@ -470,6 +493,8 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                     .append(&header, &file_data[..])
                     .with_context(|| format!("source: append '{}' to tar", entry.src))?;
             }
+
+            duplicates.report(log);
 
             builder.finish().context("source: finish tar")?;
         }
