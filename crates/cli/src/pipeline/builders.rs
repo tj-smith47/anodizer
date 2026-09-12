@@ -35,14 +35,15 @@ fn push_publish_tail(p: &mut Pipeline) {
     // non-zero hook can abort the release before any publisher writes to a
     // registry — last gate for smoke-tests / scanners against the staged dist.
     p.add(Box::new(anodizer_core::hooks::BeforePublishStage));
-    p.add(Box::new(ReleaseStage));
-    // PrePublishGuardStage runs immediately after ReleaseStage — once the
-    // release exists, `ensure_release_url` has put the (real or derived)
-    // `ReleaseURL` in ctx — and BEFORE any irreversible publisher
-    // (chocolatey/winget moderation, AUR push) or announcer fires, so a broken
-    // publisher-manifest or announce template aborts with no one-way door
-    // already through.
+    // PrePublishGuardStage runs BEFORE ReleaseStage: an abort must leave no
+    // release behind, neither draft nor live. It derives `ReleaseURL` and the
+    // artifact download URLs from the repo block and the tag itself, which is
+    // what ReleaseStage derives them from too, so it needs nothing the release
+    // creates. Placed after the `before_publish:` hooks and before every
+    // irreversible publisher (chocolatey/winget moderation, AUR push) and
+    // announcer.
     p.add(Box::new(PrePublishGuardStage));
+    p.add(Box::new(ReleaseStage));
     // Docker build+sign run between the GitHub release and PublishStage: the
     // mcp publisher (inside PublishStage) validates that the OCI image its
     // manifest references already exists in the registry, so the image must be
@@ -232,11 +233,12 @@ pub fn build_publish_pipeline() -> Pipeline {
     // sha256-consuming publisher's schema-validate runs in PrePublishGuardStage.
     p.add(Box::new(ChecksumStage));
     p.add(Box::new(anodizer_core::hooks::BeforePublishStage));
-    p.add(Box::new(ReleaseStage));
-    // Guard the (legacy) publish path too: a broken publisher-manifest or
-    // announce template must abort after the release exists but before any
-    // irreversible publisher fires.
+    // Guard the (legacy) publish path too, and on the same side of
+    // ReleaseStage: a broken publisher-manifest or announce template must abort
+    // before the release is created and before any irreversible publisher
+    // fires.
     p.add(Box::new(PrePublishGuardStage));
+    p.add(Box::new(ReleaseStage));
     // BlobStage before PublishStage so a required-blob upload failure is
     // recorded in `ctx.publish_report` before the Submitter loop runs, gating
     // the one-way-door publishers (cargo / chocolatey / winget) AND the later
@@ -534,11 +536,13 @@ mod tests {
     // -----------------------------------------------------------------------
     // PrePublishGuardStage ordering
     //
-    // The guard must sit AFTER ReleaseStage (so `ReleaseURL` is in ctx for the
-    // announce dry-render) and BEFORE every irreversible publisher
-    // (PublishStage, SnapcraftPublishStage) and before DockerStage, so a broken
-    // publisher-manifest or announce template aborts with no one-way door
-    // already through.
+    // The guard must sit BEFORE ReleaseStage, so an abort leaves no release
+    // behind — neither draft nor live — and before every irreversible publisher
+    // (PublishStage, SnapcraftPublishStage) and DockerStage. It must still
+    // follow the `before_publish:` hooks and ChecksumStage, whose rehydrated
+    // sha256 the sha256-consuming publishers' schema-validate needs. The
+    // announce dry-render's `{{ ReleaseURL }}` comes from the guard's own
+    // derivation (`derive_release_urls`), not from the release.
     // -----------------------------------------------------------------------
 
     fn idx(names: &[&str], stage: &str, pipeline: &str) -> usize {
@@ -548,13 +552,20 @@ mod tests {
             .unwrap_or_else(|| panic!("{pipeline}: missing {stage} stage; got {names:?}"))
     }
 
-    fn assert_guard_after_release_before_publishers(names: &[&str], pipeline: &str) {
+    fn assert_guard_before_release_and_publishers(names: &[&str], pipeline: &str) {
         let release = idx(names, "release", pipeline);
         let guard = idx(names, "prepublish-guard", pipeline);
         let publish = idx(names, "publish", pipeline);
         assert!(
-            release < guard,
-            "{pipeline}: release ({release}) must precede prepublish-guard ({guard}); {names:?}"
+            guard < release,
+            "{pipeline}: prepublish-guard ({guard}) must precede release ({release}) so an \
+             abort leaves no release behind; {names:?}"
+        );
+        let before_publish = idx(names, "before-publish", pipeline);
+        assert!(
+            before_publish < guard,
+            "{pipeline}: before_publish hooks ({before_publish}) must precede prepublish-guard \
+             ({guard}); {names:?}"
         );
         assert!(
             guard < publish,
@@ -578,31 +589,31 @@ mod tests {
     }
 
     #[test]
-    fn release_pipeline_runs_guard_after_release_before_publishers() {
+    fn release_pipeline_runs_guard_before_release_and_publishers() {
         let p = build_release_pipeline();
         let names = p.stage_names();
-        assert_guard_after_release_before_publishers(&names, "build_release_pipeline");
+        assert_guard_before_release_and_publishers(&names, "build_release_pipeline");
     }
 
     #[test]
-    fn merge_pipeline_runs_guard_after_release_before_publishers() {
+    fn merge_pipeline_runs_guard_before_release_and_publishers() {
         let p = build_merge_pipeline();
         let names = p.stage_names();
-        assert_guard_after_release_before_publishers(&names, "build_merge_pipeline");
+        assert_guard_before_release_and_publishers(&names, "build_merge_pipeline");
     }
 
     #[test]
-    fn publish_pipeline_runs_guard_after_release_before_publishers() {
+    fn publish_pipeline_runs_guard_before_release_and_publishers() {
         let p = build_publish_pipeline();
         let names = p.stage_names();
-        assert_guard_after_release_before_publishers(&names, "build_publish_pipeline");
+        assert_guard_before_release_and_publishers(&names, "build_publish_pipeline");
     }
 
     #[test]
-    fn publish_only_pipeline_runs_guard_after_release_before_publishers() {
+    fn publish_only_pipeline_runs_guard_before_release_and_publishers() {
         let p = build_publish_only_pipeline();
         let names = p.stage_names();
-        assert_guard_after_release_before_publishers(&names, "build_publish_only_pipeline");
+        assert_guard_before_release_and_publishers(&names, "build_publish_only_pipeline");
     }
 
     /// Stage order: ChecksumStage → PrePublishGuardStage.

@@ -18,6 +18,7 @@ anodizer-core.workspace = true
 anodizer-stage-publish.workspace = true
 anodizer-stage-announce.workspace = true
 anodizer-stage-snapcraft.workspace = true
+anodizer-stage-release.workspace = true
 anyhow.workspace = true
 
 [dev-dependencies]
