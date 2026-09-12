@@ -327,6 +327,47 @@ pub(crate) fn with_validated_crate_scope<T>(
     anodizer_core::crate_scope::with_crate_scope(ctx, &crate_cfg, resolve_tag, body)
 }
 
+/// Run one crate's render-and-validate body under that crate's scope, turning a
+/// per-entry disqualification into a recorded skip.
+///
+/// A condition that disqualifies ONE crate — two archives claiming the same
+/// platform, a `repository:` with no owner/name — must not abort this pass. The
+/// live publisher records the same skip and carries on to the next crate, so a
+/// pass that runs ahead of it and stops there would block every publisher the
+/// release still has to run. The reason is recorded exactly as the live path
+/// records it (`skipped <publisher> for '<crate>' — <reason>`) and the crate
+/// contributes no findings. Every other error still propagates.
+pub(crate) fn validate_crate_scoped<T: Default>(
+    ctx: &mut Context,
+    publisher: &str,
+    crate_name: &str,
+    resolve_tag: TagResolver<'_>,
+    body: impl FnOnce(&mut Context) -> Result<T>,
+) -> Result<T> {
+    let log = ctx.logger("publish");
+    let scoped = with_validated_crate_scope(ctx, crate_name, resolve_tag, body);
+    let reason = scoped
+        .as_ref()
+        .err()
+        .and_then(anodizer_core::pipe_skip::entry_skip_reason)
+        .map(str::to_string);
+    match crate::publisher_helpers::absorb_entry_skip(ctx, &log, publisher, crate_name, scoped)? {
+        Some(value) => Ok(value),
+        None => {
+            // The emission-validate pass counts every expectation it could not
+            // check, and a crate this pass stopped short on is one of them.
+            if let Some(reason) = reason {
+                ctx.emission_skips.remember(
+                    crate::snapshot_validation::EMISSION_SKIP_STAGE,
+                    &format!("{crate_name} {publisher}"),
+                    &reason,
+                );
+            }
+            Ok(T::default())
+        }
+    }
+}
+
 /// A publisher's self-contained artifact-schema validator.
 ///
 /// Each implementation renders the manifest(s) the publisher would emit for
@@ -401,9 +442,16 @@ pub fn validate_publisher_schemas(
             ));
             continue;
         }
-        let result = validator
+        let outcome = validator
             .validate(ctx, resolve_tag)
-            .with_context(|| format!("schema-validate publisher '{publisher}' artifacts"))?;
+            .with_context(|| format!("schema-validate publisher '{publisher}' artifacts"));
+        // A whole-publisher render that disqualifies itself (a project-wide
+        // manifest with nothing to name) is a skip for that publisher, not the
+        // end of the pass: the publishers after it still have to be validated
+        // before the release runs them.
+        let result =
+            crate::publisher_helpers::absorb_entry_skip(ctx, log, publisher, publisher, outcome)?
+                .unwrap_or_default();
         log.verbose(&format!(
             "publisher '{}' produced {} schema-validation finding(s)",
             publisher,
@@ -600,5 +648,90 @@ mod tests {
             run_missing(false, false).is_empty(),
             "an optional validator missing when lenient must skip"
         );
+    }
+
+    /// Every per-crate validator renders through [`validate_crate_scoped`], so a
+    /// disqualified crate is a recorded skip and the crates and publishers after
+    /// it are still validated. `with_validated_crate_scope` is reachable only
+    /// through that wrapper: a validator calling it directly would turn one
+    /// crate's misconfiguration back into a release-aborting error.
+    #[test]
+    fn every_per_crate_validator_renders_through_the_entry_skip_absorber() {
+        use anodizer_core::test_helpers::test_sources::{
+            function_bodies, production_half, rust_sources,
+        };
+
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/schema_validation");
+        let mut wrapped: Vec<String> = Vec::new();
+        for path in rust_sources(&dir) {
+            let text = std::fs::read_to_string(&path).expect("readable source");
+            let prod = production_half(&text).to_string();
+            let file = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .expect("named source")
+                .to_string();
+            if file != "mod.rs" {
+                for body in function_bodies(&prod) {
+                    assert!(
+                        !body.contains("with_validated_crate_scope("),
+                        "{file} renders a crate outside validate_crate_scoped; a disqualified \
+                         crate there aborts the pass instead of being skipped"
+                    );
+                }
+            }
+            if file != "mod.rs" && prod.contains("validate_crate_scoped(") {
+                wrapped.push(file);
+            }
+        }
+        wrapped.sort();
+        assert_eq!(
+            wrapped,
+            [
+                "aur.rs",
+                "chocolatey.rs",
+                "homebrew.rs",
+                "krew.rs",
+                "nfpm.rs",
+                "nix.rs",
+                "scoop.rs",
+                "snapcraft.rs",
+                "winget.rs",
+            ],
+            "every per-crate validator goes through the wrapper; mcp renders one \
+             project-wide document and has no per-crate scope"
+        );
+    }
+
+    /// A validator that disqualifies its whole publisher is skipped, and the
+    /// publishers registered after it are still validated.
+    #[test]
+    fn a_publisher_that_disqualifies_itself_does_not_end_the_pass() {
+        let mut ctx = anodizer_core::test_helpers::TestContextBuilder::new()
+            .tag("v1.0.0")
+            .build();
+        let log = quiet_log();
+        let skipped: Result<Vec<SchemaFinding>> = Err(anodizer_core::pipe_skip::entry_skip(
+            "repository.name is not set",
+        ));
+
+        let absorbed =
+            crate::publisher_helpers::absorb_entry_skip(&ctx, &log, "krew", "krew", skipped)
+                .expect("an entry skip is absorbed, not propagated");
+        assert!(
+            absorbed.is_none(),
+            "the disqualified publisher yields no findings"
+        );
+        assert!(
+            ctx.skip_memento
+                .snapshot()
+                .iter()
+                .any(|e| e.stage == "krew" && e.reason == "repository.name is not set"),
+            "the reason reaches the run summary"
+        );
+
+        // The pass itself still completes over the remaining publishers.
+        validate_publisher_schemas(&mut ctx, &log, &test_current_version_resolver())
+            .expect("the pass runs to completion");
     }
 }

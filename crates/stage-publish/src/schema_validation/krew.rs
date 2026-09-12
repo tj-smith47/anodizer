@@ -16,8 +16,8 @@ use anodizer_core::context::Context;
 use anyhow::Result;
 
 use super::{
-    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_json,
-    with_validated_crate_scope, yaml_to_json,
+    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_crate_scoped, validate_json,
+    yaml_to_json,
 };
 use crate::krew::{
     crate_has_krew_artifacts, is_krew_per_crate_configured, render_krew_manifest_for_crate,
@@ -93,15 +93,17 @@ impl PublisherSchemaValidator for KrewSchemaValidator {
             // Render + validate under THIS crate's own version (workspace
             // per-crate independent-version mode renders each crate's manifest
             // against its own version, not the first crate's).
-            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
-                // `None` means the publisher would skip this crate
-                // (skip / skip_upload / falsy `if`) — nothing to validate.
-                let Some(manifest) = render_krew_manifest_for_crate(ctx, crate_name, &log)? else {
-                    return Ok(Vec::new());
-                };
-                let value = yaml_to_json(&manifest)?;
-                validate_json("krew", &value, KREW_SCHEMA)
-            })?;
+            let crate_findings =
+                validate_crate_scoped(ctx, self.publisher(), crate_name, resolve_tag, |ctx| {
+                    // `None` means the publisher would skip this crate
+                    // (skip / skip_upload / falsy `if`) — nothing to validate.
+                    let Some(manifest) = render_krew_manifest_for_crate(ctx, crate_name, &log)?
+                    else {
+                        return Ok(Vec::new());
+                    };
+                    let value = yaml_to_json(&manifest)?;
+                    validate_json("krew", &value, KREW_SCHEMA)
+                })?;
             findings.extend(crate_findings);
         }
 

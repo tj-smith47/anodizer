@@ -21,7 +21,7 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
-use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, with_validated_crate_scope};
+use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, validate_crate_scoped};
 use crate::aur::{
     AurRendered, crate_has_aur_linux_archive, is_aur_per_crate_configured,
     render_aur_pkgbuild_and_srcinfo_for_crate,
@@ -65,55 +65,56 @@ impl PublisherSchemaValidator for AurSchemaValidator {
             // Render + validate under THIS crate's own version (workspace
             // per-crate independent-version mode renders each crate's PKGBUILD
             // `pkgver` against its own version, not the first crate's).
-            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
-                let mut out = Vec::new();
-                let aur_cfg = ctx
-                    .config
-                    .find_crate(crate_name)
-                    .and_then(|c| c.publish.as_ref())
-                    .and_then(|p| p.aur.clone());
+            let crate_findings =
+                validate_crate_scoped(ctx, self.publisher(), crate_name, resolve_tag, |ctx| {
+                    let mut out = Vec::new();
+                    let aur_cfg = ctx
+                        .config
+                        .find_crate(crate_name)
+                        .and_then(|c| c.publish.as_ref())
+                        .and_then(|p| p.aur.clone());
 
-                // A real release always builds at least one Linux archive the
-                // PKGBUILD points at, but a target-restricted determinism shard
-                // may build none for this crate (e.g. a macOS/Windows-only shard —
-                // AUR ships Linux archives only). The self-skip is gated on the
-                // partial-shard signal exactly as `validate_nix`/homebrew gate
-                // theirs: on a FULL build, an empty linux-archive set is a genuine
-                // misconfiguration (AUR configured but nothing it can package), so
-                // it must fall through to the render and ERROR — the same "no
-                // linux archives matched" bail the live publish path hits — rather
-                // than silently skip. `crate_has_aur_linux_archive` is
-                // presence-only: a matched-but-broken (missing sha256) archive
-                // still reports present, so the render is called and its `Err`
-                // propagates (`?`) on a partial shard too.
-                if let Some(aur_cfg) = aur_cfg.as_ref()
-                    && ctx.is_target_restricted_build()
-                    && !crate_has_aur_linux_archive(ctx, aur_cfg, crate_name)?
-                {
-                    log.verbose(&format!(
-                        "skipped binary PKGBUILD schema validation for crate '{}' — no linux \
+                    // A real release always builds at least one Linux archive the
+                    // PKGBUILD points at, but a target-restricted determinism shard
+                    // may build none for this crate (e.g. a macOS/Windows-only shard —
+                    // AUR ships Linux archives only). The self-skip is gated on the
+                    // partial-shard signal exactly as `validate_nix`/homebrew gate
+                    // theirs: on a FULL build, an empty linux-archive set is a genuine
+                    // misconfiguration (AUR configured but nothing it can package), so
+                    // it must fall through to the render and ERROR — the same "no
+                    // linux archives matched" bail the live publish path hits — rather
+                    // than silently skip. `crate_has_aur_linux_archive` is
+                    // presence-only: a matched-but-broken (missing sha256) archive
+                    // still reports present, so the render is called and its `Err`
+                    // propagates (`?`) on a partial shard too.
+                    if let Some(aur_cfg) = aur_cfg.as_ref()
+                        && ctx.is_target_restricted_build()
+                        && !crate_has_aur_linux_archive(ctx, aur_cfg, crate_name)?
+                    {
+                        log.verbose(&format!(
+                            "skipped binary PKGBUILD schema validation for crate '{}' — no linux \
                          archive for aur in this target-restricted shard",
-                        crate_name
-                    ));
-                    ctx.emission_skips.remember(
-                        crate::snapshot_validation::EMISSION_SKIP_STAGE,
-                        &format!("{crate_name} aur"),
-                        "no linux archive in this target-restricted shard",
-                    );
-                    return Ok(out);
-                }
+                            crate_name
+                        ));
+                        ctx.emission_skips.remember(
+                            crate::snapshot_validation::EMISSION_SKIP_STAGE,
+                            &format!("{crate_name} aur"),
+                            "no linux archive in this target-restricted shard",
+                        );
+                        return Ok(out);
+                    }
 
-                // Here the render is a validation verdict, not a publish: the
-                // entry-skip reason is bare because the publish path's skip
-                // line supplies the label, so this caller adds it.
-                if let Some(rendered) =
-                    render_aur_pkgbuild_and_srcinfo_for_crate(ctx, crate_name, &log)
-                        .with_context(|| format!("aur: '{crate_name}'"))?
-                {
-                    validate_rendered(&mut out, &rendered, strict, &log)?;
-                }
-                Ok(out)
-            })?;
+                    // Here the render is a validation verdict, not a publish: the
+                    // entry-skip reason is bare because the publish path's skip
+                    // line supplies the label, so this caller adds it.
+                    if let Some(rendered) =
+                        render_aur_pkgbuild_and_srcinfo_for_crate(ctx, crate_name, &log)
+                            .with_context(|| format!("aur: '{crate_name}'"))?
+                    {
+                        validate_rendered(&mut out, &rendered, strict, &log)?;
+                    }
+                    Ok(out)
+                })?;
             findings.extend(crate_findings);
         }
 
@@ -130,15 +131,16 @@ impl PublisherSchemaValidator for AurSchemaValidator {
                 continue;
             }
             // Render + validate under THIS crate's own version.
-            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
-                let mut out = Vec::new();
-                if let Some(rendered) =
-                    render_aur_source_pkgbuild_and_srcinfo_for_crate(ctx, crate_name, &log)?
-                {
-                    validate_rendered(&mut out, &rendered, strict, &log)?;
-                }
-                Ok(out)
-            })?;
+            let crate_findings =
+                validate_crate_scoped(ctx, self.publisher(), crate_name, resolve_tag, |ctx| {
+                    let mut out = Vec::new();
+                    if let Some(rendered) =
+                        render_aur_source_pkgbuild_and_srcinfo_for_crate(ctx, crate_name, &log)?
+                    {
+                        validate_rendered(&mut out, &rendered, strict, &log)?;
+                    }
+                    Ok(out)
+                })?;
             findings.extend(crate_findings);
         }
 

@@ -17,7 +17,7 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
-use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, with_validated_crate_scope};
+use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, validate_crate_scoped};
 use crate::chocolatey::{
     is_chocolatey_per_crate_configured, render_nuspec_for_crate, validate_install_mode_for_crate,
 };
@@ -71,43 +71,44 @@ impl PublisherSchemaValidator for ChocolateySchemaValidator {
             // Render + validate under THIS crate's own version (workspace
             // per-crate independent-version mode renders each crate's nuspec
             // `<version>` against its own version, not the first crate's).
-            let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
-                // `None` means the publisher would skip this crate (skip / falsy
-                // `if`) — nothing to render or validate.
-                let Some(nuspec) = render_nuspec_for_crate(ctx, crate_name, &log)? else {
-                    return Ok(Vec::new());
-                };
-                let mut out = validate_nuspec_structural(&nuspec);
-                out.extend(validate_nuspec_xmllint(&nuspec, strict, &log)?);
+            let crate_findings =
+                validate_crate_scoped(ctx, self.publisher(), crate_name, resolve_tag, |ctx| {
+                    // `None` means the publisher would skip this crate (skip / falsy
+                    // `if`) — nothing to render or validate.
+                    let Some(nuspec) = render_nuspec_for_crate(ctx, crate_name, &log)? else {
+                        return Ok(Vec::new());
+                    };
+                    let mut out = validate_nuspec_structural(&nuspec);
+                    out.extend(validate_nuspec_xmllint(&nuspec, strict, &log)?);
 
-                // The nuspec is metadata-only and never references a Windows
-                // artifact, so schema-checking it alone would let a full build
-                // pass while the live publish aborts on "no windows artifact".
-                // Reproduce that artifact-dependent bail here, gated on the
-                // partial-shard signal exactly as the winget/scoop validators
-                // gate theirs: an absent artifact is legitimate on a
-                // target-restricted shard (skip) but a genuine misconfiguration
-                // on a FULL build (ERROR).
-                let partial_shard = ctx.is_target_restricted_build();
-                // Here the check is a validation verdict, not a publish: the
-                // entry-skip reason is bare because the publish path's skip
-                // line supplies the label, so this caller adds it.
-                if !validate_install_mode_for_crate(ctx, crate_name, partial_shard, &log)
-                    .with_context(|| format!("chocolatey: '{crate_name}'"))?
-                {
-                    log.verbose(&format!(
-                        "skipped chocolatey install-mode validation for crate '{}' — produced \
+                    // The nuspec is metadata-only and never references a Windows
+                    // artifact, so schema-checking it alone would let a full build
+                    // pass while the live publish aborts on "no windows artifact".
+                    // Reproduce that artifact-dependent bail here, gated on the
+                    // partial-shard signal exactly as the winget/scoop validators
+                    // gate theirs: an absent artifact is legitimate on a
+                    // target-restricted shard (skip) but a genuine misconfiguration
+                    // on a FULL build (ERROR).
+                    let partial_shard = ctx.is_target_restricted_build();
+                    // Here the check is a validation verdict, not a publish: the
+                    // entry-skip reason is bare because the publish path's skip
+                    // line supplies the label, so this caller adds it.
+                    if !validate_install_mode_for_crate(ctx, crate_name, partial_shard, &log)
+                        .with_context(|| format!("chocolatey: '{crate_name}'"))?
+                    {
+                        log.verbose(&format!(
+                            "skipped chocolatey install-mode validation for crate '{}' — produced \
                          no Windows artifact in this target-restricted shard",
-                        crate_name
-                    ));
-                    ctx.emission_skips.remember(
-                        crate::snapshot_validation::EMISSION_SKIP_STAGE,
-                        &format!("{crate_name} chocolatey"),
-                        "no Windows artifact in this target-restricted shard",
-                    );
-                }
-                Ok(out)
-            })?;
+                            crate_name
+                        ));
+                        ctx.emission_skips.remember(
+                            crate::snapshot_validation::EMISSION_SKIP_STAGE,
+                            &format!("{crate_name} chocolatey"),
+                            "no Windows artifact in this target-restricted shard",
+                        );
+                    }
+                    Ok(out)
+                })?;
             findings.extend(crate_findings);
         }
 
@@ -373,6 +374,34 @@ mod tests {
             kind: ArtifactKind::Archive,
             path: std::path::PathBuf::from(format!("/dist/{crate_name}-{target}.zip")),
             name: format!("{crate_name}-{target}.zip"),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: meta,
+            size: None,
+        });
+    }
+
+    /// A SECOND Windows amd64 archive for the same crate, which is what makes
+    /// the platform ambiguous: two archives claim amd64 and the publisher
+    /// cannot tell which payload the package should carry.
+    fn add_second_windows_zip(ctx: &mut Context, crate_name: &str) {
+        use std::collections::HashMap;
+
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+
+        let target = "x86_64-pc-windows-msvc";
+        let name = format!("{crate_name}-win64-extra.zip");
+        let mut meta = HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            format!("https://github.com/acme/widget/releases/download/v1.0.0/{name}"),
+        );
+        meta.insert("sha256".to_string(), "b".repeat(64));
+        meta.insert("format".to_string(), "zip".to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/dist/{name}")),
+            name,
             target: Some(target.to_string()),
             crate_name: crate_name.to_string(),
             metadata: meta,
@@ -1174,6 +1203,56 @@ mod tests {
                 || f.field.contains("notAThing")
                 || f.expected.contains("not expected")),
             "the finding must name the offending element, got: {findings:?}"
+        );
+    }
+
+    /// A crate whose Windows archives are ambiguous disqualifies itself, not
+    /// the pass: the reason is recorded as a skip and the crate configured
+    /// after it is still validated. Before this the same `entry_skip` aborted
+    /// the pre-publish guard, which had already let the release be created.
+    #[test]
+    fn an_ambiguous_crate_is_skipped_and_the_next_crate_is_still_validated() {
+        let widget = choco_crate("widget", "v{{ .Version }}", every_option_choco_cfg());
+        let gadget = choco_crate(
+            "gadget",
+            "v{{ .Version }}",
+            ChocolateyConfig {
+                name: Some("gadget".to_string()),
+                authors: Some(String::new()),
+                ..every_option_choco_cfg()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![widget, gadget])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        add_windows_zip(&mut ctx, "widget");
+        add_second_windows_zip(&mut ctx, "widget");
+        add_windows_zip(&mut ctx, "gadget");
+
+        let findings = ChocolateySchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("an ambiguous crate is a skip, never an abort");
+
+        let skips = ctx.skip_memento.snapshot();
+        let widget_skip = skips
+            .iter()
+            .find(|e| e.stage == "chocolatey" && e.label == "widget")
+            .expect("the ambiguous crate is recorded as a skipped chocolatey entry");
+        assert!(
+            widget_skip
+                .reason
+                .contains("multiple archives for the same platform (amd64)"),
+            "the recorded reason names the ambiguity, got: {}",
+            widget_skip.reason
+        );
+        assert!(
+            findings.iter().any(|f| f.field == "metadata/authors"),
+            "the crate configured after the skipped one is still validated, got: {findings:?}"
         );
     }
 }
