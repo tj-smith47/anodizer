@@ -3,10 +3,12 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result};
 
-use crate::archive_name::{binstall_pkg_fmt, render_archive_asset_name_with_variant};
+use crate::archive_name::{
+    archive_format_for_target, binstall_pkg_fmt, default_archive_name_template,
+    global_default_archive_format, render_archive_asset_name_with_variant,
+};
 use crate::config::{ArchiveConfig, ArchivesConfig, BinstallConfig, BinstallOverride, CrateConfig};
 use crate::context::Context;
-use crate::target::map_target;
 
 /// Sentinel substituted into the rendered tag + asset name in place of the
 /// release version, then swapped for cargo-binstall's own `{ version }` token.
@@ -574,66 +576,6 @@ fn stamp_sentinel_version(ctx: &mut Context) -> Vec<(&'static str, Option<String
     // with the `v{ version }` tag the download URL targets.
     vars.set("Tag", &format!("v{VERSION_SENTINEL}"));
     prior
-}
-
-/// The default `archive.name_template` the archive stage uses for this crate:
-/// the multi-crate default when the archive stage's work list holds more than
-/// one crate, else the single-crate default. Resolves through the same
-/// selection the stage itself uses ([`crate::archive_selection`]) so the
-/// decision basis cannot drift from the stage's real work list — a
-/// workspace-only crate counts here exactly as it does there.
-fn default_archive_name_template(ctx: &Context) -> String {
-    let producing = crate::archive_selection::archive_producing_crates(
-        &ctx.config,
-        &ctx.artifacts,
-        &ctx.options.selected_crates,
-    );
-    if producing.len() > 1 {
-        crate::archive_name::DEFAULT_NAME_TEMPLATE_MULTI_CRATE.to_string()
-    } else {
-        crate::archive_name::DEFAULT_NAME_TEMPLATE.to_string()
-    }
-}
-
-/// The project-wide default archive format (`defaults.archives.formats[0]`,
-/// falling back to `tar.gz`). Used when an archive entry sets no `formats:`.
-fn global_default_archive_format(ctx: &Context) -> String {
-    ctx.config
-        .defaults
-        .as_ref()
-        .and_then(|d| d.archives.as_ref())
-        .and_then(|a| a.formats.as_ref())
-        .and_then(|f| f.first())
-        .cloned()
-        .unwrap_or_else(|| "tar.gz".to_string())
-}
-
-/// The archive format an entry produces for `target`: the first matching
-/// `format_overrides[]` entry's format (OS-prefix match, mirroring the archive
-/// stage), else the entry's own first `formats[]`, else `global_default`.
-fn archive_format_for_target(
-    archive: &ArchiveConfig,
-    target: &str,
-    global_default: &str,
-) -> String {
-    let (os, _arch) = map_target(target);
-    if let Some(overrides) = archive.format_overrides.as_ref() {
-        for ov in overrides {
-            if !ov.os.is_empty()
-                && os.starts_with(&ov.os)
-                && let Some(fmts) = ov.formats.as_ref()
-                && let Some(first) = fmts.first()
-            {
-                return first.clone();
-            }
-        }
-    }
-    archive
-        .formats
-        .as_ref()
-        .and_then(|f| f.first())
-        .cloned()
-        .unwrap_or_else(|| global_default.to_string())
 }
 
 #[cfg(test)]

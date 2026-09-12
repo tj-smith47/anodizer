@@ -529,136 +529,237 @@ pub(crate) fn qualify_basename_with_target(name: &str, target: &str) -> String {
     }
 }
 
-/// The asset-name stem the run's other assets for `crate_name`/`target` are
-/// built from: the archive stage's rendered `name_template` for that target,
-/// read back from the archive it registered
-/// (`anodizer-0.26.0-linux-amd64.tar.gz` → `anodizer-0.26.0-linux-amd64`).
+/// The name template a binary signature falls back to when NO `archives:`
+/// entry covers the binary's target — a musl build that only feeds npm, say.
 ///
-/// A crate with several `archives:` entries registers several archives per
-/// target, and the registry's order is not the config's: a publish-only run
-/// loads the preserved manifest, where `app-1.0.0-linux-amd64-extra.tar.xz`
-/// sorts ahead of `app-1.0.0-linux-amd64.tar.gz`. The stem is the PRIMARY
-/// entry's — the first `archives:` entry in config order, the one chocolatey
-/// and scoop bind to with `ids: [default]` — so a signature is named after the
-/// archive its consumers install from, whatever order the archives were
-/// registered in.
+/// The full triple is required: `Os`/`Arch` render identically for a gnu and
+/// a musl build of one machine, so a `{{ Os }}-{{ Arch }}` name would collapse
+/// the two targets' signatures onto one asset.
+pub(crate) const UNCOVERED_TARGET_NAME_TEMPLATE: &str = "{{ Binary }}-{{ Version }}-{{ Target }}";
+
+/// The release-asset BASE name every signature and certificate of one raw
+/// binary is built on.
 ///
-/// A `formats: [binary]` entry registers no archive, so the uploadable binary
-/// named after `binary_name` stands in — its own name IS the stem, which is
-/// what makes a `signs:` signature over that asset and a `binary_signs:`
-/// signature over the same bytes resolve to one name.
+/// Derived from CONFIG alone, never from which archives the run has
+/// registered, so `anodizer build` (which signs before any archive exists)
+/// and `anodizer release --publish-only` (whose registry is the preserved
+/// manifest) name the same binary's signature identically:
 ///
-/// `None` when the run produced neither, which is `anodizer build`: it signs
-/// binaries before any archive exists and uploads nothing, so the caller keeps
-/// the target-qualified basename there.
-pub(crate) fn archive_stem_for(
+/// | the binary's target | base |
+/// |---|---|
+/// | covered by the crate's primary `archives:` entry — the first entry in config order whose `ids:` / `binaries:` filters take this binary | that entry's `name_template`, rendered in the archive stage's own per-target scope ([`anodizer_core::archive_name::seed_archive_name_vars`]) |
+/// | covered by no entry | [`UNCOVERED_TARGET_NAME_TEMPLATE`] |
+///
+/// An entry producing `format: binary` publishes the executable itself, so
+/// its base is that asset's own name (the per-binary default template plus the
+/// Windows `.exe`): a `signs:` signature over the uploaded binary and a
+/// `binary_signs:` signature over the same bytes then resolve to one name.
+///
+/// A `binary_signs:` entry's `asset_name_template:` overrides every row.
+pub(crate) fn binary_sign_asset_base(
     ctx: &Context,
-    crate_name: &str,
+    cfg: &SignConfig,
+    binary: &anodizer_core::artifact::Artifact,
     target: &str,
-    binary_name: Option<&str>,
-) -> Option<String> {
-    let for_target = |a: &&anodizer_core::artifact::Artifact| {
-        a.crate_name == crate_name && a.target.as_deref() == Some(target)
+) -> Result<String> {
+    use anodizer_core::archive_name;
+
+    let binary_name = binary.binary_name().unwrap_or_default();
+    let amd64_variant = binary.metadata.get("amd64_variant").map(String::as_str);
+    // The archive stage rebinds `ProjectName` to the per-crate name whenever
+    // its work list holds more than one crate, and picks the multi-crate
+    // default template on the same condition.
+    let multi_crate = archive_name::archives_more_than_one_crate(ctx);
+    let seeded = |binary_var: &str| {
+        let mut vars = ctx.template_vars().clone();
+        if multi_crate {
+            vars.set("ProjectName", &binary.crate_name);
+        }
+        archive_name::seed_archive_name_vars(
+            &mut vars,
+            target,
+            &binary.crate_name,
+            binary_var,
+            amd64_variant,
+        );
+        vars
     };
-    let artifacts = ctx.artifacts.all();
-    let archives: Vec<_> = artifacts
-        .iter()
-        .filter(|a| a.kind == ArtifactKind::Archive)
-        .filter(for_target)
-        .collect();
-    let primary_id = primary_archive_id(ctx, crate_name);
-    let primary = archives
-        .iter()
-        .find(|a| a.metadata.get("id") == primary_id.as_ref())
-        .or_else(|| archives.first());
-    if let Some(archive) = primary
-        && let Some(stem) = archive.metadata.get("name")
-        && !stem.is_empty()
-    {
-        return Some(stem.clone());
+    let render = |template: &str, vars: &anodizer_core::template::TemplateVars| {
+        anodizer_core::template::render(template, vars).with_context(|| {
+            format!(
+                "sign: render binary signature asset name '{template}' for \
+                 {}/{target}",
+                binary.crate_name
+            )
+        })
+    };
+
+    if let Some(template) = cfg.asset_name_template.as_deref() {
+        return render(template, &seeded(&binary_name));
     }
-    artifacts
-        .iter()
-        .filter(|a| a.kind == ArtifactKind::UploadableBinary)
-        .find(|a| for_target(a) && a.binary_name().as_deref() == binary_name)
-        .map(|a| a.name.clone())
-        .filter(|n| !n.is_empty())
+
+    let krate = ctx.config.find_crate(&binary.crate_name);
+    let entry = krate
+        .map(anodizer_core::archive_selection::effective_archive_configs)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|c| {
+            // A meta entry packs no binaries, so the archive stage names it
+            // with an EMPTY `{{ Binary }}` — a base derived from it names an
+            // asset this binary never appears in.
+            !c.meta.unwrap_or(false)
+                && anodizer_core::artifact::matches_id_filter(binary, c.ids.as_deref())
+                && c.binaries
+                    .as_deref()
+                    .is_none_or(|names| names.contains(&binary_name))
+        });
+
+    let Some(entry) = entry else {
+        return render(UNCOVERED_TARGET_NAME_TEMPLATE, &seeded(&binary_name));
+    };
+
+    let format = archive_name::archive_format_for_target(
+        &entry,
+        target,
+        &archive_name::global_default_archive_format(ctx),
+    );
+    let is_binary_format = format == anodizer_core::artifact::FORMAT_BINARY;
+    let template = entry.name_template.clone().unwrap_or_else(|| {
+        if is_binary_format {
+            archive_name::DEFAULT_BINARY_NAME_TEMPLATE.to_string()
+        } else {
+            archive_name::default_archive_name_template(ctx)
+        }
+    });
+    // `format: binary` names each output after the binary it holds; every
+    // other format names one asset per target after the group's first binary.
+    let binary_var = if is_binary_format {
+        binary_name.clone()
+    } else {
+        krate
+            .map(|krate| {
+                anodizer_core::build_plan::archive_binary_name(
+                    krate,
+                    entry.ids.as_deref(),
+                    entry.binaries.as_deref(),
+                    target,
+                    &ctx.config.effective_default_targets(),
+                    |t| ctx.render_template(t),
+                )
+            })
+            .unwrap_or_else(|| binary_name.clone())
+    };
+
+    let stem = render(&template, &seeded(&binary_var))?;
+    Ok(if is_binary_format {
+        archive_name::binary_output_name(stem, target)
+    } else {
+        stem
+    })
 }
 
-/// The id of `crate_name`'s first configured `archives:` entry, the archive
-/// the crate's other per-target assets are named after. The archive stage
-/// records the same id in each archive's `id` metadata (`default` when the
-/// entry names none). `None` when the crate is not in the config or has no
-/// archive entry.
-fn primary_archive_id(ctx: &Context, crate_name: &str) -> Option<String> {
-    match &ctx.config.find_crate(crate_name)?.archives {
-        anodizer_core::config::ArchivesConfig::Configs(configs) => configs
-            .first()
-            .map(|c| c.id.clone().unwrap_or_else(|| "default".to_string())),
-        anodizer_core::config::ArchivesConfig::Disabled => None,
-    }
-}
-
-/// The release-asset name a `binary_signs:` output registers under.
+/// The release-asset name a `binary_signs:` output registers under: the
+/// config-derived [`binary_sign_asset_base`] plus the suffix the `signature:`
+/// / `certificate:` template appended to the binary's own file name.
 ///
-/// A binary signature uploads beside the archive built from the same binary,
-/// so it is named after that archive's stem: the raw binary's own basename
-/// repeats across every target (`anodizer.sig` eight times over). The suffix
-/// the `signature:` / `certificate:` template appended to the binary's file
-/// name carries over, so `anodizer.exe` → `anodizer.exe.sig` yields
-/// `<stem>.sig` and a cosign bundle `anodizer.bundle.sig` yields
-/// `<stem>.bundle.sig`.
+/// The raw binary is called the same thing under every target's directory
+/// (`anodizer.sig` eight times over), so the base carries the target.
+/// `anodizer.exe` → `anodizer.exe.sig` yields `<base>.sig` and a cosign bundle
+/// `anodizer.bundle.sig` yields `<base>.bundle.sig`.
 ///
-/// Falls back to the target-qualified basename when the run built no archive
-/// for the target, or when the template renamed the file rather than suffixing
-/// it — both still unique per target.
+/// Falls back to the target-qualified basename when the template renamed the
+/// file rather than suffixing it — still unique per target.
 pub(crate) fn binary_sign_asset_name(
     rendered_basename: &str,
     binary_basename: &str,
-    stem: Option<&str>,
+    base: &str,
     target: &str,
 ) -> String {
     if binary_basename.is_empty() {
         return qualify_basename_with_target(rendered_basename, target);
     }
-    match (stem, rendered_basename.strip_prefix(binary_basename)) {
-        (Some(stem), Some(suffix)) if !suffix.is_empty() => format!("{stem}{suffix}"),
+    match rendered_basename.strip_prefix(binary_basename) {
+        Some(suffix) if !suffix.is_empty() => format!("{base}{suffix}"),
         _ => qualify_basename_with_target(rendered_basename, target),
     }
 }
 
 #[cfg(test)]
-mod archive_stem_for_tests {
-    use super::archive_stem_for;
+mod binary_sign_asset_name_tests {
+    use super::{binary_sign_asset_base, binary_sign_asset_name};
     use anodizer_core::artifact::{Artifact, ArtifactKind};
-    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+    use anodizer_core::config::{
+        ArchiveConfig, ArchivesConfig, BuildConfig, CrateConfig, SignConfig,
+    };
     use anodizer_core::context::Context;
     use anodizer_core::test_helpers::TestContextBuilder;
 
-    const TARGET: &str = "x86_64-unknown-linux-gnu";
+    const LINUX: &str = "x86_64-unknown-linux-gnu";
+    const MUSL: &str = "x86_64-unknown-linux-musl";
+    const WINDOWS: &str = "x86_64-pc-windows-msvc";
+    const TEMPLATE: &str = "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}";
 
-    fn crate_with_archives(ids: &[&str]) -> CrateConfig {
-        CrateConfig {
-            name: "app".to_string(),
-            path: ".".to_string(),
-            archives: ArchivesConfig::Configs(
-                ids.iter()
-                    .map(|id| ArchiveConfig {
-                        id: Some((*id).to_string()),
-                        ..Default::default()
-                    })
-                    .collect(),
-            ),
+    fn archive(id: &str, name_template: &str) -> ArchiveConfig {
+        ArchiveConfig {
+            id: Some(id.to_string()),
+            name_template: Some(name_template.to_string()),
             ..Default::default()
         }
     }
 
+    fn crate_with(archives: Vec<ArchiveConfig>) -> CrateConfig {
+        CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("app".to_string()),
+                targets: Some(vec![
+                    LINUX.to_string(),
+                    MUSL.to_string(),
+                    WINDOWS.to_string(),
+                ]),
+                ..Default::default()
+            }]),
+            archives: ArchivesConfig::Configs(archives),
+            ..Default::default()
+        }
+    }
+
+    fn ctx_with(archives: Vec<ArchiveConfig>) -> Context {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("app")
+            .crates(vec![crate_with(archives)])
+            .build();
+        ctx.template_vars_mut().set("ProjectName", "app");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx
+    }
+
+    fn binary(target: &str, id: Option<&str>) -> Artifact {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("binary_name".to_string(), "app".to_string());
+        if let Some(id) = id {
+            metadata.insert("id".to_string(), id.to_string());
+        }
+        Artifact {
+            kind: ArtifactKind::Binary,
+            name: "app".to_string(),
+            path: std::path::PathBuf::from(format!("target/{target}/release/app")),
+            target: Some(target.to_string()),
+            crate_name: "app".to_string(),
+            metadata,
+            size: None,
+        }
+    }
+
+    /// The already-registered archive of a publish-only run's preserved
+    /// manifest. The base must not depend on it.
     fn add_archive(ctx: &mut Context, id: &str, stem: &str, file: &str) {
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
-            name: String::new(),
+            name: stem.to_string(),
             path: std::path::PathBuf::from(format!("dist/{file}")),
-            target: Some(TARGET.to_string()),
+            target: Some(LINUX.to_string()),
             crate_name: "app".to_string(),
             metadata: [("id", id), ("name", stem)]
                 .into_iter()
@@ -668,97 +769,90 @@ mod archive_stem_for_tests {
         });
     }
 
-    /// The preserved manifest of a publish-only run lists the `-extra`
-    /// archive first (`-` sorts before `.`); the stem is still the primary
-    /// entry's.
+    /// The primary entry is the first in CONFIG order, and its template is
+    /// what names the signature — whatever the registry holds, and whatever
+    /// order it holds it in. `anodizer build` (empty registry) therefore
+    /// names the asset exactly as `anodizer release` does.
     #[test]
-    fn the_primary_archive_entry_names_the_stem_whatever_the_registry_order() {
-        let mut ctx = TestContextBuilder::new()
-            .crates(vec![crate_with_archives(&["default", "extra"])])
-            .build();
+    fn the_primary_entry_template_names_the_base_whatever_the_registry_holds() {
+        let archives = vec![
+            archive("default", TEMPLATE),
+            archive(
+                "extra",
+                concat!(
+                    "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}",
+                    "-extra"
+                ),
+            ),
+        ];
+        let empty = ctx_with(archives.clone());
+
+        let mut extra_only = ctx_with(archives.clone());
         add_archive(
-            &mut ctx,
+            &mut extra_only,
+            "extra",
+            "app-1.0.0-linux-amd64-extra",
+            "app-1.0.0-linux-amd64-extra.tar.xz",
+        );
+
+        let mut extra_first = ctx_with(archives.clone());
+        add_archive(
+            &mut extra_first,
             "extra",
             "app-1.0.0-linux-amd64-extra",
             "app-1.0.0-linux-amd64-extra.tar.xz",
         );
         add_archive(
-            &mut ctx,
+            &mut extra_first,
             "default",
             "app-1.0.0-linux-amd64",
             "app-1.0.0-linux-amd64.tar.gz",
         );
-        assert_eq!(
-            archive_stem_for(&ctx, "app", TARGET, Some("app")).as_deref(),
-            Some("app-1.0.0-linux-amd64")
+
+        let mut default_first = ctx_with(archives);
+        add_archive(
+            &mut default_first,
+            "default",
+            "app-1.0.0-linux-amd64",
+            "app-1.0.0-linux-amd64.tar.gz",
         );
+        add_archive(
+            &mut default_first,
+            "extra",
+            "app-1.0.0-linux-amd64-extra",
+            "app-1.0.0-linux-amd64-extra.tar.xz",
+        );
+
+        for (label, ctx) in [
+            ("no archive registered (anodizer build)", &empty),
+            ("only the -extra archive registered", &extra_only),
+            ("-extra registered first", &extra_first),
+            ("default registered first", &default_first),
+        ] {
+            assert_eq!(
+                binary_sign_asset_base(ctx, &SignConfig::default(), &binary(LINUX, None), LINUX)
+                    .unwrap(),
+                "app-1.0.0-linux-amd64",
+                "{label}"
+            );
+        }
     }
 
-    /// An entry without an `id:` is registered as `default`, which is also
-    /// what the config fold writes back, so the two spellings agree.
+    /// The suffix the `signature:` / `certificate:` template appended to the
+    /// binary's own file name carries onto the base — including the Windows
+    /// `.exe` the raw binary carries and the base does not.
     #[test]
-    fn an_unnamed_first_entry_matches_the_default_id() {
-        let mut ctx = TestContextBuilder::new()
-            .crates(vec![CrateConfig {
-                archives: ArchivesConfig::Configs(vec![
-                    ArchiveConfig::default(),
-                    ArchiveConfig {
-                        id: Some("extra".to_string()),
-                        ..Default::default()
-                    },
-                ]),
-                ..crate_with_archives(&[])
-            }])
-            .build();
-        add_archive(&mut ctx, "extra", "app-extra", "app-extra.tar.xz");
-        add_archive(&mut ctx, "default", "app-main", "app-main.tar.gz");
-        assert_eq!(
-            archive_stem_for(&ctx, "app", TARGET, Some("app")).as_deref(),
-            Some("app-main")
-        );
-    }
-
-    /// A crate the config does not describe (or whose primary entry produced
-    /// no archive for this target) still resolves: the first registered
-    /// archive stands in rather than dropping to the target-qualified name.
-    #[test]
-    fn without_a_primary_match_the_first_registered_archive_stands_in() {
-        let mut ctx = TestContextBuilder::new().build();
-        add_archive(&mut ctx, "extra", "app-extra", "app-extra.tar.xz");
-        assert_eq!(
-            archive_stem_for(&ctx, "app", TARGET, Some("app")).as_deref(),
-            Some("app-extra")
-        );
-        let mut ctx = TestContextBuilder::new()
-            .crates(vec![crate_with_archives(&["default", "extra"])])
-            .build();
-        add_archive(&mut ctx, "extra", "app-extra", "app-extra.tar.xz");
-        assert_eq!(
-            archive_stem_for(&ctx, "app", TARGET, Some("app")).as_deref(),
-            Some("app-extra")
-        );
-    }
-
-    /// A target no archive entry covers (a build that only feeds npm or
-    /// docker) has no stem, so the caller keeps the target-qualified name.
-    #[test]
-    fn a_target_with_no_archive_has_no_stem() {
-        let ctx = TestContextBuilder::new()
-            .crates(vec![crate_with_archives(&["default"])])
-            .build();
-        assert_eq!(archive_stem_for(&ctx, "app", TARGET, Some("app")), None);
-    }
-}
-
-#[cfg(test)]
-mod binary_sign_asset_name_tests {
-    use super::binary_sign_asset_name;
-
-    const TARGET: &str = "x86_64-pc-windows-msvc";
-
-    #[test]
-    fn the_suffix_after_the_binary_name_carries_onto_the_archive_stem() {
-        for (rendered, binary, expected) in [
+    fn the_suffix_after_the_binary_name_carries_onto_the_base() {
+        let ctx = ctx_with(vec![archive("default", TEMPLATE)]);
+        let base = binary_sign_asset_base(
+            &ctx,
+            &SignConfig::default(),
+            &binary(WINDOWS, None),
+            WINDOWS,
+        )
+        .unwrap();
+        assert_eq!(base, "app-1.0.0-windows-amd64");
+        for (rendered, binary_file, expected) in [
             ("app.sig", "app", "app-1.0.0-windows-amd64.sig"),
             ("app.exe.sig", "app.exe", "app-1.0.0-windows-amd64.sig"),
             (
@@ -769,30 +863,88 @@ mod binary_sign_asset_name_tests {
             ("app.pem", "app", "app-1.0.0-windows-amd64.pem"),
         ] {
             assert_eq!(
-                binary_sign_asset_name(rendered, binary, Some("app-1.0.0-windows-amd64"), TARGET),
+                binary_sign_asset_name(rendered, binary_file, &base, WINDOWS),
                 expected,
-                "{rendered} over {binary}"
+                "{rendered} over {binary_file}"
             );
         }
     }
 
+    /// A `signature:` template that RENAMED the file rather than suffixing the
+    /// binary's own name has no suffix to carry, so the rendered basename is
+    /// qualified with the triple instead — still one asset per target.
     #[test]
-    fn no_stem_or_no_suffix_falls_back_to_the_target_qualified_name() {
-        // `anodizer build` signs before any archive exists.
+    fn a_renamed_signature_falls_back_to_the_target_qualified_name() {
         assert_eq!(
-            binary_sign_asset_name("app.sig", "app", None, TARGET),
-            format!("app-{TARGET}.sig")
+            binary_sign_asset_name("detached.sig", "app", "app-1.0.0-windows-amd64", WINDOWS),
+            format!("detached-{WINDOWS}.sig")
         );
-        // A `signature:` template that renamed the file rather than suffixing
-        // the binary's own name.
+    }
+
+    /// A target no archive entry covers keeps the full triple: `Os`/`Arch`
+    /// render identically for the gnu and musl builds of one machine.
+    #[test]
+    fn an_uncovered_target_is_named_with_the_whole_triple() {
+        let ctx = ctx_with(vec![ArchiveConfig {
+            ids: Some(vec!["gnu".to_string()]),
+            name_template: Some(TEMPLATE.to_string()),
+            ..Default::default()
+        }]);
+        let base = binary_sign_asset_base(
+            &ctx,
+            &SignConfig::default(),
+            &binary(MUSL, Some("musl")),
+            MUSL,
+        )
+        .unwrap();
+        assert_eq!(base, format!("app-1.0.0-{MUSL}"));
         assert_eq!(
-            binary_sign_asset_name(
-                "detached.sig",
-                "app",
-                Some("app-1.0.0-windows-amd64"),
-                TARGET
-            ),
-            format!("detached-{TARGET}.sig")
+            binary_sign_asset_name("app.sig", "app", &base, MUSL),
+            format!("app-1.0.0-{MUSL}.sig")
+        );
+    }
+
+    /// A `formats: [binary]` entry publishes the executable itself, so the
+    /// signature is named after that asset — a `signs:` signature over the
+    /// uploaded binary and a `binary_signs:` signature over the same bytes
+    /// resolve to one name. The Windows `.exe` is part of it.
+    #[test]
+    fn a_binary_format_entry_names_the_base_after_the_published_executable() {
+        let ctx = ctx_with(vec![ArchiveConfig {
+            formats: Some(vec!["binary".to_string()]),
+            ..Default::default()
+        }]);
+        assert_eq!(
+            binary_sign_asset_base(&ctx, &SignConfig::default(), &binary(LINUX, None), LINUX)
+                .unwrap(),
+            "app_1.0.0_linux_amd64"
+        );
+        assert_eq!(
+            binary_sign_asset_base(
+                &ctx,
+                &SignConfig::default(),
+                &binary(WINDOWS, None),
+                WINDOWS
+            )
+            .unwrap(),
+            "app_1.0.0_windows_amd64.exe"
+        );
+    }
+
+    /// `asset_name_template:` overrides every derived row, and renders in the
+    /// same per-target scope.
+    #[test]
+    fn the_asset_name_template_override_wins() {
+        let ctx = ctx_with(vec![archive("default", TEMPLATE)]);
+        let cfg = SignConfig {
+            asset_name_template: Some("{{ Binary }}-{{ Target }}-signed".to_string()),
+            ..Default::default()
+        };
+        let base = binary_sign_asset_base(&ctx, &cfg, &binary(LINUX, None), LINUX).unwrap();
+        assert_eq!(base, format!("app-{LINUX}-signed"));
+        assert_eq!(
+            binary_sign_asset_name("app.sig", "app", &base, LINUX),
+            format!("app-{LINUX}-signed.sig")
         );
     }
 }

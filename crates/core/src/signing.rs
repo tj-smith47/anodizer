@@ -35,6 +35,26 @@ pub struct SignConfig {
     pub args: Option<Vec<String>>,
     /// Signature output filename template (supports templates).
     pub signature: Option<String>,
+    /// `binary_signs:` only — override the release-asset name a binary
+    /// signature uploads under.
+    ///
+    /// Renders the asset's BASE name; the suffix the `signature:` /
+    /// `certificate:` template appended to the binary's own file name still
+    /// carries over, so one template names both assets
+    /// (`app-1.0.0-linux-amd64` → `app-1.0.0-linux-amd64.sig` and
+    /// `app-1.0.0-linux-amd64.pem`). Rendered in the same per-target scope an
+    /// archive `name_template` renders under (`Os`, `Arch`, `Target`, the
+    /// micro-architecture variants, `CrateName`, `Binary`).
+    ///
+    /// ```yaml
+    /// binary_signs:
+    ///   - artifacts: binary
+    ///     asset_name_template: "{{ Binary }}-{{ Version }}-{{ Target }}"
+    /// ```
+    ///
+    /// Unset, the name is derived from the crate's `archives:` config — see
+    /// the signing docs.
+    pub asset_name_template: Option<String>,
     /// Content written to the signing command's stdin.
     pub stdin: Option<String>,
     /// Path to a file whose content is written to the signing command's stdin.

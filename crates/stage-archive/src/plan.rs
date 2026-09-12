@@ -151,21 +151,15 @@ pub(crate) fn seed_target_context(
     selected_bins: &[Artifact],
     group_variant: Option<&str>,
 ) {
-    anodizer_core::archive_name::seed_target_vars(ctx, target);
-    let (_, group_arch) = map_target(target);
-    anodizer_core::archive_name::seed_amd64_variant_var(
+    anodizer_core::archive_name::seed_archive_name_vars(
         ctx.template_vars_mut(),
-        &group_arch,
-        group_variant,
-    );
-    let tvars = ctx.template_vars_mut();
-    tvars.set("CrateName", crate_name);
-    tvars.set(
-        "Binary",
+        target,
+        crate_name,
         &selected_bins
             .first()
             .map(|b| b.binary_name().unwrap_or_default())
             .unwrap_or_default(),
+        group_variant,
     );
 }
 

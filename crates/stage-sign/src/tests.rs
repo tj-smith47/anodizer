@@ -301,6 +301,7 @@ fn all_and_checksum_filters_sign_every_checksum_kind_without_recursion() {
     use anodizer_core::test_helpers::has_recursive_sidecar_chain;
 
     let gpg_sign = |filter: &str| SignConfig {
+        asset_name_template: None,
         id: Some("gpg".to_string()),
         cmd: Some("gpg".to_string()),
         args: Some(vec![
@@ -446,6 +447,7 @@ fn signs_loop_skips_only_when_every_consumer_is_deselected() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
 
     let gpg_sign = || SignConfig {
+        asset_name_template: None,
         id: Some("gpg".to_string()),
         cmd: Some("gpg".to_string()),
         args: Some(vec![
@@ -570,6 +572,7 @@ fn binary_signs_loop_follows_the_signature_consumer_set() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
 
     let cosign_sign = || SignConfig {
+        asset_name_template: None,
         id: Some("binkey".to_string()),
         cmd: Some("echo".to_string()),
         args: Some(vec![
@@ -750,6 +753,7 @@ fn test_multiple_sign_configs_run_independently() {
     // Two sign configs targeting different artifact types
     let signs = vec![
         SignConfig {
+            asset_name_template: None,
             verify: None,
             id: Some("gpg".to_string()),
             cmd: Some("echo".to_string()),
@@ -766,6 +770,7 @@ fn test_multiple_sign_configs_run_independently() {
             if_condition: None,
         },
         SignConfig {
+            asset_name_template: None,
             verify: None,
             id: Some("cosign".to_string()),
             cmd: Some("echo".to_string()),
@@ -898,6 +903,7 @@ fn test_ids_filter_restricts_signed_artifacts() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
 
     let sign_cfg = SignConfig {
+        asset_name_template: None,
         id: Some("gpg".to_string()),
         cmd: Some("echo".to_string()),
         args: Some(vec!["sign".to_string()]),
@@ -1032,6 +1038,7 @@ fn test_dry_run_logs_without_executing() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
 
     let signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("gpg".to_string()),
         cmd: Some("/nonexistent/binary/that/does/not/exist".to_string()),
         args: Some(vec![
@@ -1125,6 +1132,7 @@ fn test_sign_none_filter_skips_entirely() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
 
     let signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("skip".to_string()),
         cmd: Some("false".to_string()), // Would fail if executed
         args: None,
@@ -1172,6 +1180,7 @@ fn test_sign_if_false_records_skip_memento() {
     // memento entry so operators can tell an intentionally-disabled sign
     // config apart from a misconfigured one in the pipeline summary.
     let signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("gated".to_string()),
         cmd: Some("false".to_string()),
         args: None,
@@ -1209,6 +1218,7 @@ fn test_sign_positional_label_when_id_missing() {
     // form `<stage-label>[N]` in the skip summary so users can still
     // find it in their config.
     let signs = vec![SignConfig {
+        asset_name_template: None,
         id: None,
         cmd: Some("false".to_string()),
         args: None,
@@ -1241,6 +1251,7 @@ fn test_missing_signing_binary_errors_with_command_name() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
 
     let signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("test".to_string()),
         cmd: Some("/nonexistent/path/to/gpg-that-does-not-exist".to_string()),
         args: Some(vec![
@@ -1292,6 +1303,7 @@ fn test_signing_command_nonzero_exit_errors_with_details() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
 
     let signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("test".to_string()),
         cmd: Some("false".to_string()), // always exits with code 1
         args: Some(vec![]),
@@ -1356,6 +1368,7 @@ fn test_resolve_sign_args_both_placeholders_in_single_arg() {
 #[test]
 fn test_stdin_file_missing_errors_with_path() {
     let sign_cfg = SignConfig {
+        asset_name_template: None,
         id: None,
         cmd: None,
         args: None,
@@ -1461,6 +1474,7 @@ fn test_sign_env_vars_passed_to_command() {
 
     let (cmd, args) = shell_echo_to_file("ANODIZER_TEST_SIGN_ENV", &marker_str);
     let signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("test-env".to_string()),
         cmd: Some(cmd),
         args: Some(args),
@@ -1529,6 +1543,7 @@ fn test_sign_stdin_is_template_rendered() {
 
     let (cmd, args) = shell_stdin_capture_to_file(&marker_str);
     let signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("test-stdin".to_string()),
         cmd: Some(cmd),
         args: Some(args),
@@ -1740,6 +1755,7 @@ fn test_sign_with_certificate_dry_run() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
 
     let signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("cosign".to_string()),
         cmd: Some("cosign".to_string()),
         args: Some(vec![
@@ -1806,6 +1822,7 @@ fn test_sign_stage_registers_signature_artifacts_dry_run() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
 
     let signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("gpg".to_string()),
         cmd: Some("gpg".to_string()),
         args: Some(vec![
@@ -1859,6 +1876,7 @@ fn test_sign_stage_registers_certificate_artifacts_dry_run() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
 
     let signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("cosign".to_string()),
         cmd: Some("cosign".to_string()),
         args: Some(vec!["sign-blob".to_string(), "{{ .Artifact }}".to_string()]),
@@ -2196,6 +2214,7 @@ fn test_if_condition_false_skips_sign() {
     // Sign config with if: "false" — should be skipped entirely.
     // If not skipped, the nonexistent binary would cause an error.
     let signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("skipped".to_string()),
         cmd: Some("/nonexistent/sign-tool".to_string()),
         args: Some(vec!["sign".to_string()]),
@@ -2241,6 +2260,7 @@ fn test_if_condition_true_proceeds() {
     // Sign config with if: "true" — should proceed normally.
     // Uses "echo" which always succeeds.
     let signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("active".to_string()),
         cmd: Some("echo".to_string()),
         args: Some(vec!["signing".to_string()]),
@@ -2294,6 +2314,7 @@ fn test_if_condition_template_renders_to_empty_skips_sign() {
     // template-that-renders-empty path, which is the actual runtime
     // gate behavior the operator-facing skip surfaces.
     let signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("skipped".to_string()),
         cmd: Some("/nonexistent/sign-tool".to_string()),
         args: Some(vec!["sign".to_string()]),
@@ -2398,6 +2419,7 @@ fn run_signs_capture_skips(
 #[test]
 fn keyless_cosign_is_skipped_under_harness() {
     let sign = SignConfig {
+        asset_name_template: None,
         id: Some("cosign-keyless".to_string()),
         cmd: Some("cosign".to_string()),
         args: Some(vec![
@@ -2436,6 +2458,7 @@ fn keyless_cosign_is_skipped_under_harness() {
 
 fn keyless_checksum_sign(id: &str, args: Vec<&str>) -> SignConfig {
     SignConfig {
+        asset_name_template: None,
         id: Some(id.to_string()),
         cmd: Some("cosign".to_string()),
         args: Some(args.into_iter().map(str::to_string).collect()),
@@ -2669,6 +2692,7 @@ fn empty_match_docker_config_is_classified_from_the_rendered_arguments() {
 #[test]
 fn keyed_cosign_is_not_skipped_under_harness() {
     let sign = SignConfig {
+        asset_name_template: None,
         id: Some("cosign-keyed".to_string()),
         cmd: Some("cosign".to_string()),
         args: Some(vec![
@@ -2751,6 +2775,7 @@ fn cosign_consent_env_noop_for_non_cosign_and_respects_explicit() {
 #[test]
 fn keyless_cosign_is_not_skipped_outside_harness() {
     let sign = SignConfig {
+        asset_name_template: None,
         id: Some("cosign-keyless".to_string()),
         cmd: Some("cosign".to_string()),
         args: Some(vec![
@@ -2785,6 +2810,7 @@ fn keyless_cosign_is_not_skipped_outside_harness() {
 #[test]
 fn gpg_is_not_skipped_under_harness() {
     let sign = SignConfig {
+        asset_name_template: None,
         id: Some("gpg-sign".to_string()),
         cmd: Some("gpg".to_string()),
         args: Some(vec![
@@ -2820,6 +2846,7 @@ fn test_if_condition_snapshot_template() {
     // This sign config with if: "{{ IsSnapshot }}" should only run
     // when in snapshot mode.
     let signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("snapshot-only".to_string()),
         cmd: Some("/nonexistent/sign-tool".to_string()),
         args: Some(vec!["sign".to_string()]),
@@ -2889,6 +2916,7 @@ fn test_binary_signs_only_signs_binaries() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
 
     let binary_signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("binary-gpg".to_string()),
         cmd: Some("echo".to_string()),
         args: Some(vec!["signing-binary".to_string()]),
@@ -2958,6 +2986,7 @@ fn test_binary_signs_if_condition_works() {
 
     // binary_signs with if: "false" should be skipped
     let binary_signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("skipped".to_string()),
         cmd: Some("/nonexistent/sign-tool".to_string()),
         args: Some(vec!["sign".to_string()]),
@@ -3246,6 +3275,7 @@ fn test_output_capture_with_real_command() {
     let (cmd, mut base_args) = echo_command();
     base_args.push("hello-from-sign".to_string());
     let signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("test-output".to_string()),
         cmd: Some(cmd),
         args: Some(base_args),
@@ -3353,6 +3383,7 @@ fn test_binary_signs_signature_default_adds_dot_sig() {
     ctx.template_vars_mut().set("Mips", "");
 
     let sign_cfg = SignConfig {
+        asset_name_template: None,
         id: None,
         artifacts: None,
         cmd: None,
@@ -3391,6 +3422,7 @@ fn test_binary_signs_signature_arm_artifact_gets_dot_sig() {
     ctx.template_vars_mut().set("Mips", "");
 
     let sign_cfg = SignConfig {
+        asset_name_template: None,
         id: None,
         artifacts: None,
         cmd: None,
@@ -3429,6 +3461,7 @@ fn test_binary_signs_signature_amd64v2_artifact_gets_dot_sig() {
     ctx.template_vars_mut().set("Mips", "");
 
     let sign_cfg = SignConfig {
+        asset_name_template: None,
         id: None,
         artifacts: None,
         cmd: None,
@@ -3460,6 +3493,7 @@ fn test_binary_signs_signature_amd64v2_artifact_gets_dot_sig() {
 fn test_normal_signs_uses_simple_default() {
     let ctx = TestContextBuilder::new().dry_run(true).build();
     let sign_cfg = SignConfig {
+        asset_name_template: None,
         id: None,
         artifacts: None,
         cmd: None,
@@ -3537,6 +3571,7 @@ fn test_binary_signs_sets_os_arch_from_target_triple() {
     use anodizer_core::artifact::Artifact;
 
     let binary_sign_cfg = SignConfig {
+        asset_name_template: None,
         id: None,
         artifacts: Some("binary".to_string()),
         cmd: Some("true".to_string()),
@@ -3609,6 +3644,7 @@ fn test_binary_signs_armv7_default_template_appends_only_sig_ext() {
     use anodizer_core::artifact::Artifact;
 
     let binary_sign_cfg = SignConfig {
+        asset_name_template: None,
         id: None,
         artifacts: Some("binary".to_string()),
         cmd: Some("true".to_string()),
@@ -3677,6 +3713,7 @@ fn test_binary_signs_armv7_templates_render_composite_arch_and_empty_arm() {
     use anodizer_core::artifact::Artifact;
 
     let binary_sign_cfg = SignConfig {
+        asset_name_template: None,
         id: None,
         artifacts: Some("binary".to_string()),
         cmd: Some("true".to_string()),
@@ -3720,21 +3757,21 @@ fn test_binary_signs_armv7_templates_render_composite_arch_and_empty_arm() {
     )
     .unwrap();
 
-    // Registered names may be target-qualified, so pin the rendered stem
-    // rather than the full basename (mirrors the amd64-variant test above).
+    // The registered name is the config-derived asset base plus the suffix
+    // the template appended to the binary's own file name, so pin the suffix.
     let sigs: Vec<_> = ctx.artifacts.by_kind(ArtifactKind::Signature);
     assert_eq!(sigs.len(), 1);
     assert!(
-        sigs[0].name.starts_with("myapp.armv7") && !sigs[0].name.contains("armv7v7"),
+        sigs[0].name.ends_with(".armv7.sig") && !sigs[0].name.contains("armv7v7"),
         "signature Arm-suffix idiom must append nothing on the composite \
-         policy (expected stem 'myapp.armv7'): got '{}'",
+         policy (expected suffix '.armv7.sig'): got '{}'",
         sigs[0].name
     );
 
     let certs: Vec<_> = ctx.artifacts.by_kind(ArtifactKind::Certificate);
     assert_eq!(certs.len(), 1);
     assert!(
-        certs[0].name.starts_with("myapp.armv7"),
+        certs[0].name.ends_with(".armv7.pem"),
         "certificate `{{{{ Arch }}}}` must render the composite 'armv7', not \
          the archive-split 'arm': got '{}'",
         certs[0].name
@@ -3749,16 +3786,17 @@ fn test_binary_signs_armv7_templates_render_composite_arch_and_empty_arm() {
 fn test_binary_signs_amd64_variant_metadata_renders_in_signature_template() {
     use anodizer_core::artifact::Artifact;
 
-    // Registered names are target-qualified, so pin the rendered stem
-    // (`myapp.<variant>`) rather than the full basename.
+    // The registered name is the config-derived asset base plus the suffix
+    // the template appended to the binary's own file name, so pin the suffix.
     for (metadata, expected) in [
         (
             std::collections::HashMap::from([("amd64_variant".to_string(), "v3".to_string())]),
-            "myapp.v3",
+            ".v3.sig",
         ),
-        (Default::default(), "myapp.v1"),
+        (Default::default(), ".v1.sig"),
     ] {
         let binary_sign_cfg = SignConfig {
+            asset_name_template: None,
             verify: None,
             id: None,
             artifacts: Some("binary".to_string()),
@@ -3803,9 +3841,9 @@ fn test_binary_signs_amd64_variant_metadata_renders_in_signature_template() {
         let sigs: Vec<_> = ctx.artifacts.by_kind(ArtifactKind::Signature);
         assert_eq!(sigs.len(), 1);
         assert!(
-            sigs[0].name.starts_with(expected) && sigs[0].name.ends_with(".sig"),
+            sigs[0].name.ends_with(expected),
             "signature name must render the binary's amd64_variant \
-             (expected stem '{expected}'): got '{}'",
+             (expected suffix '{expected}'): got '{}'",
             sigs[0].name
         );
     }
@@ -3816,9 +3854,12 @@ fn test_binary_signs_register_target_qualified_names_per_target() {
     use anodizer_core::artifact::Artifact;
 
     // Per-target binaries share a basename and differ only by directory
-    // (the preserved-bin layout), so without target qualification every
-    // target's signature would register under the same name.
+    // (the preserved-bin layout), so without the target in the asset name
+    // every target's signature would register under the same name. No
+    // `archives:` entry covers these, so each takes the uncovered-target
+    // name: `<binary>-<version>-<triple>`.
     let binary_sign_cfg = SignConfig {
+        asset_name_template: None,
         id: None,
         artifacts: Some("binary".to_string()),
         cmd: Some("true".to_string()),
@@ -3876,9 +3917,9 @@ fn test_binary_signs_register_target_qualified_names_per_target() {
     assert_eq!(
         sig_names,
         vec![
-            "anodizer-aarch64-apple-darwin.sig",
-            "anodizer-x86_64-unknown-linux-gnu.sig",
-            "anodizer.exe-x86_64-pc-windows-msvc.sig",
+            "anodizer-1.2.3-aarch64-apple-darwin.sig",
+            "anodizer-1.2.3-x86_64-pc-windows-msvc.sig",
+            "anodizer-1.2.3-x86_64-unknown-linux-gnu.sig",
         ],
         "each target's signature must register under a distinct name"
     );
@@ -3893,9 +3934,9 @@ fn test_binary_signs_register_target_qualified_names_per_target() {
     assert_eq!(
         cert_names,
         vec![
-            "anodizer-aarch64-apple-darwin.pem",
-            "anodizer-x86_64-unknown-linux-gnu.pem",
-            "anodizer.exe-x86_64-pc-windows-msvc.pem",
+            "anodizer-1.2.3-aarch64-apple-darwin.pem",
+            "anodizer-1.2.3-x86_64-pc-windows-msvc.pem",
+            "anodizer-1.2.3-x86_64-unknown-linux-gnu.pem",
         ],
         "each target's certificate must register under a distinct name"
     );
@@ -5486,6 +5527,7 @@ mod cosign_tuf_race {
     /// with the stub's state directory exported in the child env.
     fn stub_signs(stub: &Path, state: &Path) -> Vec<SignConfig> {
         vec![SignConfig {
+            asset_name_template: None,
             verify: None,
             id: Some("cosign-keyless".to_string()),
             cmd: Some(stub.to_string_lossy().into_owned()),
@@ -7327,6 +7369,7 @@ fn missing_signature_output_is_still_recorded_as_an_artifact() {
     std::fs::write(&subject, b"payload").expect("write subject");
 
     let signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("noop".to_string()),
         cmd: Some(
             signer
@@ -7416,6 +7459,7 @@ fn signer_writes_where_the_signature_artifact_is_registered() {
     std::fs::write(&binary, b"bin").unwrap();
 
     let binary_signs = vec![SignConfig {
+        asset_name_template: None,
         id: Some("touch".to_string()),
         cmd: Some("touch".to_string()),
         args: Some(vec!["{{ Signature }}".to_string()]),
@@ -7472,5 +7516,144 @@ fn signer_writes_where_the_signature_artifact_is_registered() {
         capture.warn_messages().is_empty(),
         "no warning expected, got {:?}",
         capture.warn_messages()
+    );
+}
+
+/// `anodizer build` signs the raw binaries before any archive exists, and a
+/// `--publish-only` run's registry is the preserved manifest. Both must
+/// register the same asset name for the same binary, or the release ships a
+/// signature the verify gate cannot find.
+#[test]
+fn the_build_path_and_the_release_path_register_one_name_per_binary() {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, BuildConfig, CrateConfig};
+
+    const TARGET: &str = "x86_64-unknown-linux-gnu";
+
+    let run = |with_archives: bool| -> Vec<String> {
+        let binary_sign_cfg = SignConfig {
+            artifacts: Some("binary".to_string()),
+            cmd: Some("true".to_string()),
+            args: Some(vec![]),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .project_name("app")
+            .crates(vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                builds: Some(vec![BuildConfig {
+                    binary: Some("app".to_string()),
+                    targets: Some(vec![TARGET.to_string()]),
+                    ..Default::default()
+                }]),
+                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                    name_template: Some(
+                        "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}".to_string(),
+                    ),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }])
+            .binary_signs(vec![binary_sign_cfg])
+            .dry_run(true)
+            .build();
+        ctx.template_vars_mut().set("ProjectName", "app");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "app".to_string(),
+            path: std::path::PathBuf::from(format!("target/{TARGET}/release/app")),
+            target: Some(TARGET.to_string()),
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+        // The release path additionally holds the archives the archive stage
+        // (or the preserved manifest) registered.
+        if with_archives {
+            for (id, stem) in [
+                ("extra", "app-1.0.0-linux-amd64-extra"),
+                ("default", "app-1.0.0-linux-amd64"),
+            ] {
+                ctx.artifacts.add(Artifact {
+                    kind: ArtifactKind::Archive,
+                    name: stem.to_string(),
+                    path: std::path::PathBuf::from(format!("dist/{stem}.tar.gz")),
+                    target: Some(TARGET.to_string()),
+                    crate_name: "app".to_string(),
+                    metadata: [("id", id), ("name", stem)]
+                        .into_iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect(),
+                    size: None,
+                });
+            }
+        }
+
+        let log = ctx.logger("binary-sign");
+        let cfgs = ctx.config.binary_signs.clone();
+        process_sign_configs(
+            &cfgs,
+            &mut ctx,
+            &log,
+            ArtifactFilter::BinaryOnly,
+            "binary-sign",
+        )
+        .expect("binary-sign run");
+        ctx.artifacts
+            .by_kind(ArtifactKind::Signature)
+            .iter()
+            .map(|a| a.name.clone())
+            .collect()
+    };
+
+    assert_eq!(run(false), vec!["app-1.0.0-linux-amd64.sig".to_string()]);
+    assert_eq!(run(true), run(false));
+}
+
+/// A binary signature's asset name comes from CONFIG. Nothing in this crate
+/// may name one by reading back an archive the run happened to register: a
+/// `--publish-only` registry is the preserved manifest and an `anodizer build`
+/// registry holds no archive at all, so a registry-derived name differs
+/// between the two commands.
+#[test]
+fn no_signature_name_is_derived_from_a_registered_archive() {
+    use anodizer_core::test_helpers::test_sources::{
+        function_bodies, production_half, rust_sources,
+    };
+
+    let sources = rust_sources(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src"
+    )));
+    let mut readers = Vec::new();
+    for source in sources {
+        let text = std::fs::read_to_string(&source).expect("read source");
+        for body in function_bodies(production_half(&text)) {
+            if !body.contains("ArtifactKind::Archive") {
+                continue;
+            }
+            let name = body
+                .trim_start()
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            readers.push(format!("{}: {name}", source.display()));
+        }
+    }
+    assert_eq!(
+        readers.len(),
+        1,
+        "the artifact-kind filter resolver is the only production reader of \
+         ArtifactKind::Archive in this crate; a second one is a signature \
+         named after an archive the run happened to register: {readers:?}"
+    );
+    assert!(
+        readers[0].contains("fn should_sign_artifact"),
+        "unexpected reader of ArtifactKind::Archive: {}",
+        readers[0]
     );
 }

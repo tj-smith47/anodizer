@@ -26,7 +26,7 @@
 //!    uses yields falsy.
 //!
 //! `binary_signs:` outputs ARE release assets — one per built target, named
-//! after that target's archive stem — so they are derived here alongside
+//! from the crate's `archives:` config — so they are derived here alongside
 //! `signs:`. A binary whose file is not on disk contributes nothing: the sign
 //! stage drops it and records the config's skip, and the memento check above
 //! sees that skip. `docker_signs:` signatures live in the registry, not on the
@@ -248,9 +248,9 @@ pub(crate) fn expected_output_paths(
 /// signature is written beside the binary it covers, under whatever `signature:`
 /// rendered — but its registered asset name is not that path's basename: the
 /// raw binary is called the same thing under every target's directory, so the
-/// name comes from the target's archive stem
-/// ([`crate::helpers::binary_sign_asset_name`], the same helper the sign stage
-/// registers through).
+/// name is built on the config-derived base
+/// ([`crate::helpers::binary_sign_asset_base`], the same derivation the sign
+/// stage registers through).
 fn expected_binary_sign_names(
     cfg: &SignConfig,
     artifact: &anodizer_core::artifact::Artifact,
@@ -269,19 +269,9 @@ fn expected_binary_sign_names(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
-    let stem = crate::helpers::archive_stem_for(
-        ctx,
-        &artifact.crate_name,
-        target,
-        artifact.binary_name().as_deref(),
-    );
+    let base = crate::helpers::binary_sign_asset_base(ctx, cfg, artifact, target)?;
     let name = |path: &std::path::Path| {
-        crate::helpers::binary_sign_asset_name(
-            &basename_of(path),
-            binary_basename,
-            stem.as_deref(),
-            target,
-        )
+        crate::helpers::binary_sign_asset_name(&basename_of(path), binary_basename, &base, target)
     };
     Ok((name(&sig_path), cert_path.as_deref().map(name)))
 }
@@ -299,7 +289,38 @@ mod tests {
     use super::*;
     use crate::process::{ArtifactFilter, process_sign_configs};
     use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, BuildConfig, CrateConfig};
     use anodizer_core::test_helpers::TestContextBuilder;
+
+    /// The crate whose `archives:` config names every binary signature of the
+    /// binary-sign fixtures below.
+    fn archiving_crate() -> CrateConfig {
+        CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("app".to_string()),
+                targets: Some(vec![
+                    "x86_64-unknown-linux-gnu".to_string(),
+                    "aarch64-apple-darwin".to_string(),
+                ]),
+                ..Default::default()
+            }]),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some(
+                    "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}".to_string(),
+                ),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }
+    }
+
+    /// Bind the project name and version the fixture stems are rendered from.
+    fn seed_name_vars(ctx: &mut Context) {
+        ctx.template_vars_mut().set("ProjectName", "app");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+    }
 
     fn artifact(kind: ArtifactKind, name: &str, crate_name: &str, id: Option<&str>) -> Artifact {
         let mut metadata = HashMap::new();
@@ -515,10 +536,10 @@ mod tests {
         assert_eq!(b, vec!["b_checksums.txt.sig".to_string()]);
     }
 
-    /// One binary signature per built target, each named after that target's
-    /// archive stem rather than the raw binary's basename — which is the same
-    /// `app` under every target directory and would collapse eight assets into
-    /// one name.
+    /// One binary signature per built target, each named from the crate's
+    /// primary `archives:` entry rather than the raw binary's basename — which
+    /// is the same `app` under every target directory and would collapse eight
+    /// assets into one name.
     #[test]
     fn binary_signs_expect_one_asset_per_target_named_after_the_archive() {
         let cfg = SignConfig {
@@ -527,8 +548,10 @@ mod tests {
         };
         let mut ctx = TestContextBuilder::new()
             .dry_run(true)
+            .crates(vec![archiving_crate()])
             .binary_signs(vec![cfg])
             .build();
+        seed_name_vars(&mut ctx);
         for (target, stem) in [
             ("x86_64-unknown-linux-gnu", "app-1.0.0-linux-amd64"),
             ("aarch64-apple-darwin", "app-1.0.0-darwin-arm64"),
@@ -561,7 +584,7 @@ mod tests {
                 "app-1.0.0-darwin-arm64.sig".to_string(),
                 "app-1.0.0-linux-amd64.sig".to_string(),
             ],
-            "each target's binary signature must be named after its archive stem"
+            "each target's binary signature must be named from the archives config"
         );
     }
 
@@ -653,8 +676,8 @@ mod tests {
     }
 
     /// The same equivalence pin for the `binary_signs:` slice, which names its
-    /// assets through a second path (the target's archive stem). Real files on
-    /// disk, because the loop drops a binary it cannot find.
+    /// assets through a second path (the crate's `archives:` config). Real
+    /// files on disk, because the loop drops a binary it cannot find.
     #[test]
     fn binary_sign_expectations_match_the_sign_stage_registrations() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -663,7 +686,11 @@ mod tests {
             artifacts: Some("binary".to_string()),
             ..checksum_sign("binary")
         };
-        let mut ctx = TestContextBuilder::new().binary_signs(vec![cfg]).build();
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![archiving_crate()])
+            .binary_signs(vec![cfg])
+            .build();
+        seed_name_vars(&mut ctx);
         for (target, stem) in [
             ("x86_64-unknown-linux-gnu", "app-1.0.0-linux-amd64"),
             ("aarch64-apple-darwin", "app-1.0.0-darwin-arm64"),
@@ -721,7 +748,7 @@ mod tests {
                 "app-1.0.0-linux-amd64.pem".to_string(),
                 "app-1.0.0-linux-amd64.sig".to_string(),
             ],
-            "each binary signature and certificate is named after its target's archive"
+            "each binary signature and certificate is named from the archives config"
         );
         assert_eq!(
             predicted, registered,

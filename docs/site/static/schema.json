@@ -14305,6 +14305,14 @@
             "null"
           ]
         },
+        "asset_name_template": {
+          "description": "`binary_signs:` only — override the release-asset name a binary signature uploads under.\n\nRenders the asset's BASE name; the suffix the `signature:` / `certificate:` template appended to the binary's own file name still carries over, so one template names both assets (`app-1.0.0-linux-amd64` → `app-1.0.0-linux-amd64.sig` and `app-1.0.0-linux-amd64.pem`). Rendered in the same per-target scope an archive `name_template` renders under (`Os`, `Arch`, `Target`, the micro-architecture variants, `CrateName`, `Binary`).\n\n```yaml\nbinary_signs:\n  - artifacts: binary\n    asset_name_template: \"{{ Binary }}-{{ Version }}-{{ Target }}\"\n```\n\nUnset, the name is derived from the crate's `archives:` config — see the signing docs.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "authenticode": {
           "description": "Authenticode (Windows PE/MSI) signing backend. When set, this sign config signs Windows artifacts in place via osslsigncode (Linux/cross) or signtool (Windows) instead of producing a detached cosign/gpg signature. The signing command, argv, timestamp URL, and artifact selector are all derived; supply only the cert (a secret).",
           "default": null,
