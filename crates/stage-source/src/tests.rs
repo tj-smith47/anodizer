@@ -1959,3 +1959,73 @@ fn a_source_archive_without_extras_keeps_the_git_archive_layout() {
         }
     }
 }
+
+/// A `files:` entry that names a git-tracked file duplicates what
+/// `git archive` already wrote. The run reports that once, with a count,
+/// and names each duplicate relative to the repo root only under `-v`.
+#[test]
+fn duplicate_extras_are_reported_once_per_archive() {
+    use anodizer_core::config::SourceFileEntry;
+    use anodizer_core::log::{LogLevel, StageLogger, Verbosity};
+    use anodizer_core::test_helpers::{create_test_project, init_git_repo};
+
+    for format in ["tar.gz", "zip"] {
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        create_test_project(tmp.path());
+        init_git_repo(tmp.path());
+
+        let extra_files: Vec<SourceFileEntry> = ["Cargo.toml", "src/main.rs"]
+            .iter()
+            .map(|tracked| SourceFileEntry {
+                src: tmp.path().join(tracked).to_string_lossy().to_string(),
+                dst: None,
+                strip_parent: None,
+                info: None,
+            })
+            .collect();
+
+        let (log, capture) = StageLogger::with_capture("source", Verbosity::Verbose);
+        create_source_archive(&SourceArchiveInputs {
+            dist: &dist,
+            format,
+            name: "myapp-1.0.0",
+            prefix: "myapp-1.0.0/",
+            extra_files: &extra_files,
+            repo_root: tmp.path(),
+            commit: "HEAD",
+            log: &log,
+            strict: false,
+            sde_mtime: None,
+        })
+        .unwrap_or_else(|e| panic!("{format}: create_source_archive should succeed: {e}"));
+
+        let warns = capture.warn_messages();
+        assert_eq!(
+            warns.len(),
+            1,
+            "{format}: one summary warning expected, got {warns:?}; all: {:?}",
+            capture.all_messages()
+        );
+        assert!(
+            warns[0].starts_with("skipped 2 extra file(s) already in the archive"),
+            "{format}: {warns:?}"
+        );
+        let verbose: Vec<String> = capture
+            .all_messages()
+            .into_iter()
+            .filter(|(level, _)| *level == LogLevel::Verbose)
+            .map(|(_, m)| m)
+            .collect();
+        for tracked in ["Cargo.toml", "src/main.rs"] {
+            assert!(
+                verbose
+                    .iter()
+                    .any(|m| m
+                        == &format!("skipped extra file '{tracked}' — already in the archive")),
+                "{format}: verbose lines should name '{tracked}' relative to the root, got {verbose:?}"
+            );
+        }
+    }
+}
