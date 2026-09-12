@@ -576,11 +576,17 @@ pub(super) fn run_one_crate_dist(
     // in the artifacts manifest).
     //
     // Skipped artifact kinds:
-    //   * Binary + UniversalBinary — paths under `.det-tmp/target/...`
-    //     are intermediate raw cargo output, never preserved. Publishers
-    //     that consume Binary artifacts (nix's DynamicallyLinked,
-    //     winget's binary filename) read ONLY metadata, not the file
-    //     itself, so the path mismatch is harmless.
+    //   * Binary + UniversalBinary still pointing at the build worktree.
+    //     The harness's `preserve_raw_binaries` copies every raw binary it
+    //     finds to `dist/_preserved-bin/<triple>/<basename>` and rewrites
+    //     the manifest path, so `binary_signs:` can run in publish-only. A
+    //     path it did NOT rewrite is one the source file was gone for —
+    //     intermediate cargo output under `.det-tmp/target/...` that the
+    //     upload never carried. Publishers that consume those artifacts
+    //     (nix's DynamicallyLinked, winget's binary filename) read only
+    //     metadata, not the file, so the stale path is harmless there. A
+    //     preserved path IS checked: its file is what SignStage signs and
+    //     what the release uploads, so a missing one is a real defect.
     //   * Metadata — `dist/metadata.json` is renamed per-shard by the
     //     action's preserve step (`metadata-<shard>.json`) before
     //     upload, so the canonical un-suffixed path NEVER exists on the
@@ -601,12 +607,9 @@ pub(super) fn run_one_crate_dist(
             .all()
             .iter()
             .filter(|a| {
-                !matches!(
-                    a.kind,
-                    anodizer_core::artifact::ArtifactKind::Binary
-                        | anodizer_core::artifact::ArtifactKind::UniversalBinary
-                        | anodizer_core::artifact::ArtifactKind::Metadata
-                ) && !anodizer_core::artifact::is_directory_bundle_artifact(a)
+                !matches!(a.kind, anodizer_core::artifact::ArtifactKind::Metadata)
+                    && !is_unpreserved_raw_binary(a)
+                    && !anodizer_core::artifact::is_directory_bundle_artifact(a)
             })
             .map(|a| a.path.as_path()),
         &dist,
@@ -689,6 +692,25 @@ pub(super) fn run_one_crate_dist(
 /// byte-deterministic recompute refreshes the checksum manifest over
 /// the production-signed tree and backfills the `sha256` metadata
 /// that the determinism-stripped `artifacts.json` omits.
+/// Whether `a` is a raw binary the determinism harness did not preserve.
+///
+/// `preserve_raw_binaries` copies each raw binary to
+/// `dist/_preserved-bin/<triple>/<basename>` and rewrites the manifest path to
+/// match, so a Binary / UniversalBinary still pointing elsewhere is
+/// intermediate cargo output the upload never carried. A preserved one is a
+/// file `binary_signs:` and the release upload both read, so its absence is a
+/// defect the existence check has to report.
+pub(super) fn is_unpreserved_raw_binary(a: &anodizer_core::artifact::Artifact) -> bool {
+    matches!(
+        a.kind,
+        anodizer_core::artifact::ArtifactKind::Binary
+            | anodizer_core::artifact::ArtifactKind::UniversalBinary
+    ) && !a
+        .path
+        .components()
+        .any(|c| c.as_os_str() == crate::determinism_harness::PRESERVED_BIN_SUBDIR)
+}
+
 pub(super) fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
     use anodizer_core::artifact::ArtifactKind;
     let stale_paths: Vec<std::path::PathBuf> = ctx

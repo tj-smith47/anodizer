@@ -60,6 +60,7 @@ mod run;
 mod stage_id;
 
 pub use installer_detect::installer_stages;
+pub(crate) use preserve::PRESERVED_BIN_SUBDIR;
 pub use stage_id::StageId;
 
 use anodizer_core::determinism::AggregateKind;
