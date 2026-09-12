@@ -375,7 +375,7 @@ fn warn_tag_override_divergence(
 /// published.
 ///
 /// Walks the same crates, in the same order, that the release stage releases.
-/// [`ensure_release_url`] leaves an already-set value alone, so the first crate
+/// `ensure_release_url` leaves an already-set value alone, so the first crate
 /// that resolves a repo names the URL, exactly as the stage's own loop does,
 /// and the stage's authoritative post-create URL still overwrites this one.
 /// The artifact URLs are seeded, never overwritten, for the same reason.
