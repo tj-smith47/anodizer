@@ -1000,13 +1000,6 @@ source:
   format: tar.gz
   name_template: "{{ ProjectName }}-{{ Version }}-source"
   prefix_template: "{{ ProjectName }}-{{ Version }}/"
-  files:
-    - "crates/**/*.rs"
-    - "Cargo.toml"
-    - "Cargo.lock"
-    - "LICENSE-MIT"
-    - "LICENSE-APACHE"
-    - "README.md"
 
 sboms:
   # Built-in CycloneDX from Cargo.lock — omit `cmd`/`args` to opt out of
