@@ -662,17 +662,22 @@ fn slow_subprocess_heartbeats_fast_subprocess_does_not() {
     // A 40ms cadence over a ~350ms child yields several heartbeats; assert
     // ≥1 so the test is robust to scheduler jitter. The RAII guard restores
     // the prior env even if an assertion below panics.
-    let _g = EnvGuard::set(crate::progress::HEARTBEAT_INTERVAL_ENV, "40");
+    {
+        let _g = EnvGuard::set(crate::progress::HEARTBEAT_INTERVAL_ENV, "40");
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let out = run_checked(&mut sh("sleep 0.35"), &log, "sleep").expect("sleep must succeed");
+        assert!(out.status.success());
+        assert!(
+            cap.heartbeat_count() >= 1,
+            "a slow silent child must emit at least one heartbeat; got {}",
+            cap.heartbeat_count()
+        );
+    }
 
-    let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
-    let out = run_checked(&mut sh("sleep 0.35"), &log, "sleep").expect("sleep must succeed");
-    assert!(out.status.success());
-    assert!(
-        cap.heartbeat_count() >= 1,
-        "a slow silent child must emit at least one heartbeat; got {}",
-        cap.heartbeat_count()
-    );
-
+    // The instant half must not race the scheduler: on a loaded box even
+    // `true` can take longer than 40ms to spawn and exit, so its cadence is
+    // one no process start can reach.
+    let _g = EnvGuard::set(crate::progress::HEARTBEAT_INTERVAL_ENV, "5000");
     let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
     run_checked(&mut sh("true"), &log, "true").expect("true must succeed");
     assert_eq!(
