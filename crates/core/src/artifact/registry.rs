@@ -192,7 +192,7 @@ impl ArtifactRegistry {
             // (which artifact, both conflicting paths) is folded inline.
             tracing::warn!(
                 "artifact '{}' already registered at '{}' but re-added from '{}'; \
-                 upload may fail with a duplicate error",
+                 the upload keeps the first file and drops the second",
                 name,
                 existing.path.display(),
                 artifact.path.display(),

@@ -25,10 +25,12 @@
 //!    re-evaluating the config's `if:` with the same evaluator the sign stage
 //!    uses yields falsy.
 //!
-//! `binary_signs:` are intentionally absent here: their outputs carry the
-//! `binary_sign` metadata marker and are excluded from release upload
-//! (`is_binary_sign_output`), so they can never be missing release assets.
-//! `docker_signs:` signatures live in the registry, not on the release.
+//! `binary_signs:` outputs ARE release assets — one per built target, named
+//! after that target's archive stem — so they are derived here alongside
+//! `signs:`. A binary whose file is not on disk contributes nothing: the sign
+//! stage drops it and records the config's skip, and the memento check above
+//! sees that skip. `docker_signs:` signatures live in the registry, not on the
+//! release.
 
 use std::collections::HashMap;
 
@@ -64,51 +66,75 @@ pub fn expected_signature_assets(
     let skips = ctx.skip_memento.snapshot();
     let mut expected: Vec<String> = Vec::new();
 
-    for (sign_idx, cfg) in ctx.config.signs.iter().enumerate() {
-        // Must mirror process_sign_configs' sub_label derivation exactly, or
-        // a recorded skip would fail to match and resurrect expectations the
-        // run already waived.
-        let sub_label = cfg
-            .id
-            .clone()
-            .unwrap_or_else(|| format!("sign[{sign_idx}]"));
-        if skips
-            .iter()
-            .any(|e| e.stage == "sign" && e.label == sub_label)
-        {
-            continue;
-        }
-        let proceed = anodizer_core::config::evaluate_if_condition(
-            cfg.if_condition.as_deref(),
-            &format!("sign '{sub_label}' (expected-asset derivation)"),
-            |t| ctx.render_template(t),
-        )?;
-        if !proceed {
-            continue;
-        }
-        let filter = cfg.resolved_artifacts(SignConfig::DEFAULT_ARTIFACTS);
-        if filter == "none" {
-            continue;
-        }
+    let slices = [
+        ("sign", &ctx.config.signs, SignConfig::DEFAULT_ARTIFACTS),
+        (
+            "binary-sign",
+            &ctx.config.binary_signs,
+            SignConfig::DEFAULT_ARTIFACTS_BINARY,
+        ),
+    ];
+    for (stage, configs, default_filter) in slices {
+        for (sign_idx, cfg) in configs.iter().enumerate() {
+            // Must mirror process_sign_configs' sub_label derivation exactly,
+            // or a recorded skip would fail to match and resurrect
+            // expectations the run already waived.
+            let sub_label = cfg
+                .id
+                .clone()
+                .unwrap_or_else(|| format!("{stage}[{sign_idx}]"));
+            if skips
+                .iter()
+                .any(|e| e.stage == stage && e.label == sub_label)
+            {
+                continue;
+            }
+            let proceed = anodizer_core::config::evaluate_if_condition(
+                cfg.if_condition.as_deref(),
+                &format!("{stage} '{sub_label}' (expected-asset derivation)"),
+                |t| ctx.render_template(t),
+            )?;
+            if !proceed {
+                continue;
+            }
+            let filter = cfg.resolved_artifacts(default_filter);
+            if filter == "none" {
+                continue;
+            }
+            let binary_slice = stage == "binary-sign";
 
-        for artifact in ctx.artifacts.all() {
-            if artifact.crate_name != crate_name {
-                continue;
-            }
-            if !should_sign_artifact(artifact.kind, filter)? {
-                continue;
-            }
-            if !sign_ids_match(&artifact.metadata, cfg.ids.as_ref()) {
-                continue;
-            }
-            if !anodizer_core::artifact::matches_id_filter(artifact, release_ids) {
-                continue;
-            }
-            let (sig_name, cert_name) =
-                expected_output_names(cfg, &artifact.path, &artifact.metadata, ctx)?;
-            expected.push(sig_name);
-            if let Some(cert) = cert_name {
-                expected.push(cert);
+            for artifact in ctx.artifacts.all() {
+                if artifact.crate_name != crate_name {
+                    continue;
+                }
+                if binary_slice {
+                    // The `binary_signs:` loop takes raw binaries only, and
+                    // only the ones actually on disk (see
+                    // `process_sign_configs`).
+                    if artifact.kind != anodizer_core::artifact::ArtifactKind::Binary {
+                        continue;
+                    }
+                    if !ctx.is_dry_run() && !artifact.path.exists() {
+                        continue;
+                    }
+                } else if !should_sign_artifact(artifact.kind, filter)? {
+                    continue;
+                }
+                if !sign_ids_match(&artifact.metadata, cfg.ids.as_ref()) {
+                    continue;
+                }
+                if !anodizer_core::artifact::matches_id_filter(artifact, release_ids) {
+                    continue;
+                }
+                let (sig_name, cert_name) = if binary_slice {
+                    expected_binary_sign_names(cfg, artifact, ctx)?
+                } else {
+                    expected_output_names(cfg, &artifact.path, &artifact.metadata, ctx)?
+                };
+                expected.push(sig_name);
+                if let Some(cert) = cert_name {
+                    expected.push(cert);
+                }
             }
         }
     }
@@ -213,6 +239,51 @@ pub(crate) fn expected_output_paths(
         .as_deref()
         .map(|c| crate::helpers::dist_joined(dist, c));
     Ok((sig_path, cert_path))
+}
+
+/// The (signature, optional certificate) ASSET names one `binary_signs:`
+/// config produces for one raw binary.
+///
+/// The rendered output PATH is shared with the `signs:` derivation — a binary
+/// signature is written beside the binary it covers, under whatever `signature:`
+/// rendered — but its registered asset name is not that path's basename: the
+/// raw binary is called the same thing under every target's directory, so the
+/// name comes from the target's archive stem
+/// ([`crate::helpers::binary_sign_asset_name`], the same helper the sign stage
+/// registers through).
+fn expected_binary_sign_names(
+    cfg: &SignConfig,
+    artifact: &anodizer_core::artifact::Artifact,
+    ctx: &Context,
+) -> Result<(String, Option<String>)> {
+    let (sig_path, cert_path) =
+        expected_output_paths(cfg, &artifact.path, &artifact.metadata, ctx)?;
+    let Some(target) = artifact.target.as_deref() else {
+        return Ok((
+            basename_of(&sig_path),
+            cert_path.as_deref().map(basename_of),
+        ));
+    };
+    let binary_basename = artifact
+        .path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    let stem = crate::helpers::archive_stem_for(
+        ctx,
+        &artifact.crate_name,
+        target,
+        artifact.binary_name().as_deref(),
+    );
+    let name = |path: &std::path::Path| {
+        crate::helpers::binary_sign_asset_name(
+            &basename_of(path),
+            binary_basename,
+            stem.as_deref(),
+            target,
+        )
+    };
+    Ok((name(&sig_path), cert_path.as_deref().map(name)))
 }
 
 /// The asset basename of a resolved output path (the name the release
@@ -444,23 +515,79 @@ mod tests {
         assert_eq!(b, vec!["b_checksums.txt.sig".to_string()]);
     }
 
+    /// One binary signature per built target, each named after that target's
+    /// archive stem rather than the raw binary's basename — which is the same
+    /// `app` under every target directory and would collapse eight assets into
+    /// one name.
     #[test]
-    fn binary_signs_create_no_release_expectations() {
-        // binary_signs outputs are excluded from release upload
-        // (is_binary_sign_output), so the derivation must ignore them.
+    fn binary_signs_expect_one_asset_per_target_named_after_the_archive() {
+        let cfg = SignConfig {
+            artifacts: Some("binary".to_string()),
+            ..checksum_sign("binary")
+        };
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .binary_signs(vec![cfg])
+            .build();
+        for (target, stem) in [
+            ("x86_64-unknown-linux-gnu", "app-1.0.0-linux-amd64"),
+            ("aarch64-apple-darwin", "app-1.0.0-darwin-arm64"),
+        ] {
+            let mut archive = artifact(
+                ArtifactKind::Archive,
+                &format!("{stem}.tar.gz"),
+                "app",
+                None,
+            );
+            archive.target = Some(target.to_string());
+            archive
+                .metadata
+                .insert("format".to_string(), "tar.gz".to_string());
+            archive
+                .metadata
+                .insert("name".to_string(), stem.to_string());
+            ctx.artifacts.add(archive);
+
+            let mut binary = artifact(ArtifactKind::Binary, "app", "app", None);
+            binary.path = std::path::PathBuf::from(format!("target/{target}/release/app"));
+            binary.target = Some(target.to_string());
+            ctx.artifacts.add(binary);
+        }
+
+        let expected = expected_signature_assets(&ctx, "app", None).expect("derivation");
+        assert_eq!(
+            expected,
+            vec![
+                "app-1.0.0-darwin-arm64.sig".to_string(),
+                "app-1.0.0-linux-amd64.sig".to_string(),
+            ],
+            "each target's binary signature must be named after its archive stem"
+        );
+    }
+
+    /// A publish-only run rehydrates the Binary entries from the preserved
+    /// manifest, but the raw cargo output they point at never left the shard
+    /// that built it. The sign stage signs nothing then, so the release gate
+    /// must expect nothing — otherwise every publish-only release fails on a
+    /// missing asset it decided not to produce.
+    #[test]
+    fn an_absent_binary_creates_no_expectation() {
         let cfg = SignConfig {
             artifacts: Some("binary".to_string()),
             ..checksum_sign("binary")
         };
         let mut ctx = TestContextBuilder::new().binary_signs(vec![cfg]).build();
-        ctx.artifacts.add(artifact(
-            ArtifactKind::Binary,
-            "app_linux_amd64",
-            "app",
-            None,
-        ));
+        let mut binary = artifact(ArtifactKind::Binary, "app", "app", None);
+        binary.path =
+            std::path::PathBuf::from(".det-tmp/target/x86_64-unknown-linux-gnu/release/app");
+        binary.target = Some("x86_64-unknown-linux-gnu".to_string());
+        ctx.artifacts.add(binary);
+
         let expected = expected_signature_assets(&ctx, "app", None).expect("derivation");
-        assert!(expected.is_empty());
+        assert!(
+            expected.is_empty(),
+            "a binary that is not on disk is never signed, so it is never expected: {expected:?}"
+        );
     }
 
     #[test]
@@ -522,6 +649,83 @@ mod tests {
         assert_eq!(
             predicted, registered,
             "config-derived expectations must equal what the sign stage registers"
+        );
+    }
+
+    /// The same equivalence pin for the `binary_signs:` slice, which names its
+    /// assets through a second path (the target's archive stem). Real files on
+    /// disk, because the loop drops a binary it cannot find.
+    #[test]
+    fn binary_sign_expectations_match_the_sign_stage_registrations() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cfg = SignConfig {
+            certificate: Some("{{ .Artifact }}.pem".to_string()),
+            artifacts: Some("binary".to_string()),
+            ..checksum_sign("binary")
+        };
+        let mut ctx = TestContextBuilder::new().binary_signs(vec![cfg]).build();
+        for (target, stem) in [
+            ("x86_64-unknown-linux-gnu", "app-1.0.0-linux-amd64"),
+            ("aarch64-apple-darwin", "app-1.0.0-darwin-arm64"),
+        ] {
+            let mut archive = artifact(
+                ArtifactKind::Archive,
+                &format!("{stem}.tar.gz"),
+                "app",
+                None,
+            );
+            archive.target = Some(target.to_string());
+            archive
+                .metadata
+                .insert("name".to_string(), stem.to_string());
+            ctx.artifacts.add(archive);
+
+            let bin_dir = tmp.path().join(target);
+            std::fs::create_dir_all(&bin_dir).expect("bin dir");
+            let bin_path = bin_dir.join("app");
+            std::fs::write(&bin_path, b"binary").expect("write binary");
+            let mut binary = artifact(ArtifactKind::Binary, "app", "app", None);
+            binary.path = bin_path;
+            binary.target = Some(target.to_string());
+            ctx.artifacts.add(binary);
+        }
+
+        let predicted = expected_signature_assets(&ctx, "app", None).expect("derivation");
+
+        let log = ctx.logger("binary-sign");
+        let sign_cfgs = ctx.config.binary_signs.clone();
+        process_sign_configs(
+            &sign_cfgs,
+            &mut ctx,
+            &log,
+            ArtifactFilter::BinaryOnly,
+            "binary-sign",
+        )
+        .expect("sign run");
+
+        let mut registered: Vec<String> = ctx
+            .artifacts
+            .by_kind(ArtifactKind::Signature)
+            .into_iter()
+            .chain(ctx.artifacts.by_kind(ArtifactKind::Certificate))
+            .map(|a| a.name.clone())
+            .collect();
+        registered.sort();
+        registered.dedup();
+
+        assert_eq!(
+            registered,
+            vec![
+                "app-1.0.0-darwin-arm64.pem".to_string(),
+                "app-1.0.0-darwin-arm64.sig".to_string(),
+                "app-1.0.0-linux-amd64.pem".to_string(),
+                "app-1.0.0-linux-amd64.sig".to_string(),
+            ],
+            "each binary signature and certificate is named after its target's archive"
+        );
+        assert_eq!(
+            predicted, registered,
+            "config-derived expectations must equal what the binary-sign loop registers"
         );
     }
 }

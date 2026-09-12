@@ -155,9 +155,7 @@ pub(crate) fn collect_upload_artifacts<'a>(
     // Certificate is included alongside Signature.
     if include_signature {
         for a in ctx.artifacts.all() {
-            if (a.kind == ArtifactKind::Signature || a.kind == ArtifactKind::Certificate)
-                && !anodizer_core::artifact::is_binary_sign_output(a)
-            {
+            if a.kind == ArtifactKind::Signature || a.kind == ArtifactKind::Certificate {
                 artifacts.push(a);
             }
         }

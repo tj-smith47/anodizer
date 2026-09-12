@@ -4,14 +4,48 @@ use super::kind::ArtifactKind;
 use super::registry::Artifact;
 
 /// Return `true` for signature/certificate artifacts produced by the
-/// `binary_signs:` stage.  These are intermediate per-binary outputs
-/// (e.g. `anodizer_linux_amd64` without a `.sig` extension) that must not
-/// appear as GitHub release assets.
+/// `binary_signs:` slice rather than the `signs:` slice.
+///
+/// The marker records PROVENANCE only. A binary signature is an ordinary
+/// release asset — it uploads beside the archive for the same target, exactly
+/// as GoReleaser uploads every `Signature`/`Certificate` artifact — so no
+/// publish-time consumer filters on this. It is read where the two slices must
+/// be told apart: the asset NAME of a binary signature is derived from the
+/// target's archive stem, not from the raw binary's basename (which repeats
+/// across targets).
 pub fn is_binary_sign_output(artifact: &Artifact) -> bool {
     artifact
         .metadata
         .get("binary_sign")
         .is_some_and(|v| v == "true")
+}
+
+/// The asset name `artifact` uploads under.
+///
+/// Every stage that registers an artifact from a file names it after that
+/// file, so this is normally the basename. A `binary_signs:` output is the
+/// exception: its on-disk path is the per-target working location beside the
+/// raw binary (`anodizer.sig` under every target directory), so it registers
+/// the archive-style asset name instead and uploads under that.
+pub fn upload_asset_name(artifact: &Artifact) -> String {
+    if artifact.name.is_empty() {
+        return artifact
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+    }
+    artifact.name.clone()
+}
+
+/// The destination name an upload must rename `artifact` to: `Some` only when
+/// [`upload_asset_name`] differs from the file's own basename, so an upload
+/// path that defaults to the basename keeps doing that for every artifact
+/// whose registered name already matches it.
+pub fn upload_rename(artifact: &Artifact) -> Option<String> {
+    let name = upload_asset_name(artifact);
+    let basename = artifact.path.file_name().map(|n| n.to_string_lossy());
+    (basename.as_deref() != Some(name.as_str())).then_some(name)
 }
 
 /// Metadata key recording the artifact kind a derived artifact (signature,

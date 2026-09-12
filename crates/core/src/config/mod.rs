@@ -182,6 +182,12 @@ pub struct Config {
     /// at parse time to `binary` / `none` (or omitted) — a broader filter on
     /// `binary_signs` would silently match nothing because the loop only
     /// iterates Binary artifacts. Constraint lives in `deserialize_binary_signs`.
+    ///
+    /// The detached signature and certificate produced for each binary upload
+    /// as release assets alongside the archives, named after the archive built
+    /// from that binary: a `tar.gz` archive `app-1.2.3-linux-amd64.tar.gz`
+    /// gives `app-1.2.3-linux-amd64.sig`. The raw binary's own file name is
+    /// the same under every target, so it is not the asset name.
     #[serde(default, deserialize_with = "deserialize_binary_signs")]
     #[schemars(schema_with = "signs_schema")]
     pub binary_signs: Vec<SignConfig>,

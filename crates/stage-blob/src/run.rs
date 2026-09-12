@@ -578,14 +578,21 @@ impl BlobStage {
                 let mut upload_items: Vec<(PathBuf, String)> = Vec::new();
 
                 let artifacts = collect_artifacts(ctx, blob_cfg, &krate.name, &log);
+                // The object key is the artifact's registered asset name, the
+                // same name the release upload uses. It is the file's basename
+                // for everything but a `binary_signs:` output, whose on-disk
+                // path repeats across targets. De-duplicated by that key: a
+                // `formats: [binary]` target's binary can be signed both as the
+                // raw binary and as the uploadable asset, and both signatures
+                // cover the same bytes under one name.
+                let mut seen_keys: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
                 for artifact in &artifacts {
-                    let filename = artifact
-                        .path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("artifact")
-                        .to_string();
-                    upload_items.push((artifact.path.clone(), filename));
+                    let key = anodizer_core::artifact::upload_asset_name(artifact);
+                    if !seen_keys.insert(key.clone()) {
+                        continue;
+                    }
+                    upload_items.push((artifact.path.clone(), key));
                 }
 
                 // Resolve extra files (with template-rendered names)

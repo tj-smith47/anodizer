@@ -189,47 +189,31 @@ const GATED_STAGES: &[GatedStage] = &[
         anodizer_stage_snapcraft::publish_env_requirements
     ),
     // The release pipeline's sign stage drives both `signs:` and
-    // `binary_signs:` (BinarySignStage is the `anodizer build` selection),
-    // so both slices hang off the `sign` skip gate here. Each slice carries an
-    // additional gate that mirrors what `SignStage::run` does at runtime, so
-    // preflight cannot demand credentials for work the stage will not perform:
-    //
-    // - `signs:` (detached archive/checksum signatures) self-skips when EVERY
-    //   publisher in `signs_consumers()` is deselected (shared
-    //   `signs_fully_deselected` predicate), since no selected surface would
-    //   read them — so an npm-only `--publishers npm` run is not demanded
-    //   cosign/GPG material for signatures it will never produce.
-    //
-    // - `binary_signs:` (raw-binary signatures embedded into archives at BUILD
-    //   time) self-skips in `--publish-only` mode: its `binary_sign`-marked
-    //   output is filtered out of every publish-time consumer
-    //   (`is_binary_sign_output`), so in publish-only it is discarded work that
-    //   would demand cosign/GPG material the publish-time runner does not carry.
-    //   The runtime keys this on `ctx.is_publish_only()` via the shared
-    //   `binary_signs_skipped` predicate; here the `PublishOnly` SCOPE is the
-    //   authoritative publish-only signal (the standalone `preflight` ctx does
-    //   not carry the run-level flag), and both derive from the same
-    //   `--publish-only` selection. The full release job (`Full` scope, empty
-    //   allowlist) still demands binary-signing material, so binaries that ship
-    //   are still signed.
+    // `binary_signs:` (BinarySignStage is the `anodizer build` selection), so
+    // both slices hang off the `sign` skip gate here. Both produce detached
+    // signature assets that only the publishers in `signs_consumers()` read,
+    // so one gate mirrors what `SignStage::run` does at runtime: when EVERY
+    // one of those publishers is deselected the stage skips both loops, and
+    // preflight must not demand cosign/GPG material for signatures the run
+    // will never produce (the npm-only `--publishers npm` job). An empty
+    // allowlist deselects nothing, so the main release job still demands both.
     GatedStage {
         stage: "sign",
         gate: StageGate::Skip,
-        requirements: |ctx, scope| {
-            let mut pairs = Vec::new();
-            if !anodizer_stage_sign::signs_fully_deselected(ctx) {
-                pairs.push((
+        requirements: |ctx, _scope| {
+            if anodizer_stage_sign::signs_fully_deselected(ctx) {
+                return Vec::new();
+            }
+            vec![
+                (
                     "stage:sign".to_string(),
                     anodizer_stage_sign::sign_env_requirements(ctx),
-                ));
-            }
-            if scope != PreflightScope::PublishOnly {
-                pairs.push((
+                ),
+                (
                     "stage:sign".to_string(),
                     anodizer_stage_sign::binary_sign_env_requirements(ctx),
-                ));
-            }
-            pairs
+                ),
+            ]
         },
     },
     gated_stage!(
@@ -1327,13 +1311,9 @@ publish:
     /// - publisher-named stages — blob / snapcraft-publish / docker /
     ///   docker-sign / announce / **release** (github-release is a real
     ///   publisher, so the release stage self-skips when it is deselected);
-    /// - the `signs:` slice of the `sign` stage — its only consumers are
-    ///   github-release / blob / artifactory, ALL deselected here, so the
-    ///   stage skips the detached-signature loop and demands no cosign/GPG.
-    ///
-    /// `binary_signs:` is the negative control: it is the build-time
-    /// binary-signing selection (a different consumer model) and is NOT gated
-    /// on the publish-time allowlist, so it survives.
+    /// - BOTH slices of the `sign` stage — their only consumers are
+    ///   github-release / blob / artifactory / uploads, ALL deselected here, so
+    ///   the stage skips both signature loops and demands no cosign/GPG.
     #[test]
     fn publishers_allowlist_deselects_self_skipping_stages() {
         let top = crate_from_yaml(
@@ -1357,9 +1337,8 @@ publish:
                 cmd: Some("cosign".to_string()),
                 ..Default::default()
             }])
-            // binary_signs is gated OFF in PublishOnly scope (its output has no
-            // publish-time consumer), so it contributes nothing here regardless
-            // of the allowlist.
+            // binary_signs hangs off the same consumer set as signs, so the
+            // npm-only allowlist deselects it too.
             .binary_signs(vec![anodizer_core::config::SignConfig {
                 artifacts: Some("all".to_string()),
                 cmd: Some("cosign".to_string()),
@@ -1409,19 +1388,18 @@ publish:
                 "allowlist-deselected stage {absent} must contribute no requirements: {reqs:?}"
             );
         }
-        // PublishOnly scope: the `signs:` consumers are ALL deselected (npm-only
-        // allowlist) so that slice self-skips, AND `binary_signs:` is gated off
-        // for publish-only (no publish-time consumer). Neither slice runs, so
-        // ZERO cosign demands survive — this is the npm-job's clean surface.
+        // PublishOnly scope: every signature consumer is deselected by the
+        // npm-only allowlist, so BOTH slices self-skip and ZERO cosign demands
+        // survive — this is the npm-job's clean surface.
         assert_eq!(
             cosign_sign_reqs, 0,
             "under --publish-only --publishers npm BOTH sign slices must self-skip \
-             (signs: all consumers deselected; binary_signs: publish-only): {reqs:?}"
+             (every signature consumer is deselected): {reqs:?}"
         );
 
-        // Selecting any ONE signs consumer (here: github-release) revives the
-        // signs slice; binary_signs stays publish-only-skipped, so exactly ONE
-        // cosign demand returns.
+        // Selecting any ONE signature consumer (here: github-release) revives
+        // both slices — a binary signature uploads to that release too — so
+        // TWO cosign demands return.
         let mut keep_one = TestContextBuilder::new()
             .crates(ctx.config.crates.clone())
             .signs(vec![anodizer_core::config::SignConfig {
@@ -1450,16 +1428,15 @@ publish:
             })
             .count();
         assert_eq!(
-            cosign_sign_reqs, 1,
-            "selecting a signs consumer must revive the signs: slice; binary_signs: \
-             stays publish-only-skipped, so exactly one cosign demand: {reqs:?}"
+            cosign_sign_reqs, 2,
+            "selecting a signature consumer must revive BOTH sign slices, \
+             so two cosign demands: {reqs:?}"
         );
     }
 
-    /// FULL scope (the main release job's shape) keeps BOTH sign slices: the
-    /// `binary_signs:` publish-only gate must NOT fire here, so the binaries
-    /// that ship are still signed. Pins the main-job binary-signing invariant
-    /// alongside the publish-only deselection above.
+    /// FULL scope (the main release job's shape, empty allowlist) keeps BOTH
+    /// sign slices, so the binaries that ship are still signed. Pins the
+    /// main-job binary-signing invariant alongside the deselection case above.
     #[test]
     fn full_scope_keeps_both_sign_slices() {
         let top = crate_from_yaml(
