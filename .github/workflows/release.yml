@@ -103,19 +103,17 @@ jobs:
           fetch-depth: 0
           ref: ${{ env.RELEASE_REF }}
 
-      - name: Set up Rust toolchain (warm cache)
-        uses: ./.github/actions/setup-rust
-        with:
-          # Warms the cargo cache so the action's `from-source` build of HEAD is
-          # fast on re-runs. anodizer is the one consumer that builds ITSELF from
-          # source to gate its own release; a downstream consumer would pin
-          # `version:` to a published binary and need no Rust toolchain here.
-          cache-key: preflight-secrets
-
       - name: Validate publish secrets
         # Dogfood the published action as the preflight gate: it builds anodizer
-        # from this checkout (from-source), installs cosign for the offline
-        # key-load check, and materializes the GPG/APK key files from the same
+        # from this checkout (from-source) — installing its own Rust toolchain,
+        # cargo cache and sccache, so no setup-rust step precedes it. A second
+        # Swatinem/rust-cache in the same job is not merely redundant: its post
+        # step prunes ~/.cargo/bin down to cargo-installed binaries (rustup's
+        # cargo/rustc proxies included), so whichever rust-cache post step runs
+        # second finds no `cargo` for its `cargo metadata` and saves a cache it
+        # could not scope. audit-workflow-lockstep pins one instance per job.
+        # The action also installs cosign for the offline key-load check, and
+        # materializes the GPG/APK key files from the same
         # secrets — exporting GPG_KEY_PATH / APK_PRIVATE_KEY_PATH under the exact
         # names the rpm/deb/apk signers resolve. This validates the ACTUAL key
         # material the publish runner will load, through the SAME action, instead
