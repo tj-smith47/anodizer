@@ -208,19 +208,11 @@ pub(crate) fn expected_output_paths(
     let certificate_str = certificate_str.map(|c| expand_shell_vars(&c, &shell_vars));
 
     let dist = &ctx.config.dist;
-    let sig_path = dist_joined(dist, &signature_str);
-    let cert_path = certificate_str.as_deref().map(|c| dist_joined(dist, c));
+    let sig_path = crate::helpers::dist_joined(dist, &signature_str);
+    let cert_path = certificate_str
+        .as_deref()
+        .map(|c| crate::helpers::dist_joined(dist, c));
     Ok((sig_path, cert_path))
-}
-
-/// Dist-join a rendered output path the way the sign stage registers it.
-fn dist_joined(dist: &std::path::Path, rendered: &str) -> std::path::PathBuf {
-    let resolved = std::path::PathBuf::from(rendered);
-    if !resolved.starts_with(dist) {
-        dist.join(&resolved)
-    } else {
-        resolved
-    }
 }
 
 /// The asset basename of a resolved output path (the name the release

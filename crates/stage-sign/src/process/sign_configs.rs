@@ -285,6 +285,9 @@ pub(crate) fn process_sign_configs(
 
             let signature_str =
                 resolve_signature_path(sign_cfg, &artifact_str, ctx, default_sig_template)?;
+            let signature_str = crate::helpers::dist_joined(&ctx.config.dist, &signature_str)
+                .to_string_lossy()
+                .into_owned();
 
             let certificate_str = sign_cfg
                 .certificate
@@ -301,6 +304,11 @@ pub(crate) fn process_sign_configs(
                     })
                 })
                 .transpose()?;
+            let certificate_str = certificate_str.map(|cert| {
+                crate::helpers::dist_joined(&ctx.config.dist, &cert)
+                    .to_string_lossy()
+                    .into_owned()
+            });
 
             let certificate_for_vars = certificate_str.clone();
             // Invariant: every value below is supplied by anodizer itself,
@@ -387,15 +395,7 @@ pub(crate) fn process_sign_configs(
 
             inject_gpg_faked_system_time(&cmd, &mut fully_resolved, ctx.env_source());
 
-            let dist = &ctx.config.dist;
-            let sig_path = {
-                let resolved = std::path::PathBuf::from(&signature_str);
-                if !resolved.starts_with(dist) {
-                    dist.join(&resolved)
-                } else {
-                    resolved
-                }
-            };
+            let sig_path = std::path::PathBuf::from(&signature_str);
             let is_binary_sign = matches!(filter_mode, ArtifactFilter::BinaryOnly);
             // Subject provenance: the signature inherits the signed
             // artifact's verdict record — transitively when the subject is
@@ -446,12 +446,7 @@ pub(crate) fn process_sign_configs(
             }];
 
             if let Some(ref cert_path_str) = certificate_str {
-                let cert_resolved = std::path::PathBuf::from(cert_path_str);
-                let cert_path = if !cert_resolved.starts_with(dist) {
-                    dist.join(&cert_resolved)
-                } else {
-                    cert_resolved
-                };
+                let cert_path = std::path::PathBuf::from(cert_path_str);
                 let cert_name = cert_path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())

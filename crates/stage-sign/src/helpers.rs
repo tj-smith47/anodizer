@@ -357,6 +357,28 @@ pub(crate) fn resolve_signature_path(
 ///
 /// Shared by both `SignConfig` and `DockerSignConfig` — both expose the same
 /// `stdin` / `stdin_file` fields.
+/// The on-disk location a rendered `signature:` / `certificate:` template
+/// names. A rendering already under `dist` is kept; any other one is placed
+/// under `dist`, the same rule GoReleaser's `relativeToDist` applies. The two
+/// are compared as absolute paths so `./dist/x` and `dist/x` agree.
+///
+/// The signer receives this path AND the stage registers it, so the two can
+/// never disagree: a template that rendered outside `dist` used to be handed
+/// to the signer unjoined while the artifact was registered joined, leaving a
+/// registered signature that pointed at nothing.
+pub(crate) fn dist_joined(dist: &std::path::Path, rendered: &str) -> std::path::PathBuf {
+    let resolved = std::path::PathBuf::from(rendered);
+    let under_dist = match (std::path::absolute(&resolved), std::path::absolute(dist)) {
+        (Ok(abs), Ok(abs_dist)) => abs.starts_with(abs_dist),
+        _ => resolved.starts_with(dist),
+    };
+    if under_dist {
+        resolved
+    } else {
+        dist.join(resolved)
+    }
+}
+
 pub(crate) fn prepare_stdin_from(
     stdin: Option<&str>,
     stdin_file: Option<&str>,
@@ -489,6 +511,41 @@ pub(crate) fn resolve_sign_args(
             resolved
         })
         .collect()
+}
+
+#[cfg(test)]
+mod dist_joined_tests {
+    use super::dist_joined;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn a_relative_rendering_outside_dist_is_placed_under_dist() {
+        assert_eq!(
+            dist_joined(Path::new("./dist"), ".det-tmp/target/x/release/app.sig"),
+            PathBuf::from("./dist/.det-tmp/target/x/release/app.sig")
+        );
+    }
+
+    #[test]
+    fn a_rendering_under_dist_is_kept_whatever_its_spelling() {
+        assert_eq!(
+            dist_joined(Path::new("./dist"), "dist/app.tar.gz.sig"),
+            PathBuf::from("dist/app.tar.gz.sig")
+        );
+        assert_eq!(
+            dist_joined(Path::new("dist"), "./dist/app.tar.gz.sig"),
+            PathBuf::from("./dist/app.tar.gz.sig")
+        );
+    }
+
+    #[test]
+    fn an_absolute_rendering_stays_put() {
+        let abs = std::env::temp_dir().join("app.sig");
+        assert_eq!(
+            dist_joined(Path::new("./dist"), &abs.to_string_lossy()),
+            abs
+        );
+    }
 }
 
 #[cfg(test)]

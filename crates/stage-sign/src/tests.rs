@@ -7402,3 +7402,79 @@ fn missing_signature_output_is_still_recorded_as_an_artifact() {
         "the run must say once that the signer wrote no signature; got {warnings:?}"
     );
 }
+
+/// The file the signer writes is the file the stage registers: the signer
+/// receives the resolved path, not the raw rendering. The binary lives
+/// outside `dist` here, as a harness build's does.
+#[cfg(unix)]
+#[test]
+fn signer_writes_where_the_signature_artifact_is_registered() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    let bin_dir = tmp.path().join("target").join("release");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let binary = bin_dir.join("myapp");
+    std::fs::write(&binary, b"bin").unwrap();
+
+    let binary_signs = vec![SignConfig {
+        id: Some("touch".to_string()),
+        cmd: Some("touch".to_string()),
+        args: Some(vec!["{{ Signature }}".to_string()]),
+        artifacts: Some("binary".to_string()),
+        ids: None,
+        signature: None,
+        stdin: None,
+        stdin_file: None,
+        env: None,
+        certificate: None,
+        output: None,
+        authenticode: None,
+        verify: None,
+        if_condition: None,
+    }];
+
+    let (log, capture) = anodizer_core::log::StageLogger::with_capture(
+        "sign",
+        anodizer_core::log::Verbosity::Normal,
+    );
+    let mut ctx = TestContextBuilder::new()
+        .dist(dist.clone())
+        .binary_signs(binary_signs)
+        .build();
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: "myapp".to_string(),
+        path: binary,
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "test".to_string(),
+        metadata: Default::default(),
+        size: None,
+    });
+
+    let configs = ctx.config.binary_signs.clone();
+    crate::process::process_sign_configs(
+        &configs,
+        &mut ctx,
+        &log,
+        crate::process::ArtifactFilter::BinaryOnly,
+        "binary-sign",
+    )
+    .unwrap();
+
+    let sigs = ctx.artifacts.by_kind(ArtifactKind::Signature);
+    assert_eq!(sigs.len(), 1, "{sigs:?}");
+    let registered = &sigs[0].path;
+    assert!(
+        registered.is_file(),
+        "the signer should have written the registered path {}",
+        registered.display()
+    );
+    assert!(
+        capture.warn_messages().is_empty(),
+        "no warning expected, got {:?}",
+        capture.warn_messages()
+    );
+}
