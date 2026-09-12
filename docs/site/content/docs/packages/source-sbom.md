@@ -98,7 +98,9 @@ This produces a `tar.gz` archive named `<project>-<version>.tar.gz` containing a
 
 ### Extra files
 
-The `files` list accepts simple glob strings or objects with `src`, `dst`, `strip_parent`, and `info` fields. File source paths are template-rendered before glob expansion.
+The archive starts from `git archive`, so every tracked file is already in it. The `files` list adds files git does not track: generated docs, a vendored asset, a build product. An entry that names a tracked file is skipped with a warning.
+
+The list accepts simple glob strings or objects with `src`, `dst`, `strip_parent`, and `info` fields. File source paths are template-rendered before glob expansion.
 
 **Simple strings:**
 
@@ -106,9 +108,8 @@ The `files` list accepts simple glob strings or objects with `src`, `dst`, `stri
 source:
   enabled: true
   files:
-    - "LICENSE"
-    - "README.md"
-    - "crates/**/*.rs"
+    - "docs/generated/*.md"
+    - "vendor/licenses.txt"
 ```
 
 **Objects with destination mapping and metadata:**
