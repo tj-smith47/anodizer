@@ -534,6 +534,15 @@ pub(crate) fn qualify_basename_with_target(name: &str, target: &str) -> String {
 /// read back from the archive it registered
 /// (`anodizer-0.26.0-linux-amd64.tar.gz` → `anodizer-0.26.0-linux-amd64`).
 ///
+/// A crate with several `archives:` entries registers several archives per
+/// target, and the registry's order is not the config's: a publish-only run
+/// loads the preserved manifest, where `app-1.0.0-linux-amd64-extra.tar.xz`
+/// sorts ahead of `app-1.0.0-linux-amd64.tar.gz`. The stem is the PRIMARY
+/// entry's — the first `archives:` entry in config order, the one chocolatey
+/// and scoop bind to with `ids: [default]` — so a signature is named after the
+/// archive its consumers install from, whatever order the archives were
+/// registered in.
+///
 /// A `formats: [binary]` entry registers no archive, so the uploadable binary
 /// named after `binary_name` stands in — its own name IS the stem, which is
 /// what makes a `signs:` signature over that asset and a `binary_signs:`
@@ -552,10 +561,17 @@ pub(crate) fn archive_stem_for(
         a.crate_name == crate_name && a.target.as_deref() == Some(target)
     };
     let artifacts = ctx.artifacts.all();
-    if let Some(archive) = artifacts
+    let archives: Vec<_> = artifacts
         .iter()
         .filter(|a| a.kind == ArtifactKind::Archive)
-        .find(for_target)
+        .filter(for_target)
+        .collect();
+    let primary_id = primary_archive_id(ctx, crate_name);
+    let primary = archives
+        .iter()
+        .find(|a| a.metadata.get("id") == primary_id.as_ref())
+        .or_else(|| archives.first());
+    if let Some(archive) = primary
         && let Some(stem) = archive.metadata.get("name")
         && !stem.is_empty()
     {
@@ -567,6 +583,20 @@ pub(crate) fn archive_stem_for(
         .find(|a| for_target(a) && a.binary_name().as_deref() == binary_name)
         .map(|a| a.name.clone())
         .filter(|n| !n.is_empty())
+}
+
+/// The id of `crate_name`'s first configured `archives:` entry, the archive
+/// the crate's other per-target assets are named after. The archive stage
+/// records the same id in each archive's `id` metadata (`default` when the
+/// entry names none). `None` when the crate is not in the config or has no
+/// archive entry.
+fn primary_archive_id(ctx: &Context, crate_name: &str) -> Option<String> {
+    match &ctx.config.find_crate(crate_name)?.archives {
+        anodizer_core::config::ArchivesConfig::Configs(configs) => configs
+            .first()
+            .map(|c| c.id.clone().unwrap_or_else(|| "default".to_string())),
+        anodizer_core::config::ArchivesConfig::Disabled => None,
+    }
 }
 
 /// The release-asset name a `binary_signs:` output registers under.
@@ -594,6 +624,129 @@ pub(crate) fn binary_sign_asset_name(
     match (stem, rendered_basename.strip_prefix(binary_basename)) {
         (Some(stem), Some(suffix)) if !suffix.is_empty() => format!("{stem}{suffix}"),
         _ => qualify_basename_with_target(rendered_basename, target),
+    }
+}
+
+#[cfg(test)]
+mod archive_stem_for_tests {
+    use super::archive_stem_for;
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+    use anodizer_core::context::Context;
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    const TARGET: &str = "x86_64-unknown-linux-gnu";
+
+    fn crate_with_archives(ids: &[&str]) -> CrateConfig {
+        CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            archives: ArchivesConfig::Configs(
+                ids.iter()
+                    .map(|id| ArchiveConfig {
+                        id: Some((*id).to_string()),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    fn add_archive(ctx: &mut Context, id: &str, stem: &str, file: &str) {
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: String::new(),
+            path: std::path::PathBuf::from(format!("dist/{file}")),
+            target: Some(TARGET.to_string()),
+            crate_name: "app".to_string(),
+            metadata: [("id", id), ("name", stem)]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            size: None,
+        });
+    }
+
+    /// The preserved manifest of a publish-only run lists the `-extra`
+    /// archive first (`-` sorts before `.`); the stem is still the primary
+    /// entry's.
+    #[test]
+    fn the_primary_archive_entry_names_the_stem_whatever_the_registry_order() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![crate_with_archives(&["default", "extra"])])
+            .build();
+        add_archive(
+            &mut ctx,
+            "extra",
+            "app-1.0.0-linux-amd64-extra",
+            "app-1.0.0-linux-amd64-extra.tar.xz",
+        );
+        add_archive(
+            &mut ctx,
+            "default",
+            "app-1.0.0-linux-amd64",
+            "app-1.0.0-linux-amd64.tar.gz",
+        );
+        assert_eq!(
+            archive_stem_for(&ctx, "app", TARGET, Some("app")).as_deref(),
+            Some("app-1.0.0-linux-amd64")
+        );
+    }
+
+    /// An entry without an `id:` is registered as `default`, which is also
+    /// what the config fold writes back, so the two spellings agree.
+    #[test]
+    fn an_unnamed_first_entry_matches_the_default_id() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![CrateConfig {
+                archives: ArchivesConfig::Configs(vec![
+                    ArchiveConfig::default(),
+                    ArchiveConfig {
+                        id: Some("extra".to_string()),
+                        ..Default::default()
+                    },
+                ]),
+                ..crate_with_archives(&[])
+            }])
+            .build();
+        add_archive(&mut ctx, "extra", "app-extra", "app-extra.tar.xz");
+        add_archive(&mut ctx, "default", "app-main", "app-main.tar.gz");
+        assert_eq!(
+            archive_stem_for(&ctx, "app", TARGET, Some("app")).as_deref(),
+            Some("app-main")
+        );
+    }
+
+    /// A crate the config does not describe (or whose primary entry produced
+    /// no archive for this target) still resolves: the first registered
+    /// archive stands in rather than dropping to the target-qualified name.
+    #[test]
+    fn without_a_primary_match_the_first_registered_archive_stands_in() {
+        let mut ctx = TestContextBuilder::new().build();
+        add_archive(&mut ctx, "extra", "app-extra", "app-extra.tar.xz");
+        assert_eq!(
+            archive_stem_for(&ctx, "app", TARGET, Some("app")).as_deref(),
+            Some("app-extra")
+        );
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![crate_with_archives(&["default", "extra"])])
+            .build();
+        add_archive(&mut ctx, "extra", "app-extra", "app-extra.tar.xz");
+        assert_eq!(
+            archive_stem_for(&ctx, "app", TARGET, Some("app")).as_deref(),
+            Some("app-extra")
+        );
+    }
+
+    /// A target no archive entry covers (a build that only feeds npm or
+    /// docker) has no stem, so the caller keeps the target-qualified name.
+    #[test]
+    fn a_target_with_no_archive_has_no_stem() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![crate_with_archives(&["default"])])
+            .build();
+        assert_eq!(archive_stem_for(&ctx, "app", TARGET, Some("app")), None);
     }
 }
 
