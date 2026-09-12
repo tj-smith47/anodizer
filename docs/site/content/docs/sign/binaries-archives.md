@@ -75,6 +75,28 @@ app-1.2.3-linux-amd64v3.tar.gz
 app-1.2.3-linux-amd64v3.sig        <- binary_signs, micro-arch variant
 ```
 
+A crate with several `archives:` entries builds several archives per target;
+the signature takes the stem of the first entry in config order, the primary
+archive that `chocolatey` and `scoop` bind to with `ids: [default]`. A target
+no archive entry covers keeps the raw binary's name qualified with its target
+triple (`app-x86_64-unknown-linux-musl.sig`), so every target still uploads
+one distinct signature:
+
+```yaml
+archives:
+  - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"   # id: default
+    formats: [tar.gz]
+  - id: extra
+    name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-extra"
+    formats: [tar.xz]
+```
+
+```
+app-1.2.3-linux-amd64.tar.gz
+app-1.2.3-linux-amd64-extra.tar.xz
+app-1.2.3-linux-amd64.sig          <- binary_signs, the primary entry's stem
+```
+
 An archive entry with `formats: [binary]` publishes the executable itself, so a
 `signs:` config covering that asset and a `binary_signs:` config covering the
 same bytes resolve to one asset name; the release uploads it once.
