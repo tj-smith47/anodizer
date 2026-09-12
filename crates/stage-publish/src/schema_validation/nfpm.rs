@@ -130,7 +130,7 @@ impl PublisherSchemaValidator for NfpmSchemaValidator {
 /// The build's nfpm stage reads the global `Version` template var ONCE and
 /// feeds it to every crate's package `version:` — in snapshot/dry-run that is
 /// the artifact-naming `<base>-SNAPSHOT-<sha>` version. The surrounding
-/// [`with_validated_crate_scope`] re-derives a per-crate *bare* tag version
+/// [`super::with_validated_crate_scope`] re-derives a per-crate *bare* tag version
 /// (`resolve_crate_tag` strips the snapshot label and any monorepo prefix), so
 /// rendering straight through it would stamp `0.4.0` while the build stamped
 /// `0.4.0-SNAPSHOT-<sha>`, and the gated control cross-check would reject every
