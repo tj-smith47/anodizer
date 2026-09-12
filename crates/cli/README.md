@@ -19,8 +19,6 @@ The release pipeline built for Rust — workspace-aware, reproducible, and signe
 
 Anodizer reads a declarative config file and runs your entire release from a single `anodizer release` command: build, archive, checksum, changelog, sign, release, publish, and announce. It's built around the Rust ecosystem — Cargo workspaces, `Cargo.lock`-aware version bumps, crates.io, and byte-reproducible artifacts.
 
-Written by [Claude](https://claude.ai); maintained by us.
-
 See [What works (with proof)](https://tj-smith47.github.io/anodizer/dogfooding/) for a per-feature status — every "live" claim links to a real published artifact you can verify yourself.
 
 ## Why anodizer?
