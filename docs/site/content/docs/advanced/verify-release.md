@@ -163,10 +163,25 @@ One result line per publisher:
 [verify-release] snapcraft: myapp 1.0.0 live in the Snap Store channel map
 ```
 
+### Registry propagation
+
+A registry that has accepted a publish does not always serve it on the next
+request. Every probe above therefore keeps asking — backing off from 5 seconds
+to a 30-second cap, for up to 3 minutes per target — before it reports an
+absence, and a target that needed more than one ask says so:
+
+```
+[verify-release] npm: myapp@0.15.4 not yet visible on registry.npmjs.org — retrying for up to 3m
+[verify-release] npm: myapp@0.15.4 landing probe on registry.npmjs.org succeeded after 3 attempt(s)
+```
+
+The window is bounded by the run's own `retry.max_elapsed`, so lowering that
+lowers this too. A dry run probes once and never waits.
+
 A publisher that was skipped, deselected, or failed is not probed — it published
 nothing this run. A probe that **cannot run** (index unreachable, store build
-failure) is reported as an issue, never silently passed: an unverifiable
-landing is a finding.
+failure) is reported as an issue once the window closes, never silently passed:
+an unverifiable landing is a finding.
 
 ```
 - cargo: myapp@1.0.0 reported published but is not visible on the crates.io index

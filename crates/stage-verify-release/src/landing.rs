@@ -62,9 +62,144 @@ use anodizer_core::publish_report::{PublisherOutcome, PublisherResult};
 /// check (see [`LandingProbes::snap_channel_map`]).
 pub type SnapChannelMapProbe<'a> = dyn Fn(&str, &str, Option<&str>) -> anyhow::Result<bool> + 'a;
 
+/// How long a landing probe keeps asking before it reports an absence.
+///
+/// A registry that has ACCEPTED a publish and does not yet serve it is
+/// propagating, not missing. Measured on the v0.26.0 release: six of nine npm
+/// packages answered 404 immediately after `npm publish` returned and all nine
+/// answered within a minute; crates.io sparse-index entries show the same
+/// lag. So the window is sized well past the worst observed lag rather than at
+/// it, and the backoff starts long enough that the first re-ask is not simply
+/// the same instant again.
+#[derive(Debug, Clone, Copy)]
+pub struct PropagationRetry {
+    /// Backoff shape for the re-asks.
+    pub policy: anodizer_core::retry::RetryPolicy,
+    /// Wall-clock budget for one target's probe, from its first attempt.
+    pub budget: std::time::Duration,
+}
+
+impl PropagationRetry {
+    /// 5s base doubling to a 30s cap over 8 attempts inside a 3-minute budget
+    /// (5+10+20+30×4 = 155s of backoff).
+    pub const DEFAULT: PropagationRetry = PropagationRetry {
+        policy: anodizer_core::retry::RetryPolicy {
+            max_attempts: 8,
+            base_delay: std::time::Duration::from_secs(5),
+            max_delay: std::time::Duration::from_secs(30),
+        },
+        budget: std::time::Duration::from_secs(180),
+    };
+
+    /// One attempt, no sleeping — for a dry run and for tests, which must
+    /// exercise the orchestration without spending wall-clock time.
+    pub const IMMEDIATE: PropagationRetry = PropagationRetry::immediate_attempts(1);
+
+    /// Shrink the budget to whatever is left before `deadline`, so the run's
+    /// own `retry.max_elapsed` governs the landing sweep too — an operator who
+    /// bounded the release's total retry time does not get three extra minutes
+    /// per target on top of it.
+    pub fn bounded_by(self, deadline: Option<std::time::Instant>) -> PropagationRetry {
+        let Some(deadline) = deadline else {
+            return self;
+        };
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        PropagationRetry {
+            budget: self.budget.min(left),
+            ..self
+        }
+    }
+
+    /// Like [`IMMEDIATE`](Self::IMMEDIATE) but with `attempts` tries and no
+    /// backoff, so a test can prove a probe answering false-then-true passes
+    /// without spending wall-clock time. The budget keeps
+    /// [`RetryPolicy::budget_exhausted`] from ending the ladder before the
+    /// second attempt; with zero delays nothing is ever slept.
+    ///
+    /// [`RetryPolicy::budget_exhausted`]: anodizer_core::retry::RetryPolicy::budget_exhausted
+    pub const fn immediate_attempts(attempts: u32) -> PropagationRetry {
+        PropagationRetry {
+            policy: anodizer_core::retry::RetryPolicy {
+                max_attempts: attempts,
+                base_delay: std::time::Duration::ZERO,
+                max_delay: std::time::Duration::ZERO,
+            },
+            budget: PropagationRetry::DEFAULT.budget,
+        }
+    }
+}
+
+/// What a landing probe concluded once its propagation window closed.
+enum Landed {
+    /// The target is visible.
+    Yes,
+    /// Every attempt answered a definitive "absent".
+    No,
+    /// The probe could not reach a verdict (transport / store error).
+    Unknown(anyhow::Error),
+}
+
+/// One attempt's miss, as the retry driver's per-attempt cause.
+enum ProbeMiss {
+    Absent,
+    Failed(anyhow::Error),
+}
+
+impl std::fmt::Display for ProbeMiss {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProbeMiss::Absent => write!(f, "not visible yet"),
+            ProbeMiss::Failed(e) => write!(f, "{e:#}"),
+        }
+    }
+}
+
+/// Ask `probe` for `what` on `where_` until it answers yes or the propagation
+/// window closes. The single mechanism behind every landing probe in this
+/// module — a per-probe copy would drift the moment one of them learned a
+/// different bound.
+fn probe_with_propagation(
+    what: &str,
+    where_: &str,
+    retry: &PropagationRetry,
+    log: &StageLogger,
+    mut probe: impl FnMut() -> anyhow::Result<bool>,
+) -> Landed {
+    let desc = format!("{what} landing probe on {where_}");
+    let deadline = std::time::Instant::now() + retry.budget;
+    let mut announced = false;
+    let outcome: Result<(), ProbeMiss> = anodizer_core::retry::retry_sync_deadline(
+        anodizer_core::retry::RetryLog::new(&desc, log),
+        &retry.policy,
+        Some(deadline),
+        |_attempt| {
+            let miss = match probe() {
+                Ok(true) => return Ok(()),
+                Ok(false) => ProbeMiss::Absent,
+                Err(e) => ProbeMiss::Failed(e),
+            };
+            if !announced {
+                announced = true;
+                log.status(&format!(
+                    "{what} not yet visible on {where_} — retrying for up to {}",
+                    anodizer_core::progress::format_elapsed(retry.budget)
+                )); // status-ok: a per-target propagation wait an operator must see
+            }
+            Err(std::ops::ControlFlow::Continue(miss))
+        },
+    );
+    match outcome {
+        Ok(()) => Landed::Yes,
+        Err(ProbeMiss::Absent) => Landed::No,
+        Err(ProbeMiss::Failed(e)) => Landed::Unknown(e),
+    }
+}
+
 /// The landing probes, injected so tests can drive the orchestration without
 /// a network.
 pub struct LandingProbes<'a> {
+    /// How long each probe keeps asking before reporting an absence.
+    pub propagation: PropagationRetry,
     /// `(crate_name, version)` → whether the version is visible on the
     /// crates.io sparse index. `Err` = the index could not be consulted.
     pub cargo_index: &'a dyn Fn(&str, &str) -> anyhow::Result<bool>,
@@ -204,14 +339,21 @@ fn check_cargo_landing(
             continue;
         }
         probed += 1;
-        match (probes.cargo_index)(&t.name, &t.version) {
-            Ok(true) => visible.push(format!("{}@{}", t.name, t.version)),
-            Ok(false) => issues.push(format!(
+        let coords = format!("cargo: {}@{}", t.name, t.version);
+        match probe_with_propagation(
+            &coords,
+            "the crates.io index",
+            &probes.propagation,
+            log,
+            || (probes.cargo_index)(&t.name, &t.version),
+        ) {
+            Landed::Yes => visible.push(format!("{}@{}", t.name, t.version)),
+            Landed::No => issues.push(format!(
                 "cargo: {}@{} reported published but is not visible on the \
                  crates.io index",
                 t.name, t.version
             )),
-            Err(e) => issues.push(format!(
+            Landed::Unknown(e) => issues.push(format!(
                 "cargo: could not probe the crates.io index for {}@{}: {e:#}",
                 t.name, t.version
             )),
@@ -252,9 +394,16 @@ fn check_npm_landing(
     }
     let mut visible: Vec<String> = Vec::new();
     for t in targets {
-        match (probes.npm_registry)(&t.registry, &t.package, &t.version) {
-            Ok(true) => visible.push(format!("{}@{}", t.package, t.version)),
-            Ok(false) => issues.push(format!(
+        let coords = format!("npm: {}@{}", t.package, t.version);
+        match probe_with_propagation(
+            &coords,
+            registry_host(&t.registry),
+            &probes.propagation,
+            log,
+            || (probes.npm_registry)(&t.registry, &t.package, &t.version),
+        ) {
+            Landed::Yes => visible.push(format!("{}@{}", t.package, t.version)),
+            Landed::No => issues.push(format!(
                 "npm: {}@{} reported published but is not visible on {}",
                 t.package,
                 t.version,
@@ -264,7 +413,7 @@ fn check_npm_landing(
             // version is immutable once published, so a transient outage must
             // fail closed as "unverifiable", never as "not visible" — the
             // latter would fail an already published one-way-door release.
-            Err(e) => issues.push(format!(
+            Landed::Unknown(e) => issues.push(format!(
                 "npm: could not confirm {}@{} on {}: {e:#}",
                 t.package,
                 t.version,
@@ -302,15 +451,18 @@ fn check_blob_landing(
     let mut present = 0usize;
     for t in targets {
         let url = format!("{}://{}/{}", t.provider, t.bucket, t.key);
-        match (probes.blob_head)(t) {
-            Ok(true) => {
+        let coords = format!("blob: {url}");
+        match probe_with_propagation(&coords, "the bucket", &probes.propagation, log, || {
+            (probes.blob_head)(t)
+        }) {
+            Landed::Yes => {
                 present += 1;
                 log.verbose(&format!("{url} present"));
             }
-            Ok(false) => issues.push(format!(
+            Landed::No => issues.push(format!(
                 "blob: {url} reported uploaded but is missing from the bucket"
             )),
-            Err(e) => issues.push(format!("blob: could not verify {url}: {e:#}")),
+            Landed::Unknown(e) => issues.push(format!("blob: could not verify {url}: {e:#}")),
         }
     }
     if present == targets.len() {
@@ -377,22 +529,29 @@ fn check_snapcraft_landing(
         }
         probed += 1;
         let coords = format!("{} {version}", t.package_name);
-        match (probes.snap_channel_map)(&t.package_name, version, t.channel.as_deref()) {
-            Ok(true) => visible.push(coords),
-            Ok(false) if t.held_for_review => issues.push(format!(
+        let labelled = format!("snapcraft: {coords}");
+        match probe_with_propagation(
+            &labelled,
+            "the Snap Store channel map",
+            &probes.propagation,
+            log,
+            || (probes.snap_channel_map)(&t.package_name, version, t.channel.as_deref()),
+        ) {
+            Landed::Yes => visible.push(coords),
+            Landed::No if t.held_for_review => issues.push(format!(
                 "snapcraft: {coords} was HELD for Snap Store manual review and is not live in \
                  the store — consumers get nothing until review approves \
                  (https://dashboard.snapcraft.io/snaps/{}/)",
                 t.package_name
             )),
-            Ok(false) => issues.push(format!(
+            Landed::No => issues.push(format!(
                 "snapcraft: {coords} reported uploaded but is not in the store's channel map{}",
                 t.channel
                     .as_deref()
                     .map(|c| format!(" for channel '{c}'"))
                     .unwrap_or_default()
             )),
-            Err(e) => issues.push(format!(
+            Landed::Unknown(e) => issues.push(format!(
                 "snapcraft: could not probe the Snap Store for {coords}: {e:#}"
             )),
         }
@@ -489,9 +648,350 @@ mod tests {
         })
     }
 
+    /// A context whose loggers record every line, for asserting the
+    /// propagation status line.
+    fn ctx_capturing(report: PublishReport) -> (Context, anodizer_core::log::LogCapture) {
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = ctx_with_report(report);
+        ctx.with_log_capture(capture.clone());
+        (ctx, capture)
+    }
+
+    /// A probe that answers each of `answers` in turn, then repeats the last.
+    /// `None` is an indeterminate probe failure.
+    fn scripted(answers: Vec<Option<bool>>) -> impl Fn() -> anyhow::Result<bool> {
+        let calls = Cell::new(0usize);
+        move || {
+            let i = calls.get().min(answers.len() - 1);
+            calls.set(calls.get() + 1);
+            match answers[i] {
+                Some(v) => Ok(v),
+                None => anyhow::bail!("registry unreachable"),
+            }
+        }
+    }
+
+    /// The retry policy every propagation test drives: several attempts, no
+    /// sleeping, so the orchestration is exercised in microseconds.
+    const FLAKY: PropagationRetry = PropagationRetry::immediate_attempts(5);
+
+    /// A registry that accepted a publish and has not served it yet is
+    /// propagating. This is the v0.26.0 regression: six of nine npm packages
+    /// answered 404 on the first probe and all nine were visible a minute
+    /// later, so a single-shot probe failed a release whose every artifact was published.
+    #[test]
+    fn npm_probe_retries_until_the_registry_serves_the_version() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "npm",
+                PublisherOutcome::Succeeded,
+                npm_extra(&[("demo", "1.0.0")]),
+            )],
+            ..Default::default()
+        };
+        let (ctx, capture) = ctx_capturing(report);
+        let log = test_logger(&ctx);
+        let answers = scripted(vec![Some(false), Some(false), Some(true)]);
+        let npm = |_: &str, _: &str, _: &str| answers();
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            npm_registry: &npm,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(issues.is_empty(), "{issues:?}");
+        let statuses: Vec<String> = capture
+            .all_messages()
+            .into_iter()
+            .filter(|(l, _)| *l == anodizer_core::log::LogLevel::Status)
+            .map(|(_, m)| m)
+            .collect();
+        assert!(
+            statuses.iter().any(|m| m
+                .contains("npm: demo@1.0.0 not yet visible on registry.npmjs.org")
+                && m.contains("retrying for up to")),
+            "a target that needed a retry must say so once: {statuses:?}"
+        );
+    }
+
+    #[test]
+    fn npm_probe_reports_the_absence_once_the_window_closes() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "npm",
+                PublisherOutcome::Succeeded,
+                npm_extra(&[("demo", "1.0.0")]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let npm = |_: &str, _: &str, _: &str| Ok(false);
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            npm_registry: &npm,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert_eq!(issues.len(), 1);
+        assert!(
+            issues[0].contains("demo@1.0.0") && issues[0].contains("is not visible"),
+            "the wording after the window closes is unchanged: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn npm_probe_error_then_success_is_not_an_issue() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "npm",
+                PublisherOutcome::Succeeded,
+                npm_extra(&[("demo", "1.0.0")]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let answers = scripted(vec![None, Some(true)]);
+        let npm = |_: &str, _: &str, _: &str| answers();
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            npm_registry: &npm,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn cargo_probe_retries_a_propagating_sparse_index() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "cargo",
+                PublisherOutcome::Succeeded,
+                cargo_extra(&[("app-core", "1.0.0")]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let answers = scripted(vec![Some(false), Some(false), Some(true)]);
+        let cargo = |_: &str, _: &str| answers();
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            cargo_index: &cargo,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn cargo_probe_reports_the_absence_once_the_window_closes() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "cargo",
+                PublisherOutcome::Succeeded,
+                cargo_extra(&[("app-core", "1.0.0")]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let cargo = |_: &str, _: &str| Ok(false);
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            cargo_index: &cargo,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert_eq!(issues.len(), 1);
+        assert!(
+            issues[0].contains("app-core@1.0.0") && issues[0].contains("not visible"),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn cargo_probe_error_then_success_is_not_an_issue() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "cargo",
+                PublisherOutcome::Succeeded,
+                cargo_extra(&[("app-core", "1.0.0")]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let answers = scripted(vec![None, Some(true)]);
+        let cargo = |_: &str, _: &str| answers();
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            cargo_index: &cargo,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn blob_probe_retries_an_object_the_bucket_has_not_served_yet() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "blob",
+                PublisherOutcome::Succeeded,
+                blob_extra(&["dist/demo.tar.gz"]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let answers = scripted(vec![Some(false), Some(false), Some(true)]);
+        let blob = |_: &BlobTargetSnapshot| answers();
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            blob_head: &blob,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn blob_probe_reports_the_absence_once_the_window_closes() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "blob",
+                PublisherOutcome::Succeeded,
+                blob_extra(&["dist/demo.tar.gz"]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let blob = |_: &BlobTargetSnapshot| Ok(false);
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            blob_head: &blob,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("missing from the bucket"), "{issues:?}");
+    }
+
+    #[test]
+    fn blob_probe_error_then_success_is_not_an_issue() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "blob",
+                PublisherOutcome::Succeeded,
+                blob_extra(&["dist/demo.tar.gz"]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let answers = scripted(vec![None, Some(true)]);
+        let blob = |_: &BlobTargetSnapshot| answers();
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            blob_head: &blob,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn snapcraft_probe_retries_a_channel_map_that_has_not_caught_up() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "snapcraft",
+                PublisherOutcome::Succeeded,
+                snapcraft_extra(&[("demo", "1.2.3", Some("stable"), false)]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let answers = scripted(vec![Some(false), Some(false), Some(true)]);
+        let snap = |_: &str, _: &str, _: Option<&str>| answers();
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            snap_channel_map: &snap,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn snapcraft_probe_reports_the_absence_once_the_window_closes() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "snapcraft",
+                PublisherOutcome::Succeeded,
+                snapcraft_extra(&[("demo", "1.2.3", Some("stable"), false)]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let snap = |_: &str, _: &str, _: Option<&str>| Ok(false);
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            snap_channel_map: &snap,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert_eq!(issues.len(), 1);
+        assert!(
+            issues[0].contains("not in the store's channel map"),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn snapcraft_probe_error_then_success_is_not_an_issue() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "snapcraft",
+                PublisherOutcome::Succeeded,
+                snapcraft_extra(&[("demo", "1.2.3", Some("stable"), false)]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let answers = scripted(vec![None, Some(true)]);
+        let snap = |_: &str, _: &str, _: Option<&str>| answers();
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            snap_channel_map: &snap,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
     /// Probes that must never fire — for paths that filter before probing.
     fn panicking_probes() -> LandingProbes<'static> {
         LandingProbes {
+            propagation: PropagationRetry::IMMEDIATE,
             cargo_index: &|n, v| panic!("cargo probe must not fire for {n}@{v}"),
             npm_registry: &|_, p, v| panic!("npm probe must not fire for {p}@{v}"),
             blob_head: &|t| panic!("blob probe must not fire for {}", t.key),
@@ -649,6 +1149,7 @@ mod tests {
         let ctx = ctx_with_report(report);
         let log = test_logger(&ctx);
         let probes = LandingProbes {
+            propagation: PropagationRetry::IMMEDIATE,
             cargo_index: &|n, v| panic!("cargo probe must not fire for {n}@{v}"),
             npm_registry: &|_, p, v| panic!("npm probe must not fire for {p}@{v}"),
             blob_head: &|t| panic!("blob probe must not fire for {}", t.key),

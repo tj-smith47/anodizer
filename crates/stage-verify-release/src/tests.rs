@@ -2846,7 +2846,12 @@ fn landing_ctx() -> Context {
         attempts: 1,
         delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(1)),
         max_delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(2)),
-        max_elapsed: None,
+        // The landing probes wait out registry propagation inside the run's
+        // retry budget, so a test that drives the real stage bounds that
+        // budget instead of sleeping out the production window.
+        max_elapsed: Some(anodizer_core::config::HumanDuration(
+            std::time::Duration::from_millis(5),
+        )),
     });
     ctx.config.verify_release = VerifyReleaseConfig {
         enabled: true,
