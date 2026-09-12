@@ -38,7 +38,7 @@ jobs:
         run: task docs:check
 
       - name: Install Zola
-        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2.87.9
         with:
           # The version the local `task docs:site` gate runs; zola 0.23 dropped
           # the `concat` filter the sidebar uses.
