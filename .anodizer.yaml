@@ -1024,11 +1024,13 @@ upx:
       - "--lzma"
     compress: "9"
     lzma: true
-    # UPX doesn't support macOS ARM or Windows ARM binaries
+    # UPX 5.x refuses every macOS binary (CantPackException: macOS is
+    # currently not supported) and has never packed Windows ARM, so the list
+    # is the GNU Linux pair plus Windows x86_64. A listed target UPX cannot
+    # pack is skipped with a warning and ships uncompressed.
     targets:
       - "x86_64-unknown-linux-gnu"
       - "aarch64-unknown-linux-gnu"
-      - "x86_64-apple-darwin"
       - "x86_64-pc-windows-msvc"
 
 nightly:
