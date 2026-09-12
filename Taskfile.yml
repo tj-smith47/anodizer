@@ -241,6 +241,17 @@ tasks:
     # Deploy Docs only fires after a Release that actually cut a version, so
     # without this target such a break stays invisible until release day.
     dir: docs/site
+    preconditions:
+      # One pinned Zola for CI and for a laptop: `.zola-version` is what
+      # .github/actions/setup-docs installs, so a local build that differs
+      # proves nothing about what the deploy will render. Zola 0.23 moved to
+      # Tera 2, which parses `{{ … }}` inside markdown prose — the syntax 100
+      # of these pages document — so the pin matters, it is not cosmetic.
+      - sh: test "$(zola --version | awk '{print $2}')" = "$(tr -d '[:space:]' < ../../.zola-version)"
+        msg: >-
+          zola version mismatch: this repo pins the version in .zola-version and
+          your `zola --version` differs. Install the pinned version before
+          building the docsite.
     cmds:
       - zola build
 

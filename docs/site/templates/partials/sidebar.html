@@ -7,24 +7,6 @@
    from each section's `weight`, page order from the section's `sort_by`. #}
 <aside class="docs-sidebar" aria-label="Documentation navigation">
   {% set docs = get_section(path="docs/_index.md") %}
-  {% set_global nav = docs.subsections %}
-  {% set_global nav = nav | concat(with="migration/_index.md") %}
-  {% for section_path in nav %}
-    {% set section = get_section(path=section_path) %}
-  <div class="sidebar-section">
-    <div class="sidebar-section-title">{{ section.title }}</div>
-    {% for page in section.pages %}
-    <a href="{{ page.permalink }}" class="sidebar-link{% if current_path == page.path %} active{% endif %}">{{ page.title }}</a>
-    {% endfor %}
-  </div>
-    {% for nested_path in section.subsections %}
-      {% set nested = get_section(path=nested_path) %}
-  <div class="sidebar-section">
-    <div class="sidebar-section-title">{{ nested.title }}</div>
-      {% for page in nested.pages %}
-    <a href="{{ page.permalink }}" class="sidebar-link{% if current_path == page.path %} active{% endif %}">{{ page.title }}</a>
-      {% endfor %}
-  </div>
-    {% endfor %}
-  {% endfor %}
+  {% for section_path in docs.subsections %}{% include "partials/sidebar_group.html" %}
+  {% endfor %}{% set_global section_path = "migration/_index.md" %}{% include "partials/sidebar_group.html" %}
 </aside>

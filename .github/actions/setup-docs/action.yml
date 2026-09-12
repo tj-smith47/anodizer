@@ -1,7 +1,7 @@
 name: Setup Docs
 description: >-
   Provision the docs jobs' shared toolchain: stable Rust, the Swatinem build
-  cache, and go-task. Collapses the toolchain/cache/task steps the docs.yml
+  cache, go-task, and Zola. Collapses the toolchain/cache/task steps the docs.yml
   freshness-check and site-build jobs otherwise repeat. Checkout is NOT included
   — a local composite requires the repo already checked out, so each job keeps
   its own checkout step (matching the setup-rust composite's contract).
@@ -14,6 +14,13 @@ inputs:
     default: "true"
   github-token:
     description: Token forwarded to go-task/setup-task as repo-token to avoid API rate limits.
+    default: ""
+  zola-version:
+    description: >-
+      Zola release to install. Empty (the default) reads the pinned version from
+      the repository's `.zola-version`, which is the same file `task docs:site`
+      checks the local binary against — so a workflow and a laptop cannot build
+      the docsite with different Zola versions.
     default: ""
 
 runs:
@@ -36,3 +43,19 @@ runs:
         # and API-independent.
         version: 3.51.1
         repo-token: ${{ inputs.github-token }}
+
+    - name: Resolve the pinned Zola version
+      id: zola
+      shell: bash
+      run: |
+        set -euo pipefail
+        version="${{ inputs.zola-version }}"
+        if [ -z "$version" ]; then
+          version="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/.zola-version")"
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - name: Install Zola
+      uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2.87.9
+      with:
+        tool: zola@${{ steps.zola.outputs.version }}

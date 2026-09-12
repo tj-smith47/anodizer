@@ -96,11 +96,6 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Zola
-        uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2.87.9
-        with:
-          tool: zola
-
       # This workflow only deploys off a Release that actually published, so the
       # binary these docs describe is already built, signed and attached to that
       # release — rebuilding the workspace here would recompile an artifact that
@@ -132,7 +127,7 @@ jobs:
         run: ./target/release/anodizer jsonschema > docs/site/static/schema.json
 
       - name: Build site
-        run: cd docs/site && zola build
+        run: task docs:site
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
