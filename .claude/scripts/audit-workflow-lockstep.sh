@@ -33,6 +33,14 @@
 #      names every HOSTED_PUBLISHERS token, AND publish-oidc.yml's copy of
 #      HOSTED_PUBLISHERS stays byte-equal to release.yml's (the --skip and
 #      --publishers selectors must remain exact complements across the split).
+#   9. One rust-cache per job: no job runs two Swatinem/rust-cache instances,
+#      whether direct, through a local composite (setup-rust with cache on,
+#      setup-docs), or through anodizer-action's from-source / from-branch /
+#      determinism paths. The FIRST instance's post step prunes ~/.cargo/bin
+#      down to cargo-installed binaries (rustup's cargo/rustc proxies
+#      included), so the second post step finds no `cargo` for its `cargo
+#      metadata` and saves a cache it could not scope. The job still passes,
+#      so nothing else notices.
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
@@ -268,6 +276,56 @@ elif [[ "$oidc_hosted" != "$hosted" ]]; then
     fail "hosted set drift: ${OIDC} HOSTED_PUBLISHERS [${oidc_hosted}] != ${REL} [${hosted}] — the main job's --skip set and the OIDC job's --publishers set are no longer complements."
 fi
 
+# --- 9. One rust-cache per job ---------------------------------------------
+# Which local composites carry a rust-cache step, and the input that turns it
+# off. Derived from the composites themselves so a composite that gains a
+# rust-cache step without an entry here fails the audit instead of slipping
+# through as "not counted".
+declare -A COMPOSITE_CACHE_OFF=(
+    ["./.github/actions/setup-rust"]="cache"
+    ["./.github/actions/setup-docs"]=""
+)
+for action_yml in .github/actions/*/action.yml; do
+    action_dir="./${action_yml%/action.yml}"
+    if grep -q 'uses: Swatinem/rust-cache' "$action_yml"; then
+        [[ -v COMPOSITE_CACHE_OFF["$action_dir"] ]] || fail "rust-cache per job: composite ${action_dir} carries a Swatinem/rust-cache step but is unknown to this audit — add it to COMPOSITE_CACHE_OFF."
+    elif [[ -v COMPOSITE_CACHE_OFF["$action_dir"] ]]; then
+        fail "rust-cache per job: composite ${action_dir} no longer carries a Swatinem/rust-cache step — drop it from COMPOSITE_CACHE_OFF."
+    fi
+done
+# anodizer-action provisions its own rust-cache whenever it builds from source
+# (classify.sh: determinism, from-source, or from-branch set needs_cargo_cache).
+for wf in .github/workflows/*.yml; do
+    while IFS= read -r job; do
+        [[ -z "$job" ]] && continue
+        count=0
+        # `|` rather than a tab: read collapses runs of IFS whitespace, so an
+        # empty middle field would shift the columns.
+        while IFS='|' read -r uses cache_input from_source from_branch determinism; do
+            [[ -z "$uses" || "$uses" == "null" ]] && continue
+            case "$uses" in
+                Swatinem/rust-cache@*) count=$((count + 1)) ;;
+                tj-smith47/anodizer-action@*)
+                    if [[ "$from_source" == "true" || "$determinism" == "true" || ( -n "$from_branch" && "$from_branch" != "null" ) ]]; then
+                        count=$((count + 1))
+                    fi
+                    ;;
+                ./.github/actions/*)
+                    if [[ -v COMPOSITE_CACHE_OFF["$uses"] ]]; then
+                        off_input="${COMPOSITE_CACHE_OFF[$uses]}"
+                        if [[ -z "$off_input" || "$cache_input" != "false" ]]; then
+                            count=$((count + 1))
+                        fi
+                    fi
+                    ;;
+            esac
+        done < <(yqr -r ".jobs[\"${job}\"].steps[]? | [.uses, .with.cache, .with[\"from-source\"], .with[\"from-branch\"], .with.determinism] | map(. // \"\") | join(\"|\")" "$wf")
+        if (( count > 1 )); then
+            fail "rust-cache per job: ${wf} job '${job}' runs ${count} Swatinem/rust-cache instances (direct, via a local composite, or via anodizer-action from-source/from-branch/determinism) — the first post step deletes the rustup proxies from ~/.cargo/bin and the second cannot run cargo metadata. Keep one."
+        fi
+    done < <(yqr -r '.jobs | keys[]' "$wf")
+done
+
 if [[ -n "$failures" ]]; then
     echo "audit-workflow-lockstep: FAIL — hand-synced workflow copies have drifted." >&2
     echo "" >&2
@@ -275,4 +333,4 @@ if [[ -n "$failures" ]]; then
     exit 1
 fi
 
-echo "audit-workflow-lockstep: OK — shard roster, secret env, trigger gate, CI bootstrap gate, release/nightly mutex, bootstrap artifact (name + workflow file), atomic tag topology, cross-OS suite fallback, and skip_publishers prose are in lockstep."
+echo "audit-workflow-lockstep: OK — shard roster, secret env, trigger gate, CI bootstrap gate, release/nightly mutex, bootstrap artifact (name + workflow file), atomic tag topology, cross-OS suite fallback, skip_publishers prose, and one rust-cache per job are in lockstep."
