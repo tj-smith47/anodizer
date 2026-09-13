@@ -6,7 +6,7 @@
 //! block or undo anything: it REPORTS post-publish defects (and exits
 //! non-zero so CI surfaces them), but the release is already live.
 //!
-//! Three independently-toggleable checks:
+//! Four independently-toggleable checks:
 //!
 //! - **asset-existence** (`Self::assert_assets`) — every produced artifact
 //!   has a matching UPLOADED asset on the published release. Catches the
@@ -18,6 +18,9 @@
 //!   `.deb` requires a glibc newer than the configured floor. musl binaries
 //!   have no glibc requirement and are skipped — which is the whole point:
 //!   musl hides a glibc-floor regression that this check is meant to surface.
+//! - **publisher landing** (`Self::assert_landing`) — every publisher that
+//!   succeeded this run is probed upstream to confirm consumers can see what
+//!   it published.
 //!
 //! The block is off unless `Self::enabled` is `true`. Defaults mirror the
 //! [`PostPublishPollConfig`](super::PostPublishPollConfig) style:
@@ -59,14 +62,17 @@ pub struct VerifyReleaseConfig {
     /// Assert that every publisher that succeeded this run is actually VISIBLE upstream:
     /// each published crate version is visible on the crates.io sparse index,
     /// each npm package version is visible on its registry, each uploaded
-    /// blob object exists in its bucket, and each uploaded snap is live in
-    /// the Snap Store's channel map (catching a manual-review hold that
-    /// parked the revision outside every channel). Default `true` (no extra
-    /// config: the run's own publish report already carries every coordinate
-    /// the probes need). Publishers that did not run — or did not succeed —
-    /// are skipped. Each probe retries while the registry propagates (5s
-    /// backoff to a 30s cap, up to 3 minutes per target, bounded by
-    /// `retry.max_elapsed`) before reporting an absence.
+    /// PyPI wheel or source distribution is listed by the index it went to,
+    /// each uploaded blob object exists in its bucket, and each uploaded snap
+    /// is live in the Snap Store's channel map (catching a manual-review hold
+    /// that parked the revision outside every channel). Default `true` (no
+    /// extra config: the run's own publish report already carries every
+    /// coordinate the probes need). Publishers that did not run — or did not
+    /// succeed — are skipped. A target the registry has not served yet is
+    /// re-asked (5s backoff doubling to a 30s cap, 8 attempts) inside ONE
+    /// 3-minute window shared by the whole sweep, shortened whenever
+    /// `retry.max_elapsed` leaves less than that; an absence is reported when
+    /// the window closes.
     pub assert_landing: bool,
     /// Per-package install smoke-test images. When `None`, smoke-testing is
     /// off. When present, each package type that produced an artifact is

@@ -190,6 +190,11 @@ There is **no workflow-side rollback step**: a pipeline failure leaves the tag a
 
 Three publishers authenticate from a GitHub Actions OIDC identity that the registry only honours from a github-hosted runner: **npm** provenance (issued from the id-token; a self-hosted runner 422s and degrades to a non-provenance publish), **pypi** [Trusted Publishing](@/docs/publish/pypi.md), and **cargo** [crates.io Trusted Publishing](@/docs/publish/crates-io.md#trusted-publishing-oidc) (`auth: oidc` exchanges the id-token for a short-lived upload token — no stored `PYPI_TOKEN` / `CARGO_REGISTRY_TOKEN`). The main publish skips all three.
 
+The OIDC leg runs the same pipeline, so its own
+[`verify_release`](@/docs/advanced/verify-release.md) gate probes what that leg
+published — the crates.io index, the npm registry and the PyPI index — before
+the run reports success.
+
 These do **not** run as a job inside `release.yml`. crates.io and PyPI Trusted Publishing accept only `push`, `release`, and `workflow_dispatch` — they **reject the `workflow_run` event** `release.yml` fires on (`400 "does not support the workflow_run event trigger"`), and the OIDC `event_name` claim is fixed per workflow-run, so no job inside `release.yml` can present an accepted trigger. So the OIDC publishers live in a standalone **`publish-oidc.yml`** (`on: workflow_dispatch`), and a small `dispatch-oidc` job triggers it via the Actions API and waits on its verdict — the release run still reflects the OIDC leg's pass/fail. A reusable `workflow_call` workflow would not work either: it inherits the caller's `workflow_run` event.
 
 ```yaml
