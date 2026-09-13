@@ -2164,6 +2164,56 @@ fn the_defaults_provenance_record_is_rewound_between_workspaces() {
     assert!(ctx.config.filled_from_defaults.contains("signs"));
 }
 
+/// Whether every use of the `config` binding past `body`'s signature line
+/// names a field, returning the offending line otherwise.
+///
+/// An allowlist rather than a list of rebinding spellings: a mutation handed
+/// to a helper (`apply_env_overlay(config, ws)`) carries no `&mut` token and
+/// no `= config;`, so only "always followed by `.`" catches every way the
+/// binding can leave the walk's sight.
+fn every_config_use_names_a_field(body: &str) -> Result<(), String> {
+    let body = body.split_once('\n').map_or("", |(_, rest)| rest);
+    let ident = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    for (index, _) in body.match_indices("config") {
+        let bytes = body.as_bytes();
+        let joined = (index > 0 && ident(bytes[index - 1]))
+            || bytes
+                .get(index + "config".len())
+                .copied()
+                .is_some_and(ident);
+        if joined {
+            continue;
+        }
+        if bytes.get(index + "config".len()) != Some(&b'.') {
+            return Err(body[index..].lines().next().unwrap_or_default().to_string());
+        }
+    }
+    Ok(())
+}
+
+/// The allowlist sees a mutation no rebinding spelling would have caught.
+#[test]
+fn a_config_handed_to_a_helper_fails_the_overlay_walk() {
+    let accepted = "fn apply_workspace_overlay(config: &mut Config, ws: &WorkspaceConfig) {
+    config.crates = ws.crates.clone();
+    let merged = config.env.get_or_insert_with(Vec::new);
+    let sign_config = merged.len();
+    let _ = sign_config;
+}";
+    assert_eq!(every_config_use_names_a_field(accepted), Ok(()));
+
+    for rejected in [
+        "fn f(config: &mut Config) {\n    apply_env_overlay(config, ws);\n}",
+        "fn f(config: &mut Config) {\n    let c = &mut *config;\n}",
+        "fn f(config: &mut Config) {\n    let c = config;\n}",
+    ] {
+        assert!(
+            every_config_use_names_a_field(rejected).is_err(),
+            "the walk must refuse: {rejected}"
+        );
+    }
+}
+
 /// Every `config` field `apply_workspace_overlay` mutates is restored by
 /// `OverlayFields::restore_into`.
 ///
@@ -2175,9 +2225,9 @@ fn the_defaults_provenance_record_is_rewound_between_workspaces() {
 /// The walk reads `config.<field>` text, which cannot tell a read from a
 /// write: a plain `if config.dist.is_some()` in the overlay would demand a
 /// restore entry it does not need. Add the field to `restore_into` or spell
-/// the read through a local — never a bogus restore. A mutation through a
-/// `&mut` rebinding would be invisible to the walk, so the overlay is held
-/// to spelling every mutation `config.<field>`.
+/// the read through a local — never a bogus restore. A mutation reached any
+/// other way is invisible to the walk, so the overlay is held to naming a
+/// field on every use of the binding ([`every_config_use_names_a_field`]).
 #[test]
 fn every_overlay_mutation_is_rewound_by_the_guard() {
     use anodizer_core::test_helpers::test_sources::{function_bodies, production_half};
@@ -2216,12 +2266,10 @@ fn every_overlay_mutation_is_rewound_by_the_guard() {
         "the overlay touches a different set of fields than the walk expects: \
          {mutated:?}"
     );
-    for rebinding in ["&mut *config", "&mut config", "= config;"] {
-        assert!(
-            !overlay.contains(rebinding),
-            "`apply_workspace_overlay` rebinds the config (`{rebinding}`), which \
-             hides the mutation from this walk — spell every mutation \
-             `config.<field>`"
+    if let Err(line) = every_config_use_names_a_field(&overlay) {
+        panic!(
+            "`apply_workspace_overlay` hands the config somewhere this walk \
+             cannot read — spell every mutation `config.<field>`: {line}"
         );
     }
     for field in &mutated {
