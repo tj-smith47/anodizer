@@ -129,7 +129,7 @@ pub fn verify_release_consumers() -> &'static [&'static str] {
 /// of a hand-maintained string list. The OS-package verify axes
 /// (install-smoke and libc-ceiling) verify those produced artifacts, so —
 /// like the asset check gating on `github-release` — they run only when at
-/// least one such publisher is in the selected publishers.
+/// least one such publisher is among the selected publishers.
 /// Over-inclusion is safe (a publisher that ships no package finds nothing to
 /// check); under-inclusion would drop coverage on a shipped package.
 pub fn os_package_consumers() -> Vec<&'static str> {
@@ -222,7 +222,7 @@ impl Stage for VerifyReleaseStage {
             && !os_package_publisher_selected(ctx)
         {
             ctx.logger(STAGE_NAME)
-                .status("skipped — no verifiable publisher in the selected publishers");
+                .status("skipped — no verifiable publisher among the selected publishers");
             return Ok(());
         }
         // The gate verifies a real, published release; dry-run / snapshot
@@ -248,7 +248,7 @@ impl Stage for VerifyReleaseStage {
         // out of the selected surface while the landing checks still apply.
         let github_selected = !ctx.publisher_deselected("github-release");
         if cfg.assert_assets_enabled() && !github_selected {
-            log.verbose("github-release not in the selected publishers — asset check skipped");
+            log.verbose("github-release not among the selected publishers — asset check skipped");
         }
 
         let mut run_state = VerifyRun::default();
