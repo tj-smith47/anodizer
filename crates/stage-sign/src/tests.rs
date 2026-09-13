@@ -8214,9 +8214,13 @@ fn two_configs_naming_one_signature_for_one_binary_are_accepted() {
     assert_eq!(expected, vec!["shared-1.0.0.sig"]);
 }
 
-/// Two entries spelling ONE output path two ways (`dist/x` and `./dist/x`)
-/// write one file, so the claim compares the two the way `dist_joined`
-/// decides what is already under `dist` — as absolute paths.
+/// Two entries spelling ONE output path two ways (`dist/x` against
+/// `./dist/x`, and against `dist/../dist/x`) write one file, so the claim
+/// compares the two the way `dist_joined` decides what is already under
+/// `dist` — as absolute paths with `.` and `..` folded away. A raw
+/// `std::path::absolute` keeps `..` on POSIX and drops it on Windows, so
+/// the second pair would pass two of a release's four shards and fail the
+/// other two.
 #[test]
 fn two_spellings_of_one_signature_path_are_one_file() {
     use anodizer_core::artifact::Artifact;
@@ -8232,58 +8236,57 @@ fn two_spellings_of_one_signature_path_are_one_file() {
         ..Default::default()
     };
 
-    let mut ctx = TestContextBuilder::new()
-        .project_name("app")
-        .crates(vec![CrateConfig {
-            name: "app".to_string(),
-            path: ".".to_string(),
-            builds: Some(vec![BuildConfig {
-                binary: Some("app".to_string()),
-                targets: Some(vec![TARGET.to_string()]),
+    for second in ["./dist/sigs/app.sig", "dist/../dist/sigs/app.sig"] {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("app")
+            .crates(vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                builds: Some(vec![BuildConfig {
+                    binary: Some("app".to_string()),
+                    targets: Some(vec![TARGET.to_string()]),
+                    ..Default::default()
+                }]),
                 ..Default::default()
-            }]),
-            ..Default::default()
-        }])
-        .binary_signs(vec![
-            config_for("dist/sigs/app.sig"),
-            config_for("./dist/sigs/app.sig"),
-        ])
-        // The relative `dist` every real config carries: it is what keeps a
-        // rendering that is already under it spelled as written, so the two
-        // entries reach the claim as two spellings rather than one joined
-        // path. Nothing is written — the run is a dry run.
-        .dist(std::path::PathBuf::from("dist"))
-        .dry_run(true)
-        .build();
-    ctx.template_vars_mut().set("ProjectName", "app");
-    ctx.template_vars_mut().set("Version", "1.0.0");
-    ctx.artifacts.add(Artifact {
-        kind: ArtifactKind::Binary,
-        name: "app".to_string(),
-        path: std::path::PathBuf::from(format!("target/{TARGET}/release/app")),
-        target: Some(TARGET.to_string()),
-        crate_name: "app".to_string(),
-        metadata: [
-            ("binary".to_string(), "app".to_string()),
-            ("id".to_string(), "app".to_string()),
-        ]
-        .into_iter()
-        .collect(),
-        size: None,
-    });
+            }])
+            .binary_signs(vec![config_for("dist/sigs/app.sig"), config_for(second)])
+            // The relative `dist` every real config carries: it is what keeps a
+            // rendering that is already under it spelled as written, so the two
+            // entries reach the claim as two spellings rather than one joined
+            // path. Nothing is written — the run is a dry run.
+            .dist(std::path::PathBuf::from("dist"))
+            .dry_run(true)
+            .build();
+        ctx.template_vars_mut().set("ProjectName", "app");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "app".to_string(),
+            path: std::path::PathBuf::from(format!("target/{TARGET}/release/app")),
+            target: Some(TARGET.to_string()),
+            crate_name: "app".to_string(),
+            metadata: [
+                ("binary".to_string(), "app".to_string()),
+                ("id".to_string(), "app".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            size: None,
+        });
 
-    let log = ctx.logger("binary-sign");
-    let cfgs = ctx.config.binary_signs.clone();
-    process_sign_configs(
-        &cfgs,
-        &mut ctx,
-        &log,
-        ArtifactFilter::BinaryOnly,
-        "binary-sign",
-    )
-    .expect("two spellings of one path are one file");
-    crate::expected::expected_signature_assets(&ctx, "app", None)
-        .expect("the gate must accept it too");
+        let log = ctx.logger("binary-sign");
+        let cfgs = ctx.config.binary_signs.clone();
+        process_sign_configs(
+            &cfgs,
+            &mut ctx,
+            &log,
+            ArtifactFilter::BinaryOnly,
+            "binary-sign",
+        )
+        .expect("two spellings of one path are one file");
+        crate::expected::expected_signature_assets(&ctx, "app", None)
+            .expect("the gate must accept it too");
+    }
 }
 
 /// The stage and the gate expand `${artifact}` and join `dist` in the same

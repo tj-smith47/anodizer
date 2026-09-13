@@ -268,12 +268,15 @@ impl ClaimedAssetName {
 }
 
 /// Whether two rendered output paths name one file, compared the way
-/// [`dist_joined`] decides what is already under `dist`: `./dist/x` and
-/// `dist/x` are one file, so a claim keyed on the textual spelling would
-/// refuse a pair the filesystem accepts.
+/// [`crate::helpers::dist_joined`] decides what is already under `dist`:
+/// `./dist/x`, `dist/x` and `dist/../dist/x` are one file, so a claim keyed
+/// on the textual spelling would refuse a pair the filesystem accepts.
 fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
-    match (std::path::absolute(a), std::path::absolute(b)) {
-        (Ok(a), Ok(b)) => a == b,
+    match (
+        crate::helpers::lexical_absolute(a),
+        crate::helpers::lexical_absolute(b),
+    ) {
+        (Some(a), Some(b)) => a == b,
         _ => a == b,
     }
 }
