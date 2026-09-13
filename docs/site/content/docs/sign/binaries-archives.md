@@ -148,9 +148,11 @@ build render one `amd64`). Either dimension in the template separates them —
 this is what the built-in default does:
 
 ```yaml
-archives:
-  - name_template: >-
-      {{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}{% if Amd64 and Amd64 != "v1" %}{{ Amd64 }}{% endif %}
+crates:
+  - name: app
+    archives:
+      - name_template: >-
+          {{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}{% if Amd64 and Amd64 != "v1" %}{{ Amd64 }}{% endif %}
 ```
 
 or name the signature directly:
@@ -179,12 +181,14 @@ the signature takes the name of the first entry in config order, the primary
 archive that `chocolatey` and `scoop` bind to with `ids: [default]`:
 
 ```yaml
-archives:
-  - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"   # id: default, single-variant
-    formats: [tar.gz]
-  - id: extra
-    name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-extra"
-    formats: [tar.xz]
+crates:
+  - name: app
+    archives:
+      - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"   # id: default, single-variant
+        formats: [tar.gz]
+      - id: extra
+        name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-extra"
+        formats: [tar.xz]
 ```
 
 ```

@@ -3318,9 +3318,10 @@ fn test_output_capture_with_real_command() {
 // -----------------------------------------------------------------------
 
 /// Regression: DEFAULT_BINARY_SIGNATURE_TEMPLATE must produce `<artifact>.sig`
-/// for anodizer's flat layout where binaries are already named with the platform
-/// suffix (e.g. `myapp_linux_amd64`). The old template appended Os/Arch
-/// again, producing `myapp_linux_amd64_linux_amd64` with no `.sig` extension.
+/// for anodizer's flat layout where binaries are already named with the
+/// platform suffix (e.g. `myapp_linux_amd64`). The old template appended
+/// Os/Arch again, producing `myapp_linux_amd64_linux_amd64` with no `.sig`
+/// extension.
 #[test]
 fn test_binary_signature_no_duplicate_suffix_has_dot_sig() {
     let mut ctx = TestContextBuilder::new().dry_run(true).build();
@@ -6949,7 +6950,7 @@ mod cosign_retry_policy {
         assert_eq!(attempts.get(), 1, "NotFound must not be retried");
     }
 
-    /// First-attempt success returns immediately (a single attempt, no backoff).
+    /// First-attempt success returns immediately — one attempt, no backoff.
     #[test]
     fn success_on_first_attempt_never_sleeps() {
         let log = quiet_log();
@@ -8852,7 +8853,8 @@ fn binary_sign_collision_error(
 /// order the page shows them.
 ///
 /// The page's `check config` warnings are pinned where those checks live
-/// (`crates/cli`, `every_warning_quoted_in_the_sign_docs_is_a_message_the_checks_produce`).
+/// (`crates/cli`,
+/// `every_warning_quoted_in_the_sign_docs_is_a_message_the_checks_produce`).
 #[test]
 fn the_collision_errors_quoted_in_the_sign_docs_are_the_messages_the_stage_produces() {
     let path = concat!(
