@@ -46,17 +46,17 @@ closes the Submitter gate before cargo can fire:
 
 ```text
 $ anodizer release
-   • created GitHub Release 'v0.2.1' (id=178342119) on acme/widget
-   • published release 'v0.2.1' (draft → live)
-   • skipping cargo — gated by an earlier required failure (one-way-door protection)
-   • wrote run-report to dist/run-v0.2.1/report.json
+     • created GitHub Release 'v0.2.1' (id=178342119) on acme/widget
+     • published release 'v0.2.1' (draft → live)
+     • skipping cargo — gated by an earlier required failure (one-way-door protection)
+     • wrote run-report to dist/run-v0.2.1/report.json
        Error 1 required publisher(s) failed: homebrew. The release pipeline ran to completion, so rollback / announce-gating / summary all observed final state; this non-zero exit ensures CI and shell callers see the failure. Inspect dist/run-<id>/report.json for details; re-run the same release command to converge, or `anodizer tag rollback` to withdraw the release deliberately.
 
 # fix the branch-protection rule, then run the EXACT SAME command:
 $ anodizer release
-   • release 'v0.2.1' already live (id=178342119, mode=keep-existing)
-   • Homebrew tap acme/homebrew-tap updated for 'widget'
-   • published crate 'widget-core'
+     • release 'v0.2.1' already live (id=178342119, mode=keep-existing)
+     • Homebrew tap acme/homebrew-tap updated for 'widget'
+     • published crate 'widget-core'
 ```
 
 Dispatch order is what makes the second run correct: the reversible groups go
@@ -183,7 +183,7 @@ re-inspects the in-progress `PublishReport`:
 Each gated publisher prints one line:
 
 ```text
-   • skipping cargo — gated by an earlier required failure (one-way-door protection)
+     • skipping cargo — gated by an earlier required failure (one-way-door protection)
 ```
 
 The gate is on by default. Operator opt-out:
@@ -212,7 +212,7 @@ A `Complete` verdict prints one line and the publisher never runs:
 
 ```text
 $ anodizer release
-   • skipping cargo — already published for this version (all 3 planned crate(s) already on crates.io with verified content)
+     • skipping cargo — already published for this version (all 3 planned crate(s) already on crates.io with verified content)
 ```
 
 `reconcile()` returns one of four states, and the dispatch loop reacts
@@ -705,8 +705,8 @@ report.json  summary.json
 
 # The re-run consults it before any network probe:
 $ anodizer release --verbose
-   • cargo: ledger fast-path — prior summary digests matched, skipping network reconcile probe
-   • skipping cargo — already published for this version (all 3 planned crate(s) already on crates.io with verified content)
+     • cargo: ledger fast-path — prior summary digests matched, skipping network reconcile probe
+     • skipping cargo — already published for this version (all 3 planned crate(s) already on crates.io with verified content)
 ```
 
 Reconciliation fails *toward* publishing: a publisher only skips on a
