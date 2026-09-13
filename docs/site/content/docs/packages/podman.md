@@ -68,23 +68,62 @@ Bare `--build-arg`, `--label`, `--platform`, `--tag`, `--no-cache`, and `--iidfi
 
 `podman build` cannot bake `--push` into the build, so anodizer publishes each rendered tag afterwards with `podman push` (single-platform) or `podman manifest push --all` (multi-platform). Both carry `--digestfile`, which writes the digest the destination registry now holds — the image manifest for a single-platform push, the manifest list for a `manifest push`. That is the same kind of value buildx reports as `containerimage.digest`, so `{{ Digest }}` in a `post:` hook, the `<tag>.digest` artifact and the release's docker landing check behave identically on both backends.
 
-Measured against a local `registry:2` under podman 5.8.4, both verbs wrote exactly the digest the registry then served:
+Measured against a local `registry:2` under podman 5.8.4, both verbs wrote exactly the digest the registry then served. The measurement is a script — `crates/stage-docker/tests/data/podman-digestfile-measure.sh` — and the transcript beside it (`podman-digestfile-vs-registry.txt`) is that script's stdout, so the commands below are the ones that produced the output below:
 
 ```text
 $ podman push --tls-verify=false --digestfile=/out/push.digest localhost:5000/probe:t
+Getting image source signatures
+Copying blob sha256:4e7bc3f990a0afcd6a47cb46a70f4141418bec70a9bbf812230c4a9ccd5dd723
+Copying config sha256:584cf49a13f6d372df12420839e289c39286bc37149fc46aca9be18057c344e0
+Writing manifest to image destination
 $ cat /out/push.digest
-sha256:175760276794f3dcc233eda09300ed71cf1bca74add010530480869e7b370b8e
-$ curl -sI http://localhost:5000/v2/probe/manifests/t | grep -i docker-content-digest
-Docker-Content-Digest: sha256:175760276794f3dcc233eda09300ed71cf1bca74add010530480869e7b370b8e
+sha256:4fc24e873ce52bc5f8400cb780f6319c2abb1343c18627b3d49b607e874a26d2
 
+$ curl -i -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+    http://localhost:5000/v2/probe/manifests/t
+HTTP/1.1 200 OK
+Content-Length: 567
+Content-Type: application/vnd.oci.image.manifest.v1+json
+Docker-Content-Digest: sha256:4fc24e873ce52bc5f8400cb780f6319c2abb1343c18627b3d49b607e874a26d2
+Docker-Distribution-Api-Version: registry/2.0
+Etag: "sha256:4fc24e873ce52bc5f8400cb780f6319c2abb1343c18627b3d49b607e874a26d2"
+X-Content-Type-Options: nosniff
+Date: Sun, 13 Sep 2026 07:25:46 GMT
+
+{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:584cf49a13f6d372df12420839e289c39286bc37149fc46aca9be18057c344e0","size":520},"layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"sha256:249002a2f534c7e6e72a81770ed64d602b47233810fd08586a1d703d77bf3fce","size":107}],"annotations":{"org.opencontainers.image.base.digest":"","org.opencontainers.image.base.name":"","org.opencontainers.image.created":"2026-09-13T07:25:45.410981776Z"}}
+
+$ podman manifest create probelist
+e52c2a31bd6236a7faa9b57b785bc6770b82c9725ccfe03f326cc5580f483476
+$ podman manifest add probelist --tls-verify=false localhost:5000/probe:t
+e52c2a31bd6236a7faa9b57b785bc6770b82c9725ccfe03f326cc5580f483476
 $ podman manifest push --tls-verify=false --digestfile=/out/manifest.digest probelist docker://localhost:5000/probelist:t
+Getting image list signatures
+Copying 1 images generated from 1 images in list
+Copying image sha256:4fc24e873ce52bc5f8400cb780f6319c2abb1343c18627b3d49b607e874a26d2 (1/1)
+Getting image source signatures
+Copying blob sha256:249002a2f534c7e6e72a81770ed64d602b47233810fd08586a1d703d77bf3fce
+Copying config sha256:584cf49a13f6d372df12420839e289c39286bc37149fc46aca9be18057c344e0
+Writing manifest to image destination
+Writing manifest list to image destination
+Storing list signatures
 $ cat /out/manifest.digest
-sha256:d45fc543f733090503ea990e92e6a313195925fd96ed63947f9501549e7d8bd3
-$ curl -sI http://localhost:5000/v2/probelist/manifests/t | grep -i docker-content-digest
-Docker-Content-Digest: sha256:d45fc543f733090503ea990e92e6a313195925fd96ed63947f9501549e7d8bd3
+sha256:ac03ebfa3da3648ff63c2d5544f519f67d76eb0a64c918086a6dd6460b3866f8
+
+$ curl -i -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+    http://localhost:5000/v2/probelist/manifests/t
+HTTP/1.1 200 OK
+Content-Length: 289
+Content-Type: application/vnd.oci.image.index.v1+json
+Docker-Content-Digest: sha256:ac03ebfa3da3648ff63c2d5544f519f67d76eb0a64c918086a6dd6460b3866f8
+Docker-Distribution-Api-Version: registry/2.0
+Etag: "sha256:ac03ebfa3da3648ff63c2d5544f519f67d76eb0a64c918086a6dd6460b3866f8"
+X-Content-Type-Options: nosniff
+Date: Sun, 13 Sep 2026 07:25:46 GMT
+
+{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:4fc24e873ce52bc5f8400cb780f6319c2abb1343c18627b3d49b607e874a26d2","size":567,"platform":{"architecture":"amd64","os":"linux"}}]}
 ```
 
-**Podman 2.0 is the floor for the podman backend.** `podman push` took `--digestfile` in 1.6.0 — "The `podman push` command now supports the `--digestfile` option to save a file containing the pushed digest" ([RELEASE_NOTES.md, 1.6.0 Features](https://github.com/containers/podman/blob/main/RELEASE_NOTES.md)) — and `podman manifest push` in 2.0.0, the first tag whose [`podman-manifest-push.1.md`](https://github.com/containers/podman/blob/v2.0.0/docs/source/markdown/podman-manifest-push.1.md) documents it; the page carries no such flag at 1.9.0. The higher of the two is the floor. An older podman exits non-zero on the unknown option, which fails the push rather than degrading to a build with no digest. A podman that accepts the flag but writes nothing degrades cleanly: anodizer notes the missing file under `-v` and records no digest for that tag.
+**Podman 2.0 is the floor for the podman backend.** `podman push` took `--digestfile` in 1.6.0 — "The `podman push` command now supports the `--digestfile` option to save a file containing the pushed digest" ([RELEASE_NOTES.md at v1.6.0, 1.6.0 Features](https://github.com/podman-container-tools/podman/blob/v1.6.0/RELEASE_NOTES.md)) — and `podman manifest push` did not exist before 2.0.0: v1.9.0 carries no `podman-manifest-*` man page at all, and v2.0.0's [`podman-manifest-push.1.md`](https://github.com/podman-container-tools/podman/blob/v2.0.0/docs/source/markdown/podman-manifest-push.1.md) documents the flag from the start. The higher of the two is the floor. An older podman exits non-zero on the unknown option, which fails the push rather than degrading to a build with no digest. A podman that accepts the flag but writes nothing degrades cleanly: anodizer notes the missing file under `-v` and records no digest for that tag.
 
 A build that pushes nothing (a snapshot, a dry run, `skip_push:`) records no digest under either backend — `podman build`'s own `--iidfile` holds the LOCAL image ID, which names different content than a registry serves.
 

@@ -1,0 +1,89 @@
+Recorded run of `podman push --digestfile` and `podman manifest push
+--digestfile` against a local `registry:2`, to check the value podman writes
+against the digest the registry then serves for the same tag.
+
+Regenerate with `bash podman-digestfile-measure.sh` beside this file: its
+stdout IS this transcript.
+
+  $ podman version
+  Client:        Podman Engine
+  Version:       5.8.4
+  API Version:   5.8.4
+  Go Version:    go1.26.4-X:nodwarf5
+  Git Commit:    5431df23c742e5edea35bef34eed696f4db0106b
+  Built:         Fri Jun 26 00:00:00 2026
+  Build Origin:  Fedora Project
+  OS/Arch:       linux/amd64
+
+  $ podman build --quiet -t localhost:5000/probe:t /ctx
+  584cf49a13f6d372df12420839e289c39286bc37149fc46aca9be18057c344e0
+
+  $ podman push --tls-verify=false --digestfile=/out/push.digest localhost:5000/probe:t
+  Getting image source signatures
+  Copying blob sha256:4e7bc3f990a0afcd6a47cb46a70f4141418bec70a9bbf812230c4a9ccd5dd723
+  Copying config sha256:584cf49a13f6d372df12420839e289c39286bc37149fc46aca9be18057c344e0
+  Writing manifest to image destination
+  $ cat /out/push.digest
+  sha256:4fc24e873ce52bc5f8400cb780f6319c2abb1343c18627b3d49b607e874a26d2
+
+  $ curl -i -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+      http://localhost:5000/v2/probe/manifests/t
+  HTTP/1.1 200 OK
+  Content-Length: 567
+  Content-Type: application/vnd.oci.image.manifest.v1+json
+  Docker-Content-Digest: sha256:4fc24e873ce52bc5f8400cb780f6319c2abb1343c18627b3d49b607e874a26d2
+  Docker-Distribution-Api-Version: registry/2.0
+  Etag: "sha256:4fc24e873ce52bc5f8400cb780f6319c2abb1343c18627b3d49b607e874a26d2"
+  X-Content-Type-Options: nosniff
+  Date: Sun, 13 Sep 2026 07:25:46 GMT
+  
+  {"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:584cf49a13f6d372df12420839e289c39286bc37149fc46aca9be18057c344e0","size":520},"layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"sha256:249002a2f534c7e6e72a81770ed64d602b47233810fd08586a1d703d77bf3fce","size":107}],"annotations":{"org.opencontainers.image.base.digest":"","org.opencontainers.image.base.name":"","org.opencontainers.image.created":"2026-09-13T07:25:45.410981776Z"}}
+  $ podman manifest create probelist
+  e52c2a31bd6236a7faa9b57b785bc6770b82c9725ccfe03f326cc5580f483476
+  $ podman manifest add probelist --tls-verify=false localhost:5000/probe:t
+  e52c2a31bd6236a7faa9b57b785bc6770b82c9725ccfe03f326cc5580f483476
+  $ podman manifest push --tls-verify=false --digestfile=/out/manifest.digest probelist docker://localhost:5000/probelist:t
+  Getting image list signatures
+  Copying 1 images generated from 1 images in list
+  Copying image sha256:4fc24e873ce52bc5f8400cb780f6319c2abb1343c18627b3d49b607e874a26d2 (1/1)
+  Getting image source signatures
+  Copying blob sha256:249002a2f534c7e6e72a81770ed64d602b47233810fd08586a1d703d77bf3fce
+  Copying config sha256:584cf49a13f6d372df12420839e289c39286bc37149fc46aca9be18057c344e0
+  Writing manifest to image destination
+  Writing manifest list to image destination
+  Storing list signatures
+  $ cat /out/manifest.digest
+  sha256:ac03ebfa3da3648ff63c2d5544f519f67d76eb0a64c918086a6dd6460b3866f8
+
+  $ curl -i -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+      http://localhost:5000/v2/probelist/manifests/t
+  HTTP/1.1 200 OK
+  Content-Length: 289
+  Content-Type: application/vnd.oci.image.index.v1+json
+  Docker-Content-Digest: sha256:ac03ebfa3da3648ff63c2d5544f519f67d76eb0a64c918086a6dd6460b3866f8
+  Docker-Distribution-Api-Version: registry/2.0
+  Etag: "sha256:ac03ebfa3da3648ff63c2d5544f519f67d76eb0a64c918086a6dd6460b3866f8"
+  X-Content-Type-Options: nosniff
+  Date: Sun, 13 Sep 2026 07:25:46 GMT
+  
+  {"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:4fc24e873ce52bc5f8400cb780f6319c2abb1343c18627b3d49b607e874a26d2","size":567,"platform":{"architecture":"amd64","os":"linux"}}]}
+  $ podman manifest inspect --tls-verify=false localhost:5000/probelist:t
+  {
+      "schemaVersion": 2,
+      "mediaType": "application/vnd.oci.image.index.v1+json",
+      "manifests": [
+          {
+              "mediaType": "application/vnd.oci.image.manifest.v1+json",
+              "size": 567,
+              "digest": "sha256:4fc24e873ce52bc5f8400cb780f6319c2abb1343c18627b3d49b607e874a26d2",
+              "platform": {
+                  "architecture": "amd64",
+                  "os": "linux"
+              }
+          }
+      ]
+  }
+
+Both verbs wrote exactly the digest the registry serves, so the value recorded
+as `{{ Digest }}` and compared by the release's docker landing check is the
+same kind of value buildx reports under `containerimage.digest`.

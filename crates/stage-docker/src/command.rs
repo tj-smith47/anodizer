@@ -522,7 +522,8 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
 /// push and the manifest list for a `manifest push`. Measured against a local
 /// `registry:2` under podman 5.8.4 — both verbs wrote exactly the
 /// `Docker-Content-Digest` the registry then served for the same tag, and the
-/// transcript is `tests/data/podman-5.8.4-digestfile-vs-registry.txt`. That is
+/// transcript is `tests/data/podman-digestfile-vs-registry.txt`, the stdout
+/// of `tests/data/podman-digestfile-measure.sh` beside it. That is
 /// the same kind of value buildx reports under `containerimage.digest`, so
 /// `{{ Digest }}`, the `.digest` artifact and the release's landing check
 /// compare one kind of value whichever backend built the image.
@@ -531,11 +532,13 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
 /// non-zero on the unknown option instead of degrading, and the push fails.
 /// `podman push` took the flag in 1.6.0 ("The `podman push` command now
 /// supports the `--digestfile` option to save a file containing the pushed
-/// digest", RELEASE_NOTES.md, 1.6.0 Features) and `podman manifest push` in
-/// 2.0.0, where `docs/source/markdown/podman-manifest-push.1.md` first
-/// documents it ("**--digestfile**=*Digestfile* — After copying the image,
-/// write the digest of the resulting image to the file"); it is absent from
-/// that page at 1.9.0. The higher of the two is the floor.
+/// digest", RELEASE_NOTES.md at the v1.6.0 tag, 1.6.0 Features).
+/// `podman manifest push` did not exist before 2.0.0 — v1.9.0 carries no
+/// `podman-manifest-*` man page at all — and v2.0.0's
+/// `docs/source/markdown/podman-manifest-push.1.md` documents the flag from
+/// the start ("**--digestfile**=*Digestfile* — After copying the image,
+/// write the digest of the resulting image to the file"). The higher of the
+/// two is the floor.
 ///
 /// The file is named per tag under the build's own staging directory: one
 /// build can push several tags, and one path would leave every tag holding
