@@ -1429,6 +1429,10 @@ fn per_crate_overlay_does_not_leak_across_workspaces() {
         );
         assert_eq!(cfg.signs.len(), 1);
         assert_eq!(cfg.binary_signs.len(), 1);
+        assert!(
+            !cfg.filled_from_defaults.contains("signs"),
+            "the overlay drops the provenance record of a slice it replaced"
+        );
         assert_eq!(
             cfg.before
                 .as_ref()
@@ -2086,4 +2090,129 @@ fn per_crate_lifecycle_hooks_honor_skip_and_absent_block() {
     // Unknown crate name is a no-op.
     run_per_crate_lifecycle_hooks(&ctx, "ghost", HookKind::Before, false, &log)
         .expect("unknown crate must be a no-op");
+}
+
+/// A workspace that declares `signs:` drops the `defaults:` provenance
+/// record of the slice it replaced, and the next workspace — which left
+/// `signs:` unset and runs on the `defaults:`-filled slice — must get that
+/// record back. Without the rewind it reads as a block the operator wrote,
+/// which is what `check config` names in its diagnostics.
+#[test]
+fn the_defaults_provenance_record_is_rewound_between_workspaces() {
+    use anodizer_core::config::{Config, CrateConfig, WorkspaceConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::signing::SignConfig;
+
+    let mut config = Config {
+        signs: vec![SignConfig {
+            id: Some("from-defaults".to_string()),
+            ..SignConfig::default()
+        }],
+        ..Config::default()
+    };
+    config.filled_from_defaults.insert("signs");
+    let mut ctx = Context::new(config, ContextOptions::default());
+
+    let workspace_a = WorkspaceConfig {
+        name: "alpha".to_string(),
+        crates: vec![CrateConfig {
+            name: "alpha".to_string(),
+            ..CrateConfig::default()
+        }],
+        signs: vec![SignConfig {
+            id: Some("alpha-sign".to_string()),
+            ..SignConfig::default()
+        }],
+        ..WorkspaceConfig::default()
+    };
+    let workspace_b = WorkspaceConfig {
+        name: "beta".to_string(),
+        crates: vec![CrateConfig {
+            name: "beta".to_string(),
+            ..CrateConfig::default()
+        }],
+        ..WorkspaceConfig::default()
+    };
+
+    let mut guard = PerCrateOverlayGuard::capture(&mut ctx);
+
+    guard.reset_overlay_fields();
+    crate::commands::helpers::apply_workspace_overlay(&mut guard.ctx_mut().config, &workspace_a);
+    assert!(
+        !guard
+            .ctx_mut()
+            .config
+            .filled_from_defaults
+            .contains("signs"),
+        "alpha wrote its own slice, so the record no longer describes it"
+    );
+
+    guard.reset_overlay_fields();
+    crate::commands::helpers::apply_workspace_overlay(&mut guard.ctx_mut().config, &workspace_b);
+    let cfg = &guard.ctx_mut().config;
+    assert_eq!(
+        cfg.signs.first().and_then(|s| s.id.as_deref()),
+        Some("from-defaults"),
+        "beta runs on the defaults-filled slice"
+    );
+    assert!(
+        cfg.filled_from_defaults.contains("signs"),
+        "beta must not inherit alpha's dropped provenance record"
+    );
+
+    drop(guard);
+    assert!(ctx.config.filled_from_defaults.contains("signs"));
+}
+
+/// Every `config` field `apply_workspace_overlay` mutates is restored by
+/// `OverlayFields::restore_into`.
+///
+/// The two functions sit in different modules and nothing else couples
+/// them, so a mutation added to the overlay leaks across per-crate
+/// iterations until someone remembers the rewind. `filled_from_defaults`
+/// did exactly that.
+#[test]
+fn every_overlay_mutation_is_rewound_by_the_guard() {
+    use anodizer_core::test_helpers::test_sources::{function_bodies, production_half};
+
+    let body = |relative: &str, name: &str| -> String {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/").to_string() + relative;
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        function_bodies(production_half(&src))
+            .into_iter()
+            .find(|b| b.lines().next().is_some_and(|l| l.contains(name)))
+            .unwrap_or_else(|| panic!("no `{name}` body in {path}"))
+    };
+
+    let overlay = body(
+        "src/commands/helpers/workspace.rs",
+        "fn apply_workspace_overlay(",
+    );
+    let restore = body(
+        "src/commands/release/publish_only/per_crate.rs",
+        "fn restore_into(",
+    );
+
+    let mut mutated: Vec<String> = Vec::new();
+    for (index, _) in overlay.match_indices("config.") {
+        let field: String = overlay[index + "config.".len()..]
+            .chars()
+            .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+            .collect();
+        if !field.is_empty() && !mutated.contains(&field) {
+            mutated.push(field);
+        }
+    }
+    assert!(
+        mutated.len() >= 9,
+        "the overlay walk found too few fields — it stopped matching: {mutated:?}"
+    );
+    for field in &mutated {
+        assert!(
+            restore.contains(&format!("config.{field} =")),
+            "`apply_workspace_overlay` mutates `config.{field}` but \
+             `OverlayFields::restore_into` does not restore it, so the value \
+             leaks into the next per-crate iteration"
+        );
+    }
 }
