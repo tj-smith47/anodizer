@@ -39,9 +39,7 @@ use anyhow::Result;
 use anodizer_core::config::SignConfig;
 use anodizer_core::context::Context;
 
-use crate::helpers::{
-    expand_shell_vars, resolve_signature_path, should_sign_artifact, sign_ids_match,
-};
+use crate::helpers::{should_sign_artifact, sign_ids_match};
 
 /// Derive the signature / certificate asset names the `signs:` config demands
 /// for `crate_name`'s published release, from config + the produced artifact
@@ -199,66 +197,13 @@ pub(crate) fn expected_output_paths(
     artifact_metadata: &HashMap<String, String>,
     ctx: &Context,
 ) -> Result<(std::path::PathBuf, Option<std::path::PathBuf>)> {
-    use anyhow::Context as _;
-
-    let artifact_str = artifact_path.to_string_lossy();
-    let artifact_name = artifact_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
-    let artifact_id = artifact_metadata
-        .get("id")
-        .map(|s| s.as_str())
-        .unwrap_or("");
-
-    let signature_str = resolve_signature_path(
+    crate::helpers::resolve_output_paths(
         cfg,
-        &artifact_str,
+        artifact_path,
+        artifact_metadata,
         ctx,
         SignConfig::DEFAULT_SIGNATURE_TEMPLATE,
-    )?;
-
-    let certificate_str = cfg
-        .certificate
-        .as_ref()
-        .map(|tmpl| {
-            let preprocessed = tmpl
-                .replace("{{ .Artifact }}", &artifact_str)
-                .replace("{{ Artifact }}", &artifact_str);
-            ctx.render_template(&preprocessed).with_context(|| {
-                format!(
-                    "sign: render certificate template '{}' for artifact {}",
-                    tmpl, artifact_str
-                )
-            })
-        })
-        .transpose()?;
-
-    let certificate_for_vars = certificate_str.clone();
-    let shell_vars: HashMap<&str, &str> = HashMap::from([
-        ("artifact", artifact_str.as_ref()),
-        ("signature", signature_str.as_str()),
-        ("certificate", certificate_for_vars.as_deref().unwrap_or("")),
-        (
-            "digest",
-            artifact_metadata
-                .get("digest")
-                .map(|s| s.as_str())
-                .unwrap_or(""),
-        ),
-        ("artifactName", artifact_name),
-        ("artifactID", artifact_id),
-    ]);
-
-    let signature_str = expand_shell_vars(&signature_str, &shell_vars);
-    let certificate_str = certificate_str.map(|c| expand_shell_vars(&c, &shell_vars));
-
-    let dist = &ctx.config.dist;
-    let sig_path = crate::helpers::dist_joined(dist, &signature_str);
-    let cert_path = certificate_str
-        .as_deref()
-        .map(|c| crate::helpers::dist_joined(dist, c));
-    Ok((sig_path, cert_path))
+    )
 }
 
 /// The (signature, optional certificate) ASSET names one `binary_signs:`
@@ -269,9 +214,9 @@ pub(crate) fn expected_output_paths(
 /// `signature:` rendered — but its registered asset name is not that path's
 /// basename: the raw binary is called the same thing under every target's
 /// directory, so the name is built on the config-derived base
-/// ([`crate::asset_names::binary_sign_asset_naming`], the same derivation the sign
-/// stage registers through), and claimed in `claimed_names` so two binaries
-/// naming one asset fail the gate the way they fail the stage.
+/// ([`crate::asset_names::binary_sign_asset_naming`], the same derivation the
+/// sign stage registers through), and claimed in `claimed_names` so two
+/// binaries naming one asset fail the gate the way they fail the stage.
 fn expected_binary_sign_names(
     cfg: &SignConfig,
     artifact: &anodizer_core::artifact::Artifact,

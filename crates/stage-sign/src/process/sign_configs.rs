@@ -14,7 +14,7 @@ use anodizer_core::target::map_target;
 use crate::asset_names::{BinarySignAssetNames, binary_sign_asset_name, binary_sign_asset_naming};
 use crate::helpers::{
     default_sign_cmd, expand_shell_vars, prepare_stdin_from, resolve_sign_args,
-    resolve_signature_path, should_sign_artifact,
+    should_sign_artifact,
 };
 
 /// Process a list of `SignConfig` entries against a set of artifacts, executing
@@ -287,32 +287,17 @@ pub(crate) fn process_sign_configs(
                 }
             }
 
-            let signature_str =
-                resolve_signature_path(sign_cfg, &artifact_str, ctx, default_sig_template)?;
-            let signature_str = crate::helpers::dist_joined(&ctx.config.dist, &signature_str)
-                .to_string_lossy()
-                .into_owned();
-
-            let certificate_str = sign_cfg
-                .certificate
+            let (sig_output, cert_output) = crate::helpers::resolve_output_paths(
+                sign_cfg,
+                artifact_path,
+                artifact_metadata,
+                ctx,
+                default_sig_template,
+            )?;
+            let signature_str = sig_output.to_string_lossy().into_owned();
+            let certificate_str = cert_output
                 .as_ref()
-                .map(|tmpl| {
-                    let preprocessed = tmpl
-                        .replace("{{ .Artifact }}", &artifact_str)
-                        .replace("{{ Artifact }}", &artifact_str);
-                    ctx.render_template(&preprocessed).with_context(|| {
-                        format!(
-                            "sign: render certificate template '{}' for artifact {}",
-                            tmpl, artifact_str
-                        )
-                    })
-                })
-                .transpose()?;
-            let certificate_str = certificate_str.map(|cert| {
-                crate::helpers::dist_joined(&ctx.config.dist, &cert)
-                    .to_string_lossy()
-                    .into_owned()
-            });
+                .map(|p| p.to_string_lossy().into_owned());
 
             let certificate_for_vars = certificate_str.clone();
             // Invariant: every value below is supplied by anodizer itself,
@@ -321,8 +306,7 @@ pub(crate) fn process_sign_configs(
             //     an Artifact produced upstream (build/archive/etc.).
             //   - signature / certificate: rendered from sign-stage
             //     templates against the controlled template var set, then
-            //     joined with a `dist/` prefix below if not already
-            //     absolute.
+            //     joined with a `dist/` prefix if not already under it.
             //   - digest / artifactID: read from artifact metadata, also
             //     populated by stages (no direct config write surface).
             // Values feed `Command::args` (no shell), so shell metacharacters
@@ -344,9 +328,6 @@ pub(crate) fn process_sign_configs(
                 ("artifactName", artifact_name),
                 ("artifactID", artifact_id),
             ]);
-
-            let signature_str = expand_shell_vars(&signature_str, &shell_vars);
-            let certificate_str = certificate_str.map(|c| expand_shell_vars(&c, &shell_vars));
 
             let resolved = resolve_sign_args(
                 &args,
