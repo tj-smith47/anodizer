@@ -73,7 +73,7 @@ pub(crate) fn resolve_token(ctx: &Context, cfg: &PypiConfig) -> Result<String> {
 
 /// Resolve the credential sent as the `__token__` Basic-auth password, per the
 /// entry's [`PypiAuthMode`](anodizer_core::config::PypiAuthMode): an explicit/env
-/// token, or a freshly-minted
+/// token, or a freshly issued
 /// Trusted-Publishing token from the ambient GitHub Actions OIDC identity.
 pub(crate) fn resolve_upload_credential(
     ctx: &Context,

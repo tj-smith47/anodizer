@@ -31,7 +31,7 @@ impl std::error::Error for RollbackRefusal {}
 /// version is burned, so the only clean path is the NEXT version;
 /// `--force` remains the explicit override.
 pub(super) fn refusal_next_step() -> String {
-    "fix the failure and cut the NEXT version (auto-tag mints it from the next push). \
+    "fix the failure and cut the NEXT version (auto-tag creates it from the next push). \
      To override anyway: `anodizer tag rollback --force`."
         .to_string()
 }

@@ -382,7 +382,8 @@ pub(super) fn run_cargo_dry_run_with_binary(
     run_cargo_dry_run_spawning(cargo_binary, crate_name, log, |cmd| cmd.output())
 }
 
-/// Spawn-seam sibling of [`run_cargo_dry_run_with_binary`]: `spawn` builds the
+/// Sibling of [`run_cargo_dry_run_with_binary`] taking the spawn as an
+/// argument: `spawn` builds the
 /// `cargo publish --dry-run` output. Production passes `|cmd| cmd.output()`;
 /// tests that install a `FakeToolDir` stub and exec it immediately inject
 /// `output_retrying_etxtbsy` so the write-then-exec `ETXTBSY` race a sibling

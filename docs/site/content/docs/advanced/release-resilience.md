@@ -513,7 +513,7 @@ $ anodizer tag rollback
        Error refusing to roll back — one-way-door publisher(s) already accepted these version(s):
   v0.8.0: version burned at cargo, chocolatey
 Those registries never accept the same version twice, so deleting the tag(s) and reverting the bump cannot lead to a clean same-version re-cut — tags kept to protect the published state.
-next step: fix the failure and cut the NEXT version (auto-tag mints it from the next push). To override anyway: `anodizer tag rollback --force`.
+next step: fix the failure and cut the NEXT version (auto-tag creates it from the next push). To override anyway: `anodizer tag rollback --force`.
 ```
 
 For workflows that add their own destructive recovery steps anyway, the

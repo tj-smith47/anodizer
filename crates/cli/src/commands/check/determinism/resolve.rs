@@ -102,7 +102,7 @@ pub(super) fn signature_allowlist_entries_from_config(
         .map(|suffix| AllowListEntry {
             reason: format!(
                 "signature/certificate artifact ({suffix}): bytes vary by signer \
-                 (cosign signs with a random ECDSA nonce / mints a fresh keyless cert); \
+                 (cosign signs with a random ECDSA nonce / gets a fresh keyless cert); \
                  validate cryptographically via `cosign verify-blob` / `gpg --verify`, \
                  not byte-equality"
             ),
