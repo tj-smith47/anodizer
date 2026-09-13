@@ -271,7 +271,7 @@ impl ClaimedAssetName {
 /// [`crate::helpers::dist_joined`] decides what is already under `dist`:
 /// `./dist/x`, `dist/x` and `dist/../dist/x` are one file, so a claim keyed
 /// on the textual spelling would refuse a pair the filesystem accepts.
-fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+pub(crate) fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
     match (
         crate::helpers::lexical_absolute(a),
         crate::helpers::lexical_absolute(b),

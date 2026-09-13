@@ -362,23 +362,15 @@ pub(crate) fn resolve_signature_path(
 /// one config would pass the Windows determinism shards and fail the Linux and
 /// macOS ones. Folding here gives every platform one answer.
 ///
-/// A Windows verbatim path (`\\?\…`) is returned exactly as `absolute` built
-/// it. Windows performs no normalization on a verbatim path, so there `..` is
-/// an ordinary directory name: folding it would report `\\?\C:\a\..\b` and
-/// `\\?\C:\b` as one file when the filesystem holds two.
+/// A Windows verbatim path (`\\?\…`) survives with its `..` components
+/// intact: the fold itself leaves one unchanged, since Windows normalizes
+/// nothing behind `\\?\`.
 ///
 /// Lexical like `absolute` itself: no symlink is resolved and the path need
 /// not exist, which every path asked about here does not yet. `None` is the
 /// error `absolute` reports for an empty or syntactically invalid path.
 pub(crate) fn lexical_absolute(path: &std::path::Path) -> Option<std::path::PathBuf> {
     let absolute = std::path::absolute(path).ok()?;
-    let verbatim = matches!(
-        absolute.components().next(),
-        Some(std::path::Component::Prefix(prefix)) if prefix.kind().is_verbatim()
-    );
-    if verbatim {
-        return Some(absolute);
-    }
     Some(anodizer_core::util::fold_dot_components(&absolute))
 }
 
@@ -408,6 +400,18 @@ pub(crate) fn dist_joined(dist: &std::path::Path, rendered: &str) -> std::path::
     } else {
         dist.join(anodizer_core::util::fold_dot_components(&resolved))
     }
+}
+
+/// Whether two rendered `signature:` / `certificate:` templates name one
+/// output FILE.
+///
+/// The stage's own answer, asked with the stage's own pieces: each rendering
+/// is placed under `dist` the way the sign stage places it, then the two are
+/// compared as absolute paths. `app.sig` and `dist/app.sig` name one file,
+/// so `anodizer check config` warns about the pair the signer would
+/// overwrite instead of comparing two strings that differ.
+pub fn sign_outputs_are_one_file(dist: &std::path::Path, left: &str, right: &str) -> bool {
+    crate::asset_names::same_file(&dist_joined(dist, left), &dist_joined(dist, right))
 }
 
 /// The (signature, optional certificate) output PATHS one sign config
