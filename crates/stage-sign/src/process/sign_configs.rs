@@ -12,8 +12,9 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::target::map_target;
 
 use crate::helpers::{
-    binary_sign_asset_base, binary_sign_asset_name, default_sign_cmd, expand_shell_vars,
-    prepare_stdin_from, resolve_sign_args, resolve_signature_path, should_sign_artifact,
+    BinarySignAssetBases, binary_sign_asset_name, binary_sign_asset_naming, default_sign_cmd,
+    expand_shell_vars, prepare_stdin_from, resolve_sign_args, resolve_signature_path,
+    should_sign_artifact,
 };
 
 /// Process a list of `SignConfig` entries against a set of artifacts, executing
@@ -35,6 +36,9 @@ pub(crate) fn process_sign_configs(
     label: &str,
 ) -> Result<()> {
     let parallelism = ctx.options.parallelism.max(1);
+    // One release asset per name: a second binary resolving to a base another
+    // already claimed must stop the run before either signature is uploaded.
+    let mut claimed_bases = BinarySignAssetBases::default();
 
     'configs: for (sign_idx, sign_cfg) in sign_configs.iter().enumerate() {
         let sub_label = sign_cfg
@@ -429,12 +433,11 @@ pub(crate) fn process_sign_configs(
             // and carry the triple on the artifact. The on-disk path is
             // untouched.
             let asset_base = match artifact_target.as_deref() {
-                Some(target) if is_binary_sign => Some(binary_sign_asset_base(
-                    ctx,
-                    sign_cfg,
-                    signed_binary,
-                    target,
-                )?),
+                Some(target) if is_binary_sign => {
+                    let naming = binary_sign_asset_naming(ctx, sign_cfg, signed_binary, target)?;
+                    claimed_bases.claim(&naming, signed_binary)?;
+                    Some(naming.base)
+                }
                 _ => None,
             };
             let (sig_name, registered_target) = match (artifact_target, &asset_base) {

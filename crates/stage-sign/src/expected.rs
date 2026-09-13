@@ -28,10 +28,9 @@
 //! `binary_signs:` outputs ARE release assets — one per (crate, target,
 //! binary), named from the crate's `archives:` config — so they are derived
 //! here alongside `signs:`. A binary whose file is not on disk contributes
-//! nothing: the sign
-//! stage drops it and records the config's skip, and the memento check above
-//! sees that skip. `docker_signs:` signatures live in the registry, not on the
-//! release.
+//! nothing: the sign stage drops it and records the config's skip, and the
+//! memento check above sees that skip. `docker_signs:` signatures live in the
+//! registry, not on the release.
 
 use std::collections::HashMap;
 
@@ -66,6 +65,11 @@ pub fn expected_signature_assets(
     }
     let skips = ctx.skip_memento.snapshot();
     let mut expected: Vec<String> = Vec::new();
+    // The trailing `dedup` below folds two identical names into one
+    // expectation. For a binary signature that would hide the collision the
+    // sign stage refuses, leaving the gate looking for one asset while two
+    // were meant to exist, so the same claim is made here.
+    let mut claimed_bases = crate::helpers::BinarySignAssetBases::default();
 
     let slices = [
         ("sign", &ctx.config.signs, SignConfig::DEFAULT_ARTIFACTS),
@@ -135,7 +139,7 @@ pub fn expected_signature_assets(
                     continue;
                 }
                 let (sig_name, cert_name) = if binary_slice {
-                    expected_binary_sign_names(cfg, artifact, ctx)?
+                    expected_binary_sign_names(cfg, artifact, ctx, &mut claimed_bases)?
                 } else {
                     expected_output_names(cfg, &artifact.path, &artifact.metadata, ctx)?
                 };
@@ -257,12 +261,14 @@ pub(crate) fn expected_output_paths(
 /// `signature:` rendered — but its registered asset name is not that path's
 /// basename: the raw binary is called the same thing under every target's
 /// directory, so the name is built on the config-derived base
-/// ([`crate::helpers::binary_sign_asset_base`], the same derivation the sign
-/// stage registers through).
+/// ([`crate::helpers::binary_sign_asset_naming`], the same derivation the sign
+/// stage registers through), and claimed in `claimed_bases` so two binaries
+/// naming one asset fail the gate the way they fail the stage.
 fn expected_binary_sign_names(
     cfg: &SignConfig,
     artifact: &anodizer_core::artifact::Artifact,
     ctx: &Context,
+    claimed_bases: &mut crate::helpers::BinarySignAssetBases,
 ) -> Result<(String, Option<String>)> {
     let (sig_path, cert_path) =
         expected_output_paths(cfg, &artifact.path, &artifact.metadata, ctx)?;
@@ -277,9 +283,15 @@ fn expected_binary_sign_names(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
-    let base = crate::helpers::binary_sign_asset_base(ctx, cfg, artifact, target)?;
+    let naming = crate::helpers::binary_sign_asset_naming(ctx, cfg, artifact, target)?;
+    claimed_bases.claim(&naming, artifact)?;
     let name = |path: &std::path::Path| {
-        crate::helpers::binary_sign_asset_name(&basename_of(path), binary_basename, &base, target)
+        crate::helpers::binary_sign_asset_name(
+            &basename_of(path),
+            binary_basename,
+            &naming.base,
+            target,
+        )
     };
     Ok((name(&sig_path), cert_path.as_deref().map(name)))
 }

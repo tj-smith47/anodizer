@@ -1499,7 +1499,7 @@ fn asset_name_template_on_signs_warns_that_it_is_ignored() {
 /// their file.
 #[test]
 fn asset_name_template_under_defaults_sign_names_the_defaults_block() {
-    let config = Config {
+    let mut config = Config {
         project_name: "test".to_string(),
         defaults: Some(anodizer_core::config::Defaults {
             sign: Some(anodizer_core::config::SignConfig {
@@ -1508,20 +1508,47 @@ fn asset_name_template_under_defaults_sign_names_the_defaults_block() {
             }),
             ..Default::default()
         }),
-        // What `apply_defaults` leaves behind once the defaults entry filled
-        // the empty slice.
-        signs: vec![anodizer_core::config::SignConfig {
-            asset_name_template: Some("{{ Binary }}-{{ Version }}".to_string()),
-            ..Default::default()
-        }],
         ..Default::default()
     };
+    anodizer_core::defaults_merge::apply_defaults(&mut config);
     let mut warnings: Vec<String> = vec![];
     check_sign_asset_name_templates(&config, &mut warnings);
     assert_eq!(
         warnings,
         vec![
             "defaults.sign.asset_name_template is set but only binary_signs honors it (it will be ignored)".to_string(),
+        ]
+    );
+}
+
+/// A `signs:` entry the operator wrote is named as `signs[0]` even when it
+/// repeats the `defaults.sign:` value verbatim — the fold filled nothing, so
+/// naming `defaults.sign` would point at a block that changed no behaviour.
+#[test]
+fn an_entry_repeating_the_defaults_value_is_still_named_as_the_entry() {
+    let mut config = Config {
+        project_name: "test".to_string(),
+        defaults: Some(anodizer_core::config::Defaults {
+            sign: Some(anodizer_core::config::SignConfig {
+                asset_name_template: Some("{{ Binary }}-{{ Version }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        signs: vec![anodizer_core::config::SignConfig {
+            asset_name_template: Some("{{ Binary }}-{{ Version }}".to_string()),
+            cmd: Some("cosign".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    anodizer_core::defaults_merge::apply_defaults(&mut config);
+    let mut warnings: Vec<String> = vec![];
+    check_sign_asset_name_templates(&config, &mut warnings);
+    assert_eq!(
+        warnings,
+        vec![
+            "signs[0].asset_name_template is set but only binary_signs honors it (it will be ignored)".to_string(),
         ]
     );
 }

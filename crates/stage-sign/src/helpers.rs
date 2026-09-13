@@ -538,13 +538,23 @@ pub(crate) fn qualify_basename_with_target(name: &str, target: &str) -> String {
 /// level is the dimension the triple itself does not carry — a baseline and a
 /// `-Ctarget-cpu=x86-64-v3` build share `x86_64-unknown-linux-gnu` — so the
 /// tail every default name template appends
-/// ([`INSTALLER_AMD64_VARIANT_SUFFIX`](anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX))
-/// is appended here too; `v1` renders nothing, so an ordinary build keeps its
+/// ([`anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX`]) is
+/// appended here too; `v1` renders nothing, so an ordinary build keeps its
 /// historical name.
 pub(crate) const UNCOVERED_TARGET_NAME_TEMPLATE: &str = concat!(
     "{{ Binary }}-{{ Version }}-{{ Target }}",
     "{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}"
 );
+
+/// The rendered base of a binary signature asset together with the template
+/// it came from, so a diagnostic about the name can quote the template the
+/// operator has to change.
+pub(crate) struct BinarySignNaming {
+    /// The rendered asset base.
+    pub(crate) base: String,
+    /// The template that rendered it.
+    pub(crate) template: String,
+}
 
 /// The release-asset BASE name every signature and certificate of one raw
 /// binary is built on — unique per (crate, target, binary).
@@ -566,12 +576,12 @@ pub(crate) const UNCOVERED_TARGET_NAME_TEMPLATE: &str = concat!(
 /// that builds it and the machine that publishes it.
 ///
 /// A `binary_signs:` entry's `asset_name_template:` overrides every row.
-pub(crate) fn binary_sign_asset_base(
+pub(crate) fn binary_sign_asset_naming(
     ctx: &Context,
     cfg: &SignConfig,
     binary: &anodizer_core::artifact::Artifact,
     target: &str,
-) -> Result<String> {
+) -> Result<BinarySignNaming> {
     use anodizer_core::archive_name;
 
     let binary_name = binary.binary_name().unwrap_or_default();
@@ -605,8 +615,15 @@ pub(crate) fn binary_sign_asset_base(
         })
     };
 
+    let named = |base: Result<String>, template: &str| -> Result<BinarySignNaming> {
+        Ok(BinarySignNaming {
+            base: reject_empty_base(base?)?,
+            template: template.to_string(),
+        })
+    };
+
     if let Some(template) = cfg.asset_name_template.as_deref() {
-        return reject_empty_base(render(template, &seeded(&binary_name))?);
+        return named(render(template, &seeded(&binary_name)), template);
     }
 
     let krate = ctx.config.find_crate(&binary.crate_name);
@@ -626,10 +643,10 @@ pub(crate) fn binary_sign_asset_base(
         });
 
     let Some(entry) = entry else {
-        return reject_empty_base(render(
+        return named(
+            render(UNCOVERED_TARGET_NAME_TEMPLATE, &seeded(&binary_name)),
             UNCOVERED_TARGET_NAME_TEMPLATE,
-            &seeded(&binary_name),
-        )?);
+        );
     };
 
     let formats = archive_name::archive_formats_for_target(
@@ -661,7 +678,10 @@ pub(crate) fn binary_sign_asset_base(
         // no ambiguity to resolve. The stem is checked before the extension is
         // appended: a bare `.exe` names no subject either.
         let stem = reject_empty_base(render(&template, &seeded(&binary_name))?)?;
-        return Ok(archive_name::binary_output_name(stem, target));
+        return Ok(BinarySignNaming {
+            base: archive_name::binary_output_name(stem, target),
+            template,
+        });
     }
 
     let packed: Vec<String> = krate
@@ -680,16 +700,16 @@ pub(crate) fn binary_sign_asset_base(
     // packed binaries cannot each be named after it — the release would keep
     // one signature and silently drop its siblings.
     if packed.len() > 1 {
-        return reject_empty_base(render(
+        return named(
+            render(UNCOVERED_TARGET_NAME_TEMPLATE, &seeded(&binary_name)),
             UNCOVERED_TARGET_NAME_TEMPLATE,
-            &seeded(&binary_name),
-        )?);
+        );
     }
     let binary_var = packed
         .into_iter()
         .next()
         .unwrap_or_else(|| binary_name.clone());
-    reject_empty_base(render(&template, &seeded(&binary_var))?)
+    named(render(&template, &seeded(&binary_var)), &template)
 }
 
 /// Reject an empty rendered base before it becomes a `.sig` asset with no
@@ -710,8 +730,54 @@ fn reject_empty_base(base: String) -> Result<String> {
     Ok(base)
 }
 
+/// Which raw binary claimed each signature asset base in this run.
+///
+/// One release asset carries one file, so two binaries resolving to one base
+/// upload two signatures under one name and the release keeps whichever
+/// arrived last. The default templates separate every binary by target and
+/// micro-architecture level, but a hand-written `archives[].name_template`
+/// need not — `{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}` renders
+/// one name for a baseline and a `x86-64-v3` build of the same binary.
+#[derive(Default)]
+pub(crate) struct BinarySignAssetBases {
+    claimed: HashMap<String, String>,
+}
+
+impl BinarySignAssetBases {
+    /// Record `naming` as claimed by one binary, or refuse the run when a
+    /// different binary already claimed the same base.
+    pub(crate) fn claim(
+        &mut self,
+        naming: &BinarySignNaming,
+        binary: &anodizer_core::artifact::Artifact,
+    ) -> Result<()> {
+        // Two builds of one binary at different micro-architecture levels are
+        // two artifacts under one (crate, target, binary) triple, so identity
+        // is the file each signature covers.
+        let claimant = binary.path.display().to_string();
+        match self.claimed.get(&naming.base) {
+            Some(first) if *first != claimant => anyhow::bail!(
+                "sign: the binaries '{first}' and '{claimant}' both resolve to \
+                 the signature asset name '{base}', rendered from the template \
+                 '{template}'. One release asset cannot carry two signatures — \
+                 give the covering `archives[].name_template` a variable that \
+                 separates them ({{{{ Target }}}} and {{{{ Amd64 }}}} are the \
+                 dimensions {{{{ Os }}}}-{{{{ Arch }}}} drops), or set \
+                 `binary_signs[].asset_name_template`.",
+                base = naming.base,
+                template = naming.template
+            ),
+            Some(_) => Ok(()),
+            None => {
+                self.claimed.insert(naming.base.clone(), claimant);
+                Ok(())
+            }
+        }
+    }
+}
+
 /// The release-asset name a `binary_signs:` output registers under: the
-/// config-derived [`binary_sign_asset_base`] plus the suffix the `signature:`
+/// config-derived [`binary_sign_asset_naming`] base plus the suffix the `signature:`
 /// / `certificate:` template appended to the binary's own file name.
 ///
 /// The raw binary is called the same thing under every target's directory
@@ -738,7 +804,7 @@ pub(crate) fn binary_sign_asset_name(
 
 #[cfg(test)]
 mod binary_sign_asset_name_tests {
-    use super::{binary_sign_asset_base, binary_sign_asset_name};
+    use super::{binary_sign_asset_name, binary_sign_asset_naming};
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::config::{
         ArchiveConfig, ArchivesConfig, BuildConfig, CrateConfig, SignConfig,
@@ -750,6 +816,16 @@ mod binary_sign_asset_name_tests {
     const MUSL: &str = "x86_64-unknown-linux-musl";
     const WINDOWS: &str = "x86_64-pc-windows-msvc";
     const TEMPLATE: &str = "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}";
+
+    /// The rendered base alone, which every row assertion below reads.
+    fn binary_sign_asset_base(
+        ctx: &Context,
+        cfg: &SignConfig,
+        binary: &Artifact,
+        target: &str,
+    ) -> anyhow::Result<String> {
+        Ok(binary_sign_asset_naming(ctx, cfg, binary, target)?.base)
+    }
 
     fn archive(id: &str, name_template: &str) -> ArchiveConfig {
         ArchiveConfig {
@@ -785,6 +861,19 @@ mod binary_sign_asset_name_tests {
         ctx.template_vars_mut().set("ProjectName", "app");
         ctx.template_vars_mut().set("Version", "1.0.0");
         ctx
+    }
+
+    /// A binary whose own name differs from the project name, so a row that
+    /// renders `{{ Binary }}` is told apart from one that renders
+    /// `{{ ProjectName }}`.
+    fn named_binary(target: &str, binary_name: &str) -> Artifact {
+        let mut artifact = binary(target, None);
+        artifact
+            .metadata
+            .insert("binary_name".to_string(), binary_name.to_string());
+        artifact.name = binary_name.to_string();
+        artifact.path = std::path::PathBuf::from(format!("target/{target}/release/{binary_name}"));
+        artifact
     }
 
     fn binary(target: &str, id: Option<&str>) -> Artifact {
@@ -1146,7 +1235,10 @@ mod binary_sign_asset_name_tests {
     /// toward the archive stage's work list only once something archivable is
     /// registered for it — which an `anodizer build` run has not done yet.
     /// Basing the multi-crate decision on that would rebind `ProjectName` on
-    /// one command and not the other.
+    /// one command and not the other. What this holds is the `ProjectName`
+    /// rebinding alone: the multi-crate default template renders the same
+    /// string as the single-crate one, so the template half of the decision
+    /// is held by the structural pin in `tests.rs` instead.
     #[test]
     fn the_base_is_stable_when_an_artifact_only_sibling_crate_has_nothing_registered_yet() {
         let run = |register_sibling_archive: bool| {
@@ -1178,9 +1270,12 @@ mod binary_sign_asset_name_tests {
             binary_sign_asset_base(&ctx, &SignConfig::default(), &binary(LINUX, None), LINUX)
                 .unwrap()
         };
-        // No `name_template:` anywhere, so the default template is chosen —
-        // the decision the registry-aware resolver would answer differently
-        // once the sibling's archive is registered.
+        // What differs between the two runs is the `ProjectName` rebinding:
+        // the registry-aware answer counts two crates once the sibling's
+        // archive is registered and renders `app_…`. The template CHOICE is
+        // not covered here — `DEFAULT_NAME_TEMPLATE_MULTI_CRATE` is defined
+        // as `DEFAULT_NAME_TEMPLATE`, so both arms render alike; the
+        // structural assertion in `tests.rs` holds that half.
         assert_eq!(run(false), "proj_1.0.0_linux_amd64");
         assert_eq!(run(true), run(false));
     }
@@ -1262,17 +1357,18 @@ mod binary_sign_asset_name_tests {
             .build();
         ctx.template_vars_mut().set("ProjectName", "app");
         ctx.template_vars_mut().set("Version", "1.0.0");
-        // The `.exe` is what separates the executable's own asset name from
-        // the archive stem an unoverridden entry would render.
+        // The binary is named apart from the project, so the assertion holds
+        // the template SHAPE — the archive default would render `app_…` — as
+        // well as the `.exe` the executable's own asset name carries.
         assert_eq!(
             binary_sign_asset_base(
                 &ctx,
                 &SignConfig::default(),
-                &binary(WINDOWS, None),
+                &named_binary(WINDOWS, "helper"),
                 WINDOWS
             )
             .unwrap(),
-            "app_1.0.0_windows_amd64.exe"
+            "helper_1.0.0_windows_amd64.exe"
         );
     }
 
@@ -1289,11 +1385,11 @@ mod binary_sign_asset_name_tests {
             binary_sign_asset_base(
                 &ctx,
                 &SignConfig::default(),
-                &binary(WINDOWS, None),
+                &named_binary(WINDOWS, "helper"),
                 WINDOWS
             )
             .unwrap(),
-            "app_1.0.0_windows_amd64.exe"
+            "helper_1.0.0_windows_amd64.exe"
         );
     }
 
