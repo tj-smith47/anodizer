@@ -50,7 +50,7 @@ $ anodizer release
    • published release 'v0.2.1' (draft → live)
    • skipping cargo — gated by an earlier required failure (one-way-door protection)
    • wrote run-report to dist/run-v0.2.1/report.json
-Error: 1 required publisher(s) failed: homebrew. The release pipeline ran to
+       Error 1 required publisher(s) failed: homebrew. The release pipeline ran to
 completion, so rollback / announce-gating / summary all observed final state;
 this non-zero exit ensures CI and shell callers see the failure. Inspect
 dist/run-<id>/report.json for details; re-run the same release command to
@@ -246,7 +246,7 @@ byte-level detail:
 
 ```bash
 $ anodizer release
-Error: publish: 'anodizer-core-0.2.1' is ALREADY published on crates.io with
+       Error publish: 'anodizer-core-0.2.1' is ALREADY published on crates.io with
 DIFFERENT content (index cksum ab12…, local .crate cksum cd34…). Re-publishing
 would be SILENTLY SKIPPED by cargo, so the changed code would never ship under
 this version. Differing entries: src/lib.rs. Bump the version (crates.io
@@ -416,7 +416,7 @@ silent downgrade — automatic rollback was removed entirely:
 
 ```bash
 $ anodizer check config
-Error: release.on_failure: rollback is no longer supported — automatic rollback
+       Error release.on_failure: rollback is no longer supported — automatic rollback
 was removed — re-running `anodizer release` converges; use `anodizer tag
 rollback` for deliberate withdrawal.
 ```
@@ -520,7 +520,7 @@ when the version is burned (override with `--force`):
 
 ```bash
 $ anodizer tag rollback
-Error: refusing to roll back — one-way-door publisher(s) already accepted these version(s):
+       Error refusing to roll back — one-way-door publisher(s) already accepted these version(s):
   v0.8.0: version burned at cargo, chocolatey
 Those registries never accept the same version twice, so deleting the tag(s) and reverting the bump cannot lead to a clean same-version re-cut — tags kept to protect the published state.
 next step: fix the failure and cut the NEXT version (auto-tag creates it from the next push). To override anyway: `anodizer tag rollback --force`.
@@ -1037,7 +1037,7 @@ announce:
 ```text
 $ anodizer check config
    • validating configuration
-   Warning: announce.slack.message_template references secret-named var Env.GITHUB_TOKEN; its value is masked by outbound redaction (sent as "$GITHUB_TOKEN"), so embedding it here is almost certainly a mistake — remove the reference
+     Warning announce.slack.message_template references secret-named var Env.GITHUB_TOKEN; its value is masked by outbound redaction (sent as "$GITHUB_TOKEN"), so embedding it here is almost certainly a mistake — remove the reference
    • Config is valid.
 ```
 
@@ -1057,7 +1057,7 @@ registry-side "no matching package named ... found":
 
 ```text
 $ anodizer check config
-Error: crate 'anodizer-stage-install-script' is a workspace member and an
+       Error crate 'anodizer-stage-install-script' is a workspace member and an
 intra-workspace dependency of published crate 'anodizer', but is absent
 from `crates:` (cargo will fail publishing 'anodizer')
 ```
@@ -1069,7 +1069,7 @@ never uploaded to the registry first:
 
 ```text
 $ anodizer check config
-Error: crate 'anodizer-core' is an intra-workspace dependency of published
+       Error crate 'anodizer-core' is an intra-workspace dependency of published
 crate 'anodizer' but has no active cargo publisher (skipped or never
 configured for crates.io) — cargo will fail publishing 'anodizer' because
 'anodizer-core' is never uploaded to the registry

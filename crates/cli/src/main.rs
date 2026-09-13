@@ -136,7 +136,7 @@ fn enable_ci_colors() {
 
 /// `tracing` event formatter that renders library-side `warn!`/`error!`
 /// in the exact visual shape of [`anodizer_core::log::StageLogger`] — a
-/// bold `Warning:` / `Error:` prefix followed by the event's message —
+/// bold `Warning` / `Error` gutter label followed by the event's message —
 /// with NO ` WARN ` ansi level badge and NO `key=value` field/target
 /// clutter. This is the single output authority: the few user-facing
 /// warnings emitted from pure-library code paths (config validation,

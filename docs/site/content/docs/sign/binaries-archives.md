@@ -85,7 +85,7 @@ carries one file, so the second upload would replace the first and the release
 would ship a signature over bytes nobody can identify:
 
 ```text
-Error: sign: the signature of 'target/x86_64-unknown-linux-gnu/release/app (crate 'app', build id 'app', target x86_64-unknown-linux-gnu, amd64 v1)' and the signature of 'target/x86_64-unknown-linux-gnu/release/app (crate 'app', build id 'app', target x86_64-unknown-linux-gnu, amd64 v3)' both resolve to the asset name 'app-1.2.3-linux-amd64.sig' — the signature is the base 'app-1.2.3-linux-amd64' rendered from the template '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}' plus the suffix `binary_signs[].signature:` appended. One release asset cannot carry both files — give the covering `archives[].name_template` a variable that separates them ({{ Target }} and {{ Amd64 }} are the dimensions {{ Os }}-{{ Arch }} drops), or set `binary_signs[].asset_name_template`.
+       Error sign: the signature of 'target/x86_64-unknown-linux-gnu/release/app (crate 'app', build id 'app', target x86_64-unknown-linux-gnu, amd64 v1)' and the signature of 'target/x86_64-unknown-linux-gnu/release/app (crate 'app', build id 'app', target x86_64-unknown-linux-gnu, amd64 v3)' both resolve to the asset name 'app-1.2.3-linux-amd64.sig' — the signature is the base 'app-1.2.3-linux-amd64' rendered from the template '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}' plus the suffix `binary_signs[].signature:` appended. One release asset cannot carry both files — give the covering `archives[].name_template` a variable that separates them ({{ Target }} and {{ Amd64 }} are the dimensions {{ Os }}-{{ Arch }} drops), or set `binary_signs[].asset_name_template`.
 ```
 
 The certificate is checked the same way. Two `binary_signs:` entries whose
@@ -98,7 +98,7 @@ One entry's own two outputs are checked against each other as well: a
 one name for two files, and the run stops with both outputs named:
 
 ```text
-Error: sign: the signature and the certificate of 'target/x86_64-unknown-linux-gnu/release/app (crate 'app', build id 'app', target x86_64-unknown-linux-gnu, amd64 v1)' both resolve to the asset name 'app-1.2.3-linux-amd64.sig' — the signature is the base 'app-1.2.3-linux-amd64' rendered from the template '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}' plus the suffix `binary_signs[].signature:` appended and the certificate is the base 'app-1.2.3-linux-amd64' rendered from the template '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}' plus the suffix `binary_signs[].certificate:` appended. One release asset cannot carry both files — give `binary_signs[].signature:` and `binary_signs[].certificate:` names that differ.
+       Error sign: the signature and the certificate of 'target/x86_64-unknown-linux-gnu/release/app (crate 'app', build id 'app', target x86_64-unknown-linux-gnu, amd64 v1)' both resolve to the asset name 'app-1.2.3-linux-amd64.sig' — the signature is the base 'app-1.2.3-linux-amd64' rendered from the template '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}' plus the suffix `binary_signs[].signature:` appended and the certificate is the base 'app-1.2.3-linux-amd64' rendered from the template '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}' plus the suffix `binary_signs[].certificate:` appended. One release asset cannot carry both files — give `binary_signs[].signature:` and `binary_signs[].certificate:` names that differ.
 ```
 
 When a `signature:` (or `certificate:`) template renders a name of its own
@@ -107,7 +107,7 @@ result, so the message asks for a change to that template rather than to the
 archive name:
 
 ```text
-Error: sign: the signature of '…, build id 'app', …' and the signature of '…, build id 'helper', …' both resolve to the asset name 'detached-x86_64-unknown-linux-gnu.sig' — the signature was rendered by the `binary_signs[].signature:` template, which renamed the output instead of suffixing the binary's own file name, so the asset base 'app-1.2.3-linux-amd64' (from '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}') is not part of it. One release asset cannot carry both files — give the `binary_signs[].signature:` template {{ .Artifact }} or the target, so it renders one name per binary.
+       Error sign: the signature of '…, build id 'app', …' and the signature of '…, build id 'helper', …' both resolve to the asset name 'detached-x86_64-unknown-linux-gnu.sig' — the signature was rendered by the `binary_signs[].signature:` template, which renamed the output instead of suffixing the binary's own file name, so the asset base 'app-1.2.3-linux-amd64' (from '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}') is not part of it. One release asset cannot carry both files — give the `binary_signs[].signature:` template {{ .Artifact }} or the target, so it renders one name per binary.
 ```
 
 `asset_name_template:` is a per-entry field and the asset name is the base
@@ -117,7 +117,7 @@ with `{{ .Artifact }}.bundle.sig` — and resolve one binary's signature to one
 asset name over two files. That fails the run too, naming both files:
 
 ```text
-Error: sign: two `binary_signs:` entries resolve the signature of 'target/x86_64-unknown-linux-gnu/release/app (crate 'app', build id 'app', target x86_64-unknown-linux-gnu, amd64 v1)' to one asset name 'app-1.2.3.bundle.sig' over two files ('dist/target/x86_64-unknown-linux-gnu/release/app.sig' and 'dist/target/x86_64-unknown-linux-gnu/release/app.bundle.sig'). One release asset carries one file — give the two entries `signature:` suffixes that differ, or one of them its own `asset_name_template`.
+       Error sign: two `binary_signs:` entries resolve the signature of 'target/x86_64-unknown-linux-gnu/release/app (crate 'app', build id 'app', target x86_64-unknown-linux-gnu, amd64 v1)' to one asset name 'app-1.2.3.bundle.sig' over two files ('dist/target/x86_64-unknown-linux-gnu/release/app.sig' and 'dist/target/x86_64-unknown-linux-gnu/release/app.bundle.sig'). One release asset carries one file — give the two entries `signature:` suffixes that differ, or one of them its own `asset_name_template`.
 ```
 
 Two entries that resolve to one name over ONE file are accepted — that is one

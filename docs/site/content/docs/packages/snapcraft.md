@@ -156,8 +156,8 @@ by email. anodizer treats the hold as non-fatal (review can still approve),
 but never as delivered:
 
 ```
-Warning: snap myapp 1.0.0 HELD for Snap Store manual review — not live in any channel until review approves (https://dashboard.snapcraft.io/snaps/myapp/)
-Warning: 1 snap upload(s) HELD for Snap Store manual review — store release NOT verified: myapp 1.0.0
+     Warning snap myapp 1.0.0 HELD for Snap Store manual review — not live in any channel until review approves (https://dashboard.snapcraft.io/snaps/myapp/)
+     Warning 1 snap upload(s) HELD for Snap Store manual review — store release NOT verified: myapp 1.0.0
 ```
 
 The hold is also recorded in the run's publish evidence, and the

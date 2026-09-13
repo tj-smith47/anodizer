@@ -78,7 +78,7 @@ Matching details:
   ```text
   $ anodizer tag
   ...
-  Warning: version_files: enrolled file docs/install.md did not contain version 0.1.0 (nothing rewritten)
+     Warning enrolled version_files entry docs/install.md did not contain version 0.1.0 (nothing rewritten)
   ```
 
 Pass `--dry-run` to preview the rewrite counts without writing any file.

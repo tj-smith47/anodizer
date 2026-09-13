@@ -105,10 +105,10 @@ with a loud error so a typo can never silently widen or narrow a release:
 
 ```bash
 $ anodizer release --skip brew
-Error: invalid --skip value(s): brew. Valid options: …, homebrew, …, chocolatey, …
+       Error invalid --skip value(s): brew. Valid options: …, homebrew, …, chocolatey, …
 
 $ anodizer release --publishers crates
-Error: invalid --publishers value(s): crates. Valid publishers: cargo, …
+       Error invalid --publishers value(s): crates. Valid publishers: cargo, …
 ```
 
 Use `homebrew`, `chocolatey`, and `cargo` (the canonical names from the table above).
@@ -138,7 +138,7 @@ If a configured install aggregator finds **no** archive it can install, anodizer
 ```bash
 $ anodizer release
 ...
-Error: aur: no linux archives matched filters for 'myapp' — PKGBUILD would have
+       Error aur: no linux archives matched filters for 'myapp' — PKGBUILD would have
 placeholder URL and empty sha256. Check your archive configuration and aur
 filters (ids=<none>, amd64_variant=<default v1>, arm_variant=7 [hardcoded]). At
 least one linux Archive artifact must match.
@@ -237,14 +237,14 @@ $ anodizer check config --publishers cargo
    • Config is valid.
 
 $ anodizer check config --publishers npm
-Error: publisher 'npm' named in --publishers is not configured (no npm publish block)
+       Error publisher 'npm' named in --publishers is not configured (no npm publish block)
 ```
 
 The same loud error guards a typo here as on `release`/`publish`:
 
 ```bash
 $ anodizer check config --publishers crates
-Error: invalid --publishers value(s): crates. Valid publishers: cargo, …
+       Error invalid --publishers value(s): crates. Valid publishers: cargo, …
 ```
 
 ## Typos fail loud — one-way-door safety
@@ -255,7 +255,7 @@ anodizer rejects any unknown token with a nonzero exit before dispatch begins:
 
 ```bash
 $ anodizer release --publishers homebrwe   # typo
-Error: invalid --publishers value(s): homebrwe. Valid publishers: cargo, …
+       Error invalid --publishers value(s): homebrwe. Valid publishers: cargo, …
 $ echo $?
 1
 ```

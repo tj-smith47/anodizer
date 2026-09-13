@@ -25,7 +25,7 @@ side effect:
 •   ✗ env var(s) missing or empty: COSIGN_KEY [needed by: stage:sign, stage:docker-sign]
 •   ✗ env var AUR_SSH_KEY does not hold a usable SSH private key: missing trailing newline after end marker [needed by: publish:aur]
 •   ✗ endpoint 'http://minio.svc:9003' unreachable: connection refused [needed by: stage:blob]
-Error: preflight: 4 environment failure(s) across 24 check(s); fix the issues above before re-running
+       Error preflight: 4 environment failure(s) across 24 check(s); fix the issues above before re-running
 ```
 
 Secret **values** are never printed — only env-var names. Key material

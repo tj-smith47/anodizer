@@ -112,7 +112,7 @@ reported as `publisher: field '<path>' — <what the schema expected>`:
 ```bash
 $ anodizer release --snapshot
 ...
-Error: publisher artifact schema validation failed:
+       Error publisher artifact schema validation failed:
 winget: field '/PublisherUrl' — "acme.example" does not match "^([Hh][Tt][Tt][Pp][Ss]?)://.+$"
 ```
 
