@@ -412,19 +412,35 @@ pub fn is_gpg_command(cmd: &str) -> bool {
 pub struct DockerSignConfig {
     /// Unique identifier for this docker sign config.
     pub id: Option<String>,
-    /// Docker artifact types to sign: "all", "image", or "manifest" (default: "none").
+    /// Which docker artifacts to sign: `all`, `images`, `manifests`, `none`,
+    /// or empty.
+    /// Empty is the default and signs the canonical docker images. The
+    /// singular `image` and `manifest` are refused — the sign stage fails the
+    /// run rather than signing nothing.
     pub artifacts: Option<String>,
     /// Signing command to invoke (default: "cosign").
     pub cmd: Option<String>,
-    /// Arguments passed to the signing command (supports templates).
+    /// Arguments passed to the signing command. `{{ .Artifact }}` is
+    /// replaced by the digest-pinned image reference and `{{ .Signature }}`
+    /// by the synthesized `<image>@<digest>.sig` name before the rest is
+    /// rendered as a template; `{{ .Digest }}` renders the image digest.
+    /// Shell variables such as `${artifact}` are never expanded on the docker
+    /// path and reach the signing command as literal text.
     pub args: Option<Vec<String>>,
-    /// Signature output filename template (supports templates).
+    /// Ignored. A container signature is stored in the registry beside the
+    /// image rather than written to a file, so the docker sign stage
+    /// synthesizes the `<image>@<digest>.sig` name its argv substitutes and
+    /// reads this template nowhere.
     pub signature: Option<String>,
-    /// Certificate file to embed in the signature (Cosign bundle signing).
+    /// Certificate file whose PRESENCE selects cosign's bundle verification
+    /// mode. The path itself never reaches the signing command:
+    /// `{{ .Certificate }}` in `args:` renders empty on the docker path.
     pub certificate: Option<String>,
     /// Docker config IDs filter: only sign images from configs whose `id` is in this list.
     pub ids: Option<Vec<String>>,
-    /// Content written to the signing command's stdin.
+    /// Content written to the signing command's stdin. Rendered as a
+    /// template with nothing substituted first, so neither `{{ .Artifact }}`
+    /// nor `${artifact}` names anything here.
     pub stdin: Option<String>,
     /// Path to a file whose content is written to the signing command's stdin.
     pub stdin_file: Option<String>,
@@ -460,11 +476,16 @@ impl DockerSignConfig {
     /// canonical case). An empty `artifacts` is treated identically.
     pub const DEFAULT_ARTIFACTS: &'static str = "";
 
+    /// The values `artifacts:` accepts, in the order the sign stage names
+    /// them when it refuses one. The empty string is the default.
+    pub const ARTIFACT_FILTERS: &[&'static str] = &["all", "images", "manifests", "none", ""];
+
     /// Default `args` for `docker_signs:[]`
-    /// (`["sign", "--key=cosign.key",
-    /// "${artifact}@${digest}", "--yes"]`). Anodizer substitutes
-    /// `${artifact}@${digest}` for the Tera-rewritten
-    /// `{{ .Artifact }}@{{ .Digest }}` placeholders.
+    /// (`["sign", "--key=cosign.key", "{{ .Artifact }}@{{ .Digest }}",
+    /// "--yes"]`). `{{ .Artifact }}` is replaced by the digest-pinned image
+    /// reference before the render, and `{{ .Digest }}` renders the digest,
+    /// so the argument names the image by digest even when the reference
+    /// carried only a tag.
     pub const DEFAULT_ARGS: &[&'static str] = &[
         "sign",
         "--key=cosign.key",
@@ -503,6 +524,19 @@ impl DockerSignConfig {
         self.verify
             .as_ref()
             .is_none_or(SignVerifyConfig::is_enabled)
+    }
+
+    /// The accepted `artifacts:` values written as prose, for a diagnostic
+    /// that has to name them: `all, images, manifests, none, or empty`.
+    pub fn artifact_filters_phrase() -> String {
+        let named: Vec<&str> = Self::ARTIFACT_FILTERS
+            .iter()
+            .map(|filter| if filter.is_empty() { "empty" } else { filter })
+            .collect();
+        match named.split_last() {
+            Some((last, rest)) => format!("{}, or {last}", rest.join(", ")),
+            None => String::new(),
+        }
     }
 }
 
@@ -863,5 +897,49 @@ mod tests {
             ..Default::default()
         };
         assert!(cfg.is_required());
+    }
+    /// The `artifacts:` description generates into `schema.json` and the
+    /// configuration reference, so a value named there that the sign stage
+    /// refuses sends an operator to write a config that fails the run. The
+    /// field's first sentence and the stage's own list are therefore read
+    /// from one constant.
+    #[test]
+    fn the_docker_artifacts_rustdoc_names_exactly_the_filters_the_stage_accepts() {
+        let src = include_str!("signing.rs");
+        let struct_body = src
+            .split_once("pub struct DockerSignConfig")
+            .expect("the struct lives in this file")
+            .1;
+        let before_field = struct_body
+            .split_once("    pub artifacts:")
+            .expect("the field lives in that struct")
+            .0;
+        let mut doc: Vec<&str> = before_field
+            .lines()
+            .rev()
+            .map_while(|line| line.trim_start().strip_prefix("///"))
+            .map(str::trim)
+            .collect();
+        doc.reverse();
+        let doc = doc.join(" ");
+        let sentence = doc
+            .split_once(". ")
+            .map_or(doc.as_str(), |(first, _)| first);
+
+        let quoted: Vec<&str> = sentence.split('`').skip(1).step_by(2).collect();
+        let accepted: Vec<&str> = DockerSignConfig::ARTIFACT_FILTERS
+            .iter()
+            .copied()
+            .filter(|filter| !filter.is_empty())
+            .collect();
+        assert_eq!(quoted, accepted, "documented: {sentence:?}");
+        assert!(
+            sentence.contains("or empty"),
+            "the empty filter is accepted and unnamed: {sentence:?}"
+        );
+        assert_eq!(
+            DockerSignConfig::artifact_filters_phrase(),
+            "all, images, manifests, none, or empty"
+        );
     }
 }

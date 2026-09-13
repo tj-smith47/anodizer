@@ -13,7 +13,7 @@ Sign your Docker images after they're pushed.
 docker_signs:
   - artifacts: all
     cmd: cosign
-    args: ["sign", "--key=cosign.key", "${artifact}"]
+    args: ["sign", "--key=cosign.key", "{{ Artifact }}@{{ Digest }}"]
 ```
 
 ## Docker sign config fields
@@ -23,11 +23,11 @@ docker_signs:
 | `id` | string | | Unique identifier for this docker sign config (referenced by `ids` filters elsewhere). |
 | `artifacts` | string | `""` | Which Docker artifacts to sign: `all`, `images`, `manifests`, `none`, or `""` (empty — the default — signs the canonical Docker images). The singular `image` / `manifest` are **not** accepted and hard-error at release time. |
 | `cmd` | string | `cosign` | Signing command to invoke. |
-| `args` | list | — | Arguments passed to the signing command. Templates supported. |
-| `signature` | string | auto | Signature output filename template. Templates supported. |
-| `certificate` | string | | Certificate file to embed in the signature (Cosign bundle signing). |
+| `args` | list | `["sign", "--key=cosign.key", "{{ Artifact }}@{{ Digest }}", "--yes"]` | Arguments passed to the signing command. `{{ Artifact }}` is replaced by the digest-pinned image reference and `{{ Signature }}` by the synthesized `<image>@<digest>.sig` name before the rest is rendered as a template; `{{ Digest }}` renders the image digest. The `${artifact}` shell variables the [binary/archive path](@/docs/sign/binaries-archives.md) expands are **not** expanded here and reach the signing command as literal text. |
+| `signature` | string | — | **Ignored.** A container signature is stored in the registry beside the image rather than written to a file, so anodizer synthesizes the `<image>@<digest>.sig` name its argv substitutes and reads this template nowhere. `anodizer check config` warns when it is set. |
+| `certificate` | string | | Certificate file whose **presence** selects cosign's bundle verification mode. The path itself never reaches the signing command — `{{ Certificate }}` in `args:` renders empty. |
 | `ids` | list | all | Only sign images from docker configs whose `id` is in this list. |
-| `stdin` | string | | Content written to the signing command's stdin (e.g. a passphrase); template-expanded (e.g. `{{ Env.GPG_PASSPHRASE }}`). |
+| `stdin` | string | | Content written to the signing command's stdin (e.g. a passphrase); rendered as a template (e.g. `{{ Env.GPG_PASSPHRASE }}`) with nothing substituted first, so neither `{{ Artifact }}` nor `${artifact}` names anything here. |
 | `stdin_file` | string | | Path to a file whose content is written to the signing command's stdin. |
 | `env` | list | | Environment variables passed to the signing command (`KEY=VALUE` strings). |
 | `output` | bool | `false` | Capture and log the signing command's stdout/stderr. |

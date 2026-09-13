@@ -395,17 +395,17 @@ Multi-publisher fields are single-struct on both sides today: defaults supplies 
 ## `docker_signs` {#docker-signs}
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `args` | list of string | — | Arguments passed to the signing command (supports templates). |
-| `artifacts` | string | — | Docker artifact types to sign: "all", "image", or "manifest" (default: "none"). |
-| `certificate` | string | — | Certificate file to embed in the signature (Cosign bundle signing). |
+| `args` | list of string | — | Arguments passed to the signing command. `{{ .Artifact }}` is replaced by the digest-pinned image reference and `{{ .Signature }}` by the synthesized `<image>@<digest>.sig` name before the rest is rendered as a template; `{{ .Digest }}` renders the image digest. Shell variables such as `${artifact}` are never expanded on the docker path and reach the signing command as literal text. |
+| `artifacts` | string | — | Which docker artifacts to sign: `all`, `images`, `manifests`, `none`, or empty. Empty is the default and signs the canonical docker images. The singular `image` and `manifest` are refused — the sign stage fails the run rather than signing nothing. |
+| `certificate` | string | — | Certificate file whose PRESENCE selects cosign's bundle verification mode. The path itself never reaches the signing command: `{{ .Certificate }}` in `args:` renders empty on the docker path. |
 | `cmd` | string | — | Signing command to invoke (default: "cosign"). |
 | `env` | list of string | — | Environment variables passed to the signing command. |
 | `id` | string | — | Unique identifier for this docker sign config. |
 | `ids` | list of string | — | Docker config IDs filter: only sign images from configs whose `id` is in this list. |
 | `if` | string | — | Template-conditional: skip this docker sign config if rendered result is "false" or empty. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `output` | StringOrBool | — | Capture and log stdout/stderr of the docker signing command. |
-| `signature` | string | — | Signature output filename template (supports templates). |
-| `stdin` | string | — | Content written to the signing command's stdin. |
+| `signature` | string | — | Ignored. A container signature is stored in the registry beside the image rather than written to a file, so the docker sign stage synthesizes the `<image>@<digest>.sig` name its argv substitutes and reads this template nowhere. |
+| `stdin` | string | — | Content written to the signing command's stdin. Rendered as a template with nothing substituted first, so neither `{{ .Artifact }}` nor `${artifact}` names anything here. |
 | `stdin_file` | string | — | Path to a file whose content is written to the signing command's stdin. |
 | `verify` | SignVerifyConfig | — | Post-sign verification knobs — see `SignVerifyConfig`. Docker signatures are verified with `cosign verify` against the registry the sign just pushed to. |
 

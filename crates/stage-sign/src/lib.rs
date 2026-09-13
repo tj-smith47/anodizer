@@ -391,10 +391,10 @@ impl Stage for DockerSignStage {
                         arts
                     }
                     other => bail!(
-                        "docker_signs[{}]: unknown artifacts filter {:?} (expected one of: \
-                         all, images, manifests, none, or empty)",
+                        "docker_signs[{}]: unknown artifacts filter {:?} (expected one of: {})",
                         sign_id,
-                        other
+                        other,
+                        anodizer_core::config::DockerSignConfig::artifact_filters_phrase()
                     ),
                 };
 

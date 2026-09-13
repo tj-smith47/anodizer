@@ -5754,7 +5754,7 @@
       "type": "object",
       "properties": {
         "args": {
-          "description": "Arguments passed to the signing command (supports templates).",
+          "description": "Arguments passed to the signing command. `{{ .Artifact }}` is replaced by the digest-pinned image reference and `{{ .Signature }}` by the synthesized `<image>@<digest>.sig` name before the rest is rendered as a template; `{{ .Digest }}` renders the image digest. Shell variables such as `${artifact}` are never expanded on the docker path and reach the signing command as literal text.",
           "default": null,
           "type": [
             "array",
@@ -5765,7 +5765,7 @@
           }
         },
         "artifacts": {
-          "description": "Docker artifact types to sign: \"all\", \"image\", or \"manifest\" (default: \"none\").",
+          "description": "Which docker artifacts to sign: `all`, `images`, `manifests`, `none`, or empty. Empty is the default and signs the canonical docker images. The singular `image` and `manifest` are refused — the sign stage fails the run rather than signing nothing.",
           "default": null,
           "type": [
             "string",
@@ -5773,7 +5773,7 @@
           ]
         },
         "certificate": {
-          "description": "Certificate file to embed in the signature (Cosign bundle signing).",
+          "description": "Certificate file whose PRESENCE selects cosign's bundle verification mode. The path itself never reaches the signing command: `{{ .Certificate }}` in `args:` renders empty on the docker path.",
           "default": null,
           "type": [
             "string",
@@ -5839,7 +5839,7 @@
           ]
         },
         "signature": {
-          "description": "Signature output filename template (supports templates).",
+          "description": "Ignored. A container signature is stored in the registry beside the image rather than written to a file, so the docker sign stage synthesizes the `<image>@<digest>.sig` name its argv substitutes and reads this template nowhere.",
           "default": null,
           "type": [
             "string",
@@ -5847,7 +5847,7 @@
           ]
         },
         "stdin": {
-          "description": "Content written to the signing command's stdin.",
+          "description": "Content written to the signing command's stdin. Rendered as a template with nothing substituted first, so neither `{{ .Artifact }}` nor `${artifact}` names anything here.",
           "default": null,
           "type": [
             "string",
