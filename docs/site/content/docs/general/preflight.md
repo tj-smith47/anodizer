@@ -21,17 +21,19 @@ side effect:
 
 ```text
        Error 4 of 24 preflight check(s) failed:
-       Error   ✗ required tool 'cosign' not found on PATH [needed by: stage:sign, stage:docker-sign]
+       Error   ✗ tool 'cosign' not found on PATH [needed by: stage:sign, stage:docker-sign]
        Error   ✗ env var(s) missing or empty: COSIGN_KEY [needed by: stage:sign, stage:docker-sign]
-       Error   ✗ env var AUR_SSH_KEY does not hold a usable SSH private key: missing trailing newline after end marker [needed by: publish:aur]
+       Error   ✗ env var AUR_SSH_KEY does not hold a usable SSH private key: missing '-----END ... PRIVATE KEY-----' footer [needed by: publish:aur]
        Error   ✗ endpoint 'http://minio.svc:9003' unreachable: connection refused [needed by: stage:blob]
        Error preflight: 4 environment failure(s) across 24 check(s); fix the issues above before re-running
 ```
 
 Secret **values** are never printed — only env-var names. Key material
 (SSH, PGP, cosign) is structurally parsed, not just checked for presence,
-so the classic "key works locally but the CI secret lost its trailing
-newline" failure is caught before a publisher half-runs.
+so the classic "the CI secret pasted in truncated" failure is caught before
+a publisher half-runs. A key that merely lost its trailing newline is
+accepted: the key writer normalizes that before ssh reads it, so refusing
+it would reject input the pipeline provably tolerates.
 
 Snapshot and dry-run invocations skip the preflight (no upstream side
 effects to guard); `--split` skips it because split legs are

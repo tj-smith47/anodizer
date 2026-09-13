@@ -2148,4 +2148,40 @@ mod tests {
             "workspace crate's krew.required = Some(true) must escalate the gate"
         );
     }
+
+    /// The publisher-selection page quotes two refusals: a `--publishers`
+    /// name no config block backs, and an `aur:` block no linux archive
+    /// matched. Both are produced here from the real code and compared with
+    /// the page, so a reworded message leaves the docs showing a line the
+    /// binary no longer prints. A quoted line carrying `…` abbreviates a long
+    /// list instead of claiming an exact output, so it stays out.
+    #[test]
+    fn the_refusals_quoted_in_the_publisher_selection_docs_are_what_the_checks_produce() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/site/content/docs/publish/selecting-publishers.md"
+        );
+        let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let quoted: Vec<String> = page
+            .lines()
+            .filter_map(|line| line.trim_start().strip_prefix("Error "))
+            .filter(|line| !line.contains('\u{2026}'))
+            .map(str::to_string)
+            .collect();
+
+        let ctx = Context::test_fixture();
+        let no_archive = crate::aur::aur_build_sources(
+            &ctx,
+            &anodizer_core::config::AurConfig::default(),
+            "myapp",
+            "1.0.0",
+        )
+        .expect_err("no linux archive matched, so no PKGBUILD can be written");
+        let unconfigured = validate_publisher_allowlist_configured(&["npm".to_string()], &ctx)
+            .expect_err("npm has no publish block on this context");
+
+        assert_eq!(quoted.len(), 2, "the refusals the page quotes");
+        assert_eq!(quoted[0], format!("{no_archive:#}"));
+        assert_eq!(quoted[1], unconfigured);
+    }
 }

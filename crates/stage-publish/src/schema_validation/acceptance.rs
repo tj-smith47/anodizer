@@ -368,3 +368,38 @@ fn validators_cover_exactly_the_expected_publisher_set() {
          be removed here deliberately"
     );
 }
+
+/// The validation page quotes the abort a failed schema pass prints. The same
+/// malformed `publisher_url` the page's example names is fed to the real pass
+/// here, so a reworded abort or a changed finding line leaves the page showing
+/// bytes the binary no longer produces.
+#[test]
+fn the_abort_quoted_in_the_validation_docs_is_what_the_pass_produces() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/publish/validation.md"
+    );
+    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let quoted: Vec<String> = page
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("Error "))
+        .filter(|line| !line.contains('\u{2026}'))
+        .map(str::to_string)
+        .collect();
+
+    let mut ctx = multi_publisher_ctx("acme.example");
+    let log = ctx.logger("publish");
+    let resolver = |_: &Context, _: &CrateConfig| Some(VERSION.to_string());
+    let err = validate_publisher_schemas(&mut ctx, &log, &resolver)
+        .expect_err("a malformed winget publisher_url fails the pass");
+    let message = format!("{err:#}");
+    let mut lines = message.lines();
+
+    assert_eq!(quoted.len(), 1, "the aborts the page quotes");
+    assert_eq!(quoted[0], lines.next().expect("the abort's first line"));
+    let finding = lines.next().expect("the abort names the offending field");
+    assert!(
+        page.contains(finding),
+        "the page quotes the finding line the pass produced, got: {finding}"
+    );
+}

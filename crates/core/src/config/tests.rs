@@ -11272,3 +11272,39 @@ mcp:
         assert_eq!(config.mcp.packages[0].registry_type, want);
     }
 }
+
+/// The release-resilience page quotes the removed-rollback refusal as the
+/// operator sees it, so a reword leaves the page showing a line the binary no
+/// longer prints.
+///
+/// The page's other errors come from four more producers and are pinned where
+/// each of them lives; the error count is asserted in every one of those
+/// tests, so a newly quoted line fails until it is pinned somewhere.
+#[test]
+fn the_rollback_policy_error_quoted_in_the_resilience_docs_is_what_validation_produces() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/advanced/release-resilience.md"
+    );
+    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let quoted: Vec<String> = page
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("Error "))
+        .filter(|line| !line.contains('\u{2026}'))
+        .map(str::to_string)
+        .collect();
+
+    let config = Config {
+        project_name: "test".into(),
+        release: Some(ReleaseConfig {
+            on_failure: Some(OnFailureConfig::Rollback),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let produced = validate_on_failure_not_rollback(&config)
+        .expect_err("the removed policy is refused at config load");
+
+    assert_eq!(quoted[1], produced, "the page's second Error line");
+    assert_eq!(quoted.len(), 5, "the errors the page quotes");
+}

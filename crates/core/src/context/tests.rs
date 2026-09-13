@@ -2133,3 +2133,26 @@ fn populate_runtime_vars_sets_rustc_version() {
         );
     }
 }
+
+/// The hooks page quotes the `--skip` usage error as the operator sees it, so
+/// a reword of the message or a change to the build skip vocabulary leaves the
+/// page showing a line the binary no longer prints.
+#[test]
+fn the_skip_error_quoted_in_the_hooks_docs_is_what_the_validator_produces() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/general/hooks.md"
+    );
+    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let quoted: Vec<String> = page
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("Error "))
+        .map(str::to_string)
+        .collect();
+
+    let produced = validate_skip_values(&["post-hooks".to_string()], &VALID_BUILD_SKIPS)
+        .expect_err("an unrecognized token is a usage error");
+
+    assert_eq!(quoted, vec![produced], "the page's Error lines");
+    assert_eq!(quoted.len(), 1, "the errors the page quotes");
+}

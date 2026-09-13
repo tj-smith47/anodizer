@@ -2340,3 +2340,146 @@ fn snapshot_release_warns_when_git_refuses_the_repository() {
         "the warning must carry git's own error: {warnings:?}"
     );
 }
+
+/// The preflight page quotes the whole abort as the operator sees it: the
+/// report's own summary and bullets, then the line the release gate bails
+/// with. Each is produced here from the real code and the page's lines have to
+/// match exactly, in page order.
+#[test]
+fn the_abort_quoted_in_the_preflight_docs_is_what_a_failed_preflight_produces() {
+    use anodizer_core::env_preflight::{
+        EnvProbes, EnvRequirement, KeyKind, SourcedRequirement, evaluate,
+    };
+    use std::collections::HashMap;
+
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/general/preflight.md"
+    );
+    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let quoted: Vec<String> = page
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("Error "))
+        .map(str::to_string)
+        .collect();
+
+    let sourced = |source: &str, requirement: EnvRequirement| {
+        SourcedRequirement::new(source.to_string(), requirement)
+    };
+    let mut requirements = vec![
+        sourced(
+            "stage:sign",
+            EnvRequirement::Tool {
+                name: "cosign".to_string(),
+            },
+        ),
+        sourced(
+            "stage:docker-sign",
+            EnvRequirement::Tool {
+                name: "cosign".to_string(),
+            },
+        ),
+        sourced(
+            "stage:sign",
+            EnvRequirement::EnvAllOf {
+                vars: vec!["COSIGN_KEY".to_string()],
+            },
+        ),
+        sourced(
+            "stage:docker-sign",
+            EnvRequirement::EnvAllOf {
+                vars: vec!["COSIGN_KEY".to_string()],
+            },
+        ),
+        sourced(
+            "publish:aur",
+            EnvRequirement::KeyEnv {
+                kind: KeyKind::SshPrivate,
+                var: "AUR_SSH_KEY".to_string(),
+            },
+        ),
+        sourced(
+            "stage:blob",
+            EnvRequirement::Endpoint {
+                url: "http://minio.svc:9003".to_string(),
+            },
+        ),
+    ];
+    // Twenty satisfied tool checks, so the summary counts the twenty-four a
+    // configured release evaluates rather than only the failing four.
+    for n in 0..20 {
+        requirements.push(sourced(
+            "stage:build",
+            EnvRequirement::Tool {
+                name: format!("tool-{n}"),
+            },
+        ));
+    }
+
+    let env: HashMap<&str, &str> = HashMap::from([(
+        "AUR_SSH_KEY",
+        "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA\n",
+    )]);
+    let report = evaluate(
+        &requirements,
+        &|var| env.get(var).map(|v| (*v).to_string()),
+        &EnvProbes {
+            tool: &|name| name != "cosign",
+            endpoint: &|_| Err("connection refused".to_string()),
+            docker: &|| true,
+        },
+    );
+
+    let mut produced: Vec<String> = report
+        .to_string()
+        .trim_end_matches('\n')
+        .lines()
+        .map(str::to_string)
+        .collect();
+    produced.push(super::pipeline_run::preflight_failure_message(&report));
+
+    assert_eq!(quoted, produced, "the page's Error lines");
+    assert_eq!(quoted.len(), 6, "the errors the page quotes");
+}
+
+/// Read every `Error ` line a docs page quotes, in page order, with the label
+/// and the renderer's indentation stripped. A line carrying the elision
+/// character is an abbreviation of real output rather than a claim about it,
+/// so it is left out.
+fn quoted_error_lines(relative: &str) -> Vec<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/site/content/docs")
+        .join(relative);
+    let page =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    page.lines()
+        .filter_map(|line| line.trim_start().strip_prefix("Error "))
+        .filter(|line| !line.contains('\u{2026}'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The release-resilience page opens by quoting the exit a failed required
+/// publisher produces, so a reword of the gate or of the sentence the release
+/// wrapper passes it leaves the page showing a line the binary no longer
+/// prints.
+///
+/// The page's other errors come from four more producers and are pinned where
+/// each of them lives; the error count is asserted in every one of those
+/// tests, so a newly quoted line fails until it is pinned somewhere.
+#[test]
+fn the_required_failure_exit_quoted_in_the_resilience_docs_is_what_the_gate_produces() {
+    use anodizer_core::publish_report::PublisherOutcome;
+
+    let ctx = ctx_with_report(
+        "homebrew",
+        true,
+        PublisherOutcome::Failed("git push refused".into()),
+        ContextOptions::default(),
+    );
+    let err = gate_required_failures(&ctx).expect_err("a failed required publisher exits nonzero");
+
+    let quoted = quoted_error_lines("advanced/release-resilience.md");
+    assert_eq!(quoted[0], format!("{err:#}"), "the page's first Error line");
+    assert_eq!(quoted.len(), 5, "the errors the page quotes");
+}

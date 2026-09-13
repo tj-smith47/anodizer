@@ -2991,3 +2991,53 @@ fn the_lines_quoted_in_the_version_files_docs_are_what_the_commands_produce() {
     assert_eq!(warnings.len(), 1, "the warnings the page quotes");
     assert_eq!(errors.len(), 3, "the errors the page quotes");
 }
+
+/// The changelog page quotes the refusal a shared tag prefix over divergent
+/// crate versions raises. The page's own two-crate example is built on a
+/// temporary workspace and the produced refusal compared with the page, so a
+/// reworded message leaves the docs showing a line the binary no longer
+/// prints.
+#[test]
+fn the_refusal_quoted_in_the_changelog_docs_is_what_the_guard_produces() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/more/changelog.md"
+    );
+    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let quoted: Vec<String> = page
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("Error "))
+        .filter(|line| !line.contains('\u{2026}'))
+        .map(str::to_string)
+        .collect();
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let member = |rel: &str, name: &str, version: &str| {
+        let dir = root.join(rel);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"{version}\"\n"),
+        )
+        .expect("write manifest");
+    };
+    member("crates/core", "core", "0.2.0");
+    member("crates/cli", "cli", "0.3.0");
+
+    let shared = |name: &str, path: &str| CrateConfig {
+        name: name.to_string(),
+        path: path.to_string(),
+        tag_template: Some("v{{ Version }}".to_string()),
+        ..Default::default()
+    };
+    let err = repo_shape::check_shared_prefix_version_coherence(
+        &[shared("core", "crates/core"), shared("cli", "crates/cli")],
+        root,
+        None,
+    )
+    .expect_err("one shared prefix cannot carry two versions");
+
+    assert_eq!(quoted.len(), 1, "the refusals the page quotes");
+    assert_eq!(quoted[0], format!("{err:#}"));
+}
