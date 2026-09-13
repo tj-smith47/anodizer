@@ -70,10 +70,8 @@ asset:
 ```
 $ anodizer release
 ...
-[verify-release] crate 'myapp': 1 produced artifact(s) missing from the published
-                 release: myapp_1.0.0_amd64.deb
-       Error verify-release: post-publish verification found 1 issue(s);
-             the release IS published — investigate:
+[verify-release] crate 'myapp': 1 produced artifact(s) missing from the published release: myapp_1.0.0_amd64.deb
+       Error verify-release: post-publish verification found 1 issue(s); the release IS published — investigate:
   - crate 'myapp': 1 produced artifact(s) missing from the published release: myapp_1.0.0_amd64.deb
 ```
 
@@ -331,8 +329,7 @@ version exceeds your floor — catching the classic "built on a too-new builder,
 won't run on the target distro" regression:
 
 ```
-       Error verify-release: post-publish verification found 1 issue(s);
-             the release IS published — investigate:
+       Error verify-release: post-publish verification found 1 issue(s); the release IS published — investigate:
   - crate 'myapp': usr/bin/myapp requires glibc 2.38, exceeding the configured ceiling 2.36
 ```
 

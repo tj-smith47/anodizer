@@ -268,9 +268,7 @@ registry-side "no matching package named ... found":
 
 ```text
 $ anodizer check config
-       Error crate 'anodizer-stage-install-script' is a workspace member and an
-intra-workspace dependency of published crate 'anodizer', but is absent
-from `crates:` (cargo will fail publishing 'anodizer')
+       Error crate 'anodizer-stage-install-script' is a workspace member and an intra-workspace dependency of published crate 'anodizer', but is absent from `crates:` (cargo will fail publishing 'anodizer')
 ```
 
 The check also fires when the dependency crate IS listed in `crates:` but

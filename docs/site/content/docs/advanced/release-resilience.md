@@ -50,11 +50,7 @@ $ anodizer release
    • published release 'v0.2.1' (draft → live)
    • skipping cargo — gated by an earlier required failure (one-way-door protection)
    • wrote run-report to dist/run-v0.2.1/report.json
-       Error 1 required publisher(s) failed: homebrew. The release pipeline ran to
-completion, so rollback / announce-gating / summary all observed final state;
-this non-zero exit ensures CI and shell callers see the failure. Inspect
-dist/run-<id>/report.json for details; re-run the same release command to
-converge, or `anodizer tag rollback` to withdraw the release deliberately.
+       Error 1 required publisher(s) failed: homebrew. The release pipeline ran to completion, so rollback / announce-gating / summary all observed final state; this non-zero exit ensures CI and shell callers see the failure. Inspect dist/run-<id>/report.json for details; re-run the same release command to converge, or `anodizer tag rollback` to withdraw the release deliberately.
 
 # fix the branch-protection rule, then run the EXACT SAME command:
 $ anodizer release
@@ -246,11 +242,7 @@ byte-level detail:
 
 ```bash
 $ anodizer release
-       Error publish: 'anodizer-core-0.2.1' is ALREADY published on crates.io with
-DIFFERENT content (index cksum ab12…, local .crate cksum cd34…). Re-publishing
-would be SILENTLY SKIPPED by cargo, so the changed code would never ship under
-this version. Differing entries: src/lib.rs. Bump the version (crates.io
-versions are immutable) and re-run.
+       Error publish: 'anodizer-core-0.2.1' is ALREADY published on crates.io with DIFFERENT content (index cksum ab12…, local .crate cksum cd34…). Re-publishing would be SILENTLY SKIPPED by cargo, so the changed code would never ship under this version. Differing entries: src/lib.rs. Bump the version (crates.io versions are immutable) and re-run.
 ```
 
 ## `on_error` hooks
@@ -416,9 +408,7 @@ silent downgrade — automatic rollback was removed entirely:
 
 ```bash
 $ anodizer check config
-       Error release.on_failure: rollback is no longer supported — automatic rollback
-was removed — re-running `anodizer release` converges; use `anodizer tag
-rollback` for deliberate withdrawal.
+       Error release.on_failure: rollback is no longer supported — automatic rollback was removed — re-running `anodizer release` converges; use `anodizer tag rollback` for deliberate withdrawal.
 ```
 
 The fix is a one-line config edit:
@@ -1057,9 +1047,7 @@ registry-side "no matching package named ... found":
 
 ```text
 $ anodizer check config
-       Error crate 'anodizer-stage-install-script' is a workspace member and an
-intra-workspace dependency of published crate 'anodizer', but is absent
-from `crates:` (cargo will fail publishing 'anodizer')
+       Error crate 'anodizer-stage-install-script' is a workspace member and an intra-workspace dependency of published crate 'anodizer', but is absent from `crates:` (cargo will fail publishing 'anodizer')
 ```
 
 It also fails when the dependency IS listed in `crates:` but has no active
@@ -1069,10 +1057,7 @@ never uploaded to the registry first:
 
 ```text
 $ anodizer check config
-       Error crate 'anodizer-core' is an intra-workspace dependency of published
-crate 'anodizer' but has no active cargo publisher (skipped or never
-configured for crates.io) — cargo will fail publishing 'anodizer' because
-'anodizer-core' is never uploaded to the registry
+       Error crate 'anodizer-core' is an intra-workspace dependency of published crate 'anodizer' but has no active cargo publisher (skipped or never configured for crates.io) — cargo will fail publishing 'anodizer' because 'anodizer-core' is never uploaded to the registry
 ```
 
 The guard reads the same `[dependencies]` / `[build-dependencies]` /
