@@ -45,6 +45,8 @@ pub struct DmgConfig {
     pub amd64_variant: Option<Amd64Variant>,
     /// Template-conditional: skip this DMG config if rendered result is "false"
     /// or empty. Render failure hard-errors (not silent-skip).
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// Volume label shown in Finder when the image is mounted.
@@ -98,6 +100,8 @@ pub struct MsiConfig {
     pub extensions: Option<Vec<String>>,
     /// Template-conditional: skip this MSI config if rendered result is "false"
     /// or empty. Render failure hard-errors (not silent-skip).
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// Pre/post MSI-build hooks. Accepts `pre`/`post`
@@ -154,6 +158,8 @@ pub struct PkgConfig {
     pub skip: Option<StringOrBool>,
     /// Template-conditional: skip this PKG config if rendered result is "false"
     /// or empty. Render failure hard-errors (not silent-skip).
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }
@@ -203,6 +209,8 @@ pub struct NsisConfig {
     pub mod_timestamp: Option<String>,
     /// Template-conditional: skip this NSIS config if rendered result is "false"
     /// or empty. Render failure hard-errors (not silent-skip).
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }
@@ -248,6 +256,8 @@ pub struct AppBundleConfig {
     pub skip: Option<StringOrBool>,
     /// Template-conditional: skip this app bundle config if rendered result is
     /// "false" or empty. Render failure hard-errors (not silent-skip).
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }

@@ -35,7 +35,7 @@ crates:
         mod_timestamp: ""             # optional; fixed timestamp for reproducible builds
         use: binary                   # optional; "binary" (default) or "appbundle"
         amd64_variant: v1             # optional; amd64 variant filter
-        if: ""                        # optional; template-conditional skip
+        if: ""                        # optional; empty imposes no gate; a non-blank one skips when it renders falsy
         skip: false                   # optional
 ```
 

@@ -896,4 +896,69 @@ mod tests {
              presence; a rename that empties it would pass vacuously"
         );
     }
+
+    /// Every documented `if:` field describes the same three spellings.
+    ///
+    /// A field's description generates straight into
+    /// `docs/site/static/schema.json` and the configuration reference, so
+    /// one left saying an empty gate SKIPS tells an operator the opposite of
+    /// what the engine does — and, where a hand-written page was updated and
+    /// its generated sibling was not, the two surfaces contradict each
+    /// other. A field with no doc comment at all (the private deserialize
+    /// helper in `archives.rs`) generates nothing and is outside the
+    /// question.
+    #[test]
+    fn every_documented_if_field_says_an_empty_gate_runs() {
+        use crate::test_helpers::test_sources::{production_half, workspace_production_sources};
+
+        const SENTENCE: &str = "An absent, empty or blank `if:` imposes no gate and \
+                                always runs; the falsy test applies to what a \
+                                non-blank gate renders.";
+
+        let mut documented = 0usize;
+        let mut silent: Vec<String> = Vec::new();
+        for path in workspace_production_sources() {
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            let lines: Vec<&str> = production_half(&src).lines().collect();
+            for (at, line) in lines.iter().enumerate() {
+                if line.trim() != r#"#[serde(rename = "if")]"# {
+                    continue;
+                }
+                // The attribute and doc run directly above the field.
+                let mut from = at;
+                while from > 0 && {
+                    let above = lines[from - 1].trim_start();
+                    above.starts_with("///") || above.starts_with("#[")
+                } {
+                    from -= 1;
+                }
+                let doc = lines[from..at]
+                    .iter()
+                    .map(|l| l.trim_start())
+                    .filter(|l| l.starts_with("///"))
+                    .map(|l| l.trim_start_matches('/').trim())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if doc.is_empty() {
+                    continue;
+                }
+                documented += 1;
+                if !doc.contains(SENTENCE) {
+                    silent.push(format!("{}:{}", path.display(), at + 1));
+                }
+            }
+        }
+        assert!(
+            silent.is_empty(),
+            "these `if:` descriptions still leave out what an absent, empty or \
+             blank gate does, and each one generates into the schema and the \
+             configuration reference: {silent:?}"
+        );
+        assert_eq!(
+            documented, 35,
+            "the walk found a different number of documented `if:` fields than \
+             it expects; a new one must carry the sentence and be counted here"
+        );
+    }
 }

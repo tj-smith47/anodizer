@@ -129,6 +129,8 @@ pub struct NfpmConfig {
     pub changelog: Option<String>,
     /// Template-conditional: skip this nfpm config if rendered result is "false" or empty.
     /// Conditional-skip gate.
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// Extra file contents whose source files are Tera-rendered before packaging.

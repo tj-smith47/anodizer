@@ -276,7 +276,7 @@ The canonical key is `hooks:` in every block, matching the conventional spelling
 | `env` | list of string | — | Environment variables passed to the signing command. |
 | `id` | string | — | Unique identifier for this sign config. |
 | `ids` | list of string | — | Build IDs filter: only sign artifacts from builds whose `id` is in this list. |
-| `if` | string | — | Template-conditional: skip this sign config if rendered result is "false" or empty. |
+| `if` | string | — | Template-conditional: skip this sign config if rendered result is "false" or empty. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `output` | StringOrBool | — | Capture and log stdout/stderr of the signing command. Accepts bool or template string (e.g., "{{ IsSnapshot }}"). |
 | `signature` | string | — | Signature output filename template (supports templates). |
 | `stdin` | string | — | Content written to the signing command's stdin. |
@@ -402,7 +402,7 @@ Multi-publisher fields are single-struct on both sides today: defaults supplies 
 | `env` | list of string | — | Environment variables passed to the signing command. |
 | `id` | string | — | Unique identifier for this docker sign config. |
 | `ids` | list of string | — | Docker config IDs filter: only sign images from configs whose `id` is in this list. |
-| `if` | string | — | Template-conditional: skip this docker sign config if rendered result is "false" or empty. |
+| `if` | string | — | Template-conditional: skip this docker sign config if rendered result is "false" or empty. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `output` | StringOrBool | — | Capture and log stdout/stderr of the docker signing command. |
 | `signature` | string | — | Signature output filename template (supports templates). |
 | `stdin` | string | — | Content written to the signing command's stdin. |
@@ -862,7 +862,7 @@ Top-level `schemastore:` block. Shared fields here are defaults for every entry 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `commit_author` | CommitAuthorConfig | — | Commit author for the SchemaStore commit (defaults to git config). |
-| `if` | string | — | Tera condition; when it renders falsy the publisher is skipped. |
+| `if` | string | — | Tera condition; when it renders falsy the publisher is skipped. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `repository` | RepositoryConfig | — | Fork of `SchemaStore/schemastore` to push branches to and open the PR from. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `schemas` | list of SchemaEntry | `[]` | The schema entries to register/refresh. |
@@ -881,7 +881,7 @@ Top-level `schemastore:` block. Shared fields here are defaults for every entry 
 | `env` | list of string | — | Environment variables passed to the signing command. |
 | `id` | string | — | Unique identifier for this sign config. |
 | `ids` | list of string | — | Build IDs filter: only sign artifacts from builds whose `id` is in this list. |
-| `if` | string | — | Template-conditional: skip this sign config if rendered result is "false" or empty. |
+| `if` | string | — | Template-conditional: skip this sign config if rendered result is "false" or empty. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `output` | StringOrBool | — | Capture and log stdout/stderr of the signing command. Accepts bool or template string (e.g., "{{ IsSnapshot }}"). |
 | `signature` | string | — | Signature output filename template (supports templates). |
 | `stdin` | string | — | Content written to the signing command's stdin. |
@@ -1110,7 +1110,7 @@ After each docker image push, a digest file (containing the sha256 digest) is wr
 | `homepage` | string | — | Project homepage URL. |
 | `id` | string | — | Unique identifier for cross-referencing this nFPM config. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts from builds whose `id` is in this list. Accepts the deprecated `builds:` spelling via serde alias for back-compat with imported configs (the legacy `builds` key marked `deprecated`, aliasing `ids`). |
-| `if` | string | — | Template-conditional: skip this nfpm config if rendered result is "false" or empty. Conditional-skip gate. |
+| `if` | string | — | Template-conditional: skip this nfpm config if rendered result is "false" or empty. Conditional-skip gate. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `ipk` | NfpmIpkConfig | — | IPK-specific configuration (OpenWrt packages). |
 | `libdirs` | NfpmLibdirs | — | CGo library installation directories (header, carchive, cshared). |
 | `license` | string | — | SPDX license identifier (e.g., "MIT", "Apache-2.0"). |
