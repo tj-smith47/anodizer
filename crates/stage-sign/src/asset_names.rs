@@ -267,6 +267,17 @@ impl ClaimedAssetName {
     }
 }
 
+/// Whether two rendered output paths name one file, compared the way
+/// [`dist_joined`] decides what is already under `dist`: `./dist/x` and
+/// `dist/x` are one file, so a claim keyed on the textual spelling would
+/// refuse a pair the filesystem accepts.
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (std::path::absolute(a), std::path::absolute(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
 /// How one claim's asset name was produced, worded for a collision message.
 fn derivation(output: &str, source: AssetNameSource, base: &str, template: &str) -> String {
     match source {
@@ -419,7 +430,7 @@ impl BinarySignAssetNames {
             // `<base><suffix>`, so two entries trading a component between
             // the two resolve to one name over two files — of which the
             // release keeps whichever upload arrived last.
-            Some(first) if first.path != path => anyhow::bail!(
+            Some(first) if !same_file(&first.path, path) => anyhow::bail!(
                 "sign: two `binary_signs:` entries resolve the {output} of \
                  '{claimant}' to one asset name '{asset_name}' over two files \
                  ('{first_path}' and '{path}'). One release asset carries one \

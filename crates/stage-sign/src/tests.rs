@@ -8214,6 +8214,156 @@ fn two_configs_naming_one_signature_for_one_binary_are_accepted() {
     assert_eq!(expected, vec!["shared-1.0.0.sig"]);
 }
 
+/// Two entries spelling ONE output path two ways (`dist/x` and `./dist/x`)
+/// write one file, so the claim compares the two the way `dist_joined`
+/// decides what is already under `dist` — as absolute paths.
+#[test]
+fn two_spellings_of_one_signature_path_are_one_file() {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{BuildConfig, CrateConfig};
+
+    const TARGET: &str = "x86_64-unknown-linux-gnu";
+
+    let config_for = |signature: &str| SignConfig {
+        artifacts: Some("binary".to_string()),
+        cmd: Some("true".to_string()),
+        args: Some(vec![]),
+        signature: Some(signature.to_string()),
+        ..Default::default()
+    };
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("app")
+        .crates(vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("app".to_string()),
+                targets: Some(vec![TARGET.to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .binary_signs(vec![
+            config_for("dist/sigs/app.sig"),
+            config_for("./dist/sigs/app.sig"),
+        ])
+        // The relative `dist` every real config carries: it is what keeps a
+        // rendering that is already under it spelled as written, so the two
+        // entries reach the claim as two spellings rather than one joined
+        // path. Nothing is written — the run is a dry run.
+        .dist(std::path::PathBuf::from("dist"))
+        .dry_run(true)
+        .build();
+    ctx.template_vars_mut().set("ProjectName", "app");
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: "app".to_string(),
+        path: std::path::PathBuf::from(format!("target/{TARGET}/release/app")),
+        target: Some(TARGET.to_string()),
+        crate_name: "app".to_string(),
+        metadata: [
+            ("binary".to_string(), "app".to_string()),
+            ("id".to_string(), "app".to_string()),
+        ]
+        .into_iter()
+        .collect(),
+        size: None,
+    });
+
+    let log = ctx.logger("binary-sign");
+    let cfgs = ctx.config.binary_signs.clone();
+    process_sign_configs(
+        &cfgs,
+        &mut ctx,
+        &log,
+        ArtifactFilter::BinaryOnly,
+        "binary-sign",
+    )
+    .expect("two spellings of one path are one file");
+    crate::expected::expected_signature_assets(&ctx, "app", None)
+        .expect("the gate must accept it too");
+}
+
+/// The stage and the gate expand `${artifact}` and join `dist` in the same
+/// order, so an absolute artifact path resolves to one output file on both
+/// sides. Joining first placed the literal `${artifact}` under `dist` and
+/// expanded it into a path the gate never named.
+#[test]
+fn an_absolute_artifact_signature_resolves_to_one_path_on_both_sides() {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{BuildConfig, CrateConfig};
+
+    const TARGET: &str = "x86_64-unknown-linux-gnu";
+    let binary_path = std::path::PathBuf::from(format!("/opt/build/{TARGET}/app"));
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("app")
+        .crates(vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("app".to_string()),
+                targets: Some(vec![TARGET.to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .binary_signs(vec![SignConfig {
+            artifacts: Some("binary".to_string()),
+            cmd: Some("true".to_string()),
+            args: Some(vec![]),
+            signature: Some("${artifact}.sig".to_string()),
+            ..Default::default()
+        }])
+        .dry_run(true)
+        .build();
+    ctx.template_vars_mut().set("ProjectName", "app");
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    let metadata: std::collections::HashMap<String, String> = [
+        ("binary".to_string(), "app".to_string()),
+        ("id".to_string(), "app".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: "app".to_string(),
+        path: binary_path.clone(),
+        target: Some(TARGET.to_string()),
+        crate_name: "app".to_string(),
+        metadata: metadata.clone(),
+        size: None,
+    });
+
+    let log = ctx.logger("binary-sign");
+    let cfgs = ctx.config.binary_signs.clone();
+    process_sign_configs(
+        &cfgs,
+        &mut ctx,
+        &log,
+        ArtifactFilter::BinaryOnly,
+        "binary-sign",
+    )
+    .expect("an absolute artifact path signs");
+
+    let (gate_path, _) =
+        crate::expected::expected_output_paths(&cfgs[0], &binary_path, &metadata, &ctx)
+            .expect("the gate resolves the same output");
+    let stage_paths: Vec<std::path::PathBuf> = ctx
+        .artifacts
+        .by_kind(ArtifactKind::Signature)
+        .into_iter()
+        .map(|a| a.path.clone())
+        .collect();
+    assert_eq!(
+        gate_path,
+        std::path::PathBuf::from("/opt/build/x86_64-unknown-linux-gnu/app.sig")
+    );
+    assert_eq!(stage_paths, vec![gate_path]);
+}
+
 /// `asset_name_template:` is a per-entry field and the asset name is
 /// `<base><suffix>`, so two entries can trade a component between the base
 /// and the output template's suffix and resolve the SAME output of ONE binary

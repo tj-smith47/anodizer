@@ -381,6 +381,75 @@ pub(crate) fn dist_joined(dist: &std::path::Path, rendered: &str) -> std::path::
     }
 }
 
+/// The (signature, optional certificate) output PATHS one sign config
+/// resolves for one artifact.
+///
+/// Shell variables are expanded BEFORE the `dist` join: a `${artifact}` that
+/// resolves to a path already under `dist` is kept there, where joining first
+/// would place the literal `${artifact}` under `dist` and expand it into a
+/// doubled `dist/dist/…`. The sign stage and the release gate both call this,
+/// so the file the stage writes is the file the gate claims.
+pub(crate) fn resolve_output_paths(
+    cfg: &SignConfig,
+    artifact_path: &std::path::Path,
+    artifact_metadata: &HashMap<String, String>,
+    ctx: &Context,
+    default_template: &str,
+) -> Result<(std::path::PathBuf, Option<std::path::PathBuf>)> {
+    let artifact_str = artifact_path.to_string_lossy();
+    let artifact_name = artifact_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    let artifact_id = artifact_metadata
+        .get("id")
+        .map(|s| s.as_str())
+        .unwrap_or("");
+
+    let signature_str = resolve_signature_path(cfg, &artifact_str, ctx, default_template)?;
+    let certificate_str = cfg
+        .certificate
+        .as_ref()
+        .map(|tmpl| {
+            let preprocessed = tmpl
+                .replace("{{ .Artifact }}", &artifact_str)
+                .replace("{{ Artifact }}", &artifact_str);
+            ctx.render_template(&preprocessed).with_context(|| {
+                format!(
+                    "sign: render certificate template '{}' for artifact {}",
+                    tmpl, artifact_str
+                )
+            })
+        })
+        .transpose()?;
+
+    let certificate_for_vars = certificate_str.clone();
+    let shell_vars: HashMap<&str, &str> = HashMap::from([
+        ("artifact", artifact_str.as_ref()),
+        ("signature", signature_str.as_str()),
+        ("certificate", certificate_for_vars.as_deref().unwrap_or("")),
+        (
+            "digest",
+            artifact_metadata
+                .get("digest")
+                .map(|s| s.as_str())
+                .unwrap_or(""),
+        ),
+        ("artifactName", artifact_name),
+        ("artifactID", artifact_id),
+    ]);
+    let signature_str = expand_shell_vars(&signature_str, &shell_vars);
+    let certificate_str = certificate_str
+        .as_deref()
+        .map(|c| expand_shell_vars(c, &shell_vars));
+
+    let dist = &ctx.config.dist;
+    Ok((
+        dist_joined(dist, &signature_str),
+        certificate_str.as_deref().map(|c| dist_joined(dist, c)),
+    ))
+}
+
 pub(crate) fn prepare_stdin_from(
     stdin: Option<&str>,
     stdin_file: Option<&str>,
