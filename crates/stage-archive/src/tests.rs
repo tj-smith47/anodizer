@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 use anodizer_core::artifact::{Artifact, ArtifactKind};
-use anodizer_core::config::{ArchivesConfig, FormatOverride};
+use anodizer_core::config::{ArchiveConfig, ArchivesConfig, FormatOverride};
 use anodizer_core::stage::Stage;
 
 use crate::entries::{ArchiveEntry, deduplicate_entries, sort_entries};
@@ -18,9 +18,33 @@ use crate::formats::{
     create_xz, create_zip, resolve_glob_patterns,
 };
 use crate::{
-    ArchiveStage, default_binary_name_template, default_name_template, format_for_target,
-    formats_for_target, resolve_file_specs,
+    ArchiveStage, default_binary_name_template, default_name_template, resolve_file_specs,
 };
+
+/// The stage's own format resolution, driven through the shared resolver with
+/// an entry that sets no `formats:` of its own — so an override list and the
+/// project-wide default are the only inputs, the shape these cases pin.
+fn formats_for_target(
+    target: &str,
+    default_format: &str,
+    overrides: &[FormatOverride],
+) -> Vec<String> {
+    anodizer_core::archive_name::archive_formats_for_target(
+        &ArchiveConfig::default(),
+        target,
+        overrides,
+        default_format,
+    )
+}
+
+fn format_for_target(target: &str, default_format: &str, overrides: &[FormatOverride]) -> String {
+    anodizer_core::archive_name::archive_format_for_target(
+        &ArchiveConfig::default(),
+        target,
+        overrides,
+        default_format,
+    )
+}
 
 #[test]
 fn archive_mtime_pins_commit_timestamp_for_workspace_only_reproducible_build() {

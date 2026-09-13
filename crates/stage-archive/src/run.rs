@@ -144,22 +144,10 @@ pub(crate) const ARCHIVE_TEMPLATED_STAGING_DIR: &str = ".archive-templated";
 /// Resolve global archive defaults from `defaults.archives`.
 /// Returns `(default_format, format_overrides)`.
 fn resolve_global_archive_defaults(ctx: &Context) -> (String, Vec<FormatOverride>) {
-    let global_default_format = ctx
-        .config
-        .defaults
-        .as_ref()
-        .and_then(|d| d.archives.as_ref())
-        .and_then(|a| a.formats.as_ref())
-        .and_then(|fmts| fmts.first().cloned())
-        .unwrap_or_else(|| "tar.gz".to_string());
-    let global_format_overrides: Vec<FormatOverride> = ctx
-        .config
-        .defaults
-        .as_ref()
-        .and_then(|d| d.archives.as_ref())
-        .and_then(|a| a.format_overrides.clone())
-        .unwrap_or_default();
-    (global_default_format, global_format_overrides)
+    (
+        anodizer_core::archive_name::global_default_archive_format(ctx),
+        anodizer_core::archive_name::global_format_overrides(ctx),
+    )
 }
 
 /// Build the list of `(crate_name, crate_dir, archive_configs)` for all

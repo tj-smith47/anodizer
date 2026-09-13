@@ -3,15 +3,12 @@
 //!
 //! Public surface:
 //! - [`ArchiveStage`] — the [`Stage`](anodizer_core::stage::Stage) driver.
-//! - [`formats_for_target`] / [`format_for_target`] — apply OS-based format overrides.
 //! - File-spec resolution: [`ResolvedExtraFile`], [`resolve_file_specs`].
 //! - Format primitives: [`copy_binary`], [`create_gz`], [`create_tar`],
 //!   [`create_tar_gz`], [`create_tar_xz`], [`create_tar_zst`], [`create_zip`],
 //!   [`resolve_glob_patterns`].
 
-use anodizer_core::config::FormatOverride;
 use anodizer_core::log::{StageLogger, Verbosity};
-use anodizer_core::target::map_target;
 
 mod archive_config;
 mod completions_gen;
@@ -45,53 +42,6 @@ pub use formats::{
 /// can't observe). Routes through StageLogger for consistent `[archive]` framing.
 pub(crate) fn archive_log() -> StageLogger {
     StageLogger::new("archive", Verbosity::Normal)
-}
-
-// ---------------------------------------------------------------------------
-// format_for_target
-// ---------------------------------------------------------------------------
-
-/// Determine the archive format(s) for a target, applying OS-based overrides.
-/// Returns the override's `formats` list when an override matches the target's OS,
-/// otherwise falls back to `default_format`.
-pub fn formats_for_target(
-    target: &str,
-    default_format: &str,
-    overrides: &[FormatOverride],
-) -> Vec<String> {
-    let (os, _arch) = map_target(target);
-    for ov in overrides {
-        // Format-override OS match via prefix:
-        // FormatOverride.os matches when the resolved target's os field starts
-        // with the configured value. Same call-site rationale as the primary
-        // archive run loop.
-        //
-        // Empty `os` is rejected as a user typo (stricter than the upstream,
-        // which lets `os: ""` match every target via empty-prefix). A user who
-        // accidentally writes `os:` (yaml-empty) gets a clean fallback to the
-        // default format instead of a silent global-override.
-        if !ov.os.is_empty()
-            && os.starts_with(&ov.os)
-            && let Some(ref fmts) = ov.formats
-            && !fmts.is_empty()
-        {
-            return fmts.clone();
-        }
-    }
-    vec![default_format.to_string()]
-}
-
-/// Determine the archive format for a target (returns the first match).
-/// Convenience wrapper around `formats_for_target`.
-pub fn format_for_target(
-    target: &str,
-    default_format: &str,
-    overrides: &[FormatOverride],
-) -> String {
-    formats_for_target(target, default_format, overrides)
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| default_format.to_string())
 }
 
 // ---------------------------------------------------------------------------
