@@ -395,14 +395,27 @@ pub(super) fn check_sign_asset_name_templates(config: &Config, warnings: &mut Ve
 
 /// Whether two sign entries can select one artifact: an absent `ids:` takes
 /// every one, and two present lists overlap when they name an id in common.
+///
+/// Gates that differ are not evaluated — a template can read the environment,
+/// so "both fire" cannot be decided here — and two entries that never both
+/// run write no second file.
 fn sign_selections_overlap(
     a: &anodizer_core::config::SignConfig,
     b: &anodizer_core::config::SignConfig,
 ) -> bool {
+    if a.if_condition != b.if_condition {
+        return false;
+    }
     match (&a.ids, &b.ids) {
         (Some(left), Some(right)) => left.iter().any(|id| right.contains(id)),
         _ => true,
     }
+}
+
+/// Whether an entry writes a detached signature at all: Authenticode signs
+/// the PE in place, and `artifacts: none` signs nothing.
+fn writes_detached_outputs(cfg: &anodizer_core::config::SignConfig) -> bool {
+    cfg.authenticode.is_none() && cfg.artifacts.as_deref() != Some("none")
 }
 
 /// Warn when two `binary_signs:` entries resolve one output FILE.
@@ -420,25 +433,40 @@ pub(super) fn check_binary_sign_duplicate_outputs(config: &Config, warnings: &mu
             &ws.binary_signs,
         ));
     }
+    let default = anodizer_core::config::SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE;
     for (label, configs) in slices {
-        for (first, a) in configs.iter().enumerate() {
-            for (second, b) in configs.iter().enumerate().skip(first + 1) {
+        // The index is the one the operator wrote, so a filtered-out entry
+        // does not renumber the labels of the entries after it.
+        let writing: Vec<(usize, &anodizer_core::config::SignConfig)> = configs
+            .iter()
+            .enumerate()
+            .filter(|(_, cfg)| writes_detached_outputs(cfg))
+            .collect();
+        for (pos, (first, a)) in writing.iter().enumerate() {
+            for (second, b) in writing.iter().skip(pos + 1) {
                 if !sign_selections_overlap(a, b) {
                     continue;
                 }
-                for (field, left, right) in [
-                    ("signature", &a.signature, &b.signature),
+                for (field, same) in [
+                    (
+                        "signature",
+                        a.resolved_signature_template(default)
+                            == b.resolved_signature_template(default),
+                    ),
                     // An absent `certificate:` writes no certificate, so two
                     // absent ones are not one file.
-                    ("certificate", &a.certificate, &b.certificate),
+                    (
+                        "certificate",
+                        a.certificate.is_some() && a.certificate == b.certificate,
+                    ),
                 ] {
-                    if left != right || (field == "certificate" && left.is_none()) {
+                    if !same {
                         continue;
                     }
                     warnings.push(format!(
                         "{label}[{first}] and {label}[{second}] resolve one \
                          {field} file for the binaries both select — the \
-                         second signature overwrites the first, so one file \
+                         second {field} overwrites the first, so one file \
                          ships where two were configured"
                     ));
                 }

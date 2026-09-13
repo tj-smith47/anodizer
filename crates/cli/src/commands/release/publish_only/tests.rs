@@ -2164,6 +2164,50 @@ fn the_defaults_provenance_record_is_rewound_between_workspaces() {
     assert!(ctx.config.filled_from_defaults.contains("signs"));
 }
 
+/// A function body reduced to the text a structural walk may read: the
+/// signature dropped at the opening brace, `//` comment text removed, and
+/// string-literal content emptied.
+///
+/// Dropping one LINE would keep a wrapped signature's parameters, and a
+/// comment or a literal holding the word being searched for is prose, not a
+/// use of the binding.
+fn scannable_code(body: &str) -> String {
+    let body = body.split_once('{').map_or("", |(_, rest)| rest);
+    let mut out = String::with_capacity(body.len());
+    let mut chars = body.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(c) = chars.next() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+                out.push(c);
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_string = true;
+                out.push(c);
+            }
+            '/' if chars.peek() == Some(&'/') => {
+                for next in chars.by_ref() {
+                    if next == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Whether every use of the `config` binding past `body`'s signature line
 /// names a field, returning the offending line otherwise.
 ///
@@ -2172,7 +2216,8 @@ fn the_defaults_provenance_record_is_rewound_between_workspaces() {
 /// no `= config;`, so only "always followed by `.`" catches every way the
 /// binding can leave the walk's sight.
 fn every_config_use_names_a_field(body: &str) -> Result<(), String> {
-    let body = body.split_once('\n').map_or("", |(_, rest)| rest);
+    let body = scannable_code(body);
+    let body = body.as_str();
     let ident = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
     for (index, _) in body.match_indices("config") {
         let bytes = body.as_bytes();
@@ -2201,6 +2246,19 @@ fn a_config_handed_to_a_helper_fails_the_overlay_walk() {
     let _ = sign_config;
 }";
     assert_eq!(every_config_use_names_a_field(accepted), Ok(()));
+
+    // A wrapped signature, a comment and a string literal all carry the word
+    // without using the binding.
+    let commented = "fn apply_workspace_overlay(
+    config: &mut Config,
+    ws: &WorkspaceConfig,
+) {
+    // the workspace config replaces the top-level one
+    config.crates = ws.crates.clone();
+    let label = \"config\";
+    let _ = label;
+}";
+    assert_eq!(every_config_use_names_a_field(commented), Ok(()));
 
     for rejected in [
         "fn f(config: &mut Config) {\n    apply_env_overlay(config, ws);\n}",
@@ -2251,8 +2309,9 @@ fn every_overlay_mutation_is_rewound_by_the_guard() {
     );
 
     let mut mutated: Vec<String> = Vec::new();
-    for (index, _) in overlay.match_indices("config.") {
-        let field: String = overlay[index + "config.".len()..]
+    let overlay_code = scannable_code(&overlay);
+    for (index, _) in overlay_code.match_indices("config.") {
+        let field: String = overlay_code[index + "config.".len()..]
             .chars()
             .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
             .collect();

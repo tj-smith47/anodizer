@@ -1640,6 +1640,182 @@ fn two_binary_signs_entries_over_one_file_warn() {
     );
 }
 
+/// The `workspaces.<name>.binary_signs:` slice is the other half of the
+/// population, and its label names the workspace.
+#[test]
+fn two_workspace_binary_signs_entries_over_one_file_warn() {
+    use anodizer_core::config::SignConfig;
+    let entry = |cmd: &str| SignConfig {
+        cmd: Some(cmd.to_string()),
+        ..Default::default()
+    };
+    let config = Config {
+        workspaces: Some(vec![anodizer_core::config::WorkspaceConfig {
+            name: "ws".to_string(),
+            binary_signs: vec![entry("cosign"), entry("gpg")],
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_binary_sign_duplicate_outputs(&config, &mut warnings);
+    assert_eq!(
+        warnings,
+        vec![
+            "workspaces.ws.binary_signs[0] and workspaces.ws.binary_signs[1] resolve one \
+             signature file for the binaries both select — the second signature overwrites \
+             the first, so one file ships where two were configured"
+                .to_string(),
+        ]
+    );
+}
+
+/// `signature:` has a default, so leaving it unset and spelling it out name
+/// one file; the certificate has none, so two absent ones name nothing.
+#[test]
+fn an_unset_signature_and_its_default_spelling_are_one_file() {
+    use anodizer_core::config::SignConfig;
+    let config = Config {
+        binary_signs: vec![
+            SignConfig {
+                cmd: Some("cosign".to_string()),
+                ..Default::default()
+            },
+            SignConfig {
+                cmd: Some("gpg".to_string()),
+                signature: Some(SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE.to_string()),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_binary_sign_duplicate_outputs(&config, &mut warnings);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("resolve one signature file"),
+        "{warnings:?}"
+    );
+}
+
+/// Two entries sharing a `certificate:` template overwrite that file too, and
+/// the message names the certificate on both sides.
+#[test]
+fn two_binary_signs_entries_over_one_certificate_warn() {
+    use anodizer_core::config::SignConfig;
+    let entry = |cmd: &str| SignConfig {
+        cmd: Some(cmd.to_string()),
+        signature: Some(format!("{{{{ .Artifact }}}}.{cmd}.sig")),
+        certificate: Some("{{ .Artifact }}.pem".to_string()),
+        ..Default::default()
+    };
+    let config = Config {
+        binary_signs: vec![entry("cosign"), entry("gpg")],
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_binary_sign_duplicate_outputs(&config, &mut warnings);
+    assert_eq!(
+        warnings,
+        vec![
+            "binary_signs[0] and binary_signs[1] resolve one certificate file for the \
+             binaries both select — the second certificate overwrites the first, so one \
+             file ships where two were configured"
+                .to_string(),
+        ]
+    );
+}
+
+/// An Authenticode entry signs the PE in place and `artifacts: none` signs
+/// nothing, so neither can overwrite a sibling's detached output.
+#[test]
+fn entries_that_write_no_detached_output_warn_nothing() {
+    use anodizer_core::config::SignConfig;
+    let cosign = || SignConfig {
+        cmd: Some("cosign".to_string()),
+        ..Default::default()
+    };
+    for quiet in [
+        SignConfig {
+            authenticode: Some(anodizer_core::config::AuthenticodeConfig::default()),
+            ..Default::default()
+        },
+        SignConfig {
+            artifacts: Some("none".to_string()),
+            ..Default::default()
+        },
+    ] {
+        let config = Config {
+            binary_signs: vec![cosign(), quiet],
+            ..Default::default()
+        };
+        let mut warnings = Vec::new();
+        check_binary_sign_duplicate_outputs(&config, &mut warnings);
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+}
+
+/// An entry the filter drops keeps the entries after it on the index the
+/// operator wrote.
+#[test]
+fn a_filtered_entry_does_not_renumber_the_labels_after_it() {
+    use anodizer_core::config::SignConfig;
+    let cosign = |cmd: &str| SignConfig {
+        cmd: Some(cmd.to_string()),
+        ..Default::default()
+    };
+    let config = Config {
+        binary_signs: vec![
+            SignConfig {
+                artifacts: Some("none".to_string()),
+                ..Default::default()
+            },
+            cosign("cosign"),
+            cosign("gpg"),
+        ],
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_binary_sign_duplicate_outputs(&config, &mut warnings);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].starts_with("binary_signs[1] and binary_signs[2] "),
+        "{warnings:?}"
+    );
+}
+
+/// Two entries under different gates cannot be proven to both fire; two under
+/// the same gate still overwrite each other.
+#[test]
+fn entries_under_different_gates_warn_nothing() {
+    use anodizer_core::config::SignConfig;
+    let entry = |gate: &str| SignConfig {
+        cmd: Some("cosign".to_string()),
+        if_condition: Some(gate.to_string()),
+        ..Default::default()
+    };
+    let warnings_for = |pair: Vec<SignConfig>| {
+        let config = Config {
+            binary_signs: pair,
+            ..Default::default()
+        };
+        let mut warnings = Vec::new();
+        check_binary_sign_duplicate_outputs(&config, &mut warnings);
+        warnings
+    };
+    assert!(
+        warnings_for(vec![
+            entry("{{ IsSnapshot }}"),
+            entry("{{ not IsSnapshot }}")
+        ])
+        .is_empty()
+    );
+    assert_eq!(
+        warnings_for(vec![entry("{{ IsSnapshot }}"), entry("{{ IsSnapshot }}")]).len(),
+        1
+    );
+}
+
 /// Two entries whose `signature:` templates differ write two files, and two
 /// entries whose `ids:` cannot both take one binary never meet — neither is
 /// the overwrite this warns about.
