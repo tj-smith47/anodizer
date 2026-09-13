@@ -317,10 +317,24 @@ pub fn collect_if_replace(
 ///
 /// A `..` that has nothing to climb into is kept: it names a directory only
 /// the filesystem can resolve, and dropping it would turn `../x` into `x`,
-/// two different files. Climbing past a root or a drive prefix is not
-/// possible, so a `..` there is dropped.
+/// two different files. Climbing past a root is not possible, so a `..`
+/// there is dropped; a `..` straight after a bare drive prefix (`C:..`, the
+/// parent of the current directory on drive C) is kept, since that prefix
+/// names no directory to climb out of.
+///
+/// A Windows verbatim path (`\\?\…`) is returned unchanged. Windows
+/// normalizes nothing behind `\\?\`, so `..` there is an ordinary directory
+/// name and folding it would report `\\?\C:\a\..\b` and `\\?\C:\b` as one
+/// file when the filesystem holds two.
 pub fn fold_dot_components(path: &std::path::Path) -> std::path::PathBuf {
     use std::path::Component;
+    let verbatim = matches!(
+        path.components().next(),
+        Some(Component::Prefix(prefix)) if prefix.kind().is_verbatim()
+    );
+    if verbatim {
+        return path.to_path_buf();
+    }
     let mut folded = std::path::PathBuf::new();
     for component in path.components() {
         match component {
@@ -329,7 +343,7 @@ pub fn fold_dot_components(path: &std::path::Path) -> std::path::PathBuf {
                 Some(Component::Normal(_)) => {
                     folded.pop();
                 }
-                Some(Component::RootDir | Component::Prefix(_)) => {}
+                Some(Component::RootDir) => {}
                 _ => folded.push(".."),
             },
             other => folded.push(other),
@@ -823,5 +837,66 @@ mod tests {
             not_profile.join("deps").exists() && not_profile.join("build").exists(),
             "guard must leave a non-profile dir's contents untouched"
         );
+    }
+
+    /// A Windows verbatim path keeps every `..` it spells. Windows resolves
+    /// nothing behind `\\?\`, so `..` is an ordinary directory name there and
+    /// folding it would call two files one.
+    #[test]
+    fn a_verbatim_path_is_returned_unfolded() {
+        // On a non-Windows host the whole spelling parses as one component,
+        // so the string form is what both platforms can agree on.
+        let spelling = r"\\?\C:\a\..\b";
+        let folded = fold_dot_components(std::path::Path::new(spelling));
+        assert_eq!(
+            folded.to_string_lossy(),
+            spelling,
+            "a verbatim path must survive the fold byte for byte"
+        );
+    }
+
+    /// The same claim where the prefix really parses: a verbatim path folds
+    /// to itself, while the same drive spelled without `\\?\` folds.
+    #[cfg(windows)]
+    #[test]
+    fn a_verbatim_prefix_is_told_apart_from_a_plain_drive() {
+        assert_eq!(
+            fold_dot_components(std::path::Path::new(r"\\?\C:\a\..\b")),
+            std::path::PathBuf::from(r"\\?\C:\a\..\b")
+        );
+        assert_eq!(
+            fold_dot_components(std::path::Path::new(r"C:\a\..\b")),
+            std::path::PathBuf::from(r"C:\b")
+        );
+    }
+
+    /// A `..` straight after a bare drive prefix is kept: `C:..` names the
+    /// parent of the current directory on drive C, which dropping the `..`
+    /// would turn into the current directory itself.
+    #[cfg(windows)]
+    #[test]
+    fn a_drive_relative_parent_hop_survives() {
+        assert_eq!(
+            fold_dot_components(std::path::Path::new(r"C:..\x")),
+            std::path::PathBuf::from(r"C:..\x")
+        );
+        // A rooted drive path has no parent above the root, so there the
+        // hop is still dropped.
+        assert_eq!(
+            fold_dot_components(std::path::Path::new(r"C:\..\x")),
+            std::path::PathBuf::from(r"C:\x")
+        );
+    }
+
+    /// The ordinary folds every platform agrees on.
+    #[test]
+    fn dot_and_parent_components_fold() {
+        let fold = |p: &str| fold_dot_components(std::path::Path::new(p));
+        assert_eq!(fold("./dist/sigs/app.sig"), fold("dist/sigs/app.sig"));
+        assert_eq!(
+            fold("dist/../elsewhere/x"),
+            std::path::PathBuf::from("elsewhere/x")
+        );
+        assert_eq!(fold("../x"), std::path::PathBuf::from("../x"));
     }
 }

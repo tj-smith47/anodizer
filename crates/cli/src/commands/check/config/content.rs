@@ -426,22 +426,57 @@ fn writes_detached_outputs(cfg: &anodizer_core::config::SignConfig) -> bool {
     cfg.authenticode.is_none() && cfg.artifacts.as_deref() != Some("none")
 }
 
+/// The path separators inside `template`'s `{{ … }}` runs hidden behind an
+/// opaque character.
+///
+/// It leaves the placeholder one path component whatever it holds, so the
+/// literal segments AROUND it fold as the components they are. Without it a
+/// `{{ printf "a/b" }}` would split into two components and a `..` beside it
+/// would climb into the placeholder's own text.
+fn mask_placeholder_separators(template: &str) -> String {
+    const OPAQUE: char = '\u{1}';
+    let mut masked = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find("{{") {
+        masked.push_str(&rest[..open]);
+        let tail = &rest[open..];
+        let end = tail.find("}}").map_or(tail.len(), |close| close + 2);
+        masked.extend(tail[..end].chars().map(|c| match c {
+            '/' | '\\' => OPAQUE,
+            other => other,
+        }));
+        rest = &tail[end..];
+    }
+    masked.push_str(rest);
+    masked
+}
+
 /// Whether two rendered-output templates name one file.
 ///
-/// A template that still holds `{{` cannot be resolved here, so it is
-/// compared as text. One that holds none is a literal path, where
-/// `dist/sigs/app.sig` and `./dist/sigs/app.sig` are the same file — the
-/// answer the sign stage reaches by folding `.` and `..` before it compares
-/// two signature paths.
-fn same_output_file(left: &str, right: &str) -> bool {
+/// A literal path is asked of the sign stage itself
+/// (`sign_outputs_are_one_file`), so `app.sig` and `dist/app.sig` are one
+/// file here exactly as they are there — the stage places a rendering that
+/// is not under `dist` under it before it compares.
+///
+/// A template still holding `{{` renders to a value only the run knows, so
+/// it is compared as a path whose placeholders are opaque components: the
+/// `.` and `..` in the literal segments around an identical placeholder fold
+/// away, which makes `dist/{{ .Artifact }}.sig` and
+/// `./dist/{{ .Artifact }}.sig` one file and leaves two different
+/// placeholders two files.
+fn same_output_file(dist: &std::path::Path, left: &str, right: &str) -> bool {
     if left == right {
         return true;
     }
     if left.contains("{{") || right.contains("{{") {
-        return false;
+        let fold = |t: &str| {
+            anodizer_core::util::fold_dot_components(std::path::Path::new(
+                &mask_placeholder_separators(t),
+            ))
+        };
+        return fold(left) == fold(right);
     }
-    let fold = |p: &str| anodizer_core::util::fold_dot_components(std::path::Path::new(p));
-    fold(left) == fold(right)
+    anodizer_stage_sign::sign_outputs_are_one_file(dist, left, right)
 }
 
 /// Warn when two `binary_signs:` entries resolve one output FILE.
@@ -477,6 +512,7 @@ pub(super) fn check_binary_sign_duplicate_outputs(config: &Config, warnings: &mu
                     (
                         "signature",
                         same_output_file(
+                            &config.dist,
                             a.resolved_signature_template(default),
                             b.resolved_signature_template(default),
                         ),
@@ -486,7 +522,9 @@ pub(super) fn check_binary_sign_duplicate_outputs(config: &Config, warnings: &mu
                     (
                         "certificate",
                         match (a.certificate.as_deref(), b.certificate.as_deref()) {
-                            (Some(left), Some(right)) => same_output_file(left, right),
+                            (Some(left), Some(right)) => {
+                                same_output_file(&config.dist, left, right)
+                            }
                             _ => false,
                         },
                     ),

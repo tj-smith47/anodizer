@@ -1875,6 +1875,77 @@ fn two_spellings_of_one_signature_path_warn() {
     assert!(none.is_empty(), "{none:?}");
 }
 
+/// A rendering that is not under `dist` is placed under it by the sign
+/// stage, so `app.sig` and `dist/app.sig` are one file and the second `cmd:`
+/// overwrites the first.
+#[test]
+fn a_signature_outside_dist_names_the_same_file_as_its_dist_spelling() {
+    use anodizer_core::config::SignConfig;
+    let entry = |signature: &str| SignConfig {
+        cmd: Some("cosign".to_string()),
+        signature: Some(signature.to_string()),
+        ..Default::default()
+    };
+    let config = Config {
+        binary_signs: vec![entry("app.sig"), entry("dist/app.sig")],
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_binary_sign_duplicate_outputs(&config, &mut warnings);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("resolve one signature file"),
+        "{warnings:?}"
+    );
+
+    // A `dist:` the config moved is the one the join uses, so a spelling
+    // under the OLD default is a different file.
+    let moved = Config {
+        dist: std::path::PathBuf::from("out"),
+        binary_signs: vec![entry("app.sig"), entry("dist/app.sig")],
+        ..Default::default()
+    };
+    let mut none = Vec::new();
+    check_binary_sign_duplicate_outputs(&moved, &mut none);
+    assert!(none.is_empty(), "{none:?}");
+}
+
+/// Two templates that differ only in a `./` around the SAME placeholder name
+/// one file: the literal segments fold as path components while the
+/// placeholder stays opaque.
+#[test]
+fn two_spellings_of_one_templated_signature_path_warn() {
+    use anodizer_core::config::SignConfig;
+    let entry = |signature: &str| SignConfig {
+        cmd: Some("cosign".to_string()),
+        signature: Some(signature.to_string()),
+        ..Default::default()
+    };
+    let config = Config {
+        binary_signs: vec![
+            entry("dist/sigs/{{ .Artifact }}.sig"),
+            entry("dist/./sigs/../sigs/{{ .Artifact }}.sig"),
+        ],
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_binary_sign_duplicate_outputs(&config, &mut warnings);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+
+    // Two DIFFERENT placeholders render two names, so the fold must keep
+    // them apart.
+    let distinct = Config {
+        binary_signs: vec![
+            entry("dist/{{ .Artifact }}.sig"),
+            entry("./dist/{{ .Binary }}.sig"),
+        ],
+        ..Default::default()
+    };
+    let mut none = Vec::new();
+    check_binary_sign_duplicate_outputs(&distinct, &mut none);
+    assert!(none.is_empty(), "{none:?}");
+}
+
 /// Two entries whose `signature:` templates differ write two files, and two
 /// entries whose `ids:` cannot both take one binary never meet — neither is
 /// the overwrite this warns about.

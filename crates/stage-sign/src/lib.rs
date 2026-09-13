@@ -31,7 +31,7 @@ mod verify;
 mod verify_assets;
 
 pub use expected::expected_signature_assets;
-pub use helpers::VALID_SIGN_ARTIFACT_FILTERS;
+pub use helpers::{VALID_SIGN_ARTIFACT_FILTERS, sign_outputs_are_one_file};
 pub use keyload::{CosignKeyLoad, verify_cosign_key_loads};
 pub use verify_assets::{
     PublishedSignatureSource, SignatureCryptoOutcome, SignatureVerification,
