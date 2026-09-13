@@ -128,8 +128,6 @@ pub struct PushedImage {
     pub reference: String,
     /// The content digest the push recorded, when the backend produced one.
     pub digest: Option<String>,
-    /// The crate the image belongs to, for per-crate wording.
-    pub crate_name: String,
 }
 
 #[derive(Debug, Default)]
@@ -282,7 +280,6 @@ impl ArtifactRegistry {
             .map(|a| PushedImage {
                 reference: a.name.clone(),
                 digest: a.metadata.get("digest").cloned(),
-                crate_name: a.crate_name.clone(),
             })
             .collect()
     }

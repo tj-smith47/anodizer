@@ -295,9 +295,10 @@ fn run_docker_post_hooks(
         let digest_val = config_first_digest.get(&cph.idx).cloned().ok_or_else(|| {
             anyhow::anyhow!(
                 "dockers_v2[{}]: post-hooks configured but no image digest captured \
-                 (iidfile id.txt missing or empty after a successful build); \
-                 this usually means buildx + multi-platform --push produced no iidfile — \
-                 upgrade buildx or remove the post-hook",
+                 (no `containerimage.digest` in the buildx metadata file meta.json \
+                 after a successful build); a `use: podman` build reports no registry \
+                 digest at all, and a build that exports no image has none to report — \
+                 remove the post-hook or build with buildx",
                 cph.id.as_deref().unwrap_or(&cph.idx.to_string())
             )
         })?;

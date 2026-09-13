@@ -1452,7 +1452,7 @@ fn test_build_docker_v2_command_combined() {
 }
 
 #[test]
-fn test_build_docker_v2_command_includes_iidfile() {
+fn test_build_docker_v2_command_includes_metadata_file() {
     let cmd = build_docker_v2_command(&DockerV2Spec {
         staging_dir: "/tmp/staging",
         platforms: &["linux/amd64"],
@@ -1468,24 +1468,23 @@ fn test_build_docker_v2_command_includes_iidfile() {
     })
     .unwrap();
     assert!(
-        cmd.iter().any(|a| a.starts_with("--iidfile=")),
-        "V2 command should include --iidfile, got: {:?}",
-        cmd
+        !cmd.iter().any(|a| a.starts_with("--iidfile=")),
+        "the iidfile holds the image config digest, which names different \
+         content than the registry serves: {cmd:?}"
     );
-    // --iidfile should come before the staging dir (last arg)
-    let iidfile_pos = cmd
+    let meta_pos = cmd
         .iter()
-        .position(|a| a.starts_with("--iidfile="))
-        .unwrap();
+        .position(|a| a.starts_with("--metadata-file="))
+        .expect("V2 command carries --metadata-file");
+    // The staging dir is the last argument (the build context).
     assert_eq!(
-        iidfile_pos,
+        meta_pos,
         cmd.len() - 2,
-        "--iidfile should be second-to-last arg"
+        "--metadata-file is the argument before the build context: {cmd:?}"
     );
-    // Verify the iidfile path is within the staging dir
     assert_eq!(
-        cmd[iidfile_pos], "--iidfile=/tmp/staging/id.txt",
-        "iidfile should be written to staging dir"
+        cmd[meta_pos], "--metadata-file=/tmp/staging/meta.json",
+        "the metadata file is written into the staging dir"
     );
 }
 
@@ -3392,32 +3391,58 @@ fn test_podman_snapshot_and_dry_run_do_not_push() {
     );
 }
 
+/// buildx reports the digest the registry stores under
+/// `containerimage.digest`, beside the image config digest the iidfile used
+/// to be read from. A single-platform export names the image manifest.
 #[test]
-fn test_v2_iidfile_digest_read() {
-    // Simulate the iidfile-based digest capture path:
-    // write an id.txt to a staging dir, then verify it's read correctly.
-    let tmp = TempDir::new().unwrap();
-    let staging_dir = tmp.path().join("staging");
-    fs::create_dir_all(&staging_dir).unwrap();
+fn a_single_platform_metadata_file_yields_the_manifest_digest() {
+    let raw = r#"{
+      "containerimage.config.digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "containerimage.descriptor": {
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "size": 1234
+      },
+      "containerimage.digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "image.name": "ghcr.io/owner/app:1.0.0"
+    }"#;
+    assert_eq!(
+        crate::build::metadata_file_digest(raw).as_deref(),
+        Some("sha256:2222222222222222222222222222222222222222222222222222222222222222"),
+        "the config digest must never be mistaken for the served digest"
+    );
+}
 
-    let digest = "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
-    fs::write(staging_dir.join("id.txt"), digest).unwrap();
+/// A multi-platform export names the image index under the same key.
+#[test]
+fn a_multi_platform_metadata_file_yields_the_index_digest() {
+    let raw = r#"{
+      "containerimage.descriptor": {
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "size": 856
+      },
+      "containerimage.digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "image.name": "ghcr.io/owner/app:1.0.0,ghcr.io/owner/app:latest"
+    }"#;
+    assert_eq!(
+        crate::build::metadata_file_digest(raw).as_deref(),
+        Some("sha256:3333333333333333333333333333333333333333333333333333333333333333")
+    );
+}
 
-    // Simulate the read logic from execute_docker_build
-    let iidfile = staging_dir.join("id.txt");
-    let digest_content = fs::read_to_string(&iidfile).unwrap();
-    let read_digest = digest_content.trim().to_string();
-    assert_eq!(read_digest, digest);
-
-    // Verify per-tag digests are populated correctly
-    let tags = vec!["img:latest".to_string(), "img:v1.0.0".to_string()];
-    let mut tag_digests = BTreeMap::new();
-    for tag in &tags {
-        tag_digests.insert(tag.clone(), read_digest.clone());
-    }
-    assert_eq!(tag_digests.len(), 2);
-    assert_eq!(tag_digests.get("img:latest").unwrap(), digest);
-    assert_eq!(tag_digests.get("img:v1.0.0").unwrap(), digest);
+/// A metadata file that reports no image digest yields none, so the build
+/// records nothing rather than a value the registry does not serve.
+#[test]
+fn a_metadata_file_without_an_image_digest_yields_none() {
+    assert_eq!(crate::build::metadata_file_digest("{}"), None);
+    assert_eq!(
+        crate::build::metadata_file_digest(
+            r#"{"containerimage.config.digest": "sha256:aaa", "containerimage.digest": "  "}"#
+        ),
+        None
+    );
+    assert_eq!(crate::build::metadata_file_digest("not json"), None);
 }
 
 // -----------------------------------------------------------------------
@@ -4065,26 +4090,22 @@ fn template_vars_images_list_iterates_via_set_structured() {
     assert_eq!(out, "<ghcr.io/foo:v1><ghcr.io/bar:v2>");
 }
 
-/// A7 — when post-hooks are configured AND no image digest was captured
-/// (iidfile missing / empty after a successful build), Step 3 must fail
-/// with a clear error rather than silently invoking the user hook with
-/// `Digest=""`. The build returns a digest or an error.
-///
-/// This test isolates the digest-or-error decision from the surrounding
-/// build pipeline: it reproduces the exact `tag_digests.values().next()`
-/// ↦ error mapping used in `run.rs` Step 3 and asserts the user-visible
-/// message shape. A future refactor that silently restores `unwrap_or_default`
-/// would regress the message and trip this test.
+/// Post-hooks configured with no captured digest must fail loudly instead of
+/// invoking the user's hook with `Digest=""`. This reproduces the
+/// `tag_digests.values().next()` to error mapping the post-hook runner
+/// applies and asserts the user-visible message shape; restoring an
+/// `unwrap_or_default` there would regress it.
 #[test]
 fn docker_v2_post_hook_with_empty_digest_errors_loudly() {
     let tag_digests: BTreeMap<String, String> = BTreeMap::new();
 
     let result: anyhow::Result<String> = tag_digests.values().next().cloned().ok_or_else(|| {
         anyhow::anyhow!(
-            "dockers_v2[test] crate myapp: post-hooks configured but no image digest captured \
-                 (iidfile /tmp/staging/id.txt missing or empty after a successful build); \
-                 this usually means buildx + multi-platform --push produced no iidfile — \
-                 upgrade buildx or remove the post-hook"
+            "dockers_v2[test]: post-hooks configured but no image digest captured \
+                 (no `containerimage.digest` in the buildx metadata file meta.json \
+                 after a successful build); a `use: podman` build reports no registry \
+                 digest at all, and a build that exports no image has none to report — \
+                 remove the post-hook or build with buildx"
         )
     });
 
@@ -4096,7 +4117,7 @@ fn docker_v2_post_hook_with_empty_digest_errors_loudly() {
         msg
     );
     assert!(
-        msg.contains("upgrade buildx or remove the post-hook"),
+        msg.contains("remove the post-hook or build with buildx"),
         "error message must suggest a remediation: {}",
         msg
     );
@@ -5700,8 +5721,12 @@ fn build_docker_v2_command_podman_backend_omits_buildx_only_flags() {
         "podman build must NOT receive --attest (buildx-only): {cmd:?}"
     );
     assert!(
-        cmd.iter().any(|a| a.starts_with("--iidfile=")),
-        "podman build must still capture --iidfile for digest pinning: {cmd:?}"
+        !cmd.iter().any(|a| a.starts_with("--iidfile=")),
+        "podman's iidfile holds a local image ID, not a registry digest: {cmd:?}"
+    );
+    assert!(
+        !cmd.iter().any(|a| a.starts_with("--metadata-file=")),
+        "podman build must NOT receive --metadata-file (buildx-only): {cmd:?}"
     );
 }
 
@@ -7095,11 +7120,14 @@ fn staged_binary_is_forced_executable() {
 }
 
 /// Run one `docker_manifests[0]` entry against a stubbed `docker` binary and
-/// return the registered artifact's metadata.
+/// return the registered artifact's metadata plus every argv the stub saw.
 ///
-/// `skip_push` drives the only branch under test; the stub keeps the whole
-/// `manifest rm` / `create` / `push` sequence offline.
-fn manifest_run_metadata(skip_push: Option<SkipPushConfig>) -> HashMap<String, String> {
+/// `skip_push` and `snapshot` drive the only branches under test; the stub
+/// keeps the whole `manifest rm` / `create` / `push` sequence offline.
+fn manifest_run(
+    skip_push: Option<SkipPushConfig>,
+    snapshot: bool,
+) -> (HashMap<String, String>, Vec<Vec<String>>) {
     use anodizer_core::config::{Config, CrateConfig, DockerManifestConfig};
     use anodizer_core::context::{Context, ContextOptions};
     use anodizer_core::test_helpers::fake_tool::FakeToolDir;
@@ -7123,7 +7151,13 @@ fn manifest_run_metadata(skip_push: Option<SkipPushConfig>) -> HashMap<String, S
     let mut config = Config::default();
     config.project_name = "app".to_string();
     config.crates = vec![krate.clone()];
-    let mut ctx = Context::new(config, ContextOptions::default());
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            snapshot,
+            ..Default::default()
+        },
+    );
     let log = ctx.logger("docker");
     let mut new_artifacts: Vec<anodizer_core::artifact::Artifact> = Vec::new();
     super::run::process_docker_manifest(
@@ -7139,7 +7173,7 @@ fn manifest_run_metadata(skip_push: Option<SkipPushConfig>) -> HashMap<String, S
     )
     .expect("manifest run");
     assert_eq!(new_artifacts.len(), 1, "one manifest artifact");
-    new_artifacts.remove(0).metadata
+    (new_artifacts.remove(0).metadata, tools.calls("docker"))
 }
 
 /// `manifest push` returned, so the list is in the registry and the landing
@@ -7147,7 +7181,7 @@ fn manifest_run_metadata(skip_push: Option<SkipPushConfig>) -> HashMap<String, S
 #[test]
 #[serial_test::serial(path_env)]
 fn a_pushed_manifest_records_the_pushed_marker() {
-    let meta = manifest_run_metadata(None);
+    let (meta, _calls) = manifest_run(None, false);
     assert_eq!(
         meta.get(anodizer_core::artifact::PUSHED_META)
             .map(String::as_str),
@@ -7160,11 +7194,141 @@ fn a_pushed_manifest_records_the_pushed_marker() {
 #[test]
 #[serial_test::serial(path_env)]
 fn a_skip_push_manifest_records_no_pushed_marker() {
-    let meta = manifest_run_metadata(Some(SkipPushConfig::Bool(true)));
+    let (meta, _calls) = manifest_run(Some(SkipPushConfig::Bool(true)), false);
     assert!(
         !meta.contains_key(anodizer_core::artifact::PUSHED_META),
         "a manifest that was never pushed is not a landing target: {meta:?}"
     );
+}
+
+/// A snapshot publishes nothing: the list is assembled locally, `manifest
+/// push` is never spawned, and the artifact carries no pushed marker for the
+/// landing gate to chase.
+#[test]
+#[serial_test::serial(path_env)]
+fn a_snapshot_manifest_pushes_nothing_and_records_no_marker() {
+    let (meta, calls) = manifest_run(None, true);
+    assert!(
+        !meta.contains_key(anodizer_core::artifact::PUSHED_META),
+        "a snapshot manifest is not a landing target: {meta:?}"
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|argv| argv.first().map(String::as_str) == Some("manifest")
+                && argv.get(1).map(String::as_str) == Some("push")),
+        "a snapshot must not publish a manifest list: {calls:?}"
+    );
+}
+
+/// Run one `dockers_v2` config against stubbed backends and return the image
+/// artifacts it registered. The stub answers every probe and the build itself,
+/// so the whole prepare / build / push path runs offline.
+fn docker_v2_registered_images(
+    snapshot: bool,
+    backend: Option<&str>,
+) -> Vec<anodizer_core::artifact::Artifact> {
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+    let tools = FakeToolDir::new();
+    tools.tool("docker").install();
+    tools.tool("podman").install();
+    let _path = tools.activate();
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+    let mut config = docker_v2_config(&["app"], &dockerfile);
+    config.dist = tmp.path().join("dist");
+    if let Some(name) = backend {
+        for krate in &mut config.crates {
+            for v2 in krate.dockers_v2.as_mut().unwrap() {
+                v2.use_backend = Some(name.to_string());
+                // SBOM attestation is buildx-only and the stage refuses the
+                // combination outright.
+                v2.sbom = Some(anodizer_core::config::StringOrBool::Bool(false));
+            }
+        }
+    }
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            snapshot,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    DockerStage::new().run(&mut ctx).unwrap();
+    ctx.artifacts
+        .by_kind(ArtifactKind::DockerImageV2)
+        .into_iter()
+        .cloned()
+        .collect()
+}
+
+/// The buildx push path is what the landing gate rests on: a returned
+/// `--push` build means the registry accepted every rendered tag.
+#[test]
+#[serial_test::serial(path_env)]
+fn a_pushed_docker_v2_image_records_the_pushed_marker() {
+    let images = docker_v2_registered_images(false, None);
+    assert!(!images.is_empty(), "the build registers an image");
+    for image in &images {
+        assert_eq!(
+            image
+                .metadata
+                .get(anodizer_core::artifact::PUSHED_META)
+                .map(String::as_str),
+            Some(anodizer_core::artifact::PUSHED_VALUE),
+            "a pushed tag is a landing target: {:?}",
+            image.metadata
+        );
+    }
+}
+
+/// A snapshot builds without `--push`, so nothing reached a registry and the
+/// landing gate has nothing to probe.
+#[test]
+#[serial_test::serial(path_env)]
+fn a_snapshot_docker_v2_image_records_no_pushed_marker() {
+    for image in docker_v2_registered_images(true, None) {
+        assert!(
+            !image
+                .metadata
+                .contains_key(anodizer_core::artifact::PUSHED_META),
+            "a snapshot pushes nothing: {:?}",
+            image.metadata
+        );
+    }
+}
+
+/// The podman push loop marks its tags too, and records no digest: podman
+/// reports only a local image ID, which names different content than the
+/// registry serves.
+#[cfg(target_os = "linux")]
+#[test]
+#[serial_test::serial(path_env)]
+fn a_podman_push_marks_the_tag_and_records_no_digest() {
+    let images = docker_v2_registered_images(false, Some("podman"));
+    assert!(!images.is_empty(), "the podman build registers an image");
+    for image in &images {
+        assert_eq!(
+            image
+                .metadata
+                .get(anodizer_core::artifact::PUSHED_META)
+                .map(String::as_str),
+            Some(anodizer_core::artifact::PUSHED_VALUE),
+            "a pushed podman tag is a landing target: {:?}",
+            image.metadata
+        );
+        assert!(
+            !image.metadata.contains_key("digest"),
+            "podman reports no registry digest: {:?}",
+            image.metadata
+        );
+    }
 }
 
 /// A dry run builds nothing and pushes nothing, in every config mode.

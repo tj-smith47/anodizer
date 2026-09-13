@@ -1775,7 +1775,6 @@ fn a_single_crates_pushed_image_survives_the_manifest_round_trip() {
     let pushed = reloaded.pushed_images();
     assert_eq!(references(&pushed), vec!["ghcr.io/owner/app:1.0.0"]);
     assert_eq!(pushed[0].digest.as_deref(), Some("sha256:aaa"));
-    assert_eq!(pushed[0].crate_name, "app");
 }
 
 /// Lockstep config: several crates on one version, each with its own image,

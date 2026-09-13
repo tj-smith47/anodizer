@@ -471,15 +471,17 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
     // This path does NOT auto-add --provenance=false or --sbom=false; it
     // relies on explicit user flags or the --attest=type=sbom flag set above.
 
-    // Write image digest to file for capture.
-    // This works even without --push (no daemon needed for digest capture).
-    // buildx and single-platform podman support `--iidfile` (same flag name).
-    // Multi-platform `podman build` rejects `--iidfile` (it errors when
-    // `--platform` is given more than once), so it is suppressed there; the
-    // downstream digest capture reads the iidfile only when present and
-    // degrades gracefully when it is absent.
-    if !(is_podman && multi_platform) {
-        cmd.push(format!("--iidfile={}/id.txt", staging_dir));
+    // Capture the digest the registry stores for the built image. buildx
+    // writes it to its metadata file under `containerimage.digest` — the
+    // image manifest digest for a single-platform build, the index digest for
+    // a multi-platform one — which is what a consumer pulls by and what the
+    // release's landing check asks the registry for. The `--iidfile` this
+    // used to pass instead holds the image CONFIG digest, a value no registry
+    // ever serves a tag at. `podman build` supports neither key: its iidfile
+    // holds the local image ID, so a podman build reports no digest at all
+    // rather than one that names different content.
+    if !is_podman {
+        cmd.push(format!("--metadata-file={}/meta.json", staging_dir));
     }
 
     // Build context directory (positional, last argument)
