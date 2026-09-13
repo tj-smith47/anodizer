@@ -3453,6 +3453,37 @@ fn a_multi_platform_metadata_file_yields_the_index_digest() {
     );
 }
 
+/// The three exporter answers, read from metadata files buildx itself wrote.
+///
+/// The fixtures under `tests/data/` are the verbatim `--metadata-file` output
+/// of buildx v0.36.1 (`FROM scratch` + one `COPY`): one `--push` to a
+/// `registry:2`, one `--load`, one build with neither. The registry answered
+/// `HEAD /v2/<name>/manifests/push` with
+/// `Docker-Content-Digest: sha256:204efd70…`, the same value the pushed
+/// fixture reports under `containerimage.digest` — which is what makes the
+/// release's landing check able to compare the two.
+#[test]
+fn buildx_metadata_files_report_a_digest_for_an_exported_image_only() {
+    let data = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data"));
+    let read = |name: &str| std::fs::read_to_string(data.join(name)).expect("read fixture");
+
+    assert_eq!(
+        crate::build::metadata_file_digest(&read("buildx-0.36.1-push.json")).as_deref(),
+        Some("sha256:204efd70e890201d72ae17d010843e6b5eda830afe4c27e300712158d4bc889d"),
+        "a --push build reports the digest the registry serves for the tag"
+    );
+    assert_eq!(
+        crate::build::metadata_file_digest(&read("buildx-0.36.1-load.json")).as_deref(),
+        Some("sha256:c758e4f27bb618727f1f1c9a310966dc498ee29957d0725c333d984a618d0bca"),
+        "a --load build reports a digest too, so a local export is recorded"
+    );
+    assert_eq!(
+        crate::build::metadata_file_digest(&read("buildx-0.36.1-cache-only.json")),
+        None,
+        "a build that exported no image reports no digest to record"
+    );
+}
+
 /// A metadata file that reports no image digest yields none, so the build
 /// records nothing rather than a value the registry does not serve.
 #[test]
@@ -7409,6 +7440,65 @@ fn a_podman_push_marks_the_tag_and_records_the_pushed_digest() {
             image.metadata
         );
     }
+}
+
+/// podman reads one digestfile per tag, so the first tag can be the one that
+/// came back empty. The result line reports the first digest actually
+/// recorded rather than going silent on the whole set.
+#[cfg(target_os = "linux")]
+#[test]
+#[serial_test::serial(path_env)]
+fn a_partial_podman_digest_set_still_reports_a_digest() {
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+    let tools = FakeToolDir::new();
+    tools.tool("docker").install();
+    // Writes nothing for the first tag pushed and the digest for the second.
+    tools
+        .tool("podman")
+        .script(format!(
+            "for __a in \"$@\"; do\n\
+               case \"$__a\" in\n\
+                 *first*.pushdigest) : ;;\n\
+                 --digestfile=*) printf '%s' '{PODMAN_PUSH_DIGEST}' > \"${{__a#--digestfile=}}\" ;;\n\
+               esac\n\
+             done\n\
+             exit 0\n"
+        ))
+        .install();
+    let _path = tools.activate();
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+    let mut config = docker_v2_config(&["app"], &dockerfile);
+    config.dist = tmp.path().join("dist");
+    for krate in &mut config.crates {
+        for v2 in krate.dockers_v2.as_mut().unwrap() {
+            v2.use_backend = Some("podman".to_string());
+            v2.sbom = Some(anodizer_core::config::StringOrBool::Bool(false));
+            v2.tags = vec!["first".to_string(), "{{ .Tag }}".to_string()];
+        }
+    }
+    let capture = anodizer_core::log::LogCapture::new();
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.with_log_capture(capture.clone());
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    DockerStage::new().run(&mut ctx).unwrap();
+
+    let created: Vec<String> = capture
+        .all_messages()
+        .into_iter()
+        .map(|(_, m)| m)
+        .filter(|m| m.starts_with("created images"))
+        .collect();
+    assert!(!created.is_empty(), "no created-images line was emitted");
+    assert!(
+        created.iter().all(|m| m.contains(PODMAN_PUSH_DIGEST)),
+        "{created:?}"
+    );
 }
 
 /// A dry run builds nothing and pushes nothing, in every config mode.

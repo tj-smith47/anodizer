@@ -15,13 +15,13 @@
 //!
 //! A "real" `podman manifest push` test would require a live registry and
 //! a `podman` binary on `PATH`; both are out of scope for a unit-test
-//! harness. The argv-level coverage here pins the spec the surface MUST
+//! harness. The argv-level coverage here holds the spec the builders must
 //! adhere to, so any future regression that silently sneaks a buildx-only
 //! flag through fails CI on every OS.
 
 use anodizer_stage_docker::{
-    build_podman_push_commands, enforce_podman_linux_only, resolve_backend,
-    validate_podman_flag_compat,
+    build_podman_push_commands, enforce_podman_linux_only, podman_push_digest_file,
+    resolve_backend, validate_podman_flag_compat,
 };
 // Argv-shape assertions only run on linux (podman is linux-only), so the
 // builder surface they exercise is in scope solely for that target.
@@ -202,7 +202,10 @@ fn podman_multi_platform_build_uses_manifest_not_tag() {
 fn podman_push_verb_depends_on_platform_arity() {
     let tags = vec!["ghcr.io/owner/app:v1".to_string()];
     let staging = std::path::Path::new("/stage");
-    let digestfile = "--digestfile=/stage/ghcr.io_owner_app_v1.pushdigest".to_string();
+    let digestfile = format!(
+        "--digestfile={}",
+        podman_push_digest_file(staging, "ghcr.io/owner/app:v1").display()
+    );
 
     let single = build_podman_push_commands(&tags, false, staging);
     assert_eq!(

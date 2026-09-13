@@ -517,14 +517,21 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
 ///   separate `docker_manifests` feature relies on being in the registry
 ///   before its own `manifest create`/`push` resolves per-arch tags.
 ///
-/// Both verbs take `--digestfile`, which podman fills with the digest the
-/// registry stored — the image manifest for a single-platform push, the index
-/// for a manifest-list push. That is the same value buildx reports under
-/// `containerimage.digest`, so `{{ Digest }}`, the `.digest` artifact and the
-/// release's landing check read one kind of value whichever backend built the
-/// image. The file is named per tag under the build's own staging directory:
-/// one build can push several tags, and one path would leave every tag
-/// holding the last push's digest.
+/// Both verbs take `--digestfile`, documented as "after copying the image,
+/// write the digest of the resulting image to the file" — the digest of what
+/// the destination registry now holds, which is the image manifest for a
+/// single-platform push and the manifest list for a `manifest push`. That is
+/// the same kind of value buildx reports under `containerimage.digest`, so
+/// `{{ Digest }}`, the `.digest` artifact and the release's landing check
+/// compare one kind of value whichever backend built the image.
+///
+/// Both verbs have carried the flag since podman 2.1, which is the floor a
+/// podman backend needs: an older podman exits non-zero on the unknown
+/// option instead of degrading, and the push fails.
+///
+/// The file is named per tag under the build's own staging directory: one
+/// build can push several tags, and one path would leave every tag holding
+/// the last push's digest.
 pub fn build_podman_push_commands(
     tags: &[String],
     multi_platform: bool,
