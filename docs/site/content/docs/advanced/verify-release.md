@@ -70,7 +70,7 @@ asset:
 ```
 $ anodizer release
 ...
-[verify-release] crate 'myapp': 1 produced artifact(s) missing from the published release: myapp_1.0.0_amd64.deb
+     Warning crate 'myapp': 1 produced artifact(s) missing from the published release: myapp_1.0.0_amd64.deb
        Error verify-release: post-publish verification found 1 issue(s); the release IS published — investigate:
   - crate 'myapp': 1 produced artifact(s) missing from the published release: myapp_1.0.0_amd64.deb
 ```
@@ -87,7 +87,7 @@ local sha256 — the checksum stage's already-computed hash is reused when
 available. A clean pass emits one result line:
 
 ```
-[verify-release] github: crate 'myapp' 22/22 assets present, sizes+digests match
+• github: crate 'myapp' 22/22 assets present, sizes+digests match
 ```
 
 A mismatch names the asset and both values:
@@ -312,7 +312,7 @@ When **Docker is unavailable**, the smoke-test is **skipped with a notice** —
 it does not hard-fail the gate, and asset-existence and libc-ceiling still run:
 
 ```
-[verify-release] Docker unavailable — skipping install smoke-test (asset-existence and libc-ceiling still run)
+• skipped install smoke-test — Docker unavailable (asset-existence and libc-ceiling still run)
 ```
 
 ## (d) libc ceiling
