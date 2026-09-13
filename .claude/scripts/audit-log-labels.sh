@@ -31,12 +31,16 @@
 #      `indent()` (two spaces per open section, so always even) plus the
 #      3-space BODY_INDENT, so its column is always odd.
 #   3. A `•` body line at 5 under a command that opens no log section. Only
-#      `release`, `publish`, `continue` and `check determinism` ever call
-#      `log.group`, so under every other subcommand the only reachable body
-#      column is 3. Those four are held to the parity rule alone: a release
-#      prints its stage lines inside a section (5) and its own orchestration
-#      lines — `--split` / `--merge`, the `setup` group's contents — outside
-#      one (3), and the fence cannot tell which a given line is.
+#      `release`, `publish`, `continue`, `announce` and `check determinism`
+#      ever reach a `log.group`, so under every other subcommand the only
+#      reachable body column is 3. Those five are held to the parity rule
+#      alone: a release prints its stage lines inside a section (5) and its
+#      own orchestration lines — `--split` / `--merge`, the `setup` group's
+#      contents — outside one (3), and the fence cannot tell which a given
+#      line is. A fence that quotes output without its `$ anodizer <cmd>`
+#      opener is held to the parity rule alone for the same reason: with no
+#      command named there is nothing to resolve the depth against, so rule
+#      3 would either guess or reject a correct line.
 #   4. A `[stage]` prefix — the stage name is carried by the section header
 #      and the gutter, never repeated per line.
 #
@@ -93,6 +97,11 @@ $ anodizer release
 ```bash
 $ anodizer build
    • the only column an ungrouped command reaches
+```
+
+```bash
+$ anodizer announce
+     • a stage line inside the announce pipeline's section
 ```
 
 ```bash
@@ -206,9 +215,20 @@ if [[ -d "$DOCS_DIR" ]]; then
         run_scanner docs_violations -f - "${DOCS_FILES[@]}" <<'AWK'
 # The subcommands whose runs open a log section; every other one prints its
 # body lines ungrouped, where 3 is the only reachable column.
+#
+# Derived from the callers of the two functions that open one. `Pipeline::run`
+# (crates/cli/src/pipeline/mod.rs) wraps every stage in `log.group(name)`, and
+# `grep -rn "p\.run(" crates/cli/src` outside the test modules reaches it from
+# commands/release/{run,announce_only,split}.rs and
+# commands/release/publish_only/per_crate.rs (all `release`),
+# commands/publish_cmd.rs, commands/continue_cmd.rs and
+# commands/announce_cmd.rs. `check/determinism/mod.rs` opens its own group.
+# The empty command is a fence that quotes no `$ anodizer <cmd>` opener: with
+# nothing to resolve the depth against, it is held to the parity rule alone.
 function grouping(command) {
     return command == "" || command == "release" || command == "publish" ||
-           command == "continue" || command == "check determinism"
+           command == "continue" || command == "announce" ||
+           command == "check determinism"
 }
 FNR == 1 { fenced = 0; cmd = "" }
 /^[[:space:]]*```/ {
@@ -262,10 +282,10 @@ AWK
             echo "                        section) plus the 3-space BODY_INDENT, so it"
             echo "                        sits at 3 columns ungrouped, 5 inside a stage"
             echo "                        section — never an even count."
-            echo "  ungrouped bullet      only release / publish / continue / check"
-            echo "                        determinism open a log section, so under every"
-            echo "                        other subcommand 3 is the only column a body"
-            echo "                        line can reach."
+            echo "  ungrouped bullet      only release / publish / continue / announce /"
+            echo "                        check determinism open a log section, so under"
+            echo "                        every other subcommand 3 is the only column a"
+            echo "                        body line can reach."
             echo "  stage-name prefix     the stage name is carried by the section"
             echo "                        header and the gutter, never repeated as a"
             echo "                        per-line [stage] prefix."
