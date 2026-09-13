@@ -23,7 +23,7 @@ Four independently-toggleable checks:
 | Check | What it catches | Needs |
 |---|---|---|
 | **asset existence + content** | A produced artifact that never made it onto the published release (the partial uploads GitHub silently tolerates), an uploaded asset whose **size or sha256 digest** doesn't match the local bytes (truncated/corrupted uploads, stale assets from a prior re-cut), **and** a signature / SBOM asset your `signs:` / `sboms:` config demands that was never produced at all (a silently no-op'd sign or SBOM stage) | network |
-| **publisher landing checks** | A publisher that reported success without the artifact actually landing: a crate version missing from the crates.io index, an npm version the registry doesn't serve, a blob object absent from its bucket, a snap held for manual store review and live in no channel | network |
+| **publisher landing checks** | A publisher that reported success without the artifact actually landing: a crate version missing from the crates.io index, an npm version the registry doesn't serve, a wheel the PyPI index doesn't list, a blob object absent from its bucket, a snap held for manual store review and live in no channel | network |
 | **install smoke-test** | A `.deb` / `.rpm` / `.apk` that won't install or whose binary won't run `--version` | Docker |
 | **libc ceiling** | A glibc-linked `.deb` that requires a glibc newer than your support floor | — |
 
@@ -46,7 +46,7 @@ configure them.
 verify_release:
   enabled: true            # default false — the whole gate is opt-in
   assert_assets: true      # default true — diff produced vs. uploaded assets + size/digest
-  assert_landing: true     # default true — probe cargo/npm/blob landings
+  assert_landing: true     # default true — probe cargo/npm/pypi/blob/snapcraft landings
   install_smoke:           # absent => smoke-test off
     deb: { image: "debian:12" }      # default debian:stable-slim
     rpm: { image: "fedora:40" }      # default fedora:latest
@@ -151,32 +151,44 @@ so no extra config is needed:
 |---|---|
 | `cargo` | crates.io **sparse index** lookup for every published `crate@version` (custom `registry:`/`index:` targets are skipped — the crates.io index says nothing about them) |
 | `npm` | registry metadata `GET <registry>/<pkg>/<version>` for every published package |
+| `pypi` | index lookup for every uploaded file, by the exact filename the run recorded — `GET https://pypi.org/pypi/<name>/<version>/json` for the public hosts, the PEP 503 `/simple/<name>/` page for any other index. The configured `index_url` decides which index is asked, so a TestPyPI or private-index upload is probed where it went |
 | `blob` | `HEAD` on every uploaded object, through the **same store backend and ambient credentials** the upload used — works for private buckets with no public URL |
 | `snapcraft` | anonymous `GET api.snapcraft.io/v2/snaps/info/<snap>` for every uploaded snap — the version must be **live in the store's channel map** (in the released channel when one was set). This catches the Snap Store's silent failure mode: a manual-review hold accepts the upload but ships nothing until a human approves, and a decline arrives only by email |
 
 One result line per publisher:
 
 ```
-[verify-release] cargo: anodizer-core@0.15.4 visible on crates.io index
-[verify-release] npm: myapp@0.15.4 visible on registry.npmjs.org
-[verify-release] blob: 22/22 uploaded object(s) present in bucket
-[verify-release] snapcraft: myapp 1.0.0 live in the Snap Store channel map
+• cargo: anodizer-core@0.15.4 visible on crates.io index
+• npm: myapp@0.15.4 visible on registry.npmjs.org
+• pypi: 9/9 uploaded file(s) listed on pypi.org
+• blob: 22/22 uploaded object(s) present in bucket
+• snapcraft: myapp 1.0.0 live in the Snap Store channel map
 ```
 
 ### Registry propagation
 
 A registry that has accepted a publish does not always serve it on the next
 request. Every probe above therefore keeps asking — backing off from 5 seconds
-to a 30-second cap, for up to 3 minutes per target — before it reports an
-absence, and a target that needed more than one ask says so:
+to a 30-second cap, over 8 attempts — before it reports an absence.
+
+The window belongs to the **whole sweep**, not to each target: it opens once,
+runs for 3 minutes, and every probe of that run shares it. A release publishing
+43 targets to a registry that never serves them therefore costs one 3-minute
+window, not 43 of them. `retry.max_elapsed` caps the window too, so lowering
+that lowers this; a dry run probes once and never waits.
+
+Waiting out propagation is the expected case, so it prints no warning. The
+publisher's own result line says how much of the publish arrived late:
 
 ```
-[verify-release] npm: myapp@0.15.4 not yet visible on registry.npmjs.org — retrying for up to 3m
-[verify-release] npm: myapp@0.15.4 landing probe on registry.npmjs.org succeeded after 3 attempt(s)
+• npm: 9/9 published package(s) visible on registry.npmjs.org (6/9 needed a propagation wait)
 ```
 
-The window is bounded by the run's own `retry.max_elapsed`, so lowering that
-lowers this too. A dry run probes once and never waits.
+Run with `-v` to see each individual re-ask.
+
+A failure re-asking cannot resolve — a rejected credential, a bucket store that
+could not be built — ends that target immediately instead of holding the
+shared window open on a fixed answer.
 
 A publisher that was skipped, deselected, or failed is not probed — it published
 nothing this run. A probe that **cannot run** (index unreachable, store build
@@ -185,6 +197,7 @@ an unverifiable landing is a finding.
 
 ```
 - cargo: myapp@1.0.0 reported published but is not visible on the crates.io index
+- pypi: myapp-1.0.0-py3-none-win_amd64.whl reported uploaded but is not listed on pypi.org
 - blob: s3://my-bucket/v1.0.0/myapp.tar.gz reported uploaded but is missing from the bucket
 - snapcraft: myapp 1.0.0 was HELD for Snap Store manual review and is not live in the store — consumers get nothing until review approves (https://dashboard.snapcraft.io/snaps/myapp/)
 ```
