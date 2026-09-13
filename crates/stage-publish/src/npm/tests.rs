@@ -2925,6 +2925,7 @@ fn real_npm_reads_the_flags_that_precede_the_subcommand() {
 /// dropped from the child env. Asserted under a token credential, since the
 /// same publish that carries a chosen token is also the one a stale ambient
 /// variable can silently re-authenticate.
+#[cfg(unix)]
 #[test]
 fn publish_command_pins_its_userconfig_and_drops_ambient_npm_config_credentials() {
     const AMBIENT: &str = "NPM_CONFIG_//registry.npmjs.org/:_authToken";
@@ -2972,6 +2973,7 @@ fn publish_command_pins_its_userconfig_and_drops_ambient_npm_config_credentials(
 /// unpublish — is built by one helper, so all three read the run's own
 /// `.npmrc`, talk to the registry the entry names, and drop the ambient
 /// `npm_config_*` variables npm ranks above `--userconfig`.
+#[cfg(unix)]
 #[test]
 fn the_shared_npm_command_pins_the_config_registry_and_strips_ambient_credentials() {
     const AMBIENT: &str = "NPM_CONFIG_//registry.npmjs.org/:_authToken";

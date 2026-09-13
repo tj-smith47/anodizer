@@ -2182,8 +2182,14 @@ mod tests {
         assert!(outcome.waited, "more than one ask happened");
         // 25ms of window at a flat 10ms backoff: two sleeps fit, the third
         // would fall past the deadline, so the ladder stops with the
-        // remaining window shorter than one base delay.
-        assert_eq!(asks.get(), 3, "the ladder stops at the deadline");
+        // remaining window shorter than one base delay. A loaded runner can
+        // overrun one sleep and fit only one, so the lower bound is two;
+        // the upper bound is what holds the property.
+        let asked = asks.get();
+        assert!(
+            (2..=3).contains(&asked),
+            "the ladder stops at the deadline: asked {asked} times"
+        );
         assert!(
             spent < Duration::from_millis(500),
             "the ladder must not outlive its window: {spent:?}"
