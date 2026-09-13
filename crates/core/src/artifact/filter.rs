@@ -112,6 +112,19 @@ pub const FORMAT_APPBUNDLE: &str = "appbundle";
 /// those compiles and silently routes that path down the container branch.
 pub const FORMAT_BINARY: &str = "binary";
 
+/// Metadata key marking an image artifact whose registry push SUCCEEDED.
+///
+/// The docker stage is not a `publish_report` participant, so the only record
+/// that an image reached its registry is the artifact itself. The key is
+/// written at the moment the push returned, which keeps a `skip_push:` build,
+/// a dry run and a snapshot unmarked, and it rides `artifacts.json` so a
+/// `--publish-only` run rehydrated from the preserved manifest still knows
+/// which tags were pushed. Value: [`PUSHED_VALUE`].
+pub const PUSHED_META: &str = "pushed";
+
+/// The only value [`PUSHED_META`] is ever written with.
+pub const PUSHED_VALUE: &str = "true";
+
 /// `true` when `artifact` is a packaging BUNDLE that lives on disk as a
 /// DIRECTORY rather than a single file — currently the macOS `.app` bundle
 /// (registered as [`ArtifactKind::Installer`] with `format = appbundle`).

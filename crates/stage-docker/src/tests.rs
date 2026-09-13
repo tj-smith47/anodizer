@@ -7093,3 +7093,116 @@ fn staged_binary_is_forced_executable() {
     let mode = std::fs::metadata(&staged).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o755, "staged binary must be executable");
 }
+
+/// Run one `docker_manifests[0]` entry against a stubbed `docker` binary and
+/// return the registered artifact's metadata.
+///
+/// `skip_push` drives the only branch under test; the stub keeps the whole
+/// `manifest rm` / `create` / `push` sequence offline.
+fn manifest_run_metadata(skip_push: Option<SkipPushConfig>) -> HashMap<String, String> {
+    use anodizer_core::config::{Config, CrateConfig, DockerManifestConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+    let tools = FakeToolDir::new();
+    tools.tool("docker").install();
+    let _path = tools.activate();
+
+    let manifest_cfg = DockerManifestConfig {
+        name_template: "ghcr.io/owner/app:1.0.0".to_string(),
+        image_templates: vec!["ghcr.io/owner/app:1.0.0-amd64".to_string()],
+        skip_push,
+        ..Default::default()
+    };
+    let krate = CrateConfig {
+        name: "app".to_string(),
+        path: ".".to_string(),
+        docker_manifests: Some(vec![manifest_cfg.clone()]),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "app".to_string();
+    config.crates = vec![krate.clone()];
+    let mut ctx = Context::new(config, ContextOptions::default());
+    let log = ctx.logger("docker");
+    let mut new_artifacts: Vec<anodizer_core::artifact::Artifact> = Vec::new();
+    super::run::process_docker_manifest(
+        &mut ctx,
+        &log,
+        &krate,
+        0,
+        &manifest_cfg,
+        &std::collections::HashSet::new(),
+        &HashMap::new(),
+        false,
+        &mut new_artifacts,
+    )
+    .expect("manifest run");
+    assert_eq!(new_artifacts.len(), 1, "one manifest artifact");
+    new_artifacts.remove(0).metadata
+}
+
+/// `manifest push` returned, so the list is in the registry and the landing
+/// gate has a reference to probe.
+#[test]
+#[serial_test::serial(path_env)]
+fn a_pushed_manifest_records_the_pushed_marker() {
+    let meta = manifest_run_metadata(None);
+    assert_eq!(
+        meta.get(anodizer_core::artifact::PUSHED_META)
+            .map(String::as_str),
+        Some(anodizer_core::artifact::PUSHED_VALUE)
+    );
+}
+
+/// A `skip_push: true` manifest exists only locally. Marking it would send
+/// the landing gate after a reference no registry was ever asked to hold.
+#[test]
+#[serial_test::serial(path_env)]
+fn a_skip_push_manifest_records_no_pushed_marker() {
+    let meta = manifest_run_metadata(Some(SkipPushConfig::Bool(true)));
+    assert!(
+        !meta.contains_key(anodizer_core::artifact::PUSHED_META),
+        "a manifest that was never pushed is not a landing target: {meta:?}"
+    );
+}
+
+/// A dry run builds nothing and pushes nothing, in every config mode.
+#[test]
+fn a_dry_run_marks_no_image_as_pushed() {
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    for (mode, crate_names) in [
+        ("single-crate", &["app"][..]),
+        ("lockstep", &["cli", "server"][..]),
+        ("per-crate", &["api", "worker"][..]),
+    ] {
+        let mut config = docker_v2_config(crate_names, &dockerfile);
+        config.dist = tmp.path().join("dist");
+        let mut ctx = anodizer_core::context::Context::new(
+            config,
+            anodizer_core::context::ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        DockerStage::new().run(&mut ctx).unwrap();
+
+        let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
+        assert!(!images.is_empty(), "{mode}: the dry run registers images");
+        assert!(
+            images.iter().all(|a| !a
+                .metadata
+                .contains_key(anodizer_core::artifact::PUSHED_META)),
+            "{mode}: a dry run pushes nothing"
+        );
+        assert!(
+            ctx.artifacts.pushed_images().is_empty(),
+            "{mode}: the landing gate has no target"
+        );
+    }
+}

@@ -210,6 +210,16 @@ pub(crate) fn process_docker_manifest(
     if let Some(ref digest) = manifest_digest {
         meta.insert("digest".to_string(), digest.clone());
     }
+    // `manifest push` returned, so the list is in the registry. A dry run and
+    // a `skip_push: true` manifest reach this point having created the list
+    // locally only, and stay unmarked so the landing gate never probes a
+    // reference that was never pushed.
+    if !dry_run && !manifest_skip_push {
+        meta.insert(
+            anodizer_core::artifact::PUSHED_META.to_string(),
+            anodizer_core::artifact::PUSHED_VALUE.to_string(),
+        );
+    }
 
     new_artifacts.push(Artifact {
         kind: ArtifactKind::DockerManifest,
