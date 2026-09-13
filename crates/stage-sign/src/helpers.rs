@@ -800,6 +800,48 @@ mod filter_drift_tests {
         }
     }
 
+    /// Every kind a filter can select has to be IN the universe, not merely
+    /// one of them: two entries meeting only on a kind the universe leaves
+    /// out would read as disjoint, and `check config` would stay quiet about
+    /// a pair that really does overwrite one file.
+    ///
+    /// The kinds come from `ArtifactKind::as_str`'s own match arms rather
+    /// than a list here. That match is exhaustive, so a variant added to the
+    /// enum joins this question with nothing to keep in step.
+    #[test]
+    fn the_overlap_universe_holds_every_kind_a_filter_selects() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../core/src/artifact/kind.rs");
+        let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let every_kind: Vec<ArtifactKind> = src
+            .lines()
+            .filter_map(|line| {
+                let arm = line.trim().strip_prefix("ArtifactKind::")?;
+                let (_, wire) = arm.split_once("=> \"")?;
+                ArtifactKind::parse(wire.split('"').next()?)
+            })
+            .collect();
+        assert_eq!(
+            every_kind.len(),
+            45,
+            "the walk over ArtifactKind::as_str found {} kinds, so either a \
+             variant was added or the arms no longer look the way this reads \
+             them",
+            every_kind.len()
+        );
+        let universe: Vec<ArtifactKind> = filterable_kinds().collect();
+        for filter in VALID_SIGN_ARTIFACT_FILTERS {
+            for kind in &every_kind {
+                assert!(
+                    !should_sign_artifact(*kind, filter).expect("a listed filter resolves")
+                        || universe.contains(kind),
+                    "'{filter}' selects {kind} and the overlap universe does \
+                     not hold it, so a pair meeting only there reads as \
+                     disjoint",
+                );
+            }
+        }
+    }
+
     /// Two filters overlap when they can name one artifact, and the answer
     /// is the resolver's rather than a second list of kinds: `windows` and
     /// `binary` both take a `Binary`, `archive` and `checksum` take nothing

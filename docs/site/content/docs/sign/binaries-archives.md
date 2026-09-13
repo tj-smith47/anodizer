@@ -122,11 +122,22 @@ asset name over two files. That fails the run too, naming both files:
 
 Two entries that resolve to one name over ONE file are accepted — that is one
 release asset — but the second `cmd:` overwrites the first's bytes, so one
-signature ships where two were configured. `anodizer check config` says so:
+signature ships where two were configured:
+
+```yaml
+project_name: app
+binary_signs:
+  - cmd: cosign
+    args: ["sign-blob", "--key=cosign.key", "--output-signature=${signature}", "${artifact}"]
+  - cmd: gpg
+    args: ["--batch", "--detach-sig", "--output", "${signature}", "${artifact}"]
+```
+
+`anodizer check config` says so:
 
 ```text
    • validating configuration
-     Warning binary_signs[0] and binary_signs[1] resolve one signature file for the binaries both select — the second signature overwrites the first, so one file ships where two were configured
+     Warning binary_signs[0] and binary_signs[1] resolve one signature file for the artifacts both select — the second signature overwrites the first, so one file ships where two were configured
    • Config is valid.
 ```
 
@@ -228,6 +239,101 @@ signs:
     cmd: cosign
     args: ["sign-blob", "--key=cosign.key", "--output-signature=${signature}", "${artifact}"]
 ```
+
+Those two select different artifact kinds, so neither can overwrite the
+other's output and `anodizer check config` says nothing about the pair.
+
+## What `anodizer check config` catches
+
+### Two entries writing one file
+
+The duplicate-output question is asked of `signs:`, of `binary_signs:` and of
+every per-crate slice, because all four resolve their outputs the same way and
+write under the same `dist`. Two entries meet when their `artifacts:`, `if:`
+and `ids:` selectors all can take one artifact:
+
+```yaml
+signs:
+  - id: gpg
+    artifacts: all
+    cmd: gpg
+    signature: "${artifact}.asc"
+  - id: cosign
+    artifacts: all
+    cmd: cosign
+    signature: "${artifact}.asc"
+```
+
+```text
+   • validating configuration
+     Warning signs[0] and signs[1] resolve one signature file for the artifacts both select — the second signature overwrites the first, so one file ships where two were configured
+   • Config is valid.
+```
+
+A per-crate slice names the workspace it belongs to, and a filter that
+`binary_signs:` cannot honor is named where it was written — under
+`defaults.binary_signs:`, which is the one block that reaches the slice
+without passing the `binary_signs:` loader:
+
+```yaml
+project_name: app
+workspaces:
+  - name: tools
+    crates:
+      - name: app
+    binary_signs:
+      - cmd: cosign
+      - cmd: gpg
+defaults:
+  binary_signs:
+    artifacts: archive
+```
+
+```text
+   • validating configuration
+     Warning defaults.binary_signs artifacts filter 'archive' is not allowed on binary_signs (valid: binary, none) — the sign stage signs binaries whatever it says
+     Warning workspaces.tools.binary_signs[0] and workspaces.tools.binary_signs[1] resolve one signature file for the artifacts both select — the second signature overwrites the first, so one file ships where two were configured
+   • Config is valid.
+```
+
+### A placeholder the field cannot substitute
+
+`{{ .Artifact }}`, `{{ .Signature }}` and `{{ .Certificate }}` are replaced by
+exact literal before the template reaches the engine, and which of the three a
+field replaces differs per field: `args:` takes all three, `signature:` and
+`certificate:` take `Artifact` alone, and `stdin:` takes none. Every other
+spelling — a different padding, or the name inside an expression — survives the
+replacement, reaches the engine as an undefined variable and fails the sign
+stage. A `docker_signs:` entry's `signature:` is read nowhere at all, because a
+container signature is stored in the registry:
+
+```yaml
+project_name: app
+binary_signs:
+  - cmd: cosign
+    signature: "{{.Artifact}}.sig"
+    certificate: "{{ Artifact | upper }}.pem"
+  - cmd: gpg
+    signature: "{{ .Signature }}.asc"
+docker_signs:
+  - cmd: cosign
+    signature: "{{ .Artifact }}.sig"
+```
+
+```text
+   • validating configuration
+     Warning binary_signs[0].signature names `{{.Artifact}}`, which anodizer substitutes only as the literal `{{ .Artifact }}` or `{{ Artifact }}` — every other spelling reaches the template engine as an undefined variable and fails the sign stage
+     Warning binary_signs[0].certificate names `{{ Artifact | upper }}`, which anodizer substitutes only as the literal `{{ .Artifact }}` or `{{ Artifact }}` — every other spelling reaches the template engine as an undefined variable and fails the sign stage
+     Warning binary_signs[1].signature names `{{ .Signature }}`, which anodizer does not substitute in signature: — it reaches the template engine as an undefined variable and fails the sign stage; the signature path is what this template renders, so `${signature}` has no value here either — remove the reference
+     Warning docker_signs[0].signature is set but a docker signature is stored in the registry rather than written to a file (it will be ignored)
+   • Config is valid.
+```
+
+The `${…}` variables are the way to name another output: `${certificate}`
+inside `signature:` and `${signature}` inside `certificate:` are expanded after
+the render. A field's own name is not — `${signature}` inside `signature:`
+expands to that template's own unexpanded text — so there the reference has to
+go.
 
 ## Execution & resilience
 
