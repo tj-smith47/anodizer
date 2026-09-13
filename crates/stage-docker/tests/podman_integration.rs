@@ -9,9 +9,9 @@
 //! - Buildx-only flag rejection under `use: podman` (the full
 //!   `BUILDX_ONLY_FLAGS` set).
 //! - Argv shape of `build_docker_v2_command` with `backend = Some("podman")`
-//!   — confirms buildx-only switches (`--push`, `--load`, `--attest=*`) are
-//!   omitted while podman-compatible flags (`--iidfile`, `--build-arg`,
-//!   `--label`, `--platform`, `--tag`) survive.
+//!   — confirms buildx-only switches (`--push`, `--load`, `--attest=*`,
+//!   `--metadata-file`) are omitted while podman-compatible flags
+//!   (`--build-arg`, `--label`, `--platform`, `--tag`) survive.
 //!
 //! A "real" `podman manifest push` test would require a live registry and
 //! a `podman` binary on `PATH`; both are out of scope for a unit-test
@@ -124,8 +124,9 @@ fn podman_v2_command_shape_matches_spec() {
     assert!(cmd.contains(&"--label".to_string()));
     assert!(cmd.contains(&"--platform=linux/amd64".to_string()));
     assert!(
-        cmd.iter().any(|a| a.starts_with("--iidfile=")),
-        "podman build retains --iidfile for digest capture"
+        !cmd.iter().any(|a| a.starts_with("--iidfile=")),
+        "podman's iidfile holds a local image ID, not the digest a registry \
+         serves, so no digest is captured from a podman build: {cmd:?}"
     );
     for forbidden in ["--push", "--load", "--attest=type=sbom"] {
         assert!(
@@ -184,11 +185,13 @@ fn podman_multi_platform_build_uses_manifest_not_tag() {
         !cmd.iter().any(|a| a == "--tag"),
         "multi-platform podman must NOT use --tag (does not build a manifest list): {cmd:?}"
     );
-    // Multi-platform `podman build` rejects --iidfile (errors when --platform
-    // is given more than once), so it must be suppressed.
     assert!(
         !cmd.iter().any(|a| a.starts_with("--iidfile")),
         "multi-platform podman must NOT pass --iidfile: {cmd:?}"
+    );
+    assert!(
+        !cmd.iter().any(|a| a.starts_with("--metadata-file")),
+        "podman build has no --metadata-file (buildx-only): {cmd:?}"
     );
 }
 

@@ -114,7 +114,11 @@ pub(crate) fn process_docker_manifest(
         new_artifacts,
     );
 
-    let manifest_skip_push = resolve_skip_push(&manifest_cfg.skip_push, ctx)?;
+    // A snapshot never publishes: `dockers_v2` builds its images without
+    // `--push`, so the per-architecture tags this list points at exist
+    // nowhere but the local store, and pushing the list would put a release
+    // the operator did not cut into the registry.
+    let manifest_skip_push = resolve_skip_push(&manifest_cfg.skip_push, ctx)? || ctx.is_snapshot();
     let mut manifest_digest: Option<String> = None;
 
     if dry_run {
@@ -210,10 +214,10 @@ pub(crate) fn process_docker_manifest(
     if let Some(ref digest) = manifest_digest {
         meta.insert("digest".to_string(), digest.clone());
     }
-    // `manifest push` returned, so the list is in the registry. A dry run and
-    // a `skip_push: true` manifest reach this point having created the list
-    // locally only, and stay unmarked so the landing gate never probes a
-    // reference that was never pushed.
+    // `manifest push` returned, so the list is in the registry. A dry run, a
+    // snapshot and a `skip_push: true` manifest reach this point having
+    // created the list locally only, and stay unmarked so the landing gate
+    // never probes a reference that was never pushed.
     if !dry_run && !manifest_skip_push {
         meta.insert(
             anodizer_core::artifact::PUSHED_META.to_string(),

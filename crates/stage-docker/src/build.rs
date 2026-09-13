@@ -76,6 +76,19 @@ pub(crate) fn format_v2_created_images_log(images: &[String], digest: &str) -> S
     )
 }
 
+/// The registry digest a buildx build reported in its `--metadata-file`.
+///
+/// `containerimage.digest` is the digest the registry stores for what was
+/// built: the image manifest for a single-platform build, the image index for
+/// a multi-platform one. buildx writes it beside
+/// `containerimage.config.digest`, the image config blob's digest — the value
+/// the `--iidfile` carries, which a registry never serves a tag at.
+pub(crate) fn metadata_file_digest(raw: &str) -> Option<String> {
+    let doc: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let digest = doc.get("containerimage.digest")?.as_str()?.trim();
+    (!digest.is_empty()).then(|| digest.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // DockerBuildJob — prepared data for a single docker build
 // ---------------------------------------------------------------------------
@@ -304,48 +317,46 @@ pub(crate) fn execute_docker_build(
         push_podman_tags(job, log)?;
     }
 
-    // Capture digests from the --iidfile (written by both buildx and podman).
+    // Capture the registry digest buildx reported for this build.
     let mut tag_digests = BTreeMap::new();
     let mut digest_files = Vec::new();
 
-    // V2: read digest from --iidfile (works even without push).
-    // For multi-platform --push builds, older buildx versions may not
-    // populate the iidfile; the `if let Ok(...)` handles this gracefully.
-    // When present, the iidfile contains a single sha256 digest shared
-    // across all tags (it's the manifest list digest for multi-platform).
-    let iidfile = job.staging_dir.join("id.txt");
-    if let Ok(digest_content) = fs::read_to_string(&iidfile) {
-        let digest = digest_content.trim().to_string();
-        if !digest.is_empty() {
-            // Emit the created-images log with
-            // `images` and `digest` as *separate* structured fields rather
-            // than embedding `image@digest` in a single field. Easier to
-            // query in log aggregators (the `images` field carries
-            // ...).WithField("digest", ...)` shape.
-            tracing::info!(
-                images = %job.rendered_tags.join(","),
-                digest = %digest,
-                "created images",
-            );
-            log.status(&format_v2_created_images_log(&job.rendered_tags, &digest));
+    // The metadata file is absent when the build produced no image export
+    // (a cache-only build) and under the podman backend, which reports no
+    // registry digest at all — both degrade to no digest rather than to a
+    // digest that names different content.
+    let metadata_file = job.staging_dir.join("meta.json");
+    if let Ok(metadata) = fs::read_to_string(&metadata_file)
+        && let Some(digest) = metadata_file_digest(&metadata)
+    {
+        // Emit the created-images log with
+        // `images` and `digest` as *separate* structured fields rather
+        // than embedding `image@digest` in a single field. Easier to
+        // query in log aggregators (the `images` field carries
+        // ...).WithField("digest", ...)` shape.
+        tracing::info!(
+            images = %job.rendered_tags.join(","),
+            digest = %digest,
+            "created images",
+        );
+        log.status(&format_v2_created_images_log(&job.rendered_tags, &digest));
+        for tag in &job.rendered_tags {
+            tag_digests.insert(tag.clone(), digest.clone());
+        }
+        // Write per-tag digest files
+        if !job.skip_digest {
             for tag in &job.rendered_tags {
-                tag_digests.insert(tag.clone(), digest.clone());
-            }
-            // Write per-tag digest files
-            if !job.skip_digest {
-                for tag in &job.rendered_tags {
-                    let safe_name = tag.replace(['/', ':'], "_");
-                    let digest_file = job.dist.join(format!("{}.digest", safe_name));
-                    if let Err(e) = fs::write(&digest_file, &digest) {
-                        log.warn(&format!(
-                            "failed to write digest file {}: {}",
-                            digest_file.display(),
-                            e
-                        ));
-                    } else {
-                        log.status(&format!("saved digest to {}", digest_file.display()));
-                        digest_files.push(digest_file);
-                    }
+                let safe_name = tag.replace(['/', ':'], "_");
+                let digest_file = job.dist.join(format!("{}.digest", safe_name));
+                if let Err(e) = fs::write(&digest_file, &digest) {
+                    log.warn(&format!(
+                        "failed to write digest file {}: {}",
+                        digest_file.display(),
+                        e
+                    ));
+                } else {
+                    log.status(&format!("saved digest to {}", digest_file.display()));
+                    digest_files.push(digest_file);
                 }
             }
         }
