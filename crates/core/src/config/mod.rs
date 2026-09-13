@@ -184,10 +184,26 @@ pub struct Config {
     /// iterates Binary artifacts. Constraint lives in `deserialize_binary_signs`.
     ///
     /// The detached signature and certificate produced for each binary upload
-    /// as release assets alongside the archives, named after the archive built
-    /// from that binary: a `tar.gz` archive `app-1.2.3-linux-amd64.tar.gz`
-    /// gives `app-1.2.3-linux-amd64.sig`. The raw binary's own file name is
-    /// the same under every target, so it is not the asset name.
+    /// as release assets alongside the archives. The raw binary's own file
+    /// name is the same under every target, so the asset name is derived from
+    /// the crate's `archives:` CONFIG instead — unique per (crate, target,
+    /// binary), and identical whether `anodizer build` or `anodizer release
+    /// --publish-only` produced it. The base is the primary `archives:` entry's
+    /// `name_template` rendered for the target (`app-1.2.3-linux-amd64.sig`),
+    /// where the primary entry is the first in config order whose `ids:` /
+    /// `binaries:` filters take this binary. Three cases resolve differently:
+    /// an entry that packs several binaries on the target, and a target no
+    /// entry covers at all, both take the whole triple
+    /// `{{ Binary }}-{{ Version }}-{{ Target }}` (one archive carries the whole
+    /// group under a single name, and `Os`/`Arch` render identically for a gnu
+    /// and a musl build); an entry whose resolved formats include `binary`
+    /// takes that uploaded executable's own name; and a lipo-merged universal
+    /// binary, whose `darwin-universal` target no build entry names, takes the
+    /// entry's template rendered with the binary's own name.
+    ///
+    /// An entry's `if:` is not evaluated for this, so a gate that reads the
+    /// environment cannot name one binary's signature two ways.
+    /// `binary_signs[].asset_name_template:` overrides every case.
     #[serde(default, deserialize_with = "deserialize_binary_signs")]
     #[schemars(schema_with = "signs_schema")]
     pub binary_signs: Vec<SignConfig>,

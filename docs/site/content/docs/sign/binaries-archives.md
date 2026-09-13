@@ -62,13 +62,23 @@ binary_signs:
 The signature and certificate upload as release assets alongside the archives.
 Each is named from the crate's `archives:` **config** — never from which
 archives the run happens to have built, so `anodizer build` and
-`anodizer release` name the same binary's signature identically:
+`anodizer release` name the same binary's signature identically. The name is
+unique per crate, target **and binary**:
 
 | The binary's target | Asset name |
 |---|---|
-| Covered by the crate's primary `archives:` entry — the first entry in config order whose `ids:` / `binaries:` filters take this binary | That entry's `name_template` rendered for the target, plus the suffix the `signature:` / `certificate:` template appended to the binary's file name. `app-1.2.3-linux-amd64.sig`, `app-1.2.3-windows-amd64.sig` (from `app.exe.sig`), `app-1.2.3-linux-amd64.bundle.sig` |
-| Covered by no archive entry — a musl build that only feeds npm, say | `{{ Binary }}-{{ Version }}-{{ Target }}` plus that suffix: `app-1.2.3-x86_64-unknown-linux-musl.sig`. The whole triple is required, because `Os`/`Arch` render identically for a gnu and a musl build |
-| Published by a `formats: [binary]` entry | That uploaded executable's own name plus the suffix, so a `signs:` config covering the asset and a `binary_signs:` config covering the same bytes resolve to one name |
+| Covered by the crate's primary `archives:` entry — the first entry in config order whose `ids:` / `binaries:` filters take this binary — and that entry packs this binary alone on the target | That entry's `name_template` rendered for the target, plus the suffix the `signature:` / `certificate:` template appended to the binary's file name. `app-1.2.3-linux-amd64.sig`, `app-1.2.3-windows-amd64.sig` (from `app.exe.sig`), `app-1.2.3-linux-amd64.bundle.sig` |
+| Covered by an entry that packs several binaries on that target, or by no archive entry at all — a musl build that only feeds npm, say | `{{ Binary }}-{{ Version }}-{{ Target }}` plus that suffix: `app-1.2.3-x86_64-unknown-linux-musl.sig`. One archive carries the whole group under a single name, so each binary's signature takes the triple instead; and the whole triple is required, because `Os`/`Arch` render identically for a gnu and a musl build |
+| Covered by an entry whose resolved formats include `binary` — the entry's own `formats:`, or a `format_overrides:` entry matching the target's OS, or `defaults.archives.format_overrides` | That uploaded executable's own name plus the suffix, so a `signs:` config covering the asset and a `binary_signs:` config covering the same bytes resolve to one name |
+| A lipo-merged universal binary (`darwin-universal`), which no `builds:` entry names | The covering entry's `name_template` rendered with the binary's own name |
+
+An entry's `if:` is **not** evaluated when the primary is chosen. A gate can
+read the environment, and a signature named one way on the machine that builds
+it and another on the machine that publishes it is an asset the release's
+verify gate cannot find.
+
+A name that renders empty fails the sign stage rather than uploading a bare
+`.sig` every binary's signature would collide on.
 
 The raw binary is called `app` (or `app.exe`) under every target's directory,
 so its own basename would collapse every target's signature onto one asset:
@@ -105,8 +115,10 @@ app-1.2.3-linux-amd64.sig          <- binary_signs, the primary entry's name
 
 ### Overriding the asset name
 
-`asset_name_template:` replaces the derived name. It renders the asset's BASE
-name in the same per-target scope an archive `name_template` renders under
+`asset_name_template:` replaces the derived name. It is read on `binary_signs:`
+entries only — `anodizer check config` warns when a `signs:` entry sets it. It
+renders the asset's BASE name in the same per-target scope an archive
+`name_template` renders under
 (`Os`, `Arch`, `Target`, the micro-architecture variants, `CrateName`,
 `Binary`); the `signature:` / `certificate:` suffix still carries over, so one
 template names both assets:

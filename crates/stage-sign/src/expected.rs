@@ -25,8 +25,8 @@
 //!    re-evaluating the config's `if:` with the same evaluator the sign stage
 //!    uses yields falsy.
 //!
-//! `binary_signs:` outputs ARE release assets — one per built target, named
-//! from the crate's `archives:` config — so they are derived here alongside
+//! `binary_signs:` outputs ARE release assets — one per (crate, target,
+//! binary), named from the crate's `archives:` config — so they are derived here alongside
 //! `signs:`. A binary whose file is not on disk contributes nothing: the sign
 //! stage drops it and records the config's skip, and the memento check above
 //! sees that skip. `docker_signs:` signatures live in the registry, not on the
@@ -107,17 +107,24 @@ pub fn expected_signature_assets(
                 if artifact.crate_name != crate_name {
                     continue;
                 }
-                if binary_slice {
-                    // The `binary_signs:` loop takes raw binaries only, and
-                    // only the ones actually on disk (see
-                    // `process_sign_configs`).
-                    if artifact.kind != anodizer_core::artifact::ArtifactKind::Binary {
-                        continue;
-                    }
-                    if !ctx.is_dry_run() && !artifact.path.exists() {
-                        continue;
-                    }
-                } else if !should_sign_artifact(artifact.kind, filter)? {
+                // The binary slice narrows to binaries whatever the config's
+                // own `artifacts:` says, exactly as `process_sign_configs`
+                // does — and the shared vocabulary's `binary` row takes a
+                // lipo-merged universal binary as well as a plain one, so a
+                // gate spelling the kinds itself would expect a different set
+                // than the stage signs.
+                let kind_filter = if binary_slice {
+                    SignConfig::DEFAULT_ARTIFACTS_BINARY
+                } else {
+                    filter
+                };
+                if !should_sign_artifact(artifact.kind, kind_filter)? {
+                    continue;
+                }
+                // `process_sign_configs` drops a binary whose file is not on
+                // disk: a publish-only registry points at raw cargo output
+                // that the preserved dist does not carry.
+                if binary_slice && !ctx.is_dry_run() && !artifact.path.exists() {
                     continue;
                 }
                 if !sign_ids_match(&artifact.metadata, cfg.ids.as_ref()) {

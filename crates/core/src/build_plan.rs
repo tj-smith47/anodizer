@@ -351,11 +351,42 @@ pub fn archive_binary_name(
     default_targets: &[String],
     render: impl Fn(&str) -> anyhow::Result<String>,
 ) -> String {
+    archive_target_binaries(
+        krate,
+        archive_ids,
+        archive_binaries,
+        target,
+        default_targets,
+        render,
+    )
+    .into_iter()
+    .next()
+    .unwrap_or_else(|| binary_or_crate_name(krate, &BuildConfig::default()))
+}
+
+/// Every binary an archive entry packs on one target, in build order — the
+/// group the archive stage assembles before naming its asset after the first
+/// of them ([`archive_binary_name`]).
+///
+/// Empty when the entry packs nothing for this target: the target belongs to no
+/// build entry (a lipo-merged `darwin-universal` binary, whose own target no
+/// build names), or every candidate is filtered out. A caller that must name
+/// one asset PER BINARY — a raw binary's detached signature — reads the length
+/// too, since a group of several binaries carries one archive name between
+/// them.
+pub fn archive_target_binaries(
+    krate: &CrateConfig,
+    archive_ids: Option<&[String]>,
+    archive_binaries: Option<&[String]>,
+    target: &str,
+    default_targets: &[String],
+    render: impl Fn(&str) -> anyhow::Result<String>,
+) -> Vec<String> {
     crate_build_target_entries(krate, default_targets, |build| {
         build_is_skipped(build, &render)
     })
     .into_iter()
-    .find_map(|entry| {
+    .filter_map(|entry| {
         // `stage-build` renders the binary name, and the `binary`-fallback id
         // it derives from it, once per target before stamping either on the
         // artifact the archive stage then filters — so a `binary:` that is
@@ -371,7 +402,7 @@ pub fn archive_binary_name(
             && archive_packs_binary(&binary, archive_binaries))
         .then_some(binary)
     })
-    .unwrap_or_else(|| binary_or_crate_name(krate, &BuildConfig::default()))
+    .collect()
 }
 
 /// The de-duplicated, order-preserving list of target triples a crate's builds
