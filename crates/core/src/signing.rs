@@ -478,7 +478,12 @@ impl DockerSignConfig {
 
     /// The values `artifacts:` accepts, in the order the sign stage names
     /// them when it refuses one. The empty string is the default.
-    pub const ARTIFACT_FILTERS: &[&'static str] = &["all", "images", "manifests", "none", ""];
+    ///
+    /// Crate-private: the sign stage reads the rendered sentence through
+    /// [`Self::artifact_filters_phrase`], never the slice, so publishing the
+    /// slice would be API nobody asked for.
+    pub(crate) const ARTIFACT_FILTERS: &[&'static str] =
+        &["all", "images", "manifests", "none", ""];
 
     /// Default `args` for `docker_signs:[]`
     /// (`["sign", "--key=cosign.key", "{{ .Artifact }}@{{ .Digest }}",
@@ -941,5 +946,37 @@ mod tests {
             DockerSignConfig::artifact_filters_phrase(),
             "all, images, manifests, none, or empty"
         );
+    }
+
+    /// The docker sign page prints the `args:` default in a Default column,
+    /// which is a claim about this const's bytes. Both spellings of the
+    /// placeholder resolve, so a drifted cell breaks nothing at release
+    /// time and nothing else would catch it.
+    #[test]
+    fn the_docker_args_default_documented_is_the_constant() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/site/content/docs/sign/docker.md"
+        );
+        let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let row = page
+            .lines()
+            .find(|line| line.starts_with("| `args` |"))
+            .expect("the page documents the args field");
+        let documented = row
+            .split('|')
+            .nth(3)
+            .expect("the row has a Default column")
+            .trim()
+            .trim_matches('`');
+        let expected = format!(
+            "[{}]",
+            DockerSignConfig::DEFAULT_ARGS
+                .iter()
+                .map(|arg| format!("\"{arg}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        assert_eq!(documented, expected);
     }
 }

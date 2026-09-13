@@ -199,6 +199,23 @@ const PATH_CARRYING_SPELLINGS: &[&str] = &["{{.Artifact}}", "{{Artifact}}"];
 /// `${name}` or the bare `$name` spelling.
 const PATH_CARRYING_SHELL_VARS: &[&str] = &["artifact", "signature", "certificate"];
 
+/// The shell-style variables a `docker_signs:` template can write that the
+/// docker path hands to the signing command as literal text.
+///
+/// It is the detached path's three plus the two the docker path seeds as
+/// template variables instead — `Digest` and `ArtifactID`
+/// (`stage-sign::docker_render::set_image_template_vars`). `${digest}` is
+/// the spelling the old `DEFAULT_ARGS` rustdoc shipped, and it expands
+/// nowhere: `expand_shell_vars` resolves the map its caller passes, and no
+/// caller passes a digest.
+const DOCKER_LITERAL_SHELL_VARS: &[&str] = &[
+    "artifact",
+    "signature",
+    "certificate",
+    "digest",
+    "artifactID",
+];
+
 /// Whether `c` continues a variable or placeholder name, which is what
 /// `expand_with_preserve` reads a bare `$` name to the end of.
 fn continues_a_name(c: char) -> bool {
@@ -491,20 +508,33 @@ const NO_SIGN_PLACEHOLDERS: &[&str] = &[];
 ///
 /// Tera evaluates a quoted literal as text and never as a variable
 /// reference, so a name written inside one renders fine: `{{ "Artifact" }}`
-/// and `{{ Version | replace(from="Artifact", to="x") }}` both succeed. An
+/// and `{{ Version | replace(from="Artifact", to="x") }}` both succeed. Its
+/// lexer opens a literal on `'`, `"` or a backtick and closes it on the same
+/// character, and a backslash inside one escapes the next character — so
+/// `{{ "he said \"Artifact\"" }}` is ONE literal and closing at the escaped
+/// quote would expose its text to the question this masks it for. An
 /// unterminated quote blanks the rest of the run, which is the direction
 /// that stays silent rather than warning about text that works.
 fn mask_string_literals(core: &str) -> String {
     let mut masked = String::with_capacity(core.len());
     let mut quote: Option<char> = None;
+    let mut escaped = false;
     for c in core.chars() {
         match quote {
+            Some(_) if escaped => {
+                escaped = false;
+                masked.push(' ');
+            }
+            Some(_) if c == '\\' => {
+                escaped = true;
+                masked.push(' ');
+            }
             Some(open) if c == open => {
                 quote = None;
                 masked.push(c);
             }
             Some(_) => masked.push(' '),
-            None if c == '"' || c == '\'' => {
+            None if c == '"' || c == '\'' || c == '`' => {
                 quote = Some(c);
                 masked.push(c);
             }
@@ -530,9 +560,19 @@ fn mask_string_literals(core: &str) -> String {
 /// Tera strips the first before evaluating the template and reads the second
 /// as text, so neither can fail the render.
 ///
-/// A run that never closes ends the scan, and nothing is lost by that: the
-/// closing delimiter is searched for in the whole remainder, so a template
-/// with no `}}` after an open `{{` holds no complete run after it either.
+/// An opener whose closing delimiter is absent from the rest of the template
+/// is stepped over and the scan continues after it, because the three
+/// openers close on three different delimiters: a `{{` with no `}}` after it
+/// can still be followed by a complete `{% … %}` statement, and breaking
+/// there would leave that statement unread. The cost is that a name written
+/// after an unterminated `{#` is warned about even though the comment, not
+/// the name, is what fails the parse.
+///
+/// A name a statement BINDS rather than reads (`{% set Artifact = "x" %}`,
+/// `{% for Artifact in items %}`) is matched the same way a lookup is. Both
+/// render, so the warning is wrong about them; the spellings are contrived
+/// inside a sign template and telling them apart would need a Tera parser
+/// here.
 fn placeholder_spellings<'a>(template: &'a str, name: &str) -> Vec<&'a str> {
     let mut found = Vec::new();
     let mut at = 0usize;
@@ -549,7 +589,8 @@ fn placeholder_spellings<'a>(template: &'a str, name: &str) -> Vec<&'a str> {
             (Some((open, closer)), c) if c.is_none_or(|c| open < c) => {
                 let after = &rest[open + 2..];
                 let Some(close) = after.find(closer) else {
-                    break;
+                    at += open + 2;
+                    continue;
                 };
                 if names_whole_word(mask_string_literals(after[..close].trim()).trim(), name) {
                     found.push(&rest[open..open + close + 4]);
@@ -558,7 +599,8 @@ fn placeholder_spellings<'a>(template: &'a str, name: &str) -> Vec<&'a str> {
             }
             (_, Some(open)) => {
                 let Some(end) = rest[open + 2..].find("#}") else {
-                    break;
+                    at += open + 2;
+                    continue;
                 };
                 at += open + 2 + end + 2;
             }
@@ -579,54 +621,58 @@ fn placeholder_spellings<'a>(template: &'a str, name: &str) -> Vec<&'a str> {
 /// `{{ .Artifact}}` and `{{ Artifact | upper }}` alike, since only
 /// `{{ .Artifact }}` and `{{ Artifact }}` are replaced.
 pub(super) fn check_unpadded_sign_placeholders(config: &Config, warnings: &mut Vec<String>) {
-    let mut warn =
-        |block: &str, field: &str, substituted: &[&str], shell_expanded: bool, template: &str| {
-            for name in LITERAL_SIGN_PLACEHOLDERS {
-                for spelling in placeholder_spellings(template, name) {
-                    if !substituted.contains(name) {
-                        let shell = name.to_ascii_lowercase();
-                        // A field is what its own path is DERIVED from, so
-                        // the shell variable of the same name holds this
-                        // template's own unexpanded text while it resolves:
-                        // `${signature}` inside `signature:` expands to a
-                        // file name carrying a literal `$`.
-                        let remedy = if shell == field {
-                            format!(
-                                "; the {field} path is what this template \
+    let warn = |block: &str,
+                field: &str,
+                substituted: &[&str],
+                shell_expanded: bool,
+                template: &str,
+                warnings: &mut Vec<String>| {
+        for name in LITERAL_SIGN_PLACEHOLDERS {
+            for spelling in placeholder_spellings(template, name) {
+                if !substituted.contains(name) {
+                    let shell = name.to_ascii_lowercase();
+                    // A field is what its own path is DERIVED from, so
+                    // the shell variable of the same name holds this
+                    // template's own unexpanded text while it resolves:
+                    // `${signature}` inside `signature:` expands to a
+                    // file name carrying a literal `$`.
+                    let remedy = if shell == field {
+                        format!(
+                            "; the {field} path is what this template \
                                 renders, so `${{{shell}}}` has no value here \
                                 either — remove the reference"
-                            )
-                        } else if shell_expanded {
-                            // Every other shell-expanded field resolves the
-                            // `${…}` spelling after the render, so it needs
-                            // no template variable at all.
-                            format!(
-                                "; write `${{{shell}}}`, which the sign stage \
+                        )
+                    } else if shell_expanded {
+                        // Every other shell-expanded field resolves the
+                        // `${…}` spelling after the render, so it needs
+                        // no template variable at all.
+                        format!(
+                            "; write `${{{shell}}}`, which the sign stage \
                                 expands after the render"
-                            )
-                        } else {
-                            String::new()
-                        };
-                        warnings.push(format!(
-                            "{block}.{field} names `{spelling}`, which anodizer \
+                        )
+                    } else {
+                        String::new()
+                    };
+                    warnings.push(format!(
+                        "{block}.{field} names `{spelling}`, which anodizer \
                             does not substitute in {field}: — it reaches the \
                             template engine as an undefined variable and fails \
                             the sign stage{remedy}"
-                        ));
-                    } else if spelling != format!("{{{{ .{name} }}}}")
-                        && spelling != format!("{{{{ {name} }}}}")
-                    {
-                        warnings.push(format!(
-                            "{block}.{field} names `{spelling}`, which anodizer \
+                    ));
+                } else if spelling != format!("{{{{ .{name} }}}}")
+                    && spelling != format!("{{{{ {name} }}}}")
+                {
+                    warnings.push(format!(
+                        "{block}.{field} names `{spelling}`, which anodizer \
                             substitutes only as the literal `{{{{ .{name} }}}}` \
                             or `{{{{ {name} }}}}` — every other spelling \
                             reaches the template engine as an undefined \
                             variable and fails the sign stage"
-                        ));
-                    }
+                    ));
                 }
             }
-        };
+        }
+    };
     for slice in sign_slices(config) {
         for (idx, cfg) in slice.configs.iter().enumerate() {
             let block = slice.block(idx);
@@ -644,11 +690,18 @@ pub(super) fn check_unpadded_sign_placeholders(config: &Config, warnings: &mut V
                 ("stdin", NO_SIGN_PLACEHOLDERS, cfg.stdin.as_deref()),
             ] {
                 if let Some(template) = template {
-                    warn(&block, field, substituted, true, template);
+                    warn(&block, field, substituted, true, template, warnings);
                 }
             }
             for arg in cfg.args.iter().flatten() {
-                warn(&block, "args", LITERAL_SIGN_PLACEHOLDERS, true, arg);
+                warn(
+                    &block,
+                    "args",
+                    LITERAL_SIGN_PLACEHOLDERS,
+                    true,
+                    arg,
+                    warnings,
+                );
             }
         }
     }
@@ -658,14 +711,25 @@ pub(super) fn check_unpadded_sign_placeholders(config: &Config, warnings: &mut V
         // `stdin:` is rendered raw with no shell expansion behind it, so
         // there is no spelling of a placeholder that works there.
         for arg in cfg.args.iter().flatten() {
-            warn(&block, "args", LITERAL_SIGN_PLACEHOLDERS, false, arg);
+            warn(
+                &block,
+                "args",
+                LITERAL_SIGN_PLACEHOLDERS,
+                false,
+                arg,
+                warnings,
+            );
         }
         if let Some(stdin) = cfg.stdin.as_deref() {
-            warn(&block, "stdin", NO_SIGN_PLACEHOLDERS, false, stdin);
+            warn(
+                &block,
+                "stdin",
+                NO_SIGN_PLACEHOLDERS,
+                false,
+                stdin,
+                warnings,
+            );
         }
-    }
-    for (idx, cfg) in config.docker_signs.iter().flatten().enumerate() {
-        let block = docker_sign_block(config, idx);
         for (field, template) in docker_sign_templates(cfg) {
             check_docker_sign_literal_text(&block, field, template, warnings);
         }
@@ -691,16 +755,22 @@ fn docker_sign_templates(cfg: &DockerSignConfig) -> Vec<(&'static str, &str)> {
 /// cosign as those nine characters. And a docker certificate path is read
 /// nowhere — only its presence is, to select cosign's bundle verify mode —
 /// so `{{ .Certificate }}` is substituted with the empty string.
+///
+/// Every warning prints the braced `${name}` spelling, so a template writing
+/// the bare `$name` is told about `${name}`. The remedy is the same
+/// template spelling either way, and printing the operator's own spelling
+/// back would mean carrying it through `names_shell_var`.
 fn check_docker_sign_literal_text(
     block: &str,
     field: &str,
     template: &str,
     warnings: &mut Vec<String>,
 ) {
-    for name in PATH_CARRYING_SHELL_VARS {
+    for name in DOCKER_LITERAL_SHELL_VARS {
         if !names_shell_var(template, name) {
             continue;
         }
+        let title = format!("{}{}", name[..1].to_uppercase(), &name[1..]);
         let remedy = match (*name, field) {
             ("certificate", _) => {
                 "; a docker certificate path is read nowhere, so remove the reference".to_string()
@@ -708,8 +778,11 @@ fn check_docker_sign_literal_text(
             // `stdin:` is rendered with nothing substituted, so it has no
             // working spelling of any of these names to offer.
             (_, "stdin") => String::new(),
-            (name, _) => {
-                let title = format!("{}{}", name[..1].to_uppercase(), &name[1..]);
+            ("digest" | "artifactID", _) => format!(
+                "; write `{{{{ .{title} }}}}`, which the docker sign path \
+                renders from the image"
+            ),
+            _ => {
                 format!(
                     "; write `{{{{ .{title} }}}}`, which anodizer substitutes before the render"
                 )

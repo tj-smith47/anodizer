@@ -2521,12 +2521,13 @@ fn a_placeholder_inside_a_statement_block_warns() {
     );
 }
 
-/// The closing delimiter is searched for in the whole remainder, so a
-/// template whose `{{` never closes holds no complete run after it either —
-/// ending the scan there loses no spelling. A run that closes AFTER another
-/// opener is still one run, and still warned about.
+/// The three openers close on three different delimiters, so an opener
+/// whose own closer is missing is stepped over rather than ending the scan:
+/// a `{{` with no `}}` can still be followed by a complete `{% … %}`, and
+/// breaking there would leave that statement unread. A run that closes
+/// AFTER another opener is still one run, and still warned about.
 #[test]
-fn an_unclosed_run_leaves_no_later_run_to_find() {
+fn an_unclosed_run_does_not_hide_the_runs_after_it() {
     use anodizer_core::config::SignConfig;
     let warnings_for = |template: &str| {
         let config = Config {
@@ -2540,10 +2541,73 @@ fn an_unclosed_run_leaves_no_later_run_to_find() {
         check_unpadded_sign_placeholders(&config, &mut warnings);
         warnings
     };
+    // Nothing complete follows the unterminated opener.
     assert!(warnings_for("{{ Artifact | upper").is_empty());
     assert!(warnings_for("out.sig {{ .Artifact").is_empty());
     assert_eq!(warnings_for("{{ oops {{ Artifact }}.sig").len(), 1);
     assert!(warnings_for("{{ .Artifact }}{{ Artifact }}.sig").is_empty());
+
+    // A complete run of the OTHER kind after an unterminated one is found.
+    assert_eq!(
+        warnings_for("{{ oops {% set x = Artifact %}"),
+        vec![
+            "binary_signs[0].signature names `{% set x = Artifact %}`, which \
+             anodizer substitutes only as the literal `{{ .Artifact }}` or \
+             `{{ Artifact }}` — every other spelling reaches the template \
+             engine as an undefined variable and fails the sign stage"
+                .to_string()
+        ]
+    );
+    assert_eq!(
+        warnings_for("{% oops {{ Artifact | upper }}"),
+        vec![
+            "binary_signs[0].signature names `{{ Artifact | upper }}`, which \
+             anodizer substitutes only as the literal `{{ .Artifact }}` or \
+             `{{ Artifact }}` — every other spelling reaches the template \
+             engine as an undefined variable and fails the sign stage"
+                .to_string()
+        ]
+    );
+    // The same fall-through reaches a name written after an unterminated
+    // comment, whose own `{#` is what really fails the parse.
+    assert_eq!(warnings_for("{# oops {{ Artifact | upper }}").len(), 1);
+}
+
+/// Tera opens a string literal on a single quote, a double quote or a
+/// backtick, and a backslash inside one escapes the next character. So all
+/// three spellings are text it never looks a name up in, and an escaped
+/// quote does not end the literal it sits in.
+#[test]
+fn a_name_inside_any_tera_string_literal_warns_nothing() {
+    use anodizer_core::config::SignConfig;
+    for spelling in [
+        "{{ `Artifact` }}",
+        "{{ \"he said \\\"Artifact\\\"\" }}",
+        "{{ Version | replace(from=`Artifact`, to=\"x\") }}",
+    ] {
+        let config = Config {
+            binary_signs: vec![SignConfig {
+                signature: Some(format!("{spelling}.sig")),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut warnings = Vec::new();
+        check_unpadded_sign_placeholders(&config, &mut warnings);
+        assert!(warnings.is_empty(), "{spelling}: {warnings:?}");
+    }
+
+    // A name OUTSIDE the literal is still found.
+    let config = Config {
+        binary_signs: vec![SignConfig {
+            signature: Some("{{ `x` }}{{ Artifact | upper }}.sig".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_unpadded_sign_placeholders(&config, &mut warnings);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
 }
 
 /// Tera strips a `{# … #}` comment before evaluating the template, so a
@@ -2977,6 +3041,60 @@ fn a_docker_shell_variable_warns_that_it_is_never_expanded() {
                 "{{ .Artifact }}@{{ .Digest }}".to_string(),
                 "{{ Signature }}".to_string(),
             ]),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_unpadded_sign_placeholders(&config, &mut warnings);
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+/// `${digest}` and `${artifactID}` expand nowhere either — the docker path
+/// seeds those two as TEMPLATE variables — so each is warned about with the
+/// spelling that renders instead of the one that is substituted.
+#[test]
+fn a_docker_digest_shell_variable_warns_with_the_template_spelling() {
+    use anodizer_core::config::DockerSignConfig;
+    let config = Config {
+        docker_signs: Some(vec![DockerSignConfig {
+            args: Some(vec![
+                "sign".to_string(),
+                "${artifact}@${digest}".to_string(),
+                "--annotation=id=$artifactID".to_string(),
+            ]),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_unpadded_sign_placeholders(&config, &mut warnings);
+    assert_eq!(
+        warnings,
+        vec![
+            "docker_signs[0].args names `${artifact}`, which the docker sign \
+             path never expands — it reaches the signing command as that \
+             literal text; write `{{ .Artifact }}`, which anodizer substitutes \
+             before the render"
+                .to_string(),
+            "docker_signs[0].args names `${digest}`, which the docker sign \
+             path never expands — it reaches the signing command as that \
+             literal text; write `{{ .Digest }}`, which the docker sign path \
+             renders from the image"
+                .to_string(),
+            "docker_signs[0].args names `${artifactID}`, which the docker sign \
+             path never expands — it reaches the signing command as that \
+             literal text; write `{{ .ArtifactID }}`, which the docker sign \
+             path renders from the image"
+                .to_string(),
+        ]
+    );
+
+    // The template spellings themselves warn nothing.
+    let config = Config {
+        docker_signs: Some(vec![DockerSignConfig {
+            args: Some(vec!["{{ .Artifact }}@{{ .Digest }}".to_string()]),
+            stdin: Some("{{ ArtifactID }}".to_string()),
             ..Default::default()
         }]),
         ..Default::default()
@@ -3450,10 +3568,17 @@ fn signing_tools_silent_when_no_signing_configured() {
 /// produce must be exactly what the ```text block after it quotes — every
 /// quoted line produced, and every produced line quoted, in that order.
 ///
-/// What this covers is `check config`'s own sign warnings. The page's
-/// `Error sign:` blocks come from the sign stage rather than from a check
-/// function and are pinned where that stage lives
-/// (`crates/stage-sign`, `the_collision_errors_quoted_in_the_sign_docs_are_the_messages_the_stage_produces`).
+/// Every yaml block has to load, and the count of `Warning ` lines is taken
+/// over the WHOLE page rather than over the fixtures: a line quoted in a
+/// block no fixture reaches would otherwise be counted by neither side.
+///
+/// What this covers is `check config`'s own sign warnings. The command also
+/// runs the announce, structure and tooling checks, so a page block that
+/// ever quotes one of THEIR warnings needs that check driven here too. The
+/// page's `Error sign:` blocks come from the sign stage rather than from a
+/// check function and are pinned where that stage lives
+/// (`crates/stage-sign`,
+/// `the_collision_errors_quoted_in_the_sign_docs_are_the_messages_the_stage_produces`).
 #[test]
 fn every_warning_quoted_in_the_sign_docs_is_a_message_the_checks_produce() {
     let path = concat!(
@@ -3464,14 +3589,16 @@ fn every_warning_quoted_in_the_sign_docs_is_a_message_the_checks_produce() {
     let blocks = fenced_blocks(&page);
 
     let mut fixtures = 0usize;
-    let mut quoted_lines = 0usize;
+    let mut refused = 0usize;
     for (at, (language, body)) in blocks.iter().enumerate() {
         if *language != "yaml" {
             continue;
         }
         // A fragment the loader refuses is not a config the page claims to
-        // show output for.
+        // show output for. The count is pinned below, so one arriving is a
+        // failure rather than a silent skip.
         let Ok(mut config) = serde_yaml_ng::from_str::<Config>(body) else {
+            refused += 1;
             continue;
         };
         anodizer_core::defaults_merge::apply_defaults(&mut config);
@@ -3490,14 +3617,18 @@ fn every_warning_quoted_in_the_sign_docs_is_a_message_the_checks_produce() {
             .filter_map(|line| line.trim_start().strip_prefix("Warning "))
             .map(str::to_string)
             .collect();
-        quoted_lines += quoted.len();
         assert_eq!(
             produced, quoted,
             "the config in block {at} and the output quoted under it disagree"
         );
     }
-    assert_eq!(fixtures, 10, "the page's parseable config blocks");
-    assert_eq!(quoted_lines, 9, "the warnings the page quotes");
+    assert_eq!(fixtures, 12, "the page's parseable config blocks");
+    assert_eq!(refused, 0, "every config block on the page has to load");
+    assert_eq!(
+        quoted_warning_lines("sign/binaries-archives.md").len(),
+        9,
+        "the warnings the page quotes"
+    );
 }
 
 /// Every fenced block on a docs page as `(language, body)`, in page order.
@@ -3523,6 +3654,9 @@ fn fenced_blocks(page: &str) -> Vec<(&str, &str)> {
 /// it. So that page's lint section is driven as a fixture too: its `yaml`
 /// block is the config, and the `text` block under it is what the check has
 /// to produce for it.
+///
+/// The count is taken over the whole page, not over that section, so a
+/// `Warning ` quoted anywhere else on it fails until somebody pins it too.
 #[test]
 fn the_warning_quoted_in_the_resilience_docs_is_a_message_the_check_produces() {
     let path = concat!(
@@ -3554,24 +3688,38 @@ fn the_warning_quoted_in_the_resilience_docs_is_a_message_the_check_produces() {
     let mut produced: Vec<String> = vec![];
     check_announce_secret_exposure(&config, &mut produced);
     assert_eq!(produced, quoted);
-    assert_eq!(quoted.len(), 1, "the section quotes one warning");
+    assert_eq!(
+        quoted_warning_lines("advanced/release-resilience.md").len(),
+        1,
+        "the warnings the page quotes"
+    );
 }
 
-/// Read every `Error ` line a docs page quotes, in page order, with the label
-/// and the renderer's indentation stripped. A line carrying the elision
-/// character is an abbreviation of real output rather than a claim about it,
-/// so it is left out.
-fn quoted_error_lines(relative: &str) -> Vec<String> {
+/// Read every line a docs page quotes under one gutter label, in page
+/// order, with the label and the renderer's indentation stripped. A line
+/// carrying the elision character is an abbreviation of real output rather
+/// than a claim about it, so it is left out.
+fn quoted_label_lines(relative: &str, label: &str) -> Vec<String> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/site/content/docs")
         .join(relative);
     let page =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     page.lines()
-        .filter_map(|line| line.trim_start().strip_prefix("Error "))
+        .filter_map(|line| line.trim_start().strip_prefix(label))
         .filter(|line| !line.contains('\u{2026}'))
         .map(str::to_string)
         .collect()
+}
+
+/// Every `Error ` line a docs page quotes.
+fn quoted_error_lines(relative: &str) -> Vec<String> {
+    quoted_label_lines(relative, "Error ")
+}
+
+/// Every `Warning ` line a docs page quotes.
+fn quoted_warning_lines(relative: &str) -> Vec<String> {
+    quoted_label_lines(relative, "Warning ")
 }
 
 /// The monorepo page and the release-resilience page both quote the workspace
