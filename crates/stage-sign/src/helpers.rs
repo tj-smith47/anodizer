@@ -13,8 +13,8 @@ use anodizer_core::config::SignConfig;
 use anodizer_core::context::Context;
 use anodizer_core::env_expand::expand_with_preserve;
 
-/// The complete set of recognized `signs[].artifacts` / `docker_signs[].artifacts`
-/// filter strings, in match-arm order.
+/// The complete set of recognized `signs[].artifacts` /
+/// `docker_signs[].artifacts` filter strings, in match-arm order.
 ///
 /// This is the single source of truth shared between the runtime resolver
 /// (`should_sign_artifact`) and the config-time validator
@@ -77,8 +77,9 @@ pub const VALID_SIGN_ARTIFACT_FILTERS: &[&str] = &[
 /// anti-recursion guard is NOT in this filter — it is upstream, mirroring
 /// GoReleaser's `refreshAll` `Not(Checksum, Signature, Certificate)`
 /// (`internal/pipe/checksums/checksums.go:189-190`). Two upstream facts close
-/// the loop: the checksum stage's subject set is `checksummable_subject_kinds()`
-/// (PRIMARY only — it never hashes a `.sig` or a `.sha256`), and
+/// the loop: the checksum stage's subject set is
+/// `checksummable_subject_kinds()` (PRIMARY only — it never hashes a `.sig`
+/// or a `.sha256`), and
 /// `refresh_combined_checksums` skips every `is_derived_sidecar_kind`. So a
 /// freshly-produced `X.sha256.sig` is never re-checksummed (no third level
 /// forms) and never re-signed (`Signature` is excluded here). The legit second
@@ -235,8 +236,8 @@ pub(crate) fn build_authenticode_argv(
 /// `sign` subcommand), so the slot-based approach is both exact and password-
 /// value-independent.
 ///
-/// Used by the dry-run `(dry-run) would run:` echo so the password never arrives
-/// in logs verbatim. The spawn path relies on `redact::string` (fed the
+/// Used by the dry-run `(dry-run) would run:` echo so the password never
+/// arrives in logs verbatim. The spawn path relies on `redact::string` (fed the
 /// password via `SignJob::redact_extra`) instead; this helper covers the
 /// dry-run path where no process runs.
 pub(crate) fn redact_password_in_argv(args: &[String]) -> String {
@@ -332,8 +333,9 @@ pub(crate) fn sign_ids_match(
 ///
 /// Caller passes `SignConfig::DEFAULT_SIGNATURE_TEMPLATE` for normal signs
 /// (`{{ .Artifact }}.sig`) or `SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE`
-/// for binary_signs (also `{{ .Artifact }}.sig` — anodizer's flat dist layout
-/// means binary names already carry the platform suffix; no duplication needed).
+/// for binary_signs (also `{{ .Artifact }}.sig` — anodizer's flat dist
+/// layout means binary names already carry the platform suffix; no
+/// duplication needed).
 pub(crate) fn resolve_signature_path(
     sign_cfg: &SignConfig,
     artifact_path: &str,
