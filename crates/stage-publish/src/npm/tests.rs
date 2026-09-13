@@ -2852,6 +2852,13 @@ fn npm_config_credential_vars_are_classified_by_key_not_by_case() {
         "npm_config__auth",
         "npm_config__authToken",
         "NPM_CONFIG_//registry.npmjs.org/:_authToken",
+        // The two halves of a client certificate, and the CA bundle in both
+        // spellings.
+        "npm_config_cert",
+        "npm_config_key",
+        "NPM_CONFIG_CA",
+        "npm_config_ca",
+        "npm_config_cafile",
     ] {
         assert!(
             is_npm_config_credential_var(name),
@@ -2861,6 +2868,8 @@ fn npm_config_credential_vars_are_classified_by_key_not_by_case() {
     for name in [
         "NPM_CONFIG_REGISTRY",
         "npm_config_loglevel",
+        // Contains `ca`, but names a directory, not a trust decision.
+        "npm_config_cache",
         "NPM_TOKEN",
         "PATH",
         "ACTIONS_ID_TOKEN_REQUEST_URL",
@@ -2871,6 +2880,36 @@ fn npm_config_credential_vars_are_classified_by_key_not_by_case() {
              unrelated npm behaviour"
         );
     }
+}
+
+/// `npm_config_flags` puts `--userconfig` and `--registry` BEFORE the
+/// subcommand, which only npm itself can confirm — a fake npm scanning argv
+/// proves nothing about npm's own parser. Ignored by default because it needs
+/// npm on PATH; run with `--ignored` where it is installed.
+///
+/// Verified on npm 11.19.0: `npm --userconfig <file> config get registry`
+/// answers with the file's registry, so the flag is honoured in this position.
+#[test]
+#[ignore = "requires npm on PATH"]
+fn real_npm_reads_the_flags_that_precede_the_subcommand() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let npmrc = dir.path().join(".npmrc");
+    std::fs::write(&npmrc, "registry=https://registry.example.invalid/\n").expect("write npmrc");
+
+    let out = std::process::Command::new("npm")
+        .args(super::publish::npm_config_flags(
+            &npmrc,
+            "https://registry.example.invalid/",
+        ))
+        .args(["config", "get", "registry"])
+        .output()
+        .expect("spawn npm");
+    assert!(out.status.success(), "{:?}", out);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "https://registry.example.invalid/",
+        "npm must read --userconfig given before the subcommand"
+    );
 }
 
 /// The publish subprocess must read its credential from the `.npmrc` this run
@@ -4385,7 +4424,7 @@ fn partial_publish_failure_preserves_rollback_evidence() {
     anodizer_core::test_helpers::fake_tool::write_executable_script(
         &npm,
         r#"#!/bin/sh
-# The publisher pins `--userconfig` / `--registry` ahead of the subcommand,
+# The publisher places `--userconfig` / `--registry` ahead of the subcommand,
 # which npm accepts, so find the subcommand rather than reading $1.
 sub=
 for a in "$@"; do
@@ -4491,7 +4530,7 @@ fn missing_platform_binary_publishes_nothing() {
     anodizer_core::test_helpers::fake_tool::write_executable_script(
         &npm,
         r#"#!/bin/sh
-# The publisher pins `--userconfig` / `--registry` ahead of the subcommand,
+# The publisher places `--userconfig` / `--registry` ahead of the subcommand,
 # which npm accepts, so find the subcommand rather than reading $1.
 sub=
 for a in "$@"; do
@@ -5625,6 +5664,9 @@ fn promote_postinstall_version_retags_metapackage() {
         &npm,
         &format!(
             r#"#!/bin/sh
+# The flags npm reads before its subcommand (--userconfig, --registry) each
+# take a value, so step past both words to reach the subcommand.
+while case "$1" in --*) true ;; *) false ;; esac; do shift 2; done
 if [ "$1" = "dist-tag" ] && [ "$2" = "add" ]; then
   echo "$3 $4" >> "{calls}"
   exit 0
@@ -5696,6 +5738,9 @@ fn promote_optional_deps_newest_reads_dist_tag_and_family() {
         &npm,
         &format!(
             r#"#!/bin/sh
+# The flags npm reads before its subcommand (--userconfig, --registry) each
+# take a value, so step past both words to reach the subcommand.
+while case "$1" in --*) true ;; *) false ;; esac; do shift 2; done
 case "$1 $2" in
   "dist-tag ls")
     echo "$1 $2 $3" >> "{calls}"

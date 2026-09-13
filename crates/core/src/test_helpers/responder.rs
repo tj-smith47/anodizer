@@ -142,9 +142,23 @@ where
     (addr, counter)
 }
 
+/// Like [`spawn_oneshot_http_responder`], but each response is raw bytes, so a
+/// test can serve a document that is not valid UTF-8 — a container manifest
+/// with a binary byte in it, whose content digest is the SHA-256 over exactly
+/// the bytes served.
+pub fn spawn_oneshot_http_responder_bytes(responses: Vec<Vec<u8>>) -> (SocketAddr, Arc<AtomicU32>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local_addr");
+    let counter = Arc::new(AtomicU32::new(0));
+    spawn_serve_thread(listener, counter.clone(), responses);
+    (addr, counter)
+}
+
 /// Serve `responses` one-per-connection (incrementing `counter` per canned
-/// response), then enter a drain phase. Generic over `AsRef<str>` so both
-/// the `&'static str` and owned-`String` spawners delegate here.
+/// response), then enter a drain phase. Generic over `AsRef<[u8]>` so the
+/// `&'static str`, owned-`String` and raw-byte spawners all delegate here; a
+/// response body is written verbatim, so a manifest that is not valid UTF-8
+/// reaches the client byte for byte.
 ///
 /// Drain phase — soak up any in-flight connect attempts that the client may
 /// have initiated before its retry returned success. Without this, a stray
@@ -156,7 +170,7 @@ where
 /// over-eager client middleware (e.g. octocrab's tower retry layer making
 /// extra connects beyond the user-level retry policy) must not inflate that
 /// assertion.
-fn spawn_serve_thread<R: AsRef<str> + Send + 'static>(
+fn spawn_serve_thread<R: AsRef<[u8]> + Send + 'static>(
     listener: TcpListener,
     counter: Arc<AtomicU32>,
     responses: Vec<R>,
@@ -167,7 +181,7 @@ fn spawn_serve_thread<R: AsRef<str> + Send + 'static>(
 /// [`spawn_serve_thread`] with an optional sink that collects each served
 /// request's raw bytes, in order, for header assertions across a sequence of
 /// asks (an authentication challenge and the authorized re-ask behind it).
-fn spawn_serve_thread_capturing<R: AsRef<str> + Send + 'static>(
+fn spawn_serve_thread_capturing<R: AsRef<[u8]> + Send + 'static>(
     listener: TcpListener,
     counter: Arc<AtomicU32>,
     responses: Vec<R>,
@@ -190,7 +204,7 @@ fn spawn_serve_thread_capturing<R: AsRef<str> + Send + 'static>(
                     let _ = stream.set_nonblocking(false);
                     serve_one(
                         stream,
-                        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+                        b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
                     );
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -267,7 +281,7 @@ pub fn spawn_request_capturing_responder(
 /// raced the client's send buffer and produced `BrokenPipe` on the
 /// client side, which was then mis-classified as a transport-layer
 /// failure and triggered a spurious retry.
-fn serve_one(stream: TcpStream, resp: &str) {
+fn serve_one(stream: TcpStream, resp: &[u8]) {
     serve_one_capturing(stream, resp, None);
 }
 
@@ -275,7 +289,7 @@ fn serve_one(stream: TcpStream, resp: &str) {
 /// given.
 fn serve_one_capturing(
     mut stream: TcpStream,
-    resp: &str,
+    resp: &[u8],
     captured: Option<&std::sync::Mutex<Vec<String>>>,
 ) {
     let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
@@ -286,7 +300,7 @@ fn serve_one_capturing(
             .push(String::from_utf8_lossy(&request).to_string());
     }
     let resp = force_connection_close(resp);
-    let _ = stream.write_all(resp.as_bytes());
+    let _ = stream.write_all(&resp);
     let _ = stream.flush();
     let _ = stream.shutdown(std::net::Shutdown::Both);
 }
@@ -304,24 +318,29 @@ fn serve_one_capturing(
 /// `Connection: close` makes the client retire the socket after each
 /// response and dial a fresh one, matching the one-response-per-connection
 /// contract. Real servers keep-alive; a single-shot test double must not.
-fn force_connection_close(resp: &str) -> std::borrow::Cow<'_, str> {
+fn force_connection_close(resp: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     // Split status line from the rest at the first CRLF; every canned
     // response is a well-formed HTTP/1.1 message starting with a status line.
-    let Some((status_line, rest)) = resp.split_once("\r\n") else {
+    let Some(crlf) = resp.windows(2).position(|w| w == b"\r\n") else {
         return std::borrow::Cow::Borrowed(resp);
     };
+    let (status_line, rest) = (&resp[..crlf], &resp[crlf + 2..]);
     // Header names are case-insensitive (RFC 7230); only inspect the header
     // block (everything up to the blank line) so a `Connection:` substring in
     // the body can't suppress the injection.
-    let header_block = rest.split("\r\n\r\n").next().unwrap_or(rest);
+    let header_block = &rest[..find_double_crlf(rest).unwrap_or(rest.len())];
     if header_block
-        .split("\r\n")
-        .filter_map(|line| line.split_once(':'))
-        .any(|(name, _)| name.trim().eq_ignore_ascii_case("connection"))
+        .split(|b| *b == b'\n')
+        .filter_map(|line| line.iter().position(|b| *b == b':').map(|at| &line[..at]))
+        .any(|name| name.trim_ascii().eq_ignore_ascii_case(b"connection"))
     {
         return std::borrow::Cow::Borrowed(resp);
     }
-    std::borrow::Cow::Owned(format!("{status_line}\r\nConnection: close\r\n{rest}"))
+    let mut out = Vec::with_capacity(resp.len() + 21);
+    out.extend_from_slice(status_line);
+    out.extend_from_slice(b"\r\nConnection: close\r\n");
+    out.extend_from_slice(rest);
+    std::borrow::Cow::Owned(out)
 }
 
 /// Read the full HTTP request from `stream`: headers up to the first
@@ -450,10 +469,10 @@ mod self_tests {
 
     #[test]
     fn force_connection_close_injects_header_after_status_line() {
-        let resp = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n";
+        let resp = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n";
         assert_eq!(
-            force_connection_close(resp),
-            "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+            force_connection_close(resp).as_ref(),
+            b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".as_slice()
         );
     }
 
@@ -461,23 +480,51 @@ mod self_tests {
     fn force_connection_close_is_noop_when_header_present() {
         // Case-insensitive: an existing `connection:` header suppresses the
         // injection so the responder never emits a duplicate.
-        let resp = "HTTP/1.1 200 OK\r\nconnection: keep-alive\r\nContent-Length: 0\r\n\r\n";
+        let resp = b"HTTP/1.1 200 OK\r\nconnection: keep-alive\r\nContent-Length: 0\r\n\r\n";
         assert!(matches!(
             force_connection_close(resp),
             std::borrow::Cow::Borrowed(_)
         ));
-        assert_eq!(force_connection_close(resp), resp);
+        assert_eq!(force_connection_close(resp).as_ref(), resp.as_slice());
     }
 
     #[test]
     fn force_connection_close_ignores_connection_token_in_body() {
         // A `Connection:` substring in the BODY must not suppress injection —
         // only the header block (up to the blank line) is inspected.
-        let resp = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nConnection: x";
+        let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nConnection: x";
         assert_eq!(
-            force_connection_close(resp),
-            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 13\r\n\r\nConnection: x"
+            force_connection_close(resp).as_ref(),
+            b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 13\r\n\r\nConnection: x"
+                .as_slice()
         );
+    }
+
+    /// A body the responder cannot decode as text still reaches the client
+    /// byte for byte, so a digest computed over what was served is the digest
+    /// of what the test wrote.
+    #[test]
+    fn a_non_utf8_body_is_served_verbatim() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+
+        let body = [0xffu8, 0xfe, 0x00, 0x41];
+        let mut canned =
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+        canned.extend_from_slice(&body);
+        let (addr, _calls) = spawn_oneshot_http_responder_bytes(vec![canned]);
+
+        let mut stream = TcpStream::connect(addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n")
+            .expect("write");
+        stream.flush().expect("flush");
+        let mut got = Vec::new();
+        stream.read_to_end(&mut got).expect("read response");
+        assert!(got.ends_with(&body), "served body was rewritten: {got:?}");
     }
 
     /// End-to-end: spin up the responder, send a multipart-ish PUT with

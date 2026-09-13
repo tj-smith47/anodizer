@@ -637,16 +637,16 @@ pub(crate) fn publish_with_oidc_fallback(
 /// it trusts. npm reads `npm_config_<key>` from the environment at a HIGHER
 /// precedence than the `--userconfig` file, so an ambient one silently
 /// outranks the credential this publish chose.
-const NPM_CONFIG_CREDENTIAL_FRAGMENTS: [&str; 6] = [
-    "auth",
-    "token",
-    "userconfig",
-    "globalconfig",
-    // A client certificate authenticates on its own, and a CA bundle decides
-    // which registry certificate is trusted at all.
-    "cert",
-    "cafile",
-];
+/// A credential can be embedded in a registry-scoped key
+/// (`//registry.npmjs.org/:_authToken`), so these match anywhere in the key.
+/// `cert` and `key` are the two halves of one client certificate.
+const NPM_CONFIG_CREDENTIAL_FRAGMENTS: [&str; 4] = ["auth", "token", "cert", "key"];
+
+/// Keys that redirect npm at another config file, or decide which registry
+/// certificate is trusted (`ca` inline, `cafile` by path). Matched whole:
+/// `ca` as a fragment would also take `npm_config_cache`, a directory setting
+/// that carries nothing.
+const NPM_CONFIG_REDIRECT_KEYS: [&str; 4] = ["userconfig", "globalconfig", "ca", "cafile"];
 
 /// Whether `name` is an `npm_config_*` variable that carries a credential or
 /// points npm at another config file. Case-insensitive in both halves: npm
@@ -658,6 +658,7 @@ pub(crate) fn is_npm_config_credential_var(name: &str) -> bool {
         NPM_CONFIG_CREDENTIAL_FRAGMENTS
             .iter()
             .any(|f| key.contains(f))
+            || NPM_CONFIG_REDIRECT_KEYS.contains(&key)
     })
 }
 
@@ -673,6 +674,23 @@ where
         .collect()
 }
 
+/// The flags EVERY npm invocation of this publisher carries: the run's own
+/// `.npmrc` through `--userconfig`, and the `--registry` it is talking to.
+///
+/// One spelling for both shapes — [`npm_command`], which spawns a `Command`,
+/// and promotion's argv vectors, which it also echoes — so a builder cannot
+/// carry one flag and not the other. They precede the subcommand, which npm's
+/// parser accepts (verified against npm 11.19.0 for `publish --dry-run`,
+/// `unpublish`, `view` and `dist-tag ls`).
+pub(crate) fn npm_config_flags(npmrc: &Path, registry: &str) -> [String; 4] {
+    [
+        "--userconfig".to_string(),
+        npmrc.display().to_string(),
+        "--registry".to_string(),
+        registry.to_string(),
+    ]
+}
+
 /// `npm` carrying the flags every invocation of this publisher must have: the
 /// run's own `.npmrc` through `--userconfig`, the `--registry` it is talking
 /// to, and a child env with the ambient `npm_config_*` credential /
@@ -686,10 +704,7 @@ where
 /// accepts wherever they appear.
 pub(crate) fn npm_command(cfg_dir: &Path, registry: &str) -> Command {
     let mut cmd = Command::new("npm");
-    cmd.arg("--userconfig")
-        .arg(cfg_dir.join(".npmrc"))
-        .arg("--registry")
-        .arg(registry);
+    cmd.args(npm_config_flags(&cfg_dir.join(".npmrc"), registry));
     strip_ambient_npm_config(&mut cmd);
     cmd
 }
@@ -873,29 +888,41 @@ mod npm_command_pin {
         function_bodies, production_half, rust_sources,
     };
 
-    /// Every npm subprocess of this crate is built by [`super::npm_command`].
-    /// The `.npmrc` this run wrote, the registry it is talking to and the
-    /// ambient `npm_config_*` credential variables npm ranks above both are
-    /// one decision; a second spawn site answered it differently and probed
-    /// one registry while publishing to another.
+    /// Every npm subprocess of this crate is built by [`super::npm_command`],
+    /// and every npm argv vector by [`super::npm_config_flags`]. The `.npmrc`
+    /// this run wrote, the registry it is talking to and the ambient
+    /// `npm_config_*` credential variables npm ranks above both are one
+    /// decision; a second spawn site answered it differently and probed one
+    /// registry while publishing to another.
     #[test]
     fn every_npm_spawn_is_built_by_the_shared_command() {
         let src = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/npm"));
         let mut literal = Vec::new();
         let mut unstripped = Vec::new();
+        let mut unflagged = Vec::new();
         let mut spawners = 0usize;
+        let mut argv_builders = 0usize;
         for source in rust_sources(src) {
             let text = std::fs::read_to_string(&source).expect("read source");
             for body in function_bodies(production_half(&text)) {
-                if !body.contains("Command::new(") {
-                    continue;
-                }
-                spawners += 1;
                 let name = format!(
                     "{}: {}",
                     source.display(),
                     body.trim_start().lines().next().unwrap_or_default()
                 );
+                // An argv vector opening with the npm program is the other
+                // shape an npm invocation takes; it must carry the same two
+                // flags, or it reads the developer's own `~/.npmrc`.
+                if body.contains(r#"vec!["npm".to_string()]"#) {
+                    argv_builders += 1;
+                    if !body.contains("npm_config_flags(") {
+                        unflagged.push(name.clone());
+                    }
+                }
+                if !body.contains("Command::new(") {
+                    continue;
+                }
+                spawners += 1;
                 if body.contains(r#"Command::new("npm")"#) {
                     literal.push(name.clone());
                 }
@@ -904,6 +931,16 @@ mod npm_command_pin {
                 }
             }
         }
+        assert_eq!(
+            argv_builders, 3,
+            "promotion builds three npm argv vectors; a new one must say \
+             which config file and registry it names: {unflagged:?}"
+        );
+        assert!(
+            unflagged.is_empty(),
+            "an npm argv without --userconfig / --registry reads the \
+             developer's own npmrc: {unflagged:?}"
+        );
         assert_eq!(
             spawners, 3,
             "the npm module spawns from npm_command and promotion's two argv \

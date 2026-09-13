@@ -1,7 +1,7 @@
 use super::*;
 use anodizer_core::test_helpers::responder::{
     canned_http_response, spawn_capturing_http_responder_with, spawn_oneshot_http_responder,
-    spawn_oneshot_http_responder_with,
+    spawn_oneshot_http_responder_bytes, spawn_oneshot_http_responder_with,
 };
 
 /// A retry policy that spends no wall-clock time.
@@ -160,6 +160,94 @@ fn a_bearer_challenge_is_exchanged_for_a_token_and_the_ask_repeats() {
     );
 }
 
+/// A token endpoint that answers a token under `access_token` — the OAuth2
+/// spelling, which is what Google Artifact Registry and Azure answer with —
+/// authorizes the re-ask the same way.
+#[test]
+fn an_access_token_is_read_the_same_way_as_a_token() {
+    let (addr, calls) = spawn_oneshot_http_responder_with(|addr| {
+        let token = "{\"access_token\":\"tok\"}";
+        vec![
+            bearer_challenge(addr),
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{token}",
+                token.len()
+            ),
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{MANIFEST_BODY}",
+                MANIFEST_BODY.len()
+            ),
+        ]
+    });
+    let digest = probe_local(addr, "owner/app", "1.0.0").unwrap();
+    assert_eq!(digest, Some(content_digest(MANIFEST_BODY.as_bytes())));
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "the 401, the token fetch and the authorized re-ask"
+    );
+}
+
+/// A token endpoint that refuses hands the registry's own 401 back, so the
+/// image reads as unverifiable rather than absent. The re-ask is never made:
+/// there is no token to make it with.
+#[test]
+fn a_token_endpoint_that_refuses_leaves_the_registrys_own_401() {
+    let (addr, calls) = spawn_oneshot_http_responder_with(|addr| {
+        vec![
+            bearer_challenge(addr),
+            canned_http_response("403 Forbidden", "").to_string(),
+        ]
+    });
+    let err = probe_local(addr, "owner/app", "1.0.0").expect_err("401 is unverifiable");
+    assert_eq!(http_status(&err), 401, "{err:#}");
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "the 401 and the refused token fetch, and no re-ask"
+    );
+}
+
+/// A token endpoint answering something that is not JSON (an HTML error page
+/// behind a proxy, say) is the same non-answer as a refusal.
+#[test]
+fn a_token_endpoint_answering_something_other_than_json_is_a_non_answer() {
+    let (addr, calls) = spawn_oneshot_http_responder_with(|addr| {
+        vec![
+            bearer_challenge(addr),
+            canned_http_response("200 OK", "<html>proxy error</html>").to_string(),
+        ]
+    });
+    let err = probe_local(addr, "owner/app", "1.0.0").expect_err("401 is unverifiable");
+    assert_eq!(http_status(&err), 401, "{err:#}");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+/// A well-formed JSON answer naming neither key carries no token, so the
+/// probe reports the 401 rather than re-asking with an empty credential.
+#[test]
+fn a_json_answer_naming_no_token_key_is_a_non_answer() {
+    let (addr, calls) = spawn_oneshot_http_responder_with(|addr| {
+        vec![
+            bearer_challenge(addr),
+            canned_http_response("200 OK", "{\"expires_in\":300}").to_string(),
+        ]
+    });
+    let err = probe_local(addr, "owner/app", "1.0.0").expect_err("401 is unverifiable");
+    assert_eq!(http_status(&err), 401, "{err:#}");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+/// A `Bearer` challenge naming this responder's own `/token` endpoint.
+fn bearer_challenge(addr: std::net::SocketAddr) -> String {
+    format!(
+        "HTTP/1.1 401 Unauthorized\r\n\
+         WWW-Authenticate: Bearer realm=\"http://{addr}/token\",service=\"reg\",\
+         scope=\"repository:owner/app:pull\"\r\n\
+         Content-Length: 0\r\n\r\n"
+    )
+}
+
 #[test]
 fn a_challenge_parameter_is_read_out_of_the_header() {
     let challenge = "Bearer realm=\"https://auth.example/token\",service=\"registry\"";
@@ -258,6 +346,26 @@ fn the_digest_the_registry_names_is_preferred_over_the_body_hash() {
     );
 }
 
+/// A content digest is the SHA-256 over the bytes the registry served, and a
+/// manifest is not required to be valid UTF-8. Decoding the body as text
+/// would substitute U+FFFD for the byte below and answer a digest no registry
+/// serves.
+#[test]
+fn a_manifest_that_is_not_text_still_answers_with_its_own_content_digest() {
+    let raw = b"{\"schemaVersion\":2,\"x\":\"\xff\"}".to_vec();
+    let mut response =
+        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", raw.len()).into_bytes();
+    response.extend_from_slice(&raw);
+    let (addr, _calls) = spawn_oneshot_http_responder_bytes(vec![response]);
+    let digest = probe_local(addr, "owner/app", "1.0.0").unwrap();
+    assert_eq!(digest, Some(content_digest(&raw)));
+    assert_ne!(
+        digest,
+        Some(content_digest(String::from_utf8_lossy(&raw).as_bytes())),
+        "the fixture must distinguish the raw bytes from a lossy decode"
+    );
+}
+
 /// A stock `registry:2` behind htpasswd answers `Basic`, whose realm is a
 /// human-readable name rather than a token endpoint. The credential itself is
 /// what such a registry wants.
@@ -323,7 +431,7 @@ fn a_stored_credential_is_sent_to_the_token_endpoint() {
     );
     assert!(
         asked[2].contains("Bearer tok"),
-        "the re-ask carries the minted token: {:?}",
+        "the re-ask carries the issued token: {:?}",
         asked[2]
     );
 }
