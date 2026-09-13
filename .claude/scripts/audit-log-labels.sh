@@ -22,10 +22,20 @@
 # label and its format are added for you.
 #
 # The second pass holds the same authority over the DOCS: a fenced block in
-# docs/site/content that quotes `Warning: ` / `Error: ` / `Note: ` shows a line
-# no renderer can produce, and a reader copying it files a bug about output
-# anodizer never printed. Markdown admonitions (`> **Warning:** …`) live
-# outside a fence and are prose, so they are untouched.
+# docs/site/content that quotes a line no renderer can produce sends a reader
+# to file a bug about output anodizer never printed. Three shapes, all read
+# off crates/core/src/log/:
+#
+#   1. `Warning: ` / `Error: ` / `Note: ` — the label carries no colon.
+#   2. A `•` body line at an EVEN leading-space count — a body line is
+#      `indent()` (two spaces per open section, so always even) plus the
+#      3-space BODY_INDENT, so its column is always odd.
+#   3. A `[stage]` prefix — the stage name is carried by the section header
+#      and the gutter, never repeated per line.
+#
+# Markdown admonitions (`> **Warning:** …`) live outside a fence and are
+# prose, so they are untouched. A TOML section header (`[package]`) carries
+# nothing after the `]`, so rule 3 asks for trailing content and leaves it be.
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
@@ -73,29 +83,46 @@ if [[ -n "$violations" ]]; then
     exit 1
 fi
 
-# The same authority governs every rendered transcript a docs page quotes: a
-# fenced block showing `Warning: ` claims output the renderer cannot produce.
-# Markdown admonitions (`> **Warning:** …`) sit outside a fence and are prose.
+# The same authority governs every rendered transcript a docs page quotes.
 DOCS_DIR="docs/site/content"
 if [[ -d "$DOCS_DIR" ]]; then
     collect_files DOCS_FILES -rlE --include='*.md' \
-        -- '^[[:space:]]*(Warning|Error|Note): ' "$DOCS_DIR"
+        -- '^[[:space:]]*((Warning|Error|Note): |• |\[[a-z][a-z0-9-]*\][[:space:]])' \
+        "$DOCS_DIR"
     if ((${#DOCS_FILES[@]} > 0)); then
         run_scanner docs_violations -f - "${DOCS_FILES[@]}" <<'AWK'
 FNR == 1 { fenced = 0 }
 /^[[:space:]]*```/ { fenced = !fenced; next }
 fenced && $0 ~ /^[[:space:]]*(Warning|Error|Note): / {
-    printf "%s:%d:%s\n", FILENAME, FNR, $0
+    printf "%s:%d: colon-suffixed label: %s\n", FILENAME, FNR, $0
+}
+fenced && $0 ~ /^[[:space:]]*• / {
+    leading = match($0, /[^ ]/) - 1
+    if (leading % 2 == 0) {
+        printf "%s:%d: unreachable bullet column: %s\n", FILENAME, FNR, $0
+    }
+}
+fenced && $0 ~ /^[[:space:]]*\[[a-z][a-z0-9-]*\][[:space:]]+[^[:space:]]/ {
+    printf "%s:%d: stage-name prefix: %s\n", FILENAME, FNR, $0
 }
 AWK
         if [[ -n "$docs_violations" ]]; then
-            echo "COLON-SUFFIXED STATUS LABEL IN A DOCS TRANSCRIPT."
+            echo "A DOCS TRANSCRIPT QUOTES A LINE THE RENDERER CANNOT PRODUCE."
             echo
             echo "$docs_violations"
-            echo "These fenced blocks quote a rendered line the renderer cannot produce:"
-            echo "crates/core/src/log/render.rs right-aligns the label in a 12-column"
-            echo "gutter with NO colon. Re-render the block (the label right-aligned in"
-            echo "that gutter, plus the enclosing section indent) or move the prose"
+            echo "crates/core/src/log/render.rs is the authority for all three shapes:"
+            echo
+            echo "  colon-suffixed label  the label is right-aligned in a 12-column"
+            echo "                        gutter with NO colon."
+            echo "  unreachable bullet    a body line is indent() (two spaces per open"
+            echo "                        section) plus the 3-space BODY_INDENT, so it"
+            echo "                        sits at 3 columns ungrouped, 5 inside a stage"
+            echo "                        section — never an even count."
+            echo "  stage-name prefix     the stage name is carried by the section"
+            echo "                        header and the gutter, never repeated as a"
+            echo "                        per-line [stage] prefix."
+            echo
+            echo "Re-render the block at the renderer's geometry, or move the prose"
             echo "outside the fence."
             exit 1
         fi

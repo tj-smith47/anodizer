@@ -64,11 +64,11 @@ hook stages has a teardown lane on the command that staged it:
 
 ```
 $ anodizer build
-  • ran before hook: ./stage-staging.sh
-  • built binary myapp (x86_64-unknown-linux-gnu)
-  • ran after hook: ./notify.sh built
-  • build complete
-  • ran always hook: ./teardown-staging.sh
+   • ran before hook: ./stage-staging.sh
+   • built binary myapp (x86_64-unknown-linux-gnu)
+   • ran after hook: ./notify.sh built
+   • build complete
+   • ran always hook: ./teardown-staging.sh
 ```
 
 `on_error` stays release-only on purpose: it is the release-failed

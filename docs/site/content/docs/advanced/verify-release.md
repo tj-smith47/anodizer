@@ -70,9 +70,9 @@ asset:
 ```
 $ anodizer release
 ...
-     Warning crate 'myapp': 1 produced artifact(s) missing from the published release: myapp_1.0.0_amd64.deb
+     Warning 1 produced artifact(s) missing from the published release for crate 'myapp': myapp_1.0.0_amd64.deb
        Error verify-release: post-publish verification found 1 issue(s); the release IS published — investigate:
-  - crate 'myapp': 1 produced artifact(s) missing from the published release: myapp_1.0.0_amd64.deb
+  - 1 produced artifact(s) missing from the published release for crate 'myapp': myapp_1.0.0_amd64.deb
 ```
 
 Extra assets on the release (orphans from a prior re-cut) are reported as an
@@ -87,7 +87,7 @@ local sha256 — the checksum stage's already-computed hash is reused when
 available. A clean pass emits one result line:
 
 ```
-• github: crate 'myapp' 22/22 assets present, sizes+digests match
+     • github: crate 'myapp' 22/22 assets present, sizes+digests match
 ```
 
 A mismatch names the asset and both values:
@@ -157,32 +157,32 @@ so no extra config is needed:
 One result line per publisher:
 
 ```
-• cargo: anodizer-core@0.15.4 visible on crates.io index
-• npm: myapp@0.15.4 visible on registry.npmjs.org
-• pypi: 9/9 uploaded file(s) listed on pypi.org
-• blob: 22/22 uploaded object(s) visible in s3://my-bucket
-• snapcraft: myapp 1.0.0 live in the Snap Store channel map
-• docker: 4/4 pushed image(s) visible on ghcr.io
+     • cargo: anodizer-core@0.15.4 visible on crates.io index
+     • npm: myapp@0.15.4 visible on registry.npmjs.org
+     • pypi: 9/9 uploaded file(s) listed on pypi.org
+     • blob: 22/22 uploaded object(s) visible in s3://my-bucket
+     • snapcraft: myapp 1.0.0 live in the Snap Store channel map
+     • docker: 4/4 pushed image(s) visible on ghcr.io
 ```
 
 Every line names the host it asked, and a run that spread its uploads over
 several hosts names each once, sorted:
 
 ```
-• blob: 2/2 uploaded object(s) visible in s3://my-bucket, s3://my-mirror
+     • blob: 2/2 uploaded object(s) visible in s3://my-bucket, s3://my-mirror
 ```
 
 A single object, package or image reads in the singular, with no counter:
 
 ```
-• blob: v1/app.tar.gz visible in s3://my-bucket
+     • blob: v1/app.tar.gz visible in s3://my-bucket
 ```
 
 Anything that qualifies the count arrives in ONE trailing clause — how many
 needed a propagation wait, and how many could not be reached at all:
 
 ```
-• docker: 3/4 pushed image(s) visible on ghcr.io (1/4 needed a propagation wait, 1 unverifiable)
+     • docker: 3/4 pushed image(s) visible on ghcr.io (1/4 needed a propagation wait, 1 unverifiable)
 ```
 
 ### Registry propagation
@@ -201,7 +201,7 @@ Waiting out propagation is the expected case, so it prints no warning. The
 publisher's own result line says how much of the publish arrived late:
 
 ```
-• npm: 9/9 published package(s) visible on registry.npmjs.org (6/9 needed a propagation wait)
+     • npm: 9/9 published package(s) visible on registry.npmjs.org (6/9 needed a propagation wait)
 ```
 
 Run with `-v` to see each individual re-ask.
@@ -312,7 +312,7 @@ When **Docker is unavailable**, the smoke-test is **skipped with a notice** —
 it does not hard-fail the gate, and asset-existence and libc-ceiling still run:
 
 ```
-• skipped install smoke-test — Docker unavailable (asset-existence and libc-ceiling still run)
+     • skipped install smoke-test — Docker unavailable (asset-existence and libc-ceiling still run)
 ```
 
 ## (d) libc ceiling

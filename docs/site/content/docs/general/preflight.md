@@ -20,11 +20,11 @@ Every failure is collected in one pass and the release aborts before any
 side effect:
 
 ```text
-• preflight: 4 of 24 check(s) failed:
-•   ✗ required tool 'cosign' not found on PATH [needed by: stage:sign, stage:docker-sign]
-•   ✗ env var(s) missing or empty: COSIGN_KEY [needed by: stage:sign, stage:docker-sign]
-•   ✗ env var AUR_SSH_KEY does not hold a usable SSH private key: missing trailing newline after end marker [needed by: publish:aur]
-•   ✗ endpoint 'http://minio.svc:9003' unreachable: connection refused [needed by: stage:blob]
+       Error 4 of 24 preflight check(s) failed:
+       Error   ✗ required tool 'cosign' not found on PATH [needed by: stage:sign, stage:docker-sign]
+       Error   ✗ env var(s) missing or empty: COSIGN_KEY [needed by: stage:sign, stage:docker-sign]
+       Error   ✗ env var AUR_SSH_KEY does not hold a usable SSH private key: missing trailing newline after end marker [needed by: publish:aur]
+       Error   ✗ endpoint 'http://minio.svc:9003' unreachable: connection refused [needed by: stage:blob]
        Error preflight: 4 environment failure(s) across 24 check(s); fix the issues above before re-running
 ```
 
@@ -48,11 +48,11 @@ version's current upstream state and prints a report before publishing
 starts:
 
 ```text
-• Pre-flight publisher check
-• cargo mycrate@1.2.3       clean
-• chocolatey mycrate@1.2.3  in-moderation — package in moderation queue
-• winget mycrate@1.2.3      pr-pending — https://github.com/microsoft/winget-pkgs/pull/123
-• aur mycrate@1.2.3         unknown — AUR RPC returned 503
+   • Pre-flight publisher check
+   • cargo mycrate@1.2.3       clean
+   • chocolatey mycrate@1.2.3  in-moderation — package in moderation queue
+   • winget mycrate@1.2.3      pr-pending — https://github.com/microsoft/winget-pkgs/pull/123
+   • aur mycrate@1.2.3         unknown — AUR RPC returned 503
 ```
 
 A row already live upstream renders under the success marker
@@ -98,11 +98,11 @@ deselected publisher is never probed and never gates the exit code — and so
 the canary and the release cannot answer differently:
 
 ```text
-• Reconcile state
-✓ cargo       complete — 1.2.3 live with matching cksum
-• npm         absent — will publish
-✓ winget      complete — open PR https://github.com/microsoft/winget-pkgs/pull/123
-• aur         unknown — probe failed: AUR RPC returned 503
+   • Reconcile state
+   ✓ cargo       complete — 1.2.3 live with matching cksum
+   • npm         absent — will publish
+   ✓ winget      complete — open PR https://github.com/microsoft/winget-pkgs/pull/123
+   • aur         unknown — probe failed: AUR RPC returned 503
 ```
 
 | State | Meaning | Blocks? |
@@ -123,8 +123,8 @@ about to publish. anodizer locates that tag relative to `HEAD` and skips the
 whole sweep in that case — a purely local git query, no network:
 
 ```text
-• Reconcile state
-•   skipped — v0.22.2 is already released and HEAD has advanced past it; this tree will cut a new version
+   • Reconcile state
+   •   skipped — v0.22.2 is already released and HEAD has advanced past it; this tree will cut a new version
 ```
 
 | Tag for the resolved version | Behaviour |
@@ -229,7 +229,7 @@ so a malformed secret key is caught before a tag is issued; on-disk key
 
 ```bash
 $ anodizer release --preflight-secrets
-• preflight-secrets: all required publish secrets / credentials present
+   • preflight-secrets: all required publish secrets / credentials present
 ```
 
 Wire it as the **root job a release depends on**, so a missing CI secret

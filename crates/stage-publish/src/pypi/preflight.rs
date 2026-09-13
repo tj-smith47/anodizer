@@ -198,8 +198,8 @@ pub(crate) fn released_files_body(
 /// report as unverifiable rather than as an absence.
 ///
 /// The project name and version come from the filename itself
-/// ([`distribution_name_version`]) and the page comes from
-/// [`released_files_body`], so this asks the same index question the
+/// (`distribution_name_version`) and the page comes from
+/// `released_files_body`, so this asks the same index question the
 /// publisher's own reconcile asks — an upload that reconcile would call
 /// already-published is exactly the one this reports as present.
 pub fn uploaded_file_live_on_index(

@@ -39,8 +39,8 @@ Run with `HOMEBREW_CORE_GITHUB_TOKEN` exported (a token that can fork `Homebrew/
 
 ```console
 $ anodizer release
-  • processing homebrew-core bump 'homebrew_cores[0]'
-  • bumped formula my-tool to 1.2.3 — opened Homebrew/homebrew-core#12345 (https://github.com/Homebrew/homebrew-core/pull/12345)
+     • processing homebrew-core bump 'homebrew_cores[0]'
+     • bumped formula my-tool to 1.2.3 — opened Homebrew/homebrew-core#12345 (https://github.com/Homebrew/homebrew-core/pull/12345)
 ```
 
 ## Configuration
