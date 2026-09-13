@@ -444,7 +444,14 @@ pub(crate) fn resolve_auth_for_package(
     package: &str,
     log: &StageLogger,
 ) -> Result<(NpmAuth, String)> {
-    let token = resolve_token(ctx, cfg)?;
+    // `oidc` mode consults no token (`decide_auth` ignores `token_available`
+    // there and the OIDC→token fallback is `auto`-only), so a token whose
+    // template fails to render must not fail a publish it takes no part in.
+    let token = if cfg.auth == NpmAuthMode::Oidc {
+        String::new()
+    } else {
+        resolve_token(ctx, cfg)?
+    };
     let token_available = !token.is_empty();
     let oidc = resolve_oidc_env(ctx);
     let oidc_available = oidc.is_some();

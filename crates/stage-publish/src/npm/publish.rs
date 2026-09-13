@@ -632,11 +632,48 @@ pub(crate) fn publish_with_oidc_fallback(
     first
 }
 
+/// The `npm_config_*` key fragments that can re-introduce a credential or
+/// redirect npm at another config file. npm reads `npm_config_<key>` from the
+/// environment at a HIGHER precedence than the `--userconfig` file, so an
+/// ambient one silently outranks the credential this publish chose.
+const NPM_CONFIG_CREDENTIAL_FRAGMENTS: [&str; 4] = ["auth", "token", "userconfig", "globalconfig"];
+
+/// Whether `name` is an `npm_config_*` variable that carries a credential or
+/// points npm at another config file. Case-insensitive in both halves: npm
+/// accepts `NPM_CONFIG_<KEY>` and `npm_config_<key>` alike, and a key can be a
+/// whole registry URL (`npm_config_//registry.npmjs.org/:_authToken`).
+pub(crate) fn is_npm_config_credential_var(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.strip_prefix("npm_config_").is_some_and(|key| {
+        NPM_CONFIG_CREDENTIAL_FRAGMENTS
+            .iter()
+            .any(|f| key.contains(f))
+    })
+}
+
+/// The subset of `names` that [`is_npm_config_credential_var`] admits, in the
+/// spelling the environment holds them.
+fn npm_config_credential_vars<I>(names: I) -> Vec<std::ffi::OsString>
+where
+    I: IntoIterator<Item = std::ffi::OsString>,
+{
+    names
+        .into_iter()
+        .filter(|n| is_npm_config_credential_var(&n.to_string_lossy()))
+        .collect()
+}
+
 /// Build the `npm publish` command for one tarball. Under [`NpmAuth::Oidc`] the
 /// resolved `ACTIONS_ID_TOKEN_REQUEST_*` pairs are threaded onto the subprocess
 /// env so the npm CLI performs the Trusted Publishing token exchange itself; a
 /// token credential reaches npm only via the `.npmrc` `--userconfig`, never the
 /// subprocess env or argv.
+///
+/// Ambient `npm_config_*` credential / config-path variables are dropped from
+/// the child env in EVERY auth mode: npm ranks them above `--userconfig`, so an
+/// inherited one publishes with a credential anodizer did not choose — under
+/// OIDC it defeats Trusted Publishing outright, and under a token it can
+/// authenticate as a different account than the `.npmrc` names.
 pub(crate) fn build_npm_publish_command(
     tarball: &Path,
     cfg_dir: &Path,
@@ -656,6 +693,9 @@ pub(crate) fn build_npm_publish_command(
         .arg(dist_tag);
     if let Some(a) = access {
         cmd.arg("--access").arg(a);
+    }
+    for name in npm_config_credential_vars(std::env::vars_os().map(|(k, _)| k)) {
+        cmd.env_remove(name);
     }
     if let NpmAuth::Oidc(oidc_env) = auth {
         for (name, value) in oidc_env {
