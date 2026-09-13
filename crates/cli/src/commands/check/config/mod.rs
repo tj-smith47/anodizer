@@ -115,6 +115,7 @@ pub fn run_checks(
     check_sign_asset_name_templates(config, &mut warnings);
     check_sign_duplicate_outputs(config, &mut warnings);
     check_unpadded_sign_placeholders(config, &mut warnings);
+    check_docker_sign_signature_templates(config, &mut warnings);
     check_checksum_algorithms(config, &mut warnings);
     check_source_format(config, &mut errors);
     check_sbom_configs(config, &mut errors);
@@ -141,10 +142,12 @@ fn flatten_crate_names(config: &Config) -> HashSet<&str> {
 }
 
 mod content;
+mod sign;
 mod structure;
 mod tooling;
 
 use content::*;
+use sign::*;
 use structure::*;
 use tooling::*;
 
