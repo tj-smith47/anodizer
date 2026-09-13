@@ -1462,6 +1462,51 @@ fn sign_authenticode_filter_warns_on_unrecognized_value() {
     );
 }
 
+/// `asset_name_template:` parses on every sign config but is read only on the
+/// `binary_signs:` slice — a `signs:` entry that sets it gets the derived name
+/// with no error, so check names the omission.
+#[test]
+fn asset_name_template_on_signs_warns_that_it_is_ignored() {
+    let sign_with_template = || anodizer_core::config::SignConfig {
+        asset_name_template: Some("{{ Binary }}-{{ Version }}".to_string()),
+        ..Default::default()
+    };
+    let config = Config {
+        project_name: "test".to_string(),
+        signs: vec![sign_with_template()],
+        binary_signs: vec![sign_with_template()],
+        workspaces: Some(vec![anodizer_core::config::WorkspaceConfig {
+            name: "ws".to_string(),
+            signs: vec![sign_with_template()],
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut warnings: Vec<String> = vec![];
+    check_sign_asset_name_templates(&config, &mut warnings);
+    assert_eq!(
+        warnings,
+        vec![
+            "signs[0].asset_name_template is set but only binary_signs honors it (it will be ignored)".to_string(),
+            "workspaces.ws.signs[0].asset_name_template is set but only binary_signs honors it (it will be ignored)".to_string(),
+        ],
+        "binary_signs honors the field and must not warn"
+    );
+}
+
+/// A config that sets the field nowhere warns nowhere.
+#[test]
+fn no_asset_name_template_warns_nothing() {
+    let config = Config {
+        project_name: "test".to_string(),
+        signs: vec![anodizer_core::config::SignConfig::default()],
+        ..Default::default()
+    };
+    let mut warnings: Vec<String> = vec![];
+    check_sign_asset_name_templates(&config, &mut warnings);
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
 // ---- Target-triple validation tests ----
 
 #[test]

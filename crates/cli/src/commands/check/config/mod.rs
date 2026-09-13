@@ -112,6 +112,7 @@ pub fn run_checks(
     check_crate_paths(config, &mut errors);
     check_workspace_membership(config, base_dir, &all_crate_names, &mut errors);
     check_sign_artifact_filters(config, &mut warnings);
+    check_sign_asset_name_templates(config, &mut warnings);
     check_checksum_algorithms(config, &mut warnings);
     check_source_format(config, &mut errors);
     check_sbom_configs(config, &mut errors);

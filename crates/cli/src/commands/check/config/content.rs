@@ -358,6 +358,30 @@ pub(super) fn check_sign_artifact_filters(config: &Config, warnings: &mut Vec<St
     }
 }
 
+/// Warn that `asset_name_template:` only names a `binary_signs:` asset.
+///
+/// A `signs:` signature is named by its `signature:` template alone — its
+/// subject is already an asset with a unique name — so the field parses on
+/// every `SignConfig` but is read only on the `binary_signs:` slice. A user
+/// who sets it on `signs:` gets the derived name with no error at all.
+pub(super) fn check_sign_asset_name_templates(config: &Config, warnings: &mut Vec<String>) {
+    let mut slices: Vec<(String, &Vec<anodizer_core::config::SignConfig>)> =
+        vec![("signs".to_string(), &config.signs)];
+    for ws in config.workspaces.iter().flatten() {
+        slices.push((format!("workspaces.{}.signs", ws.name), &ws.signs));
+    }
+    for (label, configs) in slices {
+        for (idx, cfg) in configs.iter().enumerate() {
+            if cfg.asset_name_template.is_some() {
+                warnings.push(format!(
+                    "{label}[{idx}].asset_name_template is set but only binary_signs \
+                     honors it (it will be ignored)"
+                ));
+            }
+        }
+    }
+}
+
 /// Warn on unrecognized checksum algorithm values in `defaults.checksum`
 /// and per-crate `checksum`.
 pub(super) fn check_checksum_algorithms(config: &Config, warnings: &mut Vec<String>) {
