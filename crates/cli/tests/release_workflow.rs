@@ -118,7 +118,7 @@ fn release_job_depends_on_determinism_check() {
     assert!(
         deps.iter().any(|d| d == "determinism-check"),
         "release.yml: `release:` job must `needs: determinism-check`. \
-         A green determinism check is the only thing that should gate the \
+         A passing determinism check is the only thing that should gate the \
          release pipeline. Got: {deps:?}"
     );
     assert!(

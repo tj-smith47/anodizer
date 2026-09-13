@@ -65,6 +65,10 @@ Not applicable — this is a local packaging stage, not a publisher.
 
 ## Format overrides
 
+Every fragment from here on shows the `archives:` block on its own. It sits
+under `crates[].archives:` (or `defaults.archives:`), as the examples above
+spell out.
+
 Use different formats for different operating systems:
 
 ```yaml

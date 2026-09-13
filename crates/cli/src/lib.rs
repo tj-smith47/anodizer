@@ -460,7 +460,7 @@ pub enum Commands {
         json: bool,
         #[arg(
             long,
-            help = "Check only the publish-time surface (the stages `release --publish-only` runs), not artifact-producing stages"
+            help = "Check only the publish-time stages (what `release --publish-only` runs), not artifact-producing stages"
         )]
         publish_only: bool,
         #[arg(
@@ -521,7 +521,7 @@ pub enum Commands {
         json: bool,
         #[arg(
             long,
-            help = "Only the tools the publish-time surface needs (the stages `release --publish-only` runs), not artifact-producing stages"
+            help = "Only the tools the publish-time stages need (what `release --publish-only` runs), not artifact-producing stages"
         )]
         publish_only: bool,
         #[arg(

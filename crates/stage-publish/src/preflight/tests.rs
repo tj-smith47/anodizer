@@ -1839,7 +1839,7 @@ mod publish_simulation {
 
     #[test]
     fn noop_dry_run_runner_reports_unavailable() {
-        // The default test-seam runner never spawns and always degrades to
+        // The default test runner never spawns and always degrades to
         // the index-only check; carry a reason so the caller's warn line is
         // honest about why the dry-run was skipped.
         match noop_dry_run_runner("anodizer-core") {

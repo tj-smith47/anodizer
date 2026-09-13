@@ -9,7 +9,7 @@
 //! registry's `/v0/auth/github-oidc`, PyPI's `/_/oidc/mint-token`, etc.
 //!
 //! Hop 1 is identical across publishers, so it lives here. Hop 2's transport is
-//! identical for the two token-minting publishers (cargo and pypi both POST a
+//! identical for the two token-issuing publishers (cargo and pypi both POST a
 //! one-field JSON body and read a JSON body back), so the request itself lives
 //! here too as [`post_mint_token`]; the endpoint, the request field name and the
 //! response shape stay with each publisher.

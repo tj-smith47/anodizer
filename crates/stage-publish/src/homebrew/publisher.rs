@@ -1195,11 +1195,11 @@ mod publisher_tests {
     #[test]
     fn should_warn_no_eligible_suppressed_when_casks_configured() {
         // No formula crates processed, selection non-empty, but 1 cask
-        // configured → no warning (the cask is the publish surface).
+        // configured → no warning (the cask is what publishes).
         assert!(!should_warn_no_eligible(0, 3, 1));
         // Multiple casks, still no formula → still suppressed.
         assert!(!should_warn_no_eligible(0, 1, 4));
-        // Both surfaces empty → the warning is a true signal, still fires.
+        // Both empty → the warning is a true signal, still fires.
         assert!(should_warn_no_eligible(0, 2, 0));
     }
 
@@ -1265,7 +1265,7 @@ mod publisher_tests {
 
     /// Cask-only project end-to-end: a top-level `homebrew_casks:` entry and
     /// ZERO `publish.homebrew` formula blocks. The cask path is the
-    /// publish surface (`processed == 0`), so the publisher must NOT emit the
+    /// what publishes (`processed == 0`), so the publisher must NOT emit the
     /// false "registered but ... nothing pushed" warning. Regression for the
     /// v0.9.0 log where the cask pushed successfully yet the warning fired.
     #[test]

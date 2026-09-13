@@ -370,7 +370,7 @@ channels carry the per-crate-scoped `Version` / `Tag`.
 Each publisher declares a `rollback_scope_needed` label (the "Token scope"
 column of the [per-publisher table](#per-publisher-classification)) — the
 credential `anodizer tag rollback` will need if this release is ever
-withdrawn. Preflight surfaces missing scope as:
+withdrawn. Preflight reports missing scope as:
 
 - A warning under default settings.
 - A blocker under `--strict`.

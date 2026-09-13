@@ -696,7 +696,7 @@ pub struct PreflightOpts {
     pub json: bool,
     pub skip: Vec<String>,
     /// `--publishers` allowlist: mirrors `release --publishers` so the
-    /// standalone canary can validate the exact publish-time surface a
+    /// standalone canary can validate the exact publish-time stages a
     /// publisher-scoped release runs (e.g. the npm-provenance job's
     /// `--publishers npm`), including the stages that self-skip when a
     /// publisher is deselected.

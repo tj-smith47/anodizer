@@ -1,6 +1,6 @@
 use super::*;
 
-/// Which check axes the selected publish surface leaves in scope, resolved
+/// Which check axes the selected publishers leave in scope, resolved
 /// once in [`VerifyReleaseStage::run`] and read per crate.
 pub(crate) struct AxisScope {
     /// github-release survives the operator selection (asset axis in scope).

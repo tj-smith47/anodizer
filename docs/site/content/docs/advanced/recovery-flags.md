@@ -34,7 +34,7 @@ Before uploading (Gitea and GitLab probe the release's asset inventory first; Gi
 
 ### `chocolatey.republish_in_moderation`
 
-Anodizer queries the Chocolatey OData feed for the version being published. If `<d:PackageStatus>` is `Submitted` (in moderation queue), the default is to skip with a warning. With this flag set, anodizer falls through to `choco push` anyway. Chocolatey's [moderation policy](https://github.com/chocolatey/choco-wiki/blob/master/Moderation.md) documents same-version resubmission during review ("make the required changes and resubmit the **exact** same version") — but the community-feed API may still reject the push with a 409 Conflict depending on queue state. If the push fails, the warning + dispatch summary surfaces it.
+Anodizer queries the Chocolatey OData feed for the version being published. If `<d:PackageStatus>` is `Submitted` (in moderation queue), the default is to skip with a warning. With this flag set, anodizer falls through to `choco push` anyway. Chocolatey's [moderation policy](https://github.com/chocolatey/choco-wiki/blob/master/Moderation.md) documents same-version resubmission during review ("make the required changes and resubmit the **exact** same version") — but the community-feed API may still reject the push with a 409 Conflict depending on queue state. If the push fails, the warning + dispatch summary reports it.
 
 ### `update_existing_pr` (winget, krew, homebrew cask)
 

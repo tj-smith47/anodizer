@@ -124,7 +124,9 @@ When any crate has `reproducible: true`, the archive stage automatically uses
 not set, the archive stage falls back to the `SOURCE_DATE_EPOCH` environment variable if
 present.
 
-You can also control archive entry metadata explicitly with `builds_info`:
+You can also control archive entry metadata explicitly with `builds_info`. The
+fragments below show the `archives:` block on its own; it sits under
+`crates[].archives:` (or `defaults.archives:`), as the examples above spell out.
 
 ```yaml
 archives:

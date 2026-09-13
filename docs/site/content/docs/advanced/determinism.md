@@ -192,7 +192,7 @@ Semantics:
 - **`--strict` interaction**: under `--strict`, `--allow-nondeterministic`
   is rejected at CLI parse time with a clear error pointing to this guide.
   Production releases that need an exemption must drop `--strict`, which
-  already surfaces the elevated risk.
+  already reports the elevated risk.
 
 ## The CI re-publish path: `skip_determinism`
 

@@ -16,7 +16,7 @@
 //!   * `--push-remote <name>` targets a second remote;
 //!   * per-crate `--no-push` pushes nothing;
 //!   * previous-tag resolution consults the remote's tag list, so a re-cut
-//!     from a clone still holding a remotely-deleted tag re-mints the SAME
+//!     from a clone still holding a remotely-deleted tag re-creates the SAME
 //!     version (with local fallback + warn when the remote is unreachable).
 
 use std::fs;

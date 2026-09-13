@@ -122,7 +122,7 @@ jobs:
 
 **Use when:** all crates in the workspace share a version via `[workspace.package].version`.
 
-`anodizer tag` bumps the shared version, creates one workspace tag, and `anodizer release` releases every crate in topo order.
+`anodizer tag` bumps the shared version, creates one workspace tag, and `anodizer release` publishes every crate in topo order.
 
 ```yaml
 name: Release
@@ -716,7 +716,7 @@ permissions:
 
 **Leader election among parallel triggered runs.** Using a lock artifact or environment variable to elect one "winner" among N simultaneously triggered runs still pays the N× resource cost (checkout, toolchain, cache hydration) before the losers bail out.
 
-**Polling crates.io for upstream deps.** Sleeping and retrying `cargo publish` until the upstream index entry surfaces treats the symptom (publish race) rather than the cause (fan-out). `anodizer release`'s topo-sorted sequential publish makes this unnecessary.
+**Polling crates.io for upstream deps.** Sleeping and retrying `cargo publish` until the upstream index entry appears treats the symptom (publish race) rather than the cause (fan-out). `anodizer release`'s topo-sorted sequential publish makes this unnecessary.
 
 **Per-crate determinism jobs without a shared rust-cache key.** When the determinism matrix uses a different cache key per crate, each shard cold-compiles the full dependency tree. Pin `Swatinem/rust-cache` to the same workspace-level key across all matrix entries.
 

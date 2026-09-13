@@ -8,7 +8,7 @@ template = "docs.html"
 The `verify_release:` gate runs **last** in the release pipeline — after the
 release is created and every publisher has run — and **reports** post-publish
 defects. Because it runs *after* the irreversible publish, it never blocks or
-undoes anything: a failed check surfaces the problem and exits non-zero so CI
+undoes anything: a failed check reports the problem and exits non-zero so CI
 flags it, but **the release is already published**.
 
 It is distinct from per-publisher [`post_publish_poll`](../../publish/) (which

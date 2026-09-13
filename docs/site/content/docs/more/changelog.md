@@ -26,7 +26,7 @@ positional range), and no `check changelog` subcommand.
 
 ### Selecting a range
 
-The positional arg drives every format identically — the same arg surfaces the
+The positional arg drives every format identically — the same arg selects the
 same commits whether you render `keep-a-changelog`, `release-notes`, or `json`.
 
 | Arg | Lower bound | Renders |
