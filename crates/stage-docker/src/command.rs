@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use anyhow::{Context as _, Result};
 
 use anodizer_core::config::{DockerDigestConfig, DockerV2Config, SkipPushConfig, StringOrBool};
@@ -477,9 +479,9 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
     // a multi-platform one — which is what a consumer pulls by and what the
     // release's landing check asks the registry for. The `--iidfile` this
     // used to pass instead holds the image CONFIG digest, a value no registry
-    // ever serves a tag at. `podman build` supports neither key: its iidfile
-    // holds the local image ID, so a podman build reports no digest at all
-    // rather than one that names different content.
+    // ever serves a tag at. `podman build` writes neither key; its digest
+    // comes from `--digestfile` on the separate push
+    // ([`build_podman_push_commands`]).
     if !is_podman {
         cmd.push(format!("--metadata-file={}/meta.json", staging_dir));
     }
@@ -514,22 +516,51 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
 ///   missing from the registry). Pushing the contents is also what the
 ///   separate `docker_manifests` feature relies on being in the registry
 ///   before its own `manifest create`/`push` resolves per-arch tags.
-pub fn build_podman_push_commands(tags: &[String], multi_platform: bool) -> Vec<Vec<String>> {
+///
+/// Both verbs take `--digestfile`, which podman fills with the digest the
+/// registry stored — the image manifest for a single-platform push, the index
+/// for a manifest-list push. That is the same value buildx reports under
+/// `containerimage.digest`, so `{{ Digest }}`, the `.digest` artifact and the
+/// release's landing check read one kind of value whichever backend built the
+/// image. The file is named per tag under the build's own staging directory:
+/// one build can push several tags, and one path would leave every tag
+/// holding the last push's digest.
+pub fn build_podman_push_commands(
+    tags: &[String],
+    multi_platform: bool,
+    staging_dir: &Path,
+) -> Vec<Vec<String>> {
     tags.iter()
         .map(|tag| {
+            let digestfile = format!(
+                "--digestfile={}",
+                podman_push_digest_file(staging_dir, tag).display()
+            );
             if multi_platform {
                 vec![
                     "podman".to_string(),
                     "manifest".to_string(),
                     "push".to_string(),
                     "--all".to_string(),
+                    digestfile,
                     tag.clone(),
                 ]
             } else {
-                vec!["podman".to_string(), "push".to_string(), tag.clone()]
+                vec![
+                    "podman".to_string(),
+                    "push".to_string(),
+                    digestfile,
+                    tag.clone(),
+                ]
             }
         })
         .collect()
+}
+
+/// Where [`build_podman_push_commands`] tells podman to write one tag's
+/// pushed digest, and where the push loop reads it back.
+pub fn podman_push_digest_file(staging_dir: &Path, tag: &str) -> PathBuf {
+    staging_dir.join(format!("{}.pushdigest", tag.replace(['/', ':'], "_")))
 }
 
 /// Evaluate whether a Docker V2 config is skipped.

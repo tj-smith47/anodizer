@@ -201,19 +201,22 @@ fn podman_multi_platform_build_uses_manifest_not_tag() {
 #[test]
 fn podman_push_verb_depends_on_platform_arity() {
     let tags = vec!["ghcr.io/owner/app:v1".to_string()];
+    let staging = std::path::Path::new("/stage");
+    let digestfile = "--digestfile=/stage/ghcr.io_owner_app_v1.pushdigest".to_string();
 
-    let single = build_podman_push_commands(&tags, false);
+    let single = build_podman_push_commands(&tags, false, staging);
     assert_eq!(
         single,
         vec![vec![
             "podman".to_string(),
             "push".to_string(),
+            digestfile.clone(),
             "ghcr.io/owner/app:v1".to_string(),
         ]],
         "single-platform podman publishes with plain `podman push`"
     );
 
-    let multi = build_podman_push_commands(&tags, true);
+    let multi = build_podman_push_commands(&tags, true, staging);
     assert_eq!(
         multi,
         vec![vec![
@@ -221,6 +224,7 @@ fn podman_push_verb_depends_on_platform_arity() {
             "manifest".to_string(),
             "push".to_string(),
             "--all".to_string(),
+            digestfile,
             "ghcr.io/owner/app:v1".to_string(),
         ]],
         "multi-platform podman publishes with `podman manifest push --all`"

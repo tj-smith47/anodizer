@@ -295,10 +295,10 @@ fn run_docker_post_hooks(
         let digest_val = config_first_digest.get(&cph.idx).cloned().ok_or_else(|| {
             anyhow::anyhow!(
                 "dockers_v2[{}]: post-hooks configured but no image digest captured \
-                 (no `containerimage.digest` in the buildx metadata file meta.json \
-                 after a successful build); a `use: podman` build reports no registry \
-                 digest at all, and a build that exports no image has none to report — \
-                 remove the post-hook or build with buildx",
+                 (a cache-only build exports no image, so buildx writes no \
+                 `containerimage.digest` to its metadata file and podman's push \
+                 writes no digestfile) — remove the post-hook, or export the \
+                 image with `push:` or a snapshot `--load` build",
                 cph.id.as_deref().unwrap_or(&cph.idx.to_string())
             )
         })?;

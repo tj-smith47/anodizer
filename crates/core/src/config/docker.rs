@@ -121,7 +121,12 @@ pub struct DockerV2Config {
     ///   reproduces a flat comma-separated string for legacy templates.
     /// - `{{ Dockerfile }}` — path to the rendered Dockerfile
     /// - `{{ ContextDir }}` — path to the buildx context staging directory
-    /// - `{{ Digest }}` — image manifest digest (post hooks only)
+    /// - `{{ Digest }}` — the digest the registry stores for the build (post
+    ///   hooks only): the image manifest single-platform, the image index
+    ///   multi-platform. Read from buildx's `--metadata-file`
+    ///   (`containerimage.digest`), or from `podman push --digestfile` under
+    ///   `use: podman`. A build that exports no image has no digest, and a
+    ///   post hook that needs one then fails the build
     /// - `{{ BaseImage }}` / `{{ BaseImageDigest }}` — final-stage base image
     ///   (the `BaseImage` / `BaseImageDigest` overlay)
     pub hooks: Option<BuildHooksConfig>,

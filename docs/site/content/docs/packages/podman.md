@@ -64,6 +64,12 @@ Error: docker_v2 with `use: podman` is incompatible with buildx-only flag
 
 Bare `--build-arg`, `--label`, `--platform`, `--tag`, `--no-cache`, and `--iidfile` are accepted on both backends.
 
+## Image digest
+
+`podman build` cannot bake `--push` into the build, so anodizer publishes each rendered tag afterwards with `podman push` (single-platform) or `podman manifest push --all` (multi-platform). Both carry `--digestfile`, which podman fills with the digest the registry stored — the image manifest for a single-platform push, the index for a manifest list. That is the same value buildx reports as `containerimage.digest`, so `{{ Digest }}` in a `post:` hook, the `<tag>.digest` artifact and the release's docker landing check behave identically on both backends.
+
+A build that pushes nothing (a snapshot, a dry run, `skip_push:`) records no digest under either backend — `podman build`'s own `--iidfile` holds the LOCAL image ID, which names different content than a registry serves.
+
 ## What anodizer does NOT do
 
 Mirrors GoReleaser Pro's caveats verbatim:
@@ -72,7 +78,6 @@ Mirrors GoReleaser Pro's caveats verbatim:
 - **No credential setup.** Push credentials are resolved from the host's `~/.docker/config.json` (or `~/.config/containers/auth.json` for rootless podman). Run `podman login` (or `docker login`) before releasing, or wire `DOCKER_USERNAME` / `DOCKER_PASSWORD` into a `before:` hook.
 - **No rootless / rootful opinion.** Anodizer treats the binary as opaque — whether `podman` runs rootless (default on most distros) or rootful is your runner's choice. Image layers and manifests written under rootless are stored at `$XDG_DATA_HOME/containers/storage`; rootful at `/var/lib/containers/storage`.
 - **No network reach checks.** Push failures retry per the `retry:` block (default 10 attempts, 10s base, 5m cap).
-- **No image digest.** `podman build` reports a local image ID, not the digest a registry serves the tag at, so a podman build records no digest: `{{ Digest }}` is unset for `post:` hooks, no `.digest` file is written, and the release's docker landing check asks only whether the tag is present.
 
 ## Determinism Harness compatibility
 
