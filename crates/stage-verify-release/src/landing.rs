@@ -11,10 +11,17 @@
 //!   index says nothing about them).
 //! - **npm** — every published package version must answer a registry
 //!   metadata `GET`.
+//! - **pypi** — every uploaded wheel / source distribution must be listed by
+//!   the index it was uploaded to, asked with the exact filename the run
+//!   recorded (the configured `index_url` decides which index, so TestPyPI
+//!   and a private index are probed where they were published).
 //! - **blob** — every uploaded object must answer a `HEAD` through the same
 //!   `ObjectStore` backend (and ambient credential chain) the upload used —
 //!   buckets rarely expose a public read URL, so this is the strongest
 //!   honest probe available.
+//! - **snapcraft** — every uploaded snap version must be live in the Snap
+//!   Store's public channel map, which is what a manual-review hold parks a
+//!   revision outside of.
 //!
 //! Only publishers whose recorded outcome is `Succeeded` are PROBED: a
 //! skipped / deselected / rolled-back publisher published nothing this run, so
@@ -49,12 +56,16 @@
 //! filtering, evidence decoding, issue wording) is unit-testable offline;
 //! `VerifyReleaseStage::run` supplies the real network-backed
 //! implementations.
+//!
+//! Every probe asks through [`probe_with_propagation`], which owns the one
+//! propagation window the whole sweep shares — see
+//! `.claude/rules/landing-probes-propagation.md`.
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::publish_evidence::{
     BlobTargetSnapshot, CargoYankTargetSnapshot, NpmTargetSnapshot, PublishEvidenceExtra,
-    SnapcraftTargetSnapshot,
+    PypiFileSnapshot, SnapcraftTargetSnapshot,
 };
 use anodizer_core::publish_report::{PublisherOutcome, PublisherResult};
 
@@ -62,25 +73,36 @@ use anodizer_core::publish_report::{PublisherOutcome, PublisherResult};
 /// check (see [`LandingProbes::snap_channel_map`]).
 pub type SnapChannelMapProbe<'a> = dyn Fn(&str, &str, Option<&str>) -> anyhow::Result<bool> + 'a;
 
-/// How long a landing probe keeps asking before it reports an absence.
+/// How long the landing sweep keeps asking before it reports an absence.
 ///
 /// A registry that has ACCEPTED a publish and does not yet serve it is
-/// propagating, not missing. Measured on the v0.26.0 release: six of nine npm
+/// propagating, not missing. Measured on a nine-package npm release: six
 /// packages answered 404 immediately after `npm publish` returned and all nine
 /// answered within a minute; crates.io sparse-index entries show the same
 /// lag. So the window is sized well past the worst observed lag rather than at
 /// it, and the backoff starts long enough that the first re-ask is not simply
 /// the same instant again.
+///
+/// The window belongs to the SWEEP, not to one target. It is anchored once
+/// ([`starting_now`](Self::starting_now)) and every probe shares the resulting
+/// absolute [`sweep_deadline`](Self::sweep_deadline), so a registry that never
+/// serves anything costs one window in total instead of one per target — a
+/// 43-target release would otherwise spend over an hour inside a 20-minute
+/// job.
 #[derive(Debug, Clone, Copy)]
 pub struct PropagationRetry {
     /// Backoff shape for the re-asks.
     pub policy: anodizer_core::retry::RetryPolicy,
-    /// Wall-clock budget for one target's probe, from its first attempt.
+    /// Wall-clock length of the sweep's window, measured from the anchor.
     pub budget: std::time::Duration,
+    /// The instant the whole sweep stops re-asking, shared by every probe.
+    /// `None` bounds the ladder by attempt count alone (a dry run, and the
+    /// no-sleep test policies).
+    pub sweep_deadline: Option<std::time::Instant>,
 }
 
 impl PropagationRetry {
-    /// 5s base doubling to a 30s cap over 8 attempts inside a 3-minute budget
+    /// 5s base doubling to a 30s cap over 8 attempts inside a 3-minute window
     /// (5+10+20+30×4 = 155s of backoff).
     pub const DEFAULT: PropagationRetry = PropagationRetry {
         policy: anodizer_core::retry::RetryPolicy {
@@ -89,35 +111,36 @@ impl PropagationRetry {
             max_delay: std::time::Duration::from_secs(30),
         },
         budget: std::time::Duration::from_secs(180),
+        sweep_deadline: None,
     };
 
     /// One attempt, no sleeping — for a dry run and for tests, which must
     /// exercise the orchestration without spending wall-clock time.
     pub const IMMEDIATE: PropagationRetry = PropagationRetry::immediate_attempts(1);
 
-    /// Shrink the budget to whatever is left before `deadline`, so the run's
-    /// own `retry.max_elapsed` governs the landing sweep too — an operator who
-    /// bounded the release's total retry time does not get three extra minutes
-    /// per target on top of it.
-    pub fn bounded_by(self, deadline: Option<std::time::Instant>) -> PropagationRetry {
-        let Some(deadline) = deadline else {
-            return self;
-        };
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
+    /// Anchor the sweep's window at this instant, capped by `run_deadline`
+    /// (the run's own `retry.max_elapsed`, already an absolute instant).
+    ///
+    /// Called ONCE per sweep. An operator who bounded the release's total
+    /// retry time does not get a fresh window per probed target on top of it,
+    /// and a wedged registry cannot multiply the window by the target count.
+    pub fn starting_now(self, run_deadline: Option<std::time::Instant>) -> PropagationRetry {
+        let end = std::time::Instant::now() + self.budget;
         PropagationRetry {
-            budget: self.budget.min(left),
+            sweep_deadline: Some(match run_deadline {
+                Some(run) => end.min(run),
+                None => end,
+            }),
             ..self
         }
     }
 
     /// Like [`IMMEDIATE`](Self::IMMEDIATE) but with `attempts` tries and no
     /// backoff, so a test can prove a probe answering false-then-true passes
-    /// without spending wall-clock time. The budget keeps
-    /// [`RetryPolicy::budget_exhausted`] from ending the ladder before the
-    /// second attempt; with zero delays nothing is ever slept.
-    ///
-    /// [`RetryPolicy::budget_exhausted`]: anodizer_core::retry::RetryPolicy::budget_exhausted
-    pub const fn immediate_attempts(attempts: u32) -> PropagationRetry {
+    /// without spending wall-clock time. No sweep deadline, so
+    /// `deadline_exhausted` never ends the ladder before the attempts are
+    /// spent; with zero delays nothing is ever slept.
+    const fn immediate_attempts(attempts: u32) -> PropagationRetry {
         PropagationRetry {
             policy: anodizer_core::retry::RetryPolicy {
                 max_attempts: attempts,
@@ -125,6 +148,7 @@ impl PropagationRetry {
                 max_delay: std::time::Duration::ZERO,
             },
             budget: PropagationRetry::DEFAULT.budget,
+            sweep_deadline: None,
         }
     }
 }
@@ -154,44 +178,85 @@ impl std::fmt::Display for ProbeMiss {
     }
 }
 
-/// Ask `probe` for `what` on `where_` until it answers yes or the propagation
-/// window closes. The single mechanism behind every landing probe in this
-/// module — a per-probe copy would drift the moment one of them learned a
-/// different bound.
+/// One target's verdict plus whether reaching it needed a propagation wait.
+struct ProbeOutcome {
+    landed: Landed,
+    /// The target answered only after more than one ask, so the per-publisher
+    /// result line can say how much of the publish arrived late.
+    waited: bool,
+}
+
+/// The sink the retry engine's own per-attempt lines go to while a landing
+/// probe waits out propagation.
+///
+/// A registry serving a just-accepted publish seconds later is the expected
+/// case, so those lines are execution detail and a clean release must print no
+/// warning. The engine owns their wording, so the register is changed by
+/// swapping the sink: a quiet logger at default verbosity, the run's own under
+/// `-v`. Nothing reaches a terminal through the quiet one (its only
+/// unconditional register is `error`, which the engine never uses), so it
+/// needs neither the redaction cell nor the run's capture sink.
+fn ladder_log(log: &StageLogger) -> StageLogger {
+    if log.is_verbose() {
+        log.clone()
+    } else {
+        StageLogger::new(crate::STAGE_NAME, anodizer_core::log::Verbosity::Quiet)
+    }
+}
+
+/// Ask `probe` for `what` on `where_` until it answers yes, it answers
+/// something re-asking cannot change, or the sweep's propagation window
+/// closes. The single mechanism behind every landing probe in this module — a
+/// per-probe copy would drift the moment one of them learned a different
+/// bound.
 fn probe_with_propagation(
     what: &str,
     where_: &str,
     retry: &PropagationRetry,
     log: &StageLogger,
     mut probe: impl FnMut() -> anyhow::Result<bool>,
-) -> Landed {
+) -> ProbeOutcome {
     let desc = format!("{what} landing probe on {where_}");
-    let deadline = std::time::Instant::now() + retry.budget;
-    let mut announced = false;
+    let ladder = ladder_log(log);
+    let mut asks = 0usize;
     let outcome: Result<(), ProbeMiss> = anodizer_core::retry::retry_sync_deadline(
-        anodizer_core::retry::RetryLog::new(&desc, log),
+        anodizer_core::retry::RetryLog::new(&desc, &ladder),
         &retry.policy,
-        Some(deadline),
+        retry.sweep_deadline,
         |_attempt| {
-            let miss = match probe() {
-                Ok(true) => return Ok(()),
-                Ok(false) => ProbeMiss::Absent,
-                Err(e) => ProbeMiss::Failed(e),
-            };
-            if !announced {
-                announced = true;
-                log.status(&format!(
-                    "{what} not yet visible on {where_} — retrying for up to {}",
-                    anodizer_core::progress::format_elapsed(retry.budget)
-                )); // status-ok: a per-target propagation wait an operator must see
+            asks += 1;
+            match probe() {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(std::ops::ControlFlow::Continue(ProbeMiss::Absent)),
+                // A failure re-asking cannot resolve — a rejected credential,
+                // a store that could not be built — answers the same way every
+                // time, so spending the sweep's shared window on it only
+                // delays the finding and starves every target behind it.
+                Err(e) if !anodizer_core::retry::is_retriable(e.as_ref()) => {
+                    Err(std::ops::ControlFlow::Break(ProbeMiss::Failed(e)))
+                }
+                Err(e) => Err(std::ops::ControlFlow::Continue(ProbeMiss::Failed(e))),
             }
-            Err(std::ops::ControlFlow::Continue(miss))
         },
     );
-    match outcome {
-        Ok(()) => Landed::Yes,
-        Err(ProbeMiss::Absent) => Landed::No,
-        Err(ProbeMiss::Failed(e)) => Landed::Unknown(e),
+    ProbeOutcome {
+        landed: match outcome {
+            Ok(()) => Landed::Yes,
+            Err(ProbeMiss::Absent) => Landed::No,
+            Err(ProbeMiss::Failed(e)) => Landed::Unknown(e),
+        },
+        waited: asks > 1,
+    }
+}
+
+/// The tail a per-publisher result line carries when some of its targets
+/// arrived late: `" (2/9 needed a propagation wait)"`. Empty when the whole
+/// publisher answered on the first ask, so a clean sweep says nothing extra.
+fn propagation_tail(waited: usize, probed: usize) -> String {
+    if waited == 0 {
+        String::new()
+    } else {
+        format!(" ({waited}/{probed} needed a propagation wait)")
     }
 }
 
@@ -208,6 +273,12 @@ pub struct LandingProbes<'a> {
     /// registry could not be consulted (5xx/transport) — an npm version is
     /// immutable, so an outage must not be reported as "not visible".
     pub npm_registry: &'a dyn Fn(&str, &str, &str) -> anyhow::Result<bool>,
+    /// `(repository, filename)` → whether the index the file was uploaded to
+    /// lists it. `Ok(false)` = the index answered without the file, `Err` =
+    /// the index could not be consulted — a PyPI filename is a permanent slot
+    /// that can never be re-uploaded, so an outage must not read as an
+    /// absence.
+    pub pypi_index: &'a dyn Fn(&str, &str) -> anyhow::Result<bool>,
     /// Blob target → whether the object exists in its bucket. `Err` = the
     /// store could not be built or the HEAD failed indeterminately.
     pub blob_head: &'a dyn Fn(&BlobTargetSnapshot) -> anyhow::Result<bool>,
@@ -248,6 +319,7 @@ pub(crate) fn run_landing_checks(
             match result.name.as_str() {
                 "cargo" => check_cargo_landing(result, log, probes, &mut findings),
                 "npm" => check_npm_landing(result, log, probes, &mut findings),
+                "pypi" => check_pypi_landing(result, log, probes, &mut findings),
                 "blob" => check_blob_landing(result, log, probes, &mut findings),
                 "snapcraft" => check_snapcraft_landing(result, log, probes, &mut findings),
                 _ => false,
@@ -255,7 +327,7 @@ pub(crate) fn run_landing_checks(
         } else if let PublisherOutcome::Failed(reason) = &result.outcome {
             // A publisher the run actually attempted and failed is a landing
             // defect on its own merits (no probe needed) — every publisher,
-            // not just the four network-probed ones.
+            // not just the network-probed ones.
             log.warn(&format!(
                 "{} publish attempt failed this run — landing not verified: {reason}",
                 result.name
@@ -327,6 +399,7 @@ fn check_cargo_landing(
     }
     let mut visible: Vec<String> = Vec::new();
     let mut probed = 0usize;
+    let mut waited = 0usize;
     for t in targets {
         // A custom registry/index means the crates.io sparse index is not
         // authoritative for this target — the same scoping the publisher's
@@ -340,13 +413,15 @@ fn check_cargo_landing(
         }
         probed += 1;
         let coords = format!("cargo: {}@{}", t.name, t.version);
-        match probe_with_propagation(
+        let outcome = probe_with_propagation(
             &coords,
             "the crates.io index",
             &probes.propagation,
             log,
             || (probes.cargo_index)(&t.name, &t.version),
-        ) {
+        );
+        waited += usize::from(outcome.waited);
+        match outcome.landed {
             Landed::Yes => visible.push(format!("{}@{}", t.name, t.version)),
             Landed::No => issues.push(format!(
                 "cargo: {}@{} reported published but is not visible on the \
@@ -360,11 +435,15 @@ fn check_cargo_landing(
         }
     }
     if probed > 0 && visible.len() == probed {
+        let tail = propagation_tail(waited, probed);
         if probed == 1 {
-            log.status(&format!("cargo: {} visible on crates.io index", visible[0]));
+            log.status(&format!(
+                "cargo: {} visible on crates.io index{tail}",
+                visible[0]
+            ));
         } else {
             log.status(&format!(
-                "cargo: {probed}/{probed} published crate(s) visible on crates.io index"
+                "cargo: {probed}/{probed} published crate(s) visible on crates.io index{tail}"
             ));
         }
     }
@@ -393,15 +472,18 @@ fn check_npm_landing(
         return false;
     }
     let mut visible: Vec<String> = Vec::new();
+    let mut waited = 0usize;
     for t in targets {
         let coords = format!("npm: {}@{}", t.package, t.version);
-        match probe_with_propagation(
+        let outcome = probe_with_propagation(
             &coords,
             registry_host(&t.registry),
             &probes.propagation,
             log,
             || (probes.npm_registry)(&t.registry, &t.package, &t.version),
-        ) {
+        );
+        waited += usize::from(outcome.waited);
+        match outcome.landed {
             Landed::Yes => visible.push(format!("{}@{}", t.package, t.version)),
             Landed::No => issues.push(format!(
                 "npm: {}@{} reported published but is not visible on {}",
@@ -423,16 +505,90 @@ fn check_npm_landing(
     }
     if visible.len() == targets.len() {
         let host = registry_host(&targets[0].registry);
+        let tail = propagation_tail(waited, targets.len());
         if targets.len() == 1 {
-            log.status(&format!("npm: {} visible on {host}", visible[0]));
+            log.status(&format!("npm: {} visible on {host}{tail}", visible[0]));
         } else {
             log.status(&format!(
-                "npm: {0}/{0} published package(s) visible on {host}",
+                "npm: {0}/{0} published package(s) visible on {host}{tail}",
                 targets.len()
             ));
         }
     }
     true
+}
+
+/// Decode the pypi publisher's recorded uploaded files.
+fn pypi_targets(result: &PublisherResult) -> &[PypiFileSnapshot] {
+    match result.evidence.as_ref().map(|e| &e.extra) {
+        Some(PublishEvidenceExtra::Pypi(extra)) => &extra.pypi_files,
+        _ => &[],
+    }
+}
+
+/// Probe every file the pypi publisher recorded against the index it was
+/// uploaded to. Returns whether at least one target was probed.
+///
+/// Probed per FILE, not per version: a release ships one wheel per platform
+/// and the index accepts them one at a time, so a partial upload leaves the
+/// version present and one platform's wheel missing — which a version-level
+/// question would report as complete.
+fn check_pypi_landing(
+    result: &PublisherResult,
+    log: &StageLogger,
+    probes: &LandingProbes<'_>,
+    issues: &mut Vec<String>,
+) -> bool {
+    let targets = pypi_targets(result);
+    if targets.is_empty() {
+        log.verbose("pypi succeeded but recorded no uploaded files — nothing to probe");
+        return false;
+    }
+    let mut visible = 0usize;
+    let mut waited = 0usize;
+    for t in targets {
+        let coords = format!("pypi: {}", t.filename);
+        let index = index_host(&t.repository);
+        let outcome = probe_with_propagation(&coords, &index, &probes.propagation, log, || {
+            (probes.pypi_index)(&t.repository, &t.filename)
+        });
+        waited += usize::from(outcome.waited);
+        match outcome.landed {
+            Landed::Yes => visible += 1,
+            Landed::No => issues.push(format!(
+                "pypi: {} reported uploaded but is not listed on {index}",
+                t.filename
+            )),
+            // A PyPI filename is a permanent index slot that can never be
+            // re-uploaded, so an index that could not be consulted must read
+            // as unverifiable rather than as an absence: the latter would fail
+            // a release whose files are live and cannot be re-published.
+            Landed::Unknown(e) => issues.push(format!(
+                "pypi: could not confirm {} on {index}: {e:#}",
+                t.filename
+            )),
+        }
+    }
+    if visible == targets.len() {
+        let tail = propagation_tail(waited, targets.len());
+        let index = index_host(&targets[0].repository);
+        log.status(&format!(
+            "pypi: {visible}/{visible} uploaded file(s) listed on {index}{tail}"
+        ));
+    }
+    true
+}
+
+/// Name the index a pypi upload endpoint belongs to, for status wording:
+/// `https://upload.pypi.org/legacy/` reads as `pypi.org`.
+fn index_host(repository: &str) -> String {
+    reqwest::Url::parse(repository)
+        .ok()
+        .and_then(|u| {
+            u.host_str()
+                .map(|h| h.trim_start_matches("upload.").to_string())
+        })
+        .unwrap_or_else(|| registry_host(repository).to_string())
 }
 
 /// HEAD every object the blob publisher recorded.
@@ -449,12 +605,16 @@ fn check_blob_landing(
         return false;
     }
     let mut present = 0usize;
+    let mut waited = 0usize;
     for t in targets {
         let url = format!("{}://{}/{}", t.provider, t.bucket, t.key);
         let coords = format!("blob: {url}");
-        match probe_with_propagation(&coords, "the bucket", &probes.propagation, log, || {
-            (probes.blob_head)(t)
-        }) {
+        let outcome =
+            probe_with_propagation(&coords, "the bucket", &probes.propagation, log, || {
+                (probes.blob_head)(t)
+            });
+        waited += usize::from(outcome.waited);
+        match outcome.landed {
             Landed::Yes => {
                 present += 1;
                 log.verbose(&format!("{url} present"));
@@ -467,8 +627,9 @@ fn check_blob_landing(
     }
     if present == targets.len() {
         log.status(&format!(
-            "blob: {present}/{} uploaded object(s) present in bucket",
-            targets.len()
+            "blob: {present}/{} uploaded object(s) present in bucket{}",
+            targets.len(),
+            propagation_tail(waited, targets.len())
         ));
     }
     true
@@ -504,6 +665,7 @@ fn check_snapcraft_landing(
     }
     let mut visible: Vec<String> = Vec::new();
     let mut probed = 0usize;
+    let mut waited = 0usize;
     // A dual-arch snap records one evidence entry per architecture, but the
     // store channel-map probe is arch-independent (it asks whether a version
     // is live in a channel), so probing every arch entry would query the same
@@ -530,13 +692,15 @@ fn check_snapcraft_landing(
         probed += 1;
         let coords = format!("{} {version}", t.package_name);
         let labelled = format!("snapcraft: {coords}");
-        match probe_with_propagation(
+        let outcome = probe_with_propagation(
             &labelled,
             "the Snap Store channel map",
             &probes.propagation,
             log,
             || (probes.snap_channel_map)(&t.package_name, version, t.channel.as_deref()),
-        ) {
+        );
+        waited += usize::from(outcome.waited);
+        match outcome.landed {
             Landed::Yes => visible.push(coords),
             Landed::No if t.held_for_review => issues.push(format!(
                 "snapcraft: {coords} was HELD for Snap Store manual review and is not live in \
@@ -557,14 +721,16 @@ fn check_snapcraft_landing(
         }
     }
     if probed > 0 && visible.len() == probed {
+        let tail = propagation_tail(waited, probed);
         if probed == 1 {
             log.status(&format!(
-                "snapcraft: {} live in the Snap Store channel map",
+                "snapcraft: {} live in the Snap Store channel map{tail}",
                 visible[0]
             ));
         } else {
             log.status(&format!(
-                "snapcraft: {probed}/{probed} uploaded snap(s) live in the Snap Store channel map"
+                "snapcraft: {probed}/{probed} uploaded snap(s) live in the Snap Store \
+                 channel map{tail}"
             ));
         }
     }
@@ -657,6 +823,16 @@ mod tests {
         (ctx, capture)
     }
 
+    /// The default-visible `status` lines a capture recorded, in order.
+    fn statuses(capture: &anodizer_core::log::LogCapture) -> Vec<String> {
+        capture
+            .all_messages()
+            .into_iter()
+            .filter(|(l, _)| *l == anodizer_core::log::LogLevel::Status)
+            .map(|(_, m)| m)
+            .collect()
+    }
+
     /// A probe that answers each of `answers` in turn, then repeats the last.
     /// `None` is an indeterminate probe failure.
     fn scripted(answers: Vec<Option<bool>>) -> impl Fn() -> anyhow::Result<bool> {
@@ -666,7 +842,7 @@ mod tests {
             calls.set(calls.get() + 1);
             match answers[i] {
                 Some(v) => Ok(v),
-                None => anyhow::bail!("registry unreachable"),
+                None => anyhow::bail!("connection reset by peer"),
             }
         }
     }
@@ -676,9 +852,10 @@ mod tests {
     const FLAKY: PropagationRetry = PropagationRetry::immediate_attempts(5);
 
     /// A registry that accepted a publish and has not served it yet is
-    /// propagating. This is the v0.26.0 regression: six of nine npm packages
+    /// propagating. The regression this closes: six of nine npm packages
     /// answered 404 on the first probe and all nine were visible a minute
-    /// later, so a single-shot probe failed a release whose every artifact was published.
+    /// later, so a single-shot probe failed a release whose every artifact
+    /// was published.
     #[test]
     fn npm_probe_retries_until_the_registry_serves_the_version() {
         let report = PublishReport {
@@ -701,17 +878,18 @@ mod tests {
         let mut issues = Vec::new();
         run_landing_checks(&ctx, &log, &probes, &mut issues);
         assert!(issues.is_empty(), "{issues:?}");
-        let statuses: Vec<String> = capture
-            .all_messages()
-            .into_iter()
-            .filter(|(l, _)| *l == anodizer_core::log::LogLevel::Status)
-            .map(|(_, m)| m)
-            .collect();
+        assert_eq!(
+            capture.warn_count(),
+            0,
+            "a release whose packages all arrived must print no warning: {:?}",
+            capture.warn_messages()
+        );
+        let lines = statuses(&capture);
         assert!(
-            statuses.iter().any(|m| m
-                .contains("npm: demo@1.0.0 not yet visible on registry.npmjs.org")
-                && m.contains("retrying for up to")),
-            "a target that needed a retry must say so once: {statuses:?}"
+            lines.iter().any(|m| m.starts_with(
+                "npm: demo@1.0.0 visible on registry.npmjs.org (1/1 needed a propagation wait"
+            )),
+            "the result line carries the propagation count: {lines:?}"
         );
     }
 
@@ -994,6 +1172,7 @@ mod tests {
             propagation: PropagationRetry::IMMEDIATE,
             cargo_index: &|n, v| panic!("cargo probe must not fire for {n}@{v}"),
             npm_registry: &|_, p, v| panic!("npm probe must not fire for {p}@{v}"),
+            pypi_index: &|_, f| panic!("pypi probe must not fire for {f}"),
             blob_head: &|t| panic!("blob probe must not fire for {}", t.key),
             snap_channel_map: &|s, v, _| panic!("snap probe must not fire for {s} {v}"),
         }
@@ -1152,6 +1331,7 @@ mod tests {
             propagation: PropagationRetry::IMMEDIATE,
             cargo_index: &|n, v| panic!("cargo probe must not fire for {n}@{v}"),
             npm_registry: &|_, p, v| panic!("npm probe must not fire for {p}@{v}"),
+            pypi_index: &|_, f| panic!("pypi probe must not fire for {f}"),
             blob_head: &|t| panic!("blob probe must not fire for {}", t.key),
             snap_channel_map: &|_, _, _| Ok(false),
         };
@@ -1624,21 +1804,468 @@ mod tests {
     }
 
     #[test]
-    fn the_propagation_budget_never_outlives_the_run_deadline() {
+    fn the_propagation_window_never_outlives_the_run_deadline() {
         use std::time::{Duration, Instant};
         let retry = PropagationRetry::DEFAULT;
 
-        assert_eq!(retry.bounded_by(None).budget, Duration::from_secs(180));
+        let anchored = Instant::now();
+        let open = retry.starting_now(None).sweep_deadline.expect("anchored");
+        assert!(open >= anchored + Duration::from_secs(179), "{open:?}");
+        assert!(
+            open <= Instant::now() + Duration::from_secs(180),
+            "{open:?}"
+        );
 
         let far = Instant::now() + Duration::from_secs(3600);
-        assert_eq!(retry.bounded_by(Some(far)).budget, Duration::from_secs(180));
+        let capped = retry
+            .starting_now(Some(far))
+            .sweep_deadline
+            .expect("anchored");
+        assert!(
+            capped < far,
+            "the run deadline is far, so the window governs"
+        );
 
         let near = Instant::now() + Duration::from_secs(10);
-        let clamped = retry.bounded_by(Some(near)).budget;
-        assert!(clamped <= Duration::from_secs(10), "{clamped:?}");
-        assert!(clamped > Duration::from_secs(9), "{clamped:?}");
+        assert_eq!(
+            retry.starting_now(Some(near)).sweep_deadline,
+            Some(near),
+            "a run deadline inside the window governs instead"
+        );
 
         let passed = Instant::now() - Duration::from_secs(1);
-        assert_eq!(retry.bounded_by(Some(passed)).budget, Duration::ZERO);
+        assert_eq!(
+            retry.starting_now(Some(passed)).sweep_deadline,
+            Some(passed),
+            "an already-spent run budget leaves no window at all"
+        );
+    }
+
+    /// The window belongs to the sweep, not to one target: probing many
+    /// never-landing targets must cost ONE window, not one per target.
+    #[test]
+    fn a_sweep_over_many_targets_closes_within_one_window() {
+        use std::time::{Duration, Instant};
+        let packages: Vec<(&str, &str)> = vec![
+            ("a", "1.0.0"),
+            ("b", "1.0.0"),
+            ("c", "1.0.0"),
+            ("d", "1.0.0"),
+            ("e", "1.0.0"),
+            ("f", "1.0.0"),
+        ];
+        let report = PublishReport {
+            results: vec![result_with(
+                "npm",
+                PublisherOutcome::Succeeded,
+                npm_extra(&packages),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let window = Duration::from_millis(120);
+        let propagation = PropagationRetry {
+            policy: anodizer_core::retry::RetryPolicy {
+                max_attempts: 100,
+                base_delay: Duration::from_millis(20),
+                max_delay: Duration::from_millis(20),
+            },
+            budget: window,
+            ..PropagationRetry::DEFAULT
+        }
+        .starting_now(None);
+        let npm = |_: &str, _: &str, _: &str| Ok(false);
+        let probes = LandingProbes {
+            propagation,
+            npm_registry: &npm,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        let started = Instant::now();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        let spent = started.elapsed();
+        assert_eq!(issues.len(), packages.len(), "{issues:?}");
+        assert!(
+            spent < window * 3,
+            "six never-landing targets shared one {window:?} window but spent {spent:?}"
+        );
+    }
+
+    /// The ladder stops at the window's edge, and stops early when the
+    /// remaining window is shorter than the next backoff.
+    #[test]
+    fn the_ladder_stops_at_the_sweep_deadline() {
+        use std::time::{Duration, Instant};
+        let retry = PropagationRetry {
+            policy: anodizer_core::retry::RetryPolicy {
+                max_attempts: 100,
+                base_delay: Duration::from_millis(10),
+                max_delay: Duration::from_millis(10),
+            },
+            budget: Duration::from_millis(25),
+            ..PropagationRetry::DEFAULT
+        }
+        .starting_now(None);
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let log = test_logger(&ctx);
+        let asks = Cell::new(0usize);
+        let started = Instant::now();
+        let outcome = probe_with_propagation("t", "nowhere", &retry, &log, || {
+            asks.set(asks.get() + 1);
+            Ok(false)
+        });
+        let spent = started.elapsed();
+        assert!(matches!(outcome.landed, Landed::No));
+        assert!(outcome.waited, "more than one ask happened");
+        // 25ms of window at a flat 10ms backoff: two sleeps fit, the third
+        // would fall past the deadline, so the ladder stops with the
+        // remaining window shorter than one base delay.
+        assert_eq!(asks.get(), 3, "the ladder stops at the deadline");
+        assert!(
+            spent < Duration::from_millis(500),
+            "the ladder must not outlive its window: {spent:?}"
+        );
+    }
+
+    /// A probe failure that re-asking cannot resolve — a rejected credential,
+    /// a store that could not be built — must end THAT target immediately
+    /// instead of spending the sweep's shared window on a fixed answer.
+    #[test]
+    fn a_non_retriable_probe_failure_breaks_without_re_asking() {
+        for (publisher, extra) in [
+            ("cargo", cargo_extra(&[("app", "1.0.0")])),
+            ("npm", npm_extra(&[("app", "1.0.0")])),
+            ("pypi", pypi_extra(&["app-1.0.0-py3-none-any.whl"])),
+            ("blob", blob_extra(&["v1/app.tar.gz"])),
+            (
+                "snapcraft",
+                snapcraft_extra(&[("app", "1.0.0", Some("stable"), false)]),
+            ),
+        ] {
+            let report = PublishReport {
+                results: vec![result_with(publisher, PublisherOutcome::Succeeded, extra)],
+                ..Default::default()
+            };
+            let ctx = ctx_with_report(report);
+            let log = test_logger(&ctx);
+            let asks = Cell::new(0usize);
+            let deny = || -> anyhow::Result<bool> {
+                asks.set(asks.get() + 1);
+                Err(anyhow::Error::new(anodizer_core::retry::HttpError::new(
+                    std::io::Error::other("403 Forbidden: token lacks publish scope"),
+                    403,
+                )))
+            };
+            let probes = LandingProbes {
+                propagation: FLAKY,
+                cargo_index: &|_, _| deny(),
+                npm_registry: &|_, _, _| deny(),
+                pypi_index: &|_, _| deny(),
+                blob_head: &|_| deny(),
+                snap_channel_map: &|_, _, _| deny(),
+            };
+            let mut issues = Vec::new();
+            run_landing_checks(&ctx, &log, &probes, &mut issues);
+            assert_eq!(
+                asks.get(),
+                1,
+                "{publisher}: a 403 answers the same on every re-ask"
+            );
+            assert_eq!(issues.len(), 1, "{publisher}: {issues:?}");
+            assert!(
+                issues[0].contains("403 Forbidden"),
+                "{publisher}: {issues:?}"
+            );
+        }
+    }
+
+    fn pypi_extra(filenames: &[&str]) -> PublishEvidenceExtra {
+        PublishEvidenceExtra::Pypi(anodizer_core::publish_evidence::PypiExtra {
+            pypi_files: filenames
+                .iter()
+                .map(|f| PypiFileSnapshot {
+                    filename: f.to_string(),
+                    platform_tag: "any".to_string(),
+                    sha256: "0".repeat(64),
+                    repository: "https://upload.pypi.org/legacy/".to_string(),
+                    skipped_existing: false,
+                })
+                .collect(),
+        })
+    }
+
+    #[test]
+    fn pypi_listed_files_pass_with_recorded_coordinates() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "pypi",
+                PublisherOutcome::Succeeded,
+                pypi_extra(&[
+                    "app-1.0.0-py3-none-manylinux_2_28_x86_64.whl",
+                    "app-1.0.0.tar.gz",
+                ]),
+            )],
+            ..Default::default()
+        };
+        let (ctx, capture) = ctx_capturing(report);
+        let log = test_logger(&ctx);
+        let seen = std::cell::RefCell::new(Vec::new());
+        let pypi = |repository: &str, filename: &str| {
+            assert_eq!(repository, "https://upload.pypi.org/legacy/");
+            seen.borrow_mut().push(filename.to_string());
+            Ok(true)
+        };
+        let probes = LandingProbes {
+            pypi_index: &pypi,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        let probed = run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert_eq!(probed, 1);
+        assert_eq!(
+            *seen.borrow(),
+            vec![
+                "app-1.0.0-py3-none-manylinux_2_28_x86_64.whl".to_string(),
+                "app-1.0.0.tar.gz".to_string()
+            ],
+            "every recorded file is probed by its own name"
+        );
+        assert!(issues.is_empty(), "{issues:?}");
+        assert!(
+            statuses(&capture)
+                .iter()
+                .any(|m| m == "pypi: 2/2 uploaded file(s) listed on pypi.org"),
+            "{:?}",
+            statuses(&capture)
+        );
+    }
+
+    #[test]
+    fn pypi_unlisted_file_is_an_issue_naming_the_filename() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "pypi",
+                PublisherOutcome::Succeeded,
+                pypi_extra(&["app-1.0.0-py3-none-win_amd64.whl", "app-1.0.0.tar.gz"]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let pypi = |_: &str, filename: &str| Ok(filename.ends_with(".tar.gz"));
+        let probes = LandingProbes {
+            pypi_index: &pypi,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert_eq!(issues.len(), 1);
+        assert!(
+            issues[0].contains("app-1.0.0-py3-none-win_amd64.whl")
+                && issues[0].contains("is not listed on pypi.org"),
+            "a partial upload names the missing wheel: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn pypi_indeterminate_probe_is_a_distinct_issue_not_unlisted() {
+        // A PyPI filename is a permanent index slot that can never be
+        // re-uploaded, so an index that could not be consulted must never be
+        // reported as an absence.
+        let report = PublishReport {
+            results: vec![result_with(
+                "pypi",
+                PublisherOutcome::Succeeded,
+                pypi_extra(&["app-1.0.0.tar.gz"]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let pypi = |_: &str, _: &str| anyhow::bail!("502 Bad Gateway: index down");
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            pypi_index: &pypi,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert_eq!(issues.len(), 1);
+        assert!(
+            issues[0].contains("could not confirm app-1.0.0.tar.gz")
+                && !issues[0].contains("is not listed"),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn pypi_probe_retries_a_propagating_index() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "pypi",
+                PublisherOutcome::Succeeded,
+                pypi_extra(&["app-1.0.0.tar.gz"]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let answers = scripted(vec![Some(false), Some(false), Some(true)]);
+        let pypi = |_: &str, _: &str| answers();
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            pypi_index: &pypi,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn pypi_probe_error_then_success_is_not_an_issue() {
+        let report = PublishReport {
+            results: vec![result_with(
+                "pypi",
+                PublisherOutcome::Succeeded,
+                pypi_extra(&["app-1.0.0.tar.gz"]),
+            )],
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(report);
+        let log = test_logger(&ctx);
+        let answers = scripted(vec![None, Some(true)]);
+        let pypi = |_: &str, _: &str| answers();
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            pypi_index: &pypi,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    /// A propagation wait is the expected case, so nothing about it may reach
+    /// default-verbosity output as a warning; under `-v` the ladder's own
+    /// per-attempt lines come back.
+    #[test]
+    fn the_propagation_ladder_is_silent_at_default_and_speaks_under_verbose() {
+        let report = || PublishReport {
+            results: vec![result_with(
+                "npm",
+                PublisherOutcome::Succeeded,
+                npm_extra(&[("demo", "1.0.0")]),
+            )],
+            ..Default::default()
+        };
+
+        let (ctx, quiet) = ctx_capturing(report());
+        let answers = scripted(vec![Some(false), Some(true)]);
+        let npm = |_: &str, _: &str, _: &str| answers();
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            npm_registry: &npm,
+            ..panicking_probes()
+        };
+        run_landing_checks(&ctx, &test_logger(&ctx), &probes, &mut Vec::new());
+        assert_eq!(
+            quiet.warn_count(),
+            0,
+            "default verbosity must carry no warning: {:?}",
+            quiet.warn_messages()
+        );
+
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut verbose = Context::new(
+            Config::default(),
+            ContextOptions {
+                verbose: true,
+                ..Default::default()
+            },
+        );
+        verbose.set_publish_report(report());
+        verbose.with_log_capture(capture.clone());
+        let answers = scripted(vec![Some(false), Some(true)]);
+        let npm = |_: &str, _: &str, _: &str| answers();
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            npm_registry: &npm,
+            ..panicking_probes()
+        };
+        run_landing_checks(&verbose, &test_logger(&verbose), &probes, &mut Vec::new());
+        assert!(
+            capture
+                .warn_messages()
+                .iter()
+                .any(|m| m.contains("npm: demo@1.0.0 landing probe on registry.npmjs.org")),
+            "under -v the ladder names each attempt: {:?}",
+            capture.warn_messages()
+        );
+    }
+
+    /// Every probe on [`LandingProbes`] is asked through
+    /// [`probe_with_propagation`] — a probe called directly would get its own
+    /// window (or none) and drift from the sweep's single bound.
+    /// See `.claude/rules/landing-probes-propagation.md`.
+    #[test]
+    fn every_landing_probe_is_asked_through_the_propagation_helper() {
+        use anodizer_core::test_helpers::test_sources::{
+            function_bodies, production_half, rust_sources,
+        };
+
+        let src = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        let landing = std::fs::read_to_string(src.join("landing.rs")).expect("read landing.rs");
+
+        // The probe fields, read off the struct itself so a new probe joins
+        // the population without anyone remembering to list it here.
+        let fields: Vec<String> = landing
+            .split("pub struct LandingProbes<'a> {")
+            .nth(1)
+            .expect("LandingProbes is declared here")
+            .split("\n}")
+            .next()
+            .expect("the struct body ends")
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("pub "))
+            .filter_map(|l| l.split(':').next())
+            .filter(|f| *f != "propagation")
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            fields.len(),
+            5,
+            "the probed publishers are cargo, npm, pypi, blob and snapcraft: {fields:?}"
+        );
+
+        let mut askers = Vec::new();
+        for source in rust_sources(src) {
+            let text = std::fs::read_to_string(&source).expect("read source");
+            for body in function_bodies(production_half(&text)) {
+                let asked: Vec<&String> = fields
+                    .iter()
+                    .filter(|f| body.contains(&format!("probes.{f}")))
+                    .collect();
+                if asked.is_empty() {
+                    continue;
+                }
+                let name = body.trim_start().lines().next().unwrap_or_default();
+                assert!(
+                    body.contains("probe_with_propagation"),
+                    "{}: {name} asks {asked:?} outside the propagation helper",
+                    source.display()
+                );
+                askers.extend(asked.into_iter().cloned());
+            }
+        }
+        askers.sort();
+        askers.dedup();
+        let mut declared = fields.clone();
+        declared.sort();
+        assert_eq!(
+            askers, declared,
+            "every declared probe must have a caller that asks it"
+        );
     }
 }

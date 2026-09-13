@@ -188,6 +188,37 @@ pub(crate) fn released_files_body(
     }
 }
 
+/// Whether the index at `repository` already serves the released file
+/// `filename` — the post-publish landing question, asked with the exact
+/// filename the run recorded in its publish evidence.
+///
+/// `Ok(true)` = the index lists that file, `Ok(false)` = the index answered
+/// but does not carry it (a 404 on the version, or a page without the file),
+/// `Err` = the index could not be consulted, which a landing check must
+/// report as unverifiable rather than as an absence.
+///
+/// The project name and version come from the filename itself
+/// ([`distribution_name_version`]) and the page comes from
+/// [`released_files_body`], so this asks the same index question the
+/// publisher's own reconcile asks — an upload that reconcile would call
+/// already-published is exactly the one this reports as present.
+pub fn uploaded_file_live_on_index(
+    repository: &str,
+    filename: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
+    log: &StageLogger,
+) -> Result<bool> {
+    let Some((name, version)) = distribution_name_version(filename) else {
+        bail!("pypi: {filename:?} is not a wheel or source-distribution filename");
+    };
+    let normalized = normalize_project_name(&name);
+    match released_files_body(repository, &normalized, &version, policy, deadline, log)? {
+        Some(body) => Ok(body_lists_file(&body, filename)),
+        None => Ok(false),
+    }
+}
+
 /// True when an index page body ([`released_files_body`]'s JSON API or simple
 /// page) names exactly `filename` — tokens reduce to their bare filename
 /// (path + `#sha256=…` fragment stripped) and must EQUAL the probe, so
