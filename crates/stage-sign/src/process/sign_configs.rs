@@ -453,7 +453,14 @@ pub(crate) fn process_sign_configs(
             // whose `signature:` templates append different suffixes to one
             // base name two distinct assets and must both be allowed.
             if let (Some(naming), Some(source)) = (&naming, sig_source) {
-                claimed_names.claim(&sig_name, "signature", naming, source, signed_binary)?;
+                claimed_names.claim(
+                    &sig_name,
+                    "signature",
+                    naming,
+                    source,
+                    &sig_path,
+                    signed_binary,
+                )?;
             }
             let mut job_artifacts = vec![anodizer_core::artifact::Artifact {
                 kind: ArtifactKind::Signature,
@@ -479,7 +486,14 @@ pub(crate) fn process_sign_configs(
                         // from the same base: two configs whose `signature:`
                         // suffixes differ can still render one certificate
                         // name, which the release would keep only once.
-                        claimed_names.claim(&name, "certificate", naming, source, signed_binary)?;
+                        claimed_names.claim(
+                            &name,
+                            "certificate",
+                            naming,
+                            source,
+                            &cert_path,
+                            signed_binary,
+                        )?;
                         name
                     }
                     _ => cert_name,

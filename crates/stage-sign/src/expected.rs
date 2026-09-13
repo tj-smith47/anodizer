@@ -299,7 +299,7 @@ fn expected_binary_sign_names(
             &naming.base,
             target,
         );
-        claimed_names.claim(&name, output, &naming, source, artifact)?;
+        claimed_names.claim(&name, output, &naming, source, path, artifact)?;
         Ok(name)
     };
     let sig_name = claim(&sig_path, "signature")?;
