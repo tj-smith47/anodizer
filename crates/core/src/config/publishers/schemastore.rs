@@ -27,6 +27,8 @@ pub struct SchemastoreConfig {
     )]
     pub skip: Option<StringOrBool>,
     /// Tera condition; when it renders falsy the publisher is skipped.
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// The schema entries to register/refresh.
@@ -68,6 +70,8 @@ pub struct SchemaEntry {
     )]
     pub skip: Option<StringOrBool>,
     /// Per-entry Tera condition.
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }

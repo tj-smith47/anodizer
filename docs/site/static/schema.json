@@ -995,7 +995,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this app bundle config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip).",
+          "description": "Template-conditional: skip this app bundle config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -5377,7 +5377,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this DMG config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip).",
+          "description": "Template-conditional: skip this DMG config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -5819,7 +5819,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this docker sign config if rendered result is \"false\" or empty.",
+          "description": "Template-conditional: skip this docker sign config if rendered result is \"false\" or empty. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -9743,7 +9743,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this MSI config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip).",
+          "description": "Template-conditional: skip this MSI config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -10084,7 +10084,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this nfpm config if rendered result is \"false\" or empty. Conditional-skip gate.",
+          "description": "Template-conditional: skip this nfpm config if rendered result is \"false\" or empty. Conditional-skip gate. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -12140,7 +12140,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this NSIS config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip).",
+          "description": "Template-conditional: skip this NSIS config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -12318,7 +12318,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this PKG config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip).",
+          "description": "Template-conditional: skip this PKG config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -13899,7 +13899,7 @@
           }
         },
         "if": {
-          "description": "Per-entry Tera condition.",
+          "description": "Per-entry Tera condition. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -13982,7 +13982,7 @@
           ]
         },
         "if": {
-          "description": "Tera condition; when it renders falsy the publisher is skipped.",
+          "description": "Tera condition; when it renders falsy the publisher is skipped. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -14372,7 +14372,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this sign config if rendered result is \"false\" or empty.",
+          "description": "Template-conditional: skip this sign config if rendered result is \"false\" or empty. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -15729,7 +15729,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: when set, the hook only runs if the rendered result is truthy (not `\"false\"` / `\"0\"` / `\"no\"` / empty). Render failure hard-errors (not silent-skip). `before.hooks[].if:` / per-build / per-archive hook `if:` surface.",
+          "description": "Template-conditional: when set, the hook only runs if the rendered result is truthy (not `\"false\"` / `\"0\"` / `\"no\"` / empty). Render failure hard-errors (not silent-skip). `before.hooks[].if:` / per-build / per-archive hook `if:` surface. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",

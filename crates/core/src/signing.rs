@@ -83,6 +83,8 @@ pub struct SignConfig {
     /// from the environment.
     pub verify: Option<SignVerifyConfig>,
     /// Template-conditional: skip this sign config if rendered result is "false" or empty.
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }
@@ -437,6 +439,8 @@ pub struct DockerSignConfig {
     /// the sign just pushed to.
     pub verify: Option<SignVerifyConfig>,
     /// Template-conditional: skip this docker sign config if rendered result is "false" or empty.
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
 }

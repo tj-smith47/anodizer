@@ -129,6 +129,8 @@ pub struct StructuredHook {
     /// result is truthy (not `"false"` / `"0"` / `"no"` / empty). Render
     /// failure hard-errors (not silent-skip).
     /// `before.hooks[].if:` / per-build / per-archive hook `if:` surface.
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// Artifact-id allow-list (`before_publish:` only). When `Some`, the
