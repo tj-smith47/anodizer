@@ -266,14 +266,21 @@ fn probe_with_propagation(
     }
 }
 
-/// The tail a per-publisher result line carries when some of its targets
-/// arrived late: `" (2/9 needed a propagation wait)"`. Empty when the whole
-/// publisher answered on the first ask, so a clean sweep says nothing extra.
-fn propagation_tail(waited: usize, probed: usize) -> String {
-    if waited == 0 {
+/// The one trailing clause a per-publisher result line carries: how many of
+/// its targets arrived late, plus whatever else that publisher has to add
+/// (`" (2/9 needed a propagation wait, 1 unverifiable)"`). Empty when there is
+/// nothing to add, so a clean sweep says nothing extra. One clause rather than
+/// one per note — two parentheticals in a row read as two separate results.
+fn result_tail(waited: usize, probed: usize, extra: Option<String>) -> String {
+    let mut notes = Vec::new();
+    if waited > 0 {
+        notes.push(format!("{waited}/{probed} needed a propagation wait"));
+    }
+    notes.extend(extra);
+    if notes.is_empty() {
         String::new()
     } else {
-        format!(" ({waited}/{probed} needed a propagation wait)")
+        format!(" ({})", notes.join(", "))
     }
 }
 
@@ -461,7 +468,7 @@ fn check_cargo_landing(
         }
     }
     if probed > 0 && visible.len() == probed {
-        let tail = propagation_tail(waited, probed);
+        let tail = result_tail(waited, probed, None);
         if probed == 1 {
             log.status(&format!(
                 "cargo: {} visible on crates.io index{tail}",
@@ -530,7 +537,7 @@ fn check_npm_landing(
         }
     }
     if visible.len() == targets.len() {
-        let tail = propagation_tail(waited, targets.len());
+        let tail = result_tail(waited, targets.len(), None);
         // One npm family can span a public and a private registry, so naming
         // only the first would credit another registry's packages to it.
         let mut hosts: Vec<String> = targets
@@ -604,7 +611,7 @@ fn check_pypi_landing(
         }
     }
     if visible == targets.len() {
-        let tail = propagation_tail(waited, targets.len());
+        let tail = result_tail(waited, targets.len(), None);
         // A run can upload to more than one index (a TestPyPI leg beside
         // pypi.org), so naming only the first index would credit files from
         // another index to it.
@@ -674,22 +681,26 @@ fn check_blob_landing(
         }
     }
     if present == targets.len() {
-        let tail = propagation_tail(waited, targets.len());
+        let tail = result_tail(waited, targets.len(), None);
         // A run can upload to more than one bucket, so naming only the first
-        // would credit another bucket's objects to it.
-        let mut buckets: Vec<String> = targets.iter().map(|t| t.bucket.clone()).collect();
+        // would credit another bucket's objects to it. The bucket is the host
+        // half of the line, so the subject half names the key alone rather
+        // than repeating it.
+        let mut buckets: Vec<String> = targets
+            .iter()
+            .map(|t| format!("{}://{}", t.provider, t.bucket))
+            .collect();
         buckets.sort();
         buckets.dedup();
         let buckets = buckets.join(", ");
         if targets.len() == 1 {
-            let t = &targets[0];
             log.status(&format!(
-                "blob: {}://{}/{} present in {buckets}{tail}",
-                t.provider, t.bucket, t.key
+                "blob: {} visible in {buckets}{tail}",
+                targets[0].key
             ));
         } else {
             log.status(&format!(
-                "blob: {present}/{} uploaded object(s) present in {buckets}{tail}",
+                "blob: {present}/{} uploaded object(s) visible in {buckets}{tail}",
                 targets.len()
             ));
         }
@@ -783,7 +794,7 @@ fn check_snapcraft_landing(
         }
     }
     if probed > 0 && visible.len() == probed {
-        let tail = propagation_tail(waited, probed);
+        let tail = result_tail(waited, probed, None);
         if probed == 1 {
             log.status(&format!(
                 "snapcraft: {} live in the Snap Store channel map{tail}",
@@ -923,7 +934,11 @@ fn check_docker_landing(
     // An image the probe could not reach is a warning, not a finding, so the
     // run passes — and the images that DID verify must still be reported.
     if visible.len() + unverifiable == pushed.len() {
-        let tail = propagation_tail(waited, pushed.len());
+        let tail = result_tail(
+            waited,
+            pushed.len(),
+            (unverifiable > 0).then(|| format!("{unverifiable} unverifiable")),
+        );
         // A run can push to more than one registry, so naming only the first
         // would credit another registry's images to it.
         let mut registries: Vec<String> = pushed
@@ -933,11 +948,6 @@ fn check_docker_landing(
         registries.sort();
         registries.dedup();
         let registries = registries.join(", ");
-        let unverified = if unverifiable > 0 {
-            format!(" ({unverifiable} unverifiable)")
-        } else {
-            String::new()
-        };
         if pushed.len() == 1 && unverifiable == 0 {
             log.status(&format!(
                 "docker: {} visible on {registries}{tail}",
@@ -945,7 +955,7 @@ fn check_docker_landing(
             ));
         } else {
             log.status(&format!(
-                "docker: {}/{} pushed image(s) visible on {registries}{tail}{unverified}",
+                "docker: {}/{} pushed image(s) visible on {registries}{tail}",
                 visible.len(),
                 pushed.len()
             ));
@@ -2371,7 +2381,8 @@ mod tests {
     }
 
     /// blob was the only publisher with no singular branch, and it named no
-    /// bucket at all.
+    /// bucket at all. Its line now reads like its five siblings: one subject,
+    /// one verb, every host it reached.
     #[test]
     fn the_blob_result_line_is_singular_for_one_object_and_names_every_bucket() {
         let one = PublishReport {
@@ -2394,7 +2405,7 @@ mod tests {
         assert!(
             statuses(&capture)
                 .iter()
-                .any(|m| m == "blob: s3://bkt/v1/app.tar.gz present in bkt"),
+                .any(|m| m == "blob: v1/app.tar.gz visible in s3://bkt"),
             "{:?}",
             statuses(&capture)
         );
@@ -2418,7 +2429,7 @@ mod tests {
         assert!(
             statuses(&capture)
                 .iter()
-                .any(|m| m == "blob: 2/2 uploaded object(s) present in bkt, mirror"),
+                .any(|m| m == "blob: 2/2 uploaded object(s) visible in s3://bkt, s3://mirror"),
             "{:?}",
             statuses(&capture)
         );
@@ -2448,12 +2459,22 @@ mod tests {
                 "a result line with no singular branch reads `1/1 …` for one \
                  target: {signature}"
             );
-            // A line that joins several host names must sort and dedup them,
-            // or it credits one registry's artifacts to another.
-            if body.contains(r#".join(", ")"#) {
+            // A line whose host comes from a PER-TARGET field must name every
+            // one of them, sorted and deduped: naming only the first credits
+            // one registry's artifacts to another, and an unsorted list
+            // reorders between runs. cargo (the crates.io index) and
+            // snapcraft (the Snap Store) name a constant host and stay out.
+            let per_target_host = body.contains("registry_host(&t")
+                || body.contains("index_host(&t")
+                || body.contains("image_registry(&i")
+                || body.contains(".bucket");
+            if per_target_host {
                 assert!(
-                    body.contains(".sort();") && body.contains(".dedup();"),
-                    "a multi-host result line must sort and dedup: {signature}"
+                    body.contains(r#".join(", ")"#)
+                        && body.contains(".sort();")
+                        && body.contains(".dedup();"),
+                    "a per-target host list must be joined, sorted and \
+                     deduped: {signature}"
                 );
             }
         }
@@ -2496,9 +2517,48 @@ mod tests {
         );
     }
 
+    /// A run that both waited for propagation and could not reach one
+    /// registry says so in ONE trailing clause — two parentheticals in a row
+    /// read as two separate results.
+    #[test]
+    fn a_waited_docker_run_with_an_unverifiable_image_prints_one_trailing_clause() {
+        let (ctx, capture) = ctx_with_pushed_images(&[
+            ("ghcr.io/owner/app:1.0.0", None, true),
+            ("private.example.com/owner/app:1.0.0", None, true),
+        ]);
+        let log = test_logger(&ctx);
+        let asks = std::cell::Cell::new(0usize);
+        let manifest = |reference: &str| {
+            if reference.starts_with("ghcr.io") {
+                asks.set(asks.get() + 1);
+                // Absent on the first ask, served on the second: the shape of
+                // a registry that has accepted a push but not yet serves it.
+                Ok((asks.get() > 1).then(|| "sha256:aa".to_string()))
+            } else {
+                Err(anyhow::anyhow!("401 Unauthorized"))
+            }
+        };
+        let probes = LandingProbes {
+            propagation: PropagationRetry::immediate_attempts(3),
+            docker_manifest: &manifest,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(issues.is_empty(), "{issues:?}");
+        assert!(
+            statuses(&capture).iter().any(|m| m
+                == "docker: 1/2 pushed image(s) visible on ghcr.io, \
+                    private.example.com (1/2 needed a propagation wait, 1 \
+                    unverifiable)"),
+            "{:?}",
+            statuses(&capture)
+        );
+    }
+
     /// One uploaded file reads as itself, not as `1/1 uploaded file(s)`, and a
     /// run that uploaded to two indexes names both rather than crediting every
-    /// file to the first."""
+    /// file to the first.
     #[test]
     fn the_pypi_result_line_is_singular_for_one_file_and_names_every_index() {
         let one = PublishReport {
