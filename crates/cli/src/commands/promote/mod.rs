@@ -106,13 +106,19 @@ pub fn run(opts: PromoteOpts) -> Result<()> {
     }
 
     if report.any_failure() {
-        bail!(
-            "{} publisher(s) failed to promote: {}",
-            report.failure_names().len(),
-            report.failure_names().join(", ")
-        );
+        bail!(promote_failure_message(&report));
     }
     Ok(())
+}
+
+/// The message a promotion run aborts with when at least one publisher failed:
+/// how many failed, and which ones.
+pub(crate) fn promote_failure_message(report: &anodizer_core::promote::PromoteReport) -> String {
+    format!(
+        "{} publisher(s) failed to promote: {}",
+        report.failure_names().len(),
+        report.failure_names().join(", ")
+    )
 }
 
 /// Assemble every configured, promotion-capable publisher as a `Promotable`.

@@ -65,13 +65,18 @@ pub fn resolve_backend(
 pub fn enforce_podman_linux_only() -> Result<()> {
     let os = std::env::consts::OS;
     if os != "linux" {
-        anyhow::bail!(
-            "podman backend is supported on Linux only (host OS: {}); \
-             remove `use: podman` or run on a Linux host",
-            os,
-        );
+        anyhow::bail!(podman_not_linux_message(os));
     }
     Ok(())
+}
+
+/// The refusal `enforce_podman_linux_only` raises on `os`, taken as a
+/// parameter so the wording can be exercised from any host.
+pub(crate) fn podman_not_linux_message(os: &str) -> String {
+    format!(
+        "podman backend is supported on Linux only (host OS: {os}); \
+         remove `use: podman` or run on a Linux host"
+    )
 }
 
 // ---------------------------------------------------------------------------

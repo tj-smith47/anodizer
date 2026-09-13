@@ -223,3 +223,33 @@ fn dry_run_dispatch_emits_would_promote_and_spawns_nothing() {
         "snapcraft: candidate→stable (dry-run)"
     );
 }
+
+/// The promote page quotes the abort a failed promotion prints. The same
+/// report shape the page's example produces — one snapcraft target rejected on
+/// its channel name — is built here and the message compared with the page.
+#[test]
+fn the_abort_quoted_in_the_promote_docs_is_what_a_failed_run_produces() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/publish/promote.md"
+    );
+    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let quoted: Vec<String> = page
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("Error "))
+        .filter(|line| !line.contains('\u{2026}'))
+        .map(str::to_string)
+        .collect();
+
+    let report = anodizer_core::promote::PromoteReport {
+        results: vec![anodizer_core::promote::PromoteOutcome::failed(
+            "snapcraft",
+            "candidate",
+            "lastest",
+            "promote --to: invalid snapcraft channel 'lastest'",
+        )],
+    };
+
+    assert_eq!(quoted.len(), 1, "the aborts the page quotes");
+    assert_eq!(quoted[0], promote_failure_message(&report));
+}

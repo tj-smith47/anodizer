@@ -3556,3 +3556,106 @@ fn the_warning_quoted_in_the_resilience_docs_is_a_message_the_check_produces() {
     assert_eq!(produced, quoted);
     assert_eq!(quoted.len(), 1, "the section quotes one warning");
 }
+
+/// Read every `Error ` line a docs page quotes, in page order, with the label
+/// and the renderer's indentation stripped. A line carrying the elision
+/// character is an abbreviation of real output rather than a claim about it,
+/// so it is left out.
+fn quoted_error_lines(relative: &str) -> Vec<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/site/content/docs")
+        .join(relative);
+    let page =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    page.lines()
+        .filter_map(|line| line.trim_start().strip_prefix("Error "))
+        .filter(|line| !line.contains('\u{2026}'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The monorepo page and the release-resilience page both quote the workspace
+/// membership guard's errors as the operator sees them, so a reword leaves
+/// them showing a line the binary no longer prints. Each documented situation
+/// is reproduced on its own temporary workspace and the pages' lines have to
+/// be exactly what the guard produced.
+///
+/// The release-resilience page's other errors come from four more producers
+/// and are pinned where each of them lives; this test asserts that page's
+/// total error count too, so a newly quoted line fails here until it is
+/// pinned somewhere.
+#[test]
+fn the_membership_errors_quoted_in_the_docs_are_what_the_guard_produces() {
+    // A dependency on disk that the config never lists.
+    let absent = tempdir().unwrap();
+    write_disk_workspace(
+        absent.path(),
+        &[
+            ("crates/cli", "anodizer", &["anodizer-stage-install-script"]),
+            (
+                "crates/stage-install-script",
+                "anodizer-stage-install-script",
+                &[],
+            ),
+        ],
+    );
+    let config = make_config(vec![with_active_cargo_publisher(CrateConfig {
+        name: "anodizer".to_string(),
+        path: p(absent.path(), "crates/cli"),
+        tag_template: Some("v{{ .Version }}".to_string()),
+        ..Default::default()
+    })]);
+    let mut produced = vec![];
+    check_workspace_membership(
+        &config,
+        absent.path(),
+        &flatten_crate_names(&config),
+        &mut produced,
+    );
+
+    // A dependency the config lists but never uploads.
+    let unpublished = tempdir().unwrap();
+    write_disk_workspace(
+        unpublished.path(),
+        &[
+            ("crates/cli", "anodizer", &["anodizer-core"]),
+            ("crates/core", "anodizer-core", &[]),
+        ],
+    );
+    let config = make_config(vec![
+        with_active_cargo_publisher(CrateConfig {
+            name: "anodizer".to_string(),
+            path: p(unpublished.path(), "crates/cli"),
+            tag_template: Some("v{{ .Version }}".to_string()),
+            ..Default::default()
+        }),
+        CrateConfig {
+            name: "anodizer-core".to_string(),
+            path: p(unpublished.path(), "crates/core"),
+            tag_template: Some("v{{ .Version }}".to_string()),
+            ..Default::default()
+        },
+    ]);
+    check_workspace_membership(
+        &config,
+        unpublished.path(),
+        &flatten_crate_names(&config),
+        &mut produced,
+    );
+
+    let monorepo = quoted_error_lines("advanced/monorepo.md");
+    assert_eq!(monorepo, produced[..1], "the monorepo page's Error lines");
+    assert_eq!(monorepo.len(), 1, "the errors the monorepo page quotes");
+
+    let resilience = quoted_error_lines("advanced/release-resilience.md");
+    assert_eq!(
+        resilience[3..],
+        produced[..],
+        "the release-resilience page's last two Error lines"
+    );
+    assert_eq!(
+        resilience.len(),
+        5,
+        "the errors the release-resilience page quotes"
+    );
+}

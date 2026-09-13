@@ -2912,3 +2912,79 @@ fn run_dry_run_previews_the_unwind_without_withdrawing() {
         "dry-run must leave the tag in place; got {tags:?}"
     );
 }
+
+/// The release-resilience page quotes the burned-version refusal as the
+/// operator sees it, so a reword leaves the page showing a line the binary no
+/// longer prints. The documented situation — a run summary recording a cargo
+/// and a chocolatey landing for `v0.8.0` — is reproduced here.
+///
+/// The page's other errors come from four more producers and are pinned where
+/// each of them lives; the error count is asserted in every one of those
+/// tests, so a newly quoted line fails until it is pinned somewhere.
+#[test]
+#[cfg(unix)]
+fn the_rollback_refusal_quoted_in_the_resilience_docs_is_what_the_guard_produces() {
+    use anodizer_core::publish_report::PublisherGroup;
+
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/advanced/release-resilience.md"
+    );
+    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let quoted: Vec<String> = page
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("Error "))
+        .filter(|line| !line.contains('\u{2026}'))
+        .map(str::to_string)
+        .collect();
+
+    let tmp = tempfile::tempdir().unwrap();
+    init_github_origin_repo(tmp.path());
+    let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+    write_summary(
+        tmp.path(),
+        "run-v0.8.0",
+        "v0.8.0",
+        true,
+        vec![
+            summary_result("cargo", PublisherGroup::Submitter, "succeeded"),
+            summary_result(
+                "chocolatey",
+                PublisherGroup::Submitter,
+                "pending-moderation",
+            ),
+        ],
+    );
+
+    let err = check_not_irreversibly_published(
+        tmp.path(),
+        &gh,
+        &["v0.8.0".to_string()],
+        &no_cargo_config(),
+        &probes_with_crates_io(&probe_untouched),
+        &quiet_log(),
+    )
+    .expect_err("a burned version must be refused");
+    let refusal = err.to_string();
+
+    assert_eq!(
+        quoted[2],
+        refusal
+            .lines()
+            .next()
+            .expect("the refusal has a first line"),
+        "the page's third Error line"
+    );
+    // The lines after the label carry the burn evidence and the next step, so
+    // the page has to show the rest of the refusal too, not only the line the
+    // label prefixes.
+    let tail = refusal
+        .split_once('\n')
+        .expect("the refusal continues past its first line")
+        .1;
+    assert!(
+        page.contains(tail),
+        "the page must quote the rest of the refusal:\n{tail}"
+    );
+    assert_eq!(quoted.len(), 5, "the errors the page quotes");
+}

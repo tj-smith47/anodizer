@@ -31,15 +31,23 @@ pub(crate) fn run_release_env_preflight(
         };
         let report = crate::commands::preflight::run_env_preflight(ctx, scope, log);
         if !report.ok() {
-            anyhow::bail!(
-                "preflight: {} environment failure(s) across {} check(s); \
-                 fix the issues above before re-running",
-                report.failures.len(),
-                report.checks
-            );
+            anyhow::bail!(preflight_failure_message(&report));
         }
     }
     Ok(())
+}
+
+/// The message a failed environment preflight aborts the release with: how
+/// many checks failed, out of how many that ran, and where to look.
+pub(crate) fn preflight_failure_message(
+    report: &anodizer_core::env_preflight::EnvPreflightReport,
+) -> String {
+    format!(
+        "preflight: {} environment failure(s) across {} check(s); \
+         fix the issues above before re-running",
+        report.failures.len(),
+        report.checks
+    )
 }
 
 pub(crate) fn run_before_hooks(

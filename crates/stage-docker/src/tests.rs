@@ -7581,3 +7581,36 @@ fn a_dry_run_marks_no_image_as_pushed() {
         );
     }
 }
+
+/// The podman page quotes both refusals as the operator sees them, so a
+/// reword leaves the page showing a line the binary no longer prints. Each is
+/// produced here from the real check and the page's lines have to match
+/// exactly, in page order.
+///
+/// The Linux-only refusal reads the host OS, so the test asks the message
+/// builder for the macOS wording the page shows rather than depending on the
+/// machine the suite runs on.
+#[test]
+fn the_refusals_quoted_in_the_podman_docs_are_what_the_checks_produce() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/packages/podman.md"
+    );
+    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let quoted: Vec<String> = page
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("Error "))
+        .map(str::to_string)
+        .collect();
+
+    let flag_refusal =
+        super::command::validate_podman_flag_compat(&["--cache-from=type=gha".to_string()])
+            .expect_err("a buildx-only flag under podman is refused");
+
+    let produced = vec![
+        super::command::podman_not_linux_message("macos"),
+        format!("{flag_refusal:#}"),
+    ];
+    assert_eq!(quoted, produced, "the page's Error lines");
+    assert_eq!(quoted.len(), 2, "the errors the page quotes");
+}
