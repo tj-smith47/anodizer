@@ -359,6 +359,32 @@ pub(crate) fn resolve_signature_path(
 ///
 /// Shared by both `SignConfig` and `DockerSignConfig` — both expose the same
 /// `stdin` / `stdin_file` fields.
+/// `path` made absolute, with `.` and `..` folded away lexically.
+///
+/// `std::path::absolute` keeps `..` on POSIX and collapses it on Windows,
+/// where it is `GetFullPathNameW`. A comparison built straight on it therefore
+/// answers differently per platform for a spelling like `dist/../dist/x`, so
+/// one config would pass the Windows determinism shards and fail the Linux and
+/// macOS ones. Folding here gives every platform one answer.
+///
+/// Lexical like `absolute` itself: no symlink is resolved and the path need
+/// not exist, which every path asked about here does not yet. `None` is the
+/// error `absolute` reports for an empty or syntactically invalid path.
+pub(crate) fn lexical_absolute(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let absolute = std::path::absolute(path).ok()?;
+    let mut folded = std::path::PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                folded.pop();
+            }
+            other => folded.push(other),
+        }
+    }
+    Some(folded)
+}
+
 /// The on-disk location a rendered `signature:` / `certificate:` template
 /// names. A rendering already under `dist` is kept; any other one is placed
 /// under `dist`, the same rule GoReleaser's `relativeToDist` applies. The two
@@ -370,8 +396,8 @@ pub(crate) fn resolve_signature_path(
 /// registered signature that pointed at nothing.
 pub(crate) fn dist_joined(dist: &std::path::Path, rendered: &str) -> std::path::PathBuf {
     let resolved = std::path::PathBuf::from(rendered);
-    let under_dist = match (std::path::absolute(&resolved), std::path::absolute(dist)) {
-        (Ok(abs), Ok(abs_dist)) => abs.starts_with(abs_dist),
+    let under_dist = match (lexical_absolute(&resolved), lexical_absolute(dist)) {
+        (Some(abs), Some(abs_dist)) => abs.starts_with(abs_dist),
         _ => resolved.starts_with(dist),
     };
     if under_dist {
@@ -606,6 +632,22 @@ mod dist_joined_tests {
         assert_eq!(
             dist_joined(Path::new("dist"), "./dist/app.tar.gz.sig"),
             PathBuf::from("./dist/app.tar.gz.sig")
+        );
+    }
+
+    /// `..` is folded before the comparison, so a rendering that hops out of
+    /// `dist` is placed under it and one that hops back in is kept — the same
+    /// verdict on every platform. `std::path::absolute` alone keeps `..` on
+    /// POSIX and drops it on Windows.
+    #[test]
+    fn a_parent_hop_is_folded_before_the_dist_comparison() {
+        assert_eq!(
+            dist_joined(Path::new("dist"), "dist/../dist/app.tar.gz.sig"),
+            PathBuf::from("dist/../dist/app.tar.gz.sig")
+        );
+        assert_eq!(
+            dist_joined(Path::new("dist"), "dist/../elsewhere/app.tar.gz.sig"),
+            PathBuf::from("dist/dist/../elsewhere/app.tar.gz.sig")
         );
     }
 
