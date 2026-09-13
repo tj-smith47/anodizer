@@ -396,7 +396,8 @@ fn recorded_npm_targets(report: &PublishReport) -> Vec<(String, String, String, 
         .collect()
 }
 
-/// `npm --userconfig <npmrc> --registry <url> dist-tag add <pkg>@<version> <tag>`.
+/// `npm --userconfig <npmrc> --registry <url> dist-tag add <pkg>@<version>
+/// <tag>`.
 fn npm_dist_tag_add_command(
     package: &str,
     version: &str,
