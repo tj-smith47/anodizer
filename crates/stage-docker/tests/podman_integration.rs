@@ -301,4 +301,24 @@ fn the_recorded_podman_digestfile_equals_what_the_registry_served() {
             "the recording lost the `{verb}` measurement"
         );
     }
+
+    // The docs page reproduces this transcript, and a retyped request there
+    // would document a measurement nobody made. Only the indentation differs.
+    const DOCS: &str = include_str!("../../../docs/site/content/docs/packages/podman.md");
+    let mut requests = 0;
+    let mut lines = RECORDING.lines().map(str::trim).peekable();
+    while let Some(line) = lines.next() {
+        if !line.starts_with("$ curl -i") {
+            continue;
+        }
+        requests += 1;
+        let url = lines.peek().copied().unwrap_or_default();
+        for recorded in [line, url] {
+            assert!(
+                DOCS.contains(recorded),
+                "the docs page lost the measured request: {recorded}"
+            );
+        }
+    }
+    assert_eq!(requests, 2, "the recording lost a request");
 }

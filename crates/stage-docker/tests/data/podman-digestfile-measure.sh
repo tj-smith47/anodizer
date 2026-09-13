@@ -12,6 +12,14 @@
 # docker and no podman on the host. The registry is a throwaway `registry:2`
 # on 127.0.0.1:5000; both containers, and any image this script pulled, are
 # removed on exit.
+#
+# Run it by hand when the transcript needs regenerating — nothing runs it
+# automatically. It needs docker, root-equivalent privilege, a free port 5000
+# and docker's data root under 80% full, and it is Linux-only: rootful podman
+# inside a container needs `--privileged`, and `--network host` is what lets
+# the container and the host's own curl name one registry. That combination
+# is host root for the duration, which is a different proposition on a shared
+# CI runner than on a dev box.
 set -euo pipefail
 
 REGISTRY_CTR=anodizer-digestfile-registry
@@ -19,9 +27,15 @@ PODMAN_CTR=anodizer-digestfile-podman
 REGISTRY_IMAGE=registry:2
 PODMAN_IMAGE=quay.io/podman/stable:latest
 
-used=$(df --output=pcent / | tail -1 | tr -dc '0-9')
-if [ "$used" -ge 80 ]; then
-    echo "refusing to run: / is ${used}% full" >&2
+# The pulls and the registry's blobs go wherever docker's data root is, which
+# is commonly a mount of its own. `df --output=` is GNU-only, as is this whole
+# script. An `if` condition is exempt from `set -e`, so an unreadable `df`
+# defaults to 100 and refuses rather than skipping the guard.
+data_root=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)
+data_root=${data_root:-/}
+used=$(df --output=pcent "$data_root" | tail -1 | tr -dc '0-9')
+if [ "${used:-100}" -ge 80 ]; then
+    echo "refusing to run: $data_root is ${used:-unreadable}% full" >&2
     exit 1
 fi
 
@@ -42,6 +56,11 @@ trap cleanup EXIT
 
 docker run -d --rm --name "$REGISTRY_CTR" -p 127.0.0.1:5000:5000 \
     "$REGISTRY_IMAGE" >/dev/null
+# `docker run -d` returns once the container is created, not once registry:2
+# has bound the port, so a push against a warm cache can beat it there and
+# fail as a push error rather than as "the registry was not up yet".
+curl -sf --retry 30 --retry-connrefused --retry-delay 1 \
+    http://localhost:5000/v2/ >/dev/null
 # The host network lets the podman container and the host's curl name the
 # same registry, so the transcript's URLs are the ones a reader can retype.
 docker run -d --rm --name "$PODMAN_CTR" --privileged --network host \
