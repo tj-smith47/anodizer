@@ -530,8 +530,16 @@ fn check_npm_landing(
         }
     }
     if visible.len() == targets.len() {
-        let host = registry_host(&targets[0].registry);
         let tail = propagation_tail(waited, targets.len());
+        // One npm family can span a public and a private registry, so naming
+        // only the first would credit another registry's packages to it.
+        let mut hosts: Vec<String> = targets
+            .iter()
+            .map(|t| registry_host(&t.registry).to_string())
+            .collect();
+        hosts.sort();
+        hosts.dedup();
+        let host = hosts.join(", ");
         if targets.len() == 1 {
             log.status(&format!("npm: {} visible on {host}{tail}", visible[0]));
         } else {
@@ -666,11 +674,25 @@ fn check_blob_landing(
         }
     }
     if present == targets.len() {
-        log.status(&format!(
-            "blob: {present}/{} uploaded object(s) present in bucket{}",
-            targets.len(),
-            propagation_tail(waited, targets.len())
-        ));
+        let tail = propagation_tail(waited, targets.len());
+        // A run can upload to more than one bucket, so naming only the first
+        // would credit another bucket's objects to it.
+        let mut buckets: Vec<String> = targets.iter().map(|t| t.bucket.clone()).collect();
+        buckets.sort();
+        buckets.dedup();
+        let buckets = buckets.join(", ");
+        if targets.len() == 1 {
+            let t = &targets[0];
+            log.status(&format!(
+                "blob: {}://{}/{} present in {buckets}{tail}",
+                t.provider, t.bucket, t.key
+            ));
+        } else {
+            log.status(&format!(
+                "blob: {present}/{} uploaded object(s) present in {buckets}{tail}",
+                targets.len()
+            ));
+        }
     }
     true
 }
@@ -815,6 +837,7 @@ fn check_docker_landing(
         return false;
     }
     let mut visible: Vec<String> = Vec::new();
+    let mut unverifiable = 0usize;
     let mut waited = 0usize;
     for image in &pushed {
         let coords = format!("docker: {}", image.reference);
@@ -877,7 +900,7 @@ fn check_docker_landing(
                 got.as_deref().unwrap_or_default()
             )),
             Landed::No => issues.push(format!(
-                "docker: {} reported pushed but is not in {registry}",
+                "docker: {} reported pushed but is not visible on {registry}",
                 image.reference
             )),
             // A registry that could not be consulted is not an absence: the
@@ -887,14 +910,19 @@ fn check_docker_landing(
             // publisher's landing finding is — loud, recorded, and never a
             // reason to fail a release whose one-way-door publishers have
             // already run.
-            Landed::Unknown(e) => log.warn(&format!(
-                "unverifiable docker landing not gating the release — docker: could not \
-                 confirm {} on {registry}: {e:#}",
-                image.reference
-            )),
+            Landed::Unknown(e) => {
+                unverifiable += 1;
+                log.warn(&format!(
+                    "unverifiable docker landing not gating the release — docker: could not \
+                     confirm {} on {registry}: {e:#}",
+                    image.reference
+                ));
+            }
         }
     }
-    if visible.len() == pushed.len() {
+    // An image the probe could not reach is a warning, not a finding, so the
+    // run passes — and the images that DID verify must still be reported.
+    if visible.len() + unverifiable == pushed.len() {
         let tail = propagation_tail(waited, pushed.len());
         // A run can push to more than one registry, so naming only the first
         // would credit another registry's images to it.
@@ -905,14 +933,20 @@ fn check_docker_landing(
         registries.sort();
         registries.dedup();
         let registries = registries.join(", ");
-        if pushed.len() == 1 {
+        let unverified = if unverifiable > 0 {
+            format!(" ({unverifiable} unverifiable)")
+        } else {
+            String::new()
+        };
+        if pushed.len() == 1 && unverifiable == 0 {
             log.status(&format!(
                 "docker: {} visible on {registries}{tail}",
                 visible[0]
             ));
         } else {
             log.status(&format!(
-                "docker: {0}/{0} pushed image(s) visible on {registries}{tail}",
+                "docker: {}/{} pushed image(s) visible on {registries}{tail}{unverified}",
+                visible.len(),
                 pushed.len()
             ));
         }
@@ -2281,9 +2315,190 @@ mod tests {
         );
     }
 
+    /// The six result lines are one grammar: a singular form for one target,
+    /// and every host named when several were asked. npm and blob carry a
+    /// per-target host, so both must sort and dedup the list they print.
+    #[test]
+    fn the_npm_result_line_is_singular_for_one_package_and_names_every_registry() {
+        let one = PublishReport {
+            results: vec![result_with(
+                "npm",
+                PublisherOutcome::Succeeded,
+                npm_extra(&[("app", "1.0.0")]),
+            )],
+            ..Default::default()
+        };
+        let (ctx, capture) = ctx_capturing(one);
+        let log = test_logger(&ctx);
+        let npm = |_: &str, _: &str, _: &str| Ok(true);
+        let probes = LandingProbes {
+            npm_registry: &npm,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(
+            statuses(&capture)
+                .iter()
+                .any(|m| m == "npm: app@1.0.0 visible on registry.npmjs.org"),
+            "{:?}",
+            statuses(&capture)
+        );
+
+        let mut two = npm_extra(&[("app", "1.0.0"), ("app-linux-x64", "1.0.0")]);
+        if let PublishEvidenceExtra::Npm(extra) = &mut two {
+            extra.npm_targets[1].registry = "https://npm.pkg.github.com".to_string();
+        }
+        let report = PublishReport {
+            results: vec![result_with("npm", PublisherOutcome::Succeeded, two)],
+            ..Default::default()
+        };
+        let (ctx, capture) = ctx_capturing(report);
+        let log = test_logger(&ctx);
+        let probes = LandingProbes {
+            npm_registry: &npm,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(
+            statuses(&capture).iter().any(|m| m
+                == "npm: 2/2 published package(s) visible on npm.pkg.github.com, \
+                    registry.npmjs.org"),
+            "{:?}",
+            statuses(&capture)
+        );
+    }
+
+    /// blob was the only publisher with no singular branch, and it named no
+    /// bucket at all.
+    #[test]
+    fn the_blob_result_line_is_singular_for_one_object_and_names_every_bucket() {
+        let one = PublishReport {
+            results: vec![result_with(
+                "blob",
+                PublisherOutcome::Succeeded,
+                blob_extra(&["v1/app.tar.gz"]),
+            )],
+            ..Default::default()
+        };
+        let (ctx, capture) = ctx_capturing(one);
+        let log = test_logger(&ctx);
+        let head = |_: &BlobTargetSnapshot| Ok(true);
+        let probes = LandingProbes {
+            blob_head: &head,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(
+            statuses(&capture)
+                .iter()
+                .any(|m| m == "blob: s3://bkt/v1/app.tar.gz present in bkt"),
+            "{:?}",
+            statuses(&capture)
+        );
+
+        let mut two = blob_extra(&["v1/app.tar.gz", "v1/app.zip"]);
+        if let PublishEvidenceExtra::Blob(extra) = &mut two {
+            extra.blob_targets[1].bucket = "mirror".to_string();
+        }
+        let report = PublishReport {
+            results: vec![result_with("blob", PublisherOutcome::Succeeded, two)],
+            ..Default::default()
+        };
+        let (ctx, capture) = ctx_capturing(report);
+        let log = test_logger(&ctx);
+        let probes = LandingProbes {
+            blob_head: &head,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(
+            statuses(&capture)
+                .iter()
+                .any(|m| m == "blob: 2/2 uploaded object(s) present in bkt, mirror"),
+            "{:?}",
+            statuses(&capture)
+        );
+    }
+
+    /// Every landing result line follows one grammar. Asked of the check
+    /// functions themselves so the seventh probe cannot invent a third shape.
+    #[test]
+    fn every_landing_result_line_has_a_singular_branch_and_dedups_its_hosts() {
+        use anodizer_core::test_helpers::test_sources::{function_bodies, production_half};
+
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/landing.rs"))
+            .expect("read landing.rs");
+        let mut checked = Vec::new();
+        for body in function_bodies(production_half(&text)) {
+            let signature = body.trim_start().lines().next().unwrap_or_default();
+            if !signature.contains("fn check_") || !signature.contains("_landing") {
+                continue;
+            }
+            checked.push(signature.to_string());
+            assert!(
+                body.contains("log.status("),
+                "a landing check reports nothing: {signature}"
+            );
+            assert!(
+                body.contains("== 1"),
+                "a result line with no singular branch reads `1/1 …` for one \
+                 target: {signature}"
+            );
+            // A line that joins several host names must sort and dedup them,
+            // or it credits one registry's artifacts to another.
+            if body.contains(r#".join(", ")"#) {
+                assert!(
+                    body.contains(".sort();") && body.contains(".dedup();"),
+                    "a multi-host result line must sort and dedup: {signature}"
+                );
+            }
+        }
+        assert_eq!(
+            checked.len(),
+            6,
+            "one check function per landing probe: {checked:?}"
+        );
+    }
+
+    /// One image the probe could not reach is a warning, not a finding, so the
+    /// run passes — and the images that DID verify are still reported.
+    #[test]
+    fn an_unverifiable_image_does_not_silence_the_verified_ones() {
+        let (ctx, capture) = ctx_with_pushed_images(&[
+            ("ghcr.io/owner/app:1.0.0", None, true),
+            ("private.example.com/owner/app:1.0.0", None, true),
+        ]);
+        let log = test_logger(&ctx);
+        let manifest = |reference: &str| {
+            if reference.starts_with("ghcr.io") {
+                Ok(Some("sha256:aa".to_string()))
+            } else {
+                Err(anyhow::anyhow!("401 Unauthorized"))
+            }
+        };
+        let probes = LandingProbes {
+            docker_manifest: &manifest,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(issues.is_empty(), "{issues:?}");
+        assert!(
+            statuses(&capture).iter().any(|m| m
+                == "docker: 1/2 pushed image(s) visible on ghcr.io, \
+                    private.example.com (1 unverifiable)"),
+            "{:?}",
+            statuses(&capture)
+        );
+    }
+
     /// One uploaded file reads as itself, not as `1/1 uploaded file(s)`, and a
     /// run that uploaded to two indexes names both rather than crediting every
-    /// file to the first.
+    /// file to the first."""
     #[test]
     fn the_pypi_result_line_is_singular_for_one_file_and_names_every_index() {
         let one = PublishReport {
@@ -2555,7 +2770,8 @@ mod tests {
         assert_eq!(
             issues,
             vec![
-                "docker: ghcr.io/owner/app:1.0.0 reported pushed but is not in ghcr.io".to_string()
+                "docker: ghcr.io/owner/app:1.0.0 reported pushed but is not visible on ghcr.io"
+                    .to_string()
             ]
         );
     }

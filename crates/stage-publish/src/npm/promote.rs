@@ -396,7 +396,7 @@ fn recorded_npm_targets(report: &PublishReport) -> Vec<(String, String, String, 
         .collect()
 }
 
-/// `npm dist-tag add <pkg>@<version> <tag> --userconfig <npmrc> --registry <url>`.
+/// `npm --userconfig <npmrc> --registry <url> dist-tag add <pkg>@<version> <tag>`.
 fn npm_dist_tag_add_command(
     package: &str,
     version: &str,
@@ -404,51 +404,46 @@ fn npm_dist_tag_add_command(
     npmrc: &Path,
     registry: &str,
 ) -> Vec<String> {
-    vec![
-        "npm".to_string(),
+    let mut argv = vec!["npm".to_string()];
+    argv.extend(crate::npm::publish::npm_config_flags(npmrc, registry));
+    argv.extend([
         "dist-tag".to_string(),
         "add".to_string(),
         format!("{package}@{version}"),
         tag.to_string(),
-        "--userconfig".to_string(),
-        npmrc.display().to_string(),
-        "--registry".to_string(),
-        registry.to_string(),
-    ]
+    ]);
+    argv
 }
 
-/// `npm dist-tag ls <pkg> --userconfig <npmrc> --registry <url>`.
+/// `npm --userconfig <npmrc> --registry <url> dist-tag ls <pkg>`.
 fn npm_dist_tag_ls_command(package: &str, npmrc: &Path, registry: &str) -> Vec<String> {
-    vec![
-        "npm".to_string(),
+    let mut argv = vec!["npm".to_string()];
+    argv.extend(crate::npm::publish::npm_config_flags(npmrc, registry));
+    argv.extend([
         "dist-tag".to_string(),
         "ls".to_string(),
         package.to_string(),
-        "--userconfig".to_string(),
-        npmrc.display().to_string(),
-        "--registry".to_string(),
-        registry.to_string(),
-    ]
+    ]);
+    argv
 }
 
-/// `npm view <pkg>@<version> optionalDependencies --json --userconfig <npmrc> --registry <url>`.
+/// `npm --userconfig <npmrc> --registry <url> view <pkg>@<version>
+/// optionalDependencies --json`.
 fn npm_view_optional_deps_command(
     package: &str,
     version: &str,
     npmrc: &Path,
     registry: &str,
 ) -> Vec<String> {
-    vec![
-        "npm".to_string(),
+    let mut argv = vec!["npm".to_string()];
+    argv.extend(crate::npm::publish::npm_config_flags(npmrc, registry));
+    argv.extend([
         "view".to_string(),
         format!("{package}@{version}"),
         "optionalDependencies".to_string(),
         "--json".to_string(),
-        "--userconfig".to_string(),
-        npmrc.display().to_string(),
-        "--registry".to_string(),
-        registry.to_string(),
-    ]
+    ]);
+    argv
 }
 
 /// Parse `npm dist-tag ls` output (`<tag>: <version>` lines) and return the
@@ -544,14 +539,14 @@ mod tests {
             args,
             vec![
                 "npm",
-                "dist-tag",
-                "add",
-                "@scope/app@1.2.3",
-                "latest",
                 "--userconfig",
                 "/tmp/.npmrc",
                 "--registry",
                 "https://registry.npmjs.org",
+                "dist-tag",
+                "add",
+                "@scope/app@1.2.3",
+                "latest",
             ]
         );
     }
@@ -559,12 +554,12 @@ mod tests {
     #[test]
     fn dist_tag_ls_and_view_commands() {
         let ls = npm_dist_tag_ls_command("app", Path::new("/x/.npmrc"), "https://r");
-        assert_eq!(ls[0..4], ["npm", "dist-tag", "ls", "app"]);
+        assert_eq!(ls[5..], ["dist-tag", "ls", "app"]);
         let view =
             npm_view_optional_deps_command("app", "1.0.0", Path::new("/x/.npmrc"), "https://r");
         assert_eq!(
-            view[0..5],
-            ["npm", "view", "app@1.0.0", "optionalDependencies", "--json"]
+            view[5..],
+            ["view", "app@1.0.0", "optionalDependencies", "--json"]
         );
     }
 
@@ -575,13 +570,13 @@ mod tests {
             ls,
             vec![
                 "npm",
-                "dist-tag",
-                "ls",
-                "@scope/app",
                 "--userconfig",
                 "/tmp/.npmrc",
                 "--registry",
                 "https://r",
+                "dist-tag",
+                "ls",
+                "@scope/app",
             ]
         );
     }
@@ -598,14 +593,14 @@ mod tests {
             view,
             vec![
                 "npm",
-                "view",
-                "@scope/app@1.2.3",
-                "optionalDependencies",
-                "--json",
                 "--userconfig",
                 "/tmp/.npmrc",
                 "--registry",
                 "https://registry.npmjs.org",
+                "view",
+                "@scope/app@1.2.3",
+                "optionalDependencies",
+                "--json",
             ]
         );
     }
