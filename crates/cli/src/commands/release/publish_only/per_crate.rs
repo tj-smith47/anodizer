@@ -108,15 +108,18 @@ pub(super) const VERSION_TEMPLATE_VARS: &[&str] = &[
     "BuildMetadata",
 ];
 
-/// Snapshot of the `config` fields `apply_workspace_overlay` mutates.
+/// Snapshot of every `config` field `apply_workspace_overlay` mutates.
 ///
 /// `apply_workspace_overlay` is conditional: it overwrites `changelog` /
 /// `signs` / `binary_signs` / `before` / `after` only when the workspace
-/// sets them, and *appends* to `env`. Without a per-iteration reset to
+/// sets them, *appends* to `env`, and drops the `defaults:` provenance
+/// record of a sign slice it replaced. Without a per-iteration reset to
 /// this baseline, a value set by workspace N would leak into workspace
-/// N+1 (which left it unset), and `env` would accumulate every prior
-/// workspace's entries. Capturing the baseline once lets each iteration
-/// rewind these fields before applying its own overlay.
+/// N+1 (which left it unset), `env` would accumulate every prior
+/// workspace's entries, and a provenance record dropped for N would stay
+/// dropped for N+1 — which still reads the `defaults:`-filled slice.
+/// Capturing the baseline once lets each iteration rewind these fields
+/// before applying its own overlay.
 #[derive(Clone)]
 pub(super) struct OverlayFields {
     crates: Vec<anodizer_core::config::CrateConfig>,
@@ -127,6 +130,7 @@ pub(super) struct OverlayFields {
     before: Option<anodizer_core::config::HooksConfig>,
     after: Option<anodizer_core::config::HooksConfig>,
     env: Option<Vec<String>>,
+    filled_from_defaults: std::collections::BTreeSet<&'static str>,
 }
 
 impl OverlayFields {
@@ -140,6 +144,7 @@ impl OverlayFields {
             before: config.before.clone(),
             after: config.after.clone(),
             env: config.env.clone(),
+            filled_from_defaults: config.filled_from_defaults.clone(),
         }
     }
 
@@ -152,6 +157,7 @@ impl OverlayFields {
         config.before = self.before.clone();
         config.after = self.after.clone();
         config.env = self.env.clone();
+        config.filled_from_defaults = self.filled_from_defaults.clone();
     }
 }
 
