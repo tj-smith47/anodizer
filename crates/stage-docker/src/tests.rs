@@ -7218,6 +7218,7 @@ fn staged_binary_is_forced_executable() {
 ///
 /// `skip_push` and `snapshot` drive the only branches under test; the stub
 /// keeps the whole `manifest rm` / `create` / `push` sequence offline.
+#[cfg(unix)]
 fn manifest_run(
     skip_push: Option<SkipPushConfig>,
     snapshot: bool,
@@ -7272,6 +7273,7 @@ fn manifest_run(
 
 /// `manifest push` returned, so the list is in the registry and the landing
 /// gate has a reference to probe.
+#[cfg(unix)]
 #[test]
 #[serial_test::serial(path_env)]
 fn a_pushed_manifest_records_the_pushed_marker() {
@@ -7285,6 +7287,7 @@ fn a_pushed_manifest_records_the_pushed_marker() {
 
 /// A `skip_push: true` manifest exists only locally. Marking it would send
 /// the landing gate after a reference no registry was ever asked to hold.
+#[cfg(unix)]
 #[test]
 #[serial_test::serial(path_env)]
 fn a_skip_push_manifest_records_no_pushed_marker() {
@@ -7298,6 +7301,7 @@ fn a_skip_push_manifest_records_no_pushed_marker() {
 /// A snapshot publishes nothing: the list is assembled locally, `manifest
 /// push` is never spawned, and the artifact carries no pushed marker for the
 /// landing gate to chase.
+#[cfg(unix)]
 #[test]
 #[serial_test::serial(path_env)]
 fn a_snapshot_manifest_pushes_nothing_and_records_no_marker() {
@@ -7319,9 +7323,11 @@ fn a_snapshot_manifest_pushes_nothing_and_records_no_marker() {
 /// artifacts it registered. The stub answers every probe and the build itself,
 /// so the whole prepare / build / push path runs offline.
 /// What the fake podman writes into every `--digestfile` it is handed.
+#[cfg(unix)]
 const PODMAN_PUSH_DIGEST: &str =
     "sha256:1111111111111111111111111111111111111111111111111111111111111111";
 
+#[cfg(unix)]
 fn docker_v2_registered_images(
     snapshot: bool,
     backend: Option<&str>,
@@ -7379,6 +7385,7 @@ fn docker_v2_registered_images(
 
 /// A build whose exporter reported no digest — a cache-only build — still
 /// created images, so it still says so at default verbosity.
+#[cfg(unix)]
 #[test]
 #[serial_test::serial(path_env)]
 fn a_build_without_a_digest_still_reports_the_images_it_created() {
@@ -7420,6 +7427,7 @@ fn a_build_without_a_digest_still_reports_the_images_it_created() {
 
 /// The buildx push path is what the landing gate rests on: a returned
 /// `--push` build means the registry accepted every rendered tag.
+#[cfg(unix)]
 #[test]
 #[serial_test::serial(path_env)]
 fn a_pushed_docker_v2_image_records_the_pushed_marker() {
@@ -7440,6 +7448,7 @@ fn a_pushed_docker_v2_image_records_the_pushed_marker() {
 
 /// A snapshot builds without `--push`, so nothing reached a registry and the
 /// landing gate has nothing to probe.
+#[cfg(unix)]
 #[test]
 #[serial_test::serial(path_env)]
 fn a_snapshot_docker_v2_image_records_no_pushed_marker() {

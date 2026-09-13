@@ -8298,7 +8298,10 @@ fn an_absolute_artifact_signature_resolves_to_one_path_on_both_sides() {
     use anodizer_core::config::{BuildConfig, CrateConfig};
 
     const TARGET: &str = "x86_64-unknown-linux-gnu";
-    let binary_path = std::path::PathBuf::from(format!("/opt/build/{TARGET}/app"));
+    // An absolute path in the platform's own spelling: a POSIX literal is
+    // relative on Windows, where `std::path::absolute` prefixes the drive.
+    let build_root = std::env::temp_dir().join("build");
+    let binary_path = build_root.join(TARGET).join("app");
 
     let mut ctx = TestContextBuilder::new()
         .project_name("app")
@@ -8359,10 +8362,7 @@ fn an_absolute_artifact_signature_resolves_to_one_path_on_both_sides() {
         .into_iter()
         .map(|a| a.path.clone())
         .collect();
-    assert_eq!(
-        gate_path,
-        std::path::PathBuf::from("/opt/build/x86_64-unknown-linux-gnu/app.sig")
-    );
+    assert_eq!(gate_path, build_root.join(TARGET).join("app.sig"));
     assert_eq!(stage_paths, vec![gate_path]);
 }
 
@@ -8777,6 +8777,7 @@ fn no_signature_name_is_derived_from_a_registered_archive() {
 /// The stage error one binary-sign collision fixture produces: a crate `app`
 /// building a binary `app` for one target, with `binaries` registered under
 /// it and `signs` configured over them.
+#[cfg(unix)]
 fn binary_sign_collision_error(
     name_template: Option<&str>,
     signs: Vec<SignConfig>,
@@ -8855,6 +8856,10 @@ fn binary_sign_collision_error(
 /// The page's `check config` warnings are pinned where those checks live
 /// (`crates/cli`,
 /// `every_warning_quoted_in_the_sign_docs_is_a_message_the_checks_produce`).
+///
+/// The page quotes the POSIX rendering of the two output paths; on Windows
+/// the same messages print them with backslashes.
+#[cfg(unix)]
 #[test]
 fn the_collision_errors_quoted_in_the_sign_docs_are_the_messages_the_stage_produces() {
     let path = concat!(
