@@ -72,6 +72,7 @@ Mirrors GoReleaser Pro's caveats verbatim:
 - **No credential setup.** Push credentials are resolved from the host's `~/.docker/config.json` (or `~/.config/containers/auth.json` for rootless podman). Run `podman login` (or `docker login`) before releasing, or wire `DOCKER_USERNAME` / `DOCKER_PASSWORD` into a `before:` hook.
 - **No rootless / rootful opinion.** Anodizer treats the binary as opaque — whether `podman` runs rootless (default on most distros) or rootful is your runner's choice. Image layers and manifests written under rootless are stored at `$XDG_DATA_HOME/containers/storage`; rootful at `/var/lib/containers/storage`.
 - **No network reach checks.** Push failures retry per the `retry:` block (default 10 attempts, 10s base, 5m cap).
+- **No image digest.** `podman build` reports a local image ID, not the digest a registry serves the tag at, so a podman build records no digest: `{{ Digest }}` is unset for `post:` hooks, no `.digest` file is written, and the release's docker landing check asks only whether the tag is present.
 
 ## Determinism Harness compatibility
 

@@ -154,7 +154,7 @@ so no extra config is needed:
 | `pypi` | index lookup for every uploaded file, by the exact filename the run recorded — `GET https://pypi.org/pypi/<name>/<version>/json` for the public hosts, the PEP 503 `/simple/<name>/` page for any other index. The configured `index_url` decides which index is asked, so a TestPyPI or private-index upload is probed where it went |
 | `blob` | `HEAD` on every uploaded object, through the **same store backend and ambient credentials** the upload used — works for private buckets with no public URL |
 | `snapcraft` | anonymous `GET api.snapcraft.io/v2/snaps/info/<snap>` for every uploaded snap — the version must be **live in the store's channel map** (in the released channel when one was set). This catches the Snap Store's silent failure mode: a manual-review hold accepts the upload but ships nothing until a human approves, and a decline arrives only by email |
-| `docker` | `GET <registry>/v2/<repo>/manifests/<tag>` for every image tag the run **pushed** — the registry's distribution API, with the standard `WWW-Authenticate: Bearer` token exchange (the credential `docker login` stored for that registry, anonymously when there is none), so no docker daemon is needed. When the push recorded a digest, the served manifest must hash to it: a tag that now resolves to different content fails even though it exists |
+| `docker` | `GET <registry>/v2/<repo>/manifests/<tag>` for every image tag the run **pushed** — the registry's distribution API, answering a `Bearer` or `Basic` challenge with the credential `docker login` stored for that registry (anonymously when there is none), so no docker daemon is needed. The digest is the one the registry names in `Docker-Content-Digest`, or the SHA-256 of the served bytes when a registry omits that header. When the push recorded a digest, the two must agree: a tag that now resolves to different content fails even though it exists |
 
 One result line per publisher:
 
@@ -164,7 +164,7 @@ One result line per publisher:
 • pypi: 9/9 uploaded file(s) listed on pypi.org
 • blob: 22/22 uploaded object(s) present in bucket
 • snapcraft: myapp 1.0.0 live in the Snap Store channel map
-• docker: 4/4 pushed image(s) present on their registries
+• docker: 4/4 pushed image(s) visible on ghcr.io
 ```
 
 ### Registry propagation
@@ -195,8 +195,22 @@ shared window open on a fixed answer.
 Docker files no publish report, so its targets come from the artifacts: an image
 artifact records that its push returned, which is what also carries the pushed
 set through a `--publish-only` run rehydrated from the preserved
-`artifacts.json`. A snapshot, a dry run, a `--skip=docker` run and a
-`skip_push: true` manifest push nothing and are never probed.
+`artifacts.json`. A snapshot, a dry run and a `skip_push: true` manifest push
+nothing and are never probed, and a run that deselects docker
+(`--skip=docker`, or a `--publishers` list without it) probes nothing either —
+even when the manifest it rehydrated carries the markers of the leg that did
+push.
+
+Having no publish report, docker has no `required:` flag either, so its
+findings are routed by what they prove. An absent tag and a digest mismatch are
+definitive and fail the gate. A registry that could not be consulted is a
+recorded warning that never fails the release: the probe reads only the plain
+`auths` entries in `config.json` and never runs a `credsStore` / `credHelpers`
+helper binary, so a repository whose credential lives in a helper answers 401 to
+a push that succeeded. The probe also asks over TLS everywhere but
+loopback (`localhost`, `127.0.0.0/8`, `[::1]`), so a plain-HTTP registry reached
+through docker's `insecure-registries` answers as unverifiable rather than as a
+failure.
 
 ```yaml
 verify_release:
@@ -228,6 +242,12 @@ an unverifiable landing is a finding.
 - snapcraft: myapp 1.0.0 was HELD for Snap Store manual review and is not live in the store — consumers get nothing until review approves (https://dashboard.snapcraft.io/snaps/myapp/)
 - docker: ghcr.io/owner/myapp:1.0.0 reported pushed but is not in ghcr.io
 - docker: ghcr.io/owner/myapp:latest was pushed as sha256:9f2c… but ghcr.io serves sha256:04ab…
+```
+
+A docker landing the probe could not confirm is recorded as a warning instead:
+
+```
+! unverifiable docker landing not gating the release — docker: could not confirm ghcr.io/owner/myapp:1.0.0 on ghcr.io: registry returned 401 Unauthorized
 ```
 
 ## (c) install smoke-test
