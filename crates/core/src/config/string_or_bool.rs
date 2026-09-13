@@ -778,4 +778,77 @@ mod tests {
         let w: VecOptW = serde_yaml_ng::from_str("v: null").unwrap();
         assert_eq!(w.v, None);
     }
+
+    /// Every production site that asks whether an `if:` imposes a gate reads
+    /// it through `active_if_gate` (or hands the raw `Option` to
+    /// `evaluate_if_condition`, which folds the empty case itself).
+    ///
+    /// A bare `Option` test calls `if: ""` a gate: it wins an `.or()`
+    /// fallback and shadows the parent's real condition, so the parent's
+    /// gate is silently dropped and the child publishes on a run the
+    /// operator gated out.
+    #[test]
+    fn every_if_condition_presence_test_reads_the_active_gate() {
+        use crate::test_helpers::test_sources::{
+            function_bodies, production_half, workspace_production_sources,
+        };
+
+        let this_file = std::path::Path::new(file!())
+            .file_name()
+            .expect("string_or_bool.rs");
+        let mut strays: Vec<String> = Vec::new();
+        let mut population = 0usize;
+        for source in workspace_production_sources() {
+            if source.file_name() == Some(this_file) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&source).expect("read source");
+            for body in function_bodies(production_half(&text)) {
+                if !body.contains("if_condition") {
+                    continue;
+                }
+                // rustfmt wraps a fallback chain across lines, so the
+                // operators are read with the whitespace removed, and only
+                // where they hang off the `if_condition` itself — an
+                // unrelated `.or(` elsewhere in the body says nothing.
+                let flat: String = body.split_whitespace().collect();
+                let mut asks_presence = false;
+                let mut builds_fallback = false;
+                for (at, _) in flat.match_indices("if_condition") {
+                    let tail = &flat[at..flat.len().min(at + 60)];
+                    builds_fallback |= tail.contains(".or(");
+                    asks_presence |= builds_fallback
+                        || tail.contains(".is_some()")
+                        || tail.contains(".is_none()");
+                }
+                if !asks_presence {
+                    continue;
+                }
+                population += 1;
+                // A fallback chain has to fold the empty case BEFORE the
+                // `.or()` picks a winner, so handing the result to
+                // `evaluate_if_condition` afterwards is too late: the empty
+                // child condition has already shadowed the parent's.
+                let folds = if builds_fallback {
+                    body.contains("active_if_gate")
+                } else {
+                    body.contains("active_if_gate") || body.contains("evaluate_if_condition")
+                };
+                if !folds {
+                    strays.push(source.display().to_string());
+                }
+            }
+        }
+        assert!(
+            strays.is_empty(),
+            "read an `if:` through `config::active_if_gate` (or pass the \
+             raw Option to `evaluate_if_condition`) — an `if: \"\"` imposes \
+             no gate and must not win a fallback: {strays:#?}"
+        );
+        assert_eq!(
+            population, 2,
+            "the walk must still find the sites that test an `if:` for \
+             presence; a rename that empties it would pass vacuously"
+        );
+    }
 }

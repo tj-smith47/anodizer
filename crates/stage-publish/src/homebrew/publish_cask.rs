@@ -34,10 +34,11 @@ pub(super) fn cask_skip_gates_trip(
 
     // Cask-level `if:` wins; if unset, fall back to the parent formula's `if:`
     // so a per-crate gate on homebrew covers both surfaces in one declaration.
-    let effective_if = cask_cfg
-        .if_condition
-        .as_deref()
-        .or(hb_cfg.if_condition.as_deref());
+    // An `if: ""` on the cask imposes nothing, so it must not shadow the
+    // formula's real gate — `active_if_gate` folds it to absent on both sides.
+    use anodizer_core::config::active_if_gate;
+    let effective_if = active_if_gate(cask_cfg.if_condition.as_deref())
+        .or(active_if_gate(hb_cfg.if_condition.as_deref()));
     let proceed = anodizer_core::config::evaluate_if_condition(
         effective_if,
         &format!("homebrew cask publisher for crate '{}'", crate_name),

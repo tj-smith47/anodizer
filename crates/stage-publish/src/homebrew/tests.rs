@@ -1857,6 +1857,46 @@ fn hb_ctx(hb_cfg: HomebrewConfig, dry_run: bool) -> Context {
     )
 }
 
+/// An `if: ""` on the cask imposes no gate, so the formula's real gate still
+/// covers the cask. Reading the raw `Option` let the empty string win the
+/// fallback and publish a cask the parent gate had ruled out.
+#[test]
+fn an_empty_cask_if_keeps_the_formulas_gate() {
+    let cask = HomebrewCaskConfig {
+        name: Some("mycask".to_string()),
+        if_condition: Some(String::new()),
+        ..Default::default()
+    };
+    let hb_cfg = HomebrewConfig {
+        if_condition: Some("false".to_string()),
+        cask: Some(cask.clone()),
+        ..Default::default()
+    };
+    let ctx = hb_ctx(hb_cfg.clone(), false);
+    assert!(
+        super::publish_cask::cask_skip_gates_trip(&ctx, &hb_cfg, &cask, "mytool", &quiet_log())
+            .expect("the gate must evaluate"),
+        "the formula's falsy `if` must still gate the cask"
+    );
+
+    // The cask's OWN gate still wins when it imposes one.
+    let opted_in = HomebrewCaskConfig {
+        if_condition: Some("true".to_string()),
+        ..cask
+    };
+    assert!(
+        !super::publish_cask::cask_skip_gates_trip(
+            &ctx,
+            &hb_cfg,
+            &opted_in,
+            "mytool",
+            &quiet_log()
+        )
+        .expect("the gate must evaluate"),
+        "a truthy cask `if` overrides the formula's"
+    );
+}
+
 /// `resolve_cask_directory`: an unset directory falls back to "Casks" and a
 /// plain (non-template) value renders verbatim.
 #[test]
