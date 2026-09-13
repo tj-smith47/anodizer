@@ -31,6 +31,7 @@ pub(crate) mod wheel;
 #[cfg(test)]
 mod tests;
 
+pub use preflight::uploaded_file_live_on_index;
 pub use publisher::{
     PypiPublisher, pypi_version_live, static_entry_crate_name, static_project_name,
     static_repository,

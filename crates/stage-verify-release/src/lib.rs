@@ -19,10 +19,11 @@
 //!   gate with the exact missing names.
 //! - **publisher landing checks** — every publisher that succeeded this run
 //!   actually published: published crate versions are visible on the crates.io
-//!   sparse index, npm package versions answer a registry GET, uploaded
-//!   blob objects answer a `HEAD` through the upload's own store backend,
-//!   and uploaded snaps are live in the Snap Store's public channel map —
-//!   which also catches a manual-review hold that parked the revision
+//!   sparse index, npm package versions answer a registry GET, uploaded PyPI
+//!   wheels and source distributions are listed by the index they went to,
+//!   uploaded blob objects answer a `HEAD` through the upload's own store
+//!   backend, and uploaded snaps are live in the Snap Store's public channel
+//!   map — which also catches a manual-review hold that parked the revision
 //!   outside every channel (`landing`).
 //! - **install smoke-test** — each Linux package is installed in a pinned
 //!   container and `<bin> --version` is run (`smoke`). Skipped with a
@@ -81,7 +82,7 @@ use anyhow::Result;
 pub struct VerifyReleaseStage;
 
 /// The stage's canonical name (also the `--skip=` value).
-const STAGE_NAME: &str = "verify-release";
+pub(crate) const STAGE_NAME: &str = "verify-release";
 
 /// Wording prefix that makes every reported defect unambiguous: the release
 /// already shipped, so the operator must investigate the LIVE release rather
@@ -112,6 +113,7 @@ pub fn verify_release_consumers() -> &'static [&'static str] {
         "github-release",
         "cargo",
         "npm",
+        "pypi",
         "blob",
         "snapcraft-publish",
     ]
@@ -312,8 +314,9 @@ impl Stage for VerifyReleaseStage {
         let mut landing_probed = 0usize;
         if cfg.landing_checks_enabled() {
             let policy = ctx.retry_policy();
-            // One budget for the whole landing sweep, so a wedged registry
-            // cannot spend `retry.max_elapsed` once per probed crate.
+            // The run's own retry budget, which caps the sweep's propagation
+            // window (`starting_now` below) and bounds each individual probe's
+            // transport retries.
             let deadline = ctx.retry_deadline();
             let cargo_probe = |name: &str, version: &str| {
                 anodizer_stage_publish::cargo::published_on_crates_io(
@@ -323,6 +326,11 @@ impl Stage for VerifyReleaseStage {
             let npm_probe = |registry: &str, package: &str, version: &str| {
                 anodizer_stage_publish::npm::version_visible_on_registry(
                     registry, package, version, &policy, deadline, &log,
+                )
+            };
+            let pypi_probe = |repository: &str, filename: &str| {
+                anodizer_stage_publish::pypi::uploaded_file_live_on_index(
+                    repository, filename, &policy, deadline, &log,
                 )
             };
             let blob_probe = |t: &anodizer_core::publish_evidence::BlobTargetSnapshot| {
@@ -339,10 +347,11 @@ impl Stage for VerifyReleaseStage {
                 propagation: if ctx.options.dry_run {
                     landing::PropagationRetry::IMMEDIATE
                 } else {
-                    landing::PropagationRetry::DEFAULT.bounded_by(deadline)
+                    landing::PropagationRetry::DEFAULT.starting_now(deadline)
                 },
                 cargo_index: &cargo_probe,
                 npm_registry: &npm_probe,
+                pypi_index: &pypi_probe,
                 blob_head: &blob_probe,
                 snap_channel_map: &snap_probe,
             };
