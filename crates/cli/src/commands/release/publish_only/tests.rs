@@ -2165,44 +2165,74 @@ fn the_defaults_provenance_record_is_rewound_between_workspaces() {
 }
 
 /// A function body reduced to the text a structural walk may read: the
-/// signature dropped at the opening brace, `//` comment text removed, and
-/// string-literal content emptied.
+/// signature dropped at the opening brace, `//` and `/* */` comment text
+/// removed, string-literal content emptied, and char literals dropped.
 ///
 /// Dropping one LINE would keep a wrapped signature's parameters, and a
 /// comment or a literal holding the word being searched for is prose, not a
-/// use of the binding.
+/// use of the binding. A `'"'` read as the start of a string would swallow
+/// the rest of the body and leave the walk passing over nothing.
+///
+/// Newlines inside a literal or a block comment are kept, so a line the walk
+/// reports is the line the reader opens.
 fn scannable_code(body: &str) -> String {
     let body = body.split_once('{').map_or("", |(_, rest)| rest);
+    let chars: Vec<char> = body.chars().collect();
     let mut out = String::with_capacity(body.len());
-    let mut chars = body.chars().peekable();
-    let mut in_string = false;
-    let mut escaped = false;
-    while let Some(c) = chars.next() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if c == '\\' {
-                escaped = true;
-            } else if c == '"' {
-                in_string = false;
-                out.push(c);
-            }
-            continue;
-        }
-        match c {
+    let mut index = 0;
+    while index < chars.len() {
+        match chars[index] {
             '"' => {
-                in_string = true;
-                out.push(c);
-            }
-            '/' if chars.peek() == Some(&'/') => {
-                for next in chars.by_ref() {
-                    if next == '\n' {
+                out.push('"');
+                index += 1;
+                while index < chars.len() && chars[index] != '"' {
+                    if chars[index] == '\\' {
+                        index += 1;
+                    } else if chars[index] == '\n' {
                         out.push('\n');
-                        break;
                     }
+                    index += 1;
+                }
+                out.push('"');
+                index += 1;
+            }
+            '/' if chars.get(index + 1) == Some(&'/') => {
+                while index < chars.len() && chars[index] != '\n' {
+                    index += 1;
                 }
             }
-            _ => out.push(c),
+            '/' if chars.get(index + 1) == Some(&'*') => {
+                index += 2;
+                while index < chars.len() {
+                    if chars[index] == '\n' {
+                        out.push('\n');
+                    }
+                    if chars[index] == '*' && chars.get(index + 1) == Some(&'/') {
+                        index += 2;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            // A `'` opens a char literal only when an escape or a single
+            // character closes it; `&'a str` and `'static` are lifetimes and
+            // carry no closing quote to look for.
+            '\'' if chars.get(index + 1) == Some(&'\\') || chars.get(index + 2) == Some(&'\'') => {
+                index += 1;
+                while index < chars.len() {
+                    if chars[index] == '\\' {
+                        index += 1;
+                    } else if chars[index] == '\'' {
+                        break;
+                    }
+                    index += 1;
+                }
+                index += 1;
+            }
+            other => {
+                out.push(other);
+                index += 1;
+            }
         }
     }
     out
@@ -2260,10 +2290,25 @@ fn a_config_handed_to_a_helper_fails_the_overlay_walk() {
 }";
     assert_eq!(every_config_use_names_a_field(commented), Ok(()));
 
+    // A block comment carries the word, a `'"'` char literal carries a quote
+    // that would open a string and swallow every use after it, and a lifetime
+    // carries a quote that closes nothing.
+    let lexed = "fn apply_workspace_overlay(config: &mut Config) {
+    /* the workspace config replaces
+       the top-level one */
+    let quote = '\"';
+    let _: &'static str = \"config\";
+    let _ = quote;
+    config.crates = ws.crates.clone();
+}";
+    assert_eq!(every_config_use_names_a_field(lexed), Ok(()));
+
     for rejected in [
         "fn f(config: &mut Config) {\n    apply_env_overlay(config, ws);\n}",
         "fn f(config: &mut Config) {\n    let c = &mut *config;\n}",
         "fn f(config: &mut Config) {\n    let c = config;\n}",
+        // The quote must not open a string that hides the handoff below it.
+        "fn f(config: &mut Config) {\n    let q = '\"';\n    apply_env_overlay(config, ws);\n}",
     ] {
         assert!(
             every_config_use_names_a_field(rejected).is_err(),

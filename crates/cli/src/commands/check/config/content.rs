@@ -396,14 +396,17 @@ pub(super) fn check_sign_asset_name_templates(config: &Config, warnings: &mut Ve
 /// Whether two sign entries can select one artifact: an absent `ids:` takes
 /// every one, and two present lists overlap when they name an id in common.
 ///
-/// Gates that differ are not evaluated — a template can read the environment,
-/// so "both fire" cannot be decided here — and two entries that never both
-/// run write no second file.
+/// Two DIFFERENT gates are not evaluated — a template can read the
+/// environment, so "both fire" cannot be decided here — and two entries that
+/// never both run write no second file. An ABSENT gate always fires, so it
+/// pairs with anything: whenever the gated entry runs, both write.
 fn sign_selections_overlap(
     a: &anodizer_core::config::SignConfig,
     b: &anodizer_core::config::SignConfig,
 ) -> bool {
-    if a.if_condition != b.if_condition {
+    if let (Some(left), Some(right)) = (&a.if_condition, &b.if_condition)
+        && left != right
+    {
         return false;
     }
     match (&a.ids, &b.ids) {

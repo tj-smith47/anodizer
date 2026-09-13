@@ -1785,13 +1785,18 @@ fn a_filtered_entry_does_not_renumber_the_labels_after_it() {
 }
 
 /// Two entries under different gates cannot be proven to both fire; two under
-/// the same gate still overwrite each other.
+/// the same gate still overwrite each other, and so does an ungated entry
+/// paired with a gated one — the ungated one runs every time.
 #[test]
 fn entries_under_different_gates_warn_nothing() {
     use anodizer_core::config::SignConfig;
     let entry = |gate: &str| SignConfig {
         cmd: Some("cosign".to_string()),
         if_condition: Some(gate.to_string()),
+        ..Default::default()
+    };
+    let ungated = SignConfig {
+        cmd: Some("cosign".to_string()),
         ..Default::default()
     };
     let warnings_for = |pair: Vec<SignConfig>| {
@@ -1812,6 +1817,14 @@ fn entries_under_different_gates_warn_nothing() {
     );
     assert_eq!(
         warnings_for(vec![entry("{{ IsSnapshot }}"), entry("{{ IsSnapshot }}")]).len(),
+        1
+    );
+    assert_eq!(
+        warnings_for(vec![ungated.clone(), entry("{{ IsSnapshot }}")]).len(),
+        1
+    );
+    assert_eq!(
+        warnings_for(vec![entry("{{ IsSnapshot }}"), ungated]).len(),
         1
     );
 }
