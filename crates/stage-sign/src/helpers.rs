@@ -788,26 +788,68 @@ impl std::fmt::Display for BinaryIdentity {
     }
 }
 
+/// Which derivation produced a binary signature asset name.
+///
+/// A collision diagnostic has to name the template the operator can
+/// actually change, and the two derivations answer differently: only one of
+/// them reads the config-derived base at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AssetNameSource {
+    /// `<base><suffix>`: the config-derived base carries the identity, and
+    /// the `signature:` / `certificate:` template only appended to it.
+    Base,
+    /// The `signature:` / `certificate:` template rendered a name of its own
+    /// rather than suffixing the binary's file name, so the base does not
+    /// appear in the result and only that template separates two binaries.
+    OutputTemplate,
+}
+
 impl BinarySignAssetNames {
     /// Record `asset_name` as claimed by one binary, or refuse the run when a
     /// different binary already claimed the same name.
+    ///
+    /// `output` names the asset in the message (`signature` or
+    /// `certificate`) and `source` decides the remedy: the two are built from
+    /// one base, so a certificate can collide on a pair of configs whose
+    /// `signature:` suffixes differ.
     pub(crate) fn claim(
         &mut self,
         asset_name: &str,
-        template: &str,
+        output: &str,
+        naming: &BinarySignNaming,
+        source: AssetNameSource,
         binary: &anodizer_core::artifact::Artifact,
     ) -> Result<()> {
         let claimant = BinaryIdentity::of(binary);
         match self.claimed.get(asset_name) {
-            Some(first) if *first != claimant => anyhow::bail!(
-                "sign: the binaries '{first}' and '{claimant}' both resolve to \
-                 the signature asset name '{asset_name}', rendered from the \
-                 template '{template}'. One release asset cannot carry two \
-                 signatures — give the covering `archives[].name_template` a \
-                 variable that separates them ({{{{ Target }}}} and \
-                 {{{{ Amd64 }}}} are the dimensions {{{{ Os }}}}-{{{{ Arch }}}} \
-                 drops), or set `binary_signs[].asset_name_template`."
-            ),
+            Some(first) if *first != claimant => {
+                let template = &naming.template;
+                let remedy = match source {
+                    AssetNameSource::Base => format!(
+                        "rendered from the template '{template}'. One release \
+                         asset cannot carry two {output}s — give the covering \
+                         `archives[].name_template` a variable that separates \
+                         them ({{{{ Target }}}} and {{{{ Amd64 }}}} are the \
+                         dimensions {{{{ Os }}}}-{{{{ Arch }}}} drops), or set \
+                         `binary_signs[].asset_name_template`."
+                    ),
+                    AssetNameSource::OutputTemplate => format!(
+                        "rendered by the `binary_signs[].{output}:` template, \
+                         which renamed the output instead of suffixing the \
+                         binary's own file name — so the asset base \
+                         '{base}' (from '{template}') is not part of it. One \
+                         release asset cannot carry two {output}s — give that \
+                         template {{{{ .Artifact }}}} or the target, so it \
+                         renders one name per binary.",
+                        base = naming.base
+                    ),
+                };
+                anyhow::bail!(
+                    "sign: the binaries '{first}' and '{claimant}' both \
+                     resolve to the {output} asset name '{asset_name}', \
+                     {remedy}"
+                )
+            }
             Some(_) => Ok(()),
             None => {
                 self.claimed.insert(asset_name.to_string(), claimant);
@@ -828,25 +870,33 @@ impl BinarySignAssetNames {
 /// `anodizer.bundle.sig` yields `<base>.bundle.sig`.
 ///
 /// Falls back to the target-qualified basename when the template renamed the
-/// file rather than suffixing it — still unique per target.
+/// file rather than suffixing it — still unique per target. The returned
+/// [`AssetNameSource`] says which of the two produced the name, so a
+/// collision diagnostic quotes a template the operator can change.
 pub(crate) fn binary_sign_asset_name(
     rendered_basename: &str,
     binary_basename: &str,
     base: &str,
     target: &str,
-) -> String {
+) -> (String, AssetNameSource) {
+    let renamed = || {
+        (
+            qualify_basename_with_target(rendered_basename, target),
+            AssetNameSource::OutputTemplate,
+        )
+    };
     if binary_basename.is_empty() {
-        return qualify_basename_with_target(rendered_basename, target);
+        return renamed();
     }
     match rendered_basename.strip_prefix(binary_basename) {
-        Some(suffix) if !suffix.is_empty() => format!("{base}{suffix}"),
-        _ => qualify_basename_with_target(rendered_basename, target),
+        Some(suffix) if !suffix.is_empty() => (format!("{base}{suffix}"), AssetNameSource::Base),
+        _ => renamed(),
     }
 }
 
 #[cfg(test)]
 mod binary_sign_asset_name_tests {
-    use super::{binary_sign_asset_name, binary_sign_asset_naming};
+    use super::{AssetNameSource, binary_sign_asset_name, binary_sign_asset_naming};
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::config::{
         ArchiveConfig, ArchivesConfig, BuildConfig, CrateConfig, SignConfig,
@@ -1047,7 +1097,7 @@ mod binary_sign_asset_name_tests {
         ] {
             assert_eq!(
                 binary_sign_asset_name(rendered, binary_file, &base, WINDOWS),
-                expected,
+                (expected.to_string(), AssetNameSource::Base),
                 "{rendered} over {binary_file}"
             );
         }
@@ -1060,7 +1110,10 @@ mod binary_sign_asset_name_tests {
     fn a_renamed_signature_falls_back_to_the_target_qualified_name() {
         assert_eq!(
             binary_sign_asset_name("detached.sig", "app", "app-1.0.0-windows-amd64", WINDOWS),
-            format!("detached-{WINDOWS}.sig")
+            (
+                format!("detached-{WINDOWS}.sig"),
+                AssetNameSource::OutputTemplate
+            )
         );
     }
 
@@ -1082,7 +1135,7 @@ mod binary_sign_asset_name_tests {
         .unwrap();
         assert_eq!(base, format!("app-1.0.0-{MUSL}"));
         assert_eq!(
-            binary_sign_asset_name("app.sig", "app", &base, MUSL),
+            binary_sign_asset_name("app.sig", "app", &base, MUSL).0,
             format!("app-1.0.0-{MUSL}.sig")
         );
     }
@@ -1447,7 +1500,7 @@ mod binary_sign_asset_name_tests {
         let base = binary_sign_asset_base(&ctx, &cfg, &binary(LINUX, None), LINUX).unwrap();
         assert_eq!(base, format!("app-{LINUX}-signed"));
         assert_eq!(
-            binary_sign_asset_name("app.sig", "app", &base, LINUX),
+            binary_sign_asset_name("app.sig", "app", &base, LINUX).0,
             format!("app-{LINUX}-signed.sig")
         );
     }

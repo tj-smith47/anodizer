@@ -7976,6 +7976,164 @@ fn two_configs_with_different_suffixes_over_one_base_are_accepted() {
     );
 }
 
+/// The certificate is a release asset of its own, so it is claimed too: two
+/// configs whose `signature:` suffixes differ are accepted on the signature
+/// and still render ONE certificate name over the shared base. The release
+/// would keep whichever arrived last, and the gate's de-duplication would
+/// fold the pair into one expectation and pass.
+#[test]
+fn two_configs_sharing_a_certificate_suffix_fail() {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{BuildConfig, CrateConfig};
+
+    const TARGET: &str = "x86_64-unknown-linux-gnu";
+
+    let config_for = |id: &str, signature: &str| SignConfig {
+        artifacts: Some("binary".to_string()),
+        cmd: Some("true".to_string()),
+        args: Some(vec![]),
+        ids: Some(vec![id.to_string()]),
+        asset_name_template: Some("shared-{{ Version }}".to_string()),
+        signature: Some(signature.to_string()),
+        certificate: Some("{{ .Artifact }}.pem".to_string()),
+        ..Default::default()
+    };
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("app")
+        .crates(vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("app".to_string()),
+                targets: Some(vec![TARGET.to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .binary_signs(vec![
+            config_for("app", "{{ .Artifact }}.sig"),
+            config_for("helper", "{{ .Artifact }}.bundle.sig"),
+        ])
+        .dry_run(true)
+        .build();
+    ctx.template_vars_mut().set("ProjectName", "app");
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    for binary in ["app", "helper"] {
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: binary.to_string(),
+            path: std::path::PathBuf::from(format!("target/{TARGET}/release/{binary}")),
+            target: Some(TARGET.to_string()),
+            crate_name: "app".to_string(),
+            metadata: [
+                ("binary".to_string(), binary.to_string()),
+                ("id".to_string(), binary.to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            size: None,
+        });
+    }
+
+    let log = ctx.logger("binary-sign");
+    let cfgs = ctx.config.binary_signs.clone();
+    let err = process_sign_configs(
+        &cfgs,
+        &mut ctx,
+        &log,
+        ArtifactFilter::BinaryOnly,
+        "binary-sign",
+    )
+    .expect_err("one certificate name over two binaries must fail the stage");
+    let msg = format!("{err:#}");
+    for needle in ["certificate asset name", "shared-1.0.0.pem"] {
+        assert!(msg.contains(needle), "message lacks '{needle}': {msg}");
+    }
+
+    let err = crate::expected::expected_signature_assets(&ctx, "app", None)
+        .expect_err("the gate must refuse the same pair");
+    let msg = format!("{err:#}");
+    for needle in ["certificate asset name", "shared-1.0.0.pem"] {
+        assert!(msg.contains(needle), "message lacks '{needle}': {msg}");
+    }
+}
+
+/// A `signature:` template that renders a name of its own — rather than
+/// suffixing the binary's file name — leaves the config-derived base out of
+/// the asset name entirely, so the remedy the diagnostic offers has to be
+/// that template and not `archives[].name_template`.
+#[test]
+fn a_renamed_output_collision_names_the_signature_template() {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{BuildConfig, CrateConfig};
+
+    const TARGET: &str = "x86_64-unknown-linux-gnu";
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("app")
+        .crates(vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("app".to_string()),
+                targets: Some(vec![TARGET.to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .binary_signs(vec![SignConfig {
+            artifacts: Some("binary".to_string()),
+            cmd: Some("true".to_string()),
+            args: Some(vec![]),
+            signature: Some("detached.sig".to_string()),
+            ..Default::default()
+        }])
+        .dry_run(true)
+        .build();
+    ctx.template_vars_mut().set("ProjectName", "app");
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    for binary in ["app", "helper"] {
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: binary.to_string(),
+            path: std::path::PathBuf::from(format!("target/{TARGET}/release/{binary}")),
+            target: Some(TARGET.to_string()),
+            crate_name: "app".to_string(),
+            metadata: [
+                ("binary".to_string(), binary.to_string()),
+                ("id".to_string(), binary.to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            size: None,
+        });
+    }
+
+    let log = ctx.logger("binary-sign");
+    let cfgs = ctx.config.binary_signs.clone();
+    let err = process_sign_configs(
+        &cfgs,
+        &mut ctx,
+        &log,
+        ArtifactFilter::BinaryOnly,
+        "binary-sign",
+    )
+    .expect_err("one renamed output over two binaries must fail the stage");
+    let msg = format!("{err:#}");
+    for needle in [
+        "`binary_signs[].signature:` template",
+        "renamed the output",
+        "{{ .Artifact }}",
+    ] {
+        assert!(msg.contains(needle), "message lacks '{needle}': {msg}");
+    }
+    assert!(
+        !msg.contains("archives[].name_template"),
+        "the base never reached this name, so its template is not the remedy: {msg}"
+    );
+}
+
 /// A lipo-merged universal binary is a raw binary under the `binary` filter,
 /// so `binary_signs:` signs it — and no build entry names its
 /// `darwin-universal` target, so the entry names it with the binary's own
