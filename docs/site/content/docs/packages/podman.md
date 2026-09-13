@@ -9,7 +9,7 @@ Anodizer supports the `podman` backend as a swap-in alternative to `docker build
 
 ## Linux-only
 
-The podman backend is **Linux-only**, matching GoReleaser Pro. Anodizer refuses to load a config with `use: podman` on macOS or Windows hosts and surfaces a clear error rather than failing later with `podman: command not found`.
+The podman backend is **Linux-only**, matching GoReleaser Pro. Anodizer refuses to load a config with `use: podman` on macOS or Windows hosts and reports a clear error rather than failing later with `podman: command not found`.
 
 ```text
 $ anodizer release         # on macOS

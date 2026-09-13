@@ -178,7 +178,7 @@ Verify the environment can run the configured release: required tools, env vars/
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--json` | — | — | Output the report as JSON |
-| `--publish-only` | — | — | Check only the publish-time surface (the stages `release --publish-only` runs), not artifact-producing stages |
+| `--publish-only` | — | — | Check only the publish-time stages (what `release --publish-only` runs), not artifact-producing stages |
 | `--skip` | — | — | Skip requirement collection for these stages (comma-separated, same names as release --skip) |
 | `--publishers` | — | — | Comma-separated publishers to run (default: all configured). --skip always wins over --publishers. |
 | `--token` | — | — | GitHub token override; when set, GitHub token env-var requirements are treated as satisfied |
@@ -234,7 +234,7 @@ Emit the external CLI tools the resolved config's pipeline will invoke
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--json` | — | — | Output as JSON |
-| `--publish-only` | — | — | Only the tools the publish-time surface needs (the stages `release --publish-only` runs), not artifact-producing stages |
+| `--publish-only` | — | — | Only the tools the publish-time stages need (what `release --publish-only` runs), not artifact-producing stages |
 | `--skip` | — | — | Drop tools contributed by these skipped stages (comma-separated, same names as release --skip) |
 | `--publishers` | — | — | Comma-separated publishers to run (default: all configured). --skip always wins over --publishers. |
 

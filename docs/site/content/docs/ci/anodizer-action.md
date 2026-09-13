@@ -413,7 +413,7 @@ runs them exactly once:
   krew, MCP each look for an already-open PR and skip rather than open a
   duplicate), so a manual re-run of the identical command is always safe.
   The action still avoids an automatic in-step retry so a real failure
-  surfaces on its own attempt rather than being masked by a silent retry.
+  appears on its own attempt rather than being masked by a silent retry.
 - `tag rollback` — already a recovery primitive; retrying would re-attempt
   remote tag deletes (which 404 the second time) and re-push the revert
   (which would fail with "Everything up-to-date" or a non-fast-forward

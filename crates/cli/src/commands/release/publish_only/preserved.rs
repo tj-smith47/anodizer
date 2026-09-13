@@ -300,7 +300,7 @@ pub(super) fn load_preserved_context(path: &Path) -> Result<PreservedDistContext
         // A literal placeholder is unambiguous.
         anyhow::bail!(
             "publish-only: missing {}. Run `anodizer check determinism \
-             --preserve-dist=<dist-dir>` on a determinism check that passed first, or \
+             --preserve-dist=<dist-dir>` on a determinism check that passed first, or use \
              `anodizer publish` (no sign step) if you only need the publisher pass.",
             path.display(),
         );

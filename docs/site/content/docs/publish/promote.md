@@ -129,7 +129,7 @@ $ anodizer promote --to stable --version 9.9.9 --publishers snapcraft --dry-run
    • snapcraft: 9.9.9→stable (dry-run)
 ```
 
-The miss therefore surfaces on the live run, in the same two-part shape as the
+The miss therefore appears on the live run, in the same two-part shape as the
 rejected-channel example above: a `• snapcraft: … (failed: …)` result line
 naming the version that matched no revision, then the aggregate
 `1 publisher(s) failed to promote: snapcraft` and a non-zero exit.

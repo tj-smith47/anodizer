@@ -71,13 +71,13 @@ pub(super) fn run_cargo_publish_simulation(
     if ctx.is_snapshot() || ctx.is_nightly() || ctx.is_dry_run() || ctx.should_skip("publish") {
         return;
     }
-    // Cargo out of the selected publish surface (e.g. `--publishers npm` or
+    // Cargo out of the selected publishers (e.g. `--publishers npm` or
     // `--skip cargo`) means the irreversible cargo door never fires this run,
     // so there is nothing to simulate — and spawning `cargo publish --dry-run`
     // or probing the crates.io index here would falsely abort a cargo-less
     // release on a cargo-only concern. Mirrors the state-probe gate above.
     if ctx.publisher_deselected("cargo") {
-        log.verbose("cargo deselected from the publish surface; skipping cargo publish simulation");
+        log.verbose("cargo deselected from the publisher set; skipping cargo publish simulation");
         return;
     }
 

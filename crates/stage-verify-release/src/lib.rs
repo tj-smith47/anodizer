@@ -129,8 +129,8 @@ pub fn verify_release_consumers() -> &'static [&'static str] {
 /// of a hand-maintained string list. The OS-package verify axes
 /// (install-smoke and libc-ceiling) verify those produced artifacts, so —
 /// like the asset check gating on `github-release` — they run only when at
-/// least one such publisher is in the selected publish surface.
-/// Over-inclusion is safe (a surface that ships no package finds nothing to
+/// least one such publisher is in the selected publishers.
+/// Over-inclusion is safe (a publisher that ships no package finds nothing to
 /// check); under-inclusion would drop coverage on a shipped package.
 pub fn os_package_consumers() -> Vec<&'static str> {
     PublisherKind::all()
@@ -139,7 +139,7 @@ pub fn os_package_consumers() -> Vec<&'static str> {
         .collect()
 }
 
-/// Whether the selected publish surface delivers any installable OS package,
+/// Whether the selected publishers deliver any installable OS package,
 /// i.e. whether the OS-package verify axes (install-smoke, libc-ceiling) have
 /// anything in scope. A `--publishers npm` run ships no OS package, so those
 /// axes are out of scope there; an in-scope custom `publishers:` entry that
@@ -222,7 +222,7 @@ impl Stage for VerifyReleaseStage {
             && !os_package_publisher_selected(ctx)
         {
             ctx.logger(STAGE_NAME)
-                .status("skipped — no verifiable publisher in the selected publish surface");
+                .status("skipped — no verifiable publisher in the selected publishers");
             return Ok(());
         }
         // The gate verifies a real, published release; dry-run / snapshot
@@ -248,7 +248,7 @@ impl Stage for VerifyReleaseStage {
         // out of the selected surface while the landing checks still apply.
         let github_selected = !ctx.publisher_deselected("github-release");
         if cfg.assert_assets_enabled() && !github_selected {
-            log.verbose("github-release not in the selected publish surface — asset check skipped");
+            log.verbose("github-release not in the selected publishers — asset check skipped");
         }
 
         let mut run_state = VerifyRun::default();
@@ -276,7 +276,7 @@ impl Stage for VerifyReleaseStage {
             // status-ok: operator-visible axis skip, same class as the
             // Docker-unavailable skip below — not a command echo.
             log.status(
-                "skipped install smoke-test — out of the selected publish surface \
+                "skipped install smoke-test — out of the selected publishers \
                  (no OS-package publisher selected)",
             );
         } else if smoke_enabled && !docker_ok {
@@ -289,7 +289,7 @@ impl Stage for VerifyReleaseStage {
             // status-ok: operator-visible axis skip, symmetric with the
             // smoke-axis skip above — not a command echo.
             log.status(
-                "skipped libc-ceiling — out of the selected publish surface \
+                "skipped libc-ceiling — out of the selected publishers \
                  (no OS-package publisher selected)",
             );
         }
@@ -392,7 +392,7 @@ impl Stage for VerifyReleaseStage {
         // would fabricate passing evidence for a run that proved nothing.
         let any_check_ran = totals.any_inspected() || landing_probed > 0;
         if !any_check_ran && issues.is_empty() {
-            log.verbose("no check ran against the selected publish surface — no verdict recorded");
+            log.verbose("no check ran against the selected publishers — no verdict recorded");
             return Ok(());
         }
 
@@ -504,7 +504,7 @@ pub fn run_asset_gate(ctx: &mut Context) -> Result<bool> {
         github_selected: true,
         // When github-release is deselected (a registry-submitter-only leg),
         // an earlier leg uploaded the assets and rewrote the combined
-        // checksum manifests with ITS publish surface — this leg cannot
+        // checksum manifests with ITS publisher set — this leg cannot
         // reproduce those bytes, only verify everything else.
         assets_published_by_this_run: !ctx.publisher_deselected("github-release"),
         os_pkg_selected: false,
@@ -653,9 +653,9 @@ fn local_asset_index(
 /// in the leg that uploaded them: the combined checksum manifests, rewritten
 /// by the github-release upload path at upload time
 /// (`refresh_combined_checksums`) to fold in publish-time evidence such as
-/// docker image digests. A leg with a different publish surface recomputes
+/// docker image digests. A leg with a different publisher set recomputes
 /// different — equally correct — bytes, so a cross-leg byte comparison of
-/// these assets reports a defect that is actually a surface difference. The
+/// these assets reports a defect that is actually a publisher-set difference. The
 /// membership predicate is the shared core definition
 /// ([`anodizer_core::artifact::is_combined_checksum_artifact`]) that the
 /// refresher's own selection uses, so the exempted set and the rewritten set

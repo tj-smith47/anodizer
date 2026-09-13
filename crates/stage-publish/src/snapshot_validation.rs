@@ -2235,7 +2235,7 @@ mod tests {
         assert!(ctx.options.partial_target.is_none());
         validate_nix(&mut ctx, &cfg, &log()).expect(
             "a windows-only single-target build must self-skip nix (no Linux/Darwin archive), \
-             not false-fail — the is_target_restricted_build seam covers single_target",
+             not false-fail — the is_target_restricted_build check covers single_target",
         );
     }
 
