@@ -142,17 +142,42 @@ impl SchemastoreConfig {
     }
 
     /// Effective `if` condition: per-entry wins, else block.
+    ///
+    /// Both sides are read through [`crate::config::active_if_gate`], so an
+    /// entry's `if: ""` — which imposes no gate — falls through to the
+    /// block's condition instead of shadowing it.
     pub fn resolved_if<'a>(&'a self, entry: &'a SchemaEntry) -> Option<&'a str> {
-        entry
-            .if_condition
-            .as_deref()
-            .or(self.if_condition.as_deref())
+        use crate::config::active_if_gate;
+        active_if_gate(entry.if_condition.as_deref())
+            .or(active_if_gate(self.if_condition.as_deref()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An entry's `if: ""` imposes no gate, so the block's condition is what
+    /// the run acts on. The raw `Option` let the empty string win the
+    /// fallback and drop the block's gate.
+    #[test]
+    fn an_empty_entry_if_keeps_the_block_gate() {
+        let block = SchemastoreConfig {
+            if_condition: Some("{{ IsSnapshot }}".to_string()),
+            ..Default::default()
+        };
+        let entry = SchemaEntry {
+            if_condition: Some(String::new()),
+            ..Default::default()
+        };
+        assert_eq!(block.resolved_if(&entry), Some("{{ IsSnapshot }}"));
+
+        let gated = SchemaEntry {
+            if_condition: Some("{{ IsSnapshot }}x".to_string()),
+            ..entry
+        };
+        assert_eq!(block.resolved_if(&gated), Some("{{ IsSnapshot }}x"));
+    }
 
     #[test]
     fn deserializes_external_and_vendor_entries() {
