@@ -328,32 +328,39 @@ pub(super) fn check_checksum_skip_conflicts(config: &Config, warnings: &mut Vec<
 /// The accepted vocabulary is the runtime resolver's own
 /// `VALID_SIGN_ARTIFACT_FILTERS` (the source of truth for
 /// `should_sign_artifact`), so check-time validation cannot drift behind a
-/// value the sign stage actually honors.
+/// value the sign stage actually honors. Every sign slice is asked:
+/// `binary_signs:` and the per-crate slices resolve the filter through that
+/// same resolver, so a value unrecognized on one of them fails the run just
+/// as loudly.
 pub(super) fn check_sign_artifact_filters(config: &Config, warnings: &mut Vec<String>) {
     let valid_artifact_filters = anodizer_stage_sign::VALID_SIGN_ARTIFACT_FILTERS;
-    for sign_cfg in &config.signs {
-        if let Some(ref filter) = sign_cfg.artifacts
-            && !valid_artifact_filters.contains(&filter.as_str())
-        {
-            warnings.push(format!(
-                "unrecognized signs artifacts filter '{}' (valid: {})",
-                filter,
-                valid_artifact_filters.join(", ")
-            ));
-        }
-        // The authenticode block carries its own `artifacts` selector, resolved
-        // through the same `should_sign_artifact` vocabulary. An unrecognized
-        // value here matches no artifact and (now that the stage propagates the
-        // error) fails the run — surface it at check time too.
-        if let Some(ref auth) = sign_cfg.authenticode
-            && let Some(ref filter) = auth.artifacts
-            && !valid_artifact_filters.contains(&filter.as_str())
-        {
-            warnings.push(format!(
-                "unrecognized signs authenticode artifacts filter '{}' (valid: {})",
-                filter,
-                valid_artifact_filters.join(", ")
-            ));
+    let unrecognized = |filter: &Option<String>| -> Option<String> {
+        let filter = filter.as_deref()?;
+        (!valid_artifact_filters.contains(&filter)).then(|| filter.to_string())
+    };
+    for slice in sign_slices(config) {
+        for (idx, sign_cfg) in slice.configs.iter().enumerate() {
+            let block = slice.block(idx);
+            if let Some(filter) = unrecognized(&sign_cfg.artifacts) {
+                warnings.push(format!(
+                    "unrecognized {block} artifacts filter '{filter}' (valid: {})",
+                    valid_artifact_filters.join(", ")
+                ));
+            }
+            // The authenticode block carries its own `artifacts` selector,
+            // resolved through the same `should_sign_artifact` vocabulary. An
+            // unrecognized value here matches no artifact and (now that the
+            // stage propagates the error) fails the run — surface it at check
+            // time too.
+            if let Some(ref auth) = sign_cfg.authenticode
+                && let Some(filter) = unrecognized(&auth.artifacts)
+            {
+                warnings.push(format!(
+                    "unrecognized {block} authenticode artifacts filter \
+                    '{filter}' (valid: {})",
+                    valid_artifact_filters.join(", ")
+                ));
+            }
         }
     }
 }
@@ -365,48 +372,54 @@ pub(super) fn check_sign_artifact_filters(config: &Config, warnings: &mut Vec<St
 /// every `SignConfig` but is read only on the `binary_signs:` slice. A user
 /// who sets it on `signs:` gets the derived name with no error at all.
 pub(super) fn check_sign_asset_name_templates(config: &Config, warnings: &mut Vec<String>) {
-    // `defaults.sign:` fills an empty top-level `signs:` before any check
-    // runs, so the entry a warning points at may be a block the user never
-    // wrote. The fold records what it filled, which a value comparison cannot
-    // tell apart from a `signs:` entry that happens to repeat the default.
-    let signs_came_from_defaults = config.filled_from_defaults.contains("signs");
-    let mut slices: Vec<(String, &Vec<anodizer_core::config::SignConfig>)> =
-        vec![("signs".to_string(), &config.signs)];
-    for ws in config.workspaces.iter().flatten() {
-        slices.push((format!("workspaces.{}.signs", ws.name), &ws.signs));
-    }
-    for (label, configs) in slices {
-        for (idx, cfg) in configs.iter().enumerate() {
+    for slice in sign_slices(config) {
+        if slice.is_binary_signs() {
+            continue;
+        }
+        for (idx, cfg) in slice.configs.iter().enumerate() {
             if cfg.asset_name_template.is_none() {
                 continue;
             }
-            let block = if label == "signs" && signs_came_from_defaults {
-                "defaults.sign".to_string()
-            } else {
-                format!("{label}[{idx}]")
-            };
+            let block = slice.block(idx);
             warnings.push(format!(
                 "{block}.asset_name_template is set but only binary_signs \
-                 honors it (it will be ignored)"
+                honors it (it will be ignored)"
             ));
         }
     }
 }
 
-/// Whether two sign entries can select one artifact: an absent `ids:` takes
-/// every one, and two present lists overlap when they name an id in common.
+/// Whether two sign entries can select one artifact.
 ///
-/// Two DIFFERENT gates are not evaluated — a template can read the
-/// environment, so "both fire" cannot be decided here — and two entries that
-/// never both run write no second file. An ABSENT gate always fires, so it
-/// pairs with anything: whenever the gated entry runs, both write. `if: ""`
-/// is absent as far as the run is concerned, so it is read through
-/// `active_if_gate`, the same answer the engine acts on.
+/// Three terms, each able to keep the pair apart on its own:
+///
+/// - `artifacts:` — the kinds each entry signs, resolved by the sign stage's
+///   own `should_sign_artifact` through `sign_filters_can_overlap`. On
+///   `signs:` this is THE selector: an entry signing archives and one
+///   signing the checksum file never meet, whatever they name their output.
+///   `artifacts_fallback` is the slice's own default, so an absent filter is
+///   read as the run reads it (`"none"` on `signs:`, `"binary"` on
+///   `binary_signs:`).
+/// - `if:` — two DIFFERENT gates are not evaluated, because a template can
+///   read the environment, so "both fire" cannot be decided here, and two
+///   entries that never both run write no second file. An ABSENT gate always
+///   fires, so it pairs with anything: whenever the gated entry runs, both
+///   write. `if: ""` is absent as far as the run is concerned, so it is read
+///   through `active_if_gate`, the same answer the engine acts on.
+/// - `ids:` — an absent list takes every build, and two present lists overlap
+///   when they name an id in common.
 fn sign_selections_overlap(
     a: &anodizer_core::config::SignConfig,
     b: &anodizer_core::config::SignConfig,
+    artifacts_fallback: &str,
 ) -> bool {
     use anodizer_core::config::active_if_gate;
+    if !anodizer_stage_sign::sign_filters_can_overlap(
+        a.resolved_artifacts(artifacts_fallback),
+        b.resolved_artifacts(artifacts_fallback),
+    ) {
+        return false;
+    }
     if let (Some(left), Some(right)) = (
         active_if_gate(a.if_condition.as_deref()),
         active_if_gate(b.if_condition.as_deref()),
@@ -474,28 +487,48 @@ fn mask_placeholder_separators(template: &str) -> String {
     masked
 }
 
-/// Spellings whose expansion is a whole PATH the run resolves, not a name.
+/// Placeholders whose expansion is a whole PATH the run resolves, not a name.
 ///
 /// `{{ .Artifact }}` is substituted before the render
-/// (`stage-sign::helpers::resolve_signature_path`) and the `${…}` forms
-/// after it (`expand_shell_vars`), and each one already carries `dist`. The
-/// `{{ … }}` entries are written without padding because they are asked of
-/// text `mask_placeholder_separators` has already trimmed.
-const PATH_CARRYING_SPELLINGS: &[&str] = &[
-    "{{.Artifact}}",
-    "{{Artifact}}",
-    "${artifact}",
-    "$artifact",
-    "${signature}",
-    "${certificate}",
-];
+/// (`stage-sign::helpers::resolve_signature_path`), and it already carries
+/// `dist`. Written without padding because they are asked of text
+/// `mask_placeholder_separators` has already trimmed.
+const PATH_CARRYING_SPELLINGS: &[&str] = &["{{.Artifact}}", "{{Artifact}}"];
 
-/// The variables a rendered spelling can be bounded by: the name-only ones
-/// the sign and archive stages seed.
+/// Shell-style variables the sign stage expands to a whole PATH after the
+/// render (`stage-sign::helpers::resolve_output_paths`), in either the
+/// `${name}` or the bare `$name` spelling.
+const PATH_CARRYING_SHELL_VARS: &[&str] = &["artifact", "signature", "certificate"];
+
+/// Whether `text` names `$name` or `${name}` as a WHOLE variable.
 ///
-/// Every other `{{ … }}` run — an `.Env.` lookup, a `Var.` reference, a
-/// function call, a filter — renders a value only the run knows, and that
-/// value can be a separator or an absolute path.
+/// `expand_with_preserve` reads a bare `$` name to the end of its
+/// alphanumeric run, so `$artifactName` and `$artifactID` are variables of
+/// those names — each expanding to a NAME, not a path — and a prefix match
+/// would read both as `$artifact`.
+fn names_shell_var(text: &str, name: &str) -> bool {
+    if text.contains(&format!("${{{name}}}")) {
+        return true;
+    }
+    let bare = format!("${name}");
+    text.match_indices(&bare).any(|(at, _)| {
+        text[at + bare.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_')
+    })
+}
+
+/// The variables whose rendering the `dist` join stays correct for: one that
+/// is RELATIVE, never absolute and never already under `dist`.
+///
+/// Both sides of a comparison are joined onto `dist`, so a rendering holding
+/// a separator is still one file on both sides — `Tag` is the git tag with
+/// its prefix stripped and may hold one (`release/1.0.0`), and `Version`
+/// derives from it. What the join cannot survive is a rendering that is
+/// ABSOLUTE or already carries `dist`, which is what every other `{{ … }}`
+/// run — an `.Env.` lookup, a `Var.` reference, a function call, a filter —
+/// can be.
 const BOUNDED_VARIABLES: &[&str] = &[
     "ProjectName",
     "Version",
@@ -517,7 +550,11 @@ const BOUNDED_VARIABLES: &[&str] = &[
 /// join and so reads as two files, the direction a missed advisory warning
 /// lies in.
 fn renders_an_unbounded_path(masked: &str) -> bool {
-    if PATH_CARRYING_SPELLINGS.iter().any(|s| masked.contains(s)) {
+    if PATH_CARRYING_SPELLINGS.iter().any(|s| masked.contains(s))
+        || PATH_CARRYING_SHELL_VARS
+            .iter()
+            .any(|name| names_shell_var(masked, name))
+    {
         return true;
     }
     let mut rest = masked;
@@ -547,8 +584,9 @@ fn renders_an_unbounded_path(masked: &str) -> bool {
 /// away, and two different placeholders stay two files. Joining `dist` onto
 /// a spelling that renders a path of its own would call `${artifact}.sig`
 /// and `dist/${artifact}.sig` one file where the run writes `dist/app.sig`
-/// and `dist/dist/app.sig`. `PATH_CARRYING_SPELLINGS` and
-/// `BOUNDED_VARIABLES` are the whole derivation of "unbounded".
+/// and `dist/dist/app.sig`. `PATH_CARRYING_SPELLINGS`,
+/// `PATH_CARRYING_SHELL_VARS` and `BOUNDED_VARIABLES` are the whole
+/// derivation of "unbounded".
 ///
 /// The `dist` asked about is the configured one. `anodizer build --dist
 /// <path>` moves it at build time, so a run passing that flag places these
@@ -568,22 +606,91 @@ fn same_output_file(dist: &std::path::Path, left: &str, right: &str) -> bool {
     anodizer_stage_sign::sign_outputs_are_one_file(dist, &left, &right)
 }
 
+/// One sign slice an operator can write, with the provenance a diagnostic
+/// needs to name the block they actually wrote.
+struct SignSlice<'a> {
+    /// The config path of the slice, `signs` or `workspaces.<name>.signs`.
+    label: String,
+    /// The `defaults.` block this slice was FILLED from, when it was. A
+    /// filled slice holds an entry the operator never wrote, so a diagnostic
+    /// saying `signs[0]` would point at an index that is not in their file.
+    defaults_block: Option<&'static str>,
+    configs: &'a Vec<anodizer_core::config::SignConfig>,
+}
+
+impl SignSlice<'_> {
+    /// The block a diagnostic names for entry `idx`.
+    fn block(&self, idx: usize) -> String {
+        match self.defaults_block {
+            Some(block) => block.to_string(),
+            None => format!("{}[{idx}]", self.label),
+        }
+    }
+
+    /// Whether this is a `binary_signs:` slice, which carries its own
+    /// defaults for the signature template and the artifact filter.
+    fn is_binary_signs(&self) -> bool {
+        self.label.ends_with("binary_signs")
+    }
+
+    /// The `signature:` template an entry that sets none resolves to.
+    fn signature_default(&self) -> &'static str {
+        if self.is_binary_signs() {
+            anodizer_core::config::SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE
+        } else {
+            anodizer_core::config::SignConfig::DEFAULT_SIGNATURE_TEMPLATE
+        }
+    }
+
+    /// The `artifacts:` filter an entry that sets none resolves to.
+    fn artifacts_default(&self) -> &'static str {
+        if self.is_binary_signs() {
+            anodizer_core::config::SignConfig::DEFAULT_ARTIFACTS_BINARY
+        } else {
+            anodizer_core::config::SignConfig::DEFAULT_ARTIFACTS
+        }
+    }
+}
+
 /// Every sign slice an operator can write, labelled as they wrote it.
 ///
 /// `signs:` and `binary_signs:` hold the same `SignConfig`, resolve their
 /// outputs through the same `resolve_output_paths` and write under the same
-/// `dist`, so a check about how two entries' outputs collide asks both.
-fn sign_slices(config: &Config) -> Vec<(String, &Vec<anodizer_core::config::SignConfig>)> {
-    let mut slices: Vec<(String, &Vec<anodizer_core::config::SignConfig>)> = vec![
-        ("signs".to_string(), &config.signs),
-        ("binary_signs".to_string(), &config.binary_signs),
+/// `dist`, so a check about how two entries' outputs collide asks both. This
+/// is the one enumeration: every per-slice question — the duplicate outputs,
+/// the artifact filters, the ignored `asset_name_template:` — walks it.
+fn sign_slices(config: &Config) -> Vec<SignSlice<'_>> {
+    // `defaults.sign:` / `defaults.binary_signs:` fill an empty top-level
+    // slice before any check runs, and the fold records what it filled — an
+    // answer a value comparison cannot reach, since a slice the operator
+    // wrote may simply repeat the default.
+    let filled = |key: &'static str, block: &'static str| {
+        config.filled_from_defaults.contains(key).then_some(block)
+    };
+    let mut slices = vec![
+        SignSlice {
+            label: "signs".to_string(),
+            defaults_block: filled("signs", "defaults.sign"),
+            configs: &config.signs,
+        },
+        SignSlice {
+            label: "binary_signs".to_string(),
+            defaults_block: filled("binary_signs", "defaults.binary_signs"),
+            configs: &config.binary_signs,
+        },
     ];
     for ws in config.workspaces.iter().flatten() {
-        slices.push((format!("workspaces.{}.signs", ws.name), &ws.signs));
-        slices.push((
-            format!("workspaces.{}.binary_signs", ws.name),
-            &ws.binary_signs,
-        ));
+        // A per-crate slice is never filled from the top-level defaults.
+        slices.push(SignSlice {
+            label: format!("workspaces.{}.signs", ws.name),
+            defaults_block: None,
+            configs: &ws.signs,
+        });
+        slices.push(SignSlice {
+            label: format!("workspaces.{}.binary_signs", ws.name),
+            defaults_block: None,
+            configs: &ws.binary_signs,
+        });
     }
     slices
 }
@@ -595,22 +702,19 @@ fn sign_slices(config: &Config) -> Vec<(String, &Vec<anodizer_core::config::Sign
 /// configured. The asset-name claim accepts the pair — one name over one file
 /// IS one release asset — so nothing on the sign path says anything.
 pub(super) fn check_sign_duplicate_outputs(config: &Config, warnings: &mut Vec<String>) {
-    for (label, configs) in sign_slices(config) {
-        let default = if label.ends_with("binary_signs") {
-            anodizer_core::config::SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE
-        } else {
-            anodizer_core::config::SignConfig::DEFAULT_SIGNATURE_TEMPLATE
-        };
+    for slice in sign_slices(config) {
+        let default = slice.signature_default();
         // The index is the one the operator wrote, so a filtered-out entry
         // does not renumber the labels of the entries after it.
-        let writing: Vec<(usize, &anodizer_core::config::SignConfig)> = configs
+        let writing: Vec<(usize, &anodizer_core::config::SignConfig)> = slice
+            .configs
             .iter()
             .enumerate()
             .filter(|(_, cfg)| writes_detached_outputs(cfg))
             .collect();
         for (pos, (first, a)) in writing.iter().enumerate() {
             for (second, b) in writing.iter().skip(pos + 1) {
-                if !sign_selections_overlap(a, b) {
+                if !sign_selections_overlap(a, b, slice.artifacts_default()) {
                     continue;
                 }
                 for (field, same) in [
@@ -637,11 +741,12 @@ pub(super) fn check_sign_duplicate_outputs(config: &Config, warnings: &mut Vec<S
                     if !same {
                         continue;
                     }
+                    let (first_block, second_block) = (slice.block(*first), slice.block(*second));
                     warnings.push(format!(
-                        "{label}[{first}] and {label}[{second}] resolve one \
-                         {field} file for the binaries both select — the \
-                         second {field} overwrites the first, so one file \
-                         ships where two were configured"
+                        "{first_block} and {second_block} resolve one {field} \
+                        file for the artifacts both select — the second \
+                        {field} overwrites the first, so one file ships \
+                        where two were configured"
                     ));
                 }
             }
@@ -653,42 +758,123 @@ pub(super) fn check_sign_duplicate_outputs(config: &Config, warnings: &mut Vec<S
 /// a sign template reaches Tera (`stage-sign::helpers`).
 const LITERAL_SIGN_PLACEHOLDERS: &[&str] = &["Artifact", "Signature", "Certificate"];
 
-/// Warn when a sign template names one of those placeholders unpadded.
+/// The subset `signature:` and `certificate:` substitute. Those two
+/// templates are what the signature and certificate paths are DERIVED from,
+/// so neither name has a value yet when they render.
+const ARTIFACT_PLACEHOLDER_ONLY: &[&str] = &["Artifact"];
+
+/// `stdin:` is handed to the template engine with nothing substituted.
+const NO_SIGN_PLACEHOLDERS: &[&str] = &[];
+
+/// Every `{{ … }}` run in `template` that names `name` — dot prefix and
+/// padding included — as it is written.
 ///
-/// The substitution matches `{{ .Artifact }}` and `{{ Artifact }}` only, so
-/// `{{.Artifact}}` survives it, reaches Tera as the undefined variable
-/// `Artifact` and hard-errors the sign stage. There is no spelling of the
-/// config in which the unpadded form works.
+/// The stage substitutes by exact literal, so the run's own text is what
+/// decides whether it is one of the two spellings that works.
+fn placeholder_spellings<'a>(template: &'a str, name: &str) -> Vec<&'a str> {
+    let mut found = Vec::new();
+    let mut rest = template;
+    let mut base = 0usize;
+    while let Some(open) = rest.find("{{") {
+        let after = &rest[open + 2..];
+        let Some(close) = after.find("}}") else { break };
+        let core = after[..close].trim();
+        if core.strip_prefix('.').unwrap_or(core) == name {
+            found.push(&template[base + open..base + open + close + 4]);
+        }
+        base += open + close + 4;
+        rest = &after[close + 2..];
+    }
+    found
+}
+
+/// Warn when a sign template names a literal placeholder the field cannot
+/// substitute, or spells one the stage does substitute with the wrong
+/// padding.
+///
+/// The substitution is by exact literal, and the set differs per field:
+/// `args:` takes all three names, `signature:` and `certificate:` take
+/// `Artifact` alone, and `stdin:` takes none. Anything else reaches Tera as
+/// an undefined variable and hard-errors the sign stage — `{{.Artifact}}`
+/// and `{{ .Artifact}}` alike, since only `{{ .Artifact }}` and
+/// `{{ Artifact }}` are replaced.
 pub(super) fn check_unpadded_sign_placeholders(config: &Config, warnings: &mut Vec<String>) {
-    let mut warn = |label: &str, idx: usize, field: &str, template: &str| {
-        for name in LITERAL_SIGN_PLACEHOLDERS {
-            for spelling in [format!("{{{{.{name}}}}}"), format!("{{{{{name}}}}}")] {
-                if template.contains(&spelling) {
-                    warnings.push(format!(
-                        "{label}[{idx}].{field} names `{spelling}`, which                          anodizer substitutes only as `{{{{ .{name} }}}}` —                          the unpadded spelling reaches the template engine                          as an undefined variable and fails the sign stage"
-                    ));
+    let mut warn =
+        |block: &str, field: &str, substituted: &[&str], shell_expanded: bool, template: &str| {
+            for name in LITERAL_SIGN_PLACEHOLDERS {
+                for spelling in placeholder_spellings(template, name) {
+                    if !substituted.contains(name) {
+                        // Every field that is shell-expanded accepts the `${…}`
+                        // spelling, which is resolved after the render and so
+                        // needs no template variable at all.
+                        let remedy = if shell_expanded {
+                            let shell = name.to_ascii_lowercase();
+                            format!(
+                                "; write `${{{shell}}}`, which the sign stage \
+                                expands after the render"
+                            )
+                        } else {
+                            String::new()
+                        };
+                        warnings.push(format!(
+                            "{block}.{field} names `{spelling}`, which anodizer \
+                            does not substitute in {field}: — it reaches the \
+                            template engine as an undefined variable and fails \
+                            the sign stage{remedy}"
+                        ));
+                    } else if spelling != format!("{{{{ .{name} }}}}")
+                        && spelling != format!("{{{{ {name} }}}}")
+                    {
+                        warnings.push(format!(
+                            "{block}.{field} names `{spelling}`, which anodizer \
+                            substitutes only as `{{{{ .{name} }}}}` or \
+                            `{{{{ {name} }}}}` — any other padding reaches the \
+                            template engine as an undefined variable and fails \
+                            the sign stage"
+                        ));
+                    }
                 }
             }
-        }
-    };
-    for (label, configs) in sign_slices(config) {
-        for (idx, cfg) in configs.iter().enumerate() {
-            for (field, template) in [
-                ("signature", cfg.signature.as_deref()),
-                ("certificate", cfg.certificate.as_deref()),
+        };
+    for slice in sign_slices(config) {
+        for (idx, cfg) in slice.configs.iter().enumerate() {
+            let block = slice.block(idx);
+            for (field, substituted, template) in [
+                (
+                    "signature",
+                    ARTIFACT_PLACEHOLDER_ONLY,
+                    cfg.signature.as_deref(),
+                ),
+                (
+                    "certificate",
+                    ARTIFACT_PLACEHOLDER_ONLY,
+                    cfg.certificate.as_deref(),
+                ),
+                ("stdin", NO_SIGN_PLACEHOLDERS, cfg.stdin.as_deref()),
             ] {
                 if let Some(template) = template {
-                    warn(&label, idx, field, template);
+                    warn(&block, field, substituted, true, template);
                 }
             }
             for arg in cfg.args.iter().flatten() {
-                warn(&label, idx, "args", arg);
+                warn(&block, "args", LITERAL_SIGN_PLACEHOLDERS, true, arg);
             }
         }
     }
+    let docker_block = |idx: usize| match config.filled_from_defaults.contains("docker_signs") {
+        true => "defaults.docker_signs".to_string(),
+        false => format!("docker_signs[{idx}]"),
+    };
     for (idx, cfg) in config.docker_signs.iter().flatten().enumerate() {
+        let block = docker_block(idx);
+        // A docker sign's argv is substituted the same three ways, but its
+        // `stdin:` is rendered raw with no shell expansion behind it, so
+        // there is no spelling of a placeholder that works there.
         for arg in cfg.args.iter().flatten() {
-            warn("docker_signs", idx, "args", arg);
+            warn(&block, "args", LITERAL_SIGN_PLACEHOLDERS, false, arg);
+        }
+        if let Some(stdin) = cfg.stdin.as_deref() {
+            warn(&block, "stdin", NO_SIGN_PLACEHOLDERS, false, stdin);
         }
     }
 }

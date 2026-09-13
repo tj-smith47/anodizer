@@ -122,6 +122,36 @@ pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<b
     }
 }
 
+/// Every artifact kind an `artifacts:` filter can admit — the universe
+/// [`sign_filters_can_overlap`] asks `should_sign_artifact` about.
+///
+/// Unioned from the kind sets core already publishes rather than listed
+/// here, so a kind added to one of them joins this question with no second
+/// enumeration to keep in step.
+fn filterable_kinds() -> impl Iterator<Item = ArtifactKind> {
+    anodizer_core::artifact::size_reportable_kinds()
+        .iter()
+        .chain(anodizer_core::artifact::signable_subject_kinds())
+        .copied()
+}
+
+/// Whether two `artifacts:` filters can ever select one artifact.
+///
+/// Asked of RESOLVED filter strings — the slice's own default (`"none"` for
+/// `signs:`, `"binary"` for `binary_signs:`) already applied — and answered
+/// by `should_sign_artifact` itself, so the kinds each value admits are
+/// spelled once, where the run reads them.
+///
+/// A value the resolver does not recognize admits nothing here. That run
+/// fails rather than signing, so a diagnostic built on this answer says
+/// nothing about a config that is already broken for another reason.
+pub fn sign_filters_can_overlap(left: &str, right: &str) -> bool {
+    filterable_kinds().any(|kind| {
+        should_sign_artifact(kind, left).unwrap_or(false)
+            && should_sign_artifact(kind, right).unwrap_or(false)
+    })
+}
+
 /// File extensions an Authenticode (`artifacts: windows`) signer can sign.
 ///
 /// The `"windows"` kind pre-filter (`should_sign_artifact`) admits
@@ -747,6 +777,57 @@ mod filter_drift_tests {
             assert!(
                 should_sign_artifact(probe, bogus).is_err(),
                 "filter '{bogus}' is not listed but the resolver accepted it",
+            );
+        }
+    }
+
+    /// The kind universe `sign_filters_can_overlap` probes must cover every
+    /// filter, or two entries selecting only a kind outside it would read as
+    /// disjoint. `"none"` is the one value that selects nothing by design.
+    #[test]
+    fn every_filter_selects_a_kind_the_overlap_universe_holds() {
+        for filter in VALID_SIGN_ARTIFACT_FILTERS {
+            if *filter == "none" {
+                continue;
+            }
+            assert!(
+                filterable_kinds()
+                    .any(|kind| should_sign_artifact(kind, filter)
+                        .expect("a listed filter resolves")),
+                "no kind in the overlap universe is selected by '{filter}', so \
+                 an entry carrying it can never be found to overlap",
+            );
+        }
+    }
+
+    /// Two filters overlap when they can name one artifact, and the answer
+    /// is the resolver's rather than a second list of kinds: `windows` and
+    /// `binary` both take a `Binary`, `archive` and `checksum` take nothing
+    /// in common, and `none` meets nothing at all.
+    #[test]
+    fn filters_overlap_exactly_where_the_resolver_agrees() {
+        for (left, right) in [
+            ("all", "archive"),
+            ("archive", "archive"),
+            ("windows", "binary"),
+            ("windows", "installer"),
+            ("all", "checksum"),
+        ] {
+            assert!(
+                sign_filters_can_overlap(left, right),
+                "'{left}' and '{right}' both select at least one kind",
+            );
+        }
+        for (left, right) in [
+            ("archive", "checksum"),
+            ("binary", "archive"),
+            ("none", "all"),
+            ("none", "none"),
+            ("all", "bogus"),
+        ] {
+            assert!(
+                !sign_filters_can_overlap(left, right),
+                "'{left}' and '{right}' select no kind in common",
             );
         }
     }

@@ -1611,6 +1611,17 @@ fn no_asset_name_template_warns_nothing() {
     assert!(warnings.is_empty(), "{warnings:?}");
 }
 
+/// The duplicate-output warning as `check_sign_duplicate_outputs` prints it,
+/// spelled out here so a broken continuation in the production format string
+/// fails a test instead of an operator's terminal.
+fn one_file_warning(first: &str, second: &str, field: &str) -> String {
+    format!(
+        "{first} and {second} resolve one {field} file for the artifacts both \
+         select — the second {field} overwrites the first, so one file ships \
+         where two were configured"
+    )
+}
+
 /// Two `binary_signs:` entries with one `signature:` template sign one file,
 /// and the second `cmd:` overwrites the first's bytes. The asset-name claim
 /// accepts the pair (one name over one file is one release asset), so check
@@ -1633,10 +1644,13 @@ fn two_binary_signs_entries_over_one_file_warn() {
     };
     let mut warnings = Vec::new();
     check_sign_duplicate_outputs(&config, &mut warnings);
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(
-        warnings[0].contains("binary_signs[0] and binary_signs[1] resolve one signature file"),
-        "{warnings:?}"
+    assert_eq!(
+        warnings,
+        vec![one_file_warning(
+            "binary_signs[0]",
+            "binary_signs[1]",
+            "signature"
+        )]
     );
 }
 
@@ -1661,12 +1675,11 @@ fn two_workspace_binary_signs_entries_over_one_file_warn() {
     check_sign_duplicate_outputs(&config, &mut warnings);
     assert_eq!(
         warnings,
-        vec![
-            "workspaces.ws.binary_signs[0] and workspaces.ws.binary_signs[1] resolve one \
-             signature file for the binaries both select — the second signature overwrites \
-             the first, so one file ships where two were configured"
-                .to_string(),
-        ]
+        vec![one_file_warning(
+            "workspaces.ws.binary_signs[0]",
+            "workspaces.ws.binary_signs[1]",
+            "signature"
+        )]
     );
 }
 
@@ -1691,10 +1704,13 @@ fn an_unset_signature_and_its_default_spelling_are_one_file() {
     };
     let mut warnings = Vec::new();
     check_sign_duplicate_outputs(&config, &mut warnings);
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(
-        warnings[0].contains("resolve one signature file"),
-        "{warnings:?}"
+    assert_eq!(
+        warnings,
+        vec![one_file_warning(
+            "binary_signs[0]",
+            "binary_signs[1]",
+            "signature"
+        )]
     );
 }
 
@@ -1717,12 +1733,11 @@ fn two_binary_signs_entries_over_one_certificate_warn() {
     check_sign_duplicate_outputs(&config, &mut warnings);
     assert_eq!(
         warnings,
-        vec![
-            "binary_signs[0] and binary_signs[1] resolve one certificate file for the \
-             binaries both select — the second certificate overwrites the first, so one \
-             file ships where two were configured"
-                .to_string(),
-        ]
+        vec![one_file_warning(
+            "binary_signs[0]",
+            "binary_signs[1]",
+            "certificate"
+        )]
     );
 }
 
@@ -1777,10 +1792,13 @@ fn a_filtered_entry_does_not_renumber_the_labels_after_it() {
     };
     let mut warnings = Vec::new();
     check_sign_duplicate_outputs(&config, &mut warnings);
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(
-        warnings[0].starts_with("binary_signs[1] and binary_signs[2] "),
-        "{warnings:?}"
+    assert_eq!(
+        warnings,
+        vec![one_file_warning(
+            "binary_signs[1]",
+            "binary_signs[2]",
+            "signature"
+        )]
     );
 }
 
@@ -1855,10 +1873,13 @@ fn two_spellings_of_one_signature_path_warn() {
     };
     let mut warnings = Vec::new();
     check_sign_duplicate_outputs(&config, &mut warnings);
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(
-        warnings[0].contains("resolve one signature file"),
-        "{warnings:?}"
+    assert_eq!(
+        warnings,
+        vec![one_file_warning(
+            "binary_signs[0]",
+            "binary_signs[1]",
+            "signature"
+        )]
     );
 
     // `{{ .Artifact }}` expands to the artifact's whole path, which already
@@ -1894,10 +1915,13 @@ fn a_signature_outside_dist_names_the_same_file_as_its_dist_spelling() {
     };
     let mut warnings = Vec::new();
     check_sign_duplicate_outputs(&config, &mut warnings);
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(
-        warnings[0].contains("resolve one signature file"),
-        "{warnings:?}"
+    assert_eq!(
+        warnings,
+        vec![one_file_warning(
+            "binary_signs[0]",
+            "binary_signs[1]",
+            "signature"
+        )]
     );
 
     // A `dist:` the config moved is the one the join uses, so a spelling
@@ -1932,7 +1956,14 @@ fn two_spellings_of_one_templated_signature_path_warn() {
     };
     let mut warnings = Vec::new();
     check_sign_duplicate_outputs(&config, &mut warnings);
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(
+        warnings,
+        vec![one_file_warning(
+            "binary_signs[0]",
+            "binary_signs[1]",
+            "signature"
+        )]
+    );
 
     // Two DIFFERENT placeholders render two names, so the fold must keep
     // them apart.
@@ -1968,10 +1999,13 @@ fn a_templated_signature_outside_dist_names_its_dist_spelling() {
     };
     let mut warnings = Vec::new();
     check_sign_duplicate_outputs(&config, &mut warnings);
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(
-        warnings[0].contains("resolve one signature file"),
-        "{warnings:?}"
+    assert_eq!(
+        warnings,
+        vec![one_file_warning(
+            "binary_signs[0]",
+            "binary_signs[1]",
+            "signature"
+        )]
     );
 
     // Two different placeholders render two names, so the join must not
@@ -2008,7 +2042,15 @@ fn placeholder_spacing_does_not_split_one_template_in_two() {
         };
         let mut warnings = Vec::new();
         check_sign_duplicate_outputs(&config, &mut warnings);
-        assert_eq!(warnings.len(), 1, "{pair:?}: {warnings:?}");
+        assert_eq!(
+            warnings,
+            vec![one_file_warning(
+                "binary_signs[0]",
+                "binary_signs[1]",
+                "signature"
+            )],
+            "{pair:?}"
+        );
     }
 }
 
@@ -2029,7 +2071,14 @@ fn an_unterminated_placeholder_is_opaque_to_the_end() {
     };
     let mut warnings = Vec::new();
     check_sign_duplicate_outputs(&config, &mut warnings);
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(
+        warnings,
+        vec![one_file_warning(
+            "binary_signs[0]",
+            "binary_signs[1]",
+            "signature"
+        )]
+    );
 
     let climbing = Config {
         binary_signs: vec![entry("dist/{{ Version/../app.sig"), entry("dist/app.sig")],
@@ -2058,7 +2107,9 @@ fn a_spelling_that_renders_a_path_is_compared_without_the_dist_join() {
         ["${artifact}.sig", "dist/${artifact}.sig"],
         ["$artifact.sig", "dist/$artifact.sig"],
         ["${signature}.asc", "dist/${signature}.asc"],
+        ["$signature.asc", "dist/$signature.asc"],
         ["${certificate}.pem", "dist/${certificate}.pem"],
+        ["$certificate.pem", "dist/$certificate.pem"],
         // A variable the operator points wherever they like.
         [
             "{{ .Env.SIG_DIR }}/app.sig",
@@ -2084,6 +2135,30 @@ fn a_spelling_that_renders_a_path_is_compared_without_the_dist_join() {
         assert!(warnings.is_empty(), "{pair:?}: {warnings:?}");
     }
 
+    // `$artifactName` and `$artifactID` are variables of those names, each
+    // expanding to a NAME, so a prefix match on `$artifact` must not read
+    // them as paths and skip the join.
+    for pair in [
+        ["$artifactName.sig", "dist/$artifactName.sig"],
+        ["$artifactID.sig", "dist/$artifactID.sig"],
+    ] {
+        let config = Config {
+            binary_signs: vec![entry(pair[0]), entry(pair[1])],
+            ..Default::default()
+        };
+        let mut warnings = Vec::new();
+        check_sign_duplicate_outputs(&config, &mut warnings);
+        assert_eq!(
+            warnings,
+            vec![one_file_warning(
+                "binary_signs[0]",
+                "binary_signs[1]",
+                "signature"
+            )],
+            "{pair:?}"
+        );
+    }
+
     // Only the bounded name-only variables keep the join, so the pair the
     // check really is about still warns.
     let bounded = Config {
@@ -2095,7 +2170,14 @@ fn a_spelling_that_renders_a_path_is_compared_without_the_dist_join() {
     };
     let mut warnings = Vec::new();
     check_sign_duplicate_outputs(&bounded, &mut warnings);
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(
+        warnings,
+        vec![one_file_warning(
+            "binary_signs[0]",
+            "binary_signs[1]",
+            "signature"
+        )]
+    );
 }
 
 /// A `}}` inside a quoted literal closes the run early, so the tail it
@@ -2118,7 +2200,14 @@ fn a_placeholder_closed_by_a_quoted_brace_leaves_its_tail_unmasked() {
     };
     let mut warnings = Vec::new();
     check_sign_duplicate_outputs(&config, &mut warnings);
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(
+        warnings,
+        vec![one_file_warning(
+            "binary_signs[0]",
+            "binary_signs[1]",
+            "signature"
+        )]
+    );
 }
 
 /// `signs:` entries overwrite each other exactly as `binary_signs:` entries
@@ -2128,6 +2217,7 @@ fn two_signs_entries_resolving_one_file_warn() {
     use anodizer_core::config::SignConfig;
     let entry = |signature: &str| SignConfig {
         cmd: Some("cosign".to_string()),
+        artifacts: Some("all".to_string()),
         signature: Some(signature.to_string()),
         ..Default::default()
     };
@@ -2137,25 +2227,269 @@ fn two_signs_entries_resolving_one_file_warn() {
     };
     let mut warnings = Vec::new();
     check_sign_duplicate_outputs(&config, &mut warnings);
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(
-        warnings[0].starts_with("signs[0] and signs[1]"),
-        "{warnings:?}"
+    assert_eq!(
+        warnings,
+        vec![one_file_warning("signs[0]", "signs[1]", "signature")]
+    );
+}
+
+/// The repo's own documented multi-signer config signs two disjoint kinds,
+/// so neither entry can overwrite the other's output however they name it.
+/// `signs:` resolves an absent `artifacts:` to `none`, which selects nothing
+/// at all, so a pair that sets no filter is quiet for the same reason.
+#[test]
+fn sign_entries_selecting_disjoint_artifact_kinds_warn_nothing() {
+    use anodizer_core::config::SignConfig;
+    let entry = |artifacts: Option<&str>, cmd: &str| SignConfig {
+        artifacts: artifacts.map(str::to_string),
+        cmd: Some(cmd.to_string()),
+        args: Some(vec!["${signature}".to_string(), "${artifact}".to_string()]),
+        ..Default::default()
+    };
+    for pair in [
+        // docs/site/content/docs/sign/binaries-archives.md, "Multiple
+        // signing configs".
+        vec![
+            entry(Some("archive"), "gpg"),
+            entry(Some("checksum"), "cosign"),
+        ],
+        vec![entry(None, "gpg"), entry(None, "cosign")],
+    ] {
+        let config = Config {
+            signs: pair,
+            ..Default::default()
+        };
+        let mut warnings = Vec::new();
+        check_sign_duplicate_outputs(&config, &mut warnings);
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    // The same two entries under a filter that takes every kind really do
+    // overwrite each other.
+    let both = Config {
+        signs: vec![entry(Some("all"), "gpg"), entry(Some("all"), "cosign")],
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_sign_duplicate_outputs(&both, &mut warnings);
+    assert_eq!(
+        warnings,
+        vec![one_file_warning("signs[0]", "signs[1]", "signature")]
+    );
+}
+
+/// `binary_signs:` resolves an absent `artifacts:` to `binary`, so two
+/// entries that set no filter still meet — the default of that slice is not
+/// the default of `signs:`.
+#[test]
+fn the_artifacts_term_reads_each_slices_own_default() {
+    use anodizer_core::config::SignConfig;
+    let entry = |cmd: &str| SignConfig {
+        cmd: Some(cmd.to_string()),
+        ..Default::default()
+    };
+    let config = Config {
+        binary_signs: vec![entry("cosign"), entry("gpg")],
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_sign_duplicate_outputs(&config, &mut warnings);
+    assert_eq!(
+        warnings,
+        vec![one_file_warning(
+            "binary_signs[0]",
+            "binary_signs[1]",
+            "signature"
+        )]
+    );
+
+    // `windows` and `binary` both take a `Binary`, so an Authenticode-shaped
+    // filter still meets the slice default.
+    let windows = Config {
+        binary_signs: vec![
+            SignConfig {
+                artifacts: Some("windows".to_string()),
+                ..entry("osslsigncode")
+            },
+            entry("gpg"),
+        ],
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_sign_duplicate_outputs(&windows, &mut warnings);
+    assert_eq!(
+        warnings,
+        vec![one_file_warning(
+            "binary_signs[0]",
+            "binary_signs[1]",
+            "signature"
+        )]
     );
 }
 
 /// An unpadded `{{.Artifact}}` is substituted by nothing and reaches the
 /// template engine as an undefined variable, so it can only fail the run.
+/// Every other padding of the same name fails identically, because the
+/// substitution is by exact literal.
 #[test]
-fn an_unpadded_literal_placeholder_warns() {
+fn a_mis_padded_literal_placeholder_warns() {
+    use anodizer_core::config::SignConfig;
+    for spelling in [
+        "{{.Artifact}}",
+        "{{Artifact}}",
+        "{{ .Artifact}}",
+        "{{.Artifact }}",
+        "{{  .Artifact  }}",
+        "{{ Artifact}}",
+    ] {
+        let config = Config {
+            binary_signs: vec![SignConfig {
+                signature: Some(format!("{spelling}.sig")),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut warnings = Vec::new();
+        check_unpadded_sign_placeholders(&config, &mut warnings);
+        assert_eq!(
+            warnings,
+            vec![format!(
+                "binary_signs[0].signature names `{spelling}`, which anodizer \
+                 substitutes only as `{{{{ .Artifact }}}}` or \
+                 `{{{{ Artifact }}}}` — any other padding reaches the template \
+                 engine as an undefined variable and fails the sign stage"
+            )]
+        );
+    }
+
+    // The two spellings the stage really does substitute warn nothing.
+    for spelling in ["{{ .Artifact }}", "{{ Artifact }}"] {
+        let config = Config {
+            binary_signs: vec![SignConfig {
+                signature: Some(format!("{spelling}.sig")),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut warnings = Vec::new();
+        check_unpadded_sign_placeholders(&config, &mut warnings);
+        assert!(warnings.is_empty(), "{spelling}: {warnings:?}");
+    }
+}
+
+/// `signature:` and `certificate:` are what the signature and certificate
+/// paths are derived FROM, so those two names have no value there in any
+/// padding — and the remedy the warning gives has to be a spelling that
+/// works, which is the shell-style one the stage expands after the render.
+#[test]
+fn a_placeholder_the_field_never_substitutes_warns_in_every_padding() {
+    use anodizer_core::config::SignConfig;
+    for (field, spelling, name, shell) in [
+        ("signature", "{{ .Signature }}", "Signature", "signature"),
+        ("signature", "{{.Signature}}", "Signature", "signature"),
+        (
+            "certificate",
+            "{{ Certificate }}",
+            "Certificate",
+            "certificate",
+        ),
+    ] {
+        let mut cfg = SignConfig::default();
+        match field {
+            "signature" => cfg.signature = Some(format!("{spelling}.x")),
+            _ => cfg.certificate = Some(format!("{spelling}.x")),
+        }
+        let config = Config {
+            binary_signs: vec![cfg],
+            ..Default::default()
+        };
+        let mut warnings = Vec::new();
+        check_unpadded_sign_placeholders(&config, &mut warnings);
+        assert_eq!(
+            warnings,
+            vec![format!(
+                "binary_signs[0].{field} names `{spelling}`, which anodizer \
+                 does not substitute in {field}: — it reaches the template \
+                 engine as an undefined variable and fails the sign stage; \
+                 write `${{{shell}}}`, which the sign stage expands after the \
+                 render"
+            )],
+            "{name} in {field}"
+        );
+    }
+}
+
+/// `args:` substitutes all three names, so only the padding is wrong there.
+#[test]
+fn an_args_template_substitutes_every_placeholder_name() {
+    use anodizer_core::config::SignConfig;
+    let config = Config {
+        binary_signs: vec![SignConfig {
+            args: Some(vec![
+                "{{ .Signature }}".to_string(),
+                "{{ Certificate }}".to_string(),
+                "{{.Signature}}".to_string(),
+            ]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_unpadded_sign_placeholders(&config, &mut warnings);
+    assert_eq!(
+        warnings,
+        vec![
+            "binary_signs[0].args names `{{.Signature}}`, which anodizer \
+             substitutes only as `{{ .Signature }}` or `{{ Signature }}` — any \
+             other padding reaches the template engine as an undefined \
+             variable and fails the sign stage"
+                .to_string(),
+        ]
+    );
+}
+
+/// `stdin:` is handed to the template engine raw, so every one of the three
+/// names fails there in either padding. A `signs:` entry can still reach the
+/// value through the shell-style spelling; a `docker_signs:` entry's stdin
+/// is not shell-expanded, so the warning offers no remedy it cannot keep.
+#[test]
+fn a_stdin_template_substitutes_no_placeholder() {
     use anodizer_core::config::{DockerSignConfig, SignConfig};
     let config = Config {
         binary_signs: vec![SignConfig {
-            signature: Some("{{.Artifact}}.sig".to_string()),
-            certificate: Some("{{Artifact}}.pem".to_string()),
-            args: Some(vec!["sign".to_string(), "{{.Signature}}".to_string()]),
+            stdin: Some("{{ .Artifact }}".to_string()),
             ..Default::default()
         }],
+        docker_signs: Some(vec![DockerSignConfig {
+            stdin: Some("{{ Signature }}".to_string()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_unpadded_sign_placeholders(&config, &mut warnings);
+    assert_eq!(
+        warnings,
+        vec![
+            "binary_signs[0].stdin names `{{ .Artifact }}`, which anodizer does \
+             not substitute in stdin: — it reaches the template engine as an \
+             undefined variable and fails the sign stage; write `${artifact}`, \
+             which the sign stage expands after the render"
+                .to_string(),
+            "docker_signs[0].stdin names `{{ Signature }}`, which anodizer does \
+             not substitute in stdin: — it reaches the template engine as an \
+             undefined variable and fails the sign stage"
+                .to_string(),
+        ]
+    );
+}
+
+/// The `docker_signs:` argv is substituted the same three ways as a sign
+/// entry's, so a mis-padded name warns there too.
+#[test]
+fn a_docker_args_placeholder_warns_on_its_padding() {
+    use anodizer_core::config::DockerSignConfig;
+    let config = Config {
         docker_signs: Some(vec![DockerSignConfig {
             args: Some(vec!["{{.Certificate}}".to_string()]),
             ..Default::default()
@@ -2164,33 +2498,226 @@ fn an_unpadded_literal_placeholder_warns() {
     };
     let mut warnings = Vec::new();
     check_unpadded_sign_placeholders(&config, &mut warnings);
-    assert_eq!(warnings.len(), 4, "{warnings:?}");
-    assert!(
-        warnings
-            .iter()
-            .any(|w| w.starts_with("binary_signs[0].signature names `{{.Artifact}}`")),
-        "{warnings:?}"
+    assert_eq!(
+        warnings,
+        vec![
+            "docker_signs[0].args names `{{.Certificate}}`, which anodizer \
+             substitutes only as `{{ .Certificate }}` or `{{ Certificate }}` — \
+             any other padding reaches the template engine as an undefined \
+             variable and fails the sign stage"
+                .to_string(),
+        ]
     );
-    assert!(
-        warnings
-            .iter()
-            .any(|w| w.starts_with("docker_signs[0].args names `{{.Certificate}}`")),
-        "{warnings:?}"
-    );
+}
 
-    // The padded spellings are the ones anodizer substitutes; they warn
-    // nothing.
-    let padded = Config {
-        binary_signs: vec![SignConfig {
-            signature: Some("{{ .Artifact }}.sig".to_string()),
-            args: Some(vec!["{{ Signature }}".to_string()]),
+/// A slice the `defaults:` fold filled holds an entry the operator never
+/// wrote, so every check that names a block names the `defaults.` one.
+#[test]
+fn a_defaults_filled_sign_slice_is_named_as_the_defaults_block() {
+    use anodizer_core::config::{Defaults, DockerSignConfig, SignConfig};
+    let mut config = Config {
+        project_name: "test".to_string(),
+        defaults: Some(Defaults {
+            sign: Some(SignConfig {
+                args: Some(vec!["{{.Artifact}}".to_string()]),
+                artifacts: Some("bogus".to_string()),
+                ..Default::default()
+            }),
+            binary_signs: Some(SignConfig {
+                stdin: Some("{{ Signature }}".to_string()),
+                ..Default::default()
+            }),
+            docker_signs: Some(DockerSignConfig {
+                args: Some(vec!["{{Artifact}}".to_string()]),
+                ..Default::default()
+            }),
             ..Default::default()
-        }],
+        }),
         ..Default::default()
     };
-    let mut none = Vec::new();
-    check_unpadded_sign_placeholders(&padded, &mut none);
-    assert!(none.is_empty(), "{none:?}");
+    anodizer_core::defaults_merge::apply_defaults(&mut config);
+
+    let mut warnings = Vec::new();
+    check_unpadded_sign_placeholders(&config, &mut warnings);
+    assert_eq!(
+        warnings,
+        vec![
+            "defaults.sign.args names `{{.Artifact}}`, which anodizer \
+             substitutes only as `{{ .Artifact }}` or `{{ Artifact }}` — any \
+             other padding reaches the template engine as an undefined \
+             variable and fails the sign stage"
+                .to_string(),
+            "defaults.binary_signs.stdin names `{{ Signature }}`, which \
+             anodizer does not substitute in stdin: — it reaches the template \
+             engine as an undefined variable and fails the sign stage; write \
+             `${signature}`, which the sign stage expands after the render"
+                .to_string(),
+            "defaults.docker_signs.args names `{{Artifact}}`, which anodizer \
+             substitutes only as `{{ .Artifact }}` or `{{ Artifact }}` — any \
+             other padding reaches the template engine as an undefined \
+             variable and fails the sign stage"
+                .to_string(),
+        ]
+    );
+
+    let mut warnings = Vec::new();
+    check_sign_artifact_filters(&config, &mut warnings);
+    assert_eq!(
+        warnings,
+        vec![format!(
+            "unrecognized defaults.sign artifacts filter 'bogus' (valid: {})",
+            anodizer_stage_sign::VALID_SIGN_ARTIFACT_FILTERS.join(", ")
+        )]
+    );
+}
+
+/// Every double-quoted string literal in `src`, with `\`-newline
+/// continuations resolved the way rustc resolves them: the escape eats the
+/// newline and the indentation after it, so what is left is the text a
+/// message really carries.
+fn message_literals(src: &str) -> Vec<String> {
+    let chars: Vec<char> = src.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        // A `//` comment can hold an unbalanced quote.
+        if chars[i] == '/' && chars.get(i + 1) == Some(&'/') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // A raw string processes no escape, so it is read to its own
+        // terminator rather than through the escape rules below.
+        if chars[i] == 'r' {
+            let mut j = i + 1;
+            while chars.get(j) == Some(&'#') {
+                j += 1;
+            }
+            if chars.get(j) == Some(&'"') {
+                let hashes = j - i - 1;
+                let mut k = j + 1;
+                loop {
+                    match chars.get(k) {
+                        None => break,
+                        Some('"') if chars[k + 1..k + 1 + hashes].iter().all(|c| *c == '#') => {
+                            break;
+                        }
+                        Some(_) => k += 1,
+                    }
+                }
+                out.push(chars[j + 1..k.min(chars.len())].iter().collect());
+                i = (k + 1 + hashes).min(chars.len());
+                continue;
+            }
+        }
+        if chars[i] != '"' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        let mut literal = String::new();
+        while i < chars.len() && chars[i] != '"' {
+            if chars[i] == '\\' {
+                i += 1;
+                match chars.get(i) {
+                    Some('\n') => {
+                        i += 1;
+                        while matches!(chars.get(i), Some(' ') | Some('\t')) {
+                            i += 1;
+                        }
+                    }
+                    Some(_) => i += 1,
+                    None => break,
+                }
+                continue;
+            }
+            literal.push(chars[i]);
+            i += 1;
+        }
+        i += 1;
+        out.push(literal);
+    }
+    out
+}
+
+/// A format string broken across source lines needs a `\` continuation: the
+/// escape eats the newline AND the indentation after it. Written without
+/// one, that indentation goes into the message, and `check config` prints a
+/// single 300-column line carrying 26-space runs — which every assertion
+/// shaped like `starts_with(…)` reads straight past.
+///
+/// So no message this module builds may carry a run of three spaces.
+#[test]
+fn no_check_config_message_carries_a_run_of_spaces() {
+    use anodizer_core::test_helpers::test_sources::{function_bodies, production_half};
+
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/commands/check/config/content.rs"
+    );
+    let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let building: Vec<String> = function_bodies(production_half(&src))
+        .into_iter()
+        .filter(|body| body.contains("format!("))
+        .collect();
+    assert!(
+        building.len() > 10,
+        "the walk found only {} message-building bodies in content.rs, so it \
+         is asking its question of almost nothing",
+        building.len()
+    );
+    let offenders: Vec<String> = building
+        .iter()
+        .flat_map(|body| message_literals(body))
+        .filter(|literal| literal.contains("   "))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "a message literal carries a run of three or more spaces, so its line \
+         continuation is missing and the warning prints this file's own \
+         indentation: {offenders:?}"
+    );
+}
+
+/// The filter check walks every sign slice, so an unrecognized value on
+/// `binary_signs:` or on a per-crate slice is caught too.
+#[test]
+fn an_unrecognized_filter_warns_on_every_sign_slice() {
+    use anodizer_core::config::{SignConfig, WorkspaceConfig};
+    let bogus = || {
+        vec![SignConfig {
+            artifacts: Some("bogus".to_string()),
+            ..Default::default()
+        }]
+    };
+    let config = Config {
+        project_name: "test".to_string(),
+        binary_signs: bogus(),
+        workspaces: Some(vec![WorkspaceConfig {
+            name: "ws".to_string(),
+            signs: bogus(),
+            binary_signs: bogus(),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_sign_artifact_filters(&config, &mut warnings);
+    let valid = anodizer_stage_sign::VALID_SIGN_ARTIFACT_FILTERS.join(", ");
+    assert_eq!(
+        warnings,
+        vec![
+            format!("unrecognized binary_signs[0] artifacts filter 'bogus' (valid: {valid})"),
+            format!(
+                "unrecognized workspaces.ws.signs[0] artifacts filter 'bogus' (valid: {valid})"
+            ),
+            format!(
+                "unrecognized workspaces.ws.binary_signs[0] artifacts filter 'bogus' \
+                 (valid: {valid})"
+            ),
+        ]
+    );
 }
 
 /// Two entries whose `signature:` templates differ write two files, and two
