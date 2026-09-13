@@ -433,15 +433,15 @@ fn writes_detached_outputs(cfg: &anodizer_core::config::SignConfig) -> bool {
 /// segments AROUND it fold as the components they are. Without that a
 /// `{{ printf "a/b" }}` would split into two components and a `..` beside it
 /// would climb into the placeholder's own text. The padding just inside the
-/// braces is trimmed as well, so `{{ .Artifact }}` and `{{.Artifact}}` —
-/// which render identically — are one placeholder.
+/// braces is trimmed as well, so `{{ Version }}` and `{{Version}}` — which
+/// render identically — are one placeholder.
 ///
 /// The scan is not a template parser, and two malformed spellings answer
-/// conservatively rather than correctly: an unterminated `{{` masks to the
-/// end of the string, and a `}}` inside a quoted literal
-/// (`{{ printf "}}" }}`) closes the run early and leaves the tail unmasked.
-/// Either way two spellings that differ only there compare as two files,
-/// which is the direction a missed advisory warning lies in.
+/// approximately. An unterminated `{{` masks to the end of the string, so
+/// two spellings differing anywhere after it read as two files — the
+/// direction a missed advisory warning lies in. A `}}` inside a quoted
+/// literal (`{{ printf "}}" }}`) closes the run early instead, which leaves
+/// the tail unmasked and its separators read as real path components.
 fn mask_placeholder_separators(template: &str) -> String {
     const OPAQUE: char = '\u{1}';
     let hide = |run: &str| -> String {
@@ -474,22 +474,81 @@ fn mask_placeholder_separators(template: &str) -> String {
     masked
 }
 
+/// Spellings whose expansion is a whole PATH the run resolves, not a name.
+///
+/// `{{ .Artifact }}` is substituted before the render
+/// (`stage-sign::helpers::resolve_signature_path`) and the `${…}` forms
+/// after it (`expand_shell_vars`), and each one already carries `dist`. The
+/// `{{ … }}` entries are written without padding because they are asked of
+/// text `mask_placeholder_separators` has already trimmed.
+const PATH_CARRYING_SPELLINGS: &[&str] = &[
+    "{{.Artifact}}",
+    "{{Artifact}}",
+    "${artifact}",
+    "$artifact",
+    "${signature}",
+    "${certificate}",
+];
+
+/// The variables a rendered spelling can be bounded by: the name-only ones
+/// the sign and archive stages seed.
+///
+/// Every other `{{ … }}` run — an `.Env.` lookup, a `Var.` reference, a
+/// function call, a filter — renders a value only the run knows, and that
+/// value can be a separator or an absolute path.
+const BOUNDED_VARIABLES: &[&str] = &[
+    "ProjectName",
+    "Version",
+    "Binary",
+    "Target",
+    "Os",
+    "Arch",
+    "Arm",
+    "Amd64",
+    "Mips",
+    "Tag",
+];
+
+/// Whether `masked` holds a spelling whose rendering this check cannot bound.
+///
+/// Asked of masked text, so a placeholder's padding is already gone. A run
+/// holding anything but a bare bounded variable is unbounded, which is the
+/// conservative answer: an unbounded pair is compared without the `dist`
+/// join and so reads as two files, the direction a missed advisory warning
+/// lies in.
+fn renders_an_unbounded_path(masked: &str) -> bool {
+    if PATH_CARRYING_SPELLINGS.iter().any(|s| masked.contains(s)) {
+        return true;
+    }
+    let mut rest = masked;
+    while let Some(open) = rest.find("{{") {
+        let tail = &rest[open + 2..];
+        let (inner, next) = match tail.find("}}") {
+            Some(close) => (&tail[..close], &tail[close + 2..]),
+            None => (tail, ""),
+        };
+        if !BOUNDED_VARIABLES.contains(&inner.trim_start_matches('.')) {
+            return true;
+        }
+        rest = next;
+    }
+    false
+}
+
 /// Whether two rendered-output templates name one file.
 ///
 /// Each spelling is placed under `dist` the way the sign stage places it
 /// (`sign_outputs_are_one_file`), so `app.sig` and `dist/app.sig` are one
-/// file here exactly as they are there. A template still holding `{{`
-/// renders to a value only the run knows, so it is asked as a path whose
-/// placeholders are opaque components: the `.` and `..` in the literal
-/// segments around an identical placeholder fold away, and two different
-/// placeholders stay two files.
+/// file here exactly as they are there.
 ///
-/// `{{ .Artifact }}` is the one placeholder that expands to a whole PATH
-/// rather than a name, and that path already carries `dist`. Joining `dist`
-/// onto a spelling holding it would call `{{ .Artifact }}.sig` and
-/// `dist/{{ .Artifact }}.sig` one file where the run writes `dist/app.sig`
-/// and `dist/dist/app.sig`, so such a pair is folded and compared without
-/// the join.
+/// A spelling whose rendering this check cannot bound is compared WITHOUT
+/// that join, as a path whose `{{ … }}` runs are opaque components: the `.`
+/// and `..` in the literal segments around an identical placeholder fold
+/// away, and two different placeholders stay two files. Joining `dist` onto
+/// a spelling that renders a path of its own would call `${artifact}.sig`
+/// and `dist/${artifact}.sig` one file where the run writes `dist/app.sig`
+/// and `dist/dist/app.sig`. `PATH_CARRYING_SPELLINGS` and
+/// `BOUNDED_VARIABLES` are the whole derivation of "unbounded".
 ///
 /// The `dist` asked about is the configured one. `anodizer build --dist
 /// <path>` moves it at build time, so a run passing that flag places these
@@ -502,31 +561,46 @@ fn same_output_file(dist: &std::path::Path, left: &str, right: &str) -> bool {
         mask_placeholder_separators(left),
         mask_placeholder_separators(right),
     );
-    let carries_a_path = |t: &str| t.contains("{{.Artifact}}") || t.contains("{{Artifact}}");
-    if carries_a_path(&left) || carries_a_path(&right) {
+    if renders_an_unbounded_path(&left) || renders_an_unbounded_path(&right) {
         let fold = |t: &str| anodizer_core::util::fold_dot_components(std::path::Path::new(t));
         return fold(&left) == fold(&right);
     }
     anodizer_stage_sign::sign_outputs_are_one_file(dist, &left, &right)
 }
 
-/// Warn when two `binary_signs:` entries resolve one output FILE.
+/// Every sign slice an operator can write, labelled as they wrote it.
 ///
-/// Both render the same path for any binary both select, so the second
-/// `cmd:` overwrites the first's bytes and one signature ships where two were
-/// configured. The asset-name claim accepts the pair — one name over one file
-/// IS one release asset — so nothing on the sign path says anything.
-pub(super) fn check_binary_sign_duplicate_outputs(config: &Config, warnings: &mut Vec<String>) {
-    let mut slices: Vec<(String, &Vec<anodizer_core::config::SignConfig>)> =
-        vec![("binary_signs".to_string(), &config.binary_signs)];
+/// `signs:` and `binary_signs:` hold the same `SignConfig`, resolve their
+/// outputs through the same `resolve_output_paths` and write under the same
+/// `dist`, so a check about how two entries' outputs collide asks both.
+fn sign_slices(config: &Config) -> Vec<(String, &Vec<anodizer_core::config::SignConfig>)> {
+    let mut slices: Vec<(String, &Vec<anodizer_core::config::SignConfig>)> = vec![
+        ("signs".to_string(), &config.signs),
+        ("binary_signs".to_string(), &config.binary_signs),
+    ];
     for ws in config.workspaces.iter().flatten() {
+        slices.push((format!("workspaces.{}.signs", ws.name), &ws.signs));
         slices.push((
             format!("workspaces.{}.binary_signs", ws.name),
             &ws.binary_signs,
         ));
     }
-    let default = anodizer_core::config::SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE;
-    for (label, configs) in slices {
+    slices
+}
+
+/// Warn when two entries of one sign slice resolve one output FILE.
+///
+/// Both render the same path for any artifact both select, so the second
+/// `cmd:` overwrites the first's bytes and one signature ships where two were
+/// configured. The asset-name claim accepts the pair — one name over one file
+/// IS one release asset — so nothing on the sign path says anything.
+pub(super) fn check_sign_duplicate_outputs(config: &Config, warnings: &mut Vec<String>) {
+    for (label, configs) in sign_slices(config) {
+        let default = if label.ends_with("binary_signs") {
+            anodizer_core::config::SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE
+        } else {
+            anodizer_core::config::SignConfig::DEFAULT_SIGNATURE_TEMPLATE
+        };
         // The index is the one the operator wrote, so a filtered-out entry
         // does not renumber the labels of the entries after it.
         let writing: Vec<(usize, &anodizer_core::config::SignConfig)> = configs
@@ -571,6 +645,50 @@ pub(super) fn check_binary_sign_duplicate_outputs(config: &Config, warnings: &mu
                     ));
                 }
             }
+        }
+    }
+}
+
+/// Placeholders anodizer substitutes by exact, single-spaced literal before
+/// a sign template reaches Tera (`stage-sign::helpers`).
+const LITERAL_SIGN_PLACEHOLDERS: &[&str] = &["Artifact", "Signature", "Certificate"];
+
+/// Warn when a sign template names one of those placeholders unpadded.
+///
+/// The substitution matches `{{ .Artifact }}` and `{{ Artifact }}` only, so
+/// `{{.Artifact}}` survives it, reaches Tera as the undefined variable
+/// `Artifact` and hard-errors the sign stage. There is no spelling of the
+/// config in which the unpadded form works.
+pub(super) fn check_unpadded_sign_placeholders(config: &Config, warnings: &mut Vec<String>) {
+    let mut warn = |label: &str, idx: usize, field: &str, template: &str| {
+        for name in LITERAL_SIGN_PLACEHOLDERS {
+            for spelling in [format!("{{{{.{name}}}}}"), format!("{{{{{name}}}}}")] {
+                if template.contains(&spelling) {
+                    warnings.push(format!(
+                        "{label}[{idx}].{field} names `{spelling}`, which                          anodizer substitutes only as `{{{{ .{name} }}}}` —                          the unpadded spelling reaches the template engine                          as an undefined variable and fails the sign stage"
+                    ));
+                }
+            }
+        }
+    };
+    for (label, configs) in sign_slices(config) {
+        for (idx, cfg) in configs.iter().enumerate() {
+            for (field, template) in [
+                ("signature", cfg.signature.as_deref()),
+                ("certificate", cfg.certificate.as_deref()),
+            ] {
+                if let Some(template) = template {
+                    warn(&label, idx, field, template);
+                }
+            }
+            for arg in cfg.args.iter().flatten() {
+                warn(&label, idx, "args", arg);
+            }
+        }
+    }
+    for (idx, cfg) in config.docker_signs.iter().flatten().enumerate() {
+        for arg in cfg.args.iter().flatten() {
+            warn("docker_signs", idx, "args", arg);
         }
     }
 }
