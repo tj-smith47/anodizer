@@ -632,21 +632,26 @@ pub(crate) fn publish_with_oidc_fallback(
     first
 }
 
-/// The `npm_config_*` key fragments that can re-introduce a credential,
-/// redirect npm at another config file, or change which registry certificate
-/// it trusts. npm reads `npm_config_<key>` from the environment at a HIGHER
-/// precedence than the `--userconfig` file, so an ambient one silently
-/// outranks the credential this publish chose.
+/// The `npm_config_*` key fragments that can re-introduce a credential. npm
+/// reads `npm_config_<key>` from the environment at a HIGHER precedence than
+/// the `--userconfig` file, so an ambient one silently outranks the credential
+/// this publish chose.
+///
 /// A credential can be embedded in a registry-scoped key
 /// (`//registry.npmjs.org/:_authToken`), so these match anywhere in the key.
-/// `cert` and `key` are the two halves of one client certificate.
-const NPM_CONFIG_CREDENTIAL_FRAGMENTS: [&str; 4] = ["auth", "token", "cert", "key"];
+/// `cert` and `key` are the two halves of one client certificate, `username`
+/// and `password` the two halves of one legacy basic-auth login, and `cafile`
+/// names the certificate authority npm trusts for the registry.
+const NPM_CONFIG_CREDENTIAL_FRAGMENTS: [&str; 7] = [
+    "auth", "token", "cert", "key", "username", "password", "cafile",
+];
 
-/// Keys that redirect npm at another config file, or decide which registry
-/// certificate is trusted (`ca` inline, `cafile` by path). Matched whole:
-/// `ca` as a fragment would also take `npm_config_cache`, a directory setting
-/// that carries nothing.
-const NPM_CONFIG_REDIRECT_KEYS: [&str; 4] = ["userconfig", "globalconfig", "ca", "cafile"];
+/// Keys that redirect npm at another config file, or inline the certificate
+/// authority it trusts (`ca`). Matched whole: `ca` as a fragment would also
+/// take `npm_config_cache`, a directory setting that carries nothing.
+/// `cafile` has no such collision and is a fragment above, so a
+/// registry-scoped `//registry/:cafile` is caught too.
+const NPM_CONFIG_REDIRECT_KEYS: [&str; 3] = ["userconfig", "globalconfig", "ca"];
 
 /// Whether `name` is an `npm_config_*` variable that carries a credential or
 /// points npm at another config file. Case-insensitive in both halves: npm
@@ -889,7 +894,10 @@ mod npm_command_pin {
     };
 
     /// Every npm subprocess of this crate is built by [`super::npm_command`],
-    /// and every npm argv vector by [`super::npm_config_flags`]. The `.npmrc`
+    /// and every npm argv vector by [`super::npm_config_flags`] — in either
+    /// spelling that names the program, since an argv is a plain
+    /// `Vec<String>` and one literal form is not the only way to open it.
+    /// The `.npmrc`
     /// this run wrote, the registry it is talking to and the ambient
     /// `npm_config_*` credential variables npm ranks above both are one
     /// decision; a second spawn site answered it differently and probed one
@@ -900,8 +908,8 @@ mod npm_command_pin {
         let mut literal = Vec::new();
         let mut unstripped = Vec::new();
         let mut unflagged = Vec::new();
+        let mut argv_builders = Vec::new();
         let mut spawners = 0usize;
-        let mut argv_builders = 0usize;
         for source in rust_sources(src) {
             let text = std::fs::read_to_string(&source).expect("read source");
             for body in function_bodies(production_half(&text)) {
@@ -913,8 +921,10 @@ mod npm_command_pin {
                 // An argv vector opening with the npm program is the other
                 // shape an npm invocation takes; it must carry the same two
                 // flags, or it reads the developer's own `~/.npmrc`.
-                if body.contains(r#"vec!["npm".to_string()]"#) {
-                    argv_builders += 1;
+                let names_npm_program =
+                    body.contains(r#"vec!["npm""#) || body.contains(r#"push("npm""#);
+                if names_npm_program {
+                    argv_builders.push(name.clone());
                     if !body.contains("npm_config_flags(") {
                         unflagged.push(name.clone());
                     }
@@ -932,9 +942,10 @@ mod npm_command_pin {
             }
         }
         assert_eq!(
-            argv_builders, 3,
+            argv_builders.len(),
+            3,
             "promotion builds three npm argv vectors; a new one must say \
-             which config file and registry it names: {unflagged:?}"
+             which config file and registry it names: {argv_builders:?}"
         );
         assert!(
             unflagged.is_empty(),

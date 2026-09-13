@@ -2859,6 +2859,13 @@ fn npm_config_credential_vars_are_classified_by_key_not_by_case() {
         "NPM_CONFIG_CA",
         "npm_config_ca",
         "npm_config_cafile",
+        // The registry-scoped spellings of the same settings: a complete
+        // basic-auth login, and the CA the scoped registry is trusted by.
+        "npm_config_//registry.npmjs.org/:username",
+        "npm_config_//registry.npmjs.org/:_password",
+        "npm_config_//registry.npmjs.org/:cafile",
+        "npm_config_//registry.npmjs.org/:certfile",
+        "npm_config_//registry.npmjs.org/:keyfile",
     ] {
         assert!(
             is_npm_config_credential_var(name),
