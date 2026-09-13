@@ -3052,7 +3052,8 @@ fn a_docker_shell_variable_warns_that_it_is_never_expanded() {
 
 /// `${digest}` and `${artifactID}` expand nowhere either — the docker path
 /// seeds those two as TEMPLATE variables — so each is warned about with the
-/// spelling that renders instead of the one that is substituted.
+/// spelling that renders instead of the one that is substituted, on `stdin:`
+/// as well as on `args:` because `stdin:` is rendered too.
 #[test]
 fn a_docker_digest_shell_variable_warns_with_the_template_spelling() {
     use anodizer_core::config::DockerSignConfig;
@@ -3063,6 +3064,7 @@ fn a_docker_digest_shell_variable_warns_with_the_template_spelling() {
                 "${artifact}@${digest}".to_string(),
                 "--annotation=id=$artifactID".to_string(),
             ]),
+            stdin: Some("${digest}".to_string()),
             ..Default::default()
         }]),
         ..Default::default()
@@ -3086,6 +3088,11 @@ fn a_docker_digest_shell_variable_warns_with_the_template_spelling() {
              path never expands — it reaches the signing command as that \
              literal text; write `{{ .ArtifactID }}`, which the docker sign \
              path renders from the image"
+                .to_string(),
+            "docker_signs[0].stdin names `${digest}`, which the docker sign \
+             path never expands — it reaches the signing command as that \
+             literal text; write `{{ .Digest }}`, which the docker sign path \
+             renders from the image"
                 .to_string(),
         ]
     );
@@ -3576,9 +3583,7 @@ fn signing_tools_silent_when_no_signing_configured() {
 /// runs the announce, structure and tooling checks, so a page block that
 /// ever quotes one of THEIR warnings needs that check driven here too. The
 /// page's `Error sign:` blocks come from the sign stage rather than from a
-/// check function and are pinned where that stage lives
-/// (`crates/stage-sign`,
-/// `the_collision_errors_quoted_in_the_sign_docs_are_the_messages_the_stage_produces`).
+/// check function and are pinned in `crates/stage-sign/src/tests.rs`.
 #[test]
 fn every_warning_quoted_in_the_sign_docs_is_a_message_the_checks_produce() {
     let path = concat!(

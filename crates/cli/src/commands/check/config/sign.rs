@@ -515,6 +515,10 @@ const NO_SIGN_PLACEHOLDERS: &[&str] = &[];
 /// quote would expose its text to the question this masks it for. An
 /// unterminated quote blanks the rest of the run, which is the direction
 /// that stays silent rather than warning about text that works.
+///
+/// The run this is handed ends at the first `}}`, which is found before the
+/// mask runs — so a `}}` written inside a literal (`{{ "}}" ~ Artifact }}`)
+/// ends the run early and a name after it goes unwarned.
 fn mask_string_literals(core: &str) -> String {
     let mut masked = String::with_capacity(core.len());
     let mut quote: Option<char> = None;
@@ -775,13 +779,13 @@ fn check_docker_sign_literal_text(
             ("certificate", _) => {
                 "; a docker certificate path is read nowhere, so remove the reference".to_string()
             }
-            // `stdin:` is rendered with nothing substituted, so it has no
-            // working spelling of any of these names to offer.
-            (_, "stdin") => String::new(),
             ("digest" | "artifactID", _) => format!(
                 "; write `{{{{ .{title} }}}}`, which the docker sign path \
                 renders from the image"
             ),
+            // The three substituted names are substituted into `args:`
+            // alone, so on `stdin:` none of them has a spelling that works.
+            (_, "stdin") => String::new(),
             _ => {
                 format!(
                     "; write `{{{{ .{title} }}}}`, which anodizer substitutes before the render"
