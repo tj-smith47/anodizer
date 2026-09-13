@@ -452,8 +452,8 @@ fn group_binaries_by_target(
                 .any(|f| f == FORMAT_BINARY)
             })
             .collect();
-        let counts: Vec<usize> = grouped.iter().map(|(_, bins)| bins.len()).collect();
-        if grouped.len() > 1 && counts.iter().any(|&c| c != counts[0]) {
+        let first_count = grouped.first().map(|(_, bins)| bins.len()).unwrap_or(0);
+        if grouped.len() > 1 && grouped.iter().any(|(_, bins)| bins.len() != first_count) {
             let details: Vec<_> = grouped
                 .iter()
                 .map(|((t, variant), b)| {

@@ -7676,6 +7676,143 @@ fn an_empty_rendered_base_fails_the_sign_stage() {
     );
 }
 
+/// A hand-written `archives[].name_template` need not separate the amd64
+/// micro-architecture levels the default templates do, and then a baseline and
+/// a `x86-64-v3` build of one binary resolve to one signature asset. The run
+/// stops at registration, before either signature is uploaded.
+#[test]
+fn two_binaries_resolving_to_one_asset_name_fail_the_sign_stage() {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, BuildConfig, CrateConfig};
+
+    const TARGET: &str = "x86_64-unknown-linux-gnu";
+    const TEMPLATE: &str = "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}";
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("app")
+        .crates(vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("app".to_string()),
+                targets: Some(vec![TARGET.to_string()]),
+                ..Default::default()
+            }]),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some(TEMPLATE.to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .binary_signs(vec![SignConfig {
+            artifacts: Some("binary".to_string()),
+            cmd: Some("true".to_string()),
+            args: Some(vec![]),
+            ..Default::default()
+        }])
+        .dry_run(true)
+        .build();
+    ctx.template_vars_mut().set("ProjectName", "app");
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    for (dir, variant) in [("release", None), ("v3/release", Some("v3"))] {
+        let mut metadata = std::collections::HashMap::new();
+        if let Some(variant) = variant {
+            metadata.insert("amd64_variant".to_string(), variant.to_string());
+        }
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "app".to_string(),
+            path: std::path::PathBuf::from(format!("target/{TARGET}/{dir}/app")),
+            target: Some(TARGET.to_string()),
+            crate_name: "app".to_string(),
+            metadata,
+            size: None,
+        });
+    }
+
+    let log = ctx.logger("binary-sign");
+    let cfgs = ctx.config.binary_signs.clone();
+    let err = process_sign_configs(
+        &cfgs,
+        &mut ctx,
+        &log,
+        ArtifactFilter::BinaryOnly,
+        "binary-sign",
+    )
+    .expect_err("two binaries claiming one asset name must fail the stage");
+    let msg = format!("{err:#}");
+    for needle in [
+        "target/x86_64-unknown-linux-gnu/release/app",
+        "target/x86_64-unknown-linux-gnu/v3/release/app",
+        "app-1.0.0-linux-amd64",
+        TEMPLATE,
+    ] {
+        assert!(msg.contains(needle), "message lacks '{needle}': {msg}");
+    }
+}
+
+/// The verify-release gate sorts and dedups its expectations, which would fold
+/// the two colliding names into one asset it then finds — so the gate refuses
+/// the same collision the stage refuses.
+#[test]
+fn two_binaries_resolving_to_one_asset_name_fail_the_verify_gate() {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, BuildConfig, CrateConfig};
+
+    const TARGET: &str = "x86_64-unknown-linux-gnu";
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("app")
+        .crates(vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("app".to_string()),
+                targets: Some(vec![TARGET.to_string()]),
+                ..Default::default()
+            }]),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some(
+                    "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}".to_string(),
+                ),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .binary_signs(vec![SignConfig {
+            artifacts: Some("binary".to_string()),
+            cmd: Some("true".to_string()),
+            args: Some(vec![]),
+            ..Default::default()
+        }])
+        .dry_run(true)
+        .build();
+    ctx.template_vars_mut().set("ProjectName", "app");
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    for (dir, variant) in [("release", None), ("v3/release", Some("v3"))] {
+        let mut metadata = std::collections::HashMap::new();
+        if let Some(variant) = variant {
+            metadata.insert("amd64_variant".to_string(), variant.to_string());
+        }
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "app".to_string(),
+            path: std::path::PathBuf::from(format!("target/{TARGET}/{dir}/app")),
+            target: Some(TARGET.to_string()),
+            crate_name: "app".to_string(),
+            metadata,
+            size: None,
+        });
+    }
+
+    let err = crate::expected::expected_signature_assets(&ctx, "app", None)
+        .expect_err("the gate must refuse two binaries claiming one asset name");
+    assert!(
+        format!("{err:#}").contains("both resolve to"),
+        "unexpected error: {err:#}"
+    );
+}
+
 /// A lipo-merged universal binary is a raw binary under the `binary` filter,
 /// so `binary_signs:` signs it — and no build entry names its
 /// `darwin-universal` target, so the entry names it with the binary's own
@@ -7801,12 +7938,12 @@ fn no_signature_name_is_derived_from_a_registered_archive() {
         .expect("read helpers.rs");
     let derivation = function_bodies(production_half(&helpers))
         .into_iter()
-        .find(|body| body.contains("fn binary_sign_asset_base"))
-        .expect("binary_sign_asset_base is a production function of this crate");
+        .find(|body| body.contains("fn binary_sign_asset_naming"))
+        .expect("binary_sign_asset_naming is a production function of this crate");
     for registry_read in ["ctx.artifacts", ".artifacts."] {
         assert!(
             !derivation.contains(registry_read),
-            "binary_sign_asset_base reads the registry ('{registry_read}'); the \
+            "binary_sign_asset_naming reads the registry ('{registry_read}'); the \
              base must come from config alone, or `anodizer build` and \
              `anodizer release --publish-only` name one binary two ways"
         );
@@ -7822,7 +7959,7 @@ fn no_signature_name_is_derived_from_a_registered_archive() {
     ] {
         assert!(
             !config_only.contains(registry_aware),
-            "binary_sign_asset_base calls the registry-aware \
+            "binary_sign_asset_naming calls the registry-aware \
              '{registry_aware}'; a build and a publish-only run would then \
              choose different default templates for one binary"
         );

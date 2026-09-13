@@ -132,6 +132,10 @@ pub fn apply_defaults(config: &mut Config) {
 
 /// Fold defaults into the top-level `Config` fields that path-mirror in
 /// `Defaults`. Fill-when-unset — top-level user values always win.
+///
+/// Each sign slice this fills is recorded in `Config::filled_from_defaults`:
+/// afterwards the entry is a plain config entry, and a diagnostic pointing at
+/// `signs[0]` would name a block the operator never wrote.
 fn apply_top_level_defaults(config: &mut Config, defaults: &Defaults) {
     // Single-struct deep-merge: both sides are Option<T>, so deep-merge if
     // both Some, fill if config is None.
@@ -149,11 +153,13 @@ fn apply_top_level_defaults(config: &mut Config, defaults: &Defaults) {
         && let Some(ref d) = defaults.sign
     {
         config.signs = vec![d.clone()];
+        config.filled_from_defaults.insert("signs");
     }
     if config.binary_signs.is_empty()
         && let Some(ref d) = defaults.binary_signs
     {
         config.binary_signs = vec![d.clone()];
+        config.filled_from_defaults.insert("binary_signs");
     }
     if config.sboms.is_empty()
         && let Some(ref d) = defaults.sbom
@@ -176,6 +182,7 @@ fn apply_top_level_defaults(config: &mut Config, defaults: &Defaults) {
         && let Some(ref d) = defaults.docker_signs
     {
         config.docker_signs = Some(vec![d.clone()]);
+        config.filled_from_defaults.insert("docker_signs");
     }
 }
 
@@ -582,6 +589,64 @@ mod tests {
         AnchoredVersionFile, ArchiveConfig, ArchivesConfig, ChecksumConfig, CrossStrategy,
         HomebrewCaskConfig, HomebrewCaskUninstall, HomebrewConfig, StringOrBool, VersionFileEntry,
     };
+
+    /// Each sign slice a `defaults:` block fills records which block filled
+    /// it, so a diagnostic names what the operator wrote.
+    #[test]
+    fn every_sign_slice_filled_from_defaults_is_recorded() {
+        let sign = crate::config::SignConfig {
+            cmd: Some("cosign".to_string()),
+            ..Default::default()
+        };
+        let mut config = Config {
+            project_name: "app".to_string(),
+            defaults: Some(Defaults {
+                sign: Some(sign.clone()),
+                binary_signs: Some(sign.clone()),
+                docker_signs: Some(crate::config::DockerSignConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        apply_defaults(&mut config);
+        assert_eq!(
+            config
+                .filled_from_defaults
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec!["binary_signs", "docker_signs", "signs"]
+        );
+    }
+
+    /// A slice the operator wrote is left alone, and records nothing — a
+    /// filled slice and a written one are otherwise identical afterwards.
+    #[test]
+    fn a_sign_slice_the_operator_wrote_records_nothing() {
+        let sign = crate::config::SignConfig {
+            cmd: Some("cosign".to_string()),
+            ..Default::default()
+        };
+        let mut config = Config {
+            project_name: "app".to_string(),
+            defaults: Some(Defaults {
+                sign: Some(sign.clone()),
+                binary_signs: Some(sign.clone()),
+                docker_signs: Some(crate::config::DockerSignConfig::default()),
+                ..Default::default()
+            }),
+            signs: vec![sign.clone()],
+            binary_signs: vec![sign],
+            docker_signs: Some(vec![crate::config::DockerSignConfig::default()]),
+            ..Default::default()
+        };
+        apply_defaults(&mut config);
+        assert!(
+            config.filled_from_defaults.is_empty(),
+            "{:?}",
+            config.filled_from_defaults
+        );
+    }
 
     fn make_crate(name: &str) -> CrateConfig {
         CrateConfig {

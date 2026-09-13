@@ -367,12 +367,9 @@ pub(super) fn check_sign_artifact_filters(config: &Config, warnings: &mut Vec<St
 pub(super) fn check_sign_asset_name_templates(config: &Config, warnings: &mut Vec<String>) {
     // `defaults.sign:` fills an empty top-level `signs:` before any check
     // runs, so the entry a warning points at may be a block the user never
-    // wrote. Name the block they did write.
-    let defaults_template = config
-        .defaults
-        .as_ref()
-        .and_then(|d| d.sign.as_ref())
-        .and_then(|d| d.asset_name_template.as_deref());
+    // wrote. The fold records what it filled, which a value comparison cannot
+    // tell apart from a `signs:` entry that happens to repeat the default.
+    let signs_came_from_defaults = config.filled_from_defaults.contains("signs");
     let mut slices: Vec<(String, &Vec<anodizer_core::config::SignConfig>)> =
         vec![("signs".to_string(), &config.signs)];
     for ws in config.workspaces.iter().flatten() {
@@ -380,15 +377,14 @@ pub(super) fn check_sign_asset_name_templates(config: &Config, warnings: &mut Ve
     }
     for (label, configs) in slices {
         for (idx, cfg) in configs.iter().enumerate() {
-            let Some(template) = cfg.asset_name_template.as_deref() else {
+            if cfg.asset_name_template.is_none() {
                 continue;
+            }
+            let block = if label == "signs" && signs_came_from_defaults {
+                "defaults.sign".to_string()
+            } else {
+                format!("{label}[{idx}]")
             };
-            let block =
-                if label == "signs" && configs.len() == 1 && defaults_template == Some(template) {
-                    "defaults.sign".to_string()
-                } else {
-                    format!("{label}[{idx}]")
-                };
             warnings.push(format!(
                 "{block}.asset_name_template is set but only binary_signs \
                  honors it (it will be ignored)"

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 
 use schemars::JsonSchema;
@@ -418,6 +418,15 @@ pub struct Config {
     #[serde(skip)]
     #[schemars(skip)]
     pub derived_tag_template: Option<String>,
+    /// The top-level slices [`crate::defaults_merge::apply_defaults`] filled
+    /// from the `defaults:` block, by their YAML names (`signs`,
+    /// `binary_signs`, `docker_signs`). NOT a user-facing YAML field — once
+    /// the fold has run a filled slice is indistinguishable from one the
+    /// operator wrote, so a diagnostic that must name the block they DID
+    /// write reads this instead of guessing from a matching value.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub filled_from_defaults: BTreeSet<&'static str>,
 }
 
 /// Helper schema function for the signs field (accepts object or array).
@@ -521,6 +530,7 @@ impl Default for Config {
             homebrew_cores: None,
             derived_metadata: BTreeMap::new(),
             derived_tag_template: None,
+            filled_from_defaults: BTreeSet::new(),
         }
     }
 }
