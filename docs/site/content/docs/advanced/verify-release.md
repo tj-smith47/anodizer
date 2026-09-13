@@ -23,7 +23,7 @@ Four independently-toggleable checks:
 | Check | What it catches | Needs |
 |---|---|---|
 | **asset existence + content** | A produced artifact that never made it onto the published release (the partial uploads GitHub silently tolerates), an uploaded asset whose **size or sha256 digest** doesn't match the local bytes (truncated/corrupted uploads, stale assets from a prior re-cut), **and** a signature / SBOM asset your `signs:` / `sboms:` config demands that was never produced at all (a silently no-op'd sign or SBOM stage) | network |
-| **publisher landing checks** | A publisher that reported success without the artifact actually landing: a crate version missing from the crates.io index, an npm version the registry doesn't serve, a wheel the PyPI index doesn't list, a blob object absent from its bucket, a snap held for manual store review and live in no channel | network |
+| **publisher landing checks** | A publisher that reported success without the artifact actually landing: a crate version missing from the crates.io index, an npm version the registry doesn't serve, a wheel the PyPI index doesn't list, a blob object absent from its bucket, a snap held for manual store review and live in no channel, a docker image tag the registry does not serve (or serves at a digest this release never pushed) | network |
 | **install smoke-test** | A `.deb` / `.rpm` / `.apk` that won't install or whose binary won't run `--version` | Docker |
 | **libc ceiling** | A glibc-linked `.deb` that requires a glibc newer than your support floor | — |
 
@@ -36,8 +36,8 @@ verify_release:
 
 With just `enabled: true`, the asset check and the landing checks run (they
 need no extra config — anodizer already knows what it produced, can fetch the
-release's asset list, and the run's own publish report carries every landing
-coordinate). The smoke-test and libc-ceiling checks stay off until you
+release's asset list, and the run's own publish report and artifact set carry
+every landing coordinate). The smoke-test and libc-ceiling checks stay off until you
 configure them.
 
 ## Full config reference
@@ -46,7 +46,7 @@ configure them.
 verify_release:
   enabled: true            # default false — the whole gate is opt-in
   assert_assets: true      # default true — diff produced vs. uploaded assets + size/digest
-  assert_landing: true     # default true — probe cargo/npm/pypi/blob/snapcraft landings
+  assert_landing: true     # default true — probe cargo/npm/pypi/blob/snapcraft/docker landings
   install_smoke:           # absent => smoke-test off
     deb: { image: "debian:12" }      # default debian:stable-slim
     rpm: { image: "fedora:40" }      # default fedora:latest
@@ -154,6 +154,7 @@ so no extra config is needed:
 | `pypi` | index lookup for every uploaded file, by the exact filename the run recorded — `GET https://pypi.org/pypi/<name>/<version>/json` for the public hosts, the PEP 503 `/simple/<name>/` page for any other index. The configured `index_url` decides which index is asked, so a TestPyPI or private-index upload is probed where it went |
 | `blob` | `HEAD` on every uploaded object, through the **same store backend and ambient credentials** the upload used — works for private buckets with no public URL |
 | `snapcraft` | anonymous `GET api.snapcraft.io/v2/snaps/info/<snap>` for every uploaded snap — the version must be **live in the store's channel map** (in the released channel when one was set). This catches the Snap Store's silent failure mode: a manual-review hold accepts the upload but ships nothing until a human approves, and a decline arrives only by email |
+| `docker` | `GET <registry>/v2/<repo>/manifests/<tag>` for every image tag the run **pushed** — the registry's distribution API, with the standard `WWW-Authenticate: Bearer` token exchange (the credential `docker login` stored for that registry, anonymously when there is none), so no docker daemon is needed. When the push recorded a digest, the served manifest must hash to it: a tag that now resolves to different content fails even though it exists |
 
 One result line per publisher:
 
@@ -163,6 +164,7 @@ One result line per publisher:
 • pypi: 9/9 uploaded file(s) listed on pypi.org
 • blob: 22/22 uploaded object(s) present in bucket
 • snapcraft: myapp 1.0.0 live in the Snap Store channel map
+• docker: 4/4 pushed image(s) present on their registries
 ```
 
 ### Registry propagation
@@ -190,6 +192,30 @@ A failure re-asking cannot resolve — a rejected credential, a bucket store tha
 could not be built — ends that target immediately instead of holding the
 shared window open on a fixed answer.
 
+Docker files no publish report, so its targets come from the artifacts: an image
+artifact records that its push returned, which is what also carries the pushed
+set through a `--publish-only` run rehydrated from the preserved
+`artifacts.json`. A snapshot, a dry run, a `--skip=docker` run and a
+`skip_push: true` manifest push nothing and are never probed.
+
+```yaml
+verify_release:
+  enabled: true
+  assert_landing: true
+
+crates:
+  - name: myapp
+    dockers_v2:
+      - images: ["ghcr.io/owner/myapp"]
+        tags: ["{{ .Version }}", "latest"]
+    docker_manifests:
+      - name_template: "ghcr.io/owner/myapp:{{ .Version }}"
+        image_templates:
+          - "ghcr.io/owner/myapp:{{ .Version }}-amd64"
+          - "ghcr.io/owner/myapp:{{ .Version }}-arm64"
+        skip_push: false      # `true` builds the list locally and is not probed
+```
+
 A publisher that was skipped, deselected, or failed is not probed — it published
 nothing this run. A probe that **cannot run** (index unreachable, store build
 failure) is reported as an issue once the window closes, never silently passed:
@@ -200,6 +226,8 @@ an unverifiable landing is a finding.
 - pypi: myapp-1.0.0-py3-none-win_amd64.whl reported uploaded but is not listed on pypi.org
 - blob: s3://my-bucket/v1.0.0/myapp.tar.gz reported uploaded but is missing from the bucket
 - snapcraft: myapp 1.0.0 was HELD for Snap Store manual review and is not live in the store — consumers get nothing until review approves (https://dashboard.snapcraft.io/snaps/myapp/)
+- docker: ghcr.io/owner/myapp:1.0.0 reported pushed but is not in ghcr.io
+- docker: ghcr.io/owner/myapp:latest was pushed as sha256:9f2c… but ghcr.io serves sha256:04ab…
 ```
 
 ## (c) install smoke-test

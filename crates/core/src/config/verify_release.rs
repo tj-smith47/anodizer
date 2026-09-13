@@ -19,8 +19,8 @@
 //!   have no glibc requirement and are skipped — which is the whole point:
 //!   musl hides a glibc-floor regression that this check is meant to surface.
 //! - **publisher landing** (`Self::assert_landing`) — every publisher that
-//!   succeeded this run is probed upstream to confirm consumers can see what
-//!   it published.
+//!   succeeded this run, and every docker image tag the run pushed, is probed
+//!   upstream to confirm consumers can see what it published.
 //!
 //! The block is off unless `Self::enabled` is `true`. Defaults mirror the
 //! [`PostPublishPollConfig`](super::PostPublishPollConfig) style:
@@ -63,12 +63,14 @@ pub struct VerifyReleaseConfig {
     /// each published crate version is visible on the crates.io sparse index,
     /// each npm package version is visible on its registry, each uploaded
     /// PyPI wheel or source distribution is listed by the index it went to,
-    /// each uploaded blob object exists in its bucket, and each uploaded snap
+    /// each uploaded blob object exists in its bucket, each uploaded snap
     /// is live in the Snap Store's channel map (catching a manual-review hold
-    /// that parked the revision outside every channel). Default `true` (no
-    /// extra config: the run's own publish report already carries every
-    /// coordinate the probes need). Publishers that did not run — or did not
-    /// succeed — are skipped. A target the registry has not served yet is
+    /// that parked the revision outside every channel), and each docker image
+    /// tag the run pushed answers a registry manifest `GET` at the digest the
+    /// push recorded. Default `true` (no extra config: the run's own publish
+    /// report and artifact set already carry every coordinate the probes
+    /// need). Publishers that did not run — or did not succeed — are skipped,
+    /// as is an image the run built without pushing. A target the registry has not served yet is
     /// re-asked (5s backoff doubling to a 30s cap, 8 attempts) inside ONE
     /// 3-minute window shared by the whole sweep, shortened whenever
     /// `retry.max_elapsed` leaves less than that; an absence is reported when
