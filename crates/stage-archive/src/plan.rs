@@ -231,7 +231,7 @@ pub(crate) fn plan_crate(
         }
 
         let Some(by_target) =
-            group_binaries_by_target(ctx, log, archive_cfg, crate_name, all_binaries)?
+            group_binaries_by_target(ctx, log, run, archive_cfg, crate_name, all_binaries)?
         else {
             continue;
         };
@@ -383,6 +383,7 @@ pub(crate) fn plan_crate(
 fn group_binaries_by_target(
     ctx: &Context,
     log: &anodizer_core::log::StageLogger,
+    run: &RunInputs<'_>,
     archive_cfg: &ArchiveConfig,
     crate_name: &str,
     all_binaries: &[Artifact],
@@ -431,21 +432,29 @@ fn group_binaries_by_target(
         by_target.insert(("unknown".to_string(), None), Vec::new());
     }
 
-    // The "binary" format is exempt from the equal-count check, as in
-    // GoReleaser.
-    let is_binary_format = archive_cfg
-        .formats
-        .as_ref()
-        .map(|fs| fs.iter().any(|f| f == FORMAT_BINARY))
-        .unwrap_or(false);
-    if !is_binary_format
-        && !archive_cfg.allow_different_binary_count.unwrap_or(false)
-        && by_target.len() > 1
-    {
-        let counts: Vec<usize> = by_target.values().map(|bins| bins.len()).collect();
-        let first = counts[0];
-        if counts.iter().any(|&c| c != first) {
-            let details: Vec<_> = by_target
+    // The "binary" format publishes each executable under its own name, so it
+    // is exempt from the equal-count check, as in GoReleaser. The format is
+    // resolved per target through the shared resolver — an entry's own
+    // `format_overrides:`, then `defaults.archives.format_overrides`, can make
+    // one OS's outputs raw binaries while the rest archive normally, so only
+    // the targets that really pack a group are compared.
+    if !archive_cfg.allow_different_binary_count.unwrap_or(false) {
+        let grouped: Vec<(&TargetVariantKey, &Vec<Artifact>)> = by_target
+            .iter()
+            .filter(|((target, _), _)| {
+                !anodizer_core::archive_name::archive_formats_for_target(
+                    archive_cfg,
+                    target,
+                    run.format_overrides,
+                    run.default_format,
+                )
+                .iter()
+                .any(|f| f == FORMAT_BINARY)
+            })
+            .collect();
+        let counts: Vec<usize> = grouped.iter().map(|(_, bins)| bins.len()).collect();
+        if grouped.len() > 1 && counts.iter().any(|&c| c != counts[0]) {
+            let details: Vec<_> = grouped
                 .iter()
                 .map(|((t, variant), b)| {
                     let variant = variant

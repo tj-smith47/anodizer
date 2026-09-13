@@ -1494,6 +1494,38 @@ fn asset_name_template_on_signs_warns_that_it_is_ignored() {
     );
 }
 
+/// `defaults.sign:` fills an empty top-level `signs:`, so the warning must
+/// name the block the user actually wrote — `signs[0]` points at nothing in
+/// their file.
+#[test]
+fn asset_name_template_under_defaults_sign_names_the_defaults_block() {
+    let config = Config {
+        project_name: "test".to_string(),
+        defaults: Some(anodizer_core::config::Defaults {
+            sign: Some(anodizer_core::config::SignConfig {
+                asset_name_template: Some("{{ Binary }}-{{ Version }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        // What `apply_defaults` leaves behind once the defaults entry filled
+        // the empty slice.
+        signs: vec![anodizer_core::config::SignConfig {
+            asset_name_template: Some("{{ Binary }}-{{ Version }}".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut warnings: Vec<String> = vec![];
+    check_sign_asset_name_templates(&config, &mut warnings);
+    assert_eq!(
+        warnings,
+        vec![
+            "defaults.sign.asset_name_template is set but only binary_signs honors it (it will be ignored)".to_string(),
+        ]
+    );
+}
+
 /// A config that sets the field nowhere warns nowhere.
 #[test]
 fn no_asset_name_template_warns_nothing() {

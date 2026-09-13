@@ -534,8 +534,17 @@ pub(crate) fn qualify_basename_with_target(name: &str, target: &str) -> String {
 ///
 /// The full triple is required: `Os`/`Arch` render identically for a gnu and
 /// a musl build of one machine, so a `{{ Os }}-{{ Arch }}` name would collapse
-/// the two targets' signatures onto one asset.
-pub(crate) const UNCOVERED_TARGET_NAME_TEMPLATE: &str = "{{ Binary }}-{{ Version }}-{{ Target }}";
+/// the two targets' signatures onto one asset. The amd64 micro-architecture
+/// level is the dimension the triple itself does not carry — a baseline and a
+/// `-Ctarget-cpu=x86-64-v3` build share `x86_64-unknown-linux-gnu` — so the
+/// tail every default name template appends
+/// ([`INSTALLER_AMD64_VARIANT_SUFFIX`](anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX))
+/// is appended here too; `v1` renders nothing, so an ordinary build keeps its
+/// historical name.
+pub(crate) const UNCOVERED_TARGET_NAME_TEMPLATE: &str = concat!(
+    "{{ Binary }}-{{ Version }}-{{ Target }}",
+    "{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}"
+);
 
 /// The release-asset BASE name every signature and certificate of one raw
 /// binary is built on — unique per (crate, target, binary).
@@ -549,16 +558,8 @@ pub(crate) const UNCOVERED_TARGET_NAME_TEMPLATE: &str = "{{ Binary }}-{{ Version
 /// |---|---|
 /// | covered by the crate's primary `archives:` entry — the first entry in config order whose `ids:` / `binaries:` filters take this binary — and that entry packs this binary alone on the target | that entry's `name_template`, rendered in the archive stage's own per-target scope ([`anodizer_core::archive_name::seed_archive_name_vars`]) |
 /// | covered by an entry that packs SEVERAL binaries on the target, or by no entry at all | [`UNCOVERED_TARGET_NAME_TEMPLATE`] |
-///
-/// An entry whose resolved formats include `binary` publishes each executable
-/// itself, so the base is that asset's own name (the per-binary default
-/// template plus the Windows `.exe`): a `signs:` signature over the uploaded
-/// binary and a `binary_signs:` signature over the same bytes then resolve to
-/// one name.
-///
-/// A lipo-merged universal binary belongs to no build entry — no `builds:`
-/// names `darwin-universal` — so the entry names it with the binary's OWN
-/// name.
+/// | covered by an entry whose RESOLVED formats include `binary` | that executable's own asset name (the per-binary default template plus the Windows `.exe`), so a `signs:` signature over the uploaded binary and a `binary_signs:` signature over the same bytes resolve to one name |
+/// | a lipo-merged universal binary (`darwin-universal`, which no `builds:` entry names) | the covering entry's `name_template` rendered with the binary's OWN name |
 ///
 /// The entry's `if:` is deliberately NOT evaluated: a gate that reads the
 /// environment would name one binary's signature differently on the machine
@@ -646,15 +647,21 @@ pub(crate) fn binary_sign_asset_base(
     let template = entry.name_template.clone().unwrap_or_else(|| {
         if is_binary_format {
             archive_name::DEFAULT_BINARY_NAME_TEMPLATE.to_string()
+        } else if multi_crate {
+            // Chosen from the same config-only answer that rebinds
+            // `ProjectName` above; the registry-aware resolver would pick one
+            // default on a build and another on a publish-only run.
+            archive_name::DEFAULT_NAME_TEMPLATE_MULTI_CRATE.to_string()
         } else {
-            archive_name::default_archive_name_template(ctx)
+            archive_name::DEFAULT_NAME_TEMPLATE.to_string()
         }
     });
     if is_binary_format {
         // Each executable is published under its own name, so the group holds
-        // no ambiguity to resolve.
-        let stem = render(&template, &seeded(&binary_name))?;
-        return reject_empty_base(archive_name::binary_output_name(stem, target));
+        // no ambiguity to resolve. The stem is checked before the extension is
+        // appended: a bare `.exe` names no subject either.
+        let stem = reject_empty_base(render(&template, &seeded(&binary_name))?)?;
+        return Ok(archive_name::binary_output_name(stem, target));
     }
 
     let packed: Vec<String> = krate
@@ -1006,15 +1013,38 @@ mod binary_sign_asset_name_tests {
         ctx.template_vars_mut().set("ProjectName", "app");
         ctx.template_vars_mut().set("Version", "1.0.0");
 
-        let base = |name: &str| {
+        let base = |name: &str, amd64_variant: Option<&str>| {
             let mut artifact = binary(LINUX, None);
             artifact.name = name.to_string();
             artifact.path = std::path::PathBuf::from(format!("target/{LINUX}/release/{name}"));
+            if let Some(variant) = amd64_variant {
+                artifact
+                    .metadata
+                    .insert("amd64_variant".to_string(), variant.to_string());
+            }
             binary_sign_asset_base(&ctx, &SignConfig::default(), &artifact, LINUX).unwrap()
         };
-        assert_eq!(base("app"), format!("app-1.0.0-{LINUX}"));
-        assert_eq!(base("helper"), format!("helper-1.0.0-{LINUX}"));
-        assert_ne!(base("app"), base("helper"));
+        assert_eq!(base("app", None), format!("app-1.0.0-{LINUX}"));
+        assert_eq!(base("helper", None), format!("helper-1.0.0-{LINUX}"));
+        assert_ne!(base("app", None), base("helper", None));
+
+        // The build stage emits one artifact per micro-architecture level on
+        // ONE target, so the triple alone does not separate them.
+        assert_eq!(base("app", Some("v1")), format!("app-1.0.0-{LINUX}"));
+        assert_eq!(base("app", Some("v3")), format!("app-1.0.0-{LINUX}v3"));
+        assert_ne!(base("app", Some("v1")), base("app", Some("v3")));
+    }
+
+    /// The uncovered-target fallback appends the same amd64 clause every
+    /// default name template does, so the two cannot drift apart.
+    #[test]
+    fn the_uncovered_target_template_ends_with_the_shared_amd64_suffix() {
+        assert!(
+            super::UNCOVERED_TARGET_NAME_TEMPLATE
+                .ends_with(anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX),
+            "uncovered-target template must reuse the shared amd64 variant suffix: {}",
+            super::UNCOVERED_TARGET_NAME_TEMPLATE
+        );
     }
 
     /// A `binaries:` allow-list that packs this binary alone keeps the entry's
@@ -1123,7 +1153,7 @@ mod binary_sign_asset_name_tests {
             let mut ctx = TestContextBuilder::new()
                 .project_name("proj")
                 .crates(vec![
-                    crate_with(vec![archive("default", TEMPLATE)]),
+                    crate_with(vec![ArchiveConfig::default()]),
                     CrateConfig {
                         name: "extras".to_string(),
                         path: "extras".to_string(),
@@ -1148,7 +1178,10 @@ mod binary_sign_asset_name_tests {
             binary_sign_asset_base(&ctx, &SignConfig::default(), &binary(LINUX, None), LINUX)
                 .unwrap()
         };
-        assert_eq!(run(false), "proj-1.0.0-linux-amd64");
+        // No `name_template:` anywhere, so the default template is chosen —
+        // the decision the registry-aware resolver would answer differently
+        // once the sibling's archive is registered.
+        assert_eq!(run(false), "proj_1.0.0_linux_amd64");
         assert_eq!(run(true), run(false));
     }
 
@@ -1219,7 +1252,7 @@ mod binary_sign_asset_name_tests {
             .defaults(anodizer_core::config::Defaults {
                 archives: Some(ArchiveConfig {
                     format_overrides: Some(vec![anodizer_core::config::FormatOverride {
-                        os: "linux".to_string(),
+                        os: "windows".to_string(),
                         formats: Some(vec!["binary".to_string()]),
                     }]),
                     ..Default::default()
@@ -1229,10 +1262,17 @@ mod binary_sign_asset_name_tests {
             .build();
         ctx.template_vars_mut().set("ProjectName", "app");
         ctx.template_vars_mut().set("Version", "1.0.0");
+        // The `.exe` is what separates the executable's own asset name from
+        // the archive stem an unoverridden entry would render.
         assert_eq!(
-            binary_sign_asset_base(&ctx, &SignConfig::default(), &binary(LINUX, None), LINUX)
-                .unwrap(),
-            "app_1.0.0_linux_amd64"
+            binary_sign_asset_base(
+                &ctx,
+                &SignConfig::default(),
+                &binary(WINDOWS, None),
+                WINDOWS
+            )
+            .unwrap(),
+            "app_1.0.0_windows_amd64.exe"
         );
     }
 
@@ -1246,9 +1286,14 @@ mod binary_sign_asset_name_tests {
             ..Default::default()
         }]);
         assert_eq!(
-            binary_sign_asset_base(&ctx, &SignConfig::default(), &binary(LINUX, None), LINUX)
-                .unwrap(),
-            "app_1.0.0_linux_amd64"
+            binary_sign_asset_base(
+                &ctx,
+                &SignConfig::default(),
+                &binary(WINDOWS, None),
+                WINDOWS
+            )
+            .unwrap(),
+            "app_1.0.0_windows_amd64.exe"
         );
     }
 
