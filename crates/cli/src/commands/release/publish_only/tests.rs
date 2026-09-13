@@ -2171,6 +2171,13 @@ fn the_defaults_provenance_record_is_rewound_between_workspaces() {
 /// them, so a mutation added to the overlay leaks across per-crate
 /// iterations until someone remembers the rewind. `filled_from_defaults`
 /// did exactly that.
+///
+/// The walk reads `config.<field>` text, which cannot tell a read from a
+/// write: a plain `if config.dist.is_some()` in the overlay would demand a
+/// restore entry it does not need. Add the field to `restore_into` or spell
+/// the read through a local — never a bogus restore. A mutation through a
+/// `&mut` rebinding would be invisible to the walk, so the overlay is held
+/// to spelling every mutation `config.<field>`.
 #[test]
 fn every_overlay_mutation_is_rewound_by_the_guard() {
     use anodizer_core::test_helpers::test_sources::{function_bodies, production_half};
@@ -2203,10 +2210,20 @@ fn every_overlay_mutation_is_rewound_by_the_guard() {
             mutated.push(field);
         }
     }
-    assert!(
-        mutated.len() >= 9,
-        "the overlay walk found too few fields — it stopped matching: {mutated:?}"
+    assert_eq!(
+        mutated.len(),
+        9,
+        "the overlay touches a different set of fields than the walk expects: \
+         {mutated:?}"
     );
+    for rebinding in ["&mut *config", "&mut config", "= config;"] {
+        assert!(
+            !overlay.contains(rebinding),
+            "`apply_workspace_overlay` rebinds the config (`{rebinding}`), which \
+             hides the mutation from this walk — spell every mutation \
+             `config.<field>`"
+        );
+    }
     for field in &mutated {
         assert!(
             restore.contains(&format!("config.{field} =")),
