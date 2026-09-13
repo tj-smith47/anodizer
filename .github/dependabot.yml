@@ -4,6 +4,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "saturday"
+    # Skip day-zero releases: a dep bumped this week is not re-bumped next
+    # week when its follow-up patch ships.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore"
       include: "scope"
@@ -11,6 +16,11 @@ updates:
     # updates bypass grouping and arrive as individual PRs regardless.
     groups:
       cargo:
+        patterns: ["*"]
+      # Security updates ignore the schedule and arrive on advisory day; this
+      # group folds them into one PR per ecosystem instead of one per dep.
+      cargo-security:
+        applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: "github-actions"
     # `directory: "/"` reaches .github/workflows plus a ROOT-level action.yml —
@@ -23,11 +33,21 @@ updates:
       - "/.github/actions/*"
     schedule:
       interval: "weekly"
+      day: "saturday"
+    # Skip day-zero releases: a dep bumped this week is not re-bumped next
+    # week when its follow-up patch ships.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore"
       include: "scope"
     groups:
       github-actions:
+        patterns: ["*"]
+      # Security updates ignore the schedule and arrive on advisory day; this
+      # group folds them into one PR per ecosystem instead of one per dep.
+      github-actions-security:
+        applies-to: security-updates
         patterns: ["*"]
     ignore:
       # Self-managed: the floating @v1 is moved by anodizer-action's own
@@ -41,9 +61,19 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "saturday"
+    # Skip day-zero releases: a dep bumped this week is not re-bumped next
+    # week when its follow-up patch ships.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore"
       include: "scope"
     groups:
       docker:
+        patterns: ["*"]
+      # Security updates ignore the schedule and arrive on advisory day; this
+      # group folds them into one PR per ecosystem instead of one per dep.
+      docker-security:
+        applies-to: security-updates
         patterns: ["*"]
