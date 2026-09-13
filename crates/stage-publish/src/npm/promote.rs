@@ -342,6 +342,7 @@ impl<'a> ReTagger<'a> {
         self.log.verbose(&format!("running {}", args.join(" ")));
         let mut cmd = Command::new(&args[0]);
         cmd.args(&args[1..]);
+        super::publish::strip_ambient_npm_config(&mut cmd);
         match run_checked(&mut cmd, self.log, "npm dist-tag add")
             .with_context(|| format!("failed to re-tag {label} to {}", self.req.to))
         {
@@ -353,6 +354,7 @@ impl<'a> ReTagger<'a> {
     fn capture(&self, args: &[String], label: &'static str) -> Result<String> {
         let mut cmd = Command::new(&args[0]);
         cmd.args(&args[1..]);
+        super::publish::strip_ambient_npm_config(&mut cmd);
         let out = run_checked(&mut cmd, self.log, label)?;
         Ok(self.log.redact(&String::from_utf8_lossy(&out.stdout)))
     }

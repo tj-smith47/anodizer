@@ -1711,6 +1711,99 @@ fn simple_index_probe_matches_exact_version_only() {
 }
 
 // -----------------------------------------------------------------------------
+// The landing probe's own parsing: filename -> (name, version), and whether a
+// page lists one exact file
+// -----------------------------------------------------------------------------
+
+/// The `(name, version)` a distribution filename carries. A wheel escapes the
+/// name so the FIRST `-` splits it; an sdist has no such guarantee, so the
+/// LAST `-` before the extension does — and a local version segment
+/// (`1.2.3+local.1`) belongs to the version, not to the name.
+#[test]
+fn distribution_filenames_parse_into_name_and_version() {
+    use super::preflight::distribution_name_version;
+    for (filename, expected) in [
+        ("app-1.2.3-py3-none-any.whl", Some(("app", "1.2.3"))),
+        (
+            "my_tool-1.2.3-cp311-cp311-manylinux_2_28_x86_64.whl",
+            Some(("my_tool", "1.2.3")),
+        ),
+        ("app-1.2.3.tar.gz", Some(("app", "1.2.3"))),
+        ("my_tool-1.2.3.tar.gz", Some(("my_tool", "1.2.3"))),
+        ("app-1.2.3.zip", Some(("app", "1.2.3"))),
+        (
+            "app-1.2.3+local.1-py3-none-any.whl",
+            Some(("app", "1.2.3+local.1")),
+        ),
+        ("app-1.2.3+local.1.tar.gz", Some(("app", "1.2.3+local.1"))),
+        (
+            "/simple/app/app-1.2.3.tar.gz#sha256=abc",
+            Some(("app", "1.2.3")),
+        ),
+        ("app-1.2.3.tar.br", None),
+        ("README.md", None),
+        ("-1.2.3.tar.gz", None),
+        ("app-.whl", None),
+    ] {
+        assert_eq!(
+            distribution_name_version(filename),
+            expected.map(|(n, v)| (n.to_string(), v.to_string())),
+            "{filename}"
+        );
+    }
+}
+
+/// The landing probe asks for ONE exact filename, so a token must reduce to
+/// that filename exactly — a longer version, a sibling platform's wheel, or a
+/// file under another project never satisfies it.
+#[test]
+fn a_page_lists_only_the_exact_file_probed() {
+    use super::preflight::body_lists_file;
+    let page = r#"<!DOCTYPE html><html><body>
+        <a href="/x/app-1.2.30-py3-none-any.whl">app-1.2.30-py3-none-any.whl</a>
+        <a href="/x/app-1.2.3-cp311-cp311-manylinux_2_28_x86_64.whl#sha256=abc">wheel</a>
+        <a href="/x/app-1.2.3.tar.gz#sha256=def">sdist</a>
+        </body></html>"#;
+    for (filename, expected) in [
+        ("app-1.2.3.tar.gz", true),
+        ("app-1.2.3-cp311-cp311-manylinux_2_28_x86_64.whl", true),
+        ("app-1.2.30-py3-none-any.whl", true),
+        ("app-1.2.3-py3-none-any.whl", false),
+        ("app-1.2.3.zip", false),
+    ] {
+        assert_eq!(body_lists_file(page, filename), expected, "{filename}");
+    }
+    // A JSON API body is tokenised the same way.
+    let json = r#"{"urls":[{"filename":"app-1.2.3.tar.gz"}]}"#;
+    assert!(body_lists_file(json, "app-1.2.3.tar.gz"));
+    assert!(!body_lists_file(json, "app-1.2.4.tar.gz"));
+}
+
+/// A filename that is not a distribution cannot be turned into an index
+/// question, so the probe reports it as unverifiable rather than as an
+/// absence — no request is made.
+#[test]
+fn a_non_distribution_filename_is_unverifiable_not_absent() {
+    let log = anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+    let err = super::uploaded_file_live_on_index(
+        "https://upload.pypi.org/legacy/",
+        "NOTES.txt",
+        &anodizer_core::retry::RetryPolicy {
+            max_attempts: 1,
+            base_delay: std::time::Duration::ZERO,
+            max_delay: std::time::Duration::ZERO,
+        },
+        None,
+        &log,
+    )
+    .expect_err("a non-distribution filename has no index question");
+    assert!(
+        format!("{err:#}").contains("not a wheel or source-distribution filename"),
+        "{err:#}"
+    );
+}
+
+// -----------------------------------------------------------------------------
 // C7 — sdist upload echoes PKG-INFO's own metadata_version + version
 // -----------------------------------------------------------------------------
 

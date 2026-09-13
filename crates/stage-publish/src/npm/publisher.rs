@@ -528,7 +528,10 @@ impl anodizer_core::Publisher for NpmPublisher {
                          brand-new package would fail — rotate or remove NPM_TOKEN"
                     ))
                 } else {
-                    PreflightCheck::Blocker(msg)
+                    // The Warning branch names the way out; the Blocker must
+                    // too, or the operator is told only that the release
+                    // stops here.
+                    PreflightCheck::Blocker(format!("{msg} — rotate or remove NPM_TOKEN"))
                 }
             };
             // `oidc` mode never consults a token — `resolve_auth_for_package`
@@ -536,10 +539,19 @@ impl anodizer_core::Publisher for NpmPublisher {
             // token that fails to render, or one that is simply stale, cannot
             // affect a publish that authenticates through Trusted Publishing.
             if cfg.auth == anodizer_core::config::NpmAuthMode::Oidc {
-                ctx.logger("preflight").verbose(&format!(
-                    "npm: auth mode is `oidc` for '{entry_name}' on {registry} — a configured \
-                     token is ignored and not validated"
-                ));
+                // Only worth saying when a token actually exists to ignore: on
+                // a tokenless Trusted Publishing setup the note describes
+                // config the user never wrote.
+                let has_token = cfg.token.is_some()
+                    || ctx
+                        .env_var(super::manifest::token_env_var(cfg))
+                        .is_some_and(|v| !v.trim().is_empty());
+                if has_token {
+                    ctx.logger("preflight").verbose(&format!(
+                        "npm: auth mode is `oidc` for '{entry_name}' on {registry} — the \
+                         configured token is ignored and not validated"
+                    ));
+                }
             } else {
                 // An empty `Ok` is the legitimate absent-token path (an `auto`
                 // entry that authenticates through OIDC): nothing to probe.
