@@ -22,6 +22,11 @@
 //! - **snapcraft** — every uploaded snap version must be live in the Snap
 //!   Store's public channel map, which is what a manual-review hold parks a
 //!   revision outside of.
+//! - **docker** — every image tag the run PUSHED must answer a registry
+//!   manifest `GET`, and must answer with the digest the push recorded. The
+//!   docker stage files no publish report, so its targets come from the
+//!   artifacts themselves (`ArtifactRegistry::pushed_images`), which is what
+//!   also carries them through a `--publish-only` rehydration.
 //!
 //! Only publishers whose recorded outcome is `Succeeded` are PROBED: a
 //! skipped / deselected / rolled-back publisher published nothing this run, so
@@ -72,6 +77,12 @@ use anodizer_core::publish_report::{PublisherOutcome, PublisherResult};
 /// `(snap, version, channel)` probe signature for the Snap Store channel-map
 /// check (see [`LandingProbes::snap_channel_map`]).
 pub type SnapChannelMapProbe<'a> = dyn Fn(&str, &str, Option<&str>) -> anyhow::Result<bool> + 'a;
+
+/// Image-reference probe signature for the docker registry check (see
+/// [`LandingProbes::docker_manifest`]). `Ok(Some(digest))` is the content
+/// digest the registry serves for the reference, `Ok(None)` a definitive
+/// absence, `Err` a registry that could not be consulted.
+pub type DockerManifestProbe<'a> = dyn Fn(&str) -> anyhow::Result<Option<String>> + 'a;
 
 /// How long the landing sweep keeps asking before it reports an absence.
 ///
@@ -287,6 +298,12 @@ pub struct LandingProbes<'a> {
     /// `None`). `Ok(false)` covers snap-unknown and version-absent alike;
     /// `Err` = the store could not be consulted.
     pub snap_channel_map: &'a SnapChannelMapProbe<'a>,
+    /// Image reference → the content digest the registry serves for it.
+    /// `Ok(None)` = the registry answered that the reference does not exist;
+    /// `Err` = the registry could not be consulted, which must read as
+    /// unverifiable rather than as an absence (a private repository whose
+    /// credential the probe lacks is still live for everyone holding one).
+    pub docker_manifest: &'a DockerManifestProbe<'a>,
 }
 
 /// Run every applicable landing check against the run's publish report.
@@ -300,11 +317,14 @@ pub(crate) fn run_landing_checks(
     probes: &LandingProbes<'_>,
     issues: &mut Vec<String>,
 ) -> usize {
-    let Some(report) = ctx.publish_report() else {
-        log.verbose("no publish report recorded this run — landing checks skipped");
-        return 0;
-    };
     let mut probed_publishers = 0usize;
+    if check_docker_landing(ctx, log, probes, issues) {
+        probed_publishers += 1;
+    }
+    let Some(report) = ctx.publish_report() else {
+        log.verbose("no publish report recorded this run — report-driven landing checks skipped");
+        return probed_publishers;
+    };
     for result in &report.results {
         // A publisher's landing findings are routed by its `required` flag: a
         // required publisher's finding fails the gate; an advisory
@@ -735,6 +755,98 @@ fn check_snapcraft_landing(
         }
     }
     probed > 0
+}
+
+/// Probe the registry for every image reference this run PUSHED.
+/// Returns whether at least one reference was probed.
+///
+/// Docker is not a `publish_report` participant, so the targets come from the
+/// artifacts: an image artifact carries the pushed marker exactly when its
+/// push returned OK, which leaves a snapshot, a dry run and a `skip_push:`
+/// manifest out and survives a `--publish-only` rehydration from the
+/// preserved `artifacts.json`.
+///
+/// A reference whose push recorded a digest is held to it: a registry serving
+/// the tag at DIFFERENT content means the tag this release named now resolves
+/// to an image the release did not build, which a plain presence question
+/// would pass.
+fn check_docker_landing(
+    ctx: &Context,
+    log: &StageLogger,
+    probes: &LandingProbes<'_>,
+    issues: &mut Vec<String>,
+) -> bool {
+    let pushed = ctx.artifacts.pushed_images();
+    if pushed.is_empty() {
+        log.verbose("no image was pushed to a registry this run — nothing to probe");
+        return false;
+    }
+    let mut visible: Vec<String> = Vec::new();
+    let mut waited = 0usize;
+    for image in &pushed {
+        let coords = format!("docker: {}", image.reference);
+        let registry = crate::registry::image_registry(&image.reference);
+        // What the last ask actually saw, so an absence can be told apart
+        // from a tag that resolves to different content without asking the
+        // registry a second time.
+        let served: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+        let outcome =
+            probe_with_propagation(
+                &coords,
+                &registry,
+                &probes.propagation,
+                log,
+                || match (probes.docker_manifest)(&image.reference) {
+                    Ok(Some(digest)) => {
+                        let matched = image
+                            .digest
+                            .as_deref()
+                            .is_none_or(|want| crate::registry::digests_match(want, &digest));
+                        *served.borrow_mut() = Some(digest);
+                        Ok(matched)
+                    }
+                    Ok(None) => {
+                        *served.borrow_mut() = None;
+                        Ok(false)
+                    }
+                    Err(e) => Err(e),
+                },
+            );
+        waited += usize::from(outcome.waited);
+        match outcome.landed {
+            Landed::Yes => visible.push(image.reference.clone()),
+            Landed::No => match (served.into_inner(), image.digest.as_deref()) {
+                (Some(got), Some(want)) => issues.push(format!(
+                    "docker: {} was pushed as {want} but {registry} serves {got}",
+                    image.reference
+                )),
+                _ => issues.push(format!(
+                    "docker: {} reported pushed but is not in {registry}",
+                    image.reference
+                )),
+            },
+            Landed::Unknown(e) => issues.push(format!(
+                "docker: could not confirm {} on {registry}: {e:#}",
+                image.reference
+            )),
+        }
+    }
+    if visible.len() == pushed.len() {
+        let tail = propagation_tail(waited, pushed.len());
+        let registry = crate::registry::image_registry(&pushed[0].reference);
+        if pushed.len() == 1 {
+            log.status(&format!(
+                "docker: {} present on {registry}{tail}",
+                visible[0]
+            ));
+        } else {
+            log.status(&format!(
+                "docker: {0}/{0} pushed image(s) present on their registries{tail}",
+                pushed.len()
+            ));
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -1175,7 +1287,41 @@ mod tests {
             pypi_index: &|_, f| panic!("pypi probe must not fire for {f}"),
             blob_head: &|t| panic!("blob probe must not fire for {}", t.key),
             snap_channel_map: &|s, v, _| panic!("snap probe must not fire for {s} {v}"),
+            docker_manifest: &|i| panic!("docker probe must not fire for {i}"),
         }
+    }
+
+    /// A context carrying image artifacts as the docker stage registered
+    /// them, with no publish report — docker files none.
+    fn ctx_with_pushed_images(
+        images: &[(&str, Option<&str>, bool)],
+    ) -> (Context, anodizer_core::log::LogCapture) {
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.with_log_capture(capture.clone());
+        for (reference, digest, pushed) in images {
+            let mut metadata = std::collections::HashMap::new();
+            metadata.insert("tag".to_string(), (*reference).to_string());
+            if let Some(d) = digest {
+                metadata.insert("digest".to_string(), (*d).to_string());
+            }
+            if *pushed {
+                metadata.insert(
+                    anodizer_core::artifact::PUSHED_META.to_string(),
+                    anodizer_core::artifact::PUSHED_VALUE.to_string(),
+                );
+            }
+            ctx.artifacts.add(anodizer_core::artifact::Artifact {
+                kind: anodizer_core::artifact::ArtifactKind::DockerImageV2,
+                name: (*reference).to_string(),
+                path: std::path::PathBuf::from(*reference),
+                target: None,
+                crate_name: "app".to_string(),
+                metadata,
+                size: None,
+            });
+        }
+        (ctx, capture)
     }
 
     fn test_logger(ctx: &Context) -> StageLogger {
@@ -1334,6 +1480,7 @@ mod tests {
             pypi_index: &|_, f| panic!("pypi probe must not fire for {f}"),
             blob_head: &|t| panic!("blob probe must not fire for {}", t.key),
             snap_channel_map: &|_, _, _| Ok(false),
+            docker_manifest: &|i| panic!("docker probe must not fire for {i}"),
         };
         let mut issues = Vec::new();
         run_landing_checks(&ctx, &log, &probes, &mut issues);
@@ -1933,22 +2080,10 @@ mod tests {
     /// instead of spending the sweep's shared window on a fixed answer.
     #[test]
     fn a_non_retriable_probe_failure_breaks_without_re_asking() {
-        for (publisher, extra) in [
-            ("cargo", cargo_extra(&[("app", "1.0.0")])),
-            ("npm", npm_extra(&[("app", "1.0.0")])),
-            ("pypi", pypi_extra(&["app-1.0.0-py3-none-any.whl"])),
-            ("blob", blob_extra(&["v1/app.tar.gz"])),
-            (
-                "snapcraft",
-                snapcraft_extra(&[("app", "1.0.0", Some("stable"), false)]),
-            ),
-        ] {
-            let report = PublishReport {
-                results: vec![result_with(publisher, PublisherOutcome::Succeeded, extra)],
-                ..Default::default()
-            };
-            let ctx = ctx_with_report(report);
-            let log = test_logger(&ctx);
+        /// Drive every probe of one run with a 403 and assert the ladder
+        /// asked exactly once.
+        fn assert_one_ask(publisher: &str, ctx: &Context) {
+            let log = test_logger(ctx);
             let asks = Cell::new(0usize);
             let deny = || -> anyhow::Result<bool> {
                 asks.set(asks.get() + 1);
@@ -1964,9 +2099,10 @@ mod tests {
                 pypi_index: &|_, _| deny(),
                 blob_head: &|_| deny(),
                 snap_channel_map: &|_, _, _| deny(),
+                docker_manifest: &|_| deny().map(|_| None),
             };
             let mut issues = Vec::new();
-            run_landing_checks(&ctx, &log, &probes, &mut issues);
+            run_landing_checks(ctx, &log, &probes, &mut issues);
             assert_eq!(
                 asks.get(),
                 1,
@@ -1978,6 +2114,27 @@ mod tests {
                 "{publisher}: {issues:?}"
             );
         }
+
+        for (publisher, extra) in [
+            ("cargo", cargo_extra(&[("app", "1.0.0")])),
+            ("npm", npm_extra(&[("app", "1.0.0")])),
+            ("pypi", pypi_extra(&["app-1.0.0-py3-none-any.whl"])),
+            ("blob", blob_extra(&["v1/app.tar.gz"])),
+            (
+                "snapcraft",
+                snapcraft_extra(&[("app", "1.0.0", Some("stable"), false)]),
+            ),
+        ] {
+            let report = PublishReport {
+                results: vec![result_with(publisher, PublisherOutcome::Succeeded, extra)],
+                ..Default::default()
+            };
+            assert_one_ask(publisher, &ctx_with_report(report));
+        }
+        // Docker files no publish report, so its one target comes from the
+        // artifacts instead.
+        let (ctx, _capture) = ctx_with_pushed_images(&[("ghcr.io/owner/app:1.0.0", None, true)]);
+        assert_one_ask("docker", &ctx);
     }
 
     fn pypi_extra(filenames: &[&str]) -> PublishEvidenceExtra {
@@ -2209,6 +2366,150 @@ mod tests {
     /// [`probe_with_propagation`] — a probe called directly would get its own
     /// window (or none) and drift from the sweep's single bound.
     /// See `.claude/rules/landing-probes-propagation.md`.
+    /// A registry that has accepted a push does not always serve the tag on
+    /// the next request — the same propagation the npm and crates.io probes
+    /// wait out.
+    #[test]
+    fn docker_probe_retries_until_the_registry_serves_the_tag() {
+        let (ctx, capture) = ctx_with_pushed_images(&[("ghcr.io/owner/app:1.0.0", None, true)]);
+        let log = test_logger(&ctx);
+        let asks = Cell::new(0usize);
+        let docker = |_: &str| -> anyhow::Result<Option<String>> {
+            asks.set(asks.get() + 1);
+            Ok((asks.get() >= 3).then(|| "sha256:aaa".to_string()))
+        };
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            docker_manifest: &docker,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        let probed = run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(probed, 1);
+        assert_eq!(
+            capture.warn_count(),
+            0,
+            "waiting out propagation is not a defect: {:?}",
+            capture.warn_messages()
+        );
+        let lines = statuses(&capture);
+        assert!(
+            lines.iter().any(|m| m.starts_with(
+                "docker: ghcr.io/owner/app:1.0.0 present on ghcr.io (1/1 needed a propagation wait"
+            )),
+            "the result line carries the propagation count: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn docker_probe_reports_the_absence_once_the_window_closes() {
+        let (ctx, _capture) = ctx_with_pushed_images(&[("ghcr.io/owner/app:1.0.0", None, true)]);
+        let log = test_logger(&ctx);
+        let docker = |_: &str| Ok(None);
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            docker_manifest: &docker,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert_eq!(
+            issues,
+            vec![
+                "docker: ghcr.io/owner/app:1.0.0 reported pushed but is not in ghcr.io".to_string()
+            ]
+        );
+    }
+
+    /// A registry that could not be consulted is unverifiable, not absent: a
+    /// pushed tag behind a credential the probe lacks is still live for
+    /// everyone holding one.
+    #[test]
+    fn docker_probe_reports_an_unreachable_registry_as_unverifiable() {
+        let (ctx, _capture) = ctx_with_pushed_images(&[("ghcr.io/owner/app:1.0.0", None, true)]);
+        let log = test_logger(&ctx);
+        let docker = |_: &str| -> anyhow::Result<Option<String>> {
+            anyhow::bail!("connection reset by peer")
+        };
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            docker_manifest: &docker,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(
+            issues[0].starts_with(
+                "docker: could not confirm ghcr.io/owner/app:1.0.0 on ghcr.io: connection reset"
+            ),
+            "{issues:?}"
+        );
+    }
+
+    /// An error followed by a success is propagation, not a finding.
+    #[test]
+    fn a_docker_probe_error_then_success_is_not_an_issue() {
+        let (ctx, capture) = ctx_with_pushed_images(&[("ghcr.io/owner/app:1.0.0", None, true)]);
+        let log = test_logger(&ctx);
+        let asks = Cell::new(0usize);
+        let docker = |_: &str| -> anyhow::Result<Option<String>> {
+            asks.set(asks.get() + 1);
+            if asks.get() == 1 {
+                anyhow::bail!("connection reset by peer");
+            }
+            Ok(Some("sha256:aaa".to_string()))
+        };
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            docker_manifest: &docker,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(capture.warn_count(), 0, "{:?}", capture.warn_messages());
+    }
+
+    /// A tag that resolves to content the run did not push is a different
+    /// defect from an absent tag, and a presence-only question would pass it.
+    #[test]
+    fn a_tag_serving_a_different_digest_is_reported_as_a_mismatch() {
+        let (ctx, _capture) =
+            ctx_with_pushed_images(&[("ghcr.io/owner/app:1.0.0", Some("sha256:aaa"), true)]);
+        let log = test_logger(&ctx);
+        let docker = |_: &str| Ok(Some("sha256:bbb".to_string()));
+        let probes = LandingProbes {
+            propagation: FLAKY,
+            docker_manifest: &docker,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert_eq!(
+            issues,
+            vec![
+                "docker: ghcr.io/owner/app:1.0.0 was pushed as sha256:aaa but ghcr.io serves \
+                 sha256:bbb"
+                    .to_string()
+            ]
+        );
+    }
+
+    /// An image the run built but never pushed — a snapshot, a dry run, a
+    /// `skip_push:` manifest, or an unpushed image rehydrated from the
+    /// preserved manifest — is not a landing target.
+    #[test]
+    fn an_image_that_was_never_pushed_is_not_probed() {
+        let (ctx, _capture) = ctx_with_pushed_images(&[("ghcr.io/owner/app:1.0.0", None, false)]);
+        let log = test_logger(&ctx);
+        let mut issues = Vec::new();
+        let probed = run_landing_checks(&ctx, &log, &panicking_probes(), &mut issues);
+        assert_eq!(probed, 0);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
     #[test]
     fn every_landing_probe_is_asked_through_the_propagation_helper() {
         use anodizer_core::test_helpers::test_sources::{
@@ -2235,8 +2536,8 @@ mod tests {
             .collect();
         assert_eq!(
             fields.len(),
-            5,
-            "the probed publishers are cargo, npm, pypi, blob and snapcraft: {fields:?}"
+            6,
+            "the probed publishers are cargo, npm, pypi, blob, snapcraft and docker: {fields:?}"
         );
 
         let mut askers = Vec::new();

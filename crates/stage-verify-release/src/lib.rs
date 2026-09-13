@@ -52,6 +52,7 @@ mod content;
 mod crate_verify;
 mod landing;
 mod libc_check;
+mod registry;
 mod smoke;
 mod snap_store;
 
@@ -64,7 +65,7 @@ pub use anodizer_core::libc_check::{
     max_glibc_requirement,
 };
 pub use asset_check::{AssetDiff, ContentVerdict, check_asset_content, diff_assets};
-pub use landing::{LandingProbes, PropagationRetry};
+pub use landing::{DockerManifestProbe, LandingProbes, PropagationRetry};
 pub use smoke::{
     PackageType, SmokeJob, SmokeOutcome, build_smoke_argv, docker_available, docker_platform,
     run_smoke,
@@ -101,10 +102,12 @@ const PUBLISHED_NOTE: &str = "the release IS published — investigate";
 /// ([`anodizer_stage_sign::signs_consumers`]).
 ///
 /// Each check axis is additionally gated on ITS OWN publisher: the asset
-/// existence/content check consumes only github-release, each landing
-/// probe fires only when its publisher's recorded outcome is `Succeeded`
-/// (a `Failed` attempt is reported as an issue directly, without a probe —
-/// see `landing`), and the OS-package axes gate on
+/// existence/content check consumes only github-release, each report-driven
+/// landing probe fires only when its publisher's recorded outcome is
+/// `Succeeded` (a `Failed` attempt is reported as an issue directly, without
+/// a probe — see `landing`), the docker probe fires per image tag the run
+/// actually pushed (docker files no publish report, so its targets are the
+/// artifacts), and the OS-package axes gate on
 /// `os_package_publisher_selected` — so a `--publishers npm` run still
 /// verifies the npm landing while skipping the GitHub asset check and the
 /// package matrix.
@@ -116,6 +119,7 @@ pub fn verify_release_consumers() -> &'static [&'static str] {
         "pypi",
         "blob",
         "snapcraft-publish",
+        "docker",
     ]
 }
 
@@ -341,6 +345,8 @@ impl Stage for VerifyReleaseStage {
                     snap, version, channel, &policy, deadline, &log,
                 )
             };
+            let docker_probe =
+                |image: &str| registry::manifest_digest(image, &policy, deadline, &log);
             let probes = LandingProbes {
                 // A dry run must not spend minutes waiting on propagation it
                 // never caused.
@@ -354,6 +360,7 @@ impl Stage for VerifyReleaseStage {
                 pypi_index: &pypi_probe,
                 blob_head: &blob_probe,
                 snap_channel_map: &snap_probe,
+                docker_manifest: &docker_probe,
             };
             landing_probed = landing::run_landing_checks(ctx, &log, &probes, &mut issues);
         }
