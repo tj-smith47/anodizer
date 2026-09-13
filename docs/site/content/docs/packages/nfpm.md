@@ -73,7 +73,7 @@ Not applicable — nFPM generates package files locally. Uploading them to a pac
 - **`formats`**: the list must match the package types your downstream publishers expect. A mismatch (e.g., configuring cloudsmith for `deb` but nFPM only producing `rpm`) silently skips upload.
 - **`dependencies`**: per-format dependency maps allow different deps for deb vs rpm — use the `overrides` map for format-specific fields.
 - **Platform routing**: Linux (plus Android/iOS/AIX where supported) binaries feed the Linux formats; Windows binaries feed **only** `msix`. Darwin targets are ignored. A `[deb, msix]` config packages each target with its matching format and silently skips the rest.
-- **`msix` needs nfpm >= 2.46.0**: older nfpm binaries don't know the msix packager; anodizer surfaces the version floor in the error when packaging fails.
+- **`msix` needs nfpm >= 2.46.0**: older nfpm binaries don't know the msix packager; anodizer names the version requirement in the error when packaging fails.
 
 ## Republish / update behavior
 

@@ -122,7 +122,7 @@ jobs:
 
 **Use when:** all crates in the workspace share a version via `[workspace.package].version`.
 
-`anodizer tag` bumps the shared version, creates one workspace tag, and `anodizer release` walks all crates in topo order.
+`anodizer tag` bumps the shared version, creates one workspace tag, and `anodizer release` releases every crate in topo order.
 
 ```yaml
 name: Release

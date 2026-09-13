@@ -239,7 +239,7 @@ The schema's `$id` field must be an absolute `http(s)://` URL. Relative or urn-f
 
 ### `format` values
 
-SchemaStore's validator rejects a schema that uses a `format` its ajv does not register (`unknown format "uint32" ignored in schema`). Anodizer walks the vendored schema for every `format` value outside ajv-formats and `@hyperupcall/ajv-formats-draft2019`, and writes them as an `unknownFormat` list in the file's `options` block in `src/schema-validation.jsonc` — keyed on the vendored filename, in the same PR:
+SchemaStore's validator rejects a schema that uses a `format` its ajv does not register (`unknown format "uint32" ignored in schema`). Anodizer reads the vendored schema for every `format` value outside ajv-formats and `@hyperupcall/ajv-formats-draft2019`, and writes them as an `unknownFormat` list in the file's `options` block in `src/schema-validation.jsonc` — keyed on the vendored filename, in the same PR:
 
 ```jsonc
 "options": {
