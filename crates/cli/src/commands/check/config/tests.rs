@@ -2471,8 +2471,16 @@ fn a_placeholder_inside_an_expression_warns() {
         );
     }
 
-    // A name that merely starts the same is a different variable.
-    for spelling in ["{{ ArtifactName }}", "{{ my_artifact }}"] {
+    // A name that merely starts or ends the same is a different variable,
+    // and a name inside a quoted literal is text Tera never looks up.
+    for spelling in [
+        "{{ ArtifactName }}",
+        "{{ my_Artifact }}",
+        "{{ my_artifact }}",
+        "{{ \"Artifact\" }}",
+        "{{ Version | replace(from=\"Artifact\", to=\"x\") }}",
+        "{{ ['Artifact'] | join(sep=\"-\") }}",
+    ] {
         let config = Config {
             binary_signs: vec![SignConfig {
                 signature: Some(format!("{spelling}.sig")),
@@ -2484,6 +2492,58 @@ fn a_placeholder_inside_an_expression_warns() {
         check_unpadded_sign_placeholders(&config, &mut warnings);
         assert!(warnings.is_empty(), "{spelling}: {warnings:?}");
     }
+}
+
+/// A statement block reads its names out of the same template context an
+/// expression does, so `{% set x = Artifact %}` fails the render exactly as
+/// `{{ Artifact | upper }}` does and is warned about the same way.
+#[test]
+fn a_placeholder_inside_a_statement_block_warns() {
+    use anodizer_core::config::SignConfig;
+    let spelling = "{% set x = Artifact %}";
+    let config = Config {
+        binary_signs: vec![SignConfig {
+            signature: Some(format!("{spelling}out.sig")),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_unpadded_sign_placeholders(&config, &mut warnings);
+    assert_eq!(
+        warnings,
+        vec![format!(
+            "binary_signs[0].signature names `{spelling}`, which anodizer \
+             substitutes only as the literal `{{{{ .Artifact }}}}` or \
+             `{{{{ Artifact }}}}` — every other spelling reaches the template \
+             engine as an undefined variable and fails the sign stage"
+        )]
+    );
+}
+
+/// The closing delimiter is searched for in the whole remainder, so a
+/// template whose `{{` never closes holds no complete run after it either —
+/// ending the scan there loses no spelling. A run that closes AFTER another
+/// opener is still one run, and still warned about.
+#[test]
+fn an_unclosed_run_leaves_no_later_run_to_find() {
+    use anodizer_core::config::SignConfig;
+    let warnings_for = |template: &str| {
+        let config = Config {
+            binary_signs: vec![SignConfig {
+                signature: Some(template.to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut warnings = Vec::new();
+        check_unpadded_sign_placeholders(&config, &mut warnings);
+        warnings
+    };
+    assert!(warnings_for("{{ Artifact | upper").is_empty());
+    assert!(warnings_for("out.sig {{ .Artifact").is_empty());
+    assert_eq!(warnings_for("{{ oops {{ Artifact }}.sig").len(), 1);
+    assert!(warnings_for("{{ .Artifact }}{{ Artifact }}.sig").is_empty());
 }
 
 /// Tera strips a `{# … #}` comment before evaluating the template, so a
@@ -2745,6 +2805,11 @@ fn message_literals(src: &str) -> Vec<String> {
 /// So no message this module builds may carry a run of three spaces —
 /// asked of every production source under `check/config/`, not just the one
 /// that happened to hold the defect.
+/// How many function bodies under `check/config/` build a message. Pinned
+/// so a rename or a move that empties the walk fails instead of passing
+/// with nothing to ask.
+const MESSAGE_BUILDING_BODIES: usize = 31;
+
 #[test]
 fn no_check_config_message_carries_a_run_of_spaces() {
     use anodizer_core::test_helpers::test_sources::{
@@ -2753,10 +2818,10 @@ fn no_check_config_message_carries_a_run_of_spaces() {
 
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands/check/config");
     let sources = rust_sources(std::path::Path::new(dir));
-    assert!(
-        sources.len() >= 4,
-        "the walk found only {} production sources under {dir}",
-        sources.len()
+    assert_eq!(
+        sources.len(),
+        5,
+        "the production sources under {dir} the walk found: {sources:?}"
     );
     let building: Vec<String> = sources
         .iter()
@@ -2767,11 +2832,10 @@ fn no_check_config_message_carries_a_run_of_spaces() {
         })
         .filter(|body| body.contains("format!("))
         .collect();
-    assert!(
-        building.len() > 20,
-        "the walk found only {} message-building bodies under {dir}, so it \
-         is asking its question of almost nothing",
-        building.len()
+    assert_eq!(
+        building.len(),
+        MESSAGE_BUILDING_BODIES,
+        "the message-building bodies the walk found under {dir}"
     );
     let offenders: Vec<String> = building
         .iter()
@@ -2786,31 +2850,29 @@ fn no_check_config_message_carries_a_run_of_spaces() {
     );
 }
 
-/// The filter check walks every sign slice, so an unrecognized value on
-/// `binary_signs:` or on a per-crate slice is caught too — and a
-/// `binary_signs:` slice is asked the narrower question its own field is
-/// loaded under, so a value that is valid elsewhere is still refused there.
+/// The filter check walks every sign slice, so an unrecognized value on a
+/// per-crate slice is caught exactly as one on the top-level `signs:` is.
+///
+/// Both arms are `signs:`, which is the only slice a YAML file can write an
+/// unrecognized filter on: `binary_signs:` is loaded through a deserializer
+/// that refuses everything but `binary` and `none`, so its own vocabulary is
+/// asked on the one route past that deserializer —
+/// `a_wide_filter_under_defaults_binary_signs_warns`.
 #[test]
 fn an_unrecognized_filter_warns_on_every_sign_slice() {
-    use anodizer_core::config::{SignConfig, WorkspaceConfig};
-    let bogus = || {
-        vec![SignConfig {
-            artifacts: Some("bogus".to_string()),
-            ..Default::default()
-        }]
-    };
-    let config = Config {
-        project_name: "test".to_string(),
-        signs: bogus(),
-        binary_signs: bogus(),
-        workspaces: Some(vec![WorkspaceConfig {
-            name: "ws".to_string(),
-            signs: bogus(),
-            binary_signs: bogus(),
-            ..Default::default()
-        }]),
-        ..Default::default()
-    };
+    let yaml = r#"
+project_name: test
+signs:
+  - artifacts: bogus
+workspaces:
+  - name: ws
+    crates:
+      - name: app
+    signs:
+      - artifacts: bogus
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).expect("the loader accepts it");
+    anodizer_core::defaults_merge::apply_defaults(&mut config);
     let mut warnings = Vec::new();
     check_sign_artifact_filters(&config, &mut warnings);
     let valid = anodizer_stage_sign::VALID_SIGN_ARTIFACT_FILTERS.join(", ");
@@ -2818,17 +2880,9 @@ fn an_unrecognized_filter_warns_on_every_sign_slice() {
         warnings,
         vec![
             format!("unrecognized signs[0] artifacts filter 'bogus' (valid: {valid})"),
-            "binary_signs[0] artifacts filter 'bogus' is not allowed on \
-             binary_signs (valid: binary, none) — the sign stage signs \
-             binaries whatever it says"
-                .to_string(),
             format!(
                 "unrecognized workspaces.ws.signs[0] artifacts filter 'bogus' (valid: {valid})"
             ),
-            "workspaces.ws.binary_signs[0] artifacts filter 'bogus' is not \
-             allowed on binary_signs (valid: binary, none) — the sign stage \
-             signs binaries whatever it says"
-                .to_string(),
         ]
     );
 }
@@ -2872,6 +2926,92 @@ defaults:
         check_sign_artifact_filters(&config, &mut warnings);
         assert!(warnings.is_empty(), "{filter}: {warnings:?}");
     }
+}
+
+/// The docker sign path renders its templates and substitutes
+/// `{{ .Artifact }}` / `{{ .Signature }}` by literal; it never expands the
+/// `${…}` variables the detached sign path does, so a shell-style reference
+/// reaches cosign as text. `stdin:` substitutes nothing at all, so it is
+/// offered no remedy.
+#[test]
+fn a_docker_shell_variable_warns_that_it_is_never_expanded() {
+    use anodizer_core::config::DockerSignConfig;
+    let config = Config {
+        docker_signs: Some(vec![DockerSignConfig {
+            args: Some(vec![
+                "sign".to_string(),
+                "${artifact}".to_string(),
+                "--certificate=$certificate".to_string(),
+            ]),
+            stdin: Some("${signature}".to_string()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_unpadded_sign_placeholders(&config, &mut warnings);
+    assert_eq!(
+        warnings,
+        vec![
+            "docker_signs[0].args names `${artifact}`, which the docker sign \
+             path never expands — it reaches the signing command as that \
+             literal text; write `{{ .Artifact }}`, which anodizer substitutes \
+             before the render"
+                .to_string(),
+            "docker_signs[0].args names `${certificate}`, which the docker \
+             sign path never expands — it reaches the signing command as that \
+             literal text; a docker certificate path is read nowhere, so \
+             remove the reference"
+                .to_string(),
+            "docker_signs[0].stdin names `${signature}`, which the docker sign \
+             path never expands — it reaches the signing command as that \
+             literal text"
+                .to_string(),
+        ]
+    );
+
+    // The spellings the docker path really does substitute warn nothing.
+    let config = Config {
+        docker_signs: Some(vec![DockerSignConfig {
+            args: Some(vec![
+                "{{ .Artifact }}@{{ .Digest }}".to_string(),
+                "{{ Signature }}".to_string(),
+            ]),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_unpadded_sign_placeholders(&config, &mut warnings);
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+/// A docker certificate path is read nowhere — only its presence is, to pick
+/// cosign's bundle verify mode — so the placeholder the argv substitutes
+/// resolves to the empty string and the argument ships with no value.
+#[test]
+fn a_docker_certificate_placeholder_warns_that_it_renders_empty() {
+    use anodizer_core::config::DockerSignConfig;
+    let config = Config {
+        docker_signs: Some(vec![DockerSignConfig {
+            certificate: Some("cert.pem".to_string()),
+            args: Some(vec!["--certificate={{ .Certificate }}".to_string()]),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_unpadded_sign_placeholders(&config, &mut warnings);
+    assert_eq!(
+        warnings,
+        vec![
+            "docker_signs[0].args names `{{ .Certificate }}`, which anodizer \
+             substitutes with the empty string on the docker path — a docker \
+             certificate path is read nowhere, so the argument reaches the \
+             signing command with no value"
+                .to_string(),
+        ]
+    );
 }
 
 /// A `docker_signs:` entry's `signature:` names no file — the signature is
@@ -3305,13 +3445,15 @@ fn signing_tools_silent_when_no_signing_configured() {
 
 /// The sign docs page quotes `check config` output as the operator sees it,
 /// and a reworded message leaves those blocks quoting a line the binary no
-/// longer prints. So every `Warning` line the page quotes has to be a
-/// message the checks really produce, for a config the page really shows:
-/// the YAML blocks on the page ARE the fixtures, parsed straight out of it.
+/// longer prints. So the page's own ```yaml blocks ARE the fixtures: each
+/// one is parsed, the five sign checks are run over it, and what they
+/// produce must be exactly what the ```text block after it quotes — every
+/// quoted line produced, and every produced line quoted, in that order.
 ///
-/// What this cannot see is a quoted line whose config the page leaves out —
-/// such a line has no fixture to produce it and fails here, which is the
-/// direction that keeps the two in step.
+/// What this covers is `check config`'s own sign warnings. The page's
+/// `Error sign:` blocks come from the sign stage rather than from a check
+/// function and are pinned where that stage lives
+/// (`crates/stage-sign`, `the_collision_errors_quoted_in_the_sign_docs_are_the_messages_the_stage_produces`).
 #[test]
 fn every_warning_quoted_in_the_sign_docs_is_a_message_the_checks_produce() {
     let path = concat!(
@@ -3319,47 +3461,98 @@ fn every_warning_quoted_in_the_sign_docs_is_a_message_the_checks_produce() {
         "/../../docs/site/content/docs/sign/binaries-archives.md"
     );
     let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let blocks = fenced_blocks(&page);
 
     let mut fixtures = 0usize;
-    let mut produced: Vec<String> = vec![];
-    for block in page.split("```yaml").skip(1) {
-        let Some(yaml) = block.split("```").next() else {
+    let mut quoted_lines = 0usize;
+    for (at, (language, body)) in blocks.iter().enumerate() {
+        if *language != "yaml" {
             continue;
-        };
+        }
         // A fragment the loader refuses is not a config the page claims to
         // show output for.
-        let Ok(mut config) = serde_yaml_ng::from_str::<Config>(yaml) else {
+        let Ok(mut config) = serde_yaml_ng::from_str::<Config>(body) else {
             continue;
         };
         anodizer_core::defaults_merge::apply_defaults(&mut config);
         fixtures += 1;
+        let mut produced: Vec<String> = vec![];
         check_sign_artifact_filters(&config, &mut produced);
         check_sign_asset_name_templates(&config, &mut produced);
         check_sign_duplicate_outputs(&config, &mut produced);
         check_unpadded_sign_placeholders(&config, &mut produced);
         check_docker_sign_signature_templates(&config, &mut produced);
-    }
-    assert!(
-        fixtures >= 8,
-        "only {fixtures} of the page's YAML blocks parsed as a config, so the \
-         pin is asking its question of almost nothing"
-    );
 
-    let quoted: Vec<&str> = page
-        .lines()
-        .filter_map(|line| line.trim_start().strip_prefix("Warning "))
-        .collect();
-    assert!(
-        quoted.len() >= 7,
-        "the page quotes only {} warnings, so the pin is asking its question \
-         of almost nothing",
-        quoted.len()
-    );
-    for line in quoted {
-        assert!(
-            produced.iter().any(|w| w == line),
-            "the page quotes a warning no check produces for any config it \
-             shows: {line}"
+        let quoted: Vec<String> = blocks[at + 1..]
+            .iter()
+            .take_while(|(language, _)| *language != "yaml")
+            .flat_map(|(_, body)| body.lines())
+            .filter_map(|line| line.trim_start().strip_prefix("Warning "))
+            .map(str::to_string)
+            .collect();
+        quoted_lines += quoted.len();
+        assert_eq!(
+            produced, quoted,
+            "the config in block {at} and the output quoted under it disagree"
         );
     }
+    assert_eq!(fixtures, 10, "the page's parseable config blocks");
+    assert_eq!(quoted_lines, 9, "the warnings the page quotes");
+}
+
+/// Every fenced block on a docs page as `(language, body)`, in page order.
+fn fenced_blocks(page: &str) -> Vec<(&str, &str)> {
+    let mut blocks = Vec::new();
+    let mut open: Option<(&str, usize)> = None;
+    for line in page.lines() {
+        let at = line.as_ptr() as usize - page.as_ptr() as usize;
+        match (line.strip_prefix("```"), open) {
+            (Some(_), Some((language, from))) => {
+                blocks.push((language, &page[from..at]));
+                open = None;
+            }
+            (Some(language), None) => open = Some((language.trim(), at + line.len() + 1)),
+            (None, _) => {}
+        }
+    }
+    blocks
+}
+
+/// The release-resilience page quotes the announce secret-exposure warning
+/// the same way the sign page quotes its own, and the same rewording breaks
+/// it. So that page's lint section is driven as a fixture too: its `yaml`
+/// block is the config, and the `text` block under it is what the check has
+/// to produce for it.
+#[test]
+fn the_warning_quoted_in_the_resilience_docs_is_a_message_the_check_produces() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/advanced/release-resilience.md"
+    );
+    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let section = page
+        .split_once("### Static lint — `anodizer check config`")
+        .expect("the lint section is on the page")
+        .1;
+    let blocks = fenced_blocks(section);
+    let yaml = blocks
+        .iter()
+        .find(|(language, _)| *language == "yaml")
+        .expect("the section shows a config");
+    let quoted: Vec<String> = blocks
+        .iter()
+        .find(|(language, _)| *language == "text")
+        .expect("the section shows the output")
+        .1
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("Warning "))
+        .map(str::to_string)
+        .collect();
+
+    let mut config: Config = serde_yaml_ng::from_str(yaml.1).expect("the loader accepts it");
+    anodizer_core::defaults_merge::apply_defaults(&mut config);
+    let mut produced: Vec<String> = vec![];
+    check_announce_secret_exposure(&config, &mut produced);
+    assert_eq!(produced, quoted);
+    assert_eq!(quoted.len(), 1, "the section quotes one warning");
 }

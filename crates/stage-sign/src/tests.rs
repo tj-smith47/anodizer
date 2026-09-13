@@ -8772,3 +8772,156 @@ fn no_signature_name_is_derived_from_a_registered_archive() {
         );
     }
 }
+
+/// The stage error one binary-sign collision fixture produces: a crate `app`
+/// building a binary `app` for one target, with `binaries` registered under
+/// it and `signs` configured over them.
+fn binary_sign_collision_error(
+    name_template: Option<&str>,
+    signs: Vec<SignConfig>,
+    binaries: &[(&str, Option<&str>)],
+) -> String {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, BuildConfig, CrateConfig};
+
+    const TARGET: &str = "x86_64-unknown-linux-gnu";
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("app")
+        .crates(vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("app".to_string()),
+                targets: Some(vec![TARGET.to_string()]),
+                ..Default::default()
+            }]),
+            archives: match name_template {
+                Some(template) => ArchivesConfig::Configs(vec![ArchiveConfig {
+                    name_template: Some(template.to_string()),
+                    ..Default::default()
+                }]),
+                None => ArchivesConfig::default(),
+            },
+            ..Default::default()
+        }])
+        .binary_signs(signs)
+        .dry_run(true)
+        .build();
+    ctx.template_vars_mut().set("ProjectName", "app");
+    ctx.template_vars_mut().set("Version", "1.2.3");
+    for (binary, variant) in binaries {
+        let mut metadata = std::collections::HashMap::from([
+            ("binary".to_string(), (*binary).to_string()),
+            ("id".to_string(), (*binary).to_string()),
+        ]);
+        if let Some(variant) = variant {
+            metadata.insert("amd64_variant".to_string(), (*variant).to_string());
+        }
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: (*binary).to_string(),
+            path: std::path::PathBuf::from(format!("target/{TARGET}/release/{binary}")),
+            target: Some(TARGET.to_string()),
+            crate_name: "app".to_string(),
+            metadata,
+            size: None,
+        });
+    }
+
+    let log = ctx.logger("binary-sign");
+    let cfgs = ctx.config.binary_signs.clone();
+    let dist = ctx.config.dist.display().to_string();
+    let err = process_sign_configs(
+        &cfgs,
+        &mut ctx,
+        &log,
+        ArtifactFilter::BinaryOnly,
+        "binary-sign",
+    )
+    .expect_err("the fixture must fail the stage");
+    // The fixture's `dist` is a directory of its own under the system temp
+    // dir; the page spells the configured default.
+    format!("{err:#}").replace(&dist, "dist")
+}
+
+/// The sign page quotes the stage's own collision errors as the operator
+/// sees them, and a reworded message leaves those blocks quoting a line the
+/// binary no longer prints. So each documented collision is reproduced here
+/// and the page's line has to be exactly what the stage produced, in the
+/// order the page shows them.
+///
+/// The page's `check config` warnings are pinned where those checks live
+/// (`crates/cli`, `every_warning_quoted_in_the_sign_docs_is_a_message_the_checks_produce`).
+#[test]
+fn the_collision_errors_quoted_in_the_sign_docs_are_the_messages_the_stage_produces() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/sign/binaries-archives.md"
+    );
+    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let quoted: Vec<&str> = page
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("Error "))
+        .collect();
+
+    let signing =
+        |signature: Option<&str>, certificate: Option<&str>, asset: Option<&str>| SignConfig {
+            artifacts: Some("binary".to_string()),
+            cmd: Some("true".to_string()),
+            args: Some(vec![]),
+            signature: signature.map(str::to_string),
+            certificate: certificate.map(str::to_string),
+            asset_name_template: asset.map(str::to_string),
+            ..Default::default()
+        };
+    const TEMPLATE: &str = "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}";
+    let produced = [
+        // Two amd64 levels of one binary under a template that separates
+        // neither.
+        binary_sign_collision_error(
+            Some(TEMPLATE),
+            vec![signing(None, None, None)],
+            &[("app", None), ("app", Some("v3"))],
+        ),
+        // One binary whose signature and certificate append one suffix.
+        binary_sign_collision_error(
+            Some(TEMPLATE),
+            vec![signing(
+                Some("{{ .Artifact }}.sig"),
+                Some("{{ .Artifact }}.sig"),
+                None,
+            )],
+            &[("app", None)],
+        ),
+        // A `signature:` template that renames the output, so the base is in
+        // neither name.
+        binary_sign_collision_error(
+            Some(TEMPLATE),
+            vec![signing(Some("detached.sig"), None, None)],
+            &[("app", None), ("helper", None)],
+        ),
+        // Two entries trading a component between the base and the suffix.
+        binary_sign_collision_error(
+            Some(TEMPLATE),
+            vec![
+                signing(
+                    Some("{{ .Artifact }}.sig"),
+                    None,
+                    Some("app-{{ Version }}.bundle"),
+                ),
+                signing(
+                    Some("{{ .Artifact }}.bundle.sig"),
+                    None,
+                    Some("app-{{ Version }}"),
+                ),
+            ],
+            &[("app", None)],
+        ),
+    ];
+
+    assert_eq!(quoted.len(), produced.len(), "the errors the page quotes");
+    for (line, message) in quoted.iter().zip(produced.iter()) {
+        assert_eq!(line, message);
+    }
+}
