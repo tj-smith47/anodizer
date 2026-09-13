@@ -26,7 +26,13 @@
 //!   manifest `GET`, and must answer with the digest the push recorded. The
 //!   docker stage files no publish report, so its targets come from the
 //!   artifacts themselves (`ArtifactRegistry::pushed_images`), which is what
-//!   also carries them through a `--publish-only` rehydration.
+//!   also carries them through a `--publish-only` rehydration. Having no
+//!   report row, it has no `required` flag either, so its findings are
+//!   routed by what they prove: an absence and a digest mismatch are
+//!   definitive and fail the gate, while a registry that could not be
+//!   consulted is a recorded warning — the probe reads only the plain
+//!   credentials docker stored, so a repository behind a credential helper
+//!   answers 401 to a push that succeeded.
 //!
 //! Only publishers whose recorded outcome is `Succeeded` are PROBED: a
 //! skipped / deselected / rolled-back publisher published nothing this run, so
@@ -771,6 +777,11 @@ fn check_snapcraft_landing(
     probed > 0
 }
 
+/// How many asks a digest mismatch gets before the ladder ends. One re-ask
+/// covers a registry still catching up on an overwrite; the shared
+/// propagation window belongs to every remaining target.
+const MISMATCH_ASKS: usize = 2;
+
 /// Probe the registry for every image reference this run PUSHED.
 /// Returns whether at least one reference was probed.
 ///
@@ -790,6 +801,14 @@ fn check_docker_landing(
     probes: &LandingProbes<'_>,
     issues: &mut Vec<String>,
 ) -> bool {
+    // Every other axis is gated by its own publisher's selection. Docker's
+    // targets come from artifacts that carry their pushed marker across a
+    // `--publish-only` rehydration, so without this gate a leg told to leave
+    // the registry alone would still ask it.
+    if ctx.publisher_deselected("docker") {
+        log.verbose(&ctx.deselected_reason("docker"));
+        return false;
+    }
     let pushed = ctx.artifacts.pushed_images();
     if pushed.is_empty() {
         log.verbose("no image was pushed to a registry this run — nothing to probe");
@@ -804,6 +823,7 @@ fn check_docker_landing(
         // from a tag that resolves to different content without asking the
         // registry a second time.
         let served: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+        let mismatched_asks = std::cell::Cell::new(0usize);
         let outcome =
             probe_with_propagation(
                 &coords,
@@ -817,6 +837,19 @@ fn check_docker_landing(
                             .as_deref()
                             .is_none_or(|want| crate::registry::digests_match(want, &digest));
                         *served.borrow_mut() = Some(digest);
+                        if !matched {
+                            mismatched_asks.set(mismatched_asks.get() + 1);
+                            // A tag serving other content is a fixed answer,
+                            // not propagation. One re-ask covers a registry
+                            // still catching up on an overwrite; past that,
+                            // re-asking only spends the window every other
+                            // target is queued behind.
+                            anyhow::ensure!(
+                                mismatched_asks.get() < MISMATCH_ASKS,
+                                "the registry serves this tag at a digest \
+                                 other than the one pushed"
+                            );
+                        }
                         Ok(matched)
                     }
                     Ok(None) => {
@@ -827,35 +860,59 @@ fn check_docker_landing(
                 },
             );
         waited += usize::from(outcome.waited);
+        let got = served.into_inner();
+        let want = image.digest.as_deref();
+        let mismatched = match (got.as_deref(), want) {
+            (Some(got), Some(want)) => !crate::registry::digests_match(want, got),
+            _ => false,
+        };
         match outcome.landed {
             Landed::Yes => visible.push(image.reference.clone()),
-            Landed::No => match (served.into_inner(), image.digest.as_deref()) {
-                (Some(got), Some(want)) => issues.push(format!(
-                    "docker: {} was pushed as {want} but {registry} serves {got}",
-                    image.reference
-                )),
-                _ => issues.push(format!(
-                    "docker: {} reported pushed but is not in {registry}",
-                    image.reference
-                )),
-            },
-            Landed::Unknown(e) => issues.push(format!(
-                "docker: could not confirm {} on {registry}: {e:#}",
+            // The tag this release named now resolves to an image the release
+            // did not build — definitive whichever way the ladder ended.
+            _ if mismatched => issues.push(format!(
+                "docker: {} was pushed as {} but {registry} serves {}",
+                image.reference,
+                want.unwrap_or_default(),
+                got.as_deref().unwrap_or_default()
+            )),
+            Landed::No => issues.push(format!(
+                "docker: {} reported pushed but is not in {registry}",
+                image.reference
+            )),
+            // A registry that could not be consulted is not an absence: the
+            // probe reads only the plain credentials docker stored, so a
+            // private repository behind a credential helper answers 401 to a
+            // push that succeeded. Reported the way an optional
+            // publisher's landing finding is — loud, recorded, and never a
+            // reason to fail a release whose one-way-door publishers have
+            // already run.
+            Landed::Unknown(e) => log.warn(&format!(
+                "unverifiable docker landing not gating the release — docker: could not \
+                 confirm {} on {registry}: {e:#}",
                 image.reference
             )),
         }
     }
     if visible.len() == pushed.len() {
         let tail = propagation_tail(waited, pushed.len());
-        let registry = crate::registry::image_registry(&pushed[0].reference);
+        // A run can push to more than one registry, so naming only the first
+        // would credit another registry's images to it.
+        let mut registries: Vec<String> = pushed
+            .iter()
+            .map(|i| crate::registry::image_registry(&i.reference))
+            .collect();
+        registries.sort();
+        registries.dedup();
+        let registries = registries.join(", ");
         if pushed.len() == 1 {
             log.status(&format!(
-                "docker: {} present on {registry}{tail}",
+                "docker: {} visible on {registries}{tail}",
                 visible[0]
             ));
         } else {
             log.status(&format!(
-                "docker: {0}/{0} pushed image(s) present on their registries{tail}",
+                "docker: {0}/{0} pushed image(s) visible on {registries}{tail}",
                 pushed.len()
             ));
         }
@@ -2095,8 +2152,14 @@ mod tests {
     #[test]
     fn a_non_retriable_probe_failure_breaks_without_re_asking() {
         /// Drive every probe of one run with a 403 and assert the ladder
-        /// asked exactly once.
-        fn assert_one_ask(publisher: &str, ctx: &Context) {
+        /// asked exactly once. `finding` reads the recorded finding back out
+        /// of the run: a gating publisher records an issue, docker's
+        /// unverifiable landing a warning.
+        fn assert_one_ask(
+            publisher: &str,
+            ctx: &Context,
+            finding: impl Fn(&[String]) -> Vec<String>,
+        ) {
             let log = test_logger(ctx);
             let asks = Cell::new(0usize);
             let deny = || -> anyhow::Result<bool> {
@@ -2122,10 +2185,11 @@ mod tests {
                 1,
                 "{publisher}: a 403 answers the same on every re-ask"
             );
-            assert_eq!(issues.len(), 1, "{publisher}: {issues:?}");
+            let findings = finding(&issues);
+            assert_eq!(findings.len(), 1, "{publisher}: {findings:?}");
             assert!(
-                issues[0].contains("403 Forbidden"),
-                "{publisher}: {issues:?}"
+                findings[0].contains("403 Forbidden"),
+                "{publisher}: {findings:?}"
             );
         }
 
@@ -2143,12 +2207,17 @@ mod tests {
                 results: vec![result_with(publisher, PublisherOutcome::Succeeded, extra)],
                 ..Default::default()
             };
-            assert_one_ask(publisher, &ctx_with_report(report));
+            assert_one_ask(publisher, &ctx_with_report(report), |issues| {
+                issues.to_vec()
+            });
         }
         // Docker files no publish report, so its one target comes from the
-        // artifacts instead.
-        let (ctx, _capture) = ctx_with_pushed_images(&[("ghcr.io/owner/app:1.0.0", None, true)]);
-        assert_one_ask("docker", &ctx);
+        // artifacts instead, and an unverifiable landing is a warning.
+        let (ctx, capture) = ctx_with_pushed_images(&[("ghcr.io/owner/app:1.0.0", None, true)]);
+        assert_one_ask("docker", &ctx, |issues| {
+            assert!(issues.is_empty(), "{issues:?}");
+            capture.warn_messages()
+        });
     }
 
     fn pypi_extra(filenames: &[&str]) -> PublishEvidenceExtra {
@@ -2465,7 +2534,7 @@ mod tests {
         let lines = statuses(&capture);
         assert!(
             lines.iter().any(|m| m.starts_with(
-                "docker: ghcr.io/owner/app:1.0.0 present on ghcr.io (1/1 needed a propagation wait"
+                "docker: ghcr.io/owner/app:1.0.0 visible on ghcr.io (1/1 needed a propagation wait"
             )),
             "the result line carries the propagation count: {lines:?}"
         );
@@ -2493,10 +2562,12 @@ mod tests {
 
     /// A registry that could not be consulted is unverifiable, not absent: a
     /// pushed tag behind a credential the probe lacks is still live for
-    /// everyone holding one.
+    /// everyone holding one. It is recorded as a warning and never fails the
+    /// release, the way an optional publisher's landing finding is — a fatal
+    /// verdict here would strand the one-way-door publishers downstream.
     #[test]
     fn docker_probe_reports_an_unreachable_registry_as_unverifiable() {
-        let (ctx, _capture) = ctx_with_pushed_images(&[("ghcr.io/owner/app:1.0.0", None, true)]);
+        let (ctx, capture) = ctx_with_pushed_images(&[("ghcr.io/owner/app:1.0.0", None, true)]);
         let log = test_logger(&ctx);
         let docker = |_: &str| -> anyhow::Result<Option<String>> {
             anyhow::bail!("connection reset by peer")
@@ -2508,12 +2579,104 @@ mod tests {
         };
         let mut issues = Vec::new();
         run_landing_checks(&ctx, &log, &probes, &mut issues);
-        assert_eq!(issues.len(), 1, "{issues:?}");
         assert!(
-            issues[0].starts_with(
-                "docker: could not confirm ghcr.io/owner/app:1.0.0 on ghcr.io: connection reset"
-            ),
-            "{issues:?}"
+            issues.is_empty(),
+            "an unanswerable registry is not a gate: {issues:?}"
+        );
+        let warnings = capture.warn_messages();
+        assert!(
+            warnings.iter().any(|m| m.starts_with(
+                "unverifiable docker landing not gating the release — docker: could not confirm \
+                 ghcr.io/owner/app:1.0.0 on ghcr.io: connection reset"
+            )),
+            "the finding is still recorded: {warnings:?}"
+        );
+    }
+
+    /// An operator who told this leg to leave the registry alone gets no
+    /// probe, even when the rehydrated manifest still carries the pushed
+    /// markers of the leg that did push.
+    #[test]
+    fn a_deselected_docker_publisher_is_not_probed() {
+        for opts in [
+            ContextOptions {
+                skip_stages: vec!["docker".to_string()],
+                ..Default::default()
+            },
+            ContextOptions {
+                publisher_allowlist: vec!["cargo".to_string()],
+                ..Default::default()
+            },
+        ] {
+            let (base, _capture) =
+                ctx_with_pushed_images(&[("ghcr.io/owner/app:1.0.0", None, true)]);
+            let mut ctx = Context::new(Config::default(), opts);
+            for artifact in base.artifacts.all() {
+                ctx.artifacts.add(artifact.clone());
+            }
+            let log = test_logger(&ctx);
+            let mut issues = Vec::new();
+            let probed = run_landing_checks(&ctx, &log, &panicking_probes(), &mut issues);
+            assert_eq!(probed, 0, "a deselected publisher is not probed");
+            assert!(issues.is_empty(), "{issues:?}");
+        }
+    }
+
+    /// A tag serving other content answers the same way every time, so the
+    /// ladder ends after one re-ask instead of spending the window every
+    /// other target of the sweep is queued behind.
+    #[test]
+    fn a_tag_serving_a_different_digest_stops_after_one_re_ask() {
+        let (ctx, _capture) =
+            ctx_with_pushed_images(&[("ghcr.io/owner/app:1.0.0", Some("sha256:aaa"), true)]);
+        let log = test_logger(&ctx);
+        let asks = Cell::new(0usize);
+        let docker = |_: &str| -> anyhow::Result<Option<String>> {
+            asks.set(asks.get() + 1);
+            Ok(Some("sha256:bbb".to_string()))
+        };
+        let probes = LandingProbes {
+            propagation: PropagationRetry::immediate_attempts(8),
+            docker_manifest: &docker,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert_eq!(asks.get(), 2, "one ask, one re-ask, then the fixed answer");
+        assert_eq!(
+            issues,
+            vec![
+                "docker: ghcr.io/owner/app:1.0.0 was pushed as sha256:aaa but ghcr.io serves \
+                 sha256:bbb"
+                    .to_string()
+            ]
+        );
+    }
+
+    /// A run can push to several registries, so the counted result line names
+    /// every one it asked rather than crediting them all to the first.
+    #[test]
+    fn the_docker_result_line_names_every_registry_it_probed() {
+        let (ctx, capture) = ctx_with_pushed_images(&[
+            ("ghcr.io/owner/app:1.0.0", None, true),
+            ("registry.example/owner/app:1.0.0", None, true),
+        ]);
+        let log = test_logger(&ctx);
+        let docker = |_: &str| Ok(Some("sha256:aaa".to_string()));
+        let probes = LandingProbes {
+            propagation: PropagationRetry::IMMEDIATE,
+            docker_manifest: &docker,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(issues.is_empty(), "{issues:?}");
+        let lines = statuses(&capture);
+        assert!(
+            lines
+                .iter()
+                .any(|m| m == "docker: 2/2 pushed image(s) visible on ghcr.io, registry.example"),
+            "{lines:?}"
         );
     }
 

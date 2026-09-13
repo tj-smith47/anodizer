@@ -1,6 +1,7 @@
 use super::*;
 use anodizer_core::test_helpers::responder::{
-    canned_http_response, spawn_oneshot_http_responder, spawn_oneshot_http_responder_with,
+    canned_http_response, spawn_capturing_http_responder_with, spawn_oneshot_http_responder,
+    spawn_oneshot_http_responder_with,
 };
 
 /// A retry policy that spends no wall-clock time.
@@ -201,4 +202,223 @@ fn a_stored_credential_is_found_under_every_spelling_docker_writes() {
         Some("b3RoZXIK")
     );
     assert_eq!(stored_auth_for(map, "absent.example"), None);
+}
+
+/// docker treats the whole `127.0.0.0/8` range and the IPv6 loopback as
+/// local, bracketed or not, with or without a port. Everything else is asked
+/// over TLS.
+#[test]
+fn every_loopback_spelling_is_asked_over_plain_http() {
+    for host in [
+        "localhost",
+        "localhost:5000",
+        "127.0.0.1",
+        "127.0.0.1:5000",
+        "127.0.0.53",
+        "::1",
+        "[::1]",
+        "[::1]:5000",
+    ] {
+        assert!(is_loopback(host), "{host} names the local machine");
+    }
+    for host in [
+        "ghcr.io",
+        "registry.example:5000",
+        "127.example.com",
+        "[2001:db8::1]",
+        "[2001:db8::1]:5000",
+    ] {
+        assert!(!is_loopback(host), "{host} is a remote registry");
+    }
+    assert_eq!(
+        parse_image_ref("[::1]:5000/app:1.0.0")
+            .unwrap()
+            .manifest_url(),
+        "http://[::1]:5000/v2/app/manifests/1.0.0"
+    );
+}
+
+/// The registry names the digest a pull resolves the reference to, so that
+/// answer is preferred over re-deriving one from the served document.
+#[test]
+fn the_digest_the_registry_names_is_preferred_over_the_body_hash() {
+    let named = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let (addr, _calls) = spawn_oneshot_http_responder_with(|_| {
+        vec![format!(
+            "HTTP/1.1 200 OK\r\nDocker-Content-Digest: {named}\r\nContent-Length: {}\r\n\r\n{MANIFEST_BODY}",
+            MANIFEST_BODY.len()
+        )]
+    });
+    let digest = probe_local(addr, "owner/app", "1.0.0").unwrap();
+    assert_eq!(digest.as_deref(), Some(named));
+    assert_ne!(
+        digest.as_deref(),
+        Some(content_digest(MANIFEST_BODY.as_bytes()).as_str()),
+        "the fixture must distinguish the two answers"
+    );
+}
+
+/// A stock `registry:2` behind htpasswd answers `Basic`, whose realm is a
+/// human-readable name rather than a token endpoint. The credential itself is
+/// what such a registry wants.
+#[test]
+#[serial_test::serial(env)]
+fn a_basic_challenge_is_answered_with_the_stored_credential() {
+    let (addr, requests) = spawn_capturing_http_responder_with(|_| {
+        vec![
+            "HTTP/1.1 401 Unauthorized\r\n\
+             WWW-Authenticate: Basic realm=\"Registry Realm\"\r\n\
+             Content-Length: 0\r\n\r\n"
+                .to_string(),
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{MANIFEST_BODY}",
+                MANIFEST_BODY.len()
+            ),
+        ]
+    });
+    let _config = docker_config_with_auth(&addr.to_string(), "dXNlcjpwYXNz");
+    let digest = probe_local(addr, "owner/app", "1.0.0").unwrap();
+    assert_eq!(digest, Some(content_digest(MANIFEST_BODY.as_bytes())));
+    let asked = requests.lock().unwrap().clone();
+    assert_eq!(asked.len(), 2, "the challenge and the authorized re-ask");
+    assert!(
+        asked[1].contains("Basic dXNlcjpwYXNz"),
+        "the re-ask carries the stored credential: {:?}",
+        asked[1]
+    );
+}
+
+/// A private repository is probed as its publisher: the credential docker
+/// stored for the registry is what the token endpoint is asked with.
+#[test]
+#[serial_test::serial(env)]
+fn a_stored_credential_is_sent_to_the_token_endpoint() {
+    let (addr, requests) = spawn_capturing_http_responder_with(|addr| {
+        let token = "{\"token\":\"tok\"}";
+        vec![
+            format!(
+                "HTTP/1.1 401 Unauthorized\r\n\
+                 WWW-Authenticate: Bearer realm=\"http://{addr}/token\",service=\"reg\"\r\n\
+                 Content-Length: 0\r\n\r\n"
+            ),
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{token}",
+                token.len()
+            ),
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{MANIFEST_BODY}",
+                MANIFEST_BODY.len()
+            ),
+        ]
+    });
+    let _config = docker_config_with_auth(&addr.to_string(), "dXNlcjpwYXNz");
+    let digest = probe_local(addr, "owner/app", "1.0.0").unwrap();
+    assert_eq!(digest, Some(content_digest(MANIFEST_BODY.as_bytes())));
+    let asked = requests.lock().unwrap().clone();
+    assert_eq!(asked.len(), 3, "the 401, the token fetch, the re-ask");
+    assert!(
+        asked[1].contains("Basic dXNlcjpwYXNz"),
+        "the token request carries the stored credential: {:?}",
+        asked[1]
+    );
+    assert!(
+        asked[2].contains("Bearer tok"),
+        "the re-ask carries the minted token: {:?}",
+        asked[2]
+    );
+}
+
+/// Write a docker `config.json` holding `auth` for `registry` and point
+/// `DOCKER_CONFIG` at it. The guard restores the environment on drop.
+fn docker_config_with_auth(
+    registry: &str,
+    auth: &str,
+) -> (
+    tempfile::TempDir,
+    anodizer_core::test_helpers::env::EnvGuard,
+) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let auths: serde_json::Value = serde_json::json!({
+        "auths": { registry: { "auth": auth } },
+    });
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::to_string(&auths).expect("json"),
+    )
+    .expect("write config.json");
+    let guard = anodizer_core::test_helpers::env::EnvGuard::set(
+        "DOCKER_CONFIG",
+        dir.path().to_string_lossy().as_ref(),
+    );
+    (dir, guard)
+}
+
+/// The credential file is read from `DOCKER_CONFIG` when it is set, and a
+/// missing or malformed file leaves the probe anonymous rather than failing
+/// it.
+#[test]
+#[serial_test::serial(env)]
+fn the_stored_credential_is_read_from_docker_config_and_degrades_to_none() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let _guard = anodizer_core::test_helpers::env::EnvGuard::set(
+        "DOCKER_CONFIG",
+        dir.path().to_string_lossy().as_ref(),
+    );
+    assert_eq!(
+        stored_registry_auth("ghcr.io"),
+        None,
+        "no config.json at all"
+    );
+    std::fs::write(dir.path().join("config.json"), "{ not json").expect("write");
+    assert_eq!(stored_registry_auth("ghcr.io"), None, "malformed config");
+    std::fs::write(
+        dir.path().join("config.json"),
+        "{\"auths\": {\"ghcr.io\": {\"auth\": \"Z2hjcgo=\"}}}",
+    )
+    .expect("write");
+    assert_eq!(
+        stored_registry_auth("ghcr.io").as_deref(),
+        Some("Z2hjcgo="),
+        "the entry docker wrote"
+    );
+    assert_eq!(
+        stored_registry_auth("other.example"),
+        None,
+        "a registry with no entry stays anonymous"
+    );
+}
+
+/// Challenge parameters are comma-separated with quoted or bare values, a
+/// registry may name one scope per resource, and a key matches whole.
+#[test]
+fn challenge_parameters_are_read_whole_quoted_or_bare_and_repeated() {
+    let challenge = "Bearer realm=\"https://auth.example/token\",service=registry,\
+                     scope=\"repository:owner/app:pull\",scope=\"repository:owner/other:pull\"";
+    assert_eq!(
+        challenge_param(challenge, "realm").as_deref(),
+        Some("https://auth.example/token")
+    );
+    assert_eq!(
+        challenge_param(challenge, "service").as_deref(),
+        Some("registry"),
+        "an unquoted token value is a value"
+    );
+    assert_eq!(
+        challenge_params(challenge, "scope"),
+        vec![
+            "repository:owner/app:pull".to_string(),
+            "repository:owner/other:pull".to_string()
+        ],
+        "every scope the registry named"
+    );
+    assert_eq!(
+        challenge_param("Bearer xrealm=\"https://elsewhere.example/\"", "realm"),
+        None,
+        "a longer key is a different key"
+    );
+    assert_eq!(
+        challenge_param("Bearer realm=\"https://auth.example/a,b\"", "realm").as_deref(),
+        Some("https://auth.example/a,b"),
+        "a comma inside a quoted value is not a separator"
+    );
 }

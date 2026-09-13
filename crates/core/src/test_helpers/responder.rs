@@ -161,6 +161,18 @@ fn spawn_serve_thread<R: AsRef<str> + Send + 'static>(
     counter: Arc<AtomicU32>,
     responses: Vec<R>,
 ) {
+    spawn_serve_thread_capturing(listener, counter, responses, None)
+}
+
+/// [`spawn_serve_thread`] with an optional sink that collects each served
+/// request's raw bytes, in order, for header assertions across a sequence of
+/// asks (an authentication challenge and the authorized re-ask behind it).
+fn spawn_serve_thread_capturing<R: AsRef<str> + Send + 'static>(
+    listener: TcpListener,
+    counter: Arc<AtomicU32>,
+    responses: Vec<R>,
+    captured: Option<Arc<std::sync::Mutex<Vec<String>>>>,
+) {
     std::thread::spawn(move || {
         for resp in responses.iter() {
             let (stream, _) = match listener.accept() {
@@ -168,7 +180,7 @@ fn spawn_serve_thread<R: AsRef<str> + Send + 'static>(
                 Err(_) => return,
             };
             counter.fetch_add(1, Ordering::SeqCst);
-            serve_one(stream, resp.as_ref());
+            serve_one_capturing(stream, resp.as_ref(), captured.as_deref());
         }
         let _ = listener.set_nonblocking(true);
         let drain_deadline = Instant::now() + Duration::from_millis(250);
@@ -188,6 +200,29 @@ fn spawn_serve_thread<R: AsRef<str> + Send + 'static>(
             }
         }
     });
+}
+
+/// Like [`spawn_oneshot_http_responder_with`], but every served request's raw
+/// bytes are recorded in order so a caller can assert what each ask carried —
+/// an authentication challenge and the authorized re-ask behind it, for
+/// instance.
+pub fn spawn_capturing_http_responder_with<F>(
+    make_responses: F,
+) -> (SocketAddr, Arc<std::sync::Mutex<Vec<String>>>)
+where
+    F: FnOnce(SocketAddr) -> Vec<String>,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local_addr");
+    let responses = make_responses(addr);
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    spawn_serve_thread_capturing(
+        listener,
+        Arc::new(AtomicU32::new(0)),
+        responses,
+        Some(captured.clone()),
+    );
+    (addr, captured)
 }
 
 /// Capture the first request bytes and reply with a canned response so a
@@ -232,9 +267,24 @@ pub fn spawn_request_capturing_responder(
 /// raced the client's send buffer and produced `BrokenPipe` on the
 /// client side, which was then mis-classified as a transport-layer
 /// failure and triggered a spurious retry.
-fn serve_one(mut stream: TcpStream, resp: &str) {
+fn serve_one(stream: TcpStream, resp: &str) {
+    serve_one_capturing(stream, resp, None);
+}
+
+/// [`serve_one`], recording the consumed request into `captured` when one is
+/// given.
+fn serve_one_capturing(
+    mut stream: TcpStream,
+    resp: &str,
+    captured: Option<&std::sync::Mutex<Vec<String>>>,
+) {
     let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
-    consume_request(&mut stream);
+    let request = consume_request_capturing(&mut stream);
+    if let Some(sink) = captured {
+        sink.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(String::from_utf8_lossy(&request).to_string());
+    }
     let resp = force_connection_close(resp);
     let _ = stream.write_all(resp.as_bytes());
     let _ = stream.flush();
@@ -275,69 +325,10 @@ fn force_connection_close(resp: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// Read the full HTTP request from `stream`: headers up to the first
-/// `\r\n\r\n`, then exactly `Content-Length` bytes of body if that
-/// header is present. Best-effort and fully fault-tolerant — any I/O
+/// `\r\n\r\n`, then exactly `Content-Length` bytes of body if that header is
+/// present, and return the bytes consumed so a caller can assert on the
+/// request that was sent. Best-effort and fully fault-tolerant — any I/O
 /// error or timeout simply ends the read; nothing propagates.
-fn consume_request(stream: &mut TcpStream) {
-    let deadline = Instant::now() + REQUEST_READ_DEADLINE;
-    let mut accum: Vec<u8> = Vec::with_capacity(8 * 1024);
-    let mut chunk = [0u8; 8 * 1024];
-
-    // Read until \r\n\r\n (end of headers) has been seen, or until
-    // the deadline / EOF / I/O error.
-    let header_end = loop {
-        if Instant::now() >= deadline {
-            return;
-        }
-        match stream.read(&mut chunk) {
-            Ok(0) => return, // EOF before headers complete — give up.
-            Ok(n) => {
-                accum.extend_from_slice(&chunk[..n]);
-                if let Some(pos) = find_double_crlf(&accum) {
-                    break pos + 4;
-                }
-                // Guard against unbounded growth from a malformed client.
-                if accum.len() > 1 << 20 {
-                    return;
-                }
-            }
-            Err(_) => return,
-        }
-    };
-
-    // Parse Content-Length and drain that many bytes of body.
-    let content_length = parse_content_length(&accum[..header_end]);
-    let already_have = accum.len() - header_end;
-    let Some(total_body) = content_length else {
-        // No Content-Length — most non-body requests (GET, HEAD) and
-        // some streaming clients fall here. At least the headers have been
-        // read, which is sufficient for the responder to write a
-        // canned reply. Don't block further.
-        return;
-    };
-
-    if already_have >= total_body {
-        return;
-    }
-    let mut remaining = total_body - already_have;
-    while remaining > 0 {
-        if Instant::now() >= deadline {
-            return;
-        }
-        let want = remaining.min(chunk.len());
-        match stream.read(&mut chunk[..want]) {
-            Ok(0) => return, // EOF early — give up gracefully.
-            Ok(n) => {
-                remaining -= n;
-            }
-            Err(_) => return,
-        }
-    }
-}
-
-/// Variant of [`consume_request`] that returns the bytes it consumed.
-/// Used by [`spawn_request_capturing_responder`] so callers can assert
-/// on the raw request that was sent.
 fn consume_request_capturing(stream: &mut TcpStream) -> Vec<u8> {
     let deadline = Instant::now() + REQUEST_READ_DEADLINE;
     let mut accum: Vec<u8> = Vec::with_capacity(8 * 1024);

@@ -12,16 +12,17 @@
 //! registry demands one. No docker daemon is involved, so the gate works on a
 //! runner that built nothing.
 //!
-//! The verdict carries the served manifest's CONTENT DIGEST, computed as the
-//! SHA-256 over the response bytes — which is what a content digest is
-//! defined to be, so it needs no cooperation from the registry beyond serving
-//! the manifest unconverted (the `Accept` header below asks for every media
-//! type a push can produce, so no registry downgrades the document).
+//! The verdict carries the CONTENT DIGEST the reference resolves to. Every
+//! conformant registry names it in the `Docker-Content-Digest` response
+//! header; where one does not, the SHA-256 over the served bytes answers the
+//! same question, which is what a content digest is defined to be (the
+//! `Accept` header below asks for every media type a push can produce, so no
+//! registry downgrades the document into different bytes).
 
 use anodizer_core::hashing::hex_lower;
 use anodizer_core::log::StageLogger;
 use anodizer_core::retry::{
-    RetryLog, RetryPolicy, SuccessClass, http_status, retry_http_blocking_deadline,
+    RetryLog, RetryPolicy, SuccessClass, http_status, retry_http_blocking_bytes_deadline,
 };
 use anyhow::{Context as _, Result};
 use sha2::{Digest, Sha256};
@@ -87,9 +88,31 @@ impl ImageRef {
 }
 
 /// Whether `host` (with an optional port) names the local machine.
+///
+/// An IPv6 literal is bracketed (`[::1]:5000`), so the port cannot be split
+/// off at the first colon; and the whole `127.0.0.0/8` range is local, not
+/// `127.0.0.1` alone — which is what docker's own insecure-by-default
+/// exemption covers.
 fn is_loopback(host: &str) -> bool {
-    let name = host.split(':').next().unwrap_or(host);
-    matches!(name, "localhost" | "127.0.0.1" | "::1" | "[::1]")
+    let name = match host.strip_prefix('[') {
+        Some(rest) => rest.split_once(']').map_or(rest, |(h, _)| h),
+        // An unbracketed host keeps every colon it has when more than one
+        // remains: that is a bare IPv6 literal, not a host and a port.
+        None => match host.rsplit_once(':') {
+            Some((name, port))
+                if !name.contains(':')
+                    && !port.is_empty()
+                    && port.chars().all(|c| c.is_ascii_digit()) =>
+            {
+                name
+            }
+            _ => host,
+        },
+    };
+    name == "localhost"
+        || name
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Split a docker image reference into registry, repository and tag/digest.
@@ -176,6 +199,9 @@ fn manifest_digest_with(
         "verify-release: query {} for '{}:{}'",
         parsed.registry, parsed.repository, parsed.reference
     );
+    // What the registry itself called the document it served, kept from the
+    // attempt that answered.
+    let named_digest: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
     let send = |_attempt: u32| {
         let ask = || {
             client
@@ -183,23 +209,15 @@ fn manifest_digest_with(
                 .header(reqwest::header::ACCEPT, MANIFEST_ACCEPT)
         };
         let resp = ask().send()?;
-        if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
-            return Ok(resp);
-        }
-        let challenge = resp
-            .headers()
-            .get(reqwest::header::WWW_AUTHENTICATE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
-        match bearer_token(client, &challenge, &parsed.registry)? {
-            Some(token) => ask().bearer_auth(token).send(),
-            // No challenge this probe can answer — hand back the 401 so it is
-            // reported as unverifiable rather than as an absence.
-            None => Ok(resp),
-        }
+        let resp = if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            answer_challenge(client, &parsed.registry, resp, ask)?
+        } else {
+            resp
+        };
+        *named_digest.borrow_mut() = content_digest_header(&resp);
+        Ok(resp)
     };
-    match retry_http_blocking_deadline(
+    match retry_http_blocking_bytes_deadline(
         RetryLog::new(&label, log),
         policy,
         deadline,
@@ -212,10 +230,68 @@ fn manifest_digest_with(
             )
         },
     ) {
-        Ok((_status, body)) => Ok(Some(content_digest(body.as_bytes()))),
+        // The body is read as raw bytes, never as text: a lossy decode
+        // substitutes U+FFFD for anything it cannot read and would hash to a
+        // digest nothing serves, in the one code path whose whole job is
+        // digest correctness.
+        Ok((_status, body)) => Ok(Some(
+            named_digest.take().unwrap_or_else(|| content_digest(&body)),
+        )),
         Err(err) if http_status(&err) == 404 => Ok(None),
         Err(err) => Err(err),
     }
+}
+
+/// Answer a registry's `WWW-Authenticate` challenge and re-ask, or hand the
+/// 401 back when the challenge names nothing this probe can answer.
+///
+/// The scheme decides how: a `Bearer` realm is exchanged for a token, a
+/// `Basic` challenge wants the stored credential itself. Handing a `Basic`
+/// challenge to the token exchange asks a realm that is a human-readable
+/// name rather than a URL — which is how a stock `registry:2` behind htpasswd
+/// answers — so the scheme is read first.
+fn answer_challenge<F>(
+    client: &reqwest::blocking::Client,
+    registry: &str,
+    unauthorized: reqwest::blocking::Response,
+    ask: F,
+) -> Result<reqwest::blocking::Response, reqwest::Error>
+where
+    F: Fn() -> reqwest::blocking::RequestBuilder,
+{
+    let challenge = unauthorized
+        .headers()
+        .get(reqwest::header::WWW_AUTHENTICATE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let (scheme, params) = challenge
+        .split_once(char::is_whitespace)
+        .unwrap_or((challenge.as_str(), ""));
+    match scheme.to_ascii_lowercase().as_str() {
+        "bearer" => match bearer_token(client, params, registry)? {
+            Some(token) => ask().bearer_auth(token).send(),
+            None => Ok(unauthorized),
+        },
+        "basic" => match stored_registry_auth(registry) {
+            Some(basic) => ask()
+                .header(reqwest::header::AUTHORIZATION, format!("Basic {basic}"))
+                .send(),
+            None => Ok(unauthorized),
+        },
+        _ => Ok(unauthorized),
+    }
+}
+
+/// The digest the registry itself names for the document it served.
+///
+/// `Docker-Content-Digest` is what a `docker pull` resolves the reference to,
+/// so it answers the landing question directly and without re-deriving it
+/// from a body the registry might have served in another media type.
+fn content_digest_header(resp: &reqwest::blocking::Response) -> Option<String> {
+    let value = resp.headers().get("docker-content-digest")?.to_str().ok()?;
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 /// The `sha256:<hex>` content digest of a served manifest.
@@ -256,7 +332,10 @@ fn bearer_token(
     if let Some(service) = challenge_param(challenge, "service") {
         req = req.query(&[("service", service)]);
     }
-    if let Some(scope) = challenge_param(challenge, "scope") {
+    // A registry may name one scope per resource, and the token endpoint
+    // reads them as repeated parameters; keeping only the first asks for a
+    // token that covers one of them.
+    for scope in challenge_params(challenge, "scope") {
         req = req.query(&[("scope", scope)]);
     }
     if let Some(basic) = stored_registry_auth(registry) {
@@ -280,14 +359,46 @@ fn bearer_token(
         .map(str::to_string))
 }
 
-/// Pull one `key="value"` parameter out of a `Bearer` challenge.
+/// The first value a `WWW-Authenticate` challenge gives for `key`.
 fn challenge_param(challenge: &str, key: &str) -> Option<String> {
-    let needle = format!("{key}=\"");
-    let start = challenge.find(&needle)? + needle.len();
-    let rest = &challenge[start..];
-    let end = rest.find('"')?;
-    let value = &rest[..end];
-    (!value.is_empty()).then(|| value.to_string())
+    challenge_params(challenge, key).into_iter().next()
+}
+
+/// Every value a `WWW-Authenticate` challenge gives for `key`, in order.
+///
+/// Parameters are comma-separated and their values are quoted or bare, so the
+/// split respects quotes and the quotes are then stripped. Keys match whole —
+/// a substring search for `realm="` also matches an `xrealm="` nobody asked
+/// for — and the auth-scheme token in front of the first parameter is
+/// ignored, so the whole header value or its parameter part both parse.
+fn challenge_params(challenge: &str, key: &str) -> Vec<String> {
+    let mut chunks: Vec<&str> = Vec::new();
+    let mut quoted = false;
+    let mut start = 0usize;
+    for (idx, ch) in challenge.char_indices() {
+        match ch {
+            '"' => quoted = !quoted,
+            ',' if !quoted => {
+                chunks.push(&challenge[start..idx]);
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    chunks.push(&challenge[start..]);
+    chunks
+        .into_iter()
+        .filter_map(|chunk| {
+            let (name, value) = chunk.split_once('=')?;
+            // `Bearer realm="…"` puts the scheme ahead of the first key.
+            let name = name.trim().rsplit(char::is_whitespace).next()?;
+            if !name.eq_ignore_ascii_case(key) {
+                return None;
+            }
+            let value = value.trim().trim_matches('"').trim();
+            (!value.is_empty()).then(|| value.to_string())
+        })
+        .collect()
 }
 
 /// The base64 `user:password` payload docker stored for `registry`, when it
