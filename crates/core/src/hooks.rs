@@ -165,14 +165,13 @@ fn run_hooks_inner(
                 );
                 continue;
             }
-        } else if let Some(cond) = if_cond {
+        } else if let Some(cond) = config::active_if_gate(if_cond) {
             // Without template_vars there's no way to render — treat the gate
             // as proceed unless the literal condition is explicitly falsy.
-            // An EMPTY `if:` is the "no gate set" no-op (proceed), matching
-            // `evaluate_if_condition`'s `Some("")` → proceed contract used on
-            // the template path above; only `false`/`0`/`no` skip here.
-            let trimmed = cond.trim();
-            let falsy = matches!(trimmed, "false" | "0" | "no");
+            // `active_if_gate` folds the absent, empty and blank spellings
+            // into the "no gate set" no-op the template path above gets from
+            // `evaluate_if_condition`; only `false`/`0`/`no` skip here.
+            let falsy = matches!(cond.trim(), "false" | "0" | "no");
             if falsy {
                 tracing::debug!(
                     label = label,
@@ -829,14 +828,27 @@ mod tests {
     }
 
     #[test]
+    fn hook_if_blank_literal_no_vars_proceeds() {
+        // A blank `if:` imposes no gate either — `active_if_gate` folds it
+        // the way it folds the empty one, so one added space cannot flip a
+        // hook from "always run" to "never run".
+        let log = test_logger();
+        let hooks = vec![structured("true", Some("  "))];
+        run_hooks(&hooks, "test", HookRunContext::new(true, &log, None))
+            .expect("blank `if:` with no vars must proceed (no-op gate)");
+    }
+
+    #[test]
     fn hook_if_falsy_literal_no_vars_skips() {
         // The complementary pin: an explicitly-falsy literal still skips on
         // the no-vars path. `false-cmd` would error if spawned; a non-dry-run
         // call succeeding proves it was skipped, not executed.
         let log = test_logger();
-        let hooks = vec![structured("false-cmd-must-be-skipped", Some("false"))];
-        run_hooks(&hooks, "test", HookRunContext::new(false, &log, None))
-            .expect("falsy literal `if:` with no vars must skip without spawning");
+        for falsy in ["false", "0", "no", " false "] {
+            let hooks = vec![structured("false-cmd-must-be-skipped", Some(falsy))];
+            run_hooks(&hooks, "test", HookRunContext::new(false, &log, None))
+                .expect("falsy literal `if:` with no vars must skip without spawning");
+        }
     }
 
     /// Run a single real (non-dry-run) hook that appends `KEY=$KEY` lines to

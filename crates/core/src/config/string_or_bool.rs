@@ -100,12 +100,17 @@ fn reject_stale_typed_compare(template: &str, label: &str) -> anyhow::Result<()>
 
 /// The gate an `if:` value actually imposes, or `None` when it imposes none.
 ///
-/// An absent `if:` and an empty one both mean "always run", so anything
-/// deciding whether two entries carry DIFFERENT gates has to read them the
-/// same way [`evaluate_if_condition`] does. Comparing the raw `Option` calls
-/// `if: ""` a gate and pairs it unequally with a real one.
+/// An absent `if:`, an empty one and a blank one all mean "always run", so
+/// anything deciding whether two entries carry DIFFERENT gates has to read
+/// them the same way [`evaluate_if_condition`] does. Comparing the raw
+/// `Option` calls `if: ""` a gate and pairs it unequally with a real one.
+///
+/// Blank counts because a rendered gate is judged on its TRIMMED value: a
+/// literal `if: "  "` read as a gate renders to `"  "`, trims to empty and
+/// skips, so one added space would flip an entry from "always run" to
+/// "never run".
 pub fn active_if_gate(condition: Option<&str>) -> Option<&str> {
-    condition.filter(|template| !template.is_empty())
+    condition.filter(|template| !template.trim().is_empty())
 }
 
 /// Evaluate an `if:` conditional template.
@@ -115,9 +120,9 @@ pub fn active_if_gate(condition: Option<&str>) -> Option<&str> {
 /// existing `if_condition` consumer in anodizer applies:
 ///
 /// - `None` → proceed (no gate set).
-/// - `Some("")` → proceed (empty literal is a no-op gate; the
-///   "no `if:` = always run" behavior — keeps round-tripping clean for
-///   configs that emit empty strings).
+/// - `Some("")` / `Some("   ")` → proceed (an empty or blank literal is a
+///   no-op gate; the "no `if:` = always run" behavior — keeps
+///   round-tripping clean for configs that emit empty strings).
 /// - Template render failure → hard `Err` (matches every existing
 ///   `if_condition` site; silent-skip on a typo'd template was the W1
 ///   release-resilience footgun and is intentionally NOT replicated).
@@ -566,6 +571,22 @@ mod tests {
         assert!(r);
     }
 
+    /// A blank literal is the empty one with padding: it imposes no gate,
+    /// so the render is never reached and the entry proceeds. Read as a gate
+    /// it would render `"  "`, trim to empty and skip — one space flipping
+    /// "always run" into "never run".
+    #[test]
+    fn if_condition_blank_literal_proceeds() {
+        for blank in ["  ", "\t", " \n "] {
+            assert!(active_if_gate(Some(blank)).is_none(), "{blank:?}");
+            let r = evaluate_if_condition(Some(blank), "lbl", |_| {
+                panic!("a blank `if:` imposes no gate and must not render")
+            })
+            .unwrap();
+            assert!(r, "{blank:?}");
+        }
+    }
+
     #[test]
     fn if_condition_falsy_values_skip() {
         for v in ["false", "0", "no", ""] {
@@ -787,6 +808,12 @@ mod tests {
     /// fallback and shadows the parent's real condition, so the parent's
     /// gate is silently dropped and the child publishes on a run the
     /// operator gated out.
+    ///
+    /// The shapes the walk reads as a presence test are `.or(` on either
+    /// side of the read, `.is_some()`, `.is_none()` and `.is_some_and(`.
+    /// `.map(` is deliberately not one: every `.map(` near an
+    /// `if_condition` in this workspace is the iterator after a gate call,
+    /// not a read of the field.
     #[test]
     fn every_if_condition_presence_test_reads_the_active_gate() {
         use crate::test_helpers::test_sources::{
@@ -812,14 +839,32 @@ mod tests {
                 // where they hang off the `if_condition` itself — an
                 // unrelated `.or(` elsewhere in the body says nothing.
                 let flat: String = body.split_whitespace().collect();
+                // A comment in the body can carry a multi-byte character, so
+                // a window is widened to the nearest boundary rather than
+                // sliced at a raw offset.
+                let window = |from: usize, to: usize| -> &str {
+                    let (mut lo, mut hi) = (from.min(flat.len()), to.min(flat.len()));
+                    while !flat.is_char_boundary(lo) {
+                        lo += 1;
+                    }
+                    while !flat.is_char_boundary(hi) {
+                        hi -= 1;
+                    }
+                    &flat[lo..hi]
+                };
                 let mut asks_presence = false;
                 let mut builds_fallback = false;
                 for (at, _) in flat.match_indices("if_condition") {
-                    let tail = &flat[at..flat.len().min(at + 60)];
-                    builds_fallback |= tail.contains(".or(");
+                    let tail = window(at, at + 60);
+                    // A fallback chain can also be assembled across two
+                    // statements, which puts the `.or(` BEFORE the read it
+                    // falls back to.
+                    let lead = window(at.saturating_sub(60), at);
+                    builds_fallback |= tail.contains(".or(") || lead.contains(".or(");
                     asks_presence |= builds_fallback
                         || tail.contains(".is_some()")
-                        || tail.contains(".is_none()");
+                        || tail.contains(".is_none()")
+                        || tail.contains(".is_some_and(");
                 }
                 if !asks_presence {
                     continue;
@@ -846,7 +891,7 @@ mod tests {
              no gate and must not win a fallback: {strays:#?}"
         );
         assert_eq!(
-            population, 2,
+            population, 3,
             "the walk must still find the sites that test an `if:` for \
              presence; a rename that empties it would pass vacuously"
         );
