@@ -3259,6 +3259,29 @@ fn test_format_override_empty_formats_falls_back_to_default() {
     assert_eq!(result, vec!["tar.xz"]);
 }
 
+/// The first override whose `os:` matches decides; an empty `formats:` on it
+/// falls through to the entry/default format, never to a later override for
+/// the same os.
+#[test]
+fn test_format_override_empty_formats_stops_at_the_first_match() {
+    let overrides = vec![
+        FormatOverride {
+            os: "windows".to_string(),
+            formats: Some(vec![]),
+        },
+        FormatOverride {
+            os: "windows".to_string(),
+            formats: Some(vec!["zip".to_string()]),
+        },
+    ];
+    let result = formats_for_target("x86_64-pc-windows-msvc", "tar.xz", &overrides);
+    assert_eq!(
+        result,
+        vec!["tar.xz"],
+        "an empty formats list ends the override lookup"
+    );
+}
+
 #[test]
 fn test_format_override_no_match_falls_back_to_default() {
     // No matching override falls back to default_format
@@ -3475,6 +3498,73 @@ fn test_binary_format_plural_exempts_different_binary_count_check() {
         result.is_ok(),
         "plural `formats: [binary]` must exempt the mismatched-count \
              check (got error: {:?})",
+        result.err()
+    );
+}
+
+/// A `binary` format an entry reaches only through
+/// `defaults.archives.format_overrides` exempts that target exactly as an
+/// entry-level `formats: [binary]` does: each executable is published under
+/// its own name there, so no group is packed and no count can be ambiguous.
+#[test]
+fn a_global_format_override_to_binary_exempts_the_binary_count_check() {
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig, Defaults};
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+
+    let linux_bin = tmp.path().join("myapp-linux");
+    let win_bin1 = tmp.path().join("myapp-win1");
+    let win_bin2 = tmp.path().join("myapp-win2");
+    fs::write(&linux_bin, b"linux binary").unwrap();
+    fs::write(&win_bin1, b"windows binary 1").unwrap();
+    fs::write(&win_bin2, b"windows binary 2").unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist)
+        .defaults(Defaults {
+            archives: Some(ArchiveConfig {
+                format_overrides: Some(vec![FormatOverride {
+                    os: "windows".to_string(),
+                    formats: Some(vec!["binary".to_string()]),
+                }]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .crates(vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig::default()]),
+            ..Default::default()
+        }])
+        .build();
+
+    for (path, target, binary) in [
+        (linux_bin, "x86_64-unknown-linux-gnu", "myapp"),
+        (win_bin1, "x86_64-pc-windows-msvc", "myapp"),
+        (win_bin2, "x86_64-pc-windows-msvc", "helper"),
+    ] {
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path,
+            target: Some(target.to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), binary.to_string())]),
+            size: None,
+        });
+    }
+
+    let result = ArchiveStage.run(&mut ctx);
+    assert!(
+        result.is_ok(),
+        "a `binary` format reached through defaults.archives.format_overrides \
+         must exempt the mismatched-count check (got error: {:?})",
         result.err()
     );
 }

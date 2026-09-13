@@ -7699,7 +7699,7 @@ fn a_universal_binary_signature_is_expected_and_named_from_the_archives_config()
                 ..Default::default()
             }]),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                name_template: Some("{{ Binary }}-{{ Version }}-{{ Target }}".to_string()),
+                name_template: Some("{{ Binary }}-{{ Version }}-{{ Target }}-uni".to_string()),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -7729,7 +7729,7 @@ fn a_universal_binary_signature_is_expected_and_named_from_the_archives_config()
 
     let expected =
         crate::expected::expected_signature_assets(&ctx, "app", None).expect("derive expectations");
-    assert_eq!(expected, vec![format!("app-1.0.0-{TARGET}.sig")]);
+    assert_eq!(expected, vec![format!("app-1.0.0-{TARGET}-uni.sig")]);
 
     let log = ctx.logger("binary-sign");
     let cfgs = ctx.config.binary_signs.clone();
@@ -7809,6 +7809,22 @@ fn no_signature_name_is_derived_from_a_registered_archive() {
             "binary_sign_asset_base reads the registry ('{registry_read}'); the \
              base must come from config alone, or `anodizer build` and \
              `anodizer release --publish-only` name one binary two ways"
+        );
+    }
+
+    // Two core resolvers answer the multi-crate question from the REGISTRY,
+    // so the derivation must reach neither: `config_archives_more_than_one_crate`
+    // is the config-only answer it is allowed to ask.
+    let config_only = derivation.replace("config_archives_more_than_one_crate(", "");
+    for registry_aware in [
+        "archives_more_than_one_crate(",
+        "default_archive_name_template(",
+    ] {
+        assert!(
+            !config_only.contains(registry_aware),
+            "binary_sign_asset_base calls the registry-aware \
+             '{registry_aware}'; a build and a publish-only run would then \
+             choose different default templates for one binary"
         );
     }
 }

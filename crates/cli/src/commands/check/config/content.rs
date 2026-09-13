@@ -365,6 +365,14 @@ pub(super) fn check_sign_artifact_filters(config: &Config, warnings: &mut Vec<St
 /// every `SignConfig` but is read only on the `binary_signs:` slice. A user
 /// who sets it on `signs:` gets the derived name with no error at all.
 pub(super) fn check_sign_asset_name_templates(config: &Config, warnings: &mut Vec<String>) {
+    // `defaults.sign:` fills an empty top-level `signs:` before any check
+    // runs, so the entry a warning points at may be a block the user never
+    // wrote. Name the block they did write.
+    let defaults_template = config
+        .defaults
+        .as_ref()
+        .and_then(|d| d.sign.as_ref())
+        .and_then(|d| d.asset_name_template.as_deref());
     let mut slices: Vec<(String, &Vec<anodizer_core::config::SignConfig>)> =
         vec![("signs".to_string(), &config.signs)];
     for ws in config.workspaces.iter().flatten() {
@@ -372,12 +380,19 @@ pub(super) fn check_sign_asset_name_templates(config: &Config, warnings: &mut Ve
     }
     for (label, configs) in slices {
         for (idx, cfg) in configs.iter().enumerate() {
-            if cfg.asset_name_template.is_some() {
-                warnings.push(format!(
-                    "{label}[{idx}].asset_name_template is set but only binary_signs \
-                     honors it (it will be ignored)"
-                ));
-            }
+            let Some(template) = cfg.asset_name_template.as_deref() else {
+                continue;
+            };
+            let block =
+                if label == "signs" && configs.len() == 1 && defaults_template == Some(template) {
+                    "defaults.sign".to_string()
+                } else {
+                    format!("{label}[{idx}]")
+                };
+            warnings.push(format!(
+                "{block}.asset_name_template is set but only binary_signs \
+                 honors it (it will be ignored)"
+            ));
         }
     }
 }

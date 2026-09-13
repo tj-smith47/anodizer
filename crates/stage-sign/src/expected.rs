@@ -26,8 +26,9 @@
 //!    uses yields falsy.
 //!
 //! `binary_signs:` outputs ARE release assets — one per (crate, target,
-//! binary), named from the crate's `archives:` config — so they are derived here alongside
-//! `signs:`. A binary whose file is not on disk contributes nothing: the sign
+//! binary), named from the crate's `archives:` config — so they are derived
+//! here alongside `signs:`. A binary whose file is not on disk contributes
+//! nothing: the sign
 //! stage drops it and records the config's skip, and the memento check above
 //! sees that skip. `docker_signs:` signatures live in the registry, not on the
 //! release.
@@ -252,10 +253,10 @@ pub(crate) fn expected_output_paths(
 /// config produces for one raw binary.
 ///
 /// The rendered output PATH is shared with the `signs:` derivation — a binary
-/// signature is written beside the binary it covers, under whatever `signature:`
-/// rendered — but its registered asset name is not that path's basename: the
-/// raw binary is called the same thing under every target's directory, so the
-/// name is built on the config-derived base
+/// signature is written beside the binary it covers, under whatever
+/// `signature:` rendered — but its registered asset name is not that path's
+/// basename: the raw binary is called the same thing under every target's
+/// directory, so the name is built on the config-derived base
 /// ([`crate::helpers::binary_sign_asset_base`], the same derivation the sign
 /// stage registers through).
 fn expected_binary_sign_names(
