@@ -92,9 +92,9 @@ when this exact version is already published there.
 
 ```text
 $ anodizer release --publish-only
-   • skipping cargo — already published for this version (all 3 planned crate(s) already on crates.io with verified content)
-   • skipping homebrew — already published for this version (open PR for widget 0.2.1: https://github.com/acme/homebrew-tap/pull/41)
-   • pushing widget_0.2.1_amd64.deb (deb) → https://push.fury.io/acme (gemfury account 'acme')
+     • skipping cargo — already published for this version (all 3 planned crate(s) already on crates.io with verified content)
+     • skipping homebrew — already published for this version (open PR for widget 0.2.1: https://github.com/acme/homebrew-tap/pull/41)
+     • pushing widget_0.2.1_amd64.deb (deb) → https://push.fury.io/acme (gemfury account 'acme')
 ```
 
 Reconciliation fails toward publishing — a publisher skips only on a full

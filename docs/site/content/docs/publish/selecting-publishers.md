@@ -157,29 +157,29 @@ pipeline. Pair it with `--publishers` to release one channel without re-running 
 
 ```bash
 $ anodizer publish --publishers npm
-   • publishing npm
-   • skipped cargo — not in --publishers allowlist
-   • skipped homebrew — not in --publishers allowlist
-   …
+     • published 'myapp@1.2.3' to https://registry.npmjs.org (tag=latest)
+     • skipped cargo — not in --publishers allowlist
+     • skipped homebrew — not in --publishers allowlist
+     …
 ```
 
 ### Exclude one publisher from a full release
 
 ```bash
 $ anodizer release --skip npm
-   • skipped npm — excluded via --skip
-   …    # every other configured publisher runs
+     • skipped npm — excluded via --skip
+     …    # every other configured publisher runs
 ```
 
 ### Tailor a release to two publishers
 
 ```bash
 $ anodizer release --publishers cargo,homebrew
-   • publishing cargo
-   • publishing homebrew
-   • skipped npm — not in --publishers allowlist
-   • skipped dockerhub — not in --publishers allowlist
-   …
+     • published crate 'myapp'
+     • Homebrew tap acme/homebrew-tap updated for 'myapp'
+     • skipped npm — not in --publishers allowlist
+     • skipped dockerhub — not in --publishers allowlist
+     …
 ```
 
 ### Two deselect outputs: the dispatch line and the summary line
@@ -209,17 +209,17 @@ which selector turned it off.
 
 ```bash
 $ anodizer release --skip npm
-   • skipped npm — excluded via --skip   # in-flight
-   …    # every other configured publisher runs
-   • skipped npm — excluded via --skip   # summary (same wording)
+     • skipped npm — excluded via --skip   # in-flight
+     …    # every other configured publisher runs
+     • skipped npm — excluded via --skip   # summary (same wording)
 ```
 
 ```bash
 $ anodizer release --publishers cargo
-   • publishing cargo
-   • skipped npm — not in --publishers allowlist   # in-flight
-   …
-   • skipped npm — not in --publishers allowlist   # summary (same wording)
+     • published crate 'myapp'
+     • skipped npm — not in --publishers allowlist   # in-flight
+     …
+     • skipped npm — not in --publishers allowlist   # summary (same wording)
 ```
 
 ## Validating a selection ahead of release

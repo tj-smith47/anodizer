@@ -229,7 +229,7 @@ so a malformed secret key is caught before a tag is issued; on-disk key
 
 ```bash
 $ anodizer release --preflight-secrets
-   • preflight-secrets: all required publish secrets / credentials present
+     • preflight-secrets: all required publish secrets / credentials present
 ```
 
 Wire it as the **root job a release depends on**, so a missing CI secret
