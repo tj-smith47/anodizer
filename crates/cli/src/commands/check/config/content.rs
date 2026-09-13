@@ -426,26 +426,49 @@ fn writes_detached_outputs(cfg: &anodizer_core::config::SignConfig) -> bool {
     cfg.authenticode.is_none() && cfg.artifacts.as_deref() != Some("none")
 }
 
-/// The path separators inside `template`'s `{{ … }}` runs hidden behind an
-/// opaque character.
+/// `template`'s `{{ … }}` runs reduced to one opaque path component each.
 ///
-/// It leaves the placeholder one path component whatever it holds, so the
-/// literal segments AROUND it fold as the components they are. Without it a
+/// The separators inside a run are mapped to an opaque character, which
+/// leaves the placeholder one component whatever it holds, so the literal
+/// segments AROUND it fold as the components they are. Without that a
 /// `{{ printf "a/b" }}` would split into two components and a `..` beside it
-/// would climb into the placeholder's own text.
+/// would climb into the placeholder's own text. The padding just inside the
+/// braces is trimmed as well, so `{{ .Artifact }}` and `{{.Artifact}}` —
+/// which render identically — are one placeholder.
+///
+/// The scan is not a template parser, and two malformed spellings answer
+/// conservatively rather than correctly: an unterminated `{{` masks to the
+/// end of the string, and a `}}` inside a quoted literal
+/// (`{{ printf "}}" }}`) closes the run early and leaves the tail unmasked.
+/// Either way two spellings that differ only there compare as two files,
+/// which is the direction a missed advisory warning lies in.
 fn mask_placeholder_separators(template: &str) -> String {
     const OPAQUE: char = '\u{1}';
+    let hide = |run: &str| -> String {
+        run.chars()
+            .map(|c| match c {
+                '/' | '\\' => OPAQUE,
+                other => other,
+            })
+            .collect()
+    };
     let mut masked = String::with_capacity(template.len());
     let mut rest = template;
     while let Some(open) = rest.find("{{") {
         masked.push_str(&rest[..open]);
         let tail = &rest[open..];
-        let end = tail.find("}}").map_or(tail.len(), |close| close + 2);
-        masked.extend(tail[..end].chars().map(|c| match c {
-            '/' | '\\' => OPAQUE,
-            other => other,
-        }));
-        rest = &tail[end..];
+        masked.push_str("{{");
+        match tail.find("}}") {
+            Some(close) => {
+                masked.push_str(&hide(tail[2..close].trim()));
+                masked.push_str("}}");
+                rest = &tail[close + 2..];
+            }
+            None => {
+                masked.push_str(&hide(tail[2..].trim()));
+                rest = "";
+            }
+        }
     }
     masked.push_str(rest);
     masked
@@ -453,30 +476,38 @@ fn mask_placeholder_separators(template: &str) -> String {
 
 /// Whether two rendered-output templates name one file.
 ///
-/// A literal path is asked of the sign stage itself
+/// Each spelling is placed under `dist` the way the sign stage places it
 /// (`sign_outputs_are_one_file`), so `app.sig` and `dist/app.sig` are one
-/// file here exactly as they are there — the stage places a rendering that
-/// is not under `dist` under it before it compares.
+/// file here exactly as they are there. A template still holding `{{`
+/// renders to a value only the run knows, so it is asked as a path whose
+/// placeholders are opaque components: the `.` and `..` in the literal
+/// segments around an identical placeholder fold away, and two different
+/// placeholders stay two files.
 ///
-/// A template still holding `{{` renders to a value only the run knows, so
-/// it is compared as a path whose placeholders are opaque components: the
-/// `.` and `..` in the literal segments around an identical placeholder fold
-/// away, which makes `dist/{{ .Artifact }}.sig` and
-/// `./dist/{{ .Artifact }}.sig` one file and leaves two different
-/// placeholders two files.
+/// `{{ .Artifact }}` is the one placeholder that expands to a whole PATH
+/// rather than a name, and that path already carries `dist`. Joining `dist`
+/// onto a spelling holding it would call `{{ .Artifact }}.sig` and
+/// `dist/{{ .Artifact }}.sig` one file where the run writes `dist/app.sig`
+/// and `dist/dist/app.sig`, so such a pair is folded and compared without
+/// the join.
+///
+/// The `dist` asked about is the configured one. `anodizer build --dist
+/// <path>` moves it at build time, so a run passing that flag places these
+/// renderings against a directory this check never saw.
 fn same_output_file(dist: &std::path::Path, left: &str, right: &str) -> bool {
     if left == right {
         return true;
     }
-    if left.contains("{{") || right.contains("{{") {
-        let fold = |t: &str| {
-            anodizer_core::util::fold_dot_components(std::path::Path::new(
-                &mask_placeholder_separators(t),
-            ))
-        };
-        return fold(left) == fold(right);
+    let (left, right) = (
+        mask_placeholder_separators(left),
+        mask_placeholder_separators(right),
+    );
+    let carries_a_path = |t: &str| t.contains("{{.Artifact}}") || t.contains("{{Artifact}}");
+    if carries_a_path(&left) || carries_a_path(&right) {
+        let fold = |t: &str| anodizer_core::util::fold_dot_components(std::path::Path::new(t));
+        return fold(&left) == fold(&right);
     }
-    anodizer_stage_sign::sign_outputs_are_one_file(dist, left, right)
+    anodizer_stage_sign::sign_outputs_are_one_file(dist, &left, &right)
 }
 
 /// Warn when two `binary_signs:` entries resolve one output FILE.
