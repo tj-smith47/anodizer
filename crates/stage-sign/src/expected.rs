@@ -69,7 +69,7 @@ pub fn expected_signature_assets(
     // expectation. For a binary signature that would hide the collision the
     // sign stage refuses, leaving the gate looking for one asset while two
     // were meant to exist, so the same claim is made here.
-    let mut claimed_names = crate::helpers::BinarySignAssetNames::default();
+    let mut claimed_names = crate::asset_names::BinarySignAssetNames::default();
 
     let slices = [
         ("sign", &ctx.config.signs, SignConfig::DEFAULT_ARTIFACTS),
@@ -269,14 +269,14 @@ pub(crate) fn expected_output_paths(
 /// `signature:` rendered — but its registered asset name is not that path's
 /// basename: the raw binary is called the same thing under every target's
 /// directory, so the name is built on the config-derived base
-/// ([`crate::helpers::binary_sign_asset_naming`], the same derivation the sign
+/// ([`crate::asset_names::binary_sign_asset_naming`], the same derivation the sign
 /// stage registers through), and claimed in `claimed_names` so two binaries
 /// naming one asset fail the gate the way they fail the stage.
 fn expected_binary_sign_names(
     cfg: &SignConfig,
     artifact: &anodizer_core::artifact::Artifact,
     ctx: &Context,
-    claimed_names: &mut crate::helpers::BinarySignAssetNames,
+    claimed_names: &mut crate::asset_names::BinarySignAssetNames,
 ) -> Result<(String, Option<String>)> {
     let (sig_path, cert_path) =
         expected_output_paths(cfg, &artifact.path, &artifact.metadata, ctx)?;
@@ -291,9 +291,9 @@ fn expected_binary_sign_names(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
-    let naming = crate::helpers::binary_sign_asset_naming(ctx, cfg, artifact, target)?;
+    let naming = crate::asset_names::binary_sign_asset_naming(ctx, cfg, artifact, target)?;
     let mut claim = |path: &std::path::Path, output: &'static str| -> Result<String> {
-        let (name, source) = crate::helpers::binary_sign_asset_name(
+        let (name, source) = crate::asset_names::binary_sign_asset_name(
             &basename_of(path),
             binary_basename,
             &naming.base,

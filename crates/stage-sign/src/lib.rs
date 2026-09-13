@@ -20,6 +20,7 @@ use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
 
+mod asset_names;
 mod docker_render;
 mod expected;
 mod helpers;

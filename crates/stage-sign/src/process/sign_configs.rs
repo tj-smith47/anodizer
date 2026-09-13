@@ -11,10 +11,10 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::target::map_target;
 
+use crate::asset_names::{BinarySignAssetNames, binary_sign_asset_name, binary_sign_asset_naming};
 use crate::helpers::{
-    BinarySignAssetNames, binary_sign_asset_name, binary_sign_asset_naming, default_sign_cmd,
-    expand_shell_vars, prepare_stdin_from, resolve_sign_args, resolve_signature_path,
-    should_sign_artifact,
+    default_sign_cmd, expand_shell_vars, prepare_stdin_from, resolve_sign_args,
+    resolve_signature_path, should_sign_artifact,
 };
 
 /// Process a list of `SignConfig` entries against a set of artifacts, executing

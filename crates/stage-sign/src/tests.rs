@@ -8589,9 +8589,10 @@ fn no_signature_name_is_derived_from_a_registered_archive() {
     // The registry reaches the derivation through `ctx` as well, and
     // `archives_more_than_one_crate` reads it — so the body itself must name
     // no registry access at all.
-    let helpers = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/helpers.rs"))
-        .expect("read helpers.rs");
-    let derivation = function_bodies(production_half(&helpers))
+    let asset_names =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/asset_names.rs"))
+            .expect("read asset_names.rs");
+    let derivation = function_bodies(production_half(&asset_names))
         .into_iter()
         .find(|body| body.contains("fn binary_sign_asset_naming"))
         .expect("binary_sign_asset_naming is a production function of this crate");
