@@ -393,6 +393,60 @@ pub(super) fn check_sign_asset_name_templates(config: &Config, warnings: &mut Ve
     }
 }
 
+/// Whether two sign entries can select one artifact: an absent `ids:` takes
+/// every one, and two present lists overlap when they name an id in common.
+fn sign_selections_overlap(
+    a: &anodizer_core::config::SignConfig,
+    b: &anodizer_core::config::SignConfig,
+) -> bool {
+    match (&a.ids, &b.ids) {
+        (Some(left), Some(right)) => left.iter().any(|id| right.contains(id)),
+        _ => true,
+    }
+}
+
+/// Warn when two `binary_signs:` entries resolve one output FILE.
+///
+/// Both render the same path for any binary both select, so the second
+/// `cmd:` overwrites the first's bytes and one signature ships where two were
+/// configured. The asset-name claim accepts the pair — one name over one file
+/// IS one release asset — so nothing on the sign path says anything.
+pub(super) fn check_binary_sign_duplicate_outputs(config: &Config, warnings: &mut Vec<String>) {
+    let mut slices: Vec<(String, &Vec<anodizer_core::config::SignConfig>)> =
+        vec![("binary_signs".to_string(), &config.binary_signs)];
+    for ws in config.workspaces.iter().flatten() {
+        slices.push((
+            format!("workspaces.{}.binary_signs", ws.name),
+            &ws.binary_signs,
+        ));
+    }
+    for (label, configs) in slices {
+        for (first, a) in configs.iter().enumerate() {
+            for (second, b) in configs.iter().enumerate().skip(first + 1) {
+                if !sign_selections_overlap(a, b) {
+                    continue;
+                }
+                for (field, left, right) in [
+                    ("signature", &a.signature, &b.signature),
+                    // An absent `certificate:` writes no certificate, so two
+                    // absent ones are not one file.
+                    ("certificate", &a.certificate, &b.certificate),
+                ] {
+                    if left != right || (field == "certificate" && left.is_none()) {
+                        continue;
+                    }
+                    warnings.push(format!(
+                        "{label}[{first}] and {label}[{second}] resolve one \
+                         {field} file for the binaries both select — the \
+                         second signature overwrites the first, so one file \
+                         ships where two were configured"
+                    ));
+                }
+            }
+        }
+    }
+}
+
 /// Warn on unrecognized checksum algorithm values in `defaults.checksum`
 /// and per-crate `checksum`.
 pub(super) fn check_checksum_algorithms(config: &Config, warnings: &mut Vec<String>) {

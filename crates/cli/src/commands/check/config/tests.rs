@@ -1611,6 +1611,67 @@ fn no_asset_name_template_warns_nothing() {
     assert!(warnings.is_empty(), "{warnings:?}");
 }
 
+/// Two `binary_signs:` entries with one `signature:` template sign one file,
+/// and the second `cmd:` overwrites the first's bytes. The asset-name claim
+/// accepts the pair (one name over one file is one release asset), so check
+/// is the only place that says so.
+#[test]
+fn two_binary_signs_entries_over_one_file_warn() {
+    use anodizer_core::config::SignConfig;
+    let config = Config {
+        binary_signs: vec![
+            SignConfig {
+                cmd: Some("cosign".to_string()),
+                ..Default::default()
+            },
+            SignConfig {
+                cmd: Some("gpg".to_string()),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_binary_sign_duplicate_outputs(&config, &mut warnings);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("binary_signs[0] and binary_signs[1] resolve one signature file"),
+        "{warnings:?}"
+    );
+}
+
+/// Two entries whose `signature:` templates differ write two files, and two
+/// entries whose `ids:` cannot both take one binary never meet — neither is
+/// the overwrite this warns about.
+#[test]
+fn binary_signs_entries_that_write_two_files_warn_nothing() {
+    use anodizer_core::config::SignConfig;
+    let entry = |ids: Option<Vec<String>>, signature: &str| SignConfig {
+        cmd: Some("cosign".to_string()),
+        ids,
+        signature: Some(signature.to_string()),
+        ..Default::default()
+    };
+    for pair in [
+        vec![
+            entry(None, "{{ .Artifact }}.sig"),
+            entry(None, "{{ .Artifact }}.bundle.sig"),
+        ],
+        vec![
+            entry(Some(vec!["app".to_string()]), "{{ .Artifact }}.sig"),
+            entry(Some(vec!["helper".to_string()]), "{{ .Artifact }}.sig"),
+        ],
+    ] {
+        let config = Config {
+            binary_signs: pair,
+            ..Default::default()
+        };
+        let mut warnings = Vec::new();
+        check_binary_sign_duplicate_outputs(&config, &mut warnings);
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+}
+
 // ---- Target-triple validation tests ----
 
 #[test]
