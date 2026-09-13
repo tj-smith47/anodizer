@@ -2164,6 +2164,28 @@ fn the_defaults_provenance_record_is_rewound_between_workspaces() {
     assert!(ctx.config.filled_from_defaults.contains("signs"));
 }
 
+/// The opening quote of a raw string starting at `index`, with the number of
+/// `#` between the `r` and it, or `None` when no raw string starts there.
+///
+/// `r` / `br` followed by any run of `#` and a quote, and not itself the tail
+/// of an identifier — `for "x"` opens an ordinary string, not a raw one.
+fn raw_string_start(chars: &[char], index: usize) -> Option<(usize, usize)> {
+    if index > 0 && (chars[index - 1].is_alphanumeric() || chars[index - 1] == '_') {
+        return None;
+    }
+    let mut cursor = index;
+    if chars.get(cursor) == Some(&'b') {
+        cursor += 1;
+    }
+    if chars.get(cursor) != Some(&'r') {
+        return None;
+    }
+    cursor += 1;
+    let hashes = chars[cursor..].iter().take_while(|c| **c == '#').count();
+    cursor += hashes;
+    (chars.get(cursor) == Some(&'"')).then_some((cursor, hashes))
+}
+
 /// A function body reduced to the text a structural walk may read: the
 /// signature dropped at the opening brace, `//` and `/* */` comment text
 /// removed, string-literal content emptied, and char literals dropped.
@@ -2174,13 +2196,40 @@ fn the_defaults_provenance_record_is_rewound_between_workspaces() {
 /// the rest of the body and leave the walk passing over nothing.
 ///
 /// Newlines inside a literal or a block comment are kept, so a line the walk
-/// reports is the line the reader opens.
+/// reports is the line the reader opens — a line continuation (`\` then a
+/// newline) included.
 fn scannable_code(body: &str) -> String {
     let body = body.split_once('{').map_or("", |(_, rest)| rest);
     let chars: Vec<char> = body.chars().collect();
     let mut out = String::with_capacity(body.len());
     let mut index = 0;
     while index < chars.len() {
+        // A raw string carries no escapes, so its `\` is content and its
+        // closing quote is the one carrying as many `#` as opened it. Read as
+        // an ordinary string, `r"a\"` swallows the rest of the body.
+        if let Some((quote, hashes)) = raw_string_start(&chars, index) {
+            out.push('"');
+            index = quote + 1;
+            while index < chars.len() {
+                if chars[index] == '"'
+                    && chars[index + 1..]
+                        .iter()
+                        .take(hashes)
+                        .filter(|c| **c == '#')
+                        .count()
+                        == hashes
+                {
+                    index += 1 + hashes;
+                    break;
+                }
+                if chars[index] == '\n' {
+                    out.push('\n');
+                }
+                index += 1;
+            }
+            out.push('"');
+            continue;
+        }
         match chars[index] {
             '"' => {
                 out.push('"');
@@ -2188,6 +2237,9 @@ fn scannable_code(body: &str) -> String {
                 while index < chars.len() && chars[index] != '"' {
                     if chars[index] == '\\' {
                         index += 1;
+                        if chars.get(index) == Some(&'\n') {
+                            out.push('\n');
+                        }
                     } else if chars[index] == '\n' {
                         out.push('\n');
                     }
@@ -2201,15 +2253,25 @@ fn scannable_code(body: &str) -> String {
                     index += 1;
                 }
             }
+            // Rust block comments nest, so the first `*/` closes only the
+            // innermost one. Stopping there would leave the outer comment's
+            // tail read as code.
             '/' if chars.get(index + 1) == Some(&'*') => {
                 index += 2;
-                while index < chars.len() {
+                let mut depth = 1usize;
+                while index < chars.len() && depth > 0 {
                     if chars[index] == '\n' {
                         out.push('\n');
                     }
-                    if chars[index] == '*' && chars.get(index + 1) == Some(&'/') {
+                    if chars[index] == '/' && chars.get(index + 1) == Some(&'*') {
+                        depth += 1;
                         index += 2;
-                        break;
+                        continue;
+                    }
+                    if chars[index] == '*' && chars.get(index + 1) == Some(&'/') {
+                        depth -= 1;
+                        index += 2;
+                        continue;
                     }
                     index += 1;
                 }
@@ -2303,12 +2365,36 @@ fn a_config_handed_to_a_helper_fails_the_overlay_walk() {
 }";
     assert_eq!(every_config_use_names_a_field(lexed), Ok(()));
 
+    // A raw string holds no escapes and can carry a quote of its own, a
+    // block comment nests, and a line continuation keeps its newline so a
+    // reported line number stays the reader's line number.
+    let raw = "fn apply_workspace_overlay(config: &mut Config) {
+    let pattern = r\"config\\\\\";
+    let quoted = r#\"say \"config\" loudly\"#;
+    /* outer /* inner */ the config survives */
+    let wrapped = \"first \\\n        second config\";
+    let _ = (pattern, quoted, wrapped);
+    config.crates = ws.crates.clone();
+}";
+    assert_eq!(every_config_use_names_a_field(raw), Ok(()));
+    assert_eq!(
+        scannable_code(raw).matches('\n').count(),
+        raw.matches('\n').count(),
+        "every newline survives the lexer: {}",
+        scannable_code(raw)
+    );
+
     for rejected in [
         "fn f(config: &mut Config) {\n    apply_env_overlay(config, ws);\n}",
         "fn f(config: &mut Config) {\n    let c = &mut *config;\n}",
         "fn f(config: &mut Config) {\n    let c = config;\n}",
         // The quote must not open a string that hides the handoff below it.
         "fn f(config: &mut Config) {\n    let q = '\"';\n    apply_env_overlay(config, ws);\n}",
+        // A `\\` is content inside a raw string, so the quote after it still
+        // closes the literal rather than swallowing the handoff below.
+        "fn f(config: &mut Config) {\n    let re = r\"a\\\\\";\n    apply_env_overlay(config, ws);\n}",
+        // The outer block comment ends at the SECOND `*/`.
+        "fn f(config: &mut Config) {\n    /* a /* b */ c */\n    apply_env_overlay(config, ws);\n}",
     ] {
         assert!(
             every_config_use_names_a_field(rejected).is_err(),

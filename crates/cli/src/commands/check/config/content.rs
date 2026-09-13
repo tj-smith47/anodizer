@@ -399,13 +399,18 @@ pub(super) fn check_sign_asset_name_templates(config: &Config, warnings: &mut Ve
 /// Two DIFFERENT gates are not evaluated — a template can read the
 /// environment, so "both fire" cannot be decided here — and two entries that
 /// never both run write no second file. An ABSENT gate always fires, so it
-/// pairs with anything: whenever the gated entry runs, both write.
+/// pairs with anything: whenever the gated entry runs, both write. `if: ""`
+/// is absent as far as the run is concerned, so it is read through
+/// `active_if_gate`, the same answer the engine acts on.
 fn sign_selections_overlap(
     a: &anodizer_core::config::SignConfig,
     b: &anodizer_core::config::SignConfig,
 ) -> bool {
-    if let (Some(left), Some(right)) = (&a.if_condition, &b.if_condition)
-        && left != right
+    use anodizer_core::config::active_if_gate;
+    if let (Some(left), Some(right)) = (
+        active_if_gate(a.if_condition.as_deref()),
+        active_if_gate(b.if_condition.as_deref()),
+    ) && left != right
     {
         return false;
     }
@@ -419,6 +424,24 @@ fn sign_selections_overlap(
 /// the PE in place, and `artifacts: none` signs nothing.
 fn writes_detached_outputs(cfg: &anodizer_core::config::SignConfig) -> bool {
     cfg.authenticode.is_none() && cfg.artifacts.as_deref() != Some("none")
+}
+
+/// Whether two rendered-output templates name one file.
+///
+/// A template that still holds `{{` cannot be resolved here, so it is
+/// compared as text. One that holds none is a literal path, where
+/// `dist/sigs/app.sig` and `./dist/sigs/app.sig` are the same file — the
+/// answer the sign stage reaches by folding `.` and `..` before it compares
+/// two signature paths.
+fn same_output_file(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+    if left.contains("{{") || right.contains("{{") {
+        return false;
+    }
+    let fold = |p: &str| anodizer_core::util::fold_dot_components(std::path::Path::new(p));
+    fold(left) == fold(right)
 }
 
 /// Warn when two `binary_signs:` entries resolve one output FILE.
@@ -453,14 +476,19 @@ pub(super) fn check_binary_sign_duplicate_outputs(config: &Config, warnings: &mu
                 for (field, same) in [
                     (
                         "signature",
-                        a.resolved_signature_template(default)
-                            == b.resolved_signature_template(default),
+                        same_output_file(
+                            a.resolved_signature_template(default),
+                            b.resolved_signature_template(default),
+                        ),
                     ),
                     // An absent `certificate:` writes no certificate, so two
                     // absent ones are not one file.
                     (
                         "certificate",
-                        a.certificate.is_some() && a.certificate == b.certificate,
+                        match (a.certificate.as_deref(), b.certificate.as_deref()) {
+                            (Some(left), Some(right)) => same_output_file(left, right),
+                            _ => false,
+                        },
                     ),
                 ] {
                     if !same {

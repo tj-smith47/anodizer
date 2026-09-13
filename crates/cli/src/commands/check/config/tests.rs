@@ -1827,6 +1827,52 @@ fn entries_under_different_gates_warn_nothing() {
         warnings_for(vec![entry("{{ IsSnapshot }}"), ungated]).len(),
         1
     );
+    // An empty `if:` always runs, exactly like an absent one, so it pairs
+    // with a real gate rather than reading as a second gate.
+    assert_eq!(
+        warnings_for(vec![entry(""), entry("{{ IsSnapshot }}")]).len(),
+        1
+    );
+    assert_eq!(
+        warnings_for(vec![entry("{{ IsSnapshot }}"), entry("")]).len(),
+        1
+    );
+}
+
+/// Two spellings of one literal path are one file, the same answer the sign
+/// stage reaches by folding `.` and `..` before it compares two outputs.
+#[test]
+fn two_spellings_of_one_signature_path_warn() {
+    use anodizer_core::config::SignConfig;
+    let entry = |signature: &str| SignConfig {
+        cmd: Some("cosign".to_string()),
+        signature: Some(signature.to_string()),
+        ..Default::default()
+    };
+    let config = Config {
+        binary_signs: vec![entry("dist/sigs/app.sig"), entry("./dist/sigs/app.sig")],
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_binary_sign_duplicate_outputs(&config, &mut warnings);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("resolve one signature file"),
+        "{warnings:?}"
+    );
+
+    // A template that cannot be resolved here is compared as text, so two
+    // different templates stay two files.
+    let templated = Config {
+        binary_signs: vec![
+            entry("{{ .Artifact }}.sig"),
+            entry("dist/{{ .Artifact }}.sig"),
+        ],
+        ..Default::default()
+    };
+    let mut none = Vec::new();
+    check_binary_sign_duplicate_outputs(&templated, &mut none);
+    assert!(none.is_empty(), "{none:?}");
 }
 
 /// Two entries whose `signature:` templates differ write two files, and two

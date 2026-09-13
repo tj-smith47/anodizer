@@ -98,6 +98,16 @@ fn reject_stale_typed_compare(template: &str, label: &str) -> anyhow::Result<()>
     Ok(())
 }
 
+/// The gate an `if:` value actually imposes, or `None` when it imposes none.
+///
+/// An absent `if:` and an empty one both mean "always run", so anything
+/// deciding whether two entries carry DIFFERENT gates has to read them the
+/// same way [`evaluate_if_condition`] does. Comparing the raw `Option` calls
+/// `if: ""` a gate and pairs it unequally with a real one.
+pub fn active_if_gate(condition: Option<&str>) -> Option<&str> {
+    condition.filter(|template| !template.is_empty())
+}
+
 /// Evaluate an `if:` conditional template.
 ///
 /// Returns `Ok(true)` when the caller should proceed with the resource and
@@ -123,12 +133,9 @@ pub fn evaluate_if_condition(
     render: impl Fn(&str) -> anyhow::Result<String>,
 ) -> anyhow::Result<bool> {
     use anyhow::Context as _;
-    let Some(template) = condition else {
+    let Some(template) = active_if_gate(condition) else {
         return Ok(true);
     };
-    if template.is_empty() {
-        return Ok(true);
-    }
     reject_stale_typed_compare(template, label)?;
     let rendered = render(template).with_context(|| {
         format!("{label}: `if` template render failed (expression: {template})")

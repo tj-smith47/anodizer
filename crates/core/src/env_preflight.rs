@@ -753,7 +753,7 @@ pub fn entry_inactive(
     if skip.is_some_and(truthy) || skip_upload.is_some_and(truthy) {
         return true;
     }
-    if_condition.is_some_and(|cond| {
+    crate::config::active_if_gate(if_condition).is_some_and(|cond| {
         matches!(
             crate::config::evaluate_if_condition(Some(cond), "preflight", |t| ctx
                 .render_template(t)),
