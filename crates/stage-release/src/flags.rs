@@ -189,6 +189,25 @@ pub(crate) fn resolve_release_flags(
             resolve_make_latest(&release_cfg.make_latest, |s| ctx.render_template(s))?,
         )
     };
+    // A nightly release lives for a night: `retention_keep_last` deletes it,
+    // and GitHub deletes the release's Announcements Discussion with it. The
+    // Discussion still consumed a number from the repository's shared
+    // issue / PR / discussion sequence, and a deleted one is never reissued —
+    // so announcing every nightly burns a number per track per night,
+    // permanently. A release the next run deletes must not announce.
+    let discussion_category_name = if ctx.is_nightly() {
+        if release_cfg.discussion_category_name.is_some() {
+            ctx.logger("release").verbose(&format!(
+                "withheld discussion_category_name for crate '{}' — nightly run \
+                 (a Discussion for a release retention deletes burns an \
+                 issue/PR number permanently)",
+                crate_name
+            ));
+        }
+        None
+    } else {
+        release_cfg.discussion_category_name.clone()
+    };
     Ok(ResolvedReleaseFlags {
         draft,
         prerelease,
@@ -199,7 +218,7 @@ pub(crate) fn resolve_release_flags(
             || nightly_rolling_tag,
         make_latest,
         target_commitish,
-        discussion_category_name: release_cfg.discussion_category_name.clone(),
+        discussion_category_name,
         include_meta: release_cfg.resolved_include_meta(),
         use_existing_draft: release_cfg.resolved_use_existing_draft(),
         retention_keep_last,
