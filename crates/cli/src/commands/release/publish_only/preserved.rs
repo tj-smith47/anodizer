@@ -108,8 +108,8 @@ pub(super) fn discover_preserved_contexts(
     if found.is_empty() {
         anyhow::bail!(
             "publish-only: no context.json (or context-<shard>.json) found at {}. \
-             Run `anodizer check determinism --preserve-dist=<dist-dir>` on a green \
-             determinism check first, or use `anodizer publish` (no sign step) if \
+             Run `anodizer check determinism --preserve-dist=<dist-dir>` on a \
+             determinism check that passed first, or use `anodizer publish` (no sign step) if \
              you only need the publisher pass.",
             dist.display()
         );
@@ -300,7 +300,7 @@ pub(super) fn load_preserved_context(path: &Path) -> Result<PreservedDistContext
         // A literal placeholder is unambiguous.
         anyhow::bail!(
             "publish-only: missing {}. Run `anodizer check determinism \
-             --preserve-dist=<dist-dir>` on a green determinism check first, or use \
+             --preserve-dist=<dist-dir>` on a determinism check that passed first, or \
              `anodizer publish` (no sign step) if you only need the publisher pass.",
             path.display(),
         );

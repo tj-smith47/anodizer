@@ -220,7 +220,7 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
     // Previous-tag resolution must reflect the REMOTE's tag reality, not this
     // clone's: a tag deleted on the remote for a re-cut can survive locally
     // (in this or another clone) and would otherwise silently create the NEXT
-    // version instead of re-minting the SAME one. One ls-remote call per
+    // version instead of cutting the SAME one again. One ls-remote call per
     // invocation; every previous-tag lookup below shares the result. A network
     // failure falls back to local tags with a warning rather than blocking
     // offline tagging.
@@ -232,7 +232,7 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
                     log.warn(&format!(
                         "could not list tags on remote '{remote}' ({e}); previous-tag \
                          resolution is falling back to LOCAL tags — a local tag that was \
-                         deleted on the remote may mint the wrong next version"
+                         deleted on the remote may resolve the wrong next version"
                     ));
                     None
                 }
