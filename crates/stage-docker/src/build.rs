@@ -86,15 +86,19 @@ pub(crate) fn format_created_images_log(images: &[String]) -> String {
 ///
 /// `containerimage.digest` is the digest the registry stores for what was
 /// built: the image manifest for a single-platform build, the image index for
-/// a multi-platform one. buildx writes it beside
-/// `containerimage.config.digest`, the image config blob's digest — the value
-/// the `--iidfile` carries, which a registry never serves a tag at.
+/// a multi-platform one. It is not `containerimage.config.digest`, the image
+/// config blob's digest that the `--iidfile` carries, which a registry never
+/// serves a tag at.
 ///
-/// Which exporter reports it, measured on buildx v0.36.1:
+/// Which exporter reports it, measured on buildx v0.36.1 — the three
+/// metadata files are kept verbatim under this crate's `tests/data/` and read
+/// back by `buildx_metadata_files_report_a_digest_for_an_exported_image_only`:
 ///
-/// - `--push` and `--load` both write `containerimage.digest` alongside
-///   `containerimage.config.digest`, `containerimage.descriptor` and
-///   `image.name`.
+/// - `--push` writes `containerimage.digest`, `containerimage.descriptor` and
+///   `image.name`. Its digest equalled the `Docker-Content-Digest` the
+///   registry answered for the pushed tag.
+/// - `--load` writes the same three plus `containerimage.config.digest`,
+///   naming the image manifest the local daemon stored.
 /// - A build with neither (cache only) writes `buildx.build.ref` and the
 ///   provenance block and nothing else.
 ///
@@ -355,10 +359,13 @@ pub(crate) fn execute_docker_build(
     // One default-visible result line per build, whether or not a digest was
     // recorded: a cache-only build creates images the operator has to be told
     // about too.
+    // The first digest actually recorded, not the first tag's: podman reads
+    // one file per tag, so the first tag can be the one whose digestfile came
+    // back empty while its siblings did not.
     let digest = job
         .rendered_tags
-        .first()
-        .and_then(|tag| tag_digests.get(tag))
+        .iter()
+        .find_map(|tag| tag_digests.get(tag))
         .cloned();
     match &digest {
         Some(digest) => {

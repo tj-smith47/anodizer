@@ -66,7 +66,9 @@ Bare `--build-arg`, `--label`, `--platform`, `--tag`, `--no-cache`, and `--iidfi
 
 ## Image digest
 
-`podman build` cannot bake `--push` into the build, so anodizer publishes each rendered tag afterwards with `podman push` (single-platform) or `podman manifest push --all` (multi-platform). Both carry `--digestfile`, which podman fills with the digest the registry stored — the image manifest for a single-platform push, the index for a manifest list. That is the same value buildx reports as `containerimage.digest`, so `{{ Digest }}` in a `post:` hook, the `<tag>.digest` artifact and the release's docker landing check behave identically on both backends.
+`podman build` cannot bake `--push` into the build, so anodizer publishes each rendered tag afterwards with `podman push` (single-platform) or `podman manifest push --all` (multi-platform). Both carry `--digestfile`, documented by podman as "after copying the image, write the digest of the resulting image to the file" — the digest the destination registry now holds, which is the image manifest for a single-platform push and the manifest list for a `manifest push`. That is the same kind of value buildx reports as `containerimage.digest`, so `{{ Digest }}` in a `post:` hook, the `<tag>.digest` artifact and the release's docker landing check behave identically on both backends.
+
+**Podman 2.1 is the floor for the podman backend.** `--digestfile` has been on `podman push` and `podman manifest push` since 2.1; an older podman exits non-zero on the unknown option, which fails the push rather than degrading to a build with no digest. A podman that accepts the flag but writes nothing degrades cleanly: anodizer notes the missing file under `-v` and records no digest for that tag.
 
 A build that pushes nothing (a snapshot, a dry run, `skip_push:`) records no digest under either backend — `podman build`'s own `--iidfile` holds the LOCAL image ID, which names different content than a registry serves.
 

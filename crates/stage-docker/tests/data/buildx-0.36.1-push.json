@@ -1,0 +1,37 @@
+{
+  "buildx.build.provenance": {
+    "builder": {
+      "id": ""
+    },
+    "buildType": "https://mobyproject.org/buildkit@v1",
+    "invocation": {
+      "configSource": {
+        "entryPoint": "Dockerfile"
+      },
+      "parameters": {
+        "frontend": "dockerfile.v0",
+        "locals": [
+          {
+            "name": "context"
+          },
+          {
+            "name": "dockerfile"
+          }
+        ],
+        "compatibilityVersion": 20
+      },
+      "environment": {
+        "dockerfileVersion": "1.24.0",
+        "platform": "linux/amd64"
+      }
+    }
+  },
+  "buildx.build.ref": "detbuilder/detbuilder0/swjjz2jjweosib22gkddhfor1",
+  "containerimage.descriptor": {
+    "mediaType": "application/vnd.oci.image.index.v1+json",
+    "digest": "sha256:204efd70e890201d72ae17d010843e6b5eda830afe4c27e300712158d4bc889d",
+    "size": 855
+  },
+  "containerimage.digest": "sha256:204efd70e890201d72ae17d010843e6b5eda830afe4c27e300712158d4bc889d",
+  "image.name": "172.17.0.4:5000/anodizer-meta-probe:push"
+}
