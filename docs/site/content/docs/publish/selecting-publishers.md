@@ -138,10 +138,7 @@ If a configured install aggregator finds **no** archive it can install, anodizer
 ```bash
 $ anodizer release
 ...
-       Error aur: no linux archives matched filters for 'myapp' — PKGBUILD would have
-placeholder URL and empty sha256. Check your archive configuration and aur
-filters (ids=<none>, amd64_variant=<default v1>, arm_variant=7 [hardcoded]). At
-least one linux Archive artifact must match.
+       Error aur: no linux archives matched filters for 'myapp' — PKGBUILD would have placeholder URL and empty sha256. Check your archive configuration and aur filters (ids=<none>, amd64_variant=<default v1>, arm_variant=7 [hardcoded]). At least one linux Archive artifact must match.
 ```
 
 This closes a failure-hiding gap where a misconfigured build (say, an `aur`

@@ -13,8 +13,7 @@ The podman backend is **Linux-only**, matching GoReleaser Pro. Anodizer refuses 
 
 ```text
 $ anodizer release         # on macOS
-       Error podman backend is supported on Linux only (host OS: macos);
-             remove `use: podman` or run on a Linux host
+       Error podman backend is supported on Linux only (host OS: macos); remove `use: podman` or run on a Linux host
 ```
 
 ## Opt in
@@ -58,8 +57,7 @@ Plain `podman build` does **not** accept the BuildKit-only flag set. Anodizer re
 | `sbom: true` | Resolves to `--attest=type=sbom`; same reason |
 
 ```text
-       Error dockers_v2 with `use: podman` is incompatible with buildx-only flag
-             '--cache-from=type=gha'; remove the flag or switch to `use: buildx`
+       Error dockers_v2 with `use: podman` is incompatible with buildx-only flag '--cache-from=type=gha'; remove the flag or switch to `use: buildx`
 ```
 
 Bare `--build-arg`, `--label`, `--platform`, `--tag`, `--no-cache`, and `--iidfile` are accepted on both backends.

@@ -96,8 +96,7 @@ value is never accepted and silently ignored:
 
 ```
 $ anodizer build --skip=post-hooks
-       Error invalid --skip value(s): post-hooks. Valid options: before, after,
-always, on-error, validate, sign, notarize
+       Error invalid --skip value(s): post-hooks. Valid options: before, after, always, on-error, validate, sign, notarize
 ```
 
 One token covers every scope the lane fires in: `--skip=before` suppresses

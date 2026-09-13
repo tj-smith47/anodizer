@@ -357,10 +357,7 @@ crates:
 
 ```text
 $ anodizer changelog
-       Error crates 'core' (0.2.0), 'cli' (0.3.0) share tag prefix 'v' but set
-different [package].version values; one tag can't carry two versions. For
-lockstep set [workspace.package].version; for independent releases give each
-crate a distinct tag_template prefix.
+       Error crates 'core' (0.2.0), 'cli' (0.3.0) share tag prefix 'v' but set different [package].version values; one tag can't carry two versions. For lockstep set [workspace.package].version; for independent releases give each crate a distinct tag_template prefix.
 ```
 
 Two ways to resolve it, depending on intent:
