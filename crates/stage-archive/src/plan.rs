@@ -19,7 +19,6 @@ use anodizer_core::arch_path_guard::Claim;
 use anodizer_core::artifact::{Artifact, FORMAT_BINARY, TargetVariantKey, matches_id_filter};
 use anodizer_core::config::{ArchiveConfig, FormatOverride};
 use anodizer_core::context::Context;
-use anodizer_core::target::map_target;
 use anyhow::{Context as _, Result, bail};
 
 use crate::run_helpers::render_binary_outputs;
@@ -245,11 +244,6 @@ pub(crate) fn plan_crate(
             crate::completions_gen::clear_generate_vars(ctx);
         }
 
-        let format_overrides: Vec<FormatOverride> = archive_cfg
-            .format_overrides
-            .clone()
-            .unwrap_or_else(|| global_format_overrides.to_vec());
-
         for ((target, group_variant), target_bins) in &by_target {
             let selected_bins: Vec<Artifact> = target_bins
                 .iter()
@@ -266,10 +260,10 @@ pub(crate) fn plan_crate(
                 continue;
             }
 
-            let formats_to_produce = formats_for_target(
-                target,
-                &format_overrides,
+            let formats_to_produce = anodizer_core::archive_name::archive_formats_for_target(
                 archive_cfg,
+                target,
+                global_format_overrides,
                 global_default_format,
             );
             seed_target_context(
@@ -468,32 +462,4 @@ fn group_binaries_by_target(
         }
     }
     Ok(Some(by_target))
-}
-
-/// The formats one target produces: a `format_overrides[]` entry matching
-/// its OS wins, else the entry's `formats`, else the global default.
-///
-/// The OS match is by prefix so an OS sub-variant (`linux-musl`) picks up
-/// its base OS's override without a config change; an empty `os:` is
-/// rejected as a typo guard, since it would match every target.
-fn formats_for_target(
-    target: &str,
-    format_overrides: &[FormatOverride],
-    archive_cfg: &ArchiveConfig,
-    global_default_format: &str,
-) -> Vec<String> {
-    let (os, _arch) = map_target(target);
-    let override_match = format_overrides
-        .iter()
-        .find(|ov| !ov.os.is_empty() && os.starts_with(&ov.os))
-        .and_then(|ov| ov.formats.as_ref().filter(|f| !f.is_empty()).cloned());
-    match override_match {
-        Some(fmts) => fmts,
-        None => archive_cfg
-            .formats
-            .as_ref()
-            .filter(|f| !f.is_empty())
-            .cloned()
-            .unwrap_or_else(|| vec![global_default_format.to_string()]),
-    }
 }

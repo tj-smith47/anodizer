@@ -389,6 +389,7 @@ pub fn crate_archive_asset_names(
         .clone()
         .unwrap_or_else(|| default_archive_name_template(ctx));
     let global_default_format = global_default_archive_format(ctx);
+    let global_overrides = crate::archive_name::global_format_overrides(ctx);
 
     // `format: binary` names each asset after the BINARY it holds rather than
     // the project, so its default template differs — the same rule the archive
@@ -417,7 +418,12 @@ pub fn crate_archive_asset_names(
                 |t| ctx.render_template(t),
             );
             ctx.template_vars_mut().set("Binary", &binary);
-            let format = archive_format_for_target(&archive, target, &global_default_format);
+            let format = archive_format_for_target(
+                &archive,
+                target,
+                &global_overrides,
+                &global_default_format,
+            );
             // The archive stage names a v2/v3-tuned group's asset with the
             // amd64 micro-arch level detected from the build env; derive the
             // same level from config so the derived name cannot silently fall

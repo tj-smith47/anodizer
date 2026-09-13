@@ -303,6 +303,23 @@ pub fn archives_more_than_one_crate(ctx: &Context) -> bool {
         > 1
 }
 
+/// [`archives_more_than_one_crate`] answered from CONFIG alone.
+///
+/// The registry-aware answer counts a crate that configures archives but no
+/// builds only once something archivable is registered for it, so `anodizer
+/// build` (an empty registry) and `anodizer release --publish-only` (a registry
+/// rehydrated from the preserved manifest) disagree about it. A derivation that
+/// must name one asset identically under both commands asks this instead.
+pub fn config_archives_more_than_one_crate(ctx: &Context) -> bool {
+    crate::archive_selection::archive_producing_crates(
+        &ctx.config,
+        &crate::artifact::ArtifactRegistry::new(),
+        &ctx.options.selected_crates,
+    )
+    .len()
+        > 1
+}
+
 /// The project-wide default archive format (`defaults.archives.formats[0]`,
 /// falling back to `tar.gz`). Used when an archive entry sets no `formats:`.
 pub fn global_default_archive_format(ctx: &Context) -> String {
@@ -316,31 +333,60 @@ pub fn global_default_archive_format(ctx: &Context) -> String {
         .unwrap_or_else(|| "tar.gz".to_string())
 }
 
-/// The archive format an entry produces for `target`: the first matching
-/// `format_overrides[]` entry's format (OS-prefix match, mirroring the archive
-/// stage), else the entry's own first `formats[]`, else `global_default`.
+/// The project-wide `defaults.archives.format_overrides`, the list an entry
+/// that sets none of its own inherits.
+pub fn global_format_overrides(ctx: &Context) -> Vec<crate::config::FormatOverride> {
+    ctx.config
+        .defaults
+        .as_ref()
+        .and_then(|d| d.archives.as_ref())
+        .and_then(|a| a.format_overrides.clone())
+        .unwrap_or_default()
+}
+
+/// Every format one archive entry produces for `target`, in the order the
+/// archive stage writes them: the first `format_overrides[]` entry whose `os:`
+/// prefixes the target's OS wins, else the entry's own `formats[]`, else
+/// `global_default`.
+///
+/// An entry's own `format_overrides:` REPLACE the global list rather than
+/// extending it, and an override carrying an empty (or absent) `formats:` is a
+/// typo the archive stage falls through on rather than honoring — an empty `os:`
+/// likewise, since an empty prefix matches every target.
+///
+/// THE resolver: the archive stage plans its outputs through this, and every
+/// derivation that must name the asset the stage will write (binstall's
+/// `pkg_url`, a raw binary's signature) reads the same answer.
+pub fn archive_formats_for_target(
+    archive: &crate::config::ArchiveConfig,
+    target: &str,
+    global_overrides: &[crate::config::FormatOverride],
+    global_default: &str,
+) -> Vec<String> {
+    let (os, _arch) = map_target(target);
+    let overrides: &[crate::config::FormatOverride] = archive
+        .format_overrides
+        .as_deref()
+        .unwrap_or(global_overrides);
+    overrides
+        .iter()
+        .find(|ov| !ov.os.is_empty() && os.starts_with(&ov.os))
+        .and_then(|ov| ov.formats.as_ref().filter(|f| !f.is_empty()).cloned())
+        .or_else(|| archive.formats.as_ref().filter(|f| !f.is_empty()).cloned())
+        .unwrap_or_else(|| vec![global_default.to_string()])
+}
+
+/// The first format [`archive_formats_for_target`] resolves — the one an
+/// entry's primary output carries.
 pub fn archive_format_for_target(
     archive: &crate::config::ArchiveConfig,
     target: &str,
+    global_overrides: &[crate::config::FormatOverride],
     global_default: &str,
 ) -> String {
-    let (os, _arch) = map_target(target);
-    if let Some(overrides) = archive.format_overrides.as_ref() {
-        for ov in overrides {
-            if !ov.os.is_empty()
-                && os.starts_with(&ov.os)
-                && let Some(fmts) = ov.formats.as_ref()
-                && let Some(first) = fmts.first()
-            {
-                return first.clone();
-            }
-        }
-    }
-    archive
-        .formats
-        .as_ref()
-        .and_then(|f| f.first())
-        .cloned()
+    archive_formats_for_target(archive, target, global_overrides, global_default)
+        .into_iter()
+        .next()
         .unwrap_or_else(|| global_default.to_string())
 }
 
