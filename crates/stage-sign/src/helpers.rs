@@ -538,7 +538,7 @@ pub(crate) fn qualify_basename_with_target(name: &str, target: &str) -> String {
 pub(crate) const UNCOVERED_TARGET_NAME_TEMPLATE: &str = "{{ Binary }}-{{ Version }}-{{ Target }}";
 
 /// The release-asset BASE name every signature and certificate of one raw
-/// binary is built on.
+/// binary is built on — unique per (crate, target, binary).
 ///
 /// Derived from CONFIG alone, never from which archives the run has
 /// registered, so `anodizer build` (which signs before any archive exists)
@@ -547,13 +547,22 @@ pub(crate) const UNCOVERED_TARGET_NAME_TEMPLATE: &str = "{{ Binary }}-{{ Version
 ///
 /// | the binary's target | base |
 /// |---|---|
-/// | covered by the crate's primary `archives:` entry — the first entry in config order whose `ids:` / `binaries:` filters take this binary | that entry's `name_template`, rendered in the archive stage's own per-target scope ([`anodizer_core::archive_name::seed_archive_name_vars`]) |
-/// | covered by no entry | [`UNCOVERED_TARGET_NAME_TEMPLATE`] |
+/// | covered by the crate's primary `archives:` entry — the first entry in config order whose `ids:` / `binaries:` filters take this binary — and that entry packs this binary alone on the target | that entry's `name_template`, rendered in the archive stage's own per-target scope ([`anodizer_core::archive_name::seed_archive_name_vars`]) |
+/// | covered by an entry that packs SEVERAL binaries on the target, or by no entry at all | [`UNCOVERED_TARGET_NAME_TEMPLATE`] |
 ///
-/// An entry producing `format: binary` publishes the executable itself, so
-/// its base is that asset's own name (the per-binary default template plus the
-/// Windows `.exe`): a `signs:` signature over the uploaded binary and a
-/// `binary_signs:` signature over the same bytes then resolve to one name.
+/// An entry whose resolved formats include `binary` publishes each executable
+/// itself, so the base is that asset's own name (the per-binary default
+/// template plus the Windows `.exe`): a `signs:` signature over the uploaded
+/// binary and a `binary_signs:` signature over the same bytes then resolve to
+/// one name.
+///
+/// A lipo-merged universal binary belongs to no build entry — no `builds:`
+/// names `darwin-universal` — so the entry names it with the binary's OWN
+/// name.
+///
+/// The entry's `if:` is deliberately NOT evaluated: a gate that reads the
+/// environment would name one binary's signature differently on the machine
+/// that builds it and the machine that publishes it.
 ///
 /// A `binary_signs:` entry's `asset_name_template:` overrides every row.
 pub(crate) fn binary_sign_asset_base(
@@ -568,8 +577,9 @@ pub(crate) fn binary_sign_asset_base(
     let amd64_variant = binary.metadata.get("amd64_variant").map(String::as_str);
     // The archive stage rebinds `ProjectName` to the per-crate name whenever
     // its work list holds more than one crate, and picks the multi-crate
-    // default template on the same condition.
-    let multi_crate = archive_name::archives_more_than_one_crate(ctx);
+    // default template on the same condition. Answered from config, since the
+    // registry-aware answer differs between a build and a publish-only run.
+    let multi_crate = archive_name::config_archives_more_than_one_crate(ctx);
     let seeded = |binary_var: &str| {
         let mut vars = ctx.template_vars().clone();
         if multi_crate {
@@ -595,7 +605,7 @@ pub(crate) fn binary_sign_asset_base(
     };
 
     if let Some(template) = cfg.asset_name_template.as_deref() {
-        return render(template, &seeded(&binary_name));
+        return reject_empty_base(render(template, &seeded(&binary_name))?);
     }
 
     let krate = ctx.config.find_crate(&binary.crate_name);
@@ -615,15 +625,24 @@ pub(crate) fn binary_sign_asset_base(
         });
 
     let Some(entry) = entry else {
-        return render(UNCOVERED_TARGET_NAME_TEMPLATE, &seeded(&binary_name));
+        return reject_empty_base(render(
+            UNCOVERED_TARGET_NAME_TEMPLATE,
+            &seeded(&binary_name),
+        )?);
     };
 
-    let format = archive_name::archive_format_for_target(
+    let formats = archive_name::archive_formats_for_target(
         &entry,
         target,
+        &archive_name::global_format_overrides(ctx),
         &archive_name::global_default_archive_format(ctx),
     );
-    let is_binary_format = format == anodizer_core::artifact::FORMAT_BINARY;
+    // An entry may produce several formats at once; whenever `binary` is one
+    // of them the executable is itself an uploaded asset, and the signature
+    // over its bytes takes that asset's name.
+    let is_binary_format = formats
+        .iter()
+        .any(|f| f == anodizer_core::artifact::FORMAT_BINARY);
     let template = entry.name_template.clone().unwrap_or_else(|| {
         if is_binary_format {
             archive_name::DEFAULT_BINARY_NAME_TEMPLATE.to_string()
@@ -631,31 +650,57 @@ pub(crate) fn binary_sign_asset_base(
             archive_name::default_archive_name_template(ctx)
         }
     });
-    // `format: binary` names each output after the binary it holds; every
-    // other format names one asset per target after the group's first binary.
-    let binary_var = if is_binary_format {
-        binary_name.clone()
-    } else {
-        krate
-            .map(|krate| {
-                anodizer_core::build_plan::archive_binary_name(
-                    krate,
-                    entry.ids.as_deref(),
-                    entry.binaries.as_deref(),
-                    target,
-                    &ctx.config.effective_default_targets(),
-                    |t| ctx.render_template(t),
-                )
-            })
-            .unwrap_or_else(|| binary_name.clone())
-    };
+    if is_binary_format {
+        // Each executable is published under its own name, so the group holds
+        // no ambiguity to resolve.
+        let stem = render(&template, &seeded(&binary_name))?;
+        return reject_empty_base(archive_name::binary_output_name(stem, target));
+    }
 
-    let stem = render(&template, &seeded(&binary_var))?;
-    Ok(if is_binary_format {
-        archive_name::binary_output_name(stem, target)
-    } else {
-        stem
-    })
+    let packed: Vec<String> = krate
+        .map(|krate| {
+            anodizer_core::build_plan::archive_target_binaries(
+                krate,
+                entry.ids.as_deref(),
+                entry.binaries.as_deref(),
+                target,
+                &ctx.config.effective_default_targets(),
+                |t| ctx.render_template(t),
+            )
+        })
+        .unwrap_or_default();
+    // One archive carries the whole group under a single name, so several
+    // packed binaries cannot each be named after it — the release would keep
+    // one signature and silently drop its siblings.
+    if packed.len() > 1 {
+        return reject_empty_base(render(
+            UNCOVERED_TARGET_NAME_TEMPLATE,
+            &seeded(&binary_name),
+        )?);
+    }
+    let binary_var = packed
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| binary_name.clone());
+    reject_empty_base(render(&template, &seeded(&binary_var))?)
+}
+
+/// Reject an empty rendered base before it becomes a `.sig` asset with no
+/// stem — a name the release cannot match to its subject and that collides
+/// with every other binary's signature.
+fn reject_empty_base(base: String) -> Result<String> {
+    if base.is_empty() {
+        anyhow::bail!(
+            "sign: the binary signature asset name rendered empty. An empty \
+             base uploads the signature as a bare `.sig`, which every other \
+             binary's signature collides with. Verify the templates it is \
+             rendered from (`binary_signs[].asset_name_template`, or the \
+             covering `archives[].name_template`) reference variables this run \
+             populates — `{{{{ Tag }}}}` is unset under `--snapshot`, use \
+             `{{{{ Version }}}}`."
+        );
+    }
+    Ok(base)
 }
 
 /// The release-asset name a `binary_signs:` output registers under: the
@@ -928,6 +973,282 @@ mod binary_sign_asset_name_tests {
             )
             .unwrap(),
             "app_1.0.0_windows_amd64.exe"
+        );
+    }
+
+    /// One archive carries a whole group of binaries under a single name, so
+    /// naming both binaries' signatures after it uploads two assets called the
+    /// same thing and the release keeps one. Each falls back to the whole
+    /// triple instead.
+    #[test]
+    fn two_binaries_of_one_crate_register_distinct_signature_assets() {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("app")
+            .crates(vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                builds: Some(vec![
+                    BuildConfig {
+                        binary: Some("app".to_string()),
+                        targets: Some(vec![LINUX.to_string()]),
+                        ..Default::default()
+                    },
+                    BuildConfig {
+                        binary: Some("helper".to_string()),
+                        targets: Some(vec![LINUX.to_string()]),
+                        ..Default::default()
+                    },
+                ]),
+                archives: ArchivesConfig::Configs(vec![archive("default", TEMPLATE)]),
+                ..Default::default()
+            }])
+            .build();
+        ctx.template_vars_mut().set("ProjectName", "app");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        let base = |name: &str| {
+            let mut artifact = binary(LINUX, None);
+            artifact.name = name.to_string();
+            artifact.path = std::path::PathBuf::from(format!("target/{LINUX}/release/{name}"));
+            binary_sign_asset_base(&ctx, &SignConfig::default(), &artifact, LINUX).unwrap()
+        };
+        assert_eq!(base("app"), format!("app-1.0.0-{LINUX}"));
+        assert_eq!(base("helper"), format!("helper-1.0.0-{LINUX}"));
+        assert_ne!(base("app"), base("helper"));
+    }
+
+    /// A `binaries:` allow-list that packs this binary alone keeps the entry's
+    /// own name: the group is unambiguous again.
+    #[test]
+    fn a_binaries_filter_that_excludes_this_binary_moves_the_primary_to_the_next_entry() {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("app")
+            .crates(vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                builds: Some(vec![
+                    BuildConfig {
+                        binary: Some("app".to_string()),
+                        targets: Some(vec![LINUX.to_string()]),
+                        ..Default::default()
+                    },
+                    BuildConfig {
+                        binary: Some("helper".to_string()),
+                        targets: Some(vec![LINUX.to_string()]),
+                        ..Default::default()
+                    },
+                ]),
+                archives: ArchivesConfig::Configs(vec![
+                    ArchiveConfig {
+                        id: Some("app-only".to_string()),
+                        binaries: Some(vec!["app".to_string()]),
+                        name_template: Some(TEMPLATE.to_string()),
+                        ..Default::default()
+                    },
+                    ArchiveConfig {
+                        binaries: Some(vec!["helper".to_string()]),
+                        ..archive(
+                            "rest",
+                            "{{ Binary }}-{{ Version }}-{{ Os }}-{{ Arch }}-rest",
+                        )
+                    },
+                ]),
+                ..Default::default()
+            }])
+            .build();
+        ctx.template_vars_mut().set("ProjectName", "app");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        let base = |name: &str| {
+            let mut artifact = binary(LINUX, None);
+            artifact.name = name.to_string();
+            artifact.path = std::path::PathBuf::from(format!("target/{LINUX}/release/{name}"));
+            binary_sign_asset_base(&ctx, &SignConfig::default(), &artifact, LINUX).unwrap()
+        };
+        assert_eq!(base("app"), "app-1.0.0-linux-amd64");
+        assert_eq!(base("helper"), "helper-1.0.0-linux-amd64-rest");
+    }
+
+    /// A meta entry packs no binaries at all, so the archive stage renders its
+    /// name with an empty `{{ Binary }}`. The primary is the first entry that
+    /// actually holds this binary.
+    #[test]
+    fn a_meta_first_entry_is_skipped_and_the_next_entry_names_the_base() {
+        let ctx = ctx_with(vec![
+            ArchiveConfig {
+                id: Some("docs".to_string()),
+                meta: Some(true),
+                name_template: Some("{{ ProjectName }}-docs".to_string()),
+                ..Default::default()
+            },
+            archive("default", TEMPLATE),
+        ]);
+        assert_eq!(
+            binary_sign_asset_base(&ctx, &SignConfig::default(), &binary(LINUX, None), LINUX)
+                .unwrap(),
+            "app-1.0.0-linux-amd64"
+        );
+    }
+
+    /// The entry's `if:` is not evaluated: it can read the environment, and a
+    /// signature named one way on the build host and another on the publish
+    /// host is a release asset the verify gate cannot find.
+    #[test]
+    fn a_gated_primary_entry_still_names_the_base() {
+        let ctx = ctx_with(vec![
+            ArchiveConfig {
+                if_condition: Some("false".to_string()),
+                ..archive("default", TEMPLATE)
+            },
+            archive(
+                "extra",
+                "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-extra",
+            ),
+        ]);
+        assert_eq!(
+            binary_sign_asset_base(&ctx, &SignConfig::default(), &binary(LINUX, None), LINUX)
+                .unwrap(),
+            "app-1.0.0-linux-amd64"
+        );
+    }
+
+    /// A sibling crate that configures archives but builds nothing counts
+    /// toward the archive stage's work list only once something archivable is
+    /// registered for it — which an `anodizer build` run has not done yet.
+    /// Basing the multi-crate decision on that would rebind `ProjectName` on
+    /// one command and not the other.
+    #[test]
+    fn the_base_is_stable_when_an_artifact_only_sibling_crate_has_nothing_registered_yet() {
+        let run = |register_sibling_archive: bool| {
+            let mut ctx = TestContextBuilder::new()
+                .project_name("proj")
+                .crates(vec![
+                    crate_with(vec![archive("default", TEMPLATE)]),
+                    CrateConfig {
+                        name: "extras".to_string(),
+                        path: "extras".to_string(),
+                        archives: ArchivesConfig::Configs(vec![ArchiveConfig::default()]),
+                        ..Default::default()
+                    },
+                ])
+                .build();
+            ctx.template_vars_mut().set("ProjectName", "proj");
+            ctx.template_vars_mut().set("Version", "1.0.0");
+            if register_sibling_archive {
+                ctx.artifacts.add(Artifact {
+                    kind: ArtifactKind::Archive,
+                    name: "extras-1.0.0".to_string(),
+                    path: std::path::PathBuf::from("dist/extras-1.0.0.tar.gz"),
+                    target: Some(LINUX.to_string()),
+                    crate_name: "extras".to_string(),
+                    metadata: Default::default(),
+                    size: None,
+                });
+            }
+            binary_sign_asset_base(&ctx, &SignConfig::default(), &binary(LINUX, None), LINUX)
+                .unwrap()
+        };
+        assert_eq!(run(false), "proj-1.0.0-linux-amd64");
+        assert_eq!(run(true), run(false));
+    }
+
+    /// A lockstep multi-crate run rebinds `ProjectName` to each crate's own
+    /// name while the archive stage renders that crate's asset, so the
+    /// signature bases must differ by crate.
+    #[test]
+    fn a_lockstep_multi_crate_run_names_each_crate_signature_under_its_own_project_name() {
+        let crate_cfg = |name: &str| CrateConfig {
+            name: name.to_string(),
+            path: name.to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some(name.to_string()),
+                targets: Some(vec![LINUX.to_string()]),
+                ..Default::default()
+            }]),
+            archives: ArchivesConfig::Configs(vec![archive("default", TEMPLATE)]),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .project_name("proj")
+            .crates(vec![crate_cfg("app"), crate_cfg("helper")])
+            .build();
+        ctx.template_vars_mut().set("ProjectName", "proj");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        let base = |name: &str| {
+            let mut artifact = binary(LINUX, None);
+            artifact.name = name.to_string();
+            artifact.crate_name = name.to_string();
+            artifact.path = std::path::PathBuf::from(format!("target/{LINUX}/release/{name}"));
+            binary_sign_asset_base(&ctx, &SignConfig::default(), &artifact, LINUX).unwrap()
+        };
+        assert_eq!(base("app"), "app-1.0.0-linux-amd64");
+        assert_eq!(base("helper"), "helper-1.0.0-linux-amd64");
+    }
+
+    /// A v3-tuned group's archive carries the micro-architecture level in its
+    /// name, so the signature over its binary carries the same suffix.
+    #[test]
+    fn a_v3_group_signature_base_carries_the_amd64_suffix() {
+        let ctx = ctx_with(vec![archive(
+            "default",
+            concat!(
+                "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}",
+                "{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}"
+            ),
+        )]);
+        let mut artifact = binary(LINUX, None);
+        artifact
+            .metadata
+            .insert("amd64_variant".to_string(), "v3".to_string());
+        assert_eq!(
+            binary_sign_asset_base(&ctx, &SignConfig::default(), &artifact, LINUX).unwrap(),
+            "app-1.0.0-linux-amd64v3"
+        );
+    }
+
+    /// `defaults.archives.format_overrides` applies to an entry that declares
+    /// none of its own — exactly as the archive stage plans its outputs — so a
+    /// global override to `binary` names the signature after the published
+    /// executable.
+    #[test]
+    fn a_global_format_override_to_binary_names_the_signature_after_the_executable() {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("app")
+            .crates(vec![crate_with(vec![ArchiveConfig::default()])])
+            .defaults(anodizer_core::config::Defaults {
+                archives: Some(ArchiveConfig {
+                    format_overrides: Some(vec![anodizer_core::config::FormatOverride {
+                        os: "linux".to_string(),
+                        formats: Some(vec!["binary".to_string()]),
+                    }]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .build();
+        ctx.template_vars_mut().set("ProjectName", "app");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        assert_eq!(
+            binary_sign_asset_base(&ctx, &SignConfig::default(), &binary(LINUX, None), LINUX)
+                .unwrap(),
+            "app_1.0.0_linux_amd64"
+        );
+    }
+
+    /// An entry producing several formats at once publishes the executable
+    /// itself whenever `binary` is among them, whatever position it holds in
+    /// the list.
+    #[test]
+    fn an_entry_listing_binary_second_still_names_the_signature_after_the_executable() {
+        let ctx = ctx_with(vec![ArchiveConfig {
+            formats: Some(vec!["tar.gz".to_string(), "binary".to_string()]),
+            ..Default::default()
+        }]);
+        assert_eq!(
+            binary_sign_asset_base(&ctx, &SignConfig::default(), &binary(LINUX, None), LINUX)
+                .unwrap(),
+            "app_1.0.0_linux_amd64"
         );
     }
 

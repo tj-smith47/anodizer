@@ -7613,6 +7613,143 @@ fn the_build_path_and_the_release_path_register_one_name_per_binary() {
     assert_eq!(run(true), run(false));
 }
 
+/// A rendered base of nothing at all would upload every binary's signature as
+/// a bare `.sig`, so the derivation refuses it rather than letting the release
+/// keep whichever one was uploaded last.
+#[test]
+fn an_empty_rendered_base_fails_the_sign_stage() {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, BuildConfig, CrateConfig};
+
+    const TARGET: &str = "x86_64-unknown-linux-gnu";
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("app")
+        .crates(vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("app".to_string()),
+                targets: Some(vec![TARGET.to_string()]),
+                ..Default::default()
+            }]),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some("{{ Tag }}".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .binary_signs(vec![SignConfig {
+            artifacts: Some("binary".to_string()),
+            cmd: Some("true".to_string()),
+            args: Some(vec![]),
+            ..Default::default()
+        }])
+        .dry_run(true)
+        .build();
+    ctx.template_vars_mut().set("ProjectName", "app");
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: "app".to_string(),
+        path: std::path::PathBuf::from(format!("target/{TARGET}/release/app")),
+        target: Some(TARGET.to_string()),
+        crate_name: "app".to_string(),
+        metadata: Default::default(),
+        size: None,
+    });
+
+    let log = ctx.logger("binary-sign");
+    let cfgs = ctx.config.binary_signs.clone();
+    let err = process_sign_configs(
+        &cfgs,
+        &mut ctx,
+        &log,
+        ArtifactFilter::BinaryOnly,
+        "binary-sign",
+    )
+    .expect_err("an empty base must fail the stage");
+    assert!(
+        format!("{err:#}").contains("rendered empty"),
+        "unexpected error: {err:#}"
+    );
+}
+
+/// A lipo-merged universal binary is a raw binary under the `binary` filter,
+/// so `binary_signs:` signs it — and no build entry names its
+/// `darwin-universal` target, so the entry names it with the binary's own
+/// name. The verify-release gate must expect exactly what the stage
+/// registered.
+#[test]
+fn a_universal_binary_signature_is_expected_and_named_from_the_archives_config() {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, BuildConfig, CrateConfig};
+
+    const TARGET: &str = "darwin-universal";
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("app")
+        .crates(vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("app".to_string()),
+                targets: Some(vec!["aarch64-apple-darwin".to_string()]),
+                ..Default::default()
+            }]),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some("{{ Binary }}-{{ Version }}-{{ Target }}".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .binary_signs(vec![SignConfig {
+            artifacts: Some("binary".to_string()),
+            cmd: Some("true".to_string()),
+            args: Some(vec![]),
+            ..Default::default()
+        }])
+        .dry_run(true)
+        .build();
+    ctx.template_vars_mut().set("ProjectName", "app");
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::UniversalBinary,
+        name: "app".to_string(),
+        path: std::path::PathBuf::from("dist/app_darwin_all/app"),
+        target: Some(TARGET.to_string()),
+        crate_name: "app".to_string(),
+        metadata: [("binary", "app"), ("universal", "true")]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        size: None,
+    });
+
+    let expected =
+        crate::expected::expected_signature_assets(&ctx, "app", None).expect("derive expectations");
+    assert_eq!(expected, vec![format!("app-1.0.0-{TARGET}.sig")]);
+
+    let log = ctx.logger("binary-sign");
+    let cfgs = ctx.config.binary_signs.clone();
+    process_sign_configs(
+        &cfgs,
+        &mut ctx,
+        &log,
+        ArtifactFilter::BinaryOnly,
+        "binary-sign",
+    )
+    .expect("binary-sign run");
+    let registered: Vec<String> = ctx
+        .artifacts
+        .by_kind(ArtifactKind::Signature)
+        .iter()
+        .map(|a| a.name.clone())
+        .collect();
+    assert_eq!(registered, expected);
+}
+
 /// A binary signature's asset name comes from CONFIG. Nothing in this crate
 /// may name one by reading back an archive the run happened to register: a
 /// `--publish-only` registry is the preserved manifest and an `anodizer build`
@@ -7656,4 +7793,22 @@ fn no_signature_name_is_derived_from_a_registered_archive() {
         "unexpected reader of ArtifactKind::Archive: {}",
         readers[0]
     );
+
+    // The registry reaches the derivation through `ctx` as well, and
+    // `archives_more_than_one_crate` reads it — so the body itself must name
+    // no registry access at all.
+    let helpers = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/helpers.rs"))
+        .expect("read helpers.rs");
+    let derivation = function_bodies(production_half(&helpers))
+        .into_iter()
+        .find(|body| body.contains("fn binary_sign_asset_base"))
+        .expect("binary_sign_asset_base is a production function of this crate");
+    for registry_read in ["ctx.artifacts", ".artifacts."] {
+        assert!(
+            !derivation.contains(registry_read),
+            "binary_sign_asset_base reads the registry ('{registry_read}'); the \
+             base must come from config alone, or `anodizer build` and \
+             `anodizer release --publish-only` name one binary two ways"
+        );
+    }
 }

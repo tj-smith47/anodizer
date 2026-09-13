@@ -140,7 +140,12 @@ pub(crate) fn process_sign_configs(
                         }
                     }
                     ArtifactFilter::BinaryOnly => {
-                        if a.kind != ArtifactKind::Binary {
+                        // The binary-only driver restricts the kind filter to
+                        // binaries whatever the config's own `artifacts:`
+                        // says, so the shared vocabulary's `binary` row — which
+                        // takes a lipo-merged universal binary as well as a
+                        // plain one — is what decides membership.
+                        if !should_sign_artifact(a.kind, SignConfig::DEFAULT_ARTIFACTS_BINARY)? {
                             continue;
                         }
                         // A publish-only run rehydrates its registry from the
@@ -419,9 +424,10 @@ pub(crate) fn process_sign_configs(
             // Per-target binary signatures live in per-target directories
             // (the preserved-bin layout keys on the directory, not the
             // basename), so their bare basenames collide across targets in
-            // the registry and on the release. Register them under the asset
-            // name the target's archive was built from and carry the triple on
-            // the artifact. The on-disk path is untouched.
+            // the registry and on the release. Register them under the
+            // config-derived asset name, unique per (crate, target, binary),
+            // and carry the triple on the artifact. The on-disk path is
+            // untouched.
             let asset_base = match artifact_target.as_deref() {
                 Some(target) if is_binary_sign => Some(binary_sign_asset_base(
                     ctx,
