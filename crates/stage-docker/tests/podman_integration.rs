@@ -233,3 +233,34 @@ fn podman_push_verb_depends_on_platform_arity() {
         "multi-platform podman publishes with `podman manifest push --all`"
     );
 }
+
+/// The recorded `--digestfile` measurement agrees with itself: for each push
+/// verb, the digest podman wrote and the `Docker-Content-Digest` the registry
+/// then served for the same tag are one value.
+///
+/// The stage records the digestfile value as `{{ Digest }}` and the release's
+/// docker landing check compares it to what the registry serves, so a
+/// disagreement between the two would fail a release after the push. The
+/// transcript is a recording, not a live probe — editing it to a
+/// disagreeing pair fails here.
+#[test]
+fn the_recorded_podman_digestfile_equals_what_the_registry_served() {
+    let recording = include_str!("data/podman-5.8.4-digestfile-vs-registry.txt");
+    let digests: Vec<&str> = recording
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("sha256:").map(|_| line.trim()))
+        .chain(recording.lines().filter_map(|line| {
+            line.trim()
+                .strip_prefix("Docker-Content-Digest: ")
+                .map(str::trim)
+        }))
+        .collect();
+    // Two written digests followed by the two served ones, in verb order.
+    assert_eq!(digests.len(), 4, "the recording lost a digest: {digests:?}");
+    assert_eq!(digests[0], digests[2], "podman push");
+    assert_eq!(digests[1], digests[3], "podman manifest push");
+    assert_ne!(
+        digests[0], digests[1],
+        "an image manifest and a manifest list are different objects"
+    );
+}

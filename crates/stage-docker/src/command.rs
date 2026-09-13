@@ -517,17 +517,25 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
 ///   separate `docker_manifests` feature relies on being in the registry
 ///   before its own `manifest create`/`push` resolves per-arch tags.
 ///
-/// Both verbs take `--digestfile`, documented as "after copying the image,
-/// write the digest of the resulting image to the file" — the digest of what
-/// the destination registry now holds, which is the image manifest for a
-/// single-platform push and the manifest list for a `manifest push`. That is
+/// Both verbs take `--digestfile`, which writes the digest of what the
+/// destination registry now holds: the image manifest for a single-platform
+/// push and the manifest list for a `manifest push`. Measured against a local
+/// `registry:2` under podman 5.8.4 — both verbs wrote exactly the
+/// `Docker-Content-Digest` the registry then served for the same tag, and the
+/// transcript is `tests/data/podman-5.8.4-digestfile-vs-registry.txt`. That is
 /// the same kind of value buildx reports under `containerimage.digest`, so
 /// `{{ Digest }}`, the `.digest` artifact and the release's landing check
 /// compare one kind of value whichever backend built the image.
 ///
-/// Both verbs have carried the flag since podman 2.1, which is the floor a
-/// podman backend needs: an older podman exits non-zero on the unknown
-/// option instead of degrading, and the push fails.
+/// Podman 2.0 is the floor a podman backend needs: an older podman exits
+/// non-zero on the unknown option instead of degrading, and the push fails.
+/// `podman push` took the flag in 1.6.0 ("The `podman push` command now
+/// supports the `--digestfile` option to save a file containing the pushed
+/// digest", RELEASE_NOTES.md, 1.6.0 Features) and `podman manifest push` in
+/// 2.0.0, where `docs/source/markdown/podman-manifest-push.1.md` first
+/// documents it ("**--digestfile**=*Digestfile* — After copying the image,
+/// write the digest of the resulting image to the file"); it is absent from
+/// that page at 1.9.0. The higher of the two is the floor.
 ///
 /// The file is named per tag under the build's own staging directory: one
 /// build can push several tags, and one path would leave every tag holding
