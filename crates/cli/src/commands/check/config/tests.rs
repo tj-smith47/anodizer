@@ -1861,8 +1861,10 @@ fn two_spellings_of_one_signature_path_warn() {
         "{warnings:?}"
     );
 
-    // A template that cannot be resolved here is compared as text, so two
-    // different templates stay two files.
+    // `{{ .Artifact }}` expands to the artifact's whole path, which already
+    // carries `dist`, so the two spellings really do write two files
+    // (`dist/app.sig` and `dist/dist/app.sig`) and neither is joined onto
+    // the other.
     let templated = Config {
         binary_signs: vec![
             entry("{{ .Artifact }}.sig"),
@@ -1943,6 +1945,98 @@ fn two_spellings_of_one_templated_signature_path_warn() {
     };
     let mut none = Vec::new();
     check_binary_sign_duplicate_outputs(&distinct, &mut none);
+    assert!(none.is_empty(), "{none:?}");
+}
+
+/// A template that renders outside `dist` is placed under it by the sign
+/// stage, exactly as a literal path is, so `{{ ProjectName }}.sig` and
+/// `dist/{{ ProjectName }}.sig` name one file.
+#[test]
+fn a_templated_signature_outside_dist_names_its_dist_spelling() {
+    use anodizer_core::config::SignConfig;
+    let entry = |signature: &str| SignConfig {
+        cmd: Some("cosign".to_string()),
+        signature: Some(signature.to_string()),
+        ..Default::default()
+    };
+    let config = Config {
+        binary_signs: vec![
+            entry("{{ ProjectName }}-{{ Version }}.sig"),
+            entry("dist/{{ ProjectName }}-{{ Version }}.sig"),
+        ],
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_binary_sign_duplicate_outputs(&config, &mut warnings);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("resolve one signature file"),
+        "{warnings:?}"
+    );
+
+    // Two different placeholders render two names, so the join must not
+    // fold them together.
+    let distinct = Config {
+        binary_signs: vec![
+            entry("{{ ProjectName }}.sig"),
+            entry("dist/{{ Binary }}.sig"),
+        ],
+        ..Default::default()
+    };
+    let mut none = Vec::new();
+    check_binary_sign_duplicate_outputs(&distinct, &mut none);
+    assert!(none.is_empty(), "{none:?}");
+}
+
+/// The padding inside `{{ … }}` is not part of what a placeholder renders,
+/// so `{{ .Artifact }}` and `{{.Artifact}}` are one placeholder.
+#[test]
+fn placeholder_spacing_does_not_split_one_template_in_two() {
+    use anodizer_core::config::SignConfig;
+    let entry = |signature: &str| SignConfig {
+        cmd: Some("cosign".to_string()),
+        signature: Some(signature.to_string()),
+        ..Default::default()
+    };
+    for pair in [
+        ["dist/{{ .Artifact }}.sig", "./dist/{{.Artifact}}.sig"],
+        ["{{ Version }}.sig", "dist/{{Version}}.sig"],
+    ] {
+        let config = Config {
+            binary_signs: vec![entry(pair[0]), entry(pair[1])],
+            ..Default::default()
+        };
+        let mut warnings = Vec::new();
+        check_binary_sign_duplicate_outputs(&config, &mut warnings);
+        assert_eq!(warnings.len(), 1, "{pair:?}: {warnings:?}");
+    }
+}
+
+/// An unterminated `{{` is answered, not parsed: the run is opaque to the
+/// end of the string, so the pair still compares and a `..` inside it cannot
+/// climb out of the placeholder.
+#[test]
+fn an_unterminated_placeholder_is_opaque_to_the_end() {
+    use anodizer_core::config::SignConfig;
+    let entry = |signature: &str| SignConfig {
+        cmd: Some("cosign".to_string()),
+        signature: Some(signature.to_string()),
+        ..Default::default()
+    };
+    let config = Config {
+        binary_signs: vec![entry("dist/{{ Version.sig"), entry("./dist/{{ Version.sig")],
+        ..Default::default()
+    };
+    let mut warnings = Vec::new();
+    check_binary_sign_duplicate_outputs(&config, &mut warnings);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+
+    let climbing = Config {
+        binary_signs: vec![entry("dist/{{ Version/../app.sig"), entry("dist/app.sig")],
+        ..Default::default()
+    };
+    let mut none = Vec::new();
+    check_binary_sign_duplicate_outputs(&climbing, &mut none);
     assert!(none.is_empty(), "{none:?}");
 }
 
