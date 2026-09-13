@@ -6537,6 +6537,39 @@ fn nightly_flags(
         .expect("flags resolve")
 }
 
+/// The sibling nightly suppression — announce's `skipped announce — nightly
+/// run` — is default-visible, and both are a configured behaviour withheld
+/// because the run is a nightly, so they share a register.
+#[test]
+fn the_withheld_discussion_category_is_reported_at_default_verbosity() {
+    let capture = anodizer_core::log::LogCapture::new();
+    let mut ctx = TestContextBuilder::new().nightly(true).build();
+    ctx.config.nightly = Some(anodizer_core::config::NightlyConfig::default());
+    ctx.with_log_capture(capture.clone());
+    super::flags::resolve_release_flags(
+        &ctx,
+        &ReleaseConfig {
+            discussion_category_name: Some("Announcements".to_string()),
+            ..Default::default()
+        },
+        "anodizer",
+        "nightly",
+    )
+    .expect("flags resolve");
+    let withheld: Vec<(anodizer_core::log::LogLevel, String)> = capture
+        .all_messages()
+        .into_iter()
+        .filter(|(_, m)| m.contains("withheld discussion_category_name"))
+        .collect();
+    assert_eq!(withheld.len(), 1, "{withheld:?}");
+    assert_eq!(withheld[0].0, anodizer_core::log::LogLevel::Status);
+    assert!(
+        withheld[0].1.contains("never reissued"),
+        "{}",
+        withheld[0].1
+    );
+}
+
 #[test]
 fn nightly_defaults_to_prerelease_and_never_latest() {
     // The whole point: `release.prerelease` unset is false and
@@ -6654,8 +6687,9 @@ fn nightly_never_announces_a_discussion_while_a_stable_release_does() {
 
 #[test]
 fn a_nightly_release_body_carries_no_discussion_category_name() {
-    // The create POST and the publish PATCH are the two bodies that reach
-    // GitHub; both read the resolved flag, so neither may carry the key.
+    // The publish PATCH is the body that carries the key; the create POST
+    // never has, passing `None` unconditionally. Both are asserted so the
+    // PATCH honours the resolved flag and the POST keeps its own contract.
     let nightly = nightly_flags(
         Some(anodizer_core::config::NightlyConfig::default()),
         ReleaseConfig {

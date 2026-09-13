@@ -197,10 +197,10 @@ pub(crate) fn resolve_release_flags(
     // permanently. A release the next run deletes must not announce.
     let discussion_category_name = if ctx.is_nightly() {
         if release_cfg.discussion_category_name.is_some() {
-            ctx.logger("release").verbose(&format!(
+            ctx.logger("release").status(&format!(
                 "withheld discussion_category_name for crate '{}' — nightly run \
-                 (a Discussion for a release retention deletes burns an \
-                 issue/PR number permanently)",
+                 (retention deletes the release, and the number its Discussion \
+                 took from the issue/PR sequence is never reissued)",
                 crate_name
             ));
         }
