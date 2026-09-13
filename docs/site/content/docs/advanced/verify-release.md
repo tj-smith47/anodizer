@@ -162,9 +162,29 @@ One result line per publisher:
 • cargo: anodizer-core@0.15.4 visible on crates.io index
 • npm: myapp@0.15.4 visible on registry.npmjs.org
 • pypi: 9/9 uploaded file(s) listed on pypi.org
-• blob: 22/22 uploaded object(s) present in bucket
+• blob: 22/22 uploaded object(s) visible in s3://my-bucket
 • snapcraft: myapp 1.0.0 live in the Snap Store channel map
 • docker: 4/4 pushed image(s) visible on ghcr.io
+```
+
+Every line names the host it asked, and a run that spread its uploads over
+several hosts names each once, sorted:
+
+```
+• blob: 2/2 uploaded object(s) visible in s3://my-bucket, s3://my-mirror
+```
+
+A single object, package or image reads in the singular, with no counter:
+
+```
+• blob: v1/app.tar.gz visible in s3://my-bucket
+```
+
+Anything that qualifies the count arrives in ONE trailing clause — how many
+needed a propagation wait, and how many could not be reached at all:
+
+```
+• docker: 3/4 pushed image(s) visible on ghcr.io (1/4 needed a propagation wait, 1 unverifiable)
 ```
 
 ### Registry propagation
