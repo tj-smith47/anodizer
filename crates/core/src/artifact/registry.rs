@@ -120,6 +120,18 @@ impl Artifact {
     }
 }
 
+/// One image reference a run pushed to its registry, as
+/// [`ArtifactRegistry::pushed_images`] reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushedImage {
+    /// The full reference the push used, e.g. `ghcr.io/owner/app:1.0.0`.
+    pub reference: String,
+    /// The content digest the push recorded, when the backend produced one.
+    pub digest: Option<String>,
+    /// The crate the image belongs to, for per-crate wording.
+    pub crate_name: String,
+}
+
 #[derive(Debug, Default)]
 pub struct ArtifactRegistry {
     artifacts: Vec<Artifact>,
@@ -239,6 +251,40 @@ impl ArtifactRegistry {
         self.artifacts
             .iter()
             .any(|a| a.kind == kind && a.path == resolved)
+    }
+
+    /// Every image reference this run PUSHED to a registry, in registration
+    /// order, de-duplicated by reference.
+    ///
+    /// The docker stage files no `publish_report` row, so the pushed set is
+    /// read off the artifacts themselves: an image artifact carries
+    /// [`PUSHED_META`](super::PUSHED_META) exactly when its push returned OK.
+    /// A snapshot, a dry run and a `skip_push:` manifest leave the key unset
+    /// and are therefore absent here, on a fresh run and on a
+    /// `--publish-only` run rehydrated from `artifacts.json` alike.
+    ///
+    /// Both image kinds count: a `dockers_v2` tag and a `docker_manifests`
+    /// manifest list are each one reference a consumer pulls.
+    pub fn pushed_images(&self) -> Vec<PushedImage> {
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        self.artifacts
+            .iter()
+            .filter(|a| {
+                matches!(
+                    a.kind,
+                    ArtifactKind::DockerImageV2 | ArtifactKind::DockerManifest
+                )
+            })
+            .filter(|a| {
+                a.metadata.get(super::PUSHED_META).map(String::as_str) == Some(super::PUSHED_VALUE)
+            })
+            .filter(|a| seen.insert(a.name.as_str()))
+            .map(|a| PushedImage {
+                reference: a.name.clone(),
+                digest: a.metadata.get("digest").cloned(),
+                crate_name: a.crate_name.clone(),
+            })
+            .collect()
     }
 
     pub fn by_kind(&self, kind: ArtifactKind) -> Vec<&Artifact> {

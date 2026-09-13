@@ -420,6 +420,18 @@ fn execute_jobs_and_register(
             if let Some(d) = build_result.tag_digests.get(tag) {
                 meta.insert("digest".to_string(), d.clone());
             }
+            // Reaching here with `job.push` set means the registry accepted
+            // the tag: buildx baked `--push` into the build and podman's
+            // explicit push loop is a hard error on failure, so a returned
+            // job pushed everything it was asked to. Nothing else in the run
+            // records that, and the verify-release landing gate probes
+            // exactly the marked references.
+            if job.push {
+                meta.insert(
+                    anodizer_core::artifact::PUSHED_META.to_string(),
+                    anodizer_core::artifact::PUSHED_VALUE.to_string(),
+                );
+            }
             // All anodizer docker builds are V2 → register as DockerImageV2.
             new_artifacts.push(Artifact {
                 kind: ArtifactKind::DockerImageV2,

@@ -1714,3 +1714,168 @@ fn group_by_target_variant_splits_amd64_micro_architectures() {
     // A binary with no triple ends up under `unknown`.
     assert_eq!(groups[&("unknown".to_string(), None)][0].name, "myapp-host");
 }
+
+/// An image artifact as the docker stage registers it: the reference is both
+/// the name and the "path", and the pushed marker is present only when the
+/// push returned.
+fn image_artifact(
+    kind: ArtifactKind,
+    reference: &str,
+    crate_name: &str,
+    digest: Option<&str>,
+    pushed: bool,
+) -> Artifact {
+    let mut metadata = HashMap::new();
+    metadata.insert("tag".to_string(), reference.to_string());
+    if let Some(d) = digest {
+        metadata.insert("digest".to_string(), d.to_string());
+    }
+    if pushed {
+        metadata.insert(PUSHED_META.to_string(), PUSHED_VALUE.to_string());
+    }
+    Artifact {
+        kind,
+        name: reference.to_string(),
+        path: PathBuf::from(reference),
+        target: None,
+        crate_name: crate_name.to_string(),
+        metadata,
+        size: None,
+    }
+}
+
+/// Write a registry to `artifacts.json` and read it back, which is what a
+/// `--publish-only` run does with the preserved manifest.
+fn round_trip(reg: &ArtifactRegistry) -> ArtifactRegistry {
+    let json = serde_json::to_string(&reg.to_artifacts_json().expect("serialize")).expect("json");
+    let mut out = ArtifactRegistry::default();
+    for artifact in ArtifactRegistry::from_artifacts_json(&json).expect("parse") {
+        out.add(artifact);
+    }
+    out
+}
+
+fn references(images: &[PushedImage]) -> Vec<&str> {
+    images.iter().map(|i| i.reference.as_str()).collect()
+}
+
+/// Single-crate config: one crate, one image. The pushed marker is the only
+/// record that the tag reached its registry, so it must survive the manifest.
+#[test]
+fn a_single_crates_pushed_image_survives_the_manifest_round_trip() {
+    let mut reg = ArtifactRegistry::default();
+    reg.add(image_artifact(
+        ArtifactKind::DockerImageV2,
+        "ghcr.io/owner/app:1.0.0",
+        "app",
+        Some("sha256:aaa"),
+        true,
+    ));
+    let reloaded = round_trip(&reg);
+    let pushed = reloaded.pushed_images();
+    assert_eq!(references(&pushed), vec!["ghcr.io/owner/app:1.0.0"]);
+    assert_eq!(pushed[0].digest.as_deref(), Some("sha256:aaa"));
+    assert_eq!(pushed[0].crate_name, "app");
+}
+
+/// Lockstep config: several crates on one version, each with its own image,
+/// plus a multi-arch manifest list. Every pushed reference is reported once;
+/// an image whose build never pushed (a snapshot or dry run) is not.
+#[test]
+fn a_lockstep_workspaces_pushed_images_survive_the_manifest_round_trip() {
+    let mut reg = ArtifactRegistry::default();
+    reg.add(image_artifact(
+        ArtifactKind::DockerImageV2,
+        "ghcr.io/owner/cli:1.0.0",
+        "cli",
+        Some("sha256:aaa"),
+        true,
+    ));
+    reg.add(image_artifact(
+        ArtifactKind::DockerImageV2,
+        "ghcr.io/owner/server:1.0.0",
+        "server",
+        Some("sha256:bbb"),
+        true,
+    ));
+    reg.add(image_artifact(
+        ArtifactKind::DockerManifest,
+        "ghcr.io/owner/cli:latest",
+        "cli",
+        None,
+        true,
+    ));
+    reg.add(image_artifact(
+        ArtifactKind::DockerImageV2,
+        "ghcr.io/owner/tools:1.0.0",
+        "tools",
+        None,
+        false,
+    ));
+    let pushed = round_trip(&reg).pushed_images();
+    assert_eq!(
+        references(&pushed),
+        vec![
+            "ghcr.io/owner/cli:1.0.0",
+            "ghcr.io/owner/server:1.0.0",
+            "ghcr.io/owner/cli:latest",
+        ]
+    );
+    assert!(
+        pushed
+            .iter()
+            .all(|i| i.reference != "ghcr.io/owner/tools:1.0.0"),
+        "an image that was never pushed is not a landing target: {pushed:?}"
+    );
+}
+
+/// Per-crate config: crates on independent versions, so two references differ
+/// by version rather than by name. Both are reported, each with its own
+/// digest.
+#[test]
+fn a_per_crate_workspaces_pushed_images_survive_the_manifest_round_trip() {
+    let mut reg = ArtifactRegistry::default();
+    reg.add(image_artifact(
+        ArtifactKind::DockerImageV2,
+        "ghcr.io/owner/api:2.3.0",
+        "api",
+        Some("sha256:aaa"),
+        true,
+    ));
+    reg.add(image_artifact(
+        ArtifactKind::DockerImageV2,
+        "ghcr.io/owner/worker:0.9.1",
+        "worker",
+        Some("sha256:bbb"),
+        true,
+    ));
+    let pushed = round_trip(&reg).pushed_images();
+    assert_eq!(
+        references(&pushed),
+        vec!["ghcr.io/owner/api:2.3.0", "ghcr.io/owner/worker:0.9.1"]
+    );
+    assert_eq!(
+        pushed
+            .iter()
+            .filter_map(|i| i.digest.as_deref())
+            .collect::<Vec<_>>(),
+        vec!["sha256:aaa", "sha256:bbb"]
+    );
+}
+
+/// One reference registered twice — the docker stage registers a tag per
+/// image entry — is one landing target, not two probes of the same URL.
+#[test]
+fn one_reference_registered_twice_is_probed_once() {
+    let mut reg = ArtifactRegistry::default();
+    for _ in 0..2 {
+        reg.add(image_artifact(
+            ArtifactKind::DockerImageV2,
+            "ghcr.io/owner/app:1.0.0",
+            "app",
+            Some("sha256:aaa"),
+            true,
+        ));
+    }
+    assert_eq!(reg.pushed_images().len(), 1);
+}
