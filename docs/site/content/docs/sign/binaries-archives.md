@@ -107,7 +107,7 @@ result, so the message asks for a change to that template rather than to the
 archive name:
 
 ```text
-       Error sign: the signature of '…, build id 'app', …' and the signature of '…, build id 'helper', …' both resolve to the asset name 'detached-x86_64-unknown-linux-gnu.sig' — the signature was rendered by the `binary_signs[].signature:` template, which renamed the output instead of suffixing the binary's own file name, so the asset base 'app-1.2.3-linux-amd64' (from '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}') is not part of it. One release asset cannot carry both files — give the `binary_signs[].signature:` template {{ .Artifact }} or the target, so it renders one name per binary.
+       Error sign: the signature of 'target/x86_64-unknown-linux-gnu/release/app (crate 'app', build id 'app', target x86_64-unknown-linux-gnu, amd64 v1)' and the signature of 'target/x86_64-unknown-linux-gnu/release/helper (crate 'app', build id 'helper', target x86_64-unknown-linux-gnu, amd64 v1)' both resolve to the asset name 'detached-x86_64-unknown-linux-gnu.sig' — the signature was rendered by the `binary_signs[].signature:` template, which renamed the output instead of suffixing the binary's own file name, so the asset base 'app-1.2.3-linux-amd64' (from '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}') is not part of it. One release asset cannot carry both files — give the `binary_signs[].signature:` template {{ .Artifact }} or the target, so it renders one name per binary.
 ```
 
 `asset_name_template:` is a per-entry field and the asset name is the base
@@ -304,8 +304,10 @@ field replaces differs per field: `args:` takes all three, `signature:` and
 `certificate:` take `Artifact` alone, and `stdin:` takes none. Every other
 spelling — a different padding, or the name inside an expression — survives the
 replacement, reaches the engine as an undefined variable and fails the sign
-stage. A `docker_signs:` entry's `signature:` is read nowhere at all, because a
-container signature is stored in the registry:
+stage. A `docker_signs:` entry is narrower still: its argv substitutes the same
+three names, but the `${…}` variables below are never expanded there, and its
+`signature:` is read nowhere at all, because a container signature is stored in
+the registry:
 
 ```yaml
 project_name: app
@@ -317,6 +319,7 @@ binary_signs:
     signature: "{{ .Signature }}.asc"
 docker_signs:
   - cmd: cosign
+    args: ["sign", "--key=cosign.key", "${artifact}"]
     signature: "{{ .Artifact }}.sig"
 ```
 
@@ -325,15 +328,17 @@ docker_signs:
      Warning binary_signs[0].signature names `{{.Artifact}}`, which anodizer substitutes only as the literal `{{ .Artifact }}` or `{{ Artifact }}` — every other spelling reaches the template engine as an undefined variable and fails the sign stage
      Warning binary_signs[0].certificate names `{{ Artifact | upper }}`, which anodizer substitutes only as the literal `{{ .Artifact }}` or `{{ Artifact }}` — every other spelling reaches the template engine as an undefined variable and fails the sign stage
      Warning binary_signs[1].signature names `{{ .Signature }}`, which anodizer does not substitute in signature: — it reaches the template engine as an undefined variable and fails the sign stage; the signature path is what this template renders, so `${signature}` has no value here either — remove the reference
+     Warning docker_signs[0].args names `${artifact}`, which the docker sign path never expands — it reaches the signing command as that literal text; write `{{ .Artifact }}`, which anodizer substitutes before the render
      Warning docker_signs[0].signature is set but a docker signature is stored in the registry rather than written to a file (it will be ignored)
    • Config is valid.
 ```
 
-The `${…}` variables are the way to name another output: `${certificate}`
-inside `signature:` and `${signature}` inside `certificate:` are expanded after
-the render. A field's own name is not — `${signature}` inside `signature:`
-expands to that template's own unexpanded text — so there the reference has to
-go.
+The `${…}` variables are the way to name another output on the binary and
+archive path: `${certificate}` inside `signature:` and `${signature}` inside
+`certificate:` are expanded after the render. A field's own name is not —
+`${signature}` inside `signature:` expands to that template's own unexpanded
+text — so there the reference has to go. A `docker_signs:` entry expands none
+of them.
 
 ## Execution & resilience
 

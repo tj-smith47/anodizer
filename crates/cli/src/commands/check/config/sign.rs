@@ -1,4 +1,5 @@
 use super::*;
+use anodizer_core::config::DockerSignConfig;
 
 /// The values a `binary_signs:` entry's `artifacts:` may take.
 ///
@@ -486,30 +487,71 @@ const ARTIFACT_PLACEHOLDER_ONLY: &[&str] = &["Artifact"];
 /// `stdin:` is handed to the template engine with nothing substituted.
 const NO_SIGN_PLACEHOLDERS: &[&str] = &[];
 
-/// Every `{{ … }}` run in `template` that names `name` — dot prefix,
-/// padding and any expression around it included — as it is written.
+/// `core` with the text inside its quoted literals blanked out.
+///
+/// Tera evaluates a quoted literal as text and never as a variable
+/// reference, so a name written inside one renders fine: `{{ "Artifact" }}`
+/// and `{{ Version | replace(from="Artifact", to="x") }}` both succeed. An
+/// unterminated quote blanks the rest of the run, which is the direction
+/// that stays silent rather than warning about text that works.
+fn mask_string_literals(core: &str) -> String {
+    let mut masked = String::with_capacity(core.len());
+    let mut quote: Option<char> = None;
+    for c in core.chars() {
+        match quote {
+            Some(open) if c == open => {
+                quote = None;
+                masked.push(c);
+            }
+            Some(_) => masked.push(' '),
+            None if c == '"' || c == '\'' => {
+                quote = Some(c);
+                masked.push(c);
+            }
+            None => masked.push(c),
+        }
+    }
+    masked
+}
+
+/// Every `{{ … }}` expression and `{% … %}` statement in `template` that
+/// names `name` — dot prefix, padding and any expression around it included
+/// — as it is written.
 ///
 /// The stage substitutes by exact literal, so the run's own text is what
 /// decides whether it is one of the two spellings that works. A run that
 /// names the placeholder inside an expression (`{{ Artifact | upper }}`,
 /// `{{ Artifact.path }}`) is matched too: the literal replacement misses it
 /// and the name is seeded in no template context, so it fails the same way a
-/// mis-padded one does.
+/// mis-padded one does. A statement block (`{% set x = Artifact %}`) reads
+/// the name from the same empty context and fails the same way again.
 ///
-/// A `{# … #}` comment is skipped. Tera strips it before evaluating the
-/// template, so a placeholder written inside one cannot fail the render.
+/// A `{# … #}` comment is skipped, and so is the inside of a quoted literal:
+/// Tera strips the first before evaluating the template and reads the second
+/// as text, so neither can fail the render.
+///
+/// A run that never closes ends the scan, and nothing is lost by that: the
+/// closing delimiter is searched for in the whole remainder, so a template
+/// with no `}}` after an open `{{` holds no complete run after it either.
 fn placeholder_spellings<'a>(template: &'a str, name: &str) -> Vec<&'a str> {
     let mut found = Vec::new();
     let mut at = 0usize;
     while at < template.len() {
         let rest = &template[at..];
-        let run = rest.find("{{");
+        let run = rest.find("{{").map(|open| (open, "}}"));
+        let statement = rest.find("{%").map(|open| (open, "%}"));
         let comment = rest.find("{#");
-        match (run, comment) {
-            (Some(open), c) if c.is_none_or(|c| open < c) => {
+        let block = match (run, statement) {
+            (Some(run), Some(statement)) => Some(std::cmp::min_by_key(run, statement, |b| b.0)),
+            (run, statement) => run.or(statement),
+        };
+        match (block, comment) {
+            (Some((open, closer)), c) if c.is_none_or(|c| open < c) => {
                 let after = &rest[open + 2..];
-                let Some(close) = after.find("}}") else { break };
-                if names_whole_word(after[..close].trim(), name) {
+                let Some(close) = after.find(closer) else {
+                    break;
+                };
+                if names_whole_word(mask_string_literals(after[..close].trim()).trim(), name) {
                     found.push(&rest[open..open + close + 4]);
                 }
                 at += open + close + 4;
@@ -620,6 +662,80 @@ pub(super) fn check_unpadded_sign_placeholders(config: &Config, warnings: &mut V
         }
         if let Some(stdin) = cfg.stdin.as_deref() {
             warn(&block, "stdin", NO_SIGN_PLACEHOLDERS, false, stdin);
+        }
+    }
+    for (idx, cfg) in config.docker_signs.iter().flatten().enumerate() {
+        let block = docker_sign_block(config, idx);
+        for (field, template) in docker_sign_templates(cfg) {
+            check_docker_sign_literal_text(&block, field, template, warnings);
+        }
+    }
+}
+
+/// Every template of one `docker_signs:` entry the signing command receives.
+fn docker_sign_templates(cfg: &DockerSignConfig) -> Vec<(&'static str, &str)> {
+    cfg.args
+        .iter()
+        .flatten()
+        .map(|arg| ("args", arg.as_str()))
+        .chain(cfg.stdin.as_deref().map(|stdin| ("stdin", stdin)))
+        .collect()
+}
+
+/// Warn when a docker sign template writes something the docker path hands
+/// to the signing command as text rather than resolving.
+///
+/// The docker path renders its templates and substitutes `{{ .Artifact }}`
+/// and `{{ .Signature }}` by literal, and that is all: it never expands the
+/// `${…}` variables the detached sign path does, so `${artifact}` reaches
+/// cosign as those nine characters. And a docker certificate path is read
+/// nowhere — only its presence is, to select cosign's bundle verify mode —
+/// so `{{ .Certificate }}` is substituted with the empty string.
+fn check_docker_sign_literal_text(
+    block: &str,
+    field: &str,
+    template: &str,
+    warnings: &mut Vec<String>,
+) {
+    for name in PATH_CARRYING_SHELL_VARS {
+        if !names_shell_var(template, name) {
+            continue;
+        }
+        let remedy = match (*name, field) {
+            ("certificate", _) => {
+                "; a docker certificate path is read nowhere, so remove the reference".to_string()
+            }
+            // `stdin:` is rendered with nothing substituted, so it has no
+            // working spelling of any of these names to offer.
+            (_, "stdin") => String::new(),
+            (name, _) => {
+                let title = format!("{}{}", name[..1].to_uppercase(), &name[1..]);
+                format!(
+                    "; write `{{{{ .{title} }}}}`, which anodizer substitutes before the render"
+                )
+            }
+        };
+        warnings.push(format!(
+            "{block}.{field} names `${{{name}}}`, which the docker sign path \
+            never expands — it reaches the signing command as that literal \
+            text{remedy}"
+        ));
+    }
+    if field == "args" {
+        // A mis-padded spelling never reaches the substitution at all: it
+        // fails the render, which the placeholder check above says.
+        for spelling in placeholder_spellings(template, "Certificate")
+            .into_iter()
+            .filter(|spelling| {
+                *spelling == "{{ .Certificate }}" || *spelling == "{{ Certificate }}"
+            })
+        {
+            warnings.push(format!(
+                "{block}.args names `{spelling}`, which anodizer substitutes \
+                with the empty string on the docker path — a docker \
+                certificate path is read nowhere, so the argument reaches the \
+                signing command with no value"
+            ));
         }
     }
 }
