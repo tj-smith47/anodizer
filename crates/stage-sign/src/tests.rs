@@ -2326,13 +2326,11 @@ fn test_if_condition_template_renders_to_empty_skips_sign() {
         env: None,
         certificate: None,
         output: None,
-        // Render expands to an empty string (UndefinedSymbol unset; the
-        // {{ ... }} braces render as nothing in Tera's strict mode would
-        // error — use a literal " " that trims to empty instead, exercising
-        // the trimmed-empty branch).
         authenticode: None,
         verify: None,
-        if_condition: Some(" ".to_string()),
+        // A blank LITERAL imposes no gate, so the blank has to come out of
+        // the render for this branch to be reached.
+        if_condition: Some("{{ \" \" }}".to_string()),
     }];
 
     let mut ctx = TestContextBuilder::new()
