@@ -128,7 +128,7 @@ You can also control archive entry metadata explicitly with `builds_info`:
 
 ```yaml
 archives:
-  - format: tar.gz
+  - formats: [tar.gz]
     builds_info:
       owner: root
       group: root
@@ -149,7 +149,7 @@ Per-file info can also be set on individual `files` entries:
 
 ```yaml
 archives:
-  - format: tar.gz
+  - formats: [tar.gz]
     files:
       - src: LICENSE
         dst: LICENSE
@@ -191,13 +191,12 @@ crates:
           - aarch64-unknown-linux-gnu
           - x86_64-apple-darwin
           - aarch64-apple-darwin
-
-archives:
-  - format: tar.gz
-    builds_info:
-      owner: root
-      group: root
-      mode: "0755"
+    archives:
+      - formats: [tar.gz]
+        builds_info:
+          owner: root
+          group: root
+          mode: "0755"
 ```
 
 ## Limitations and caveats
