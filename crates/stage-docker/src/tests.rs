@@ -3207,7 +3207,8 @@ fn test_build_podman_push_commands_single_platform_uses_plain_push() {
         "ghcr.io/owner/app:latest".to_string(),
         "docker.io/owner/app:v1.2.3".to_string(),
     ];
-    let cmds = build_podman_push_commands(&tags, false);
+    let staging = std::path::Path::new("/stage");
+    let cmds = build_podman_push_commands(&tags, false, staging);
 
     assert_eq!(
         cmds.len(),
@@ -3217,9 +3218,24 @@ fn test_build_podman_push_commands_single_platform_uses_plain_push() {
     for (cmd, tag) in cmds.iter().zip(&tags) {
         assert_eq!(
             cmd,
-            &vec!["podman".to_string(), "push".to_string(), tag.clone()]
+            &vec![
+                "podman".to_string(),
+                "push".to_string(),
+                format!(
+                    "--digestfile={}",
+                    crate::command::podman_push_digest_file(staging, tag).display()
+                ),
+                tag.clone()
+            ]
         );
     }
+    // One file per tag: a shared path would leave every tag holding the last
+    // push's digest.
+    let files: std::collections::BTreeSet<_> = tags
+        .iter()
+        .map(|tag| crate::command::podman_push_digest_file(staging, tag))
+        .collect();
+    assert_eq!(files.len(), tags.len());
 }
 
 #[test]
@@ -3232,7 +3248,8 @@ fn test_build_podman_push_commands_multi_platform_uses_manifest_push_all() {
         "ghcr.io/owner/app:1.0.0".to_string(),
         "ghcr.io/owner/app:latest".to_string(),
     ];
-    let cmds = build_podman_push_commands(&tags, true);
+    let staging = std::path::Path::new("/stage");
+    let cmds = build_podman_push_commands(&tags, true, staging);
 
     assert_eq!(cmds.len(), tags.len());
     for (cmd, tag) in cmds.iter().zip(&tags) {
@@ -3243,6 +3260,10 @@ fn test_build_podman_push_commands_multi_platform_uses_manifest_push_all() {
                 "manifest".to_string(),
                 "push".to_string(),
                 "--all".to_string(),
+                format!(
+                    "--digestfile={}",
+                    crate::command::podman_push_digest_file(staging, tag).display()
+                ),
                 tag.clone(),
             ],
             "multi-platform podman must use `manifest push --all`"
@@ -3258,8 +3279,8 @@ fn test_build_podman_push_commands_multi_platform_uses_manifest_push_all() {
 #[test]
 fn test_build_podman_push_commands_empty_when_no_tags() {
     // No rendered tags → no push commands (nothing to publish), either arity.
-    assert!(build_podman_push_commands(&[], false).is_empty());
-    assert!(build_podman_push_commands(&[], true).is_empty());
+    assert!(build_podman_push_commands(&[], false, std::path::Path::new("/stage")).is_empty());
+    assert!(build_podman_push_commands(&[], true, std::path::Path::new("/stage")).is_empty());
 }
 
 #[test]
@@ -3301,7 +3322,7 @@ fn test_podman_real_publish_pushes_every_tag() {
         "real podman publish must take the push path"
     );
     let multi_platform = job.platforms_list.len() > 1;
-    let cmds = build_podman_push_commands(&job.rendered_tags, multi_platform);
+    let cmds = build_podman_push_commands(&job.rendered_tags, multi_platform, &job.staging_dir);
     let pushed: Vec<&String> = cmds.iter().map(|c| c.last().unwrap()).collect();
     for tag in &tags {
         assert!(
@@ -3343,7 +3364,7 @@ fn test_podman_multi_platform_real_publish_pushes_manifest_all() {
 
     let multi_platform = job.platforms_list.len() > 1;
     assert!(multi_platform);
-    let cmds = build_podman_push_commands(&job.rendered_tags, multi_platform);
+    let cmds = build_podman_push_commands(&job.rendered_tags, multi_platform, &job.staging_dir);
     assert_eq!(cmds.len(), 1);
     assert_eq!(
         cmds[0],
@@ -3352,6 +3373,7 @@ fn test_podman_multi_platform_real_publish_pushes_manifest_all() {
             "manifest".to_string(),
             "push".to_string(),
             "--all".to_string(),
+            "--digestfile=ghcr.io_owner_app_1.0.0.pushdigest".to_string(),
             "ghcr.io/owner/app:1.0.0".to_string(),
         ]
     );
@@ -4102,10 +4124,10 @@ fn docker_v2_post_hook_with_empty_digest_errors_loudly() {
     let result: anyhow::Result<String> = tag_digests.values().next().cloned().ok_or_else(|| {
         anyhow::anyhow!(
             "dockers_v2[test]: post-hooks configured but no image digest captured \
-                 (no `containerimage.digest` in the buildx metadata file meta.json \
-                 after a successful build); a `use: podman` build reports no registry \
-                 digest at all, and a build that exports no image has none to report — \
-                 remove the post-hook or build with buildx"
+                 (a cache-only build exports no image, so buildx writes no \
+                 `containerimage.digest` to its metadata file and podman's push \
+                 writes no digestfile) — remove the post-hook, or export the \
+                 image with `push:` or a snapshot `--load` build"
         )
     });
 
@@ -4117,7 +4139,7 @@ fn docker_v2_post_hook_with_empty_digest_errors_loudly() {
         msg
     );
     assert!(
-        msg.contains("remove the post-hook or build with buildx"),
+        msg.contains("remove the post-hook, or export the image"),
         "error message must suggest a remediation: {}",
         msg
     );
@@ -7224,6 +7246,10 @@ fn a_snapshot_manifest_pushes_nothing_and_records_no_marker() {
 /// Run one `dockers_v2` config against stubbed backends and return the image
 /// artifacts it registered. The stub answers every probe and the build itself,
 /// so the whole prepare / build / push path runs offline.
+/// What the fake podman writes into every `--digestfile` it is handed.
+const PODMAN_PUSH_DIGEST: &str =
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+
 fn docker_v2_registered_images(
     snapshot: bool,
     backend: Option<&str>,
@@ -7233,7 +7259,18 @@ fn docker_v2_registered_images(
 
     let tools = FakeToolDir::new();
     tools.tool("docker").install();
-    tools.tool("podman").install();
+    // Real podman fills `--digestfile` with the digest the registry stored.
+    tools
+        .tool("podman")
+        .script(format!(
+            "for __a in \"$@\"; do\n\
+               case \"$__a\" in\n\
+                 --digestfile=*) printf '%s' '{PODMAN_PUSH_DIGEST}' > \"${{__a#--digestfile=}}\" ;;\n\
+               esac\n\
+             done\n\
+             exit 0\n"
+        ))
+        .install();
     let _path = tools.activate();
 
     let tmp = TempDir::new().unwrap();
@@ -7266,6 +7303,47 @@ fn docker_v2_registered_images(
         .into_iter()
         .cloned()
         .collect()
+}
+
+/// A build whose exporter reported no digest — a cache-only build — still
+/// created images, so it still says so at default verbosity.
+#[test]
+#[serial_test::serial(path_env)]
+fn a_build_without_a_digest_still_reports_the_images_it_created() {
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+    let tools = FakeToolDir::new();
+    // The stub writes no metadata file, which is what a cache-only buildx
+    // build leaves behind as far as `containerimage.digest` goes.
+    tools.tool("docker").install();
+    let _path = tools.activate();
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+    let mut config = docker_v2_config(&["app"], &dockerfile);
+    config.dist = tmp.path().join("dist");
+    let capture = anodizer_core::log::LogCapture::new();
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.with_log_capture(capture.clone());
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    DockerStage::new().run(&mut ctx).unwrap();
+
+    let created: Vec<(anodizer_core::log::LogLevel, String)> = capture
+        .all_messages()
+        .into_iter()
+        .filter(|(_, m)| m.starts_with("created images"))
+        .collect();
+    assert!(!created.is_empty(), "no created-images line was emitted");
+    for (level, message) in &created {
+        assert_eq!(*level, anodizer_core::log::LogLevel::Status, "{message}");
+        assert!(
+            message.contains("images=") && !message.contains("digest="),
+            "{message}"
+        );
+    }
 }
 
 /// The buildx push path is what the landing gate rests on: a returned
@@ -7304,13 +7382,14 @@ fn a_snapshot_docker_v2_image_records_no_pushed_marker() {
     }
 }
 
-/// The podman push loop marks its tags too, and records no digest: podman
-/// reports only a local image ID, which names different content than the
-/// registry serves.
+/// The podman push loop marks its tags and records the digest the registry
+/// stored, which `podman push --digestfile` writes. `podman build`'s iidfile
+/// holds the local image ID instead — a value naming different content — so
+/// the push is where the digest comes from.
 #[cfg(target_os = "linux")]
 #[test]
 #[serial_test::serial(path_env)]
-fn a_podman_push_marks_the_tag_and_records_no_digest() {
+fn a_podman_push_marks_the_tag_and_records_the_pushed_digest() {
     let images = docker_v2_registered_images(false, Some("podman"));
     assert!(!images.is_empty(), "the podman build registers an image");
     for image in &images {
@@ -7323,9 +7402,10 @@ fn a_podman_push_marks_the_tag_and_records_no_digest() {
             "a pushed podman tag is a landing target: {:?}",
             image.metadata
         );
-        assert!(
-            !image.metadata.contains_key("digest"),
-            "podman reports no registry digest: {:?}",
+        assert_eq!(
+            image.metadata.get("digest").map(String::as_str),
+            Some(PODMAN_PUSH_DIGEST),
+            "the digest podman wrote to --digestfile reaches the artifact: {:?}",
             image.metadata
         );
     }

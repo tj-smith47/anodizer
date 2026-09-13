@@ -253,7 +253,7 @@ addition to the standard template surface, hooks see:
 | `{{ Images }}` | pre + post | List of `image:tag` references for this build |
 | `{{ Dockerfile }}` | pre + post | Path to the rendered Dockerfile |
 | `{{ ContextDir }}` | pre + post | Path to the buildx context staging directory |
-| `{{ Digest }}` | post only | The digest the registry stores for the build — the image manifest single-platform, the image index multi-platform — read from buildx's `--metadata-file`. A `use: podman` build reports no such digest, so under podman this is unset and a `post:` hook that needs it fails the build |
+| `{{ Digest }}` | post only | The digest the registry stores for the build — the image manifest single-platform, the image index multi-platform. Read from buildx's `--metadata-file` (`containerimage.digest`), or from `podman push --digestfile` under `use: podman`. A build that exports no image at all (neither pushed nor loaded) has no digest to report, and a `post:` hook that needs it then fails the build |
 | `{{ BaseImage }}` / `{{ BaseImageDigest }}` | post only | Final-stage base image (mirrors GoReleaser's overlay) |
 
 ## Dockerfile pattern (distroless + dist-tree binary)

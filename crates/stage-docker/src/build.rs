@@ -76,6 +76,12 @@ pub(crate) fn format_v2_created_images_log(images: &[String], digest: &str) -> S
     )
 }
 
+/// The same result line for a build whose exporter reported no digest — a
+/// cache-only build. The images still exist and are still the build's result.
+pub(crate) fn format_created_images_log(images: &[String]) -> String {
+    format!("created images — images={}", images.join(","))
+}
+
 /// The registry digest a buildx build reported in its `--metadata-file`.
 ///
 /// `containerimage.digest` is the digest the registry stores for what was
@@ -83,6 +89,18 @@ pub(crate) fn format_v2_created_images_log(images: &[String], digest: &str) -> S
 /// a multi-platform one. buildx writes it beside
 /// `containerimage.config.digest`, the image config blob's digest — the value
 /// the `--iidfile` carries, which a registry never serves a tag at.
+///
+/// Which exporter reports it, measured on buildx v0.36.1:
+///
+/// - `--push` and `--load` both write `containerimage.digest` alongside
+///   `containerimage.config.digest`, `containerimage.descriptor` and
+///   `image.name`.
+/// - A build with neither (cache only) writes `buildx.build.ref` and the
+///   provenance block and nothing else.
+///
+/// So an exported image always reports the key, whether it went to a registry
+/// or to the local daemon, and a cache-only build reports no digest at all.
+/// `None` is the answer for anything else the file holds.
 pub(crate) fn metadata_file_digest(raw: &str) -> Option<String> {
     let doc: serde_json::Value = serde_json::from_str(raw).ok()?;
     let digest = doc.get("containerimage.digest")?.as_str()?.trim();
@@ -313,51 +331,71 @@ pub(crate) fn execute_docker_build(
     // publish. Per-arch tags are pushed before any `docker_manifests`
     // `manifest push` runs because the entire build phase (including this
     // loop) completes before the manifest stage executes.
+    let mut tag_digests = BTreeMap::new();
     if job.is_podman && job.push {
-        push_podman_tags(job, log)?;
+        tag_digests = push_podman_tags(job, log)?;
     }
 
-    // Capture the registry digest buildx reported for this build.
-    let mut tag_digests = BTreeMap::new();
-    let mut digest_files = Vec::new();
-
-    // The metadata file is absent when the build produced no image export
-    // (a cache-only build) and under the podman backend, which reports no
-    // registry digest at all — both degrade to no digest rather than to a
-    // digest that names different content.
+    // The buildx metadata file is absent when the build produced no image
+    // export: a cache-only build (neither `--push` nor `--load`) writes
+    // `buildx.build.ref` and its provenance and nothing else, so it degrades
+    // to no digest rather than to a digest that names different content. Both
+    // exporters anodizer uses DO report one — `--push` and `--load` alike
+    // write `containerimage.digest`, the manifest digest for a single-platform
+    // build and the index digest for a multi-platform one.
     let metadata_file = job.staging_dir.join("meta.json");
     if let Ok(metadata) = fs::read_to_string(&metadata_file)
         && let Some(digest) = metadata_file_digest(&metadata)
     {
-        // Emit the created-images log with
-        // `images` and `digest` as *separate* structured fields rather
-        // than embedding `image@digest` in a single field. Easier to
-        // query in log aggregators (the `images` field carries
-        // ...).WithField("digest", ...)` shape.
-        tracing::info!(
-            images = %job.rendered_tags.join(","),
-            digest = %digest,
-            "created images",
-        );
-        log.status(&format_v2_created_images_log(&job.rendered_tags, &digest));
         for tag in &job.rendered_tags {
             tag_digests.insert(tag.clone(), digest.clone());
         }
-        // Write per-tag digest files
-        if !job.skip_digest {
-            for tag in &job.rendered_tags {
-                let safe_name = tag.replace(['/', ':'], "_");
-                let digest_file = job.dist.join(format!("{}.digest", safe_name));
-                if let Err(e) = fs::write(&digest_file, &digest) {
-                    log.warn(&format!(
-                        "failed to write digest file {}: {}",
-                        digest_file.display(),
-                        e
-                    ));
-                } else {
-                    log.status(&format!("saved digest to {}", digest_file.display()));
-                    digest_files.push(digest_file);
-                }
+    }
+
+    // One default-visible result line per build, whether or not a digest was
+    // recorded: a cache-only build creates images the operator has to be told
+    // about too.
+    let digest = job
+        .rendered_tags
+        .first()
+        .and_then(|tag| tag_digests.get(tag))
+        .cloned();
+    match &digest {
+        Some(digest) => {
+            // `images` and `digest` are separate structured fields rather than
+            // one embedded `image@digest`, so a log aggregator can query them
+            // independently.
+            tracing::info!(
+                images = %job.rendered_tags.join(","),
+                digest = %digest,
+                "created images",
+            );
+            log.status(&format_v2_created_images_log(&job.rendered_tags, digest));
+        }
+        None => {
+            tracing::info!(images = %job.rendered_tags.join(","), "created images");
+            log.status(&format_created_images_log(&job.rendered_tags));
+        }
+    }
+
+    // Write per-tag digest files.
+    let mut digest_files = Vec::new();
+    if !job.skip_digest {
+        for tag in &job.rendered_tags {
+            let Some(digest) = tag_digests.get(tag) else {
+                continue;
+            };
+            let safe_name = tag.replace(['/', ':'], "_");
+            let digest_file = job.dist.join(format!("{}.digest", safe_name));
+            if let Err(e) = fs::write(&digest_file, digest) {
+                log.warn(&format!(
+                    "failed to write digest file {}: {}",
+                    digest_file.display(),
+                    e
+                ));
+            } else {
+                log.status(&format!("saved digest to {}", digest_file.display()));
+                digest_files.push(digest_file);
             }
         }
     }
@@ -380,12 +418,20 @@ pub(crate) fn execute_docker_build(
 /// than failing the release. A push failure is a hard error: a release that
 /// builds an image but never publishes it has shipped nothing, so the error is
 /// propagated with context, never swallowed.
-fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<()> {
+///
+/// Returns the digest the registry stored per pushed tag, read back from the
+/// `--digestfile` each push wrote. An unreadable or empty file leaves that tag
+/// without a digest rather than failing a push that succeeded.
+fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<BTreeMap<String, String>> {
     use anodizer_core::retry::{RetryLog, RetryPolicy, retry_sync_deadline};
     use std::ops::ControlFlow;
 
     let multi_platform = job.platforms_list.len() > 1;
-    let push_cmds = crate::command::build_podman_push_commands(&job.rendered_tags, multi_platform);
+    let push_cmds = crate::command::build_podman_push_commands(
+        &job.rendered_tags,
+        multi_platform,
+        &job.staging_dir,
+    );
     let policy = RetryPolicy {
         max_attempts: job.max_attempts,
         base_delay: job.base_delay,
@@ -394,7 +440,8 @@ fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<()> {
             .unwrap_or(anodizer_core::config::RetryConfig::DEFAULT_MAX_DELAY),
     };
 
-    for push_args in &push_cmds {
+    let mut tag_digests = BTreeMap::new();
+    for (tag, push_args) in job.rendered_tags.iter().zip(&push_cmds) {
         log.verbose(&format!("running {}", push_args.join(" ")));
         retry_sync_deadline(
             RetryLog::new("podman push", log),
@@ -482,7 +529,17 @@ fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<()> {
             "pushed image {}",
             push_args.last().map(String::as_str).unwrap_or("")
         ));
+        let digest_file = crate::command::podman_push_digest_file(&job.staging_dir, tag);
+        match fs::read_to_string(&digest_file) {
+            Ok(digest) if !digest.trim().is_empty() => {
+                tag_digests.insert(tag.clone(), digest.trim().to_string());
+            }
+            _ => log.verbose(&format!(
+                "podman wrote no digest for {tag} at {}",
+                digest_file.display()
+            )),
+        }
     }
 
-    Ok(())
+    Ok(tag_digests)
 }
