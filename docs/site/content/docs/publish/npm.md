@@ -221,18 +221,27 @@ The `auth` field selects the strategy:
 | `token` | Always use the token; never attempt OIDC. Errors if no token is set. The historical behaviour. |
 | `oidc` | Always use OIDC; never fall back to a token. Errors if no OIDC context is present. A failed exchange fails the release loudly. |
 
-### Preflight severity for a bad token
+### Preflight severity for an unusable token
 
-`release --preflight-secrets` probes `GET <registry>/-/whoami` when a token resolves. The severity of a 401/403 depends on whether the run has another way to authenticate:
+Two different gates are involved, and only one of them touches the registry:
+
+| Gate | When it runs | What it checks |
+|------|--------------|----------------|
+| `release --preflight-secrets` | before the tag is cut, on a CI runner that carries only the secrets | **presence** of the declared credentials — no network call, no `whoami` |
+| the publisher pre-publish gate | inside `anodizer release` / `release --publish-only` (and on demand with `release --preflight`) | `GET <registry>/-/whoami` when a token resolves, plus `GET <registry>/<pkg>/<version>` for a duplicate version |
+
+The live gate grades an **unusable** token — one whose `token:` template fails to render, or one `whoami` answers 401/403 on — by whether the run has another way to authenticate:
 
 | `auth` | OIDC context present | Preflight result |
 |--------|----------------------|------------------|
 | `token` | any | **Blocker** — the token is the only credential. |
 | `auto` | no | **Blocker** — same reason. |
-| `auto` | yes | **Warning**: `npm token invalid or expired; existing packages publish via OIDC (Trusted Publishing), a brand-new package would fail — rotate or remove NPM_TOKEN`. Every package that already exists still publishes. |
-| `oidc` | any | The token is never consulted, so the probe does not run. A token that is set gets a verbose "ignored" note. |
+| `auto` | yes | **Warning**: `npm token invalid or expired for '<pkg>' on <registry>; existing packages publish via OIDC (Trusted Publishing), a brand-new package would fail — rotate or remove NPM_TOKEN`. Every package that already exists still publishes. |
+| `oidc` | any | No token is resolved and none is probed, so neither a stale token nor an unrenderable `token:` template is reported. A configured token gets a verbose "ignored" note naming the package and registry. |
 
-The Warning row exists because a preflight Blocker aborts the **whole** check, including publishers that never touch the npm token — a stale `NPM_TOKEN` must not stop a PyPI or crates.io publish.
+A `whoami` that cannot reach a verdict at all (the registry is down, or answers 5xx) reports `could not verify npm token`: a Warning by default, promoted to a Blocker by `--strict` — except under `auth: auto` in an OIDC context, where it stays a Warning for the same reason the row above does.
+
+The Warning rows exist because a preflight Blocker aborts the **whole** check, including publishers that never touch the npm token — a stale `NPM_TOKEN` must not stop a PyPI or crates.io publish.
 
 An OIDC context means both `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` are set and non-empty; GitHub injects them into a job that grants `permissions: id-token: write`.
 
@@ -361,6 +370,12 @@ A Trusted Publisher cannot be attached to a package that does not yet exist, so 
 Under the default `auth: auto`, a token is used for **brand-new** packages and as the credential when no OIDC context is present; **existing** packages prefer OIDC when one is. To force token-only auth regardless of existence, set `auth: token`.
 
 Once every package an entry publishes exists, the token buys nothing on an OIDC job — drop it from that workflow and publish the first version of any new package name from a separate token-carrying workflow. A token left in place is one more secret to rotate, and a stale one shows up as the preflight Warning above.
+
+Three things change on a job that carries no token at all:
+
+- **No fallback.** The `auto`-mode OIDC→token retry needs a token to retry with, so a failed Trusted Publishing exchange fails the publish outright — the same behaviour `auth: oidc` has by design.
+- **Every package name needs its own Trusted Publisher.** In `optional-deps` mode one entry publishes the metapackage *and* one package per platform; a name without a Trusted Publisher configured has nothing to exchange the OIDC token for.
+- **Rollback degrades to manual.** `npm unpublish` authenticates with the token named in the recorded evidence (`NPM_TOKEN` by default). With that variable unset, `anodizer tag rollback` warns per package and tells the operator to run `npm unpublish <pkg>@<version>` themselves inside npm's 72h window.
 
 For a private registry (e.g. GitHub Packages):
 

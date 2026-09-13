@@ -110,5 +110,14 @@ jobs:
           # No NPM_TOKEN: every one of these publishers authenticates through
           # this job's OIDC context. Carrying the secret only let a stale one
           # fail the npm preflight and take PyPI and crates.io down with it.
-          # A brand-new npm package still needs a token — publish that first
-          # one through manual-publish.yml, then it publishes via OIDC here.
+          # What the absence costs, so the operator is not surprised:
+          #   * no fallback — auto mode's OIDC→token retry needs a token, so a
+          #     failed Trusted Publishing exchange fails the publish here;
+          #   * every npm package name this release publishes (the umbrella AND
+          #     each per-platform package) needs its own Trusted Publisher on
+          #     npmjs.com naming this file; a brand-new name has nothing to
+          #     exchange for, so publish its first version through
+          #     manual-publish.yml, which carries the token;
+          #   * npm rollback degrades to manual — `npm unpublish` reads
+          #     NPM_TOKEN, so `anodizer tag rollback` can only tell the operator
+          #     which packages to unpublish inside npm's 72h window.

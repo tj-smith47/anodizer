@@ -33,7 +33,12 @@
 #      names every HOSTED_PUBLISHERS token, AND publish-oidc.yml's copy of
 #      HOSTED_PUBLISHERS stays byte-equal to release.yml's (the --skip and
 #      --publishers selectors must remain exact complements across the split).
-#   9. One rust-cache per job: no job runs two Swatinem/rust-cache instances,
+#   9. Tokenless OIDC job: no step of publish-oidc.yml carries an NPM_TOKEN in
+#      its env. The job's comment promises the absence, and the absence is what
+#      makes the npm publish go through Trusted Publishing at all — a token
+#      re-added here silently publishes new package names with it and leaves
+#      the Trusted Publisher unexercised.
+#  10. One rust-cache per job: no job runs two Swatinem/rust-cache instances,
 #      whether direct, through a local composite (setup-rust with cache on,
 #      setup-docs), or through anodizer-action's from-source / from-branch /
 #      determinism paths. The FIRST instance's post step prunes ~/.cargo/bin
@@ -276,7 +281,19 @@ elif [[ "$oidc_hosted" != "$hosted" ]]; then
     fail "hosted set drift: ${OIDC} HOSTED_PUBLISHERS [${oidc_hosted}] != ${REL} [${hosted}] — the main job's --skip set and the OIDC job's --publishers set are no longer complements."
 fi
 
-# --- 9. One rust-cache per job ---------------------------------------------
+# --- 9. publish-oidc.yml carries no npm token ------------------------------
+# The whole point of the split job is that npm authenticates from the job's OIDC
+# context. An NPM_TOKEN re-added to any step reverts that silently: `auth: auto`
+# picks the token for every package name that does not exist yet, and a stale
+# one takes PyPI and crates.io down with it through the shared preflight.
+while IFS= read -r env_key; do
+    [[ -z "$env_key" || "$env_key" == "null" ]] && continue
+    case "${env_key^^}" in
+        *NPM_TOKEN*) fail "tokenless OIDC job: ${OIDC} sets '${env_key}' — this job publishes npm through Trusted Publishing and must carry no npm token (a brand-new package name goes through manual-publish.yml instead)." ;;
+    esac
+done < <(yqr -r '[.env // {}] + [.jobs[].env // {}] + [.jobs[].steps[]?.env // {}] | .[] | keys[]' "$OIDC")
+
+# --- 10. One rust-cache per job --------------------------------------------
 # Which local composites carry a rust-cache step, and the input that turns it
 # off. Derived from the composites themselves so a composite that gains a
 # rust-cache step without an entry here fails the audit instead of slipping
@@ -333,4 +350,4 @@ if [[ -n "$failures" ]]; then
     exit 1
 fi
 
-echo "audit-workflow-lockstep: OK — shard roster, secret env, trigger gate, CI bootstrap gate, release/nightly mutex, bootstrap artifact (name + workflow file), atomic tag topology, cross-OS suite fallback, skip_publishers prose, and one rust-cache per job are in lockstep."
+echo "audit-workflow-lockstep: OK — shard roster, secret env, trigger gate, CI bootstrap gate, release/nightly mutex, bootstrap artifact (name + workflow file), atomic tag topology, cross-OS suite fallback, skip_publishers prose, the tokenless OIDC job, and one rust-cache per job are in lockstep."

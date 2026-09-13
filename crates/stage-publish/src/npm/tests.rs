@@ -24,11 +24,11 @@ use super::publish::{
     AuthDecision, NpmAuth, PackageExistence, assemble_optional_deps_tarball,
     assemble_postinstall_tarball, build_npm_publish_command, decide_auth,
     dist_tag_guarded_against_regression, encode_package_path, guard_latest_regression,
-    probe_dist_tag_latest, probe_package_existence, publish_to_npm, publish_with_oidc_fallback,
-    resolve_auth_for_package, retry_npm_publish, write_npmrc,
+    is_npm_config_credential_var, probe_dist_tag_latest, probe_package_existence, publish_to_npm,
+    publish_with_oidc_fallback, resolve_auth_for_package, retry_npm_publish, write_npmrc,
 };
 use super::publisher::NpmPublisher;
-use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+use anodizer_core::test_helpers::responder::{canned_http_response, spawn_oneshot_http_responder};
 use std::sync::atomic::Ordering;
 
 /// The layout's metapackage files, asserted present (the default — every test
@@ -2526,23 +2526,15 @@ fn preflight_skip_metapackage_layout_error_blocks() {
 // Preflight token severity vs. auth mode
 // -----------------------------------------------------------------------------
 
-/// A canned HTTP response with a correct `Content-Length`.
-fn preflight_http(status_line: &str, body: &str) -> &'static str {
-    Box::leak(
-        format!(
-            "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\n\r\n{body}",
-            body.len()
-        )
-        .into_boxed_str(),
-    )
-}
-
-/// A sealed context with one npm entry pointed at `addr`, carrying a token and
-/// the given auth mode. `oidc` seeds the GitHub Actions OIDC request pair.
+/// A sealed context with one npm entry pointed at `addr`, carrying `token` and
+/// the given auth mode. `oidc` seeds the GitHub Actions OIDC request pair;
+/// `token: None` configures no token at all, which the sealed (closed, empty)
+/// env keeps absent whatever the host exports.
 fn preflight_ctx(
     addr: std::net::SocketAddr,
     auth: NpmAuthMode,
     oidc: bool,
+    token: Option<&str>,
 ) -> anodizer_core::context::Context {
     let mut b = TestContextBuilder::new().project_name("proj").sealed_env();
     if oidc {
@@ -2557,7 +2549,7 @@ fn preflight_ctx(
     ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.config.npms = Some(vec![NpmConfig {
         registry: Some(format!("http://{addr}")),
-        token: Some("stale-token".into()),
+        token: token.map(str::to_string),
         auth,
         name: Some("pkg".into()),
         ..Default::default()
@@ -2570,10 +2562,10 @@ fn preflight_ctx(
 #[test]
 fn preflight_invalid_token_blocks_under_auth_token() {
     let (addr, _c) = spawn_oneshot_http_responder(vec![
-        preflight_http("401 Unauthorized", ""),
-        preflight_http("404 Not Found", ""),
+        canned_http_response("401 Unauthorized", ""),
+        canned_http_response("404 Not Found", ""),
     ]);
-    let ctx = preflight_ctx(addr, NpmAuthMode::Token, true);
+    let ctx = preflight_ctx(addr, NpmAuthMode::Token, true, Some("stale-token"));
     match NpmPublisher::new().preflight(&ctx).expect("preflight") {
         PreflightCheck::Blocker(m) => assert!(m.contains("npm token invalid or expired"), "{m}"),
         other => panic!("expected Blocker, got {other:?}"),
@@ -2585,10 +2577,10 @@ fn preflight_invalid_token_blocks_under_auth_token() {
 #[test]
 fn preflight_invalid_token_blocks_under_auto_without_oidc() {
     let (addr, _c) = spawn_oneshot_http_responder(vec![
-        preflight_http("401 Unauthorized", ""),
-        preflight_http("404 Not Found", ""),
+        canned_http_response("401 Unauthorized", ""),
+        canned_http_response("404 Not Found", ""),
     ]);
-    let ctx = preflight_ctx(addr, NpmAuthMode::Auto, false);
+    let ctx = preflight_ctx(addr, NpmAuthMode::Auto, false, Some("stale-token"));
     match NpmPublisher::new().preflight(&ctx).expect("preflight") {
         PreflightCheck::Blocker(m) => assert!(m.contains("npm token invalid or expired"), "{m}"),
         other => panic!("expected Blocker, got {other:?}"),
@@ -2601,10 +2593,10 @@ fn preflight_invalid_token_blocks_under_auto_without_oidc() {
 #[test]
 fn preflight_invalid_token_warns_under_auto_with_oidc() {
     let (addr, _c) = spawn_oneshot_http_responder(vec![
-        preflight_http("401 Unauthorized", ""),
-        preflight_http("404 Not Found", ""),
+        canned_http_response("401 Unauthorized", ""),
+        canned_http_response("404 Not Found", ""),
     ]);
-    let ctx = preflight_ctx(addr, NpmAuthMode::Auto, true);
+    let ctx = preflight_ctx(addr, NpmAuthMode::Auto, true, Some("stale-token"));
     match NpmPublisher::new().preflight(&ctx).expect("preflight") {
         PreflightCheck::Warning(m) => {
             assert!(m.contains("existing packages publish via OIDC"), "{m}");
@@ -2618,8 +2610,9 @@ fn preflight_invalid_token_warns_under_auto_with_oidc() {
 /// validating it: only the version probe reaches the responder.
 #[test]
 fn preflight_skips_the_whoami_probe_under_auth_oidc() {
-    let (addr, calls) = spawn_oneshot_http_responder(vec![preflight_http("404 Not Found", "")]);
-    let ctx = preflight_ctx(addr, NpmAuthMode::Oidc, true);
+    let (addr, calls) =
+        spawn_oneshot_http_responder(vec![canned_http_response("404 Not Found", "")]);
+    let ctx = preflight_ctx(addr, NpmAuthMode::Oidc, true, Some("stale-token"));
     match NpmPublisher::new().preflight(&ctx).expect("preflight") {
         PreflightCheck::Pass => {}
         other => panic!("expected Pass, got {other:?}"),
@@ -2628,6 +2621,284 @@ fn preflight_skips_the_whoami_probe_under_auth_oidc() {
         calls.load(Ordering::SeqCst),
         1,
         "only the version probe may reach the registry under auth: oidc"
+    );
+}
+
+/// Three attempts at a 5xx exhaust `RetryPolicy::PREFLIGHT`, which is what the
+/// whoami probe reports as `Indeterminate`.
+fn unverifiable_whoami_then_version_404() -> Vec<&'static str> {
+    let mut r = vec![canned_http_response("500 Internal Server Error", ""); 3];
+    r.push(canned_http_response("404 Not Found", ""));
+    r
+}
+
+/// No token configured and a sealed env: there is nothing to validate, so the
+/// whoami probe must not run at all — `auth: token` reaching the registry with
+/// an empty `Bearer` would report a dead token that was never set.
+#[test]
+fn preflight_skips_the_whoami_probe_under_auth_token_without_a_token() {
+    let (addr, calls) =
+        spawn_oneshot_http_responder(vec![canned_http_response("404 Not Found", "")]);
+    let ctx = preflight_ctx(addr, NpmAuthMode::Token, false, None);
+    match NpmPublisher::new().preflight(&ctx).expect("preflight") {
+        PreflightCheck::Pass => {}
+        other => panic!("expected Pass, got {other:?}"),
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "only the version probe may reach the registry with no token configured"
+    );
+}
+
+/// `auth: token` has no second credential, so `--strict` promoting an
+/// unverifiable token to a Blocker is correct there.
+#[test]
+fn preflight_unverifiable_token_blocks_under_strict_auth_token() {
+    let (addr, _c) = spawn_oneshot_http_responder(unverifiable_whoami_then_version_404());
+    let mut ctx = preflight_ctx(addr, NpmAuthMode::Token, false, Some("stale-token"));
+    ctx.options.strict = true;
+    match NpmPublisher::new().preflight(&ctx).expect("preflight") {
+        PreflightCheck::Blocker(m) => assert!(m.contains("could not verify npm token"), "{m}"),
+        other => panic!("expected Blocker, got {other:?}"),
+    }
+}
+
+/// The same unverifiable probe under `auth: auto` in an OIDC context stays a
+/// Warning even under `--strict`: OIDC still publishes every existing package,
+/// and a Blocker would take the sibling publishers down with it.
+#[test]
+fn preflight_unverifiable_token_warns_under_strict_auto_with_oidc() {
+    let (addr, _c) = spawn_oneshot_http_responder(unverifiable_whoami_then_version_404());
+    let mut ctx = preflight_ctx(addr, NpmAuthMode::Auto, true, Some("stale-token"));
+    ctx.options.strict = true;
+    match NpmPublisher::new().preflight(&ctx).expect("preflight") {
+        PreflightCheck::Warning(m) => assert!(m.contains("could not verify npm token"), "{m}"),
+        other => panic!("expected Warning, got {other:?}"),
+    }
+}
+
+/// A live token in an OIDC context is the clean case: whoami answers 200, the
+/// version is absent, nothing is reported.
+#[test]
+fn preflight_valid_token_passes_under_auto_with_oidc() {
+    let (addr, _c) = spawn_oneshot_http_responder(vec![
+        canned_http_response("200 OK", r#"{"username":"me"}"#),
+        canned_http_response("404 Not Found", ""),
+    ]);
+    let ctx = preflight_ctx(addr, NpmAuthMode::Auto, true, Some("live-token"));
+    match NpmPublisher::new().preflight(&ctx).expect("preflight") {
+        PreflightCheck::Pass => {}
+        other => panic!("expected Pass, got {other:?}"),
+    }
+}
+
+/// `auth: auto` with no token and an OIDC context is the tokenless Trusted
+/// Publishing setup: no token exists to probe, and its absence is not a defect.
+#[test]
+fn preflight_absent_token_passes_under_auto_with_oidc() {
+    let (addr, calls) =
+        spawn_oneshot_http_responder(vec![canned_http_response("404 Not Found", "")]);
+    let ctx = preflight_ctx(addr, NpmAuthMode::Auto, true, None);
+    match NpmPublisher::new().preflight(&ctx).expect("preflight") {
+        PreflightCheck::Pass => {}
+        other => panic!("expected Pass, got {other:?}"),
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a tokenless OIDC entry must spend no request on whoami"
+    );
+}
+
+/// A `token:` template that cannot render fails the live publish wherever a
+/// token is read, so it is graded exactly like a dead token: a Warning under
+/// `auto` in an OIDC context, where only a brand-new package would need it.
+#[test]
+fn preflight_unrenderable_token_warns_under_auto_with_oidc() {
+    let (addr, _c) = spawn_oneshot_http_responder(vec![canned_http_response("404 Not Found", "")]);
+    let ctx = preflight_ctx(
+        addr,
+        NpmAuthMode::Auto,
+        true,
+        Some("{{ this_is_not_a_real_filter }}"),
+    );
+    match NpmPublisher::new().preflight(&ctx).expect("preflight") {
+        PreflightCheck::Warning(m) => {
+            assert!(
+                m.contains("npm token could not be resolved for 'pkg'"),
+                "{m}"
+            );
+            assert!(m.contains("existing packages publish via OIDC"), "{m}");
+        }
+        other => panic!("expected Warning, got {other:?}"),
+    }
+}
+
+/// The same unrenderable template under `auth: token` keeps its Blocker: the
+/// token is the only credential, so the publish cannot survive it.
+#[test]
+fn preflight_unrenderable_token_blocks_under_auth_token() {
+    let (addr, _c) = spawn_oneshot_http_responder(vec![canned_http_response("404 Not Found", "")]);
+    let ctx = preflight_ctx(
+        addr,
+        NpmAuthMode::Token,
+        true,
+        Some("{{ this_is_not_a_real_filter }}"),
+    );
+    match NpmPublisher::new().preflight(&ctx).expect("preflight") {
+        PreflightCheck::Blocker(m) => {
+            assert!(
+                m.contains("npm token could not be resolved for 'pkg'"),
+                "{m}"
+            )
+        }
+        other => panic!("expected Blocker, got {other:?}"),
+    }
+}
+
+/// `auth: oidc` resolves no token, so an unrenderable `token:` template is
+/// inert there — reporting it would gate a publish on a credential Trusted
+/// Publishing never reads.
+#[test]
+fn preflight_unrenderable_token_is_inert_under_auth_oidc() {
+    let (addr, _c) = spawn_oneshot_http_responder(vec![canned_http_response("404 Not Found", "")]);
+    let ctx = preflight_ctx(
+        addr,
+        NpmAuthMode::Oidc,
+        true,
+        Some("{{ this_is_not_a_real_filter }}"),
+    );
+    match NpmPublisher::new().preflight(&ctx).expect("preflight") {
+        PreflightCheck::Pass => {}
+        other => panic!("expected Pass, got {other:?}"),
+    }
+}
+
+/// `auth: oidc` is a config-level choice, not a runner-detected one: with a
+/// token set and NO OIDC context the token still goes unvalidated, so the
+/// operator gets the note rather than a probe of a credential the publish
+/// refuses to use.
+#[test]
+fn preflight_under_auth_oidc_skips_the_token_even_without_an_oidc_context() {
+    let (addr, calls) =
+        spawn_oneshot_http_responder(vec![canned_http_response("404 Not Found", "")]);
+    let ctx = preflight_ctx(addr, NpmAuthMode::Oidc, false, Some("stale-token"));
+    match NpmPublisher::new().preflight(&ctx).expect("preflight") {
+        PreflightCheck::Pass => {}
+        other => panic!("expected Pass, got {other:?}"),
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "auth: oidc must spend no request on whoami whatever the runner offers"
+    );
+}
+
+/// The `oidc` note names the entry it is about — a multi-entry `npms:` emits
+/// one per entry, and a bare "the token is ignored" cannot be acted on.
+#[test]
+fn preflight_oidc_note_names_the_entry_and_registry() {
+    let (addr, _c) = spawn_oneshot_http_responder(vec![canned_http_response("404 Not Found", "")]);
+    let capture = anodizer_core::log::LogCapture::new();
+    let mut ctx = preflight_ctx(addr, NpmAuthMode::Oidc, true, Some("stale-token"));
+    ctx.with_log_capture(capture.clone());
+    NpmPublisher::new().preflight(&ctx).expect("preflight");
+    let notes: Vec<String> = capture
+        .all_messages()
+        .into_iter()
+        .map(|(_, m)| m)
+        .filter(|m| m.contains("auth mode is `oidc`"))
+        .collect();
+    assert!(
+        notes.iter().any(|m| m.contains("'pkg'")
+            && m.contains(&format!("http://{addr}"))
+            && m.contains("ignored and not validated")),
+        "the note must name the package and the registry; got: {notes:?}"
+    );
+}
+
+/// npm ranks `npm_config_*` environment variables ABOVE the `--userconfig`
+/// file, so an ambient one outranks the credential this publish chose. The
+/// classifier admits every spelling npm accepts — either case, and a key that
+/// is a whole registry URL — and leaves the settings that are not credentials
+/// alone.
+#[test]
+fn npm_config_credential_vars_are_classified_by_key_not_by_case() {
+    for name in [
+        "NPM_CONFIG_USERCONFIG",
+        "npm_config_userconfig",
+        "NPM_CONFIG_GLOBALCONFIG",
+        "npm_config__auth",
+        "npm_config__authToken",
+        "NPM_CONFIG_//registry.npmjs.org/:_authToken",
+    ] {
+        assert!(
+            is_npm_config_credential_var(name),
+            "{name} can re-introduce a credential or another config file"
+        );
+    }
+    for name in [
+        "NPM_CONFIG_REGISTRY",
+        "npm_config_loglevel",
+        "NPM_TOKEN",
+        "PATH",
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+    ] {
+        assert!(
+            !is_npm_config_credential_var(name),
+            "{name} is not a credential or config-path setting; dropping it would change \
+             unrelated npm behaviour"
+        );
+    }
+}
+
+/// The publish subprocess must read its credential from the `.npmrc` this run
+/// wrote and nothing else: the `--userconfig` argv points npm at that file, and
+/// an ambient `npm_config_*` credential variable — which outranks it — is
+/// dropped from the child env. Asserted under a token credential, since the
+/// same publish that carries a chosen token is also the one a stale ambient
+/// variable can silently re-authenticate.
+#[test]
+fn publish_command_pins_its_userconfig_and_drops_ambient_npm_config_credentials() {
+    const AMBIENT: &str = "NPM_CONFIG_//registry.npmjs.org/:_authToken";
+    let dir = tempfile::TempDir::new().expect("tmp");
+    let _lock = anodizer_core::test_helpers::env::env_mutex()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let _ambient = EnvGuard::set(AMBIENT, "someone-elses-token");
+    let cmd = build_npm_publish_command(
+        std::path::Path::new("/tmp/demo-1.0.0.tgz"),
+        dir.path(),
+        "https://registry.npmjs.org",
+        "latest",
+        None,
+        &NpmAuth::Token("chosen-token".into()),
+    );
+    let argv: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let userconfig = dir.path().join(".npmrc").display().to_string();
+    assert!(
+        argv.windows(2)
+            .any(|w| w[0] == "--userconfig" && w[1] == userconfig),
+        "publish must read config from the run's own .npmrc: {argv:?}"
+    );
+    let removed: Vec<String> = cmd
+        .get_envs()
+        .filter(|(_, v)| v.is_none())
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        removed.iter().any(|k| k == AMBIENT),
+        "an ambient npm_config credential variable must be dropped from the child env: \
+         {removed:?}"
+    );
+    assert!(
+        !cmd.get_envs().any(|(k, v)| k == "NPM_TOKEN"
+            || v.is_some_and(|v| v.to_string_lossy().contains("chosen-token"))),
+        "a token credential must reach npm through the .npmrc only"
     );
 }
 

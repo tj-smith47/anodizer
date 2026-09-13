@@ -118,11 +118,12 @@ jobs:
           # publish version still comes from the preserved dist context.
           ANODIZER_CURRENT_TAG: ${{ inputs.tag }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          # NPM_TOKEN authenticates the publish. Trusted Publishing (OIDC) is NOT
-          # used: it requires a per-package trusted-publisher binding configured by
-          # hand on npmjs.com, and the optional-deps layout fans out to ~9 packages
-          # (the umbrella + one per platform), several of which do not exist yet on
-          # first publish — a Trusted Publisher cannot attach to a missing package.
-          # The token publishes (and creates) them all; provenance still attaches
-          # from this github-hosted runner's OIDC when the runner supports it.
+          # The token is here for the package names that do not exist yet: the
+          # optional-deps layout fans out to ~9 packages (the umbrella + one per
+          # platform) and a Trusted Publisher cannot attach to a missing package,
+          # so the initial publish of each name must authenticate with a token.
+          # This job does grant id-token: write, so under the default auth: auto
+          # every name that ALREADY exists still publishes through Trusted
+          # Publishing and only the new ones consume the token; provenance
+          # attaches from this github-hosted runner either way.
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

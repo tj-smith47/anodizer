@@ -50,7 +50,7 @@ fn oidc_requirement() -> anodizer_core::EnvRequirement {
 /// The two GitHub Actions OIDC request vars as an owned `Vec`. Single source of
 /// truth shared by [`oidc_requirement`] and the `Auto`-mode any-of gate.
 fn oidc_vars() -> Vec<String> {
-    super::publish::OIDC_ENV_VARS
+    super::auth::OIDC_ENV_VARS
         .iter()
         .map(|s| s.to_string())
         .collect()
@@ -254,7 +254,7 @@ impl anodizer_core::Publisher for NpmPublisher {
             for name in &names {
                 let url = format!(
                     "{registry}/{}/{version}",
-                    super::publish::encode_package_path(name)
+                    super::auth::encode_package_path(name)
                 );
                 match crate::publisher_preflight::probe_version_landing(
                     &url,
@@ -416,7 +416,7 @@ impl anodizer_core::Publisher for NpmPublisher {
             // creates short-lived publish-only credentials that cannot unpublish.
             // The empty-token skip above already routes OIDC-published packages
             // to the manual-unpublish warning.
-            let auth = super::publish::NpmAuth::Token(token);
+            let auth = super::auth::NpmAuth::Token(token);
             if let Err(e) = super::publish::write_npmrc(cfg_dir.path(), &t.registry, &auth, None) {
                 log.warn(&format!(
                     "npm rollback of '{}@{}' could not write .npmrc ({:#}); \
@@ -458,12 +458,13 @@ impl anodizer_core::Publisher for NpmPublisher {
     /// Live pre-publish gate. npm has no companion state-query checker, so this
     /// is its only guard against the two irreversible failure modes:
     ///
-    /// * token invalid/expired — `GET {registry}/-/whoami` 401/403 ⇒ Blocker
-    ///   under `auth: token`, and under `auth: auto` with no OIDC context.
-    ///   Under `auth: auto` *in* an OIDC context it is a Warning: every
-    ///   existing package publishes through Trusted Publishing and only a
-    ///   brand-new package needs the token. Under `auth: oidc` the token is
-    ///   never consulted, so the probe does not run at all.
+    /// * token unusable — it fails to render, or `GET {registry}/-/whoami`
+    ///   answers 401/403 ⇒ Blocker under `auth: token`, and under `auth: auto`
+    ///   with no OIDC context. Under `auth: auto` *in* an OIDC context it is a
+    ///   Warning: every existing package publishes through Trusted Publishing
+    ///   and only a brand-new package needs the token, so blocking would abort
+    ///   the whole gate — including the sibling publishers that never read it.
+    ///   Under `auth: oidc` the token is neither resolved nor probed.
     /// * version already published — `GET {registry}/{pkg}/{version}` 200 ⇒
     ///   Warning (npm forbids republishing a version; unpublish is a 72h window).
     ///
@@ -487,6 +488,10 @@ impl anodizer_core::Publisher for NpmPublisher {
         let version = ctx.version();
 
         let mut acc = PreflightCheck::Pass;
+        // The OIDC request env is process-wide, not per-entry, and every arm
+        // that grades a token defect keys its severity off it — resolve it once
+        // so the arms cannot disagree.
+        let oidc_available = super::auth::resolve_oidc_env(ctx).is_some();
         for cfg in active_npm_configs(ctx) {
             acc = merge(
                 acc,
@@ -500,67 +505,95 @@ impl anodizer_core::Publisher for NpmPublisher {
             let Ok(registry) = crate::npm::manifest::resolve_registry(ctx, cfg) else {
                 continue;
             };
-            // A resolution error means `cfg.token` was configured but its
-            // template failed to render — a misconfiguration that will fail the
-            // live publish. Surface it as a Blocker now rather than deferring
-            // past the tag and other one-way doors. An empty `Ok` is the
-            // legitimate absent-token / OIDC-only path (skip the probe).
-            let token = match super::publish::resolve_token(ctx, cfg) {
-                Ok(t) => t,
-                Err(e) => {
-                    acc = merge(
-                        acc,
-                        PreflightCheck::Blocker(format!("npm token could not be resolved: {e:#}")),
-                    );
-                    continue;
+            // The package this entry publishes under its own name: the
+            // postinstall package, or the optional-deps metapackage. Named in
+            // every message below so a multi-entry `npms:` says WHICH entry.
+            let entry_name = match cfg.mode {
+                anodizer_core::config::NpmMode::Postinstall => {
+                    crate::npm::manifest::resolve_name(cfg, &crate_name).to_string()
+                }
+                anodizer_core::config::NpmMode::OptionalDeps => {
+                    super::optional_deps::resolve_metapackage(cfg, &crate_name).to_string()
                 }
             };
-            // `oidc` mode never consults the token, so validating one would
-            // block a publish on a credential the run cannot use.
-            if cfg.auth == anodizer_core::config::NpmAuthMode::Oidc {
-                if !token.is_empty() {
-                    ctx.logger("preflight").verbose(
-                        "npm: auth mode is `oidc` — the configured token is ignored and \
-                         not validated",
-                    );
+            // Under `auto` in an OIDC context every package that already exists
+            // publishes through Trusted Publishing, so an unusable token costs
+            // only the brand-new-package fallback. A Blocker there aborts the
+            // whole gate and strands the sibling publishers (PyPI, crates.io)
+            // that never touch this token.
+            let token_defect = |msg: String| -> PreflightCheck {
+                if cfg.auth == anodizer_core::config::NpmAuthMode::Auto && oidc_available {
+                    PreflightCheck::Warning(format!(
+                        "{msg}; existing packages publish via OIDC (Trusted Publishing), a \
+                         brand-new package would fail — rotate or remove NPM_TOKEN"
+                    ))
+                } else {
+                    PreflightCheck::Blocker(msg)
                 }
-            } else if !token.is_empty() {
-                let outcome = match probe_token_auth(
-                    &format!("{registry}/-/whoami"),
-                    &format!("Bearer {token}"),
-                    "preflight: npm whoami",
-                    &policy,
-                    ctx.retry_deadline(),
-                    &ctx.logger("preflight"),
-                    &[],
-                ) {
-                    TokenAuth::Valid => PreflightCheck::Pass,
-                    TokenAuth::Invalid => {
-                        // Under `auto` in an OIDC context every package that
-                        // already exists publishes through Trusted Publishing,
-                        // so a dead token only costs the brand-new-package
-                        // fallback. Blocking there aborts the whole preflight
-                        // and strands the sibling publishers (PyPI, crates.io)
-                        // that never touch this token.
-                        if cfg.auth == anodizer_core::config::NpmAuthMode::Auto
-                            && super::auth::resolve_oidc_env(ctx).is_some()
-                        {
-                            PreflightCheck::Warning(
-                                "npm token invalid or expired; existing packages publish via \
-                                 OIDC (Trusted Publishing), a brand-new package would fail — \
-                                 rotate or remove NPM_TOKEN"
-                                    .into(),
-                            )
-                        } else {
-                            PreflightCheck::Blocker("npm token invalid or expired".into())
-                        }
+            };
+            // `oidc` mode never consults a token — `resolve_auth_for_package`
+            // resolves none there — so preflight must not resolve one either: a
+            // token that fails to render, or one that is simply stale, cannot
+            // affect a publish that authenticates through Trusted Publishing.
+            if cfg.auth == anodizer_core::config::NpmAuthMode::Oidc {
+                ctx.logger("preflight").verbose(&format!(
+                    "npm: auth mode is `oidc` for '{entry_name}' on {registry} — a configured \
+                     token is ignored and not validated"
+                ));
+            } else {
+                // An empty `Ok` is the legitimate absent-token path (an `auto`
+                // entry that authenticates through OIDC): nothing to probe.
+                let token = match super::auth::resolve_token(ctx, cfg) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        // A `cfg.token` template that fails to render fails the
+                        // live publish in every mode that reads a token, so it
+                        // is graded like a dead token rather than deferred past
+                        // the tag and the other one-way doors.
+                        acc = merge(
+                            acc,
+                            token_defect(format!(
+                                "npm token could not be resolved for '{entry_name}': {e:#}"
+                            )),
+                        );
+                        String::new()
                     }
-                    TokenAuth::Indeterminate(reason) => anodizer_core::git::indeterminate_check(
-                        ctx.preflight_is_strict(),
-                        format!("could not verify npm token ({reason})"),
-                    ),
                 };
-                acc = merge(acc, outcome);
+                if !token.is_empty() {
+                    let outcome = match probe_token_auth(
+                        &format!("{registry}/-/whoami"),
+                        &format!("Bearer {token}"),
+                        "preflight: npm whoami",
+                        &policy,
+                        ctx.retry_deadline(),
+                        &ctx.logger("preflight"),
+                        &[],
+                    ) {
+                        TokenAuth::Valid => PreflightCheck::Pass,
+                        TokenAuth::Invalid => token_defect(format!(
+                            "npm token invalid or expired for '{entry_name}' on {registry}"
+                        )),
+                        // `--strict` promotes an unverifiable token to a
+                        // Blocker, but not where OIDC already covers every
+                        // existing package: the same reasoning as an outright
+                        // dead token, applied to one that could not be reached.
+                        TokenAuth::Indeterminate(reason) => {
+                            let msg =
+                                format!("could not verify npm token for '{entry_name}' ({reason})");
+                            if cfg.auth == anodizer_core::config::NpmAuthMode::Auto
+                                && oidc_available
+                            {
+                                PreflightCheck::Warning(msg)
+                            } else {
+                                anodizer_core::git::indeterminate_check(
+                                    ctx.preflight_is_strict(),
+                                    msg,
+                                )
+                            }
+                        }
+                    };
+                    acc = merge(acc, outcome);
+                }
             }
             // Probe the package name(s) this entry will actually publish:
             // * postinstall — the single `name:` package.
@@ -571,9 +604,7 @@ impl anodizer_core::Publisher for NpmPublisher {
             //   probing it would false-warn while probing the per-platform
             //   names keeps duplicate-version detection working.
             let names: Vec<String> = match cfg.mode {
-                anodizer_core::config::NpmMode::Postinstall => {
-                    vec![crate::npm::manifest::resolve_name(cfg, &crate_name).to_string()]
-                }
+                anodizer_core::config::NpmMode::Postinstall => vec![entry_name.clone()],
                 anodizer_core::config::NpmMode::OptionalDeps => {
                     let skip_meta = match cfg.skip_metapackage.as_ref() {
                         Some(s) => match s.try_evaluates_to_true(|t| ctx.render_template(t)) {
@@ -636,16 +667,14 @@ impl anodizer_core::Publisher for NpmPublisher {
                             }
                         }
                     } else {
-                        vec![
-                            super::optional_deps::resolve_metapackage(cfg, &crate_name).to_string(),
-                        ]
+                        vec![entry_name.clone()]
                     }
                 }
             };
             for name in &names {
                 let url = format!(
                     "{registry}/{}/{version}",
-                    super::publish::encode_package_path(name)
+                    super::auth::encode_package_path(name)
                 );
                 if probe_version_published(
                     &url,
@@ -670,35 +699,29 @@ impl anodizer_core::Publisher for NpmPublisher {
 #[cfg(test)]
 mod preflight_tests {
     use anodizer_core::Publisher;
-    use anodizer_core::config::{Config, NpmAuthMode, NpmConfig};
-    use anodizer_core::context::{Context, ContextOptions};
-    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+    use anodizer_core::config::{NpmAuthMode, NpmConfig};
+    use anodizer_core::context::Context;
+    use anodizer_core::test_helpers::TestContextBuilder;
+    use anodizer_core::test_helpers::responder::{
+        canned_http_response, spawn_oneshot_http_responder,
+    };
 
-    fn http(status_line: &str, body: &str) -> &'static str {
-        Box::leak(
-            format!(
-                "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\n\r\n{body}",
-                body.len()
-            )
-            .into_boxed_str(),
-        )
-    }
-
+    /// One `auth: token` entry pointed at the responder, on a sealed (closed,
+    /// empty) env so the host's own `NPM_TOKEN` / `ACTIONS_ID_TOKEN_REQUEST_*`
+    /// cannot change the auth mode the assertions assume.
     fn ctx_with_npm(registry: String, token: &str) -> Context {
-        let npm = NpmConfig {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("proj")
+            .sealed_env()
+            .build();
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.config.npms = Some(vec![NpmConfig {
             registry: Some(registry),
             token: Some(token.to_string()),
             auth: NpmAuthMode::Token,
             name: Some("pkg".to_string()),
             ..Default::default()
-        };
-        let config = Config {
-            project_name: "proj".to_string(),
-            npms: Some(vec![npm]),
-            ..Default::default()
-        };
-        let mut ctx = Context::new(config, ContextOptions::default());
-        ctx.template_vars_mut().set("Version", "1.0.0");
+        }]);
         ctx
     }
 
@@ -708,8 +731,8 @@ mod preflight_tests {
     #[test]
     fn npm_preflight_blocks_on_invalid_token() {
         let (addr, _c) = spawn_oneshot_http_responder(vec![
-            http("401 Unauthorized", ""),
-            http("404 Not Found", ""),
+            canned_http_response("401 Unauthorized", ""),
+            canned_http_response("404 Not Found", ""),
         ]);
         let ctx = ctx_with_npm(format!("http://{addr}"), "bad-token");
         match super::NpmPublisher::new()
@@ -729,8 +752,8 @@ mod preflight_tests {
     #[test]
     fn npm_preflight_optional_deps_probes_metapackage_name() {
         let (addr, _c) = spawn_oneshot_http_responder(vec![
-            http("200 OK", r#"{"username":"me"}"#),
-            http("200 OK", r#"{"name":"meta","version":"1.0.0"}"#),
+            canned_http_response("200 OK", r#"{"username":"me"}"#),
+            canned_http_response("200 OK", r#"{"name":"meta","version":"1.0.0"}"#),
         ]);
         let mut ctx = ctx_with_npm(format!("http://{addr}"), "good-token");
         let npms = ctx.config.npms.as_mut().expect("npms");
@@ -756,7 +779,10 @@ mod preflight_tests {
         // Only the whoami response is provisioned; a metapackage version
         // probe would hit a closed responder and surface as a Warning/probe
         // noise instead of the clean Pass asserted here.
-        let (addr, _c) = spawn_oneshot_http_responder(vec![http("200 OK", r#"{"username":"me"}"#)]);
+        let (addr, _c) = spawn_oneshot_http_responder(vec![canned_http_response(
+            "200 OK",
+            r#"{"username":"me"}"#,
+        )]);
         let mut ctx = ctx_with_npm(format!("http://{addr}"), "good-token");
         let npms = ctx.config.npms.as_mut().expect("npms");
         npms[0].skip_metapackage = Some(anodizer_core::config::StringOrBool::Bool(true));
@@ -774,8 +800,8 @@ mod preflight_tests {
     #[test]
     fn npm_preflight_warns_on_already_published() {
         let (addr, _c) = spawn_oneshot_http_responder(vec![
-            http("200 OK", r#"{"username":"me"}"#),
-            http("200 OK", r#"{"name":"pkg","version":"1.0.0"}"#),
+            canned_http_response("200 OK", r#"{"username":"me"}"#),
+            canned_http_response("200 OK", r#"{"name":"pkg","version":"1.0.0"}"#),
         ]);
         let ctx = ctx_with_npm(format!("http://{addr}"), "good-token");
         match super::NpmPublisher::new()
@@ -847,25 +873,65 @@ mod config_fully_inactive_tests {
 
 #[cfg(test)]
 mod sealed_env_pin {
-    use anodizer_core::test_helpers::test_sources::{function_bodies, test_sources};
+    use anodizer_core::test_helpers::test_sources::{
+        function_bodies, production_half, rust_sources, test_sources,
+    };
     use std::path::Path;
 
-    /// The builder call that closes a context's env source, plus the two
-    /// spellings that already imply it (`env(...)` swaps to a closed map).
-    const SEALS: [&str; 2] = ["sealed_env()", ".env("];
+    /// Whether a body closes its context's env source. `sealed_env()` does it
+    /// explicitly, and a `TestContextBuilder` `.env(...)` override does it as a
+    /// side effect (a non-empty override list swaps to a closed map). `.env(`
+    /// on its own proves nothing: `Command::env` spells the same call on a
+    /// subprocess and seals no context.
+    fn seals(body: &str) -> bool {
+        body.contains("sealed_env()")
+            || (body.contains("TestContextBuilder") && body.contains(".env("))
+    }
+
+    /// Whether a body drives a path that reads credentials or runner-detection
+    /// variables: a publisher `preflight`, or a `run` handed a `&mut` context
+    /// (the receiver and the binding name vary, so neither is matched exactly).
+    ///
+    /// Asked only of a function that takes no parameters, which is every
+    /// `#[test]` — the predicates of this pin quote the same call spellings and
+    /// would otherwise report themselves.
+    fn reads_env(head: &str, body: &str) -> bool {
+        head.contains("()")
+            && (body.contains(".preflight(") || (body.contains(".run(") && body.contains("&mut")))
+    }
 
     /// Names of the helper functions in one source that build a sealed context,
     /// so a test delegating its setup to one is accepted.
     fn sealing_helpers(bodies: &[String]) -> Vec<String> {
         bodies
             .iter()
-            .filter(|b| SEALS.iter().any(|s| b.contains(s)))
+            .filter(|b| seals(b))
             .filter_map(|b| {
                 let head = b.lines().next()?.trim_start();
                 let name = head.split("fn ").nth(1)?.split('(').next()?;
                 Some(name.to_string())
             })
             .collect()
+    }
+
+    /// Every test-carrying region under `src/npm`: a whole test source, and the
+    /// inline test module of a production source — `publisher.rs` keeps its
+    /// preflight tests inline, and a walk of `test_sources` alone never saw
+    /// them.
+    fn test_regions(dir: &Path) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for path in test_sources(dir) {
+            let src = std::fs::read_to_string(&path).expect("read test source");
+            out.push((path.display().to_string(), src));
+        }
+        for path in rust_sources(dir) {
+            let src = std::fs::read_to_string(&path).expect("read production source");
+            let inline = src[production_half(&src).len()..].to_string();
+            if !inline.is_empty() {
+                out.push((path.display().to_string(), inline));
+            }
+        }
+        out
     }
 
     /// `preflight` and `run` read credentials and runner-detection variables.
@@ -877,31 +943,30 @@ mod sealed_env_pin {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/npm");
         let mut unsealed = Vec::new();
         let mut total = 0usize;
-        for path in test_sources(&dir) {
-            let src = std::fs::read_to_string(&path).expect("read test source");
-            let bodies = function_bodies(&src);
+        for (label, text) in test_regions(&dir) {
+            let bodies = function_bodies(&text);
             let helpers = sealing_helpers(&bodies);
             for body in &bodies {
-                if !body.contains(".preflight(") && !body.contains(".run(&mut ctx)") {
+                let head = body.lines().next().unwrap_or_default().trim().to_string();
+                if !reads_env(&head, body) {
                     continue;
                 }
                 total += 1;
-                let sealed = SEALS.iter().any(|s| body.contains(s))
-                    || helpers.iter().any(|h| body.contains(&format!("{h}(")));
+                let sealed = seals(body) || helpers.iter().any(|h| body.contains(&format!("{h}(")));
                 if !sealed {
-                    let name = body.lines().next().unwrap_or_default().trim().to_string();
-                    unsealed.push(format!("{}: {name}", path.display()));
+                    unsealed.push(format!("{label}: {head}"));
                 }
             }
         }
         assert!(
-            total >= 5,
+            total >= 24,
             "the walk found only {total} preflight/run tests; it stopped seeing the population"
         );
         assert!(
             unsealed.is_empty(),
             "an npm preflight/run test must build its context with sealed_env() (or seed it \
-             with env(...)) so it never reads the ambient NPM_TOKEN; unsealed: {unsealed:?}"
+             with TestContextBuilder::env(...)) so it never reads the ambient NPM_TOKEN; \
+             unsealed: {unsealed:?}"
         );
     }
 }

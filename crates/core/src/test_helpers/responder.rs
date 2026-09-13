@@ -74,6 +74,31 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// `READ_TIMEOUT`.
 const REQUEST_READ_DEADLINE: Duration = Duration::from_secs(5);
 
+/// A canned HTTP response with a correct `Content-Length`, for
+/// [`spawn_oneshot_http_responder`]'s `&'static str` queue.
+///
+/// The string is leaked, which is what makes it `'static`: fine in a test
+/// process, never on a production path. Callers had each carried their own
+/// copy of this two-line `format!`, and a copy that miscounts the body length
+/// hangs the client until its read timeout instead of failing the assertion.
+///
+/// ```
+/// # use anodizer_core::test_helpers::responder::canned_http_response;
+/// assert_eq!(
+///     canned_http_response("404 Not Found", ""),
+///     "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+/// );
+/// ```
+pub fn canned_http_response(status_line: &str, body: &str) -> &'static str {
+    Box::leak(
+        format!(
+            "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .into_boxed_str(),
+    )
+}
+
 /// Bind an ephemeral-port TCP listener and serve `responses` in order,
 /// one per accepted connection, then enter a brief drain phase that
 /// soaks up any in-flight retries the client may have initiated before
