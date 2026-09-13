@@ -241,15 +241,20 @@ fn podman_push_verb_depends_on_platform_arity() {
 /// The stage records the digestfile value as `{{ Digest }}` and the release's
 /// docker landing check compares it to what the registry serves, so a
 /// disagreement between the two would fail a release after the push. The
-/// transcript is a recording, not a live probe — editing it to a
-/// disagreeing pair fails here.
+/// transcript is a recording, not a live probe: it is the verbatim stdout of
+/// the script committed beside it, which runs podman and a throwaway
+/// `registry:2` under docker. Editing it to a disagreeing pair, or to a
+/// request the script never made, fails here.
 #[test]
 fn the_recorded_podman_digestfile_equals_what_the_registry_served() {
-    let recording = include_str!("data/podman-5.8.4-digestfile-vs-registry.txt");
-    let digests: Vec<&str> = recording
+    const RECORDING: &str = include_str!("data/podman-digestfile-vs-registry.txt");
+    const SCRIPT: &str = include_str!("data/podman-digestfile-measure.sh");
+
+    let digests: Vec<&str> = RECORDING
         .lines()
-        .filter_map(|line| line.trim().strip_prefix("sha256:").map(|_| line.trim()))
-        .chain(recording.lines().filter_map(|line| {
+        .map(str::trim)
+        .filter(|line| line.starts_with("sha256:"))
+        .chain(RECORDING.lines().filter_map(|line| {
             line.trim()
                 .strip_prefix("Docker-Content-Digest: ")
                 .map(str::trim)
@@ -263,4 +268,37 @@ fn the_recorded_podman_digestfile_equals_what_the_registry_served() {
         digests[0], digests[1],
         "an image manifest and a manifest list are different objects"
     );
+
+    assert!(
+        RECORDING.contains("podman-digestfile-measure.sh"),
+        "the transcript must name the script that regenerates it"
+    );
+    // The registry answers a manifest request under the media types it was
+    // asked for, so a transcript whose `Accept:` the script never sends
+    // records a digest for a request nobody can repeat.
+    let accepts: Vec<&str> = RECORDING
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("$ curl -i -H 'Accept: "))
+        .filter_map(|rest| rest.strip_suffix("' \\"))
+        .collect();
+    assert_eq!(
+        accepts.len(),
+        2,
+        "the recording lost a request: {accepts:?}"
+    );
+    for accept in accepts {
+        assert!(
+            SCRIPT.contains(accept),
+            "the script sends no request accepting '{accept}'"
+        );
+    }
+    for verb in [
+        "podman push --tls-verify=false --digestfile=",
+        "podman manifest push --tls-verify=false",
+    ] {
+        assert!(
+            RECORDING.contains(verb),
+            "the recording lost the `{verb}` measurement"
+        );
+    }
 }
