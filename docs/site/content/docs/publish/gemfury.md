@@ -124,7 +124,7 @@ and only require the wider API token in the rollback flow.
 | `api_token` | string | none | Cfg-supplied API/delete token (templated) |
 | `skip` | string/bool | none | Skip this entry (legacy `disable:` spelling accepted as an alias) |
 | `required` | bool | `true` | Override required-default |
-| `if` | string | none | Template-conditional gate |
+| `if` | string | none | Template-conditional gate. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 
 ## Full example
 

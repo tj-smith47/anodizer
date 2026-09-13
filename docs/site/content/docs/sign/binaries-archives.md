@@ -31,7 +31,7 @@ signs:
 | `ids` | list | none | Only sign artifacts from builds whose `id` is in this list. |
 | `env` | list | none | Environment variables passed to the signing command (`KEY=VALUE` strings). |
 | `output` | bool/template | `false` | Capture and log the signing command's stdout/stderr. Accepts a bool or a template (e.g. `"{{ IsSnapshot }}"`). |
-| `if` | string | none | Template-conditional: skip this config when the rendered result is `false` or empty. |
+| `if` | string | none | Template-conditional: skip this config when the rendered result is `false` or empty. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 
 ### Argument substitution variables
 

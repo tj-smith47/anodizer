@@ -260,6 +260,8 @@ pub struct ArchiveConfig {
     /// hard-errors. "Filter artifacts with `if` statements" is listed as a
     /// blanket promise — anodizer surfaces it explicitly to keep imported
     /// configs portable).
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// Turnkey shell-completion generation: auto-generate (or harvest, or

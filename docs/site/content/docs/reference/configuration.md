@@ -105,7 +105,7 @@ Message bodies are secret-redacted before send: known secret env values are mask
 | `discourse` | DiscourseAnnounce | — | Discourse announcement configuration. |
 | `email` | EmailAnnounce | — | Email announcement configuration. accepts the historical `smtp:` key as an alias because the field was renamed `smtp:` -> `email:` in v1.21+ and kept the alias for migration. Keeping the alias avoids forcing a re-yaml of legacy configs. |
 | `gate_on` | AnnounceGate | `required_publishers` | Selects when AnnounceStage runs vs. skips based on the `PublishReport` written by PublishStage/BlobStage. Default is `required_publishers` (announce only if every required publisher succeeded). See `AnnounceGate` for the other variants. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the entire announce stage is skipped. Render failure hard-errors. The `announce.if:`. Distinct from `skip:` (always-skip predicate) — both surfaces are documented. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the entire announce stage is skipped. Render failure hard-errors. The `announce.if:`. Distinct from `skip:` (always-skip predicate) — both surfaces are documented. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `linkedin` | LinkedInAnnounce | — | LinkedIn announcement configuration. |
 | `mastodon` | MastodonAnnounce | — | Mastodon announcement configuration. |
 | `mattermost` | MattermostAnnounce | — | Mattermost announcement configuration. |
@@ -173,7 +173,7 @@ Artifactory upload configuration. Uploads artifacts to JFrog Artifactory reposit
 | `extra_files_only` | bool | — | When true, upload only extra_files (skip normal artifacts). |
 | `exts` | list of string | — | File extension filter: only upload artifacts matching these extensions. |
 | `ids` | list of string | — | Build IDs filter: only upload artifacts from builds whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the artifactory publisher is skipped. Render failure hard-errors. The `artifactories[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the artifactory publisher is skipped. Render failure hard-errors. The `artifactories[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `meta` | bool | — | Include `dist/metadata.json` in uploaded artifacts. The sibling `dist/artifacts.json` manifest is never uploaded. |
 | `method` | string | — | HTTP method to use for uploads (default: "PUT"). |
 | `mode` | string | — | Upload mode: "archive" (upload archives) or "binary" (upload binaries). |
@@ -228,7 +228,7 @@ attestations:
 | `git_url` | string | — | AUR SSH git URL override. Defaults to `ssh://aur@aur.archlinux.org/<package>.git`, derived from the resolved package name; set this only for a non-standard endpoint. |
 | `homepage` | string | — | Project homepage URL. |
 | `ids` | list of string | — | Build IDs filter. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the AUR source config is skipped. Render failure hard-errors. The `aur_sources[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the AUR source config is skipped. Render failure hard-errors. The `aur_sources[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `install` | string | — | Content for a .install file (post-install/pre-remove scripts). |
 | `license` | string | — | SPDX license identifier. |
 | `maintainers` | list of string | — | PKGBUILD maintainer entries. |
@@ -311,7 +311,7 @@ CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
 | `exclude` | list of string | — | Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS CloudSmith target only. Use it to keep heavy sidecars off a given repository while packages still upload. Composes with `ids:` and `formats:` (all filters apply). `None`/empty keeps everything.<br><br><code>cloudsmiths:</code><br><code>  - organization: my-org</code><br><code>    repository: my-repo</code><br><code>    exclude: ["*.sha256", "*.sig", "*.cdx.json"]</code> |
 | `formats` | list of string | — | Package format filter: only publish artifacts matching these formats. |
 | `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the CloudSmith publisher is skipped. Render failure hard-errors. Config key: `cloudsmiths[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the CloudSmith publisher is skipped. Render failure hard-errors. Config key: `cloudsmiths[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `keep_versions` | integer | — | Retain only the `N` most-recent release versions of each published package, pruning older ones from the CloudSmith repository after a successful upload.<br><br>This is **opt-in** and **destructive**: leaving it unset (the default) prunes nothing. When set, after the just-uploaded artifacts are confirmed present the publisher lists every version of *this* package in the repository, ranks the distinct release versions by SemVer (newest first), keeps the top `N` — which always includes the version just published — and issues `DELETE` for every artifact (all formats and architectures) belonging to versions ranked beyond `N`. Other packages sharing the repository are never touched.<br><br>All package formats of one release are treated as the same version: the deb/rpm epoch (`1:0.9.1-1`) and apk revision (`0.9.1-r1`) suffixes are normalized to the base SemVer (`0.9.1`) before ranking, so keeping `2` versions keeps every `.deb`/`.rpm`/`.apk` of the two newest releases.<br><br>Pruning is **best-effort**: it runs only after the upload (the real work) has already succeeded, is skipped entirely in dry-run and snapshot mode, and a list/delete failure emits a prominent warning and continues rather than failing the release or rolling anything back. `keep_versions: 0` is rejected — anodizer never prunes every version.<br><br>Primarily a remedy for storage-capped repositories (e.g. the CloudSmith free plan's 500 MB limit, which offers no server-side retention policy).<br><br><code>cloudsmiths:</code><br><code>  - organization: acme</code><br><code>    repository: tools</code><br><code>    keep_versions: 3   # keep the 3 newest releases, prune older ones</code> |
 | `organization` | string | — | CloudSmith organization slug. |
 | `repository` | string | — | CloudSmith repository slug. |
@@ -415,7 +415,7 @@ DockerHub description sync configuration. Pushes image descriptions and README c
 |-------|------|---------|-------------|
 | `description` | string | — | Short description for the DockerHub repository (max 100 chars). |
 | `full_description` | DockerHubFullDescription | — | Full description (README) source for the DockerHub repository. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the DockerHub publisher is skipped. Render failure hard-errors. Exposes the `dockerhub[].if:` conditional gate; distinct from `skip:` (which expresses "always skip") and provides config-import parity. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the DockerHub publisher is skipped. Render failure hard-errors. Exposes the `dockerhub[].if:` conditional gate; distinct from `skip:` (which expresses "always skip") and provides config-import parity. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `images` | list of string | — | DockerHub image names to update (e.g. `myorg/myapp`). |
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
@@ -436,7 +436,7 @@ Pushes deb / rpm / apk artifacts to `https://push.fury.io/<account>`. Authentica
 | `formats` | list of string | — | Package format filter: only push artifacts matching these formats. Defaults to `["apk", "deb", "rpm"]`. |
 | `id` | string | — | Unique identifier for selecting this entry from the CLI (`--id=...`). |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose archive `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the GemFury publisher entry is skipped. Render failure hard-errors. Exposes the `gemfury[].if:` conditional gate; distinct from `skip:` (which expresses "always skip") and provides config-import parity. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the GemFury publisher entry is skipped. Render failure hard-errors. Exposes the `gemfury[].if:` conditional gate; distinct from `skip:` (which expresses "always skip") and provides config-import parity. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `true` — GemFury is a Manager-group publisher (mutable but reversible via the delete API), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `secret_name` | string | — | Environment variable name carrying the push token. Default `FURY_PUSH_TOKEN`. The actual token VALUE is read from this env var at publish/rollback time. |
@@ -506,7 +506,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `homepage` | string | — | Project homepage URL. |
 | `hooks` | HomebrewCaskHooks | — | Pre/post install/uninstall hooks. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts from builds whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. Config key: `homebrew_casks[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. Config key: `homebrew_casks[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `license` | string | — | License identifier (SPDX). |
 | `livecheck` | HomebrewLivecheck | — | `livecheck` stanza configuration for the cask. When unset, the cask emits `livecheck do\n  skip "Auto-generated on release."\nend` (a binary cask's download URL/sha256 are rewritten on every release, so `brew livecheck` has nothing stable to poll). Set `strategy:` / `url:` / `regex:` (with `skip: false`) to opt into active version detection — the same shape a Homebrew cask `livecheck do … end` block accepts. Reuses the formula `livecheck` config type. |
 | `manpage` | string | — | Deprecated singular spelling of `manpages`. The upstream replaced `manpage: foo.1` with `manpages: [foo.1]`; this field captures the legacy spelling so imported configs keep parsing. `apply_homebrew_cask_legacy_singulars` folds the value into `manpages` at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
@@ -542,7 +542,7 @@ homebrew_cores:
 | `download_url` | string | — | Templated download URL written into the formula's `url` stanza. Defaults to the GitHub source tarball for the release tag: `https://github.com/<owner>/<repo>/archive/refs/tags/<tag>.tar.gz` (owner/repo derived from the crate's release repository, then the git remote). |
 | `id` | string | — | Unique identifier for selecting this entry from the CLI (`--id=...`). |
 | `ids` | list of string | — | Crate scoping: when set, the formula `name` default is derived from the first crate named here instead of the workspace's primary crate. The workspace per-crate pattern — one `homebrew_cores[]` entry per crate, each scoped by `ids:`. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), this entry is skipped. Render failure hard-errors. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), this entry is skipped. Render failure hard-errors. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `name` | string | — | Formula name (templated). Defaults to the scoped crate name (see `ids:`), then the workspace's primary crate name, then the project name. |
 | `path` | string | — | Formula file path inside the repository (templated). Defaults to the homebrew-core sharded layout `Formula/<first-letter>/<name>.rb`, falling back to the flat `Formula/<name>.rb` used by most personal taps when the sharded path does not exist. |
 | `repository` | RepositoryConfig | — | Target formula repository. Defaults to `Homebrew/homebrew-core`. Carries the auth token override (`repository.token`), the base branch (`repository.branch`, default: the repo's default branch), and PR settings (`repository.pull_request.draft` / `.body`).<br><br><code>homebrew_cores:</code><br><code>  - repository: { owner: my-org, name: my-formulas }</code> |
@@ -601,7 +601,7 @@ Publishes an `apiv0.ServerJSON` document to the MCP registry (`https://registry.
 | `auth` | McpAuth | `{"type":"none"}` | Authentication method for the registry's `/v0/publish` endpoint. Defaults to `none` (anonymous publish, allowed for development / staging registries). |
 | `description` | string | — | Clear human-readable description of server functionality (max 100 chars). |
 | `homepage` | string | — | Optional URL to the server's homepage, documentation, or project website. Serialized as `websiteUrl` in the registry payload. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the MCP publisher is skipped. Render failure hard-errors. The `mcp.if:` conditional gate. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the MCP publisher is skipped. Render failure hard-errors. The `mcp.if:` conditional gate. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `name` | string | — | Server name in reverse-DNS format (e.g. `io.github.user/weather`). Must contain exactly one forward slash separating namespace from server name. An empty / unset value skips the publisher entirely. |
 | `packages` | list of McpPackage | `[]` | Distribution packages — one entry per package registry (npm, pypi, nuget, oci). |
 | `registry` | string | — | Override the registry endpoint (for staging or a private mirror). Defaults to `https://registry.modelcontextprotocol.io` when unset. |
@@ -694,7 +694,7 @@ In the default `optional-deps` mode anodizer emits one thin npm package per buil
 | `homepage` | string | — | Templated homepage URL. Falls back to `metadata.homepage` when unset. |
 | `id` | string | — | Unique identifier for selecting this entry from the CLI (`--id=...`). |
 | `ids` | list of string | — | Crate-name filter: only include artifacts whose owning `crate_name` is in this list. Orthogonal to `targets:` (both filters apply). |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the NPM publisher entry is skipped. Render failure hard-errors. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the NPM publisher entry is skipped. Render failure hard-errors. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `keywords` | list of string | — | NPM `keywords` list. |
 | `libc_aware` | bool | `true` | In `optional-deps` mode, emit separate per-platform packages for linux `musl` vs `glibc` (distinguished by the npm `libc` selector). When `false`, a single linux package per cpu is emitted with no `libc` selector. Default `true` — musl and glibc binaries are not interchangeable, so collapsing them risks installing the wrong one. |
 | `license` | string | — | Templated SPDX license identifier (e.g. `MIT`, `Apache-2.0`). Falls back to `metadata.license` when unset. |
@@ -750,7 +750,7 @@ Top-level `preflight:` block.
 | `env` | list of string | — | Environment variables passed to the publish command. |
 | `extra_files` | list of ExtraFileSpec | — | Extra files to include in publishing (glob patterns with optional name override). |
 | `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the publisher is skipped. Render failure hard-errors. The `customization/publishers/` `if:` field. Distinct from `skip:` (which expresses "always skip") and provides config-import parity. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the publisher is skipped. Render failure hard-errors. The `customization/publishers/` `if:` field. Distinct from `skip:` (which expresses "always skip") and provides config-import parity. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `meta` | bool | — | Include `dist/metadata.json` in published artifacts. The sibling `dist/artifacts.json` manifest is never published. |
 | `name` | string | — | Human-readable name for this publisher (used in logs). |
 | `signature` | bool | — | Include signatures in published artifacts. |
@@ -782,7 +782,7 @@ pypis:
 | `homepage` | string | — | Templated homepage URL, emitted as `Project-URL: Homepage`. Falls back to `metadata.homepage` (then `Cargo.toml [package].homepage`) when unset. |
 | `id` | string | — | Unique identifier for selecting this entry from the CLI (`--id=...`). |
 | `ids` | list of string | — | Build IDs filter: only include binaries whose crate is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the PyPI publisher entry is skipped. Render failure hard-errors. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the PyPI publisher entry is skipped. Render failure hard-errors. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `index_url` | string | — | Templated twine upload endpoint URL. Default `https://upload.pypi.org/legacy/` (the production PyPI upload API). Point it at TestPyPI to rehearse a release:<br><br><code>pypis:</code><br><code>  - index_url: "https://test.pypi.org/legacy/"</code><br><br>This is the twine *upload* target, not a `{owner, name}` source repository — the name `index_url` keeps it distinct from the reserved `repository` meaning every git-based publisher uses. The legacy `repository:` spelling is still accepted via serde alias. |
 | `keywords` | list of string | — | Keywords list, emitted comma-separated in METADATA. |
 | `license` | string | — | Templated license expression (e.g. `MIT`, `Apache-2.0`), emitted as the METADATA `License` field. Falls back to `metadata.license` (then `Cargo.toml [package].license`) when unset. |
@@ -987,7 +987,7 @@ All rendered template files are uploaded to the release by default. Both `src` a
 | `extra_files_only` | bool | — | Upload only extra files, skip normal artifacts. |
 | `exts` | list of string | — | File extension filter: only upload artifacts with these extensions. |
 | `ids` | list of string | — | Build IDs filter: only upload artifacts whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the upload is skipped. Render failure hard-errors. The `uploads[].if:` conditional gate. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the upload is skipped. Render failure hard-errors. The `uploads[].if:` conditional gate. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `meta` | bool | — | Include `dist/metadata.json` in uploaded artifacts. The sibling `dist/artifacts.json` manifest is never uploaded. |
 | `method` | string | — | HTTP method: PUT or POST (default: PUT). |
 | `mode` | string | — | Upload mode: "archive" (default) or "binary". |
@@ -1165,7 +1165,7 @@ Fields intentionally omitted because anodizer owns them: - `--package` / `--work
 | `auth` | CargoAuthMode | — | Whether the publish authenticates with a long-lived API token (`CARGO_REGISTRY_TOKEN`) or with GitHub Actions OIDC (crates.io Trusted Publishing). Default `Auto`: a token when one is present, otherwise a Trusted-Publishing exchange when an OIDC context is available.<br><br>`oidc` creates a short-lived crates.io token from a GitHub Actions id-token — no stored `CARGO_REGISTRY_TOKEN` is needed — and revokes it after the publish loop. The token is workspace-scoped: one token authorizes every crate whose Trusted-Publisher config matches this repository/workflow, so a lockstep workspace creates one token and reuses it for all crates.<br><br>When omitted, resolves to `Auto`. Optional (rather than a bare enum with `#[serde(default)]`) so a `defaults.publish.cargo.auth` value is inherited by a per-crate `publish.cargo` block that omits `auth`: a bare enum always serializes to a concrete value, and the defaults deep-merge (fill-by-missing-key) never overwrites a present scalar, so a strict `oidc` default would silently degrade to `auto`. Read through `CargoPublishConfig::resolved_auth` so every call site agrees on the `None` → `Auto` collapse.<br><br>`Auto`: CargoAuthMode::Auto |
 | `features` | list of string | — | Crate features to activate (`--features`). |
 | `frozen` | bool | — | Both `--locked` and `--offline` (`--frozen`). |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the cargo publisher is skipped. Render failure hard-errors. Config key: the publisher's `if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the cargo publisher is skipped. Render failure hard-errors. Config key: the publisher's `if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `index` | string | — | Registry index URL (`--index`). |
 | `index_timeout` | integer | — | Seconds to wait for the crates.io sparse index to publish a crate before its dependents are pushed (anodizer-original — no `cargo publish` equivalent). |
 | `jobs` | integer | — | Number of parallel compile jobs for verification (`--jobs`). |
@@ -1204,7 +1204,7 @@ Fields intentionally omitted because anodizer owns them: - `--package` / `--work
 | `generate_completions_from_executable` | HomebrewCaskGeneratedCompletions | — | Generate completions by running the installed binary at install time. Renders the modern homebrew-core idiom `generate_completions_from_executable(bin/"<exe>", ...)` in the install block. Preferred over `completions` when the binary can emit its own completions; the two are independent and may both be set. |
 | `homepage` | string | — | Project homepage URL. Falls back to the GitHub release URL when unset. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew publisher is skipped. Render failure hard-errors. Config key: `brews[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew publisher is skipped. Render failure hard-errors. Config key: `brews[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `install` | string | — | Ruby `install` block content for the formula. |
 | `license` | string | — | SPDX license identifier (e.g., "MIT", "Apache-2.0"). |
 | `livecheck` | HomebrewLivecheck | — | `livecheck` stanza configuration for the formula. When unset, a binary tap formula emits `livecheck { skip "Auto-generated on release." }` to match the cask (the archive URL/sha are rewritten on every release, so `brew livecheck` cannot meaningfully poll). Set `strategy:` / `regex:`/`url:` to opt into active version detection instead. |
@@ -1246,7 +1246,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `homepage` | string | — | Project homepage URL. |
 | `hooks` | HomebrewCaskHooks | — | Pre/post install/uninstall hooks. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts from builds whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. Config key: `homebrew_casks[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. Config key: `homebrew_casks[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `license` | string | — | License identifier (SPDX). |
 | `livecheck` | HomebrewLivecheck | — | `livecheck` stanza configuration for the cask. When unset, the cask emits `livecheck do\n  skip "Auto-generated on release."\nend` (a binary cask's download URL/sha256 are rewritten on every release, so `brew livecheck` has nothing stable to poll). Set `strategy:` / `url:` / `regex:` (with `skip: false`) to opt into active version detection — the same shape a Homebrew cask `livecheck do … end` block accepts. Reuses the formula `livecheck` config type. |
 | `manpage` | string | — | Deprecated singular spelling of `manpages`. The upstream replaced `manpage: foo.1` with `manpages: [foo.1]`; this field captures the legacy spelling so imported configs keep parsing. `apply_homebrew_cask_legacy_singulars` folds the value into `manpages` at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
@@ -1275,7 +1275,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `directory` | string | — | Subdirectory in the bucket repo for manifest placement. Defaults to `bucket` — scoop resolves manifests only from `bucket/` when that directory exists (root otherwise), so `bucket/` is correct for both layouts. Set to `""` to target the repo root. A stale same-named root-level manifest is removed when publishing into a subdirectory. |
 | `homepage` | string | — | Project homepage URL. Falls back to the GitHub-derived URL when unset. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Scoop publisher is skipped. Render failure hard-errors. Config key: `scoop[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Scoop publisher is skipped. Render failure hard-errors. Config key: `scoop[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `license` | string | — | SPDX license identifier (e.g., "MIT", "Apache-2.0"). |
 | `name` | string | — | Override the manifest name (default: crate name). |
 | `persist` | list of string | — | Data paths persisted between Scoop updates. |
@@ -1302,7 +1302,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `docs_url` | string | — | Documentation URL. |
 | `icon_url` | string | — | URL to the package icon image shown in the Chocolatey gallery. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Chocolatey publisher is skipped. Render failure hard-errors. Config key: `chocolateys[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Chocolatey publisher is skipped. Render failure hard-errors. Config key: `chocolateys[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `license` | string | — | SPDX license expression (e.g. "MIT", "Apache-2.0", "MIT OR Apache-2.0"). Not emitted as a nuspec element — Chocolatey CLI does not support the NuGet `<license>` element (it warns CHCU0002: "use `<licenseUrl>` instead") — it gates the `<licenseUrl>` derivation: a single identifier derives a LICENSE blob URL; a compound expression has no single canonical file, so set `license_url` explicitly. |
 | `license_url` | string | — | Optional explicit `<licenseUrl>` — Chocolatey's only supported license metadata. When unset, anodizer derives a real GitHub `…/blob/<tag>/LICENSE` URL from `repository` (what ripgrep / fd / gh ship); when no repository is known or `license` is a compound SPDX expression, no `<licenseUrl>` is emitted. anodizer never synthesizes an `opensource.org/licenses/<spdx>` URL — it 404s for compound SPDX and gets the package rejected at moderation. |
 | `name` | string | — | Override the package name (default: crate name). |
@@ -1340,7 +1340,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `documentations` | list of WingetDocumentation | — | Documentation links rendered as the `Documentations[]` block on the locale manifest. Each entry is a `{ label, url }` pair surfaced in the winget gallery (real ripgrep emits a `FAQ` and a `User Guide` entry). Omitted entirely when empty.<br><br>Example:<br><br><code>documentations:</code><br><code>  - label: "User Guide"</code><br><code>    url: "https://github.com/owner/repo/blob/master/GUIDE.md"</code> |
 | `homepage` | string | — | Project homepage URL. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the WinGet publisher is skipped. Render failure hard-errors. Config key: `winget[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the WinGet publisher is skipped. Render failure hard-errors. Config key: `winget[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `installation_notes` | string | — | Post-install notes shown to the user. |
 | `license` | string | — | License identifier (required, e.g. "MIT"). |
 | `license_url` | string | — | License URL. |
@@ -1385,7 +1385,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `git_url` | string | — | AUR SSH git URL override. Defaults to `ssh://aur@aur.archlinux.org/<package>.git`, derived from the resolved package name; set this only for a non-standard endpoint. |
 | `homepage` | string | — | Project homepage URL. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the AUR publisher is skipped. Render failure hard-errors. The `aurs[].if:` conditional gate. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the AUR publisher is skipped. Render failure hard-errors. The `aurs[].if:` conditional gate. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `install` | string | — | Content for a .install file (post-install/pre-remove scripts). |
 | `license` | string | — | SPDX license identifier (e.g., "MIT", "Apache-2.0"). |
 | `maintainers` | list of string | — | PKGBUILD maintainer entries (e.g., "Name <email@example.com>"). |
@@ -1420,7 +1420,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `git_url` | string | — | AUR SSH git URL override. Defaults to `ssh://aur@aur.archlinux.org/<package>.git`, derived from the resolved package name; set this only for a non-standard endpoint. |
 | `homepage` | string | — | Project homepage URL. |
 | `ids` | list of string | — | Build IDs filter. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the AUR source config is skipped. Render failure hard-errors. The `aur_sources[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the AUR source config is skipped. Render failure hard-errors. The `aur_sources[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `install` | string | — | Content for a .install file (post-install/pre-remove scripts). |
 | `license` | string | — | SPDX license identifier. |
 | `maintainers` | list of string | — | PKGBUILD maintainer entries. |
@@ -1449,7 +1449,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `description` | string | — | Full description of the kubectl plugin. |
 | `homepage` | string | — | Project homepage URL for the plugin. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Krew publisher is skipped. Render failure hard-errors. Config key: `krews[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Krew publisher is skipped. Render failure hard-errors. Config key: `krews[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `mode` | KrewMode | — | Which krew-index submission path to take.<br><br>- `auto` (default): probe whether the plugin already exists in `kubernetes-sigs/krew-index`. Already present → `bot` (the hosted krew-release-bot opens the version-bump PR server-side); definitively absent → `pr-direct` (anodizer opens the initial fork PR). A probe that can't reach a definitive answer (rate-limit, network error) hard-errors rather than guessing, so a transient blip never routes an existing plugin into a maintainer-hostile fork PR. - `bot`: always POST to the krew-release-bot webhook. Use when the plugin is known to be in krew-index and you want to skip the membership probe entirely. - `pr-direct`: always open a fork PR against krew-index. Use for the initial submission, or a self-hosted krew-index mirror the hosted bot can't reach. |
 | `name` | string | — | Override the plugin name (default: crate name). |
 | `repository` | RepositoryConfig | — | Unified repository config with branch, token, PR, git SSH support. (Replaces the legacy `manifests_repo:` / `upstream_repo:` form.) The upstream PR target is derived from `repository.pull_request.base` when set, falling back to the canonical kubernetes-sigs/krew-index. |
@@ -1474,7 +1474,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `formatter` | string | — | Nix formatter to run on the generated file: "alejandra" or "nixfmt". |
 | `homepage` | string | — | Project homepage URL. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Nix publisher is skipped. Render failure hard-errors. Config key: `nix[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Nix publisher is skipped. Render failure hard-errors. Config key: `nix[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `install` | string | — | Custom install commands (replaces auto-generated binary install). |
 | `license` | string | — | License for the derivation's `meta.license`. Accepts a nix `lib.licenses` attribute (e.g. `mit`, `asl20`) or an SPDX expression (e.g. `MIT`, `Apache-2.0`, `MIT OR Apache-2.0`). A known single id maps to `lib.licenses.<attr>`; an `OR`/`AND` list of known ids maps to `with lib.licenses; [ … ]`. An unknown id or an unparseable compound (e.g. a `WITH` exception) degrades to a quoted-string `license` in `meta` — never rejected, never an invalid attr-path. When unset, the license is derived from the crate's `Cargo.toml [package].license`. |
 | `long_description` | string | — | Long-form description for `meta.longDescription`, rendered as a multi-line `longDescription = '' … '';` block. Optional; omitted when unset. Templated. |

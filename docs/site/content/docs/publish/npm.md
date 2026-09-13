@@ -206,7 +206,7 @@ package/
 | `templated_extra_files` | list | none | Template-rendered file mappings (`{src, dst}`) |
 | `extra` | map | none | Free-form root-level `package.json` fields (shallow-merged) |
 | `skip` | string/bool | none | Skip this publisher (template-conditional; legacy `disable:` spelling accepted as an alias) |
-| `if` | string | none | Template condition; skip if result is falsy |
+| `if` | string | none | Template condition; skip if result is falsy. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `required` | bool | `true` | Whether failure here aborts the release |
 
 ## Authentication

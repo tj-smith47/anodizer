@@ -36,7 +36,7 @@ crates:
         amd64_variant: v1             # optional; amd64 variant filter (v1/v2/v3/v4)
         extra_files: []               # optional; plain filename strings copied into the WiX build context
         extensions: []                # optional; WiX extensions to enable (template per entry)
-        if: ""                        # optional; skip this config if rendered result is falsy
+        if: ""                        # optional; empty imposes no gate; a non-blank one skips when it renders falsy
         disable: false                # optional (alias for skip)
         hooks:
           before: []                  # optional; commands to run before the WiX build
@@ -94,7 +94,7 @@ The WiX version is determined in this order:
 | `amd64_variant` | enum | | amd64 microarchitecture variant filter — exactly one of `v1`/`v2`/`v3`/`v4` (any other value is rejected when the config is parsed). |
 | `extra_files` | list | | Plain filename strings (not `{src, dst}` objects) copied into the WiX build context alongside the rendered `.wxs`. |
 | `extensions` | list | | WiX extensions to enable (e.g. `WixUIExtension`). Each entry is a template. |
-| `if` | string | | Skip this config when the rendered value is `false` or empty. Anodizer-additive — see note below. |
+| `if` | string | | Skip this config when the rendered value is `false` or empty. Anodizer-additive — see note below. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `disable` / `skip` | bool or string | `false` | Skip this MSI config. Accepts a bool or a template string. |
 | `hooks.before` | list | | Commands to run before the WiX build. |
 | `hooks.after` | list | | Commands to run after the WiX build. Receives `ArtifactPath`, `ArtifactName`, and `ArtifactExt`. |
