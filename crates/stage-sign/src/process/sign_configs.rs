@@ -12,7 +12,7 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::target::map_target;
 
 use crate::helpers::{
-    BinarySignAssetBases, binary_sign_asset_name, binary_sign_asset_naming, default_sign_cmd,
+    BinarySignAssetNames, binary_sign_asset_name, binary_sign_asset_naming, default_sign_cmd,
     expand_shell_vars, prepare_stdin_from, resolve_sign_args, resolve_signature_path,
     should_sign_artifact,
 };
@@ -36,9 +36,9 @@ pub(crate) fn process_sign_configs(
     label: &str,
 ) -> Result<()> {
     let parallelism = ctx.options.parallelism.max(1);
-    // One release asset per name: a second binary resolving to a base another
+    // One release asset per name: a second binary resolving to a name another
     // already claimed must stop the run before either signature is uploaded.
-    let mut claimed_bases = BinarySignAssetBases::default();
+    let mut claimed_names = BinarySignAssetNames::default();
 
     'configs: for (sign_idx, sign_cfg) in sign_configs.iter().enumerate() {
         let sub_label = sign_cfg
@@ -432,21 +432,28 @@ pub(crate) fn process_sign_configs(
             // config-derived asset name, unique per (crate, target, binary),
             // and carry the triple on the artifact. The on-disk path is
             // untouched.
-            let asset_base = match artifact_target.as_deref() {
-                Some(target) if is_binary_sign => {
-                    let naming = binary_sign_asset_naming(ctx, sign_cfg, signed_binary, target)?;
-                    claimed_bases.claim(&naming, signed_binary)?;
-                    Some(naming.base)
-                }
+            let naming = match artifact_target.as_deref() {
+                Some(target) if is_binary_sign => Some(binary_sign_asset_naming(
+                    ctx,
+                    sign_cfg,
+                    signed_binary,
+                    target,
+                )?),
                 _ => None,
             };
-            let (sig_name, registered_target) = match (artifact_target, &asset_base) {
-                (Some(target), Some(base)) => (
-                    binary_sign_asset_name(&sig_name, artifact_name, base, target),
+            let (sig_name, registered_target) = match (artifact_target, &naming) {
+                (Some(target), Some(naming)) => (
+                    binary_sign_asset_name(&sig_name, artifact_name, &naming.base, target),
                     Some(target.clone()),
                 ),
                 _ => (sig_name, None),
             };
+            // The claim is on the uploaded NAME, not on the base: two configs
+            // whose `signature:` templates append different suffixes to one
+            // base name two distinct assets and must both be allowed.
+            if let Some(naming) = &naming {
+                claimed_names.claim(&sig_name, &naming.template, signed_binary)?;
+            }
             let mut job_artifacts = vec![anodizer_core::artifact::Artifact {
                 kind: ArtifactKind::Signature,
                 name: sig_name,
@@ -463,9 +470,9 @@ pub(crate) fn process_sign_configs(
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| cert_path.display().to_string());
-                let cert_name = match (registered_target.as_deref(), &asset_base) {
-                    (Some(target), Some(base)) => {
-                        binary_sign_asset_name(&cert_name, artifact_name, base, target)
+                let cert_name = match (registered_target.as_deref(), &naming) {
+                    (Some(target), Some(naming)) => {
+                        binary_sign_asset_name(&cert_name, artifact_name, &naming.base, target)
                     }
                     _ => cert_name,
                 };

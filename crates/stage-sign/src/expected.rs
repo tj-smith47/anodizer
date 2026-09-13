@@ -69,7 +69,7 @@ pub fn expected_signature_assets(
     // expectation. For a binary signature that would hide the collision the
     // sign stage refuses, leaving the gate looking for one asset while two
     // were meant to exist, so the same claim is made here.
-    let mut claimed_bases = crate::helpers::BinarySignAssetBases::default();
+    let mut claimed_names = crate::helpers::BinarySignAssetNames::default();
 
     let slices = [
         ("sign", &ctx.config.signs, SignConfig::DEFAULT_ARTIFACTS),
@@ -135,14 +135,22 @@ pub fn expected_signature_assets(
                 if !sign_ids_match(&artifact.metadata, cfg.ids.as_ref()) {
                     continue;
                 }
-                if !anodizer_core::artifact::matches_id_filter(artifact, release_ids) {
+                // The sign stage claims a name for every binary it signs,
+                // whatever the release uploads — it refuses the run before any
+                // `ids:` filter is consulted. So the claim below runs over the
+                // same population, and only the EXPECTATION is narrowed.
+                let uploaded = anodizer_core::artifact::matches_id_filter(artifact, release_ids);
+                if !uploaded && !binary_slice {
                     continue;
                 }
                 let (sig_name, cert_name) = if binary_slice {
-                    expected_binary_sign_names(cfg, artifact, ctx, &mut claimed_bases)?
+                    expected_binary_sign_names(cfg, artifact, ctx, &mut claimed_names)?
                 } else {
                     expected_output_names(cfg, &artifact.path, &artifact.metadata, ctx)?
                 };
+                if !uploaded {
+                    continue;
+                }
                 expected.push(sig_name);
                 if let Some(cert) = cert_name {
                     expected.push(cert);
@@ -262,13 +270,13 @@ pub(crate) fn expected_output_paths(
 /// basename: the raw binary is called the same thing under every target's
 /// directory, so the name is built on the config-derived base
 /// ([`crate::helpers::binary_sign_asset_naming`], the same derivation the sign
-/// stage registers through), and claimed in `claimed_bases` so two binaries
+/// stage registers through), and claimed in `claimed_names` so two binaries
 /// naming one asset fail the gate the way they fail the stage.
 fn expected_binary_sign_names(
     cfg: &SignConfig,
     artifact: &anodizer_core::artifact::Artifact,
     ctx: &Context,
-    claimed_bases: &mut crate::helpers::BinarySignAssetBases,
+    claimed_names: &mut crate::helpers::BinarySignAssetNames,
 ) -> Result<(String, Option<String>)> {
     let (sig_path, cert_path) =
         expected_output_paths(cfg, &artifact.path, &artifact.metadata, ctx)?;
@@ -284,7 +292,6 @@ fn expected_binary_sign_names(
         .and_then(|n| n.to_str())
         .unwrap_or("");
     let naming = crate::helpers::binary_sign_asset_naming(ctx, cfg, artifact, target)?;
-    claimed_bases.claim(&naming, artifact)?;
     let name = |path: &std::path::Path| {
         crate::helpers::binary_sign_asset_name(
             &basename_of(path),
@@ -293,7 +300,9 @@ fn expected_binary_sign_names(
             target,
         )
     };
-    Ok((name(&sig_path), cert_path.as_deref().map(name)))
+    let sig_name = name(&sig_path);
+    claimed_names.claim(&sig_name, &naming.template, artifact)?;
+    Ok((sig_name, cert_path.as_deref().map(name)))
 }
 
 /// The asset basename of a resolved output path (the name the release

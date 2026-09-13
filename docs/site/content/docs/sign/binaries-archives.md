@@ -80,6 +80,42 @@ verify gate cannot find.
 A name that renders empty fails the sign stage rather than uploading a bare
 `.sig` every binary's signature would collide on.
 
+Two binaries resolving to ONE name fail it the same way. A release asset
+carries one file, so the second upload would replace the first and the release
+would ship a signature over bytes nobody can identify:
+
+```text
+Error: sign: the binaries 'target/x86_64-unknown-linux-gnu/release/app (crate
+       'app', build id 'app', target x86_64-unknown-linux-gnu, amd64 v1)' and
+       'target/x86_64-unknown-linux-gnu/release/app (crate 'app', build id
+       'app', target x86_64-unknown-linux-gnu, amd64 v3)' both resolve to the
+       signature asset name 'app-1.2.3-linux-amd64.sig', rendered from the
+       template '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}'. One
+       release asset cannot carry two signatures — give the covering
+       `archives[].name_template` a variable that separates them ({{ Target }}
+       and {{ Amd64 }} are the dimensions {{ Os }}-{{ Arch }} drops), or set
+       `binary_signs[].asset_name_template`.
+```
+
+The two dimensions a hand-written `{{ Os }}-{{ Arch }}` template drops are the
+full target triple (a gnu and a musl build render one `linux-amd64`) and the
+x86-64 micro-architecture level (a baseline and a `-Ctarget-cpu=x86-64-v3`
+build render one `amd64`). Either dimension in the template separates them —
+this is what the built-in default does:
+
+```yaml
+archives:
+  - name_template: >-
+      {{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}{% if Amd64 and Amd64 != "v1" %}{{ Amd64 }}{% endif %}
+```
+
+or name the signature directly:
+
+```yaml
+binary_signs:
+  - asset_name_template: "{{ Binary }}-{{ Version }}-{{ Target }}"
+```
+
 The raw binary is called `app` (or `app.exe`) under every target's directory,
 so its own basename would collapse every target's signature onto one asset:
 
@@ -100,7 +136,7 @@ archive that `chocolatey` and `scoop` bind to with `ids: [default]`:
 
 ```yaml
 archives:
-  - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"   # id: default
+  - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"   # id: default, single-variant
     formats: [tar.gz]
   - id: extra
     name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-extra"

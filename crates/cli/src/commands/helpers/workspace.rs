@@ -54,7 +54,9 @@ pub fn collect_build_targets(config: &Config, selected_crates: &[String]) -> Vec
 /// Apply a workspace's configuration overlay onto the top-level config.
 ///
 /// - `crates` is always replaced; `workspaces` is always cleared.
-/// - `changelog`, `signs`, `before`, and `after` replace when present.
+/// - `changelog`, `signs`, `binary_signs`, `before`, and `after` replace when
+///   present; a replaced sign slice also drops its `defaults:` provenance
+///   record.
 /// - `env` is merged additively (workspace values override same-key top-level values).
 pub fn apply_workspace_overlay(config: &mut Config, ws: &WorkspaceConfig) {
     config.crates = ws.crates.clone();
@@ -67,11 +69,16 @@ pub fn apply_workspace_overlay(config: &mut Config, ws: &WorkspaceConfig) {
     if ws.changelog.is_some() {
         config.changelog = ws.changelog.clone();
     }
+    // A replaced slice is the workspace's own, so the `defaults:` fold's
+    // record no longer describes it: a diagnostic reading the record would
+    // otherwise name `defaults.sign` for a block the workspace wrote.
     if !ws.signs.is_empty() {
         config.signs = ws.signs.clone();
+        config.filled_from_defaults.remove("signs");
     }
     if !ws.binary_signs.is_empty() {
         config.binary_signs = ws.binary_signs.clone();
+        config.filled_from_defaults.remove("binary_signs");
     }
     if ws.before.is_some() {
         config.before = ws.before.clone();
