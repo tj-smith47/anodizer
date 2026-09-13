@@ -62,6 +62,7 @@ Not applicable as a separate config — nightly publishes use the same release c
 - Distinct from `--snapshot` — nightlies are published, snapshots are not.
 - Without `tag_name` every run cuts its own tag, so `keep_single_release: true` is what stops the pile accumulating.
 - With `tag_name` the pinned tag is moved every run and the assets the previous run uploaded are replaced. Pinning the tag turns on that replacement by itself; `release.replace_existing_artifacts: true` is not needed for it.
+- A nightly never opens a GitHub Discussion: `release.discussion_category_name` is withheld on nightly runs, because retention deletes the release and its Discussion a night later while the number it took from the repository's issue/PR sequence is never reissued.
 - A nightly cuts even when nothing changed since the last release; `skip_if_no_changes: true` turns that into a no-op.
 - `skip_if_no_changes` needs a changelog signal to act on: with `--skip=changelog` or `changelog.use: github-native` there is no entry count, so the nightly cuts as usual. A repo with no prior tag is never skipped either — its whole history is unreleased.
 - With a multitrack workspace, `tag_name` is prefixed with each crate's own family (`operator-v` + `edge` -> `operator-vedge`) so one literal tag cannot carry three tracks.

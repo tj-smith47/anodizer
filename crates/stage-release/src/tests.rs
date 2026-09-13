@@ -6624,3 +6624,69 @@ fn non_nightly_runs_still_read_the_release_block() {
         "unset release.make_latest stays unset"
     );
 }
+
+#[test]
+fn nightly_never_announces_a_discussion_while_a_stable_release_does() {
+    // A nightly release is deleted by retention, and GitHub deletes its
+    // Discussion with it — but the number the Discussion took out of the
+    // repository's issue/PR sequence is never reissued.
+    let release_cfg = ReleaseConfig {
+        discussion_category_name: Some("Announcements".to_string()),
+        ..Default::default()
+    };
+    let nightly = nightly_flags(
+        Some(anodizer_core::config::NightlyConfig::default()),
+        release_cfg.clone(),
+        true,
+    );
+    assert_eq!(
+        nightly.discussion_category_name, None,
+        "a nightly release must never open a GitHub Discussion"
+    );
+
+    let stable = nightly_flags(None, release_cfg, false);
+    assert_eq!(
+        stable.discussion_category_name.as_deref(),
+        Some("Announcements"),
+        "a stable release must keep release.discussion_category_name"
+    );
+}
+
+#[test]
+fn a_nightly_release_body_carries_no_discussion_category_name() {
+    // The create POST and the publish PATCH are the two bodies that reach
+    // GitHub; both read the resolved flag, so neither may carry the key.
+    let nightly = nightly_flags(
+        Some(anodizer_core::config::NightlyConfig::default()),
+        ReleaseConfig {
+            discussion_category_name: Some("Announcements".to_string()),
+            ..Default::default()
+        },
+        true,
+    );
+    let create = build_release_json(&crate::release_body::ReleaseJsonSpec {
+        tag: "nightly",
+        name: "anodizer nightly",
+        body: "notes",
+        draft: false,
+        prerelease_flag: nightly.prerelease,
+        make_latest: &nightly.make_latest,
+        target_commitish: &nightly.target_commitish,
+        discussion_category: &nightly.discussion_category_name,
+    });
+    assert!(
+        create.get("discussion_category_name").is_none(),
+        "nightly create body must omit discussion_category_name, got {create}"
+    );
+
+    let publish = build_publish_patch_body(
+        "anodizer nightly",
+        nightly.prerelease,
+        &nightly.make_latest,
+        &nightly.discussion_category_name,
+    );
+    assert!(
+        publish.get("discussion_category_name").is_none(),
+        "nightly publish body must omit discussion_category_name, got {publish}"
+    );
+}

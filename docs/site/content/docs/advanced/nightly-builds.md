@@ -27,6 +27,10 @@ anodizer release --nightly
   the same commit resolves to the same version and converges rather than
   moving a shared tag.
 - All normal pipeline stages run (build, archive, checksum, release, publish)
+- `release.discussion_category_name` is withheld on a nightly run, so a
+  nightly never opens a GitHub Discussion — the Discussion would take a number
+  out of the repository's shared issue/PR sequence and retention deletes the
+  release (and its Discussion) a night later, burning that number for good.
 - Distinct from `--snapshot` — nightlies publish, snapshots don't
 - `--nightly` does **not** skip the environment preflight. It runs as the
   first step unless the mode implies otherwise (`--snapshot`, `--dry-run`,
