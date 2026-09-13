@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-09-13
+
+### Features
+
+* 2b8d6e48486b probe PyPI landing and share one propagation window across the whole sweep ([@tj-smith47](https://github.com/tj-smith47))
+* e7961e390400 probe every pushed docker image tag for its landing ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* 4def8ddba4a0 resolve every target's archive formats through one resolver ([@tj-smith47](https://github.com/tj-smith47))
+* 40c0f923a588 warn that asset_name_template is ignored outside binary_signs ([@tj-smith47](https://github.com/tj-smith47))
+* dfcb025ae2d2 check every sign slice for duplicate outputs and mis-padded placeholders, and stop warning when a placeholder renders a path ([@tj-smith47](https://github.com/tj-smith47))
+* 906b8401b761 offer the digest spelling on a docker sign stdin ([@tj-smith47](https://github.com/tj-smith47))
+* 665978486177 rewind the defaults provenance record between workspaces ([@tj-smith47](https://github.com/tj-smith47))
+* d808c642de68 stop check config warning about two sign entries that select different artifacts ([@tj-smith47](https://github.com/tj-smith47))
+* 3d3605660126 warn on a duplicate sign output that an empty if: or a ./ hides ([@tj-smith47](https://github.com/tj-smith47))
+* 4132c2a75e71 warn on a duplicate sign output whose template renders outside dist ([@tj-smith47](https://github.com/tj-smith47))
+* 2a0b355cdc21 warn on docker sign templates the docker path never expands ([@tj-smith47](https://github.com/tj-smith47))
+* 217da5d0efa8 warn on every placeholder spelling a sign template can fail on ([@tj-smith47](https://github.com/tj-smith47))
+* 857b944e7df9 warn on the docker sign literals check config missed ([@tj-smith47](https://github.com/tj-smith47))
+* 61f01d8b0500 warn on two binary_signs entries writing one file only when both really write it ([@tj-smith47](https://github.com/tj-smith47))
+* 6ff23434e7ec warn when an ungated binary_signs entry meets a gated one ([@tj-smith47](https://github.com/tj-smith47))
+* 9c9cb0b95b82 warn when two binary_signs entries sign one file ([@tj-smith47](https://github.com/tj-smith47))
+* e95c65fc1125 treat a blank `if:` as the no-op gate an empty one already is ([@tj-smith47](https://github.com/tj-smith47))
+* 9dfd681d0ebe measure the podman digestfile and name 2.0 as the floor ([@tj-smith47](https://github.com/tj-smith47))
+* 4b4590a6c018 record every image tag whose registry push succeeded ([@tj-smith47](https://github.com/tj-smith47))
+* 696f5d5523fe record the pushed manifest digest from buildx metadata ([@tj-smith47](https://github.com/tj-smith47))
+* 62df8f09aa04 record the pushed manifest digest under podman and always report the created images ([@tj-smith47](https://github.com/tj-smith47))
+* daf88b7576bc report the first recorded podman digest and keep the buildx metadata as fixtures ([@tj-smith47](https://github.com/tj-smith47))
+* ffbd717165a6 strip every npm_config credential variable, and report each landing result line in singular and plural ([@tj-smith47](https://github.com/tj-smith47))
+* 440c24b10085 strip the registry-scoped username and password variables ([@tj-smith47](https://github.com/tj-smith47))
+* d8db10592d29 grade an unusable npm token by what else can authenticate ([@tj-smith47](https://github.com/tj-smith47))
+* d37829b29dd7 keep the parent `if:` gate when a cask or schema entry sets an empty one ([@tj-smith47](https://github.com/tj-smith47))
+* b658d902f5db let an OIDC npm publish survive a dead NPM_TOKEN ([@tj-smith47](https://github.com/tj-smith47))
+* cd60d7c0e154 never open a GitHub Discussion for a nightly release ([@tj-smith47](https://github.com/tj-smith47))
+* f555ef13f3fb report the withheld nightly discussion category at default verbosity ([@tj-smith47](https://github.com/tj-smith47))
+* 81dfb3cb6934 claim the certificate name and word the remedy per derivation ([@tj-smith47](https://github.com/tj-smith47))
+* 3dd3396d6242 compare two signature paths with '..' folded away ([@tj-smith47](https://github.com/tj-smith47))
+* 0c5e2fc9a522 derive binary signature asset names from config, one rule per target ([@tj-smith47](https://github.com/tj-smith47))
+* 8b78cf2b0790 expand ${artifact} before joining dist, so the stage and the gate name one file ([@tj-smith47](https://github.com/tj-smith47))
+* 6ea4255080e6 fail the run when two binaries resolve to one signature asset name ([@tj-smith47](https://github.com/tj-smith47))
+* d00fffe37d0f keep a Windows verbatim path whole wherever a sign output is compared ([@tj-smith47](https://github.com/tj-smith47))
+* e9f0daa7c10b key a signature asset name on the file it signs ([@tj-smith47](https://github.com/tj-smith47))
+* a78d28980e10 key the asset-name collision claim on the binary's identity ([@tj-smith47](https://github.com/tj-smith47))
+* 7fc444ceeab1 name a binary signature per micro-architecture level and from config alone ([@tj-smith47](https://github.com/tj-smith47))
+* 9e8b8ffbf6d3 name binary signatures after the crate's primary archive entry ([@tj-smith47](https://github.com/tj-smith47))
+* 910a3181b2f8 name each binary's signature per crate, target and binary ([@tj-smith47](https://github.com/tj-smith47))
+* 1885560ac551 refuse one asset name over a binary's two outputs ([@tj-smith47](https://github.com/tj-smith47))
+* 25275512a8a3 write a signature that hops out of dist to the folded path ([@tj-smith47](https://github.com/tj-smith47))
+* ee3e25069a32 answer the registry's own challenge and digest ([@tj-smith47](https://github.com/tj-smith47))
+* 947381f33019 bound every landing probe by the sweep's own window ([@tj-smith47](https://github.com/tj-smith47))
+* c3edecbce857 name every landing host once and in one clause ([@tj-smith47](https://github.com/tj-smith47))
+* ffe07ebc46d1 retry landing probes while a registry propagates a publish ([@tj-smith47](https://github.com/tj-smith47))
+* 5a8d2610313b say "among the selected publishers" on the skip lines ([@tj-smith47](https://github.com/tj-smith47))
+* 2e1c3148de21 name the selected publishers in the skip and help lines ([@tj-smith47](https://github.com/tj-smith47))
+* 0273a2cf01da reword the rollback and publish-only messages an operator reads ([@tj-smith47](https://github.com/tj-smith47))
+* eb4361d88764 move the asset-name cluster to its own module ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.26.0] - 2026-09-12
 
 ### Features
@@ -1071,7 +1130,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/tj-smith47/anodizer/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/tj-smith47/anodizer/compare/v0.25.2...v0.26.0
 [0.25.2]: https://github.com/tj-smith47/anodizer/compare/v0.25.1...v0.25.2
 [0.25.1]: https://github.com/tj-smith47/anodizer/compare/v0.25.0...v0.25.1
