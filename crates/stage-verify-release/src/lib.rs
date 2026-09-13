@@ -319,22 +319,45 @@ impl Stage for VerifyReleaseStage {
         if cfg.landing_checks_enabled() {
             let policy = ctx.retry_policy();
             // The run's own retry budget, which caps the sweep's propagation
-            // window (`starting_now` below) and bounds each individual probe's
-            // transport retries.
+            // window and bounds each individual probe's transport retries.
             let deadline = ctx.retry_deadline();
+            // A dry run must not spend minutes waiting on propagation it never
+            // caused.
+            let propagation = if ctx.options.dry_run {
+                landing::PropagationRetry::IMMEDIATE
+            } else {
+                landing::PropagationRetry::DEFAULT.starting_now(deadline)
+            };
+            // One probe's own transport retries end where the whole sweep
+            // does: a probe that kept retrying past the sweep's window would
+            // spend the budget the remaining targets share.
+            let probe_deadline = propagation.sweep_deadline.or(deadline);
             let cargo_probe = |name: &str, version: &str| {
                 anodizer_stage_publish::cargo::published_on_crates_io(
-                    name, version, &policy, deadline, &log,
+                    name,
+                    version,
+                    &policy,
+                    probe_deadline,
+                    &log,
                 )
             };
             let npm_probe = |registry: &str, package: &str, version: &str| {
                 anodizer_stage_publish::npm::version_visible_on_registry(
-                    registry, package, version, &policy, deadline, &log,
+                    registry,
+                    package,
+                    version,
+                    &policy,
+                    probe_deadline,
+                    &log,
                 )
             };
             let pypi_probe = |repository: &str, filename: &str| {
                 anodizer_stage_publish::pypi::uploaded_file_live_on_index(
-                    repository, filename, &policy, deadline, &log,
+                    repository,
+                    filename,
+                    &policy,
+                    probe_deadline,
+                    &log,
                 )
             };
             let blob_probe = |t: &anodizer_core::publish_evidence::BlobTargetSnapshot| {
@@ -342,19 +365,18 @@ impl Stage for VerifyReleaseStage {
             };
             let snap_probe = |snap: &str, version: &str, channel: Option<&str>| {
                 snap_store::snap_version_in_channel_map(
-                    snap, version, channel, &policy, deadline, &log,
+                    snap,
+                    version,
+                    channel,
+                    &policy,
+                    probe_deadline,
+                    &log,
                 )
             };
             let docker_probe =
-                |image: &str| registry::manifest_digest(image, &policy, deadline, &log);
+                |image: &str| registry::manifest_digest(image, &policy, probe_deadline, &log);
             let probes = LandingProbes {
-                // A dry run must not spend minutes waiting on propagation it
-                // never caused.
-                propagation: if ctx.options.dry_run {
-                    landing::PropagationRetry::IMMEDIATE
-                } else {
-                    landing::PropagationRetry::DEFAULT.starting_now(deadline)
-                },
+                propagation,
                 cargo_index: &cargo_probe,
                 npm_registry: &npm_probe,
                 pypi_index: &pypi_probe,

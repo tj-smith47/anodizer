@@ -591,10 +591,24 @@ fn check_pypi_landing(
     }
     if visible == targets.len() {
         let tail = propagation_tail(waited, targets.len());
-        let index = index_host(&targets[0].repository);
-        log.status(&format!(
-            "pypi: {visible}/{visible} uploaded file(s) listed on {index}{tail}"
-        ));
+        // A run can upload to more than one index (a TestPyPI leg beside
+        // pypi.org), so naming only the first index would credit files from
+        // another index to it.
+        let mut indexes: Vec<String> = targets.iter().map(|t| index_host(&t.repository)).collect();
+        indexes.sort();
+        indexes.dedup();
+        let index = indexes.join(", ");
+        if targets.len() == 1 {
+            log.status(&format!(
+                "pypi: {} listed on {index}{tail}",
+                targets[0].filename
+            ));
+        } else {
+            log.status(&format!(
+                "pypi: {visible}/{} uploaded file(s) listed on {index}{tail}",
+                targets.len()
+            ));
+        }
     }
     true
 }
@@ -1496,8 +1510,8 @@ mod tests {
         // index / npm registry / bucket / Snap Store equivalent), but a
         // publisher this run actually attempted and failed is a landing
         // defect on its own merits regardless of whether it's one of the
-        // four network-probed publishers — the name-list must not gate
-        // whether a failure gets surfaced.
+        // six network-probed publishers — the name-list must not gate
+        // whether a failure gets reported.
         let report = PublishReport {
             results: vec![result_with(
                 "homebrew",
@@ -2198,6 +2212,61 @@ mod tests {
         );
     }
 
+    /// One uploaded file reads as itself, not as `1/1 uploaded file(s)`, and a
+    /// run that uploaded to two indexes names both rather than crediting every
+    /// file to the first.
+    #[test]
+    fn the_pypi_result_line_is_singular_for_one_file_and_names_every_index() {
+        let one = PublishReport {
+            results: vec![result_with(
+                "pypi",
+                PublisherOutcome::Succeeded,
+                pypi_extra(&["app-1.0.0.tar.gz"]),
+            )],
+            ..Default::default()
+        };
+        let (ctx, capture) = ctx_capturing(one);
+        let log = test_logger(&ctx);
+        let pypi = |_: &str, _: &str| Ok(true);
+        let probes = LandingProbes {
+            pypi_index: &pypi,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(
+            statuses(&capture)
+                .iter()
+                .any(|m| m == "pypi: app-1.0.0.tar.gz listed on pypi.org"),
+            "{:?}",
+            statuses(&capture)
+        );
+
+        let mut two = pypi_extra(&["app-1.0.0.tar.gz", "app-1.0.0-py3-none-any.whl"]);
+        if let PublishEvidenceExtra::Pypi(extra) = &mut two {
+            extra.pypi_files[1].repository = "https://test.pypi.org/legacy/".to_string();
+        }
+        let report = PublishReport {
+            results: vec![result_with("pypi", PublisherOutcome::Succeeded, two)],
+            ..Default::default()
+        };
+        let (ctx, capture) = ctx_capturing(report);
+        let log = test_logger(&ctx);
+        let probes = LandingProbes {
+            pypi_index: &pypi,
+            ..panicking_probes()
+        };
+        let mut issues = Vec::new();
+        run_landing_checks(&ctx, &log, &probes, &mut issues);
+        assert!(
+            statuses(&capture)
+                .iter()
+                .any(|m| m == "pypi: 2/2 uploaded file(s) listed on pypi.org, test.pypi.org"),
+            "{:?}",
+            statuses(&capture)
+        );
+    }
+
     #[test]
     fn pypi_unlisted_file_is_an_issue_naming_the_filename() {
         let report = PublishReport {
@@ -2508,6 +2577,41 @@ mod tests {
         let probed = run_landing_checks(&ctx, &log, &panicking_probes(), &mut issues);
         assert_eq!(probed, 0);
         assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    /// `PropagationRetry::DEFAULT` carries no anchor, so a caller that hands
+    /// it to a sweep unanchored gives every probe an attempt-count ladder with
+    /// no shared wall-clock bound.
+    #[test]
+    fn the_default_propagation_window_is_always_anchored_before_use() {
+        use anodizer_core::test_helpers::test_sources::{
+            function_bodies, production_half, rust_sources,
+        };
+
+        let src = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        let mut users = 0usize;
+        for source in rust_sources(src) {
+            let text = std::fs::read_to_string(&source).expect("read source");
+            for body in function_bodies(production_half(&text)) {
+                // Reading one field off the constant (the no-sleep window
+                // borrows its budget) takes no window and needs no anchor.
+                let uses = body.replace("PropagationRetry::DEFAULT.budget", "");
+                if !uses.contains("PropagationRetry::DEFAULT") {
+                    continue;
+                }
+                users += 1;
+                assert!(
+                    body.contains("starting_now"),
+                    "{}: {} uses PropagationRetry::DEFAULT without anchoring it",
+                    source.display(),
+                    body.trim_start().lines().next().unwrap_or_default()
+                );
+            }
+        }
+        assert_eq!(
+            users, 1,
+            "the sweep anchors the window once, in VerifyReleaseStage::run"
+        );
     }
 
     #[test]

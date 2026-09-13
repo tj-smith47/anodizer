@@ -234,10 +234,10 @@ The live gate grades an **unusable** token — one whose `token:` template fails
 
 | `auth` | OIDC context present | Preflight result |
 |--------|----------------------|------------------|
-| `token` | any | **Blocker** — the token is the only credential. |
-| `auto` | no | **Blocker** — same reason. |
+| `token` | any | **Blocker** — the token is the only credential. The message ends in `— rotate or remove NPM_TOKEN`. |
+| `auto` | no | **Blocker** — same reason, same remediation. |
 | `auto` | yes | **Warning**: `npm token invalid or expired for '<pkg>' on <registry>; existing packages publish via OIDC (Trusted Publishing), a brand-new package would fail — rotate or remove NPM_TOKEN`. Every package that already exists still publishes. |
-| `oidc` | any | No token is resolved and none is probed, so neither a stale token nor an unrenderable `token:` template is reported. A configured token gets a verbose "ignored" note naming the package and registry. |
+| `oidc` | any | No token is resolved and none is probed, so neither a stale token nor an unrenderable `token:` template is reported. A configured token — a `token:` in the entry, or `NPM_TOKEN` in the environment — gets a verbose "ignored" note naming the package and registry; a tokenless entry gets no note. |
 
 A `whoami` that cannot reach a verdict at all (the registry is down, or answers 5xx) reports `could not verify npm token`: a Warning by default, promoted to a Blocker by `--strict` — except under `auth: auto` in an OIDC context, where it stays a Warning for the same reason the row above does.
 

@@ -632,11 +632,21 @@ pub(crate) fn publish_with_oidc_fallback(
     first
 }
 
-/// The `npm_config_*` key fragments that can re-introduce a credential or
-/// redirect npm at another config file. npm reads `npm_config_<key>` from the
-/// environment at a HIGHER precedence than the `--userconfig` file, so an
-/// ambient one silently outranks the credential this publish chose.
-const NPM_CONFIG_CREDENTIAL_FRAGMENTS: [&str; 4] = ["auth", "token", "userconfig", "globalconfig"];
+/// The `npm_config_*` key fragments that can re-introduce a credential,
+/// redirect npm at another config file, or change which registry certificate
+/// it trusts. npm reads `npm_config_<key>` from the environment at a HIGHER
+/// precedence than the `--userconfig` file, so an ambient one silently
+/// outranks the credential this publish chose.
+const NPM_CONFIG_CREDENTIAL_FRAGMENTS: [&str; 6] = [
+    "auth",
+    "token",
+    "userconfig",
+    "globalconfig",
+    // A client certificate authenticates on its own, and a CA bundle decides
+    // which registry certificate is trusted at all.
+    "cert",
+    "cafile",
+];
 
 /// Whether `name` is an `npm_config_*` variable that carries a credential or
 /// points npm at another config file. Case-insensitive in both halves: npm
@@ -663,6 +673,36 @@ where
         .collect()
 }
 
+/// `npm` carrying the flags every invocation of this publisher must have: the
+/// run's own `.npmrc` through `--userconfig`, the `--registry` it is talking
+/// to, and a child env with the ambient `npm_config_*` credential /
+/// config-path variables removed.
+///
+/// npm ranks `npm_config_*` environment variables ABOVE `--userconfig`, so an
+/// inherited one outranks the credential this run chose — on a publish it
+/// ships under another account, and on an idempotency probe it answers for
+/// another registry's view of the package, which is the answer that decides
+/// whether the publish happens at all. Flags precede the subcommand, which npm
+/// accepts wherever they appear.
+pub(crate) fn npm_command(cfg_dir: &Path, registry: &str) -> Command {
+    let mut cmd = Command::new("npm");
+    cmd.arg("--userconfig")
+        .arg(cfg_dir.join(".npmrc"))
+        .arg("--registry")
+        .arg(registry);
+    strip_ambient_npm_config(&mut cmd);
+    cmd
+}
+
+/// Drop the ambient `npm_config_*` credential / config-path variables from a
+/// child env, for an npm spawn that builds its own argv (promotion re-tags one
+/// package through an argv vector it also echoes).
+pub(crate) fn strip_ambient_npm_config(cmd: &mut Command) {
+    for name in npm_config_credential_vars(std::env::vars_os().map(|(k, _)| k)) {
+        cmd.env_remove(name);
+    }
+}
+
 /// Build the `npm publish` command for one tarball. Under [`NpmAuth::Oidc`] the
 /// resolved `ACTIONS_ID_TOKEN_REQUEST_*` pairs are threaded onto the subprocess
 /// env so the npm CLI performs the Trusted Publishing token exchange itself; a
@@ -682,20 +722,10 @@ pub(crate) fn build_npm_publish_command(
     access: Option<&str>,
     auth: &NpmAuth,
 ) -> Command {
-    let mut cmd = Command::new("npm");
-    cmd.arg("publish")
-        .arg(tarball)
-        .arg("--userconfig")
-        .arg(cfg_dir.join(".npmrc"))
-        .arg("--registry")
-        .arg(registry)
-        .arg("--tag")
-        .arg(dist_tag);
+    let mut cmd = npm_command(cfg_dir, registry);
+    cmd.arg("publish").arg(tarball).arg("--tag").arg(dist_tag);
     if let Some(a) = access {
         cmd.arg("--access").arg(a);
-    }
-    for name in npm_config_credential_vars(std::env::vars_os().map(|(k, _)| k)) {
-        cmd.env_remove(name);
     }
     if let NpmAuth::Oidc(oidc_env) = auth {
         for (name, value) in oidc_env {
@@ -815,13 +845,9 @@ pub(crate) fn run_npm_unpublish(
     registry: &str,
     log: &StageLogger,
 ) -> Result<()> {
-    let mut cmd = Command::new("npm");
+    let mut cmd = npm_command(cfg_dir, registry);
     cmd.arg("unpublish")
         .arg(format!("{}@{}", package, version))
-        .arg("--userconfig")
-        .arg(cfg_dir.join(".npmrc"))
-        .arg("--registry")
-        .arg(registry)
         .arg("--force");
     log.verbose(&format!(
         "running npm unpublish {}@{} --registry {}",
@@ -839,4 +865,65 @@ pub(crate) fn run_npm_unpublish(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod npm_command_pin {
+    use anodizer_core::test_helpers::test_sources::{
+        function_bodies, production_half, rust_sources,
+    };
+
+    /// Every npm subprocess of this crate is built by [`super::npm_command`].
+    /// The `.npmrc` this run wrote, the registry it is talking to and the
+    /// ambient `npm_config_*` credential variables npm ranks above both are
+    /// one decision; a second spawn site answered it differently and probed
+    /// one registry while publishing to another.
+    #[test]
+    fn every_npm_spawn_is_built_by_the_shared_command() {
+        let src = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/npm"));
+        let mut literal = Vec::new();
+        let mut unstripped = Vec::new();
+        let mut spawners = 0usize;
+        for source in rust_sources(src) {
+            let text = std::fs::read_to_string(&source).expect("read source");
+            for body in function_bodies(production_half(&text)) {
+                if !body.contains("Command::new(") {
+                    continue;
+                }
+                spawners += 1;
+                let name = format!(
+                    "{}: {}",
+                    source.display(),
+                    body.trim_start().lines().next().unwrap_or_default()
+                );
+                if body.contains(r#"Command::new("npm")"#) {
+                    literal.push(name.clone());
+                }
+                if !body.contains("npm_command(") && !body.contains("strip_ambient_npm_config(") {
+                    unstripped.push(name);
+                }
+            }
+        }
+        assert_eq!(
+            spawners, 3,
+            "the npm module spawns from npm_command and promotion's two argv \
+             sites; a new one must say which env it hands the child"
+        );
+        assert_eq!(
+            literal.len(),
+            1,
+            "npm_command is the only place that names the npm program: {literal:?}"
+        );
+        assert!(
+            literal[0].contains("fn npm_command"),
+            "unexpected npm spawn site: {}",
+            literal[0]
+        );
+        assert!(
+            unstripped.is_empty(),
+            "an npm spawn that keeps the ambient npm_config_* variables \
+             publishes or probes with a credential this run did not choose: \
+             {unstripped:?}"
+        );
+    }
 }

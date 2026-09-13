@@ -2730,6 +2730,7 @@ fn preflight_unrenderable_token_warns_under_auto_with_oidc() {
                 "{m}"
             );
             assert!(m.contains("existing packages publish via OIDC"), "{m}");
+            assert!(m.contains("rotate or remove NPM_TOKEN"), "{m}");
         }
         other => panic!("expected Warning, got {other:?}"),
     }
@@ -2751,7 +2752,8 @@ fn preflight_unrenderable_token_blocks_under_auth_token() {
             assert!(
                 m.contains("npm token could not be resolved for 'pkg'"),
                 "{m}"
-            )
+            );
+            assert!(m.contains("rotate or remove NPM_TOKEN"), "{m}");
         }
         other => panic!("expected Blocker, got {other:?}"),
     }
@@ -2816,6 +2818,24 @@ fn preflight_oidc_note_names_the_entry_and_registry() {
             && m.contains("ignored and not validated")),
         "the note must name the package and the registry; got: {notes:?}"
     );
+}
+
+/// A tokenless `auth: oidc` entry has no token to ignore, so the note
+/// describes config the user never wrote.
+#[test]
+fn preflight_oidc_note_is_silent_without_a_token() {
+    let (addr, _c) = spawn_oneshot_http_responder(vec![canned_http_response("404 Not Found", "")]);
+    let capture = anodizer_core::log::LogCapture::new();
+    let mut ctx = preflight_ctx(addr, NpmAuthMode::Oidc, true, None);
+    ctx.with_log_capture(capture.clone());
+    NpmPublisher::new().preflight(&ctx).expect("preflight");
+    let notes: Vec<String> = capture
+        .all_messages()
+        .into_iter()
+        .map(|(_, m)| m)
+        .filter(|m| m.contains("auth mode is `oidc`"))
+        .collect();
+    assert!(notes.is_empty(), "{notes:?}");
 }
 
 /// npm ranks `npm_config_*` environment variables ABOVE the `--userconfig`
@@ -2900,6 +2920,49 @@ fn publish_command_pins_its_userconfig_and_drops_ambient_npm_config_credentials(
             || v.is_some_and(|v| v.to_string_lossy().contains("chosen-token"))),
         "a token credential must reach npm through the .npmrc only"
     );
+}
+
+/// Every npm invocation — publish, the idempotency probe, the rollback
+/// unpublish — is built by one helper, so all three read the run's own
+/// `.npmrc`, talk to the registry the entry names, and drop the ambient
+/// `npm_config_*` variables npm ranks above `--userconfig`.
+#[test]
+fn the_shared_npm_command_pins_the_config_registry_and_strips_ambient_credentials() {
+    const AMBIENT: &str = "NPM_CONFIG_//registry.npmjs.org/:_authToken";
+    const CA: &str = "npm_config_cafile";
+    let dir = tempfile::TempDir::new().expect("tmp");
+    let _lock = anodizer_core::test_helpers::env::env_mutex()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let _ambient = EnvGuard::set(AMBIENT, "someone-elses-token");
+    let _ca = EnvGuard::set(CA, "/etc/attacker/ca.pem");
+    let cmd = super::publish::npm_command(dir.path(), "https://registry.example.com");
+    let argv: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let userconfig = dir.path().join(".npmrc").display().to_string();
+    assert!(
+        argv.windows(2)
+            .any(|w| w[0] == "--userconfig" && w[1] == userconfig),
+        "{argv:?}"
+    );
+    assert!(
+        argv.windows(2)
+            .any(|w| w[0] == "--registry" && w[1] == "https://registry.example.com"),
+        "{argv:?}"
+    );
+    let removed: Vec<String> = cmd
+        .get_envs()
+        .filter(|(_, v)| v.is_none())
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .collect();
+    for name in [AMBIENT, CA] {
+        assert!(
+            removed.iter().any(|k| k == name),
+            "{name} must be dropped from the child env: {removed:?}"
+        );
+    }
 }
 
 #[test]
@@ -4322,7 +4385,15 @@ fn partial_publish_failure_preserves_rollback_evidence() {
     anodizer_core::test_helpers::fake_tool::write_executable_script(
         &npm,
         r#"#!/bin/sh
-case "$1" in
+# The publisher pins `--userconfig` / `--registry` ahead of the subcommand,
+# which npm accepts, so find the subcommand rather than reading $1.
+sub=
+for a in "$@"; do
+  case "$a" in
+    view|publish) sub="$a"; break ;;
+  esac
+done
+case "$sub" in
   view)
     echo "npm error code E404" 1>&2
     exit 1
@@ -4420,7 +4491,15 @@ fn missing_platform_binary_publishes_nothing() {
     anodizer_core::test_helpers::fake_tool::write_executable_script(
         &npm,
         r#"#!/bin/sh
-case "$1" in
+# The publisher pins `--userconfig` / `--registry` ahead of the subcommand,
+# which npm accepts, so find the subcommand rather than reading $1.
+sub=
+for a in "$@"; do
+  case "$a" in
+    view|publish) sub="$a"; break ;;
+  esac
+done
+case "$sub" in
   view)
     echo "npm error code E404" 1>&2
     exit 1

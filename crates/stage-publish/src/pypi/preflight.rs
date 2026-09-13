@@ -251,7 +251,7 @@ pub(crate) fn body_lists_version(body: &str, normalized_name: &str, version: &st
 /// first `-` separates name from version for a wheel
 /// (`foo_bar-1.2.3-py3-none-any.whl`) and the last `-` before the extension
 /// does for an sdist (`foo_bar-1.2.3.tar.gz`).
-fn distribution_name_version(token: &str) -> Option<(String, String)> {
+pub(crate) fn distribution_name_version(token: &str) -> Option<(String, String)> {
     // A simple-index href is a path with an optional `#sha256=…` fragment
     // (`/simple/foo/foo-1.2.3-…whl#sha256=…`); reduce it to the bare filename
     // before parsing the escaped name has no `/`.

@@ -2,7 +2,6 @@
 //! the per-package auth decision, and package/version/dist-tag existence probes.
 
 use std::path::Path;
-use std::process::Command;
 
 use anodizer_core::config::{NpmAuthMode, NpmConfig};
 use anodizer_core::context::Context;
@@ -32,14 +31,10 @@ pub(crate) fn version_already_published(
     registry: &str,
     log: &StageLogger,
 ) -> Result<bool> {
-    let mut cmd = Command::new("npm");
+    let mut cmd = super::publish::npm_command(cfg_dir, registry);
     cmd.arg("view")
         .arg(format!("{}@{}", name, version))
         .arg("version")
-        .arg("--registry")
-        .arg(registry)
-        .arg("--userconfig")
-        .arg(cfg_dir.join(".npmrc"))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let out = match cmd.output() {
