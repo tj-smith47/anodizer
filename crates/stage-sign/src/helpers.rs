@@ -354,11 +354,6 @@ pub(crate) fn resolve_signature_path(
     })
 }
 
-/// Pipe `stdin_content` or the contents of `stdin_file` to a child process's
-/// stdin. Returns the appropriate `Stdio` and an optional content buffer.
-///
-/// Shared by both `SignConfig` and `DockerSignConfig` — both expose the same
-/// `stdin` / `stdin_file` fields.
 /// `path` made absolute, with `.` and `..` folded away lexically.
 ///
 /// `std::path::absolute` keeps `..` on POSIX and collapses it on Windows,
@@ -367,28 +362,36 @@ pub(crate) fn resolve_signature_path(
 /// one config would pass the Windows determinism shards and fail the Linux and
 /// macOS ones. Folding here gives every platform one answer.
 ///
+/// A Windows verbatim path (`\\?\…`) is returned exactly as `absolute` built
+/// it. Windows performs no normalization on a verbatim path, so there `..` is
+/// an ordinary directory name: folding it would report `\\?\C:\a\..\b` and
+/// `\\?\C:\b` as one file when the filesystem holds two.
+///
 /// Lexical like `absolute` itself: no symlink is resolved and the path need
 /// not exist, which every path asked about here does not yet. `None` is the
 /// error `absolute` reports for an empty or syntactically invalid path.
 pub(crate) fn lexical_absolute(path: &std::path::Path) -> Option<std::path::PathBuf> {
     let absolute = std::path::absolute(path).ok()?;
-    let mut folded = std::path::PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                folded.pop();
-            }
-            other => folded.push(other),
-        }
+    let verbatim = matches!(
+        absolute.components().next(),
+        Some(std::path::Component::Prefix(prefix)) if prefix.kind().is_verbatim()
+    );
+    if verbatim {
+        return Some(absolute);
     }
-    Some(folded)
+    Some(anodizer_core::util::fold_dot_components(&absolute))
 }
 
 /// The on-disk location a rendered `signature:` / `certificate:` template
 /// names. A rendering already under `dist` is kept; any other one is placed
 /// under `dist`, the same rule GoReleaser's `relativeToDist` applies. The two
 /// are compared as absolute paths so `./dist/x` and `dist/x` agree.
+///
+/// The rendering that gets placed under `dist` has its `.` and `..` folded
+/// away first, so `dist/../elsewhere/x.sig` resolves to
+/// `dist/elsewhere/x.sig` rather than `dist/dist/../elsewhere/x.sig` — a
+/// spelling the kernel can only open once a `dist/dist` directory nothing
+/// creates exists.
 ///
 /// The signer receives this path AND the stage registers it, so the two can
 /// never disagree: a template that rendered outside `dist` used to be handed
@@ -403,7 +406,7 @@ pub(crate) fn dist_joined(dist: &std::path::Path, rendered: &str) -> std::path::
     if under_dist {
         resolved
     } else {
-        dist.join(resolved)
+        dist.join(anodizer_core::util::fold_dot_components(&resolved))
     }
 }
 
@@ -476,6 +479,11 @@ pub(crate) fn resolve_output_paths(
     ))
 }
 
+/// Pipe `stdin_content` or the contents of `stdin_file` to a child process's
+/// stdin. Returns the appropriate `Stdio` and an optional content buffer.
+///
+/// Shared by both `SignConfig` and `DockerSignConfig` — both expose the same
+/// `stdin` / `stdin_file` fields.
 pub(crate) fn prepare_stdin_from(
     stdin: Option<&str>,
     stdin_file: Option<&str>,
@@ -612,7 +620,7 @@ pub(crate) fn resolve_sign_args(
 
 #[cfg(test)]
 mod dist_joined_tests {
-    use super::dist_joined;
+    use super::{dist_joined, lexical_absolute};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -639,6 +647,11 @@ mod dist_joined_tests {
     /// `dist` is placed under it and one that hops back in is kept — the same
     /// verdict on every platform. `std::path::absolute` alone keeps `..` on
     /// POSIX and drops it on Windows.
+    ///
+    /// The rendering that gets placed under `dist` is folded as well: the
+    /// signer is handed this path and the stage registers it, and the kernel
+    /// resolves a `..` against a real directory, so a doubled
+    /// `dist/dist/../elsewhere` would need a `dist/dist` nothing creates.
     #[test]
     fn a_parent_hop_is_folded_before_the_dist_comparison() {
         assert_eq!(
@@ -647,7 +660,47 @@ mod dist_joined_tests {
         );
         assert_eq!(
             dist_joined(Path::new("dist"), "dist/../elsewhere/app.tar.gz.sig"),
-            PathBuf::from("dist/dist/../elsewhere/app.tar.gz.sig")
+            PathBuf::from("dist/elsewhere/app.tar.gz.sig")
+        );
+    }
+
+    /// A `..` with nothing to climb into survives the fold: it names a
+    /// directory only the filesystem can resolve, and dropping it would
+    /// rewrite `../x` into `x`.
+    #[test]
+    fn a_leading_parent_hop_survives_the_join() {
+        assert_eq!(
+            dist_joined(Path::new("dist"), "../outside/app.tar.gz.sig"),
+            PathBuf::from("dist/../outside/app.tar.gz.sig")
+        );
+    }
+
+    /// A Windows verbatim path is handed back exactly as `absolute` built it.
+    /// Windows normalizes nothing behind `\\?\`, so a `..` there is a
+    /// directory named `..` and folding it would call two files one.
+    #[test]
+    #[cfg(windows)]
+    fn a_verbatim_path_keeps_its_parent_components() {
+        assert_eq!(
+            lexical_absolute(Path::new(r"\\?\C:\a\..\b")),
+            Some(PathBuf::from(r"\\?\C:\a\..\b"))
+        );
+        assert_ne!(
+            lexical_absolute(Path::new(r"\\?\C:\a\..\b")),
+            lexical_absolute(Path::new(r"\\?\C:\b"))
+        );
+    }
+
+    /// The same spelling on a platform that does not parse a verbatim prefix
+    /// keeps its `..` too — there it is one ordinary component name, so no
+    /// platform silently rewrites it.
+    #[test]
+    fn a_verbatim_spelling_keeps_its_parent_components_everywhere() {
+        let folded = lexical_absolute(Path::new(r"\\?\C:\a\..\b")).expect("absolute");
+        assert!(
+            folded.to_string_lossy().contains(".."),
+            "verbatim prefix must not be folded: {}",
+            folded.display()
         );
     }
 

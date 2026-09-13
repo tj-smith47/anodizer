@@ -308,6 +308,36 @@ pub fn collect_if_replace(
     }
 }
 
+/// `path` with its `.` and `..` components folded away lexically.
+///
+/// The filesystem is not touched, so no symlink is resolved and the path need
+/// not exist. Two spellings that fold to one value name one file, which is
+/// what lets a sign output rendered `dist/sigs/app.sig` and one rendered
+/// `./dist/sigs/app.sig` be recognised as the same file.
+///
+/// A `..` that has nothing to climb into is kept: it names a directory only
+/// the filesystem can resolve, and dropping it would turn `../x` into `x`,
+/// two different files. Climbing past a root or a drive prefix is not
+/// possible, so a `..` there is dropped.
+pub fn fold_dot_components(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut folded = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match folded.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    folded.pop();
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                _ => folded.push(".."),
+            },
+            other => folded.push(other),
+        }
+    }
+    folded
+}
+
 /// Convert any Windows-style backslash separators in `s` to forward
 /// slashes. Cross-platform path string normalization for cases where the
 /// downstream consumer (artifact-manifest JSON, MSYS subprocess env var)
