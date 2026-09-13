@@ -441,18 +441,19 @@ pub(crate) fn process_sign_configs(
                 )?),
                 _ => None,
             };
-            let (sig_name, registered_target) = match (artifact_target, &naming) {
-                (Some(target), Some(naming)) => (
-                    binary_sign_asset_name(&sig_name, artifact_name, &naming.base, target),
-                    Some(target.clone()),
-                ),
-                _ => (sig_name, None),
+            let (sig_name, sig_source, registered_target) = match (artifact_target, &naming) {
+                (Some(target), Some(naming)) => {
+                    let (name, source) =
+                        binary_sign_asset_name(&sig_name, artifact_name, &naming.base, target);
+                    (name, Some(source), Some(target.clone()))
+                }
+                _ => (sig_name, None, None),
             };
             // The claim is on the uploaded NAME, not on the base: two configs
             // whose `signature:` templates append different suffixes to one
             // base name two distinct assets and must both be allowed.
-            if let Some(naming) = &naming {
-                claimed_names.claim(&sig_name, &naming.template, signed_binary)?;
+            if let (Some(naming), Some(source)) = (&naming, sig_source) {
+                claimed_names.claim(&sig_name, "signature", naming, source, signed_binary)?;
             }
             let mut job_artifacts = vec![anodizer_core::artifact::Artifact {
                 kind: ArtifactKind::Signature,
@@ -472,7 +473,14 @@ pub(crate) fn process_sign_configs(
                     .unwrap_or_else(|| cert_path.display().to_string());
                 let cert_name = match (registered_target.as_deref(), &naming) {
                     (Some(target), Some(naming)) => {
-                        binary_sign_asset_name(&cert_name, artifact_name, &naming.base, target)
+                        let (name, source) =
+                            binary_sign_asset_name(&cert_name, artifact_name, &naming.base, target);
+                        // The certificate is a release asset of its own, built
+                        // from the same base: two configs whose `signature:`
+                        // suffixes differ can still render one certificate
+                        // name, which the release would keep only once.
+                        claimed_names.claim(&name, "certificate", naming, source, signed_binary)?;
+                        name
                     }
                     _ => cert_name,
                 };

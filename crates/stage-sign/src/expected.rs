@@ -292,17 +292,24 @@ fn expected_binary_sign_names(
         .and_then(|n| n.to_str())
         .unwrap_or("");
     let naming = crate::helpers::binary_sign_asset_naming(ctx, cfg, artifact, target)?;
-    let name = |path: &std::path::Path| {
-        crate::helpers::binary_sign_asset_name(
+    let mut claim = |path: &std::path::Path, output: &str| -> Result<String> {
+        let (name, source) = crate::helpers::binary_sign_asset_name(
             &basename_of(path),
             binary_basename,
             &naming.base,
             target,
-        )
+        );
+        claimed_names.claim(&name, output, &naming, source, artifact)?;
+        Ok(name)
     };
-    let sig_name = name(&sig_path);
-    claimed_names.claim(&sig_name, &naming.template, artifact)?;
-    Ok((sig_name, cert_path.as_deref().map(name)))
+    let sig_name = claim(&sig_path, "signature")?;
+    // Claimed after the signature, so the stage and the gate refuse the same
+    // pair of configs on the same output.
+    let cert_name = match cert_path.as_deref() {
+        Some(path) => Some(claim(path, "certificate")?),
+        None => None,
+    };
+    Ok((sig_name, cert_name))
 }
 
 /// The asset basename of a resolved output path (the name the release
