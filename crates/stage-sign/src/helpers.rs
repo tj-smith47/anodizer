@@ -730,46 +730,85 @@ fn reject_empty_base(base: String) -> Result<String> {
     Ok(base)
 }
 
-/// Which raw binary claimed each signature asset base in this run.
+/// Which raw binary claimed each signature asset name in this run.
 ///
-/// One release asset carries one file, so two binaries resolving to one base
-/// upload two signatures under one name and the release keeps whichever
+/// One release asset carries one file, so two binaries resolving to one asset
+/// name upload two signatures under one name and the release keeps whichever
 /// arrived last. The default templates separate every binary by target and
 /// micro-architecture level, but a hand-written `archives[].name_template`
 /// need not — `{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}` renders
 /// one name for a baseline and a `x86-64-v3` build of the same binary.
 #[derive(Default)]
-pub(crate) struct BinarySignAssetBases {
-    claimed: HashMap<String, String>,
+pub(crate) struct BinarySignAssetNames {
+    claimed: HashMap<String, BinaryIdentity>,
 }
 
-impl BinarySignAssetBases {
-    /// Record `naming` as claimed by one binary, or refuse the run when a
-    /// different binary already claimed the same base.
+/// How the artifact registry tells one raw binary from another.
+///
+/// Not the file path: two `builds:` entries differing only in
+/// `amd64_variant:` compile to ONE path, and `no_unique_dist_dir: true`
+/// flattens every binary of a crate onto `dist/<file name>`. The registry
+/// separates them by the build entry they came from, the target they were
+/// compiled for and the executable they carry.
+#[derive(Clone, PartialEq, Eq)]
+struct BinaryIdentity {
+    crate_name: String,
+    build_id: String,
+    target: String,
+    binary: String,
+    amd64_variant: String,
+    path: String,
+}
+
+impl BinaryIdentity {
+    fn of(binary: &anodizer_core::artifact::Artifact) -> Self {
+        let meta = |key: &str| binary.metadata.get(key).cloned();
+        Self {
+            crate_name: binary.crate_name.clone(),
+            build_id: meta("id").unwrap_or_else(|| binary.name.clone()),
+            target: binary.target.clone().unwrap_or_default(),
+            binary: meta("binary").unwrap_or_else(|| binary.name.clone()),
+            // An absent level IS the baseline, so a v1 build and a v3 build
+            // of one binary are two identities rather than one.
+            amd64_variant: meta("amd64_variant").unwrap_or_else(|| "v1".to_string()),
+            path: binary.path.display().to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for BinaryIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} (crate '{}', build id '{}', target {}, amd64 {})",
+            self.path, self.crate_name, self.build_id, self.target, self.amd64_variant
+        )
+    }
+}
+
+impl BinarySignAssetNames {
+    /// Record `asset_name` as claimed by one binary, or refuse the run when a
+    /// different binary already claimed the same name.
     pub(crate) fn claim(
         &mut self,
-        naming: &BinarySignNaming,
+        asset_name: &str,
+        template: &str,
         binary: &anodizer_core::artifact::Artifact,
     ) -> Result<()> {
-        // Two builds of one binary at different micro-architecture levels are
-        // two artifacts under one (crate, target, binary) triple, so identity
-        // is the file each signature covers.
-        let claimant = binary.path.display().to_string();
-        match self.claimed.get(&naming.base) {
+        let claimant = BinaryIdentity::of(binary);
+        match self.claimed.get(asset_name) {
             Some(first) if *first != claimant => anyhow::bail!(
                 "sign: the binaries '{first}' and '{claimant}' both resolve to \
-                 the signature asset name '{base}', rendered from the template \
-                 '{template}'. One release asset cannot carry two signatures — \
-                 give the covering `archives[].name_template` a variable that \
-                 separates them ({{{{ Target }}}} and {{{{ Amd64 }}}} are the \
-                 dimensions {{{{ Os }}}}-{{{{ Arch }}}} drops), or set \
-                 `binary_signs[].asset_name_template`.",
-                base = naming.base,
-                template = naming.template
+                 the signature asset name '{asset_name}', rendered from the \
+                 template '{template}'. One release asset cannot carry two \
+                 signatures — give the covering `archives[].name_template` a \
+                 variable that separates them ({{{{ Target }}}} and \
+                 {{{{ Amd64 }}}} are the dimensions {{{{ Os }}}}-{{{{ Arch }}}} \
+                 drops), or set `binary_signs[].asset_name_template`."
             ),
             Some(_) => Ok(()),
             None => {
-                self.claimed.insert(naming.base.clone(), claimant);
+                self.claimed.insert(asset_name.to_string(), claimant);
                 Ok(())
             }
         }
@@ -777,8 +816,9 @@ impl BinarySignAssetBases {
 }
 
 /// The release-asset name a `binary_signs:` output registers under: the
-/// config-derived [`binary_sign_asset_naming`] base plus the suffix the `signature:`
-/// / `certificate:` template appended to the binary's own file name.
+/// config-derived [`binary_sign_asset_naming`] base plus the suffix the
+/// `signature:` / `certificate:` template appended to the binary's own file
+/// name.
 ///
 /// The raw binary is called the same thing under every target's directory
 /// (`anodizer.sig` eight times over), so the base carries the target.

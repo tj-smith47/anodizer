@@ -1553,6 +1553,51 @@ fn an_entry_repeating_the_defaults_value_is_still_named_as_the_entry() {
     );
 }
 
+/// `check config --workspace <name>` runs the checks on the OVERLAID config.
+/// A workspace that declares its own `signs:` replaces the slice the
+/// `defaults:` fold filled, so the warning must name the workspace entry — the
+/// block the operator actually wrote — not `defaults.sign`.
+#[test]
+fn a_workspace_signs_entry_is_named_as_the_entry_after_the_overlay() {
+    let workspace = WorkspaceConfig {
+        name: "tools".to_string(),
+        signs: vec![anodizer_core::config::SignConfig {
+            cmd: Some("cosign".to_string()),
+            asset_name_template: Some("{{ Binary }}-{{ Version }}".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut config = Config {
+        project_name: "test".to_string(),
+        defaults: Some(anodizer_core::config::Defaults {
+            sign: Some(anodizer_core::config::SignConfig {
+                cmd: Some("cosign".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        workspaces: Some(vec![workspace.clone()]),
+        ..Default::default()
+    };
+    anodizer_core::defaults_merge::apply_defaults(&mut config);
+    assert!(
+        config.filled_from_defaults.contains("signs"),
+        "the fold must have filled the top-level slice for this to be a test"
+    );
+
+    let mut resolved = config.clone();
+    helpers::apply_workspace_overlay(&mut resolved, &workspace);
+    let mut warnings: Vec<String> = vec![];
+    check_sign_asset_name_templates(&resolved, &mut warnings);
+    assert_eq!(
+        warnings,
+        vec![
+            "signs[0].asset_name_template is set but only binary_signs honors it (it will be ignored)".to_string(),
+        ]
+    );
+}
+
 /// A config that sets the field nowhere warns nowhere.
 #[test]
 fn no_asset_name_template_warns_nothing() {

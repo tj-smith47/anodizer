@@ -423,7 +423,9 @@ pub struct Config {
     /// `binary_signs`, `docker_signs`). NOT a user-facing YAML field — once
     /// the fold has run a filled slice is indistinguishable from one the
     /// operator wrote, so a diagnostic that must name the block they DID
-    /// write reads this instead of guessing from a matching value.
+    /// write reads this instead of guessing from a matching value. All three
+    /// slices are recorded whichever ones a diagnostic reads, so the record
+    /// does not have to be extended alongside a new check.
     #[serde(skip)]
     #[schemars(skip)]
     pub filled_from_defaults: BTreeSet<&'static str>,

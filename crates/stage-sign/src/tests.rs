@@ -7678,8 +7678,9 @@ fn an_empty_rendered_base_fails_the_sign_stage() {
 
 /// A hand-written `archives[].name_template` need not separate the amd64
 /// micro-architecture levels the default templates do, and then a baseline and
-/// a `x86-64-v3` build of one binary resolve to one signature asset. The run
-/// stops at registration, before either signature is uploaded.
+/// a `x86-64-v3` build of one binary — the two-entry `builds:` shape the Rust
+/// builds page documents — resolve to one signature asset. The run stops at
+/// registration, before either signature is uploaded.
 #[test]
 fn two_binaries_resolving_to_one_asset_name_fail_the_sign_stage() {
     use anodizer_core::artifact::Artifact;
@@ -7714,15 +7715,19 @@ fn two_binaries_resolving_to_one_asset_name_fail_the_sign_stage() {
         .build();
     ctx.template_vars_mut().set("ProjectName", "app");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    for (dir, variant) in [("release", None), ("v3/release", Some("v3"))] {
-        let mut metadata = std::collections::HashMap::new();
+    // Two `builds:` entries differing only in `amd64_variant:` compile to ONE
+    // path — neither declares its own `CARGO_TARGET_DIR` — so the artifacts
+    // are separated by the level they were built at, not by their file.
+    for variant in [None, Some("v3")] {
+        let mut metadata =
+            std::collections::HashMap::from([("binary".to_string(), "app".to_string())]);
         if let Some(variant) = variant {
             metadata.insert("amd64_variant".to_string(), variant.to_string());
         }
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
             name: "app".to_string(),
-            path: std::path::PathBuf::from(format!("target/{TARGET}/{dir}/app")),
+            path: std::path::PathBuf::from(format!("target/{TARGET}/release/app")),
             target: Some(TARGET.to_string()),
             crate_name: "app".to_string(),
             metadata,
@@ -7743,8 +7748,9 @@ fn two_binaries_resolving_to_one_asset_name_fail_the_sign_stage() {
     let msg = format!("{err:#}");
     for needle in [
         "target/x86_64-unknown-linux-gnu/release/app",
-        "target/x86_64-unknown-linux-gnu/v3/release/app",
-        "app-1.0.0-linux-amd64",
+        "amd64 v1",
+        "amd64 v3",
+        "app-1.0.0-linux-amd64.sig",
         TEMPLATE,
     ] {
         assert!(msg.contains(needle), "message lacks '{needle}': {msg}");
@@ -7789,15 +7795,19 @@ fn two_binaries_resolving_to_one_asset_name_fail_the_verify_gate() {
         .build();
     ctx.template_vars_mut().set("ProjectName", "app");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    for (dir, variant) in [("release", None), ("v3/release", Some("v3"))] {
-        let mut metadata = std::collections::HashMap::new();
+    // Two `builds:` entries differing only in `amd64_variant:` compile to ONE
+    // path — neither declares its own `CARGO_TARGET_DIR` — so the artifacts
+    // are separated by the level they were built at, not by their file.
+    for variant in [None, Some("v3")] {
+        let mut metadata =
+            std::collections::HashMap::from([("binary".to_string(), "app".to_string())]);
         if let Some(variant) = variant {
             metadata.insert("amd64_variant".to_string(), variant.to_string());
         }
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
             name: "app".to_string(),
-            path: std::path::PathBuf::from(format!("target/{TARGET}/{dir}/app")),
+            path: std::path::PathBuf::from(format!("target/{TARGET}/release/app")),
             target: Some(TARGET.to_string()),
             crate_name: "app".to_string(),
             metadata,
@@ -7810,6 +7820,159 @@ fn two_binaries_resolving_to_one_asset_name_fail_the_verify_gate() {
     assert!(
         format!("{err:#}").contains("both resolve to"),
         "unexpected error: {err:#}"
+    );
+}
+
+/// `no_unique_dist_dir: true` copies every binary of a crate to
+/// `dist/<file name>`, so a gnu and a musl build of one binary share a path
+/// as well as a `{{ Os }}-{{ Arch }}` name. The target separates them.
+#[test]
+fn a_flat_dist_layout_still_fails_on_two_binaries_naming_one_asset() {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, BuildConfig, CrateConfig};
+
+    const TEMPLATE: &str = "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}";
+    const TARGETS: [&str; 2] = ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"];
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("app")
+        .crates(vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("app".to_string()),
+                targets: Some(TARGETS.iter().map(|t| t.to_string()).collect()),
+                ..Default::default()
+            }]),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some(TEMPLATE.to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .binary_signs(vec![SignConfig {
+            artifacts: Some("binary".to_string()),
+            cmd: Some("true".to_string()),
+            args: Some(vec![]),
+            ..Default::default()
+        }])
+        .dry_run(true)
+        .build();
+    ctx.template_vars_mut().set("ProjectName", "app");
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    for target in TARGETS {
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "app".to_string(),
+            path: std::path::PathBuf::from("dist/app"),
+            target: Some(target.to_string()),
+            crate_name: "app".to_string(),
+            metadata: [
+                ("binary".to_string(), "app".to_string()),
+                ("id".to_string(), "app".to_string()),
+                ("no_unique_dist_dir".to_string(), "true".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            size: None,
+        });
+    }
+
+    let log = ctx.logger("binary-sign");
+    let cfgs = ctx.config.binary_signs.clone();
+    let err = process_sign_configs(
+        &cfgs,
+        &mut ctx,
+        &log,
+        ArtifactFilter::BinaryOnly,
+        "binary-sign",
+    )
+    .expect_err("a flat dist layout must not hide a colliding asset name");
+    let msg = format!("{err:#}");
+    for needle in [
+        "dist/app",
+        "x86_64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+    ] {
+        assert!(msg.contains(needle), "message lacks '{needle}': {msg}");
+    }
+}
+
+/// The thing that must be unique is the uploaded NAME, not the base it is
+/// built from: two configs whose `signature:` templates append different
+/// suffixes to one base produce two distinct assets, and neither the stage nor
+/// the gate may refuse them.
+#[test]
+fn two_configs_with_different_suffixes_over_one_base_are_accepted() {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{BuildConfig, CrateConfig};
+
+    const TARGET: &str = "x86_64-unknown-linux-gnu";
+
+    let config_for = |id: &str, signature: &str| SignConfig {
+        artifacts: Some("binary".to_string()),
+        cmd: Some("true".to_string()),
+        args: Some(vec![]),
+        ids: Some(vec![id.to_string()]),
+        asset_name_template: Some("shared-{{ Version }}".to_string()),
+        signature: Some(signature.to_string()),
+        ..Default::default()
+    };
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("app")
+        .crates(vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("app".to_string()),
+                targets: Some(vec![TARGET.to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .binary_signs(vec![
+            config_for("app", "{{ .Artifact }}.sig"),
+            config_for("helper", "{{ .Artifact }}.bundle.sig"),
+        ])
+        .dry_run(true)
+        .build();
+    ctx.template_vars_mut().set("ProjectName", "app");
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    for binary in ["app", "helper"] {
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: binary.to_string(),
+            path: std::path::PathBuf::from(format!("target/{TARGET}/release/{binary}")),
+            target: Some(TARGET.to_string()),
+            crate_name: "app".to_string(),
+            metadata: [
+                ("binary".to_string(), binary.to_string()),
+                ("id".to_string(), binary.to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            size: None,
+        });
+    }
+
+    let log = ctx.logger("binary-sign");
+    let cfgs = ctx.config.binary_signs.clone();
+    process_sign_configs(
+        &cfgs,
+        &mut ctx,
+        &log,
+        ArtifactFilter::BinaryOnly,
+        "binary-sign",
+    )
+    .expect("two distinct asset names over one base must both be accepted");
+
+    let mut expected = crate::expected::expected_signature_assets(&ctx, "app", None)
+        .expect("the gate must accept them too");
+    expected.sort();
+    assert_eq!(
+        expected,
+        vec!["shared-1.0.0.bundle.sig", "shared-1.0.0.sig"]
     );
 }
 
