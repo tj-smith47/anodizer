@@ -292,7 +292,7 @@ fn expected_binary_sign_names(
         .and_then(|n| n.to_str())
         .unwrap_or("");
     let naming = crate::helpers::binary_sign_asset_naming(ctx, cfg, artifact, target)?;
-    let mut claim = |path: &std::path::Path, output: &str| -> Result<String> {
+    let mut claim = |path: &std::path::Path, output: &'static str| -> Result<String> {
         let (name, source) = crate::helpers::binary_sign_asset_name(
             &basename_of(path),
             binary_basename,
