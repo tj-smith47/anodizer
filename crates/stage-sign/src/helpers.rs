@@ -732,17 +732,18 @@ fn reject_empty_base(base: String) -> Result<String> {
     Ok(base)
 }
 
-/// Which raw binary claimed each signature asset name in this run.
+/// Which raw binary, and which of its outputs, claimed each signature asset
+/// name in this run.
 ///
-/// One release asset carries one file, so two binaries resolving to one asset
-/// name upload two signatures under one name and the release keeps whichever
+/// One release asset carries one file, so two outputs resolving to one asset
+/// name upload two files under one name and the release keeps whichever
 /// arrived last. The default templates separate every binary by target and
 /// micro-architecture level, but a hand-written `archives[].name_template`
 /// need not — `{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}` renders
 /// one name for a baseline and a `x86-64-v3` build of the same binary.
 #[derive(Default)]
 pub(crate) struct BinarySignAssetNames {
-    claimed: HashMap<String, BinaryIdentity>,
+    claimed: HashMap<String, (BinaryIdentity, &'static str)>,
 }
 
 /// How the artifact registry tells one raw binary from another.
@@ -805,29 +806,31 @@ pub(crate) enum AssetNameSource {
 }
 
 impl BinarySignAssetNames {
-    /// Record `asset_name` as claimed by one binary, or refuse the run when a
-    /// different binary already claimed the same name.
+    /// Record `asset_name` as claimed by one output of one binary, or refuse
+    /// the run when the same name is already claimed by another binary or by
+    /// the binary's other output.
     ///
     /// `output` names the asset in the message (`signature` or
-    /// `certificate`) and `source` decides the remedy: the two are built from
-    /// one base, so a certificate can collide on a pair of configs whose
-    /// `signature:` suffixes differ.
+    /// `certificate`) and `source` decides the remedy. Both outputs are built
+    /// from one base, so a certificate collides on a pair of configs whose
+    /// `signature:` suffixes differ, and one entry whose two output templates
+    /// render one suffix collides with itself.
     pub(crate) fn claim(
         &mut self,
         asset_name: &str,
-        output: &str,
+        output: &'static str,
         naming: &BinarySignNaming,
         source: AssetNameSource,
         binary: &anodizer_core::artifact::Artifact,
     ) -> Result<()> {
         let claimant = BinaryIdentity::of(binary);
+        let template = &naming.template;
         match self.claimed.get(asset_name) {
-            Some(first) if *first != claimant => {
-                let template = &naming.template;
+            Some((first, first_output)) if *first != claimant => {
                 let remedy = match source {
                     AssetNameSource::Base => format!(
                         "rendered from the template '{template}'. One release \
-                         asset cannot carry two {output}s — give the covering \
+                         asset cannot carry both files — give the covering \
                          `archives[].name_template` a variable that separates \
                          them ({{{{ Target }}}} and {{{{ Amd64 }}}} are the \
                          dimensions {{{{ Os }}}}-{{{{ Arch }}}} drops), or set \
@@ -838,21 +841,34 @@ impl BinarySignAssetNames {
                          which renamed the output instead of suffixing the \
                          binary's own file name — so the asset base \
                          '{base}' (from '{template}') is not part of it. One \
-                         release asset cannot carry two {output}s — give that \
+                         release asset cannot carry both files — give that \
                          template {{{{ .Artifact }}}} or the target, so it \
                          renders one name per binary.",
                         base = naming.base
                     ),
                 };
                 anyhow::bail!(
-                    "sign: the binaries '{first}' and '{claimant}' both \
-                     resolve to the {output} asset name '{asset_name}', \
-                     {remedy}"
+                    "sign: the {first_output} of '{first}' and the {output} \
+                     of '{claimant}' both resolve to the asset name \
+                     '{asset_name}', {remedy}"
                 )
             }
+            // One binary's signature and certificate are two release assets,
+            // so one name for both drops a file the gate's de-duplication
+            // then folds into a single expectation it finds.
+            Some((_, first_output)) if *first_output != output => anyhow::bail!(
+                "sign: the {first_output} and the {output} of '{claimant}' \
+                 both resolve to the asset name '{asset_name}', built from \
+                 the base '{base}' (from '{template}') plus the suffix each \
+                 output template appended. One release asset cannot carry \
+                 both files — give `binary_signs[].{first_output}:` and \
+                 `binary_signs[].{output}:` suffixes that differ.",
+                base = naming.base
+            ),
             Some(_) => Ok(()),
             None => {
-                self.claimed.insert(asset_name.to_string(), claimant);
+                self.claimed
+                    .insert(asset_name.to_string(), (claimant, output));
                 Ok(())
             }
         }

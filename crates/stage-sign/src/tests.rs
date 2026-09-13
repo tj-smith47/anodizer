@@ -7752,6 +7752,11 @@ fn two_binaries_resolving_to_one_asset_name_fail_the_sign_stage() {
         "amd64 v3",
         "app-1.0.0-linux-amd64.sig",
         TEMPLATE,
+        &format!("rendered from the template '{TEMPLATE}'"),
+        "One release asset cannot carry both files",
+        "`archives[].name_template`",
+        "{{ Amd64 }}",
+        "`binary_signs[].asset_name_template`",
     ] {
         assert!(msg.contains(needle), "message lacks '{needle}': {msg}");
     }
@@ -8047,16 +8052,166 @@ fn two_configs_sharing_a_certificate_suffix_fail() {
     )
     .expect_err("one certificate name over two binaries must fail the stage");
     let msg = format!("{err:#}");
-    for needle in ["certificate asset name", "shared-1.0.0.pem"] {
+    for needle in ["the certificate of", "shared-1.0.0.pem"] {
         assert!(msg.contains(needle), "message lacks '{needle}': {msg}");
     }
 
     let err = crate::expected::expected_signature_assets(&ctx, "app", None)
         .expect_err("the gate must refuse the same pair");
     let msg = format!("{err:#}");
-    for needle in ["certificate asset name", "shared-1.0.0.pem"] {
+    for needle in ["the certificate of", "shared-1.0.0.pem"] {
         assert!(msg.contains(needle), "message lacks '{needle}': {msg}");
     }
+}
+
+/// One binary's signature and its certificate are two release assets built
+/// from one base, so a pair of output templates rendering one suffix names one
+/// asset twice — the release keeps one file and the gate's de-duplication
+/// folds the pair into a single expectation it then finds. The stage and the
+/// gate both refuse it, naming both outputs.
+#[test]
+fn one_binary_whose_two_outputs_share_a_name_fails() {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{BuildConfig, CrateConfig};
+
+    const TARGET: &str = "x86_64-unknown-linux-gnu";
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("app")
+        .crates(vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("app".to_string()),
+                targets: Some(vec![TARGET.to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .binary_signs(vec![SignConfig {
+            artifacts: Some("binary".to_string()),
+            cmd: Some("true".to_string()),
+            args: Some(vec![]),
+            asset_name_template: Some("shared-{{ Version }}".to_string()),
+            signature: Some("{{ .Artifact }}.sig".to_string()),
+            certificate: Some("{{ .Artifact }}.sig".to_string()),
+            ..Default::default()
+        }])
+        .dry_run(true)
+        .build();
+    ctx.template_vars_mut().set("ProjectName", "app");
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: "app".to_string(),
+        path: std::path::PathBuf::from(format!("target/{TARGET}/release/app")),
+        target: Some(TARGET.to_string()),
+        crate_name: "app".to_string(),
+        metadata: [
+            ("binary".to_string(), "app".to_string()),
+            ("id".to_string(), "app".to_string()),
+        ]
+        .into_iter()
+        .collect(),
+        size: None,
+    });
+
+    let log = ctx.logger("binary-sign");
+    let cfgs = ctx.config.binary_signs.clone();
+    let err = process_sign_configs(
+        &cfgs,
+        &mut ctx,
+        &log,
+        ArtifactFilter::BinaryOnly,
+        "binary-sign",
+    )
+    .expect_err("one name over a binary's two outputs must fail the stage");
+    let msg = format!("{err:#}");
+    for needle in [
+        "the signature and the certificate of",
+        "shared-1.0.0.sig",
+        "`binary_signs[].signature:`",
+        "`binary_signs[].certificate:`",
+        "shared-{{ Version }}",
+    ] {
+        assert!(msg.contains(needle), "message lacks '{needle}': {msg}");
+    }
+
+    let err = crate::expected::expected_signature_assets(&ctx, "app", None)
+        .expect_err("the gate must refuse the same entry");
+    let msg = format!("{err:#}");
+    for needle in ["the signature and the certificate of", "shared-1.0.0.sig"] {
+        assert!(msg.contains(needle), "message lacks '{needle}': {msg}");
+    }
+}
+
+/// Two configs matching one binary with one `signature:` template name ONE
+/// release asset, not two, so the second claim of that name by the same
+/// output of the same binary is not a collision.
+#[test]
+fn two_configs_naming_one_signature_for_one_binary_are_accepted() {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{BuildConfig, CrateConfig};
+
+    const TARGET: &str = "x86_64-unknown-linux-gnu";
+
+    let config = || SignConfig {
+        artifacts: Some("binary".to_string()),
+        cmd: Some("true".to_string()),
+        args: Some(vec![]),
+        asset_name_template: Some("shared-{{ Version }}".to_string()),
+        signature: Some("{{ .Artifact }}.sig".to_string()),
+        ..Default::default()
+    };
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("app")
+        .crates(vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("app".to_string()),
+                targets: Some(vec![TARGET.to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .binary_signs(vec![config(), config()])
+        .dry_run(true)
+        .build();
+    ctx.template_vars_mut().set("ProjectName", "app");
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: "app".to_string(),
+        path: std::path::PathBuf::from(format!("target/{TARGET}/release/app")),
+        target: Some(TARGET.to_string()),
+        crate_name: "app".to_string(),
+        metadata: [
+            ("binary".to_string(), "app".to_string()),
+            ("id".to_string(), "app".to_string()),
+        ]
+        .into_iter()
+        .collect(),
+        size: None,
+    });
+
+    let log = ctx.logger("binary-sign");
+    let cfgs = ctx.config.binary_signs.clone();
+    process_sign_configs(
+        &cfgs,
+        &mut ctx,
+        &log,
+        ArtifactFilter::BinaryOnly,
+        "binary-sign",
+    )
+    .expect("one asset name claimed twice by one output must be accepted");
+
+    let mut expected = crate::expected::expected_signature_assets(&ctx, "app", None)
+        .expect("the gate must accept it too");
+    expected.sort();
+    expected.dedup();
+    assert_eq!(expected, vec!["shared-1.0.0.sig"]);
 }
 
 /// A `signature:` template that renders a name of its own — rather than

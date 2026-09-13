@@ -85,7 +85,7 @@ carries one file, so the second upload would replace the first and the release
 would ship a signature over bytes nobody can identify:
 
 ```text
-Error: sign: the binaries 'target/x86_64-unknown-linux-gnu/release/app (crate 'app', build id 'app', target x86_64-unknown-linux-gnu, amd64 v1)' and 'target/x86_64-unknown-linux-gnu/release/app (crate 'app', build id 'app', target x86_64-unknown-linux-gnu, amd64 v3)' both resolve to the signature asset name 'app-1.2.3-linux-amd64.sig', rendered from the template '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}'. One release asset cannot carry two signatures — give the covering `archives[].name_template` a variable that separates them ({{ Target }} and {{ Amd64 }} are the dimensions {{ Os }}-{{ Arch }} drops), or set `binary_signs[].asset_name_template`.
+Error: sign: the signature of 'target/x86_64-unknown-linux-gnu/release/app (crate 'app', build id 'app', target x86_64-unknown-linux-gnu, amd64 v1)' and the signature of 'target/x86_64-unknown-linux-gnu/release/app (crate 'app', build id 'app', target x86_64-unknown-linux-gnu, amd64 v3)' both resolve to the asset name 'app-1.2.3-linux-amd64.sig', rendered from the template '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}'. One release asset cannot carry both files — give the covering `archives[].name_template` a variable that separates them ({{ Target }} and {{ Amd64 }} are the dimensions {{ Os }}-{{ Arch }} drops), or set `binary_signs[].asset_name_template`.
 ```
 
 The certificate is checked the same way. Two `binary_signs:` entries whose
@@ -93,13 +93,21 @@ The certificate is checked the same way. Two `binary_signs:` entries whose
 if their `certificate:` templates match they render one certificate name — and
 that fails the run too, naming the certificate asset.
 
+One entry's own two outputs are checked against each other as well: a
+`signature:` and a `certificate:` template that append the same suffix render
+one name for two files, and the run stops with both outputs named:
+
+```text
+Error: sign: the signature and the certificate of 'target/x86_64-unknown-linux-gnu/release/app (crate 'app', build id 'app', target x86_64-unknown-linux-gnu, amd64 v1)' both resolve to the asset name 'app-1.2.3-linux-amd64.sig', built from the base 'app-1.2.3-linux-amd64' (from '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}') plus the suffix each output template appended. One release asset cannot carry both files — give `binary_signs[].signature:` and `binary_signs[].certificate:` suffixes that differ.
+```
+
 When a `signature:` (or `certificate:`) template renders a name of its own
 instead of suffixing the binary's file name, the base is not part of the
 result, so the message asks for a change to that template rather than to the
 archive name:
 
 ```text
-Error: sign: the binaries '…, build id 'app', …' and '…, build id 'helper', …' both resolve to the signature asset name 'detached-x86_64-unknown-linux-gnu.sig', rendered by the `binary_signs[].signature:` template, which renamed the output instead of suffixing the binary's own file name — so the asset base 'app-1.2.3-linux-amd64' (from '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}') is not part of it. One release asset cannot carry two signatures — give that template {{ .Artifact }} or the target, so it renders one name per binary.
+Error: sign: the signature of '…, build id 'app', …' and the signature of '…, build id 'helper', …' both resolve to the asset name 'detached-x86_64-unknown-linux-gnu.sig', rendered by the `binary_signs[].signature:` template, which renamed the output instead of suffixing the binary's own file name — so the asset base 'app-1.2.3-linux-amd64' (from '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}') is not part of it. One release asset cannot carry both files — give that template {{ .Artifact }} or the target, so it renders one name per binary.
 ```
 
 The two dimensions a hand-written `{{ Os }}-{{ Arch }}` template drops are the
