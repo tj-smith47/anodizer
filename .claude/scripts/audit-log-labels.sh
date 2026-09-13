@@ -20,6 +20,12 @@
 # Fix: call log.warn(msg) / log.error(msg) (or render_warning/render_error/
 # render_note for the loggerless tracing path) with the bare message — the
 # label and its format are added for you.
+#
+# The second pass holds the same authority over the DOCS: a fenced block in
+# docs/site/content that quotes `Warning: ` / `Error: ` / `Note: ` shows a line
+# no renderer can produce, and a reader copying it files a bug about output
+# anodizer never printed. Markdown admonitions (`> **Warning:** …`) live
+# outside a fence and are prose, so they are untouched.
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
@@ -65,6 +71,35 @@ if [[ -n "$violations" ]]; then
     echo "/ render_note for the loggerless tracing path) with the bare message; the"
     echo "label and gutter format are added for you."
     exit 1
+fi
+
+# The same authority governs every rendered transcript a docs page quotes: a
+# fenced block showing `Warning: ` claims output the renderer cannot produce.
+# Markdown admonitions (`> **Warning:** …`) sit outside a fence and are prose.
+DOCS_DIR="docs/site/content"
+if [[ -d "$DOCS_DIR" ]]; then
+    collect_files DOCS_FILES -rlE --include='*.md' \
+        -- '^[[:space:]]*(Warning|Error|Note): ' "$DOCS_DIR"
+    if ((${#DOCS_FILES[@]} > 0)); then
+        run_scanner docs_violations -f - "${DOCS_FILES[@]}" <<'AWK'
+FNR == 1 { fenced = 0 }
+/^[[:space:]]*```/ { fenced = !fenced; next }
+fenced && $0 ~ /^[[:space:]]*(Warning|Error|Note): / {
+    printf "%s:%d:%s\n", FILENAME, FNR, $0
+}
+AWK
+        if [[ -n "$docs_violations" ]]; then
+            echo "COLON-SUFFIXED STATUS LABEL IN A DOCS TRANSCRIPT."
+            echo
+            echo "$docs_violations"
+            echo "These fenced blocks quote a rendered line the renderer cannot produce:"
+            echo "crates/core/src/log/render.rs right-aligns the label in a 12-column"
+            echo "gutter with NO colon. Re-render the block (the label right-aligned in"
+            echo "that gutter, plus the enclosing section indent) or move the prose"
+            echo "outside the fence."
+            exit 1
+        fi
+    fi
 fi
 
 echo "audit-log-labels: no open-coded Warning/Error/Note status labels found."

@@ -321,4 +321,13 @@ fn the_recorded_podman_digestfile_equals_what_the_registry_served() {
         }
     }
     assert_eq!(requests, 2, "the recording lost a request");
+    // The page exists for the four digests and their two equalities; a page
+    // that kept the requests and retyped a digest would document a
+    // measurement that never matched.
+    for digest in &digests {
+        assert!(
+            DOCS.contains(digest),
+            "the docs page lost the measured digest: {digest}"
+        );
+    }
 }
