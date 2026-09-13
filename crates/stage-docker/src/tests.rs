@@ -3482,6 +3482,47 @@ fn buildx_metadata_files_report_a_digest_for_an_exported_image_only() {
         None,
         "a build that exported no image reports no digest to record"
     );
+
+    // The digests alone cannot fail when a fixture's key set is edited, and
+    // the key set is what tells the three exporters apart — `--push` writing
+    // no `containerimage.config.digest` is the whole reason the digest a
+    // `--push` build records is the registry's and not a local config's.
+    let keys = |name: &str| -> Vec<String> {
+        let value: serde_json::Value = serde_json::from_str(&read(name)).expect("fixture is JSON");
+        let mut keys: Vec<String> = value
+            .as_object()
+            .expect("fixture is a JSON object")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        keys
+    };
+    assert_eq!(
+        keys("buildx-0.36.1-push.json"),
+        [
+            "buildx.build.provenance",
+            "buildx.build.ref",
+            "containerimage.descriptor",
+            "containerimage.digest",
+            "image.name",
+        ]
+    );
+    assert_eq!(
+        keys("buildx-0.36.1-load.json"),
+        [
+            "buildx.build.provenance",
+            "buildx.build.ref",
+            "containerimage.config.digest",
+            "containerimage.descriptor",
+            "containerimage.digest",
+            "image.name",
+        ]
+    );
+    assert_eq!(
+        keys("buildx-0.36.1-cache-only.json"),
+        ["buildx.build.provenance", "buildx.build.ref"]
+    );
 }
 
 /// A metadata file that reports no image digest yields none, so the build

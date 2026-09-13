@@ -66,9 +66,25 @@ Bare `--build-arg`, `--label`, `--platform`, `--tag`, `--no-cache`, and `--iidfi
 
 ## Image digest
 
-`podman build` cannot bake `--push` into the build, so anodizer publishes each rendered tag afterwards with `podman push` (single-platform) or `podman manifest push --all` (multi-platform). Both carry `--digestfile`, documented by podman as "after copying the image, write the digest of the resulting image to the file" — the digest the destination registry now holds, which is the image manifest for a single-platform push and the manifest list for a `manifest push`. That is the same kind of value buildx reports as `containerimage.digest`, so `{{ Digest }}` in a `post:` hook, the `<tag>.digest` artifact and the release's docker landing check behave identically on both backends.
+`podman build` cannot bake `--push` into the build, so anodizer publishes each rendered tag afterwards with `podman push` (single-platform) or `podman manifest push --all` (multi-platform). Both carry `--digestfile`, which writes the digest the destination registry now holds — the image manifest for a single-platform push, the manifest list for a `manifest push`. That is the same kind of value buildx reports as `containerimage.digest`, so `{{ Digest }}` in a `post:` hook, the `<tag>.digest` artifact and the release's docker landing check behave identically on both backends.
 
-**Podman 2.1 is the floor for the podman backend.** `--digestfile` has been on `podman push` and `podman manifest push` since 2.1; an older podman exits non-zero on the unknown option, which fails the push rather than degrading to a build with no digest. A podman that accepts the flag but writes nothing degrades cleanly: anodizer notes the missing file under `-v` and records no digest for that tag.
+Measured against a local `registry:2` under podman 5.8.4, both verbs wrote exactly the digest the registry then served:
+
+```text
+$ podman push --tls-verify=false --digestfile=/out/push.digest localhost:5000/probe:t
+$ cat /out/push.digest
+sha256:175760276794f3dcc233eda09300ed71cf1bca74add010530480869e7b370b8e
+$ curl -sI http://localhost:5000/v2/probe/manifests/t | grep -i docker-content-digest
+Docker-Content-Digest: sha256:175760276794f3dcc233eda09300ed71cf1bca74add010530480869e7b370b8e
+
+$ podman manifest push --tls-verify=false --digestfile=/out/manifest.digest probelist docker://localhost:5000/probelist:t
+$ cat /out/manifest.digest
+sha256:d45fc543f733090503ea990e92e6a313195925fd96ed63947f9501549e7d8bd3
+$ curl -sI http://localhost:5000/v2/probelist/manifests/t | grep -i docker-content-digest
+Docker-Content-Digest: sha256:d45fc543f733090503ea990e92e6a313195925fd96ed63947f9501549e7d8bd3
+```
+
+**Podman 2.0 is the floor for the podman backend.** `podman push` took `--digestfile` in 1.6.0 — "The `podman push` command now supports the `--digestfile` option to save a file containing the pushed digest" ([RELEASE_NOTES.md, 1.6.0 Features](https://github.com/containers/podman/blob/main/RELEASE_NOTES.md)) — and `podman manifest push` in 2.0.0, the first tag whose [`podman-manifest-push.1.md`](https://github.com/containers/podman/blob/v2.0.0/docs/source/markdown/podman-manifest-push.1.md) documents it; the page carries no such flag at 1.9.0. The higher of the two is the floor. An older podman exits non-zero on the unknown option, which fails the push rather than degrading to a build with no digest. A podman that accepts the flag but writes nothing degrades cleanly: anodizer notes the missing file under `-v` and records no digest for that tag.
 
 A build that pushes nothing (a snapshot, a dry run, `skip_push:`) records no digest under either backend — `podman build`'s own `--iidfile` holds the LOCAL image ID, which names different content than a registry serves.
 
