@@ -2876,3 +2876,118 @@ fn plan_version_files_rewrites_skips_group_with_no_old_version() {
     let plan = plan_version_files_rewrites(&groups).unwrap();
     assert!(plan.is_empty());
 }
+
+/// The version-files page quotes what `anodizer tag` and
+/// `anodizer check version-files` print, so a reworded warning, finding or
+/// bail leaves the page showing a line the binary no longer produces. Each
+/// documented situation is reproduced on a temporary repo and the page's
+/// lines have to be exactly what the real code emitted.
+#[test]
+fn the_lines_quoted_in_the_version_files_docs_are_what_the_commands_produce() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/general/version-files.md"
+    );
+    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let quoted = |label: &str| -> Vec<String> {
+        page.lines()
+            .filter_map(|line| line.trim_start().strip_prefix(label))
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    let warnings = quoted("Warning ");
+    let errors = quoted("Error ");
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let write = |rel: &str, body: &str| {
+        let at = root.join(rel);
+        std::fs::create_dir_all(at.parent().expect("parent")).expect("mkdir");
+        std::fs::write(at, body).expect("write fixture");
+    };
+
+    // A bare enrollment whose file never carried the old version: warned, and
+    // the tag run continues.
+    write(
+        "docs/install.md",
+        "curl -sSfL https://example.invalid/i.sh\n",
+    );
+    let (log, capture) = StageLogger::with_capture("tag", Verbosity::Normal);
+    version_plan::rewrite_and_stage_version_files(
+        root,
+        &[FileRewrite {
+            path: "docs/install.md".to_string(),
+            anchor: None,
+            old: "0.1.0".to_string(),
+            new: "0.2.0".to_string(),
+            owner: "myapp".to_string(),
+        }],
+        false,
+        &log,
+    )
+    .expect("a bare zero-match entry warns rather than failing");
+
+    // An anchored enrollment that selects no region: refused before any file
+    // is written.
+    write(
+        "chart/cfgd/values.yaml",
+        "csi:\n  image: other/image:1.0.0\n",
+    );
+    let anchored = version_plan::rewrite_and_stage_version_files(
+        root,
+        &[FileRewrite {
+            path: "chart/cfgd/values.yaml".to_string(),
+            anchor: Some(r"csi:\s+image:.*:v{version}".to_string()),
+            old: "0.7.0".to_string(),
+            new: "0.8.0".to_string(),
+            owner: "cfgd-csi".to_string(),
+        }],
+        false,
+        &log,
+    )
+    .expect_err("an anchored entry matching nothing fails the tag");
+
+    // The drift guard over an enrolled chart that no longer carries the
+    // crate's declared version.
+    write(
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/myapp\"]\nresolver = \"2\"\n",
+    );
+    write(
+        "crates/myapp/Cargo.toml",
+        "[package]\nname = \"myapp\"\nversion = \"0.2.0\"\nedition = \"2024\"\n",
+    );
+    write("crates/myapp/src/lib.rs", "");
+    write(
+        "charts/myapp/Chart.yaml",
+        "version: 0.1.0\nappVersion: v0.1.0\n",
+    );
+    let config: Config = serde_yaml_ng::from_str(
+        "project_name: myapp\n\
+         crates:\n  - name: myapp\n    path: crates/myapp\n    \
+         tag_template: \"v{{ .Version }}\"\n    version_files:\n      \
+         - charts/myapp/Chart.yaml\n",
+    )
+    .expect("the loader accepts the fixture config");
+    let (guard_log, guard_capture) = StageLogger::with_capture("check", Verbosity::Normal);
+    let stale = crate::commands::check::version_files::run_guard(&config, root, &guard_log)
+        .expect_err("a drifted enrollment fails the guard");
+
+    let mut produced_errors: Vec<String> = guard_capture
+        .all_messages()
+        .into_iter()
+        .filter(|(level, _)| *level == anodizer_core::log::LogLevel::Error)
+        .map(|(_, message)| message)
+        .collect();
+    produced_errors.push(format!("{stale:#}"));
+    produced_errors.push(format!("{anchored:#}"));
+
+    assert_eq!(
+        warnings,
+        capture.warn_messages(),
+        "the page's Warning lines"
+    );
+    assert_eq!(errors, produced_errors, "the page's Error lines");
+    assert_eq!(warnings.len(), 1, "the warnings the page quotes");
+    assert_eq!(errors.len(), 3, "the errors the page quotes");
+}

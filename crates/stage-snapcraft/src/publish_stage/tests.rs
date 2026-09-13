@@ -2621,3 +2621,66 @@ fn crate_version_prefers_the_crate_s_own_tag_over_the_context_version() {
     ctx.template_vars_mut().set("Version", "9.9.9");
     assert_eq!(super::uploads::crate_version(&ctx, &krate), "0.4.0");
 }
+
+/// The snapcraft page quotes both hold warnings as the operator sees them, so
+/// a reword on either leaves the page showing a line the binary no longer
+/// prints. The documented situation — a store upload answered with a
+/// manual-review hold — is reproduced against a stubbed `snapcraft` and the
+/// page's lines have to be exactly what the stage emitted, in page order.
+///
+/// The stub uses `FakeToolDir::script`, which is unix-only.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(path_env)]
+fn the_hold_warnings_quoted_in_the_snapcraft_docs_are_what_the_stage_produces() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/packages/snapcraft.md"
+    );
+    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let quoted: Vec<String> = page
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("Warning "))
+        .map(str::to_string)
+        .collect();
+
+    let tools = FakeToolDir::new();
+    tools
+        .tool("snapcraft")
+        .script(
+            "if [ \"$1\" = \"upload\" ]; then\n\
+             echo \"A human will soon review your snap: (NEEDS REVIEW) confinement 'classic' not allowed\"\n\
+             exit 2\nfi\nexit 1\n",
+        )
+        .install();
+    let _path = tools.activate();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .crates(vec![snap_crate("myapp", Some("myapp"), Some("stable"))])
+        .build();
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Snap,
+        name: String::new(),
+        path: PathBuf::from("dist/myapp_1.0.0_amd64.snap"),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+
+    SnapcraftPublishStage
+        .run(&mut ctx)
+        .expect("a review hold is non-fatal — the stage must return Ok");
+
+    assert_eq!(quoted, capture.warn_messages(), "the page's Warning lines");
+    assert_eq!(quoted.len(), 3, "the warnings the page quotes");
+}

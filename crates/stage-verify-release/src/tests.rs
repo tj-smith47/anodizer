@@ -4290,3 +4290,59 @@ fn crates_to_verify_keeps_every_published_crate_when_nothing_was_skipped() {
     let names: Vec<String> = crates_to_verify(&ctx).into_iter().map(|c| c.name).collect();
     assert_eq!(names, vec!["app".to_string(), "operator".to_string()]);
 }
+
+/// The verify-release page quotes this gate's own findings as the operator
+/// sees them, so a reworded issue or bail leaves the page showing a line the
+/// binary no longer prints. The documented situation — one produced package
+/// that never reached the release — is reproduced against a loopback GitHub
+/// responder and the page's lines have to be exactly what the run emitted.
+///
+/// Both `Error` lines on the page are the aggregate bail's first line for a
+/// one-issue run, so one fixture covers them; the `Warning` line is the issue
+/// itself, read off the run's log capture.
+#[test]
+fn the_findings_quoted_in_the_verify_release_docs_are_what_the_gate_produces() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/advanced/verify-release.md"
+    );
+    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let quoted = |label: &str| -> Vec<String> {
+        page.lines()
+            .filter_map(|line| line.trim_start().strip_prefix(label))
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    let warnings = quoted("Warning ");
+    let errors = quoted("Error ");
+
+    // The release stores nothing, so the one produced package is the one
+    // missing asset the page describes.
+    let (addr, _log) = spawn_release_route(&[]);
+    let mut ctx = asset_ctx(addr, vec![published_crate("myapp", None)]);
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+    add_artifact(
+        &mut ctx,
+        ArtifactKind::LinuxPackage,
+        "myapp_1.0.0_amd64.deb",
+        "myapp",
+    );
+
+    let err = VerifyReleaseStage
+        .run(&mut ctx)
+        .expect_err("a produced package absent from the release fails the gate");
+    let bail = format!("{err:#}");
+    let first_line = bail.lines().next().expect("the bail has a first line");
+
+    assert_eq!(
+        warnings,
+        capture.warn_messages(),
+        "the page's Warning lines"
+    );
+    assert_eq!(warnings.len(), 1, "the warnings the page quotes");
+    assert_eq!(errors.len(), 2, "the errors the page quotes");
+    for line in &errors {
+        assert_eq!(line, first_line);
+    }
+}

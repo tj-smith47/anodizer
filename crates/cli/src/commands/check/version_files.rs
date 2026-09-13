@@ -61,7 +61,7 @@ pub(crate) fn run(
 /// Core guard logic, factored out of [`run`] so the config-loading shell stays
 /// thin. Accumulates findings (one per drifted / unreadable file) and bails
 /// non-zero if any are present; otherwise logs an all-in-sync line.
-fn run_guard(config: &Config, repo_root: &Path, log: &StageLogger) -> Result<()> {
+pub(crate) fn run_guard(config: &Config, repo_root: &Path, log: &StageLogger) -> Result<()> {
     let mut findings: Vec<String> = vec![];
     let mut checked = 0usize;
 
