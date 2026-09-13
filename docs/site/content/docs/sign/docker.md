@@ -31,7 +31,7 @@ docker_signs:
 | `stdin_file` | string | | Path to a file whose content is written to the signing command's stdin. |
 | `env` | list | | Environment variables passed to the signing command (`KEY=VALUE` strings). |
 | `output` | bool | `false` | Capture and log the signing command's stdout/stderr. |
-| `if` | string | | Template-conditional: skip this config when the rendered result is `false` or empty. |
+| `if` | string | | Template-conditional: skip this config when the rendered result is `false` or empty. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 
 Images are signed one at a time. A keyless config (no `--key` argument) also
 takes the same host-level advisory lock as keyless

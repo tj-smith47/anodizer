@@ -69,7 +69,7 @@ before_publish:
 | `dir` | string | project root | Working directory for the command. Template-rendered. |
 | `env` | list of `KEY=VALUE` | none | Additional environment variables for the hook. Template-rendered. The host environment is also inherited; per-hook values override inherited keys of the same name. |
 | `output` | bool | `false` | When `true`, stream stdout/stderr to anodizer's logger in real time. When `false`, output is captured and only surfaced if the hook fails (with secrets redacted). |
-| `if` | string template | unset | When set, the hook only runs if the rendered result is truthy (not `"false"` / `"0"` / `"no"` / empty). Render failure hard-errors. Same surface as build / archive / sign hooks' `if:`. |
+| `if` | string template | unset | When set, the hook only runs if the rendered result is truthy (not `"false"` / `"0"` / `"no"` / empty). Render failure hard-errors. Same surface as build / archive / sign hooks' `if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `ids` | list of strings | none | Artifact-id allow-list. When set, the per-artifact iteration only fires for artifacts whose `id` matches one of these. Ignored when `run_once: true`. |
 | `artifacts` | enum | `all` | Artifact-kind filter (`checksum` / `source` / `package` / `installer` / `diskimage` / `archive` / `binary` / `sbom` / `image` / `all`). The hook fires only for matching artifacts. Ignored when `run_once: true`. |
 | `run_once` | bool | `false` | Run the hook a single time with run-level vars instead of once per matching artifact. See [Per-artifact iteration and `run_once`](#per-artifact-iteration-and-run-once). |

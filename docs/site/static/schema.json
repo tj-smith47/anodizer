@@ -794,7 +794,7 @@
           ]
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the entire announce stage is skipped. Render failure hard-errors. The `announce.if:`. Distinct from `skip:` (always-skip predicate) — both surfaces are documented.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the entire announce stage is skipped. Render failure hard-errors. The `announce.if:`. Distinct from `skip:` (always-skip predicate) — both surfaces are documented. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -1312,7 +1312,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the archive entry is skipped entirely (no archives produced for this `id`). Render failure hard-errors. \"Filter artifacts with `if` statements\" is listed as a blanket promise — anodizer surfaces it explicitly to keep imported configs portable).",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the archive entry is skipped entirely (no archives produced for this `id`). Render failure hard-errors. \"Filter artifacts with `if` statements\" is listed as a blanket promise — anodizer surfaces it explicitly to keep imported configs portable). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "type": [
             "string",
             "null"
@@ -1582,7 +1582,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the artifactory publisher is skipped. Render failure hard-errors. The `artifactories[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the artifactory publisher is skipped. Render failure hard-errors. The `artifactories[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -1932,7 +1932,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the AUR publisher is skipped. Render failure hard-errors. The `aurs[].if:` conditional gate.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the AUR publisher is skipped. Render failure hard-errors. The `aurs[].if:` conditional gate. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -2231,7 +2231,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the AUR source config is skipped. Render failure hard-errors. The `aur_sources[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the AUR source config is skipped. Render failure hard-errors. The `aur_sources[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -2670,7 +2670,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the blob config is skipped. Render failure hard-errors. The `blobs[].if:` conditional gate.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the blob config is skipped. Render failure hard-errors. The `blobs[].if:` conditional gate. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -3209,7 +3209,7 @@
           ]
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the cargo publisher is skipped. Render failure hard-errors. Config key: the publisher's `if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the cargo publisher is skipped. Render failure hard-errors. Config key: the publisher's `if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -3897,7 +3897,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Chocolatey publisher is skipped. Render failure hard-errors. Config key: `chocolateys[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Chocolatey publisher is skipped. Render failure hard-errors. Config key: `chocolateys[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -4184,7 +4184,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the CloudSmith publisher is skipped. Render failure hard-errors. Config key: `cloudsmiths[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the CloudSmith publisher is skipped. Render failure hard-errors. Config key: `cloudsmiths[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -5502,7 +5502,7 @@
           ]
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the DockerHub publisher is skipped. Render failure hard-errors. Exposes the `dockerhub[].if:` conditional gate; distinct from `skip:` (which expresses \"always skip\") and provides config-import parity.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the DockerHub publisher is skipped. Render failure hard-errors. Exposes the `dockerhub[].if:` conditional gate; distinct from `skip:` (which expresses \"always skip\") and provides config-import parity. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -6549,7 +6549,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the GemFury publisher entry is skipped. Render failure hard-errors. Exposes the `gemfury[].if:` conditional gate; distinct from `skip:` (which expresses \"always skip\") and provides config-import parity.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the GemFury publisher entry is skipped. Render failure hard-errors. Exposes the `gemfury[].if:` conditional gate; distinct from `skip:` (which expresses \"always skip\") and provides config-import parity. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -7027,7 +7027,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. Config key: `homebrew_casks[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. Config key: `homebrew_casks[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -7659,7 +7659,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Homebrew publisher is skipped. Render failure hard-errors. Config key: `brews[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Homebrew publisher is skipped. Render failure hard-errors. Config key: `brews[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -7897,7 +7897,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), this entry is skipped. Render failure hard-errors.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), this entry is skipped. Render failure hard-errors. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -8398,7 +8398,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Krew publisher is skipped. Render failure hard-errors. Config key: `krews[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Krew publisher is skipped. Render failure hard-errors. Config key: `krews[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -9281,7 +9281,7 @@
           ]
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the MCP publisher is skipped. Render failure hard-errors. The `mcp.if:` conditional gate.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the MCP publisher is skipped. Render failure hard-errors. The `mcp.if:` conditional gate. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -11450,7 +11450,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Nix publisher is skipped. Render failure hard-errors. Config key: `nix[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Nix publisher is skipped. Render failure hard-errors. Config key: `nix[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -11848,7 +11848,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the NPM publisher entry is skipped. Render failure hard-errors.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the NPM publisher entry is skipped. Render failure hard-errors. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -12838,7 +12838,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the publisher is skipped. Render failure hard-errors. The `customization/publishers/` `if:` field. Distinct from `skip:` (which expresses \"always skip\") and provides config-import parity.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the publisher is skipped. Render failure hard-errors. The `customization/publishers/` `if:` field. Distinct from `skip:` (which expresses \"always skip\") and provides config-import parity. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -13093,7 +13093,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the PyPI publisher entry is skipped. Render failure hard-errors.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the PyPI publisher entry is skipped. Render failure hard-errors. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -14155,7 +14155,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Scoop publisher is skipped. Render failure hard-errors. Config key: `scoop[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the Scoop publisher is skipped. Render failure hard-errors. Config key: `scoop[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -15079,7 +15079,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the snapcraft config is skipped. Render failure hard-errors. The `snapcrafts[].if:`. Distinct from `skip:` (always-skip predicate).",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the snapcraft config is skipped. Render failure hard-errors. The `snapcrafts[].if:`. Distinct from `skip:` (always-skip predicate). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -16341,7 +16341,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the upload is skipped. Render failure hard-errors. The `uploads[].if:` conditional gate.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the upload is skipped. Render failure hard-errors. The `uploads[].if:` conditional gate. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -16853,7 +16853,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the WinGet publisher is skipped. Render failure hard-errors. Config key: `winget[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the WinGet publisher is skipped. Render failure hard-errors. Config key: `winget[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",

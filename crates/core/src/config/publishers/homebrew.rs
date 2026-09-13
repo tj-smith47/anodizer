@@ -111,6 +111,8 @@ pub struct HomebrewConfig {
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the Homebrew publisher is
     /// skipped. Render failure hard-errors. Config key: `brews[].if:`.
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in
@@ -359,6 +361,8 @@ pub struct HomebrewCaskConfig {
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the Homebrew Cask config is
     /// skipped. Render failure hard-errors. Config key: `homebrew_casks[].if:`.
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in
@@ -589,6 +593,8 @@ pub struct ScoopConfig {
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the Scoop publisher is
     /// skipped. Render failure hard-errors. Config key: `scoop[].if:`.
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in

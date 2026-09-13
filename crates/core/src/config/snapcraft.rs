@@ -92,6 +92,8 @@ pub struct SnapcraftConfig {
     /// (`"false"` / `"0"` / `"no"` / empty), the snapcraft config is
     /// skipped. Render failure hard-errors. The
     /// `snapcrafts[].if:`. Distinct from `skip:` (always-skip predicate).
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a failed snap upload counts as a required-publisher

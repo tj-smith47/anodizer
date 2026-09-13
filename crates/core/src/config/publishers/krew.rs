@@ -69,6 +69,8 @@ pub struct KrewConfig {
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the Krew publisher is
     /// skipped. Render failure hard-errors. Config key: `krews[].if:`.
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// Which krew-index submission path to take.

@@ -68,6 +68,8 @@ pub struct AnnounceConfig {
     /// skipped. Render failure hard-errors. The
     /// `announce.if:`. Distinct from `skip:` (always-skip predicate) — both
     /// surfaces are documented.
+    /// An absent, empty or blank `if:` imposes no gate and always runs; the
+    /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// Selects when AnnounceStage runs vs. skips based on the

@@ -132,7 +132,7 @@ Resolution order (most-specific wins): **per-entry field → block `schemastore.
 | `commit_author` | object | git config | Commit author `name` and `email` |
 | `versioned` | bool | `false` | Default for all entries. Vendor-only. See [`versioned`](#versioned) |
 | `skip` | bool or string | `false` | Skip the whole publisher. Accepts bool or Tera template string. Alias: `disable` |
-| `if` | string | — | Tera condition; publisher is skipped when it renders falsy |
+| `if` | string | — | Tera condition; publisher is skipped when it renders falsy. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `schemas` | list | **required** | The schema entries to register or refresh. At least one required |
 
 ### Per-entry fields
@@ -149,7 +149,7 @@ Resolution order (most-specific wins): **per-entry field → block `schemastore.
 | `versioned` | no | block default | Emit a version-suffixed vendored file + `versions` map. Vendor-only |
 | `required` | no | `false` | Collapse across all entries via escalate-to-true: one `required: true` makes the whole publisher required |
 | `skip` | no | `false` | Per-entry skip. Bool or Tera template string. Alias: `disable` |
-| `if` | no | — | Per-entry Tera condition |
+| `if` | no | — | Per-entry Tera condition. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 
 ## `file_match`
 

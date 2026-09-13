@@ -84,7 +84,7 @@ PKG only processes binary artifacts targeting Darwin (macOS) — the *output* is
 | `replace` | bool | `false` | Remove matching archive artifacts, keeping only the PKG. |
 | `mod_timestamp` | string | | Fixed timestamp for reproducible builds. Templates allowed (e.g. `{{ CommitTimestamp }}`). Applied to the staging directory contents before `pkgbuild` bundles them — timestamps propagate into the pkg payload tar. |
 | `skip` | bool/string | `false` | Skip this PKG config. Accepts `true`/`false` or a Tera template. Also accepts the `disable:` spelling for back-compat with imported GoReleaser configs. |
-| `if` | string | | Template-conditional: skip if the rendered result is `false` or empty. Render failure is a hard error. |
+| `if` | string | | Template-conditional: skip if the rendered result is `false` or empty. Render failure is a hard error. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 
 ## How it works
 
