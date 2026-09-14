@@ -505,12 +505,19 @@ fn run_collector(dir: &Path, body: &str, stdin: &str) -> (i32, String) {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawning bash");
-    child
+    // A collector that never reads stdin (a refused call, an absent root) can
+    // exit before this write, and the write then fails with EPIPE. That is
+    // the wanted outcome, so only another error is a harness failure.
+    match child
         .stdin
         .take()
         .expect("stdin")
         .write_all(stdin.as_bytes())
-        .expect("feeding stdin");
+    {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(e) => panic!("feeding stdin: {e}"),
+    }
     let out = child.wait_with_output().expect("collector output");
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
