@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-09-14
+
+### Features
+
+* 80f1d42cc80c run the whole preflight once, before the tag, through one engine ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* c93b27f38dad ask each publisher whether its rollback credential is really missing, and keep a clean release free of by-design warnings ([@tj-smith47](https://github.com/tj-smith47))
+* f3c7d491f956 keep the Windows test run honest about a .cmd stub and a forward-slash size report ([@tj-smith47](https://github.com/tj-smith47))
+* f86fc7f428a3 lock the TUF store for keyed cosign, sign inside the harness, and account for every skipped or retried step ([@tj-smith47](https://github.com/tj-smith47))
+* be9883bef4e3 package the whole cargo publish set in one dry-run so a pre-tag preflight verifies siblings locally ([@tj-smith47](https://github.com/tj-smith47))
+* 256907bf781b probe the chocolatey feed's service document, since a GET on the push route can never succeed ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.27.0] - 2026-09-13
 
 ### Features
@@ -1130,7 +1145,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/tj-smith47/anodizer/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/tj-smith47/anodizer/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/tj-smith47/anodizer/compare/v0.25.2...v0.26.0
 [0.25.2]: https://github.com/tj-smith47/anodizer/compare/v0.25.1...v0.25.2
