@@ -38,7 +38,7 @@ pub struct PreflightOpts {
 /// and the run says so.
 ///
 /// A git failure while planning keeps the current version, the same way
-/// [`reconcile_sweep`] keeps probing when it cannot place the tag: an
+/// [`super::reconcile_sweep`] keeps probing when it cannot place the tag: an
 /// unanswerable question must not turn the report into an abort.
 fn seed_planned_version(
     ctx: &mut Context,
