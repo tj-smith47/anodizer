@@ -130,8 +130,13 @@ fn preflight_multi_format_unambiguous(
 }
 
 /// Classify an `npm publish` stderr blob as transient (worth retrying) vs.
-/// terminal: HTTP 5xx, ECONNRESET / ETIMEDOUT / EAI_AGAIN socket failures.
-fn is_transient_npm_publish_stderr(stderr: &str) -> bool {
+/// terminal: HTTP 5xx, ECONNRESET / ETIMEDOUT / EAI_AGAIN socket failures,
+/// and `IDENTITY_TOKEN_READ_ERROR`, which is the npm CLI failing to fetch
+/// its OIDC identity token from the GitHub Actions token endpoint. That
+/// fetch is repeated per `npm publish`, and one of seven platform packages
+/// in the v0.28.0 release lost it after the six before it had succeeded
+/// through the same endpoint; the next attempt fetches a fresh token.
+pub(crate) fn is_transient_npm_publish_stderr(stderr: &str) -> bool {
     let s = stderr.to_ascii_uppercase();
     s.contains("5XX")
         || s.contains("503")
@@ -140,6 +145,7 @@ fn is_transient_npm_publish_stderr(stderr: &str) -> bool {
         || s.contains("ECONNRESET")
         || s.contains("ETIMEDOUT")
         || s.contains("EAI_AGAIN")
+        || s.contains("IDENTITY_TOKEN_READ_ERROR")
 }
 
 /// Write a per-run `.npmrc` under `cfg_dir` (0600). For [`NpmAuth::Token`] the

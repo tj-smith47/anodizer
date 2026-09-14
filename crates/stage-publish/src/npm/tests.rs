@@ -24,8 +24,9 @@ use super::publish::{
     AuthDecision, NpmAuth, PackageExistence, assemble_optional_deps_tarball,
     assemble_postinstall_tarball, build_npm_publish_command, decide_auth,
     dist_tag_guarded_against_regression, encode_package_path, guard_latest_regression,
-    is_npm_config_credential_var, probe_dist_tag_latest, probe_package_existence, publish_to_npm,
-    publish_with_oidc_fallback, resolve_auth_for_package, retry_npm_publish, write_npmrc,
+    is_npm_config_credential_var, is_transient_npm_publish_stderr, probe_dist_tag_latest,
+    probe_package_existence, publish_to_npm, publish_with_oidc_fallback, resolve_auth_for_package,
+    retry_npm_publish, write_npmrc,
 };
 use super::publisher::NpmPublisher;
 use anodizer_core::test_helpers::responder::{canned_http_response, spawn_oneshot_http_responder};
@@ -4152,6 +4153,39 @@ fn oidc_failure_no_token_available_does_not_fall_back() {
     );
     assert!(res.is_err(), "no token → failure propagates");
     assert_eq!(attempts, 1, "no retry without a token");
+}
+
+/// Every stderr shape the publisher retries, and two it must not: a 403 is a
+/// credential or ownership answer that re-asking cannot change, and
+/// `EPUBLISHCONFLICT` says the version is already on the registry.
+#[test]
+fn npm_publish_stderr_classifier_names_every_transient_shape() {
+    let transient = [
+        "npm error code E503\nnpm error 503 Service Unavailable",
+        "npm error code E502",
+        "npm error code E504",
+        "npm error 5xx from registry",
+        "npm error code ECONNRESET",
+        "npm error code ETIMEDOUT",
+        "npm error code EAI_AGAIN",
+        "npm error code IDENTITY_TOKEN_READ_ERROR\nnpm error error retrieving identity token\nnpm error cause undefined",
+    ];
+    for stderr in transient {
+        assert!(
+            is_transient_npm_publish_stderr(stderr),
+            "must retry: {stderr}"
+        );
+    }
+    let terminal = [
+        "npm error code E403\nnpm error 403 Forbidden - PUT https://registry.npmjs.org/@x%2fy",
+        "npm error code EPUBLISHCONFLICT\nnpm error cannot publish over the previously published versions",
+    ];
+    for stderr in terminal {
+        assert!(
+            !is_transient_npm_publish_stderr(stderr),
+            "must not retry: {stderr}"
+        );
+    }
 }
 
 #[test]
