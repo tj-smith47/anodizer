@@ -475,7 +475,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
             acc = merge(
                 acc,
                 choco_key_check(
-                    &choco_push_url(feed),
+                    &choco_service_url(feed),
                     feed,
                     &api_key,
                     &policy,
@@ -507,17 +507,18 @@ fn resolve_choco_api_key(ctx: &Context, ch: &anodizer_core::config::ChocolateyCo
         .unwrap_or_default()
 }
 
-/// Normalize a NuGet V2 source URL to its `…/api/v2/package` push endpoint —
-/// the same normalization [`super::package::push_nupkg`] applies so the probe
-/// hits exactly the URL the PUT will.
-fn choco_push_url(source: &str) -> String {
+/// Normalize a NuGet V2 source URL to its `…/api/v2/` service document,
+/// the one route of the feed a GET can succeed on. The push endpoint
+/// `…/api/v2/package` accepts PUT only: push.chocolatey.org answers a GET
+/// there with 404 whatever the key (406 under an `application/json` Accept),
+/// so a probe aimed at it could never report the feed healthy.
+fn choco_service_url(source: &str) -> String {
     let base = source.trim_end_matches('/');
-    if base.ends_with("/api/v2/package") {
-        base.to_string()
-    } else if base.ends_with("/api/v2") {
-        format!("{base}/package")
+    let base = base.strip_suffix("/package").unwrap_or(base);
+    if base.ends_with("/api/v2") {
+        format!("{base}/")
     } else {
-        format!("{base}/api/v2/package")
+        format!("{base}/api/v2/")
     }
 }
 
@@ -544,7 +545,7 @@ enum ChocoKeyProbe {
 /// preflight (`strict`) it is promoted to a blocker (fail-closed).
 #[allow(clippy::too_many_arguments)]
 fn choco_key_check(
-    push_url: &str,
+    service_url: &str,
     feed: &str,
     api_key: &str,
     policy: &anodizer_core::retry::RetryPolicy,
@@ -554,7 +555,7 @@ fn choco_key_check(
     log: &anodizer_core::log::StageLogger,
 ) -> anodizer_core::PreflightCheck {
     use anodizer_core::PreflightCheck;
-    match probe_choco_key(push_url, api_key, policy, deadline, log) {
+    match probe_choco_key(service_url, api_key, policy, deadline, log) {
         ChocoKeyProbe::Valid => PreflightCheck::Pass,
         ChocoKeyProbe::Rejected => fail.apply(format!(
             "chocolatey API key rejected by {feed} (HTTP 401/403); the push will fail. \
@@ -574,25 +575,24 @@ fn choco_key_check(
     }
 }
 
-/// GET against the chocolatey push endpoint carrying the `X-NuGet-ApiKey`
-/// header (the same header the PUT push uses). 2xx ⇒ the feed is reachable
-/// and did not reject the key, 401/403 ⇒ rejected, transport failure ⇒
-/// unreachable, anything else ⇒ ambiguous. `push_url` is passed in full so a
-/// unit test can point the probe at a local responder without a network
-/// round-trip.
+/// The `Accept` the key probe sends; see [`probe_choco_key`].
+const CHOCO_PROBE_ACCEPT: &str = "*/*";
+
+/// GET against the feed's `…/api/v2/` service document carrying the
+/// `X-NuGet-ApiKey` header (the same header the PUT push uses). 2xx ⇒ the
+/// feed is reachable and did not reject the key, 401/403 ⇒ rejected,
+/// transport failure ⇒ unreachable, anything else ⇒ ambiguous. `service_url`
+/// is passed in full so a unit test can point the probe at a local responder
+/// without a network round-trip.
 ///
 /// NuGet V2 has no dedicated key-validation endpoint and its reads are
 /// anonymous, so a 2xx proves reachability and nothing about the key beyond
 /// "not rejected outright" — the strongest pre-push signal obtainable without
-/// performing the (one-way) write itself. The feed content-negotiates: it
-/// answers `Accept: application/json` with 406 and `application/atom+xml`
-/// with 415, so the probe accepts anything, which is what makes a healthy
-/// feed answer 200 instead of an ambiguous status.
-/// The `Accept` the key probe sends; see [`probe_choco_key`].
-const CHOCO_PROBE_ACCEPT: &str = "*/*";
-
+/// performing the (one-way) write itself. The service document
+/// content-negotiates: push.chocolatey.org answers `application/atom+xml`
+/// with 415 and `*/*` with 200, so the probe accepts anything.
 fn probe_choco_key(
-    push_url: &str,
+    service_url: &str,
     api_key: &str,
     policy: &anodizer_core::retry::RetryPolicy,
     deadline: Option<std::time::Instant>,
@@ -611,7 +611,7 @@ fn probe_choco_key(
         SuccessClass::Strict,
         |_| {
             client
-                .get(push_url)
+                .get(service_url)
                 .header("X-NuGet-ApiKey", &key)
                 .header("Accept", CHOCO_PROBE_ACCEPT)
                 .send()
@@ -685,6 +685,25 @@ mod publisher_tests {
         }
     }
 
+    /// Every spelling of a feed resolves to its `…/api/v2/` service document.
+    #[test]
+    fn every_feed_spelling_resolves_to_the_service_document() {
+        for src in [
+            "https://push.chocolatey.org/",
+            "https://push.chocolatey.org",
+            "https://push.chocolatey.org/api/v2",
+            "https://push.chocolatey.org/api/v2/",
+            "https://push.chocolatey.org/api/v2/package",
+            "https://push.chocolatey.org/api/v2/package/",
+        ] {
+            assert_eq!(
+                choco_service_url(src),
+                "https://push.chocolatey.org/api/v2/",
+                "{src}"
+            );
+        }
+    }
+
     #[test]
     fn chocolatey_publisher_classification() {
         let p = ChocolateyPublisher::new();
@@ -740,12 +759,12 @@ mod publisher_tests {
         ));
     }
 
-    /// The push feed content-negotiates: `Accept: application/json` gets a
-    /// 406 and `application/atom+xml` a 415, both of which the probe would
-    /// report as ambiguous on a healthy feed. The probe accepts anything and
+    /// The probe asks the feed's service document, never the PUT-only push
+    /// route (a GET there is 404 on a healthy feed), accepts any content
+    /// type (the document answers `application/atom+xml` with 415), and
     /// still carries the key header the push itself will send.
     #[test]
-    fn chocolatey_key_probe_accepts_any_content_type() {
+    fn chocolatey_key_probe_asks_the_service_document_and_accepts_any_content_type() {
         use anodizer_core::test_helpers::responder::spawn_request_capturing_responder;
         let (addr, captured) =
             spawn_request_capturing_responder("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
@@ -759,6 +778,10 @@ mod publisher_tests {
             PreflightCheck::Pass
         ));
         let request = captured.lock().unwrap().to_ascii_lowercase();
+        assert!(
+            request.starts_with("get /api/v2/ http"),
+            "the probe must ask the service document, not the push route: {request}"
+        );
         assert!(
             request.contains("accept: */*"),
             "the probe must accept any content type: {request}"
