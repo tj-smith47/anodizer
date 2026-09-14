@@ -28,7 +28,7 @@ simple_publisher!(
     "cloudsmith",
     anodizer_core::PublisherGroup::Assets,
     false,
-    Some("CLOUDSMITH_API_KEY package_delete"),
+    Some("CLOUDSMITH_TOKEN package_delete"),
 );
 
 /// One Cloudsmith upload target as recorded in evidence. Operator-readable
@@ -96,6 +96,27 @@ pub(crate) fn cloudsmith_manual_cleanup_msg(target: &CloudsmithTarget) -> String
 /// [`anodizer_core::Publisher::config_fully_inactive`] so the two cannot
 /// diverge. `preflight` keeps its own loop (it needs per-entry endpoint
 /// resolution alongside the filter, not just a boolean).
+/// The API key the rollback DELETE authenticates with: `CLOUDSMITH_API_KEY`
+/// when set, else the publish token (`secret_name`, default
+/// `CLOUDSMITH_TOKEN`) of the first active entry whose variable is set.
+/// Cloudsmith authenticates the upload and the delete with one API key, so
+/// the publish credential is reused instead of being asked for a second time
+/// under a second name.
+pub(crate) fn resolve_rollback_token(ctx: &Context) -> Option<String> {
+    let set = |var: &str| ctx.env_var(var).filter(|v| !v.is_empty());
+    set("CLOUDSMITH_API_KEY").or_else(|| {
+        active_cloudsmith_configs(ctx)
+            .into_iter()
+            .find_map(|entry| {
+                set(&crate::util::resolve_secret_name(
+                    ctx,
+                    entry.secret_name.as_deref(),
+                    "CLOUDSMITH_TOKEN",
+                ))
+            })
+    })
+}
+
 pub(crate) fn active_cloudsmith_configs(
     ctx: &Context,
 ) -> Vec<&anodizer_core::config::CloudSmithConfig> {
@@ -194,14 +215,14 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
             return Ok(());
         }
 
-        // Resolve the API token once; without it nothing can be DELETEd,
-        // so fall back to the warn-only manual-cleanup
-        // checklist for every target. `CLOUDSMITH_API_KEY` is the
-        // rollback-scope env name declared by `rollback_scope_needed`.
-        let token = ctx.env_var("CLOUDSMITH_API_KEY");
+        // Resolve the API key once; without it nothing can be DELETEd, so
+        // fall back to the warn-only manual-cleanup checklist for every
+        // target.
+        let token = resolve_rollback_token(ctx);
         if token.is_none() {
             log.warn(
-                "CLOUDSMITH_API_KEY not set; emitting manual-cleanup checklist instead of DELETE",
+                "no Cloudsmith API key in the environment (CLOUDSMITH_API_KEY or the entry's \
+                 publish token); emitting manual-cleanup checklist instead of DELETE",
             );
         }
 
@@ -387,6 +408,13 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
 
     fn retain_on_rollback(&self) -> bool {
         Self::resolved_retain_on_rollback(self)
+    }
+
+    fn missing_rollback_scope(&self, ctx: &Context) -> Option<&'static str> {
+        if self.retain_on_rollback() || resolve_rollback_token(ctx).is_some() {
+            return None;
+        }
+        Self::ROLLBACK_SCOPE
     }
 }
 

@@ -128,7 +128,7 @@ where it stopped; withdrawing it is always an explicit operator command (see
 | dockerhub | Assets | false | PATCH the repo description back to the pre-publish snapshot | `DOCKER_PASSWORD description snapshot+restore` |
 | artifactory | Assets | false | parallel HTTP DELETE per uploaded URL (404/410 treated as already-absent) | `ARTIFACTORY_TOKEN delete` |
 | uploads | Assets | false | HTTP DELETE per recorded upload URL | `UPLOAD_<NAME>_SECRET delete` |
-| cloudsmith | Assets | false | DELETE `/packages/<org>/<repo>/<slug>/`; warn-only manual checklist when the API key is absent | `CLOUDSMITH_API_KEY package_delete` |
+| cloudsmith | Assets | false | DELETE `/packages/<org>/<repo>/<slug>/`; warn-only manual checklist when the API key is absent | `CLOUDSMITH_TOKEN package_delete` (the publish token; `CLOUDSMITH_API_KEY` overrides it) |
 | blob (s3/gcs/azure) | Assets (own stage) | false | delete each object actually written | provider creds (`AWS_*` / `GOOGLE_APPLICATION_CREDENTIALS` / `AZURE_STORAGE_*`); no single env gate |
 | homebrew (tap + casks) | Manager | false | re-clone, `git revert HEAD --no-edit`, push | `GITHUB_TOKEN contents:write` |
 | scoop (bucket) | Manager | false | re-clone, `git revert HEAD --no-edit`, push | `GITHUB_TOKEN contents:write` |
@@ -374,6 +374,19 @@ withdrawn. Preflight reports missing scope as:
 
 - A warning under default settings.
 - A blocker under `--strict`.
+
+The question is asked of the run as configured, so nothing is reported
+for:
+
+- a publisher with `retain_on_rollback: true` (its work is never unwound);
+- a publisher every one of whose entries is `skip: true` or gated off;
+- a credential the publish itself resolves per entry (`artifactory`,
+  `uploads`: the `<PREFIX>_<NAME>_{USERNAME,SECRET}` pair; `cloudsmith`:
+  the entry's publish token);
+- a credential issued from the Actions OIDC context: `cargo` under
+  `auth: oidc`, `npm` under `auth: auto` or `oidc` with the context present
+  (an `npm unpublish` needs a stored token, which such a run has chosen not
+  to hold), and `mcp` under `auth.type: github-oidc`.
 
 ## `--fail-fast` vs. default
 
@@ -825,7 +838,7 @@ github-release  delete release + delete uploaded assets (tag refs untouched)
 dockerhub       PATCH the repo description back to the pre-publish snapshot
 artifactory     parallel HTTP DELETE per uploaded URL (404/410 treated as already-absent)
 uploads         HTTP DELETE per recorded upload URL
-cloudsmith      DELETE per package slug; warn-only checklist when CLOUDSMITH_API_KEY is unset
+cloudsmith      DELETE per package slug; warn-only checklist when no API key is set (CLOUDSMITH_API_KEY, else the entry's publish token)
 blob            delete each object actually written (post-upload evidence snapshot)
 homebrew/scoop/nix/aur  re-clone, git revert HEAD --no-edit, git push
 krew            list open PRs by head=<fork>:<branch>, PATCH state=closed per match

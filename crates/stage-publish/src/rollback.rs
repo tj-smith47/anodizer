@@ -447,9 +447,7 @@ pub(crate) fn execute_rollback_step(
         return (current.clone(), RollbackDisposition::Retained);
     }
 
-    if let Some(label) = publisher.rollback_scope_needed()
-        && !crate::scope::scope_available_with_env(label, ctx.env_source())
-    {
+    if let Some(label) = publisher.missing_rollback_scope(ctx) {
         log.warn(&crate::scope::warn_scope_unavailable_msg(
             prefix, name, label,
         ));

@@ -521,11 +521,13 @@ fn apply_inferred_repository(
     }
 }
 
-/// Emit the experimental-warning banner the first time the publisher runs in
-/// this process; subsequent invocations are silent. The atomic flag is
-/// process-wide.
+/// Emit the experimental note the first time the publisher runs in this
+/// process; subsequent invocations are silent. The atomic flag is
+/// process-wide. It is a verbose note: a publisher the operator configured
+/// is a decision already taken, and a `Warning` on every release for it
+/// reads as a defect in a clean run.
 ///
-/// Returns `true` if THIS call emitted the warning (the swap flipped the
+/// Returns `true` if THIS call emitted the note (the swap flipped the
 /// flag from `false` to `true`), `false` otherwise. The return value lets
 /// tests assert one-shot semantics without depending on test-ordering
 /// (a previous in-process test could have already flipped the flag, so
@@ -533,7 +535,7 @@ fn apply_inferred_repository(
 /// can ignore the return value.
 fn warn_experimental_once(log: &StageLogger) -> bool {
     if !EXPERIMENTAL_WARNED.swap(true, Ordering::SeqCst) {
-        log.warn(
+        log.verbose(
             "mcp is experimental and subject to change. Keep an eye on the \
              release notes if you wish to rely on this for production builds; \
              feedback at https://github.com/tj-smith47/anodizer/issues",

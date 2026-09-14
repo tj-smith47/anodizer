@@ -11,7 +11,7 @@ use std::fs;
 mod client;
 mod collect;
 mod publisher;
-mod rollback;
+pub(crate) mod rollback;
 mod upload;
 
 pub use client::*;

@@ -193,6 +193,25 @@ pub trait Publisher: Send + Sync {
         None
     }
 
+    /// The rollback credential this context cannot reach, if any.
+    ///
+    /// `Some(label)` when [`Publisher::rollback_scope_needed`] names a scope
+    /// and the env var its label opens with is unset (or empty) in `ctx`'s
+    /// env source. `None` when no scope is needed, when the credential is
+    /// present, or when [`Publisher::retain_on_rollback`] is set — a
+    /// publisher whose work is never unwound needs no credential to unwind
+    /// it. Both the preflight and `anodizer tag rollback` ask this one
+    /// question, so a publisher whose credential is issued at publish time
+    /// (Trusted Publishing) or resolved per entry overrides it here and the
+    /// two paths agree.
+    fn missing_rollback_scope(&self, ctx: &Context) -> Option<&'static str> {
+        if self.retain_on_rollback() {
+            return None;
+        }
+        self.rollback_scope_needed()
+            .filter(|label| !rollback_scope_label_available(label, ctx.env_source()))
+    }
+
     /// Environment requirements this publisher derives from the resolved
     /// config: CLI tools it spawns, env vars/secrets it reads, endpoints
     /// it talks to, key material it loads.
@@ -254,6 +273,22 @@ pub trait Publisher: Send + Sync {
     fn retain_on_rollback(&self) -> bool {
         false
     }
+}
+
+/// Whether the env var a rollback-scope label opens with is set to a
+/// non-empty value.
+///
+/// A label reads `"CARGO_REGISTRY_TOKEN yank"`: the first whitespace-separated
+/// token names the variable, and the rest describes the scope for the
+/// operator (it cannot be verified against the token without an API
+/// round-trip). `GITHUB_TOKEN` resolves through the canonical GitHub-token
+/// chain, so its `ANODIZER_GITHUB_TOKEN` alias counts.
+pub fn rollback_scope_label_available<E: crate::EnvSource + ?Sized>(label: &str, env: &E) -> bool {
+    let env_var = label.split_once(' ').map(|(v, _)| v).unwrap_or(label);
+    if env_var == "GITHUB_TOKEN" {
+        return crate::git::resolve_github_token_with_env(None, &|key| env.var(key)).is_some();
+    }
+    env.var(env_var).map(|v| !v.is_empty()).unwrap_or(false)
 }
 
 /// The exact warn message a publisher emits when `rollback()` is invoked
@@ -397,6 +432,49 @@ mod tests {
             );
             assert!(msg.contains("no state to undo"), "{mode}: {msg}");
         }
+    }
+
+    #[test]
+    fn a_retained_publisher_has_no_missing_rollback_scope() {
+        struct Retained;
+        impl Publisher for Retained {
+            fn name(&self) -> &str {
+                "retained"
+            }
+            fn group(&self) -> PublisherGroup {
+                PublisherGroup::Manager
+            }
+            fn required(&self) -> bool {
+                false
+            }
+            fn rollback_scope_needed(&self) -> Option<&'static str> {
+                Some("RETAINED_TOKEN delete")
+            }
+            fn retain_on_rollback(&self) -> bool {
+                true
+            }
+            fn skips_on_nightly(&self) -> bool {
+                false
+            }
+            fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
+                Ok(PublishEvidence::new("retained"))
+            }
+        }
+        let mut ctx = Context::test_fixture();
+        ctx.set_env_source(crate::MapEnvSource::new());
+        assert_eq!(Retained.missing_rollback_scope(&ctx), None);
+        assert!(!rollback_scope_label_available(
+            "RETAINED_TOKEN delete",
+            &crate::MapEnvSource::new()
+        ));
+        assert!(rollback_scope_label_available(
+            "RETAINED_TOKEN delete",
+            &crate::MapEnvSource::new().with("RETAINED_TOKEN", "x")
+        ));
+        assert!(rollback_scope_label_available(
+            "GITHUB_TOKEN contents:write",
+            &crate::MapEnvSource::new().with("ANODIZER_GITHUB_TOKEN", "x")
+        ));
     }
 
     #[test]

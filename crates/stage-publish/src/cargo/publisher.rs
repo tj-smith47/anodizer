@@ -269,6 +269,25 @@ impl anodizer_core::Publisher for CargoPublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    /// Under Trusted Publishing the yank credential is the token issued
+    /// for the publish, kept live for the in-process rollback, so no stored
+    /// `CARGO_REGISTRY_TOKEN` is expected while the OIDC context is present.
+    fn missing_rollback_scope(&self, ctx: &Context) -> Option<&'static str> {
+        if self.retain_on_rollback() {
+            return None;
+        }
+        let active = active_cargo_configs(ctx);
+        let oidc_only = !active.is_empty()
+            && active
+                .iter()
+                .all(|c| c.resolved_auth() == anodizer_core::config::CargoAuthMode::Oidc);
+        if oidc_only && super::oidc::oidc_context_available(ctx) {
+            return None;
+        }
+        Self::ROLLBACK_SCOPE
+            .filter(|label| !anodizer_core::rollback_scope_label_available(label, ctx.env_source()))
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let selected = ctx.options.selected_crates.clone();

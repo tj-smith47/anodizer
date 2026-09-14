@@ -11,7 +11,7 @@ Anodizer can upload deb, rpm, and apk packages to [Cloudsmith](https://cloudsmit
 
 | Group | Required (default) | Rollback | Token scope |
 |---|---|---|---|
-| Assets | false | structured warn line per (org, repo, filename) tuple (DELETE migration pending) | `CLOUDSMITH_API_KEY package_delete` |
+| Assets | false | DELETE `/packages/<org>/<repo>/<slug>/` per uploaded package; a warn-only manual checklist when no API key is set | `CLOUDSMITH_TOKEN package_delete` (the publish token; `CLOUDSMITH_API_KEY` overrides it) |
 
 See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
 

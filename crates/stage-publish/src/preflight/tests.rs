@@ -2035,3 +2035,102 @@ mod publish_simulation_spawn {
         }
     }
 }
+
+/// A publisher whose work is never unwound (`retain_on_rollback: true`)
+/// needs no credential to unwind it, so its absent scope is not a finding.
+#[test]
+fn a_retained_publisher_is_not_asked_for_its_rollback_scope() {
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    let mut ctx = fixture_cargo_publisher(true);
+    ctx.set_env_source(anodizer_core::MapEnvSource::new());
+    ctx.config.crates[0]
+        .publish
+        .as_mut()
+        .unwrap()
+        .cargo
+        .as_mut()
+        .unwrap()
+        .retain_on_rollback = Some(true);
+    let log = StageLogger::new("preflight", Verbosity::Normal);
+    let report = run_preflight_with_factory(&mut ctx, &log, &empty_factory()).expect("ok");
+
+    assert!(report.blockers.is_empty(), "{:?}", report.blockers);
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|w| w.contains("CARGO_REGISTRY_TOKEN")),
+        "{:?}",
+        report.warnings
+    );
+}
+
+/// Under `auth: oidc` the yank credential is issued with the publish, so a
+/// run holding the Actions OIDC context and no stored token is complete.
+#[test]
+fn an_oidc_cargo_publisher_with_the_actions_context_has_its_rollback_scope() {
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    let mut ctx = fixture_cargo_publisher(true);
+    ctx.config.crates[0]
+        .publish
+        .as_mut()
+        .unwrap()
+        .cargo
+        .as_mut()
+        .unwrap()
+        .auth = Some(anodizer_core::config::CargoAuthMode::Oidc);
+    let log = StageLogger::new("preflight", Verbosity::Normal);
+
+    // Without the context nothing can issue a token: still a finding.
+    ctx.set_env_source(anodizer_core::MapEnvSource::new());
+    let report = run_preflight_with_factory(&mut ctx, &log, &empty_factory()).expect("ok");
+    assert_eq!(report.blockers.len(), 1, "{:?}", report.blockers);
+
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with(
+                crate::actions_oidc::REQUEST_URL_VAR,
+                "https://token.actions/",
+            )
+            .with(crate::actions_oidc::REQUEST_TOKEN_VAR, "req"),
+    );
+    let report = run_preflight_with_factory(&mut ctx, &log, &empty_factory()).expect("ok");
+    assert!(report.blockers.is_empty(), "{:?}", report.blockers);
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|w| w.contains("CARGO_REGISTRY_TOKEN")),
+        "{:?}",
+        report.warnings
+    );
+}
+
+/// A publisher every one of whose entries is `skip: true` never runs, so
+/// the gate asks it nothing — mirroring the dispatch chokepoint.
+#[test]
+fn a_config_skipped_publisher_is_not_asked_for_its_rollback_scope() {
+    use anodizer_core::config::{ArtifactoryConfig, StringOrBool};
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    let mut ctx = fixture_cargo_publisher(true);
+    ctx.config.crates[0].publish = None;
+    ctx.config.artifactories = Some(vec![ArtifactoryConfig {
+        name: Some("production".to_string()),
+        target: Some("https://artifactory.example.com/generic-local/".to_string()),
+        skip: Some(StringOrBool::Bool(true)),
+        ..Default::default()
+    }]);
+    ctx.set_env_source(anodizer_core::MapEnvSource::new());
+    let log = StageLogger::new("preflight", Verbosity::Normal);
+    let report = run_preflight_with_factory(&mut ctx, &log, &empty_factory()).expect("ok");
+
+    assert!(
+        report.blockers.is_empty() && !report.warnings.iter().any(|w| w.contains("artifactory")),
+        "blockers {:?} warnings {:?}",
+        report.blockers,
+        report.warnings
+    );
+}

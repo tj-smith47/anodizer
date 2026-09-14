@@ -363,6 +363,30 @@ impl anodizer_core::Publisher for McpPublisher {
     fn retain_on_rollback(&self) -> bool {
         Self::resolved_retain_on_rollback(self)
     }
+
+    /// The status-mutation rollback obtains its registry JWT the same way
+    /// the publish did: `MCP_GITHUB_TOKEN` only backs the `github` method.
+    /// An anonymous publish has nothing to authenticate, and `github-oidc`
+    /// exchanges the Actions id-token, so neither names a stored secret.
+    fn missing_rollback_scope(&self, ctx: &Context) -> Option<&'static str> {
+        use anodizer_core::config::McpAuthMethod;
+        if self.retain_on_rollback() {
+            return None;
+        }
+        match ctx.config.mcp.auth.method {
+            McpAuthMethod::None => None,
+            McpAuthMethod::GithubOidc
+                if crate::actions_oidc::context_available(|k| ctx.env_var(k)) =>
+            {
+                None
+            }
+            McpAuthMethod::Github | McpAuthMethod::GithubOidc => {
+                Self::ROLLBACK_SCOPE.filter(|label| {
+                    !anodizer_core::rollback_scope_label_available(label, ctx.env_source())
+                })
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -843,5 +867,39 @@ mod publisher_tests {
             !raw.contains("/io.github.user/weather/"),
             "unencoded slash must not appear in path segment: {raw}"
         );
+    }
+
+    /// `MCP_GITHUB_TOKEN` backs the `github` method only: anonymous and
+    /// `github-oidc` (with the Actions context) name no missing scope.
+    #[test]
+    fn only_the_github_method_names_a_missing_rollback_scope() {
+        let p = McpPublisher::new();
+        let mut ctx = rollback_ctx("io.github.acme/tool", "https://registry.example");
+        ctx.set_env_source(anodizer_core::MapEnvSource::new());
+        assert_eq!(p.missing_rollback_scope(&ctx), None);
+
+        ctx.config.mcp.auth.method = McpAuthMethod::Github;
+        assert_eq!(
+            p.missing_rollback_scope(&ctx),
+            Some("MCP_GITHUB_TOKEN status-mutation")
+        );
+        ctx.set_env_source(anodizer_core::MapEnvSource::new().with("MCP_GITHUB_TOKEN", "pat"));
+        assert_eq!(p.missing_rollback_scope(&ctx), None);
+
+        ctx.config.mcp.auth.method = McpAuthMethod::GithubOidc;
+        ctx.set_env_source(anodizer_core::MapEnvSource::new());
+        assert_eq!(
+            p.missing_rollback_scope(&ctx),
+            Some("MCP_GITHUB_TOKEN status-mutation")
+        );
+        ctx.set_env_source(
+            anodizer_core::MapEnvSource::new()
+                .with(
+                    crate::actions_oidc::REQUEST_URL_VAR,
+                    "https://token.actions/",
+                )
+                .with(crate::actions_oidc::REQUEST_TOKEN_VAR, "req"),
+        );
+        assert_eq!(p.missing_rollback_scope(&ctx), None);
     }
 }

@@ -30,7 +30,7 @@ fn cloudsmith_publisher_classification() {
     assert!(!p.required());
     assert_eq!(
         p.rollback_scope_needed(),
-        Some("CLOUDSMITH_API_KEY package_delete")
+        Some("CLOUDSMITH_TOKEN package_delete")
     );
 }
 
@@ -386,4 +386,43 @@ fn retain_on_rollback_defaults_false_and_honours_override() {
     assert!(!CloudsmithPublisher::new().retain_on_rollback());
     let opted_out = CloudsmithPublisher::with_overrides(None, Some(true));
     assert!(opted_out.retain_on_rollback());
+}
+
+/// One Cloudsmith API key authenticates the upload and the delete, so the
+/// publish token satisfies the rollback scope; `CLOUDSMITH_API_KEY` still
+/// wins when set, and a differently named `secret_name` is honored.
+#[test]
+fn the_publish_token_satisfies_the_rollback_scope() {
+    let p = CloudsmithPublisher::new();
+    let entry = |secret_name: Option<&str>| CloudSmithConfig {
+        organization: Some("acme".to_string()),
+        repository: Some("widget".to_string()),
+        secret_name: secret_name.map(str::to_string),
+        ..Default::default()
+    };
+    let mut ctx = TestContextBuilder::new().build();
+    ctx.config.cloudsmiths = Some(vec![entry(None)]);
+
+    ctx.set_env_source(anodizer_core::MapEnvSource::new());
+    assert_eq!(
+        p.missing_rollback_scope(&ctx),
+        Some("CLOUDSMITH_TOKEN package_delete")
+    );
+    assert_eq!(resolve_rollback_token(&ctx), None);
+
+    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("CLOUDSMITH_TOKEN", "pub"));
+    assert_eq!(p.missing_rollback_scope(&ctx), None);
+    assert_eq!(resolve_rollback_token(&ctx).as_deref(), Some("pub"));
+
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("CLOUDSMITH_TOKEN", "pub")
+            .with("CLOUDSMITH_API_KEY", "explicit"),
+    );
+    assert_eq!(resolve_rollback_token(&ctx).as_deref(), Some("explicit"));
+
+    ctx.config.cloudsmiths = Some(vec![entry(Some("CS_PUSH"))]);
+    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("CS_PUSH", "named"));
+    assert_eq!(resolve_rollback_token(&ctx).as_deref(), Some("named"));
+    assert_eq!(p.missing_rollback_scope(&ctx), None);
 }

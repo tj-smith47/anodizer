@@ -146,13 +146,24 @@ impl Stage for UpxStage {
 
             if matching_artifacts.is_empty() {
                 let id_label = upx_cfg.id.as_deref().unwrap_or("default");
-                ctx.strict_guard(
-                    &log,
-                    &format!(
-                        "no matching binary artifacts to compress (upx[{}])",
+                // Binaries exist and the config's `ids:`/`targets:` chose none
+                // of them: that is the operator's selection at work (a shard
+                // building only targets the list excludes), not a defect.
+                // No binary at all is the one no-match worth a warning.
+                if binary_artifacts.is_empty() {
+                    ctx.strict_guard(
+                        &log,
+                        &format!(
+                            "no matching binary artifacts to compress (upx[{}])",
+                            id_label
+                        ),
+                    )?;
+                } else {
+                    log.verbose(&format!(
+                        "upx[{}]: no registered binary matches its ids/targets filters — nothing to compress",
                         id_label
-                    ),
-                )?;
+                    ));
+                }
                 continue;
             }
 
@@ -1211,18 +1222,41 @@ crates: []
             assert_eq!(std::fs::read(&fx.binary_path).unwrap(), b"0123456789");
         }
 
+        /// A `targets:` list that excludes every binary this run built is the
+        /// operator's selection (a shard building only excluded targets), so
+        /// it is a verbose note; a run that registered no binary at all warns.
         #[test]
-        fn live_run_no_matching_artifacts_warns_and_continues() {
+        fn live_run_no_matching_artifacts_is_a_verbose_note_and_continues() {
             let fx = LiveFixture::new(b"0123456789");
             fx.tools.tool("upx").install();
             let mut ctx = fx.ctx(|cfg| {
                 cfg.targets = Some(vec!["aarch64-*".to_string()]);
             });
+            let cap = anodizer_core::log::LogCapture::new();
+            ctx.with_log_capture(cap.clone());
 
             UpxStage
                 .run(&mut ctx)
-                .expect("no-match is a warn, not an error");
+                .expect("no-match is a note, not an error");
             assert!(!fx.tools.was_called("upx"));
+            assert_eq!(cap.warn_count(), 0, "{:?}", cap.warn_messages());
+            assert!(
+                cap.all_messages()
+                    .iter()
+                    .any(|(_, m)| m.contains("no registered binary matches")),
+                "{:?}",
+                cap.all_messages()
+            );
+
+            let mut ctx = fx.ctx(|_| {});
+            ctx.artifacts = Default::default();
+            let cap = anodizer_core::log::LogCapture::new();
+            ctx.with_log_capture(cap.clone());
+            UpxStage.run(&mut ctx).expect("no binaries is a warning");
+            assert_eq!(
+                cap.warn_messages(),
+                vec!["no matching binary artifacts to compress (upx[default])".to_string()]
+            );
         }
 
         #[test]

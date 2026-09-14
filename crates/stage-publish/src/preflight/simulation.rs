@@ -551,17 +551,18 @@ pub(super) fn run_publisher_preflight_extension(
         // Mirror the run path's skip set (`dispatch::dispatch`): a publisher
         // the release will not run must contribute nothing to the gate — no
         // live credential/repo probe AND no rollback-scope blocker. Probing a
-        // deselected (`--skip`/`--publishers`) or nightly-skipped publisher can
-        // manufacture a false Blocker against an irreversible door that never
-        // opens this run.
-        if ctx.publisher_deselected(p.name()) || (ctx.is_nightly() && p.skips_on_nightly()) {
+        // deselected (`--skip`/`--publishers`), nightly-skipped or
+        // `skip: true` publisher can manufacture a false Blocker against an
+        // irreversible door that never opens this run.
+        if ctx.publisher_deselected(p.name())
+            || (ctx.is_nightly() && p.skips_on_nightly())
+            || p.config_fully_inactive(ctx)
+        {
             continue;
         }
 
         // ---- rollback scope check ------------------------------------
-        if let Some(label) = p.rollback_scope_needed()
-            && !crate::scope::scope_available_with_env(label, ctx.env_source())
-        {
+        if let Some(label) = p.missing_rollback_scope(ctx) {
             let msg = crate::scope::warn_scope_unavailable_msg("preflight", p.name(), label);
             if ctx.options.strict {
                 report.blockers.push(msg);

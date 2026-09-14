@@ -118,6 +118,28 @@ impl anodizer_core::Publisher for NpmPublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    /// `npm unpublish` needs a long-lived token, which a run publishing
+    /// through Trusted Publishing has by design not stored. When every
+    /// active entry can publish through OIDC (`auth: oidc`, or `auto` with
+    /// no token present) and the OIDC context is there, the absent token is
+    /// the chosen configuration; the per-package rollback still says so at
+    /// the moment it runs.
+    fn missing_rollback_scope(&self, ctx: &Context) -> Option<&'static str> {
+        if self.retain_on_rollback() {
+            return None;
+        }
+        let active = active_npm_configs(ctx);
+        let token_free = !active.is_empty()
+            && active
+                .iter()
+                .all(|c| c.auth != anodizer_core::config::NpmAuthMode::Token);
+        if token_free && super::auth::resolve_oidc_env(ctx).is_some() {
+            return None;
+        }
+        Self::ROLLBACK_SCOPE
+            .filter(|label| !anodizer_core::rollback_scope_label_available(label, ctx.env_source()))
+    }
+
     /// Preflight credentials per active `npms[]` entry, gated on each entry's
     /// [`NpmAuthMode`](anodizer_core::config::NpmAuthMode) (the same field
     /// `resolve_auth_for_package` reads at publish time):
@@ -830,6 +852,7 @@ mod preflight_tests {
 
 #[cfg(test)]
 mod config_fully_inactive_tests {
+    use super::NpmPublisher;
     use anodizer_core::Publisher;
     use anodizer_core::config::{Config, NpmConfig, StringOrBool};
     use anodizer_core::context::{Context, ContextOptions};
@@ -880,6 +903,44 @@ mod config_fully_inactive_tests {
             !super::NpmPublisher::new().config_fully_inactive(&ctx),
             "an active npms[] entry must keep the publisher live"
         );
+    }
+    /// A run that publishes through Trusted Publishing has, by design, no
+    /// long-lived token to unpublish with: `auth: auto` or `oidc` with the
+    /// Actions context present names no missing scope, while `auth: token`
+    /// (and any mode without the context) still does.
+    #[test]
+    fn an_oidc_capable_run_names_no_missing_rollback_scope() {
+        use anodizer_core::config::NpmAuthMode;
+        let entry = |auth: NpmAuthMode| NpmConfig {
+            name: Some("pkg".to_string()),
+            auth,
+            ..Default::default()
+        };
+        let p = NpmPublisher::new();
+        let oidc_env = || {
+            anodizer_core::MapEnvSource::new()
+                .with(
+                    crate::actions_oidc::REQUEST_URL_VAR,
+                    "https://token.actions/",
+                )
+                .with(crate::actions_oidc::REQUEST_TOKEN_VAR, "req")
+        };
+
+        let mut ctx = ctx_with_npms(vec![entry(NpmAuthMode::Auto)]);
+        ctx.set_env_source(anodizer_core::MapEnvSource::new());
+        assert_eq!(p.missing_rollback_scope(&ctx), Some("NPM_TOKEN unpublish"));
+        ctx.set_env_source(oidc_env());
+        assert_eq!(p.missing_rollback_scope(&ctx), None);
+
+        let mut ctx = ctx_with_npms(vec![entry(NpmAuthMode::Oidc)]);
+        ctx.set_env_source(oidc_env());
+        assert_eq!(p.missing_rollback_scope(&ctx), None);
+
+        let mut ctx = ctx_with_npms(vec![entry(NpmAuthMode::Token)]);
+        ctx.set_env_source(oidc_env());
+        assert_eq!(p.missing_rollback_scope(&ctx), Some("NPM_TOKEN unpublish"));
+        ctx.set_env_source(oidc_env().with("NPM_TOKEN", "t"));
+        assert_eq!(p.missing_rollback_scope(&ctx), None);
     }
 }
 

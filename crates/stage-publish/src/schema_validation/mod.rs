@@ -169,6 +169,15 @@ pub(crate) struct ExternalValidator<'a> {
     pub tool_required: bool,
 }
 
+/// Whether this is the first time the process has found `tool` absent.
+fn first_absence_of(tool: &str) -> bool {
+    static SEEN: std::sync::Mutex<std::collections::BTreeSet<String>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    SEEN.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(tool.to_string())
+}
+
 /// Run an external syntax/schema validator over freshly rendered publisher
 /// artifacts, returning one [`SchemaFinding`] per diagnostic.
 ///
@@ -178,8 +187,10 @@ pub(crate) struct ExternalValidator<'a> {
 ///   real publish/preflight gate): the missing tool is a `(root)`
 ///   [`SchemaFinding`] that fails the floor — a malformed artifact must not
 ///   clear this gate and surface only in the registry's irreversible queue.
-/// - otherwise (lenient local check/dry-run, or a reversible publisher): logs
-///   `cfg.skip_message` and returns no findings; the structural floor stands.
+/// - otherwise (lenient local check/dry-run, or a reversible publisher): notes
+///   `cfg.skip_message` under `-v`, once per tool per process, and returns no
+///   findings; the structural floor stands. Preflight has already named the
+///   absent tool once as a recommendation.
 ///
 /// A probe *error* is never silently coerced into "tool absent" — it routes
 /// through the same escalation as a clean "not on PATH" so a wedged probe on a
@@ -229,8 +240,11 @@ where
             log.warn(&format!(
                 "{publisher}: {detail}; skipping {tool} schema validation"
             ));
-        } else {
-            log.warn(cfg.skip_message);
+        } else if first_absence_of(tool) {
+            // Preflight already reported the recommended tool once at default
+            // verbosity; the floor standing in is detail, said once per tool
+            // however many entries (or passes) render through it.
+            log.verbose(cfg.skip_message);
         }
         return Ok(Vec::new());
     }

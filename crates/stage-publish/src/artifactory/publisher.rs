@@ -317,4 +317,30 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
     fn retain_on_rollback(&self) -> bool {
         Self::resolved_retain_on_rollback(self)
     }
+
+    /// The DELETE authenticates per entry through the publish path's own
+    /// credential cascade (`ARTIFACTORY_<NAME>_{USERNAME,SECRET}` or the
+    /// entry's `username`/`password`), with `ARTIFACTORY_TOKEN` /
+    /// `ARTIFACTORY_SECRET` as the whole-publisher fallback the rollback
+    /// reads. The scope is missing only when no active entry resolves a
+    /// credential by any of those routes.
+    fn missing_rollback_scope(&self, ctx: &Context) -> Option<&'static str> {
+        if self.retain_on_rollback() {
+            return None;
+        }
+        let token_set = ["ARTIFACTORY_TOKEN", "ARTIFACTORY_SECRET"]
+            .iter()
+            .any(|var| ctx.env_var(var).is_some_and(|v| !v.is_empty()));
+        let every_entry_resolves = active_artifactory_configs(ctx)
+            .iter()
+            .filter_map(|entry| entry.name.as_deref())
+            .all(|name| {
+                super::rollback::resolve_rollback_credentials(ctx, name)
+                    .is_some_and(|(u, pw)| !u.is_empty() && !pw.is_empty())
+            });
+        if token_set || every_entry_resolves {
+            return None;
+        }
+        Self::ROLLBACK_SCOPE
+    }
 }

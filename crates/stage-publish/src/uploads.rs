@@ -852,6 +852,28 @@ impl anodizer_core::Publisher for UploadsPublisher {
     fn retain_on_rollback(&self) -> bool {
         Self::resolved_retain_on_rollback(self)
     }
+
+    /// The DELETE authenticates per entry through the publish path's own
+    /// credential cascade (`UPLOAD_<NAME>_{USERNAME,SECRET}` or the entry's
+    /// `username`/`password`); the label names the pattern, never a
+    /// variable that exists. The scope is missing only when some active
+    /// entry resolves no credential.
+    fn missing_rollback_scope(&self, ctx: &Context) -> Option<&'static str> {
+        if self.retain_on_rollback() {
+            return None;
+        }
+        let every_entry_resolves = active_upload_configs(ctx)
+            .iter()
+            .filter_map(|entry| entry.name.as_deref())
+            .all(|name| {
+                resolve_rollback_credentials(ctx, name)
+                    .is_some_and(|(u, pw)| !u.is_empty() && !pw.is_empty())
+            });
+        if every_entry_resolves {
+            return None;
+        }
+        Self::ROLLBACK_SCOPE
+    }
 }
 
 /// Resolve `(username, password)` for a generic upload entry at rollback time,
@@ -2424,6 +2446,7 @@ mod dryrun_and_pure_tests {
     use anodizer_core::config::{Config, UploadConfig};
     use anodizer_core::context::{Context, ContextOptions};
     use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::{MapEnvSource, Publisher};
     use std::collections::HashMap;
 
     /// A dry-run context whose single `uploads:` entry sets every optional
@@ -2710,5 +2733,33 @@ mod dryrun_and_pure_tests {
             !targets.iter().any(|t| t.entry == "gated"),
             "deselected `if: false` entry leaked a phantom rollback target: {targets:?}"
         );
+    }
+
+    /// The rollback scope is the per-entry credential cascade, never a
+    /// variable literally named `UPLOAD_<NAME>_SECRET`: an entry whose pair
+    /// resolves has its scope, one whose pair is absent does not.
+    #[test]
+    fn the_per_entry_credential_satisfies_the_rollback_scope() {
+        let config = Config {
+            uploads: Some(vec![UploadConfig {
+                name: Some("my-mirror".to_string()),
+                target: "https://uploads.example.com/".to_string(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.set_env_source(MapEnvSource::new());
+        let p = UploadsPublisher::new();
+        assert_eq!(
+            p.missing_rollback_scope(&ctx),
+            Some("UPLOAD_<NAME>_SECRET delete")
+        );
+
+        ctx.template_vars_mut()
+            .set_env("UPLOAD_MY_MIRROR_USERNAME", "deployer");
+        ctx.template_vars_mut()
+            .set_env("UPLOAD_MY_MIRROR_SECRET", "tok");
+        assert_eq!(p.missing_rollback_scope(&ctx), None);
     }
 }
