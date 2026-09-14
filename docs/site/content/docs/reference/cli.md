@@ -48,8 +48,6 @@ Run the full release pipeline. Re-running the identical command converges on alr
 | `--host-targets` | — | — | Build every configured target this host can build, skipping cross-compile-only targets (apple targets on a non-macOS host). Only valid with --snapshot or --dry-run. Used by `task prepush` to do a real host-scoped build without aborting on un-buildable targets. |
 | `--release-notes` | — | — | Path to a custom release notes file (overrides changelog) |
 | `--workspace` | — | — | Release a specific workspace in a monorepo config |
-| `--preflight` | — | — | Run pre-flight publisher-state check and exit (don't start the pipeline) |
-| `--preflight-secrets` | — | — | Validate that all required publish secrets / credentials are present (and key material is well-formed) without checking host-local tools — for a central pre-release gate across decoupled CI runners. Checks and exits; does not start the pipeline. |
 | `--draft` | — | — | Set the release as a draft |
 | `--release-header` | — | — | Path to a file containing custom release header text |
 | `--release-header-tmpl` | — | — | Path to a template file for release header (rendered with template variables) |
@@ -172,7 +170,7 @@ Check availability of required external tools
 
 ### `anodizer preflight`
 
-Verify the environment can run the configured release: required tools, env vars/secrets (presence only — values are never printed), endpoint reachability, docker daemon, and loadable key material, all derived from the resolved config. Every failure is reported in one pass and the exit code is non-zero when anything is missing. The same checks run automatically at the start of `anodizer release`. Also prints the per-publisher reconcile table (is the target version already published?); only a required publisher's content divergence exits non-zero — an already-complete or unreachable publisher does not
+Run the release preflight without releasing: the environment check (required tools, env vars/secrets by presence only — values are never printed — endpoint reachability, docker daemon, loadable key material), the one-way-door publisher state and credential probes, and the per-publisher reconcile table (is the target version already published?), all derived from the resolved config. The target version is the one this tree would release: the tag at HEAD, or the next version `anodizer tag` would cut. Every failure is reported in one pass; the exit code is non-zero on a missing requirement, a publisher blocker, or a required publisher's content divergence. The same engine runs at the start of `anodizer release`, which `--skip=preflight` leaves out when a pre-tag job already ran it
 
 
 | Flag | Short | Default | Description |

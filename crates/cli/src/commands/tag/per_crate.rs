@@ -96,60 +96,27 @@ pub(crate) fn compute_per_crate_tags(
         let bump = detect_bump_demoted(&all_messages, &group_cfg, prev_tag.as_deref());
 
         // The group's own manifest version drives the same Cargo-ahead model
-        // the lockstep path applies: a manifest strictly ahead of the previous
-        // tag is a release signal, and one ahead of the tag-derived version
-        // wins the derivation (so a first tag starts from the crate's real
-        // `[package].version`, not the `initial_version` sentinel).
-        let group_cargo_ver = group_manifest_version(group, workspace_root);
-        let cargo_ahead = manifest_version_ahead(
-            group_cargo_ver.as_deref(),
-            prev_tag
-                .as_deref()
-                .and_then(|t| git::parse_semver_tag(t).ok())
-                .map(|p| (p.major, p.minor, p.patch)),
-        );
-
-        if bump == BumpKind::None && !cargo_ahead {
+        // the lockstep path applies, so a first tag starts from the crate's
+        // real `[package].version`.
+        let Some(plan) = planned_version(
+            PlanInputs {
+                cfg: &group_cfg,
+                prev_tag: prev_tag.as_deref(),
+                bump,
+                cargo_current_ver: group_manifest_version(group, workspace_root),
+                version_override: None,
+            },
+            log,
+        )?
+        else {
             log.verbose(&format!(
                 "skipped group {:?} — no bump signal and Cargo.toml not ahead",
                 group.iter().map(|c| c.name.as_str()).collect::<Vec<_>>()
             ));
             continue;
-        }
-
-        let (new_major, new_minor, new_patch, old_tag_str) = if let Some(ref prev) = prev_tag {
-            let base = git::parse_semver_tag(prev)?;
-            let (maj, min, pat) = apply_bump(base.major, base.minor, base.patch, &bump);
-            (maj, min, pat, prev.as_str())
-        } else {
-            let base = git::parse_semver_tag(&format!("{}{}", tag_prefix, cfg.initial_version))
-                .unwrap_or(git::SemVer {
-                    major: 0,
-                    minor: 1,
-                    patch: 0,
-                    prerelease: None,
-                    build_metadata: None,
-                });
-            (base.major, base.minor, base.patch, "")
         };
-
-        let mut new_version = format!("{}.{}.{}", new_major, new_minor, new_patch);
-        if cfg.prerelease {
-            new_version = format!("{}-{}", new_version, cfg.prerelease_suffix);
-        }
-
-        // Cargo.toml-ahead guard, mirroring the lockstep path exactly: a
-        // manifest version strictly ahead of the tag-derived one wins, so
-        // autotag never downgrades a manual bump.
-        if let Some(cargo_ver) = group_cargo_ver
-            && manifest_version_ahead(Some(&cargo_ver), Some((new_major, new_minor, new_patch)))
-        {
-            log.status(&format!(
-                "Cargo.toml version {} > tag-derived {}, using Cargo.toml version",
-                cargo_ver, new_version
-            ));
-            new_version = cargo_ver;
-        }
+        let new_version = plan.new_version;
+        let old_tag_str = plan.old_tag.as_str();
 
         log.verbose(&format!(
             "group {:?}: {} → {}{}",

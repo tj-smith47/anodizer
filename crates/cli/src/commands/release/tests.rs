@@ -391,8 +391,6 @@ fn base_release_opts() -> ReleaseOpts {
         announce_only: false,
         resume_release: false,
         replace_existing: false,
-        preflight: false,
-        preflight_secrets: false,
         no_post_publish_poll: false,
         no_gate_submitter: false,
         simulate_failure: vec![],
@@ -401,7 +399,6 @@ fn base_release_opts() -> ReleaseOpts {
         summary_json: None,
         allow_ai_failure: false,
         allow_snapshot_publish: false,
-        no_env_preflight: false,
     }
 }
 
@@ -1026,32 +1023,32 @@ fn test_apply_prepare_mode_to_skip_is_idempotent() {
 // ---- preflight auto-run gating ---------------------------------------
 
 #[test]
-fn should_run_preflight_auto_default_runs() {
+fn should_run_preflight_default_runs() {
     // No flag set → run. `--publish-only` is intentionally NOT a gate:
     // it is the one mode that actually crosses the one-way doors, so
     // the read-only publisher-state / credential probes must run there
     // by default.
-    assert!(should_run_preflight_auto(false, false, false, false));
+    assert!(should_run_preflight(false, false, false, false));
 }
 
 #[test]
-fn should_run_preflight_auto_snapshot_skips() {
-    assert!(!should_run_preflight_auto(true, false, false, false));
+fn should_run_preflight_snapshot_skips() {
+    assert!(!should_run_preflight(true, false, false, false));
 }
 
 #[test]
-fn should_run_preflight_auto_dry_run_skips() {
-    assert!(!should_run_preflight_auto(false, true, false, false));
+fn should_run_preflight_dry_run_skips() {
+    assert!(!should_run_preflight(false, true, false, false));
 }
 
 #[test]
-fn should_run_preflight_auto_split_skips() {
-    assert!(!should_run_preflight_auto(false, false, true, false));
+fn should_run_preflight_split_skips() {
+    assert!(!should_run_preflight(false, false, true, false));
 }
 
 #[test]
-fn should_run_preflight_auto_publish_skipped_skips() {
-    assert!(!should_run_preflight_auto(false, false, false, true));
+fn should_run_preflight_skip_preflight_skips() {
+    assert!(!should_run_preflight(false, false, false, true));
 }
 
 /// The global `--strict` and `preflight.strict` fold into one effective
@@ -2240,7 +2237,7 @@ fn refused_repository() -> anyhow::Error {
 #[test]
 fn every_tagless_mode_answers_both_questions_the_same_way() {
     type ModeSetter = fn(&mut ReleaseOpts);
-    let modes: [(&str, ModeSetter); 8] = [
+    let modes: [(&str, ModeSetter); 7] = [
         ("--snapshot", |o| o.snapshot = true),
         ("--nightly", |o| o.nightly = true),
         ("--dry-run", |o| o.dry_run = true),
@@ -2248,7 +2245,6 @@ fn every_tagless_mode_answers_both_questions_the_same_way() {
         ("--announce-only", |o| o.announce_only = true),
         ("--split", |o| o.split = true),
         ("--merge", |o| o.merge = true),
-        ("--preflight-secrets", |o| o.preflight_secrets = true),
     ];
     for (flag, set) in modes {
         let mut opts = base_release_opts();
@@ -2436,7 +2432,9 @@ fn the_abort_quoted_in_the_preflight_docs_is_what_a_failed_preflight_produces() 
         .lines()
         .map(str::to_string)
         .collect();
-    produced.push(super::pipeline_run::preflight_failure_message(&report));
+    produced.push(crate::commands::preflight::preflight_failure_message(
+        &report,
+    ));
 
     assert_eq!(quoted, produced, "the page's Error lines");
     assert_eq!(quoted.len(), 6, "the errors the page quotes");

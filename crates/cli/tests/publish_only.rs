@@ -658,10 +658,66 @@ fn publish_only_runs_publisher_state_preflight_by_default() {
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let merged = format!("{stdout}\n{stderr}");
 
-    assert!(
-        merged.contains("skipped one-way-door preflight — no one-way-door publishers configured"),
-        "publish-only must run the publisher-state preflight by default; output was:\n{merged}"
+    assert_eq!(
+        merged
+            .matches("skipped one-way-door preflight — no one-way-door publishers configured")
+            .count(),
+        1,
+        "publish-only must run the publisher-state preflight by default, exactly once; output was:\n{merged}"
     );
+    assert_eq!(
+        merged.matches("preflight check(s) passed").count(),
+        1,
+        "the environment half must run exactly once; output was:\n{merged}"
+    );
+}
+
+/// `--skip=preflight` leaves the whole engine out: no environment report, no
+/// publisher-state probe, no reconcile table. The fixture is the one above,
+/// so the only difference between the two runs is the skip.
+#[test]
+fn release_skip_preflight_skips_the_whole_engine() {
+    if !tool_on_path("git") {
+        eprintln!("SKIP release_skip_preflight_skips_the_whole_engine: git missing");
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    bootstrap_minimal_cargo_repo(repo, FIXTURE_CRATE_NAME);
+    configure_tag_template(repo);
+    let commit = head_commit(repo);
+    bootstrap_preserved_dist(repo, "0.1.0", &commit);
+    tag_head(repo, "0.1.0");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["release", "--publish-only", "--verbose", "--skip=preflight"])
+        .env("GITHUB_TOKEN", "dummy-token-for-preflight-test")
+        .env("ANODIZER_GITHUB_API_BASE", "http://127.0.0.1:1")
+        .env_remove("COSIGN_KEY")
+        .env_remove("GPG_PRIVATE_KEY")
+        .env_remove("GH_TOKEN")
+        .env_remove("ANODIZER_GITHUB_TOKEN")
+        .current_dir(repo)
+        .output()
+        .expect("invoking anodizer release --publish-only --verbose --skip=preflight");
+
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let merged = format!("{stdout}\n{stderr}");
+
+    for marker in [
+        "preflight check(s) passed",
+        "preflight check(s) failed",
+        "skipped one-way-door preflight",
+        "Pre-flight publisher check",
+        "Reconcile state",
+    ] {
+        assert!(
+            !merged.contains(marker),
+            "--skip=preflight must leave the engine out ({marker:?} printed); output was:\n{merged}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

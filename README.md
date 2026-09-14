@@ -340,7 +340,7 @@ anodizer promote       Promote a published artifact to a stable track without re
 anodizer continue      Resume a stalled or split release from a populated dist/ (--merge to fan-in)
 anodizer publish       Run only the publish stages (release, blob, publish) from a completed dist/
 anodizer check         Validate configuration + run determinism harness
-anodizer preflight     Verify the environment can run the configured release (tools, secrets, key material)
+anodizer preflight     Run the release preflight without releasing (tools, secrets, publisher credentials and state)
 anodizer init          Generate starter .anodizer.yaml
 anodizer healthcheck   Probe external tools (nfpm, cosign, ...)
 ```

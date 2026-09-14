@@ -787,6 +787,55 @@ fn winget_preflight_probes_the_rendered_package_identifier() {
     assert_eq!(winget.package, "Acme.tool");
 }
 
+/// A per-crate workspace releases each crate at its own version, so the
+/// state probes ask about each crate's planned version, and a crate the plan
+/// left alone is asked about the context's version.
+#[test]
+fn per_crate_state_probes_ask_about_each_crates_planned_version() {
+    use anodizer_core::config::{ChocolateyConfig, Config, CrateConfig, PublishConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    let with_choco = |name: &str| CrateConfig {
+        name: name.to_string(),
+        publish: Some(PublishConfig {
+            chocolatey: Some(ChocolateyConfig::default()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let config = Config {
+        project_name: "ws".to_string(),
+        crates: vec![with_choco("alpha"), with_choco("beta"), with_choco("gamma")],
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Version", "0.9.0");
+    ctx.planned_crate_versions
+        .insert("alpha".to_string(), "1.0.0".to_string());
+    ctx.planned_crate_versions
+        .insert("beta".to_string(), "2.0.0".to_string());
+    let log = StageLogger::new("preflight", Verbosity::Quiet);
+    let factory = CannedFactory {
+        cargo_state: PublisherState::Clean,
+        choco_state: PublisherState::Clean,
+        winget_state: PublisherState::Clean,
+        aur_state: PublisherState::Clean,
+    };
+
+    let report = run_preflight_with_factory(&mut ctx, &log, &factory).expect("ok");
+
+    let asked: Vec<(&str, &str)> = report
+        .entries
+        .iter()
+        .map(|e| (e.package.as_str(), e.version.as_str()))
+        .collect();
+    assert_eq!(
+        asked,
+        vec![("alpha", "1.0.0"), ("beta", "2.0.0"), ("gamma", "0.9.0")]
+    );
+}
+
 #[test]
 fn run_preflight_aggregates_per_publisher_in_config_order() {
     use anodizer_core::config::{

@@ -88,8 +88,9 @@ jobs:
           artifact-run-id: auto
           artifact-workflow: ci.yml
           auto-install: true
-          # No --skip: `--publishers npm,pypi,cargo` auto-determines the surface. The
-          # allowlist deselects every publisher outside the hosted set —
+          # `--publishers npm,pypi,cargo` selects the hosted set and
+          # `--skip=preflight` leaves out the check the pre-tag job already
+          # ran. The allowlist deselects every publisher outside the hosted set —
           # including github-release (so the GitHub Release the main job owns is
           # not re-touched), blob, snapcraft-publish, docker, docker-sign, and
           # announce — and the sign stage self-skips BOTH cosign/GPG loops on
@@ -100,7 +101,7 @@ jobs:
           # publish-time consumer — binaries are signed at build time on the
           # main job). None of npm, pypi, or cargo consumes signing material, so
           # this runner is never asked for cosign/GPG it does not carry.
-          args: release --publish-only --publishers ${{ env.HOSTED_PUBLISHERS }}
+          args: release --publish-only --publishers ${{ env.HOSTED_PUBLISHERS }} --skip=preflight
         env:
           # Empty on a fresh cut → anodizer resolves the highest tag at HEAD.
           # A backfill dispatch sets inputs.tag so the version is pinned here

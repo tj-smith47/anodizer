@@ -25,7 +25,7 @@ pub(crate) fn get_messages_for_bump(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BumpKind {
     Major,
     Minor,

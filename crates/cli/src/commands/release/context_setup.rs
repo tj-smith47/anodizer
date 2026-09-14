@@ -14,18 +14,15 @@ use super::*;
 ///   config-derived env preflight has already validated the credentials
 ///   they use by the time this fires.
 ///
-/// Note: this is the implicit-run decision. `--preflight` (the explicit
-/// check-only mode) gates separately in the call site and always runs the
-/// check independently of this predicate. `--announce-only` is handled by
-/// an earlier short-circuit in `run_publisher_preflight` and so is not a
-/// parameter here.
-pub(crate) fn should_run_preflight_auto(
+/// `--announce-only` and `--publish-only` are not parameters: both run the
+/// engine, under a narrower scope.
+pub(crate) fn should_run_preflight(
     snapshot: bool,
     dry_run: bool,
     split: bool,
-    publish_skipped: bool,
+    preflight_skipped: bool,
 ) -> bool {
-    !snapshot && !dry_run && !split && !publish_skipped
+    !snapshot && !dry_run && !split && !preflight_skipped
 }
 
 /// `--prepare`: runs local build/archive/sign/checksum/sbom stages but skips
@@ -160,9 +157,7 @@ pub(crate) const RUN_BOOKKEEPING_FILES: &[&str] = &[
 /// ([`RUN_BOOKKEEPING_FILES`]) is a hard error, and the bookkeeping a previous
 /// run left is removed so this run starts from only what it writes itself.
 /// `--merge` / `--publish-only` skip the non-empty check because each of
-/// those modes requires preserved dist content;
-/// `--preflight-secrets` skips it because the secrets gate is a
-/// zero-mutation check that never reads or writes dist.
+/// those modes requires preserved dist content.
 pub(crate) fn enforce_dist_state(
     config: &Config,
     opts: &ReleaseOpts,
@@ -177,12 +172,7 @@ pub(crate) fn enforce_dist_state(
         log.status("(dry-run) would clean dist directory");
     }
 
-    if !opts.clean
-        && !opts.merge
-        && !opts.publish_only
-        && !opts.announce_only
-        && !opts.preflight_secrets
-    {
+    if !opts.clean && !opts.merge && !opts.publish_only && !opts.announce_only {
         let dist = &config.dist;
         if let Some(populated) = dist_population(dist) {
             return Err(anodizer_core::error_class::deterministic_msg(format!(
@@ -475,7 +465,6 @@ pub(crate) fn build_context_options(
             .map(anodizer_core::partial::PartialTarget::Targets),
         merge: opts.merge,
         publish_only: opts.publish_only,
-        preflight_secrets: opts.preflight_secrets,
         project_root,
         strict: opts.strict,
         resume_release: opts.resume_release || opts.publish_only,
@@ -507,6 +496,7 @@ pub(crate) fn build_context_options(
         // intact. Only the standalone `changelog --format release-notes`
         // command sets this true.
         changelog_preview: false,
+        observe: false,
         notify: false,
         allow_snapshot_publish: opts.allow_snapshot_publish,
         publisher_allowlist: opts.publishers.clone(),

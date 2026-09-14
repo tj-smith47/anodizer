@@ -166,7 +166,7 @@ fn always_hooks_fire_last_on_the_split_merge_leg() {
         &[
             "release",
             "--merge",
-            "--no-env-preflight",
+            "--skip=preflight",
             SKIP_HEAVY,
             "--timeout",
             "2m",
@@ -425,7 +425,7 @@ fn release_skip_on_error_suppresses_only_the_on_error_lane() {
         &[
             "release",
             "--merge",
-            "--no-env-preflight",
+            "--skip=preflight",
             &skip_heavy_plus("on-error"),
             "--timeout",
             "2m",

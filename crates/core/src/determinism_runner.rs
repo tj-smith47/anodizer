@@ -85,8 +85,8 @@ pub fn compute_skip_arg(extra: &[&str]) -> String {
 ///   side-effect-producing stage AND every non-requested produce-stage
 ///   (the harness's complement set). Doubling N is safe in any env
 ///   because of this skip list.
-/// - `--no-env-preflight` — always. The replica runs in a deliberately
-///   credential-less env; see `build_subprocess_command`.
+/// - `preflight` is always in that skip list. The replica runs in a
+///   deliberately credential-less env; see `build_subprocess_command`.
 /// - `--targets=<csv>` (when `targets` is `Some`) — restricts the
 ///   rebuild to a subset of configured triples. The sharded
 ///   `release.yml` matrix passes this so each runner only validates
@@ -171,7 +171,15 @@ fn build_subprocess_command(spec: &ChildInvocation<'_>) -> Command {
         verbosity,
     } = *spec;
     let mut cmd = Command::new(anodizer_binary);
-    let extra_refs: Vec<&str> = extra_skip.iter().map(String::as_str).collect();
+    // The replica pipeline runs in a deliberately credential-less hermetic
+    // env (env_clear + identity-only re-population): its run paths skip
+    // gracefully when keys/tools are absent, nothing publishes (see the
+    // skip list above), and signature outputs are excluded from
+    // byte-comparison. The release preflight would therefore reject exactly
+    // the environment the harness is designed to run in, so the child skips
+    // it by construction. Real release entrypoints are unaffected.
+    let mut extra_refs: Vec<&str> = extra_skip.iter().map(String::as_str).collect();
+    extra_refs.push("preflight");
     cmd.arg("release");
     if snapshot {
         cmd.arg("--snapshot");
@@ -193,15 +201,6 @@ fn build_subprocess_command(spec: &ChildInvocation<'_>) -> Command {
         crate::log::Verbosity::Normal => {}
     }
     cmd.arg(compute_skip_arg(&extra_refs));
-    // The replica pipeline runs in a deliberately credential-less hermetic
-    // env (env_clear + identity-only re-population): its run paths skip
-    // gracefully when keys/tools are absent, nothing publishes (see the
-    // skip list above), and signature outputs are excluded from
-    // byte-comparison. The config-derived env preflight would therefore
-    // reject exactly the environment the harness is designed to run in —
-    // disable it for the child by construction. Real release entrypoints
-    // are unaffected; preflight guards them as before.
-    cmd.arg("--no-env-preflight");
     if let Some(list) = targets
         && !list.is_empty()
     {
@@ -519,15 +518,15 @@ mod tests {
         );
     }
 
-    /// The child release subprocess MUST carry `--no-env-preflight` in every
-    /// mode — snapshot children skip the env preflight via the snapshot
-    /// gate anyway, but non-snapshot children (tag-push determinism runs,
-    /// where the workflow passes `--no-snapshot` so artifacts carry the
-    /// real version) would otherwise run the config-derived env preflight
-    /// inside the credential-less worktree and abort the replica build on
-    /// missing secrets/tools the run paths handle gracefully.
+    /// The child release subprocess MUST skip the preflight in every mode —
+    /// snapshot children skip it via the snapshot gate anyway, but
+    /// non-snapshot children (tag-push determinism runs, where the workflow
+    /// passes `--no-snapshot` so artifacts carry the real version) would
+    /// otherwise run the release preflight inside the credential-less
+    /// worktree and abort the replica build on missing secrets/tools the run
+    /// paths handle gracefully.
     #[test]
-    fn subprocess_command_always_disables_env_preflight() {
+    fn subprocess_command_always_skips_the_preflight() {
         let env = HashMap::new();
         for snapshot in [true, false] {
             let cmd = build_subprocess_command(&ChildInvocation {
@@ -541,9 +540,14 @@ mod tests {
                 verbosity: crate::log::Verbosity::Normal,
             });
             let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().expect("ascii")).collect();
+            let skipped: Vec<&str> = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--skip="))
+                .map(|list| list.split(',').collect())
+                .unwrap_or_default();
             assert!(
-                args.contains(&"--no-env-preflight"),
-                "child argv (snapshot={snapshot}) must always carry --no-env-preflight; got {args:?}"
+                skipped.contains(&"preflight"),
+                "child argv (snapshot={snapshot}) must always skip the preflight; got {args:?}"
             );
         }
     }

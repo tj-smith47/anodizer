@@ -671,6 +671,12 @@ fn run_preflight_inner(
             Some(p) => p,
             None => continue,
         };
+        // A per-crate workspace releases each crate at its own version.
+        let version = ctx
+            .planned_crate_versions
+            .get(&krate.name)
+            .cloned()
+            .unwrap_or_else(|| version.clone());
 
         // ---- cargo -------------------------------------------------------
         if publish.cargo.is_some() && probe("cargo") {

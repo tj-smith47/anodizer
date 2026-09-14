@@ -175,16 +175,6 @@ pub enum Commands {
             help = "Release a specific workspace in a monorepo config"
         )]
         workspace: Option<String>,
-        #[arg(
-            long,
-            help = "Run pre-flight publisher-state check and exit (don't start the pipeline)"
-        )]
-        preflight: bool,
-        #[arg(
-            long = "preflight-secrets",
-            help = "Validate that all required publish secrets / credentials are present (and key material is well-formed) without checking host-local tools — for a central pre-release gate across decoupled CI runners. Checks and exits; does not start the pipeline."
-        )]
-        preflight_secrets: bool,
         #[arg(long, help = "Set the release as a draft")]
         draft: bool,
         #[arg(long, help = "Path to a file containing custom release header text")]
@@ -297,12 +287,6 @@ pub enum Commands {
             help = "Skip post-publish polling for chocolatey moderation / winget PR validation; report NotPolled for affected publishers."
         )]
         no_post_publish_poll: bool,
-        #[arg(
-            long = "no-env-preflight",
-            hide = true,
-            help = "(HARNESS) Skip the environment preflight (tools / secrets / key material). Set by the determinism harness, whose hermetic replica runs in a deliberately credential-less env that the config-derived preflight would correctly reject."
-        )]
-        no_env_preflight: bool,
         // The four automatic-rollback flags removed with the policy they
         // drove. Declared (hidden) rather than simply deleted so a stale CI
         // invocation gets the migration instead of clap's unknown-argument
@@ -446,15 +430,18 @@ pub enum Commands {
     },
     /// Check availability of required external tools
     Healthcheck,
-    /// Verify the environment can run the configured release: required
-    /// tools, env vars/secrets (presence only — values are never printed),
-    /// endpoint reachability, docker daemon, and loadable key material,
-    /// all derived from the resolved config. Every failure is reported in
-    /// one pass and the exit code is non-zero when anything is missing.
-    /// The same checks run automatically at the start of `anodizer release`.
-    /// Also prints the per-publisher reconcile table (is the target version
-    /// already published?); only a required publisher's content divergence
-    /// exits non-zero — an already-complete or unreachable publisher does not.
+    /// Run the release preflight without releasing: the environment check
+    /// (required tools, env vars/secrets by presence only — values are never
+    /// printed — endpoint reachability, docker daemon, loadable key
+    /// material), the one-way-door publisher state and credential probes,
+    /// and the per-publisher reconcile table (is the target version already
+    /// published?), all derived from the resolved config. The target version
+    /// is the one this tree would release: the tag at HEAD, or the next
+    /// version `anodizer tag` would cut. Every failure is reported in one
+    /// pass; the exit code is non-zero on a missing requirement, a publisher
+    /// blocker, or a required publisher's content divergence. The same engine
+    /// runs at the start of `anodizer release`, which `--skip=preflight`
+    /// leaves out when a pre-tag job already ran it.
     Preflight {
         #[arg(long, help = "Output the report as JSON")]
         json: bool,

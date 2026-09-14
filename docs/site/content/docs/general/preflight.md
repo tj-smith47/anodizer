@@ -1,23 +1,35 @@
 +++
-title = "Environment Preflight"
-description = "Config-derived environment checks that run before any release stage"
+title = "Preflight"
+description = "The one preflight engine: environment, publisher credentials and one-way-door state, and the reconcile sweep, run before any release stage"
 weight = 12
 template = "docs.html"
 +++
 
-Anodizer derives everything the configured release needs from the resolved
-config — required CLI tools, env vars and secrets, endpoint reachability,
-docker daemon availability, and loadable key material — and verifies all of
-it **before any stage runs**. There is nothing to configure: requirements
+Anodizer answers three questions about a tree before it releases anything,
+with zero mutations:
+
+1. **Can this runner publish?** Every enabled stage and publisher declares
+   what it needs — CLI tools, env vars and secrets, endpoint reachability,
+   the docker daemon, loadable key material — and all of it is evaluated in
+   one collect-all pass.
+2. **Will every publisher accept the target version?** Each one-way-door
+   publisher (cargo, chocolatey, winget, aur) reports the version's upstream
+   state, each publisher probes its own credential, and the rollback scope
+   each publisher would need is checked.
+3. **Is the target version already upstream with these bytes?** Each selected
+   publisher runs the same `reconcile()` it runs at dispatch time.
+
+One engine asks all three, in that order, and `anodizer preflight` and
+`anodizer release` both run it. There is nothing to configure: requirements
 are declared next to each stage and publisher implementation, so the check
-surface cannot drift from what the pipeline actually reads.
+cannot drift from what the pipeline reads.
 
 ## Inside `anodizer release`
 
-The preflight runs automatically at the start of `anodizer release` and
-`anodizer release --publish-only` (scoped to the stages that mode runs).
-Every failure is collected in one pass and the release aborts before any
-side effect:
+The engine runs once, after the config and git context resolve and before the
+`before:` hooks, in `anodizer release` and `anodizer release --publish-only`
+(scoped to the stages that mode runs). Every failure is collected in one pass
+and the release aborts before any side effect:
 
 ```text
        Error 4 of 24 preflight check(s) failed:
@@ -29,25 +41,31 @@ side effect:
 ```
 
 Secret **values** are never printed — only env-var names. Key material
-(SSH, PGP, cosign) is structurally parsed, not just checked for presence,
+(SSH, PGP, cosign) is structurally parsed as well as checked for presence,
 so the classic "the CI secret pasted in truncated" failure is caught before
 a publisher half-runs. A key that merely lost its trailing newline is
-accepted: the key writer normalizes that before ssh reads it, so refusing
-it would reject input the pipeline provably tolerates.
+accepted: the key writer normalizes that before ssh reads it.
 
-Snapshot and dry-run invocations skip the preflight (no upstream side
-effects to guard); `--split` skips it because split legs are
-operator-orchestrated partial pipelines. `--announce-only` runs a
-preflight scoped to the announce stage's requirements: announcers fire
-sequentially with real side effects, so a missing token aborts before the
-first post instead of after half the channels are notified.
+The release skips the engine in four cases:
 
-## Publisher-state report
+| Invocation | Why |
+|---|---|
+| `release --skip=preflight` | a pre-tag CI job already ran `anodizer preflight` on this tree (see [the CI pattern](#the-ci-pattern)) |
+| `release --snapshot` | no upstream side effects to guard |
+| `release --dry-run` | same |
+| `release --split` | split legs are operator-orchestrated partial pipelines |
 
-Alongside the environment preflight above, `anodizer release` also queries
-each one-way-door publisher (cargo, chocolatey, winget, aur) for the target
-version's current upstream state and prints a report before publishing
-starts:
+`--announce-only` runs the environment half alone, scoped to the announce
+stage's requirements: announcers fire sequentially with real side effects,
+so a missing token aborts before the first post. The publisher half is
+also skipped whenever the `publish` stage is skipped, since neither run
+crosses a one-way door.
+
+## Publisher check
+
+After the environment report, the engine asks each one-way-door publisher
+for the target version's upstream state, and every selected publisher
+probes its own credential and reports the rollback scope it would need:
 
 ```text
    • Pre-flight publisher check
@@ -55,14 +73,12 @@ starts:
    • chocolatey mycrate@1.2.3  in-moderation — package in moderation queue
    • winget mycrate@1.2.3      pr-pending — https://github.com/microsoft/winget-pkgs/pull/123
    • aur mycrate@1.2.3         unknown — AUR RPC returned 503
+   • preflight found 1 publisher(s) clean
 ```
 
 A row already live upstream renders under the success marker
 (`✓ cargo mycrate@1.2.3  published`); every other state is a plain `•`
-status line.
-
-This report is **informational, not a gate** — none of the five states
-abort the release:
+status line. None of the five states aborts the run:
 
 | State | Meaning |
 |---|---|
@@ -73,31 +89,26 @@ abort the release:
 | `unknown` | The state query itself failed (network error, unexpected response); `reconcile()` falls through and lets the publisher run |
 
 Each publisher's own `reconcile()` step makes the skip-vs-dispatch call
-from this same state at the moment it actually runs, so a re-run of an
-in-flight release converges instead of erroring on work that is already
-underway. `--preflight` runs this report and exits before publishing;
-without it, the report prints and the pipeline continues regardless of
-what it found.
+from this same state at the moment it runs, so a re-run of an in-flight
+release converges on work that is already underway.
 
-## Standalone command
+What can abort the run here is a **blocker**: a credential a publisher probed
+and found unusable with no other way to authenticate (see the
+[npm page](@/docs/publish/npm.md#preflight-severity-for-an-unusable-token)
+for how one publisher grades that), or a missing rollback scope under
+`--strict`. Every other finding is a **warning** that prints and lets the
+run continue — a rollback scope missing in default mode, a credential probe
+that could not reach a verdict, a publisher that is optional. The
+[rollback scope preflight](@/docs/advanced/release-resilience.md#rollback-scope-preflight)
+lists what is asked of each publisher. A blocker aborts the run with a
+`preflight: N resilience blocker(s): …` line naming each one.
 
-The same engine is exposed as a command — useful as a CI canary or a local
-"can this machine cut the release?" check:
+## Reconcile sweep
 
-```bash
-$ anodizer preflight                    # full pipeline surface
-$ anodizer preflight --publish-only     # only what `release --publish-only` runs
-$ anodizer preflight --json             # machine-readable report
-$ anodizer preflight --skip=docker,blob # same stage names as release --skip
-```
-
-It reports on two independent axes: whether this runner **can** publish
-(the environment report above) and whether the target version is **already**
-published (the reconcile table below). The table calls the same
-`reconcile()` each publisher runs at dispatch time — over the same
-`--publishers` / `--skip` selection the publish loop applies, so a
-deselected publisher is never probed and never gates the exit code — and so
-the canary and the release cannot answer differently:
+The third half calls the same `reconcile()` each publisher runs at dispatch
+time, over the same `--publishers` / `--skip` selection the publish loop
+applies, so a deselected publisher is never probed and never gates the exit
+code, and the standalone command and the release cannot answer differently:
 
 ```text
    • Reconcile state
@@ -114,15 +125,62 @@ the canary and the release cannot answer differently:
 | `diverged` | The version is upstream but the local artifact bytes differ | **yes, if the publisher is required** |
 | `unknown` | The probe was inconclusive (network error, unparseable feed) | no |
 
-#### When the table is skipped
+The sweep asks the real hosts: the PR-mode publishers (nix, homebrew,
+homebrew-core, krew, scoop, winget) search the upstream index repository's
+pull requests on the GitHub API, cargo reads the crates.io sparse index,
+npm and PyPI their registries, chocolatey its feed; a call that fails reads
+as `unknown` on that row and never fails an otherwise clean report.
 
-The question "is THIS version already upstream with THESE bytes?" only means
-something while the resolved version is the version this run would publish.
-Run `preflight` **between** two releases — the pre-tag CI canary, or a local
-check on a branch with commits since the last tag — and the resolved tag is
-the *last released* one, so every probe would describe a version nobody is
-about to publish. anodizer locates that tag relative to `HEAD` and skips the
-whole sweep in that case — a purely local git query, no network:
+`complete` is deliberately not an error: it is the approval a resumed
+release wants. `unknown` is deliberately not an error either — an
+unreachable registry must not veto a release, and the registry's own
+conflict handling is the backstop. A `diverged` **optional** publisher is
+reported as a warning, because the release itself tolerates it too — the
+standalone command is never stricter than the pipeline it guards. A
+required `diverged` aborts the run and asks for a version bump: the version
+is already published with different content.
+
+## Standalone command
+
+The same engine is exposed as a command — the pre-tag CI job, or a local
+"can this machine cut the release?" check:
+
+```bash
+$ anodizer preflight                    # the whole engine, full pipeline scope
+$ anodizer preflight --publish-only     # only what `release --publish-only` runs
+$ anodizer preflight --json             # machine-readable report
+$ anodizer preflight --skip=docker,blob # same stage names as release --skip
+```
+
+### Which version is probed
+
+The publisher check and the reconcile sweep are only meaningful against the
+version this tree would release, so the command derives it the way
+`anodizer tag` does:
+
+| Tree | Version the probes use |
+|---|---|
+| `ANODIZER_CURRENT_TAG` (or its `GORELEASER_CURRENT_TAG` alias, or a tag-push `GITHUB_REF_NAME`) names a tag | that tag, wherever it sits relative to `HEAD` — the operator named the target |
+| `HEAD` carries the configured tag | that tag — the resume / backfill / `--publish-only` case, where a required `diverged` must still gate |
+| commits since the last tag carry a release signal (`#major` / `#minor` / `#patch`, a conventional `feat:` / `fix:`, …) | the version `anodizer tag` would cut next |
+| commits since the last tag carry no release signal | the current version; the reconcile sweep is skipped (below) |
+
+Under `-v` the derivation is printed:
+
+```text
+$ anodizer preflight -v
+   • HEAD is not tagged; publisher probes use the planned version 0.27.1 (v0.27.0 → v0.27.1)
+```
+
+The derivation needs the tag history, so a CI checkout that runs it passes
+`fetch-depth: 0`.
+
+#### When the reconcile sweep is skipped
+
+With no release signal since the last tag the resolved version is the last
+released one, and every probe would describe a version nobody is about to
+publish. anodizer locates that tag relative to `HEAD` with a local git query
+and skips the whole sweep:
 
 ```text
    • Reconcile state
@@ -132,39 +190,29 @@ whole sweep in that case — a purely local git query, no network:
 | Tag for the resolved version | Behaviour |
 |---|---|
 | declared by an override, at **any** position | probe — the operator named the target version |
-| does not exist | probe — a fresh version, nothing can be upstream yet |
-| exists, points **at HEAD** | probe — the resume / backfill / `--publish-only` case, where a required `diverged` must still gate |
-| exists, **behind** HEAD | skip — HEAD has advanced past it; a higher version will be cut |
+| does not exist | probe — a fresh version (including the planned one), nothing can be upstream yet |
+| exists, points **at HEAD** | probe — the resume / backfill / `--publish-only` case |
+| exists, **behind** HEAD | skip — HEAD has advanced past it and nothing plans a new version |
 | exists, **off HEAD's history** (older checkout, divergent branch) | skip — this tree will not publish that version |
 
 The skip is an inference about a tag anodizer picked for you, so it never
-applies to one you named. When `ANODIZER_CURRENT_TAG` (or its
-`GORELEASER_CURRENT_TAG` alias, or a tag-push `GITHUB_REF_NAME`) declares the
-target version, the sweep **always** runs regardless of where that tag sits
-relative to `HEAD` — a backfill canary is run from a tree checked out well
-past the version it is publishing, and its whole purpose is to probe that
-version:
+applies to one you named — a backfill run from a tree checked out well past
+the version it is publishing probes exactly that version:
 
 ```bash
 # Probes v0.20.0 even though HEAD is three releases ahead of it.
 $ ANODIZER_CURRENT_TAG=v0.20.0 anodizer preflight --publish-only
 ```
 
-`complete` is deliberately not an error: it is the approval a resumed
-release wants. `unknown` is deliberately not an error either — an
-unreachable registry must not veto a release, and the registry's own
-conflict handling is the backstop. A `diverged` **optional** publisher is
-reported as a warning rather than an error, because the release itself
-tolerates it too — the canary is never stricter than the pipeline it guards.
-
 ### Exit codes
 
 | Condition | Exit |
 |---|---|
-| Everything present, no divergence | `0` |
+| Everything present, no blocker, no divergence | `0` |
 | Any environment requirement missing | non-zero |
+| A publisher **blocker** (unusable sole credential; missing rollback scope under `--strict`) | non-zero |
 | A **required** publisher `diverged` | non-zero |
-| An **optional** publisher `diverged` | `0` (warning) |
+| Publisher warnings only; an **optional** publisher `diverged` | `0` |
 | Publishers `complete` / `unknown` only | `0` |
 
 > **Contract change.** `anodizer preflight` previously exited non-zero when a
@@ -172,18 +220,30 @@ tolerates it too — the canary is never stricter than the pipeline it guards.
 > those are `complete`, the expected state of a resumed release, and treating
 > them as failures is what wedged partially-failed releases. CI scripts that
 > read "non-zero == do not publish" now only trip on a genuine content
-> divergence or a missing credential. To act on the old signal, read the
-> `--json` `reconcile[].state` field instead of the exit code.
+> divergence, a blocker, or a missing credential. To act on the old signal,
+> read the `--json` `reconcile[].state` field instead of the exit code.
 
-The JSON report carries a `kind` per environment failure (`missing_tool`,
-`missing_env`, `endpoint_unreachable`, `docker_unavailable`,
-`bad_key_material`) alongside a `reconcile` array — one object per
-publisher with `publisher`, `state`, `detail`, and `blocking`:
+### JSON report
+
+`--json` carries all three halves: the environment keys at the top level
+(with a `kind` per failure — `missing_tool`, `missing_env`,
+`endpoint_unreachable`, `docker_unavailable`, `bad_key_material`), a
+`publishers` object with the publisher check's `entries`, `warnings` and
+`blockers` (`null` when the publisher half was skipped), and a `reconcile`
+array with one object per publisher:
 
 ```json
 {
   "checks": 24,
   "failures": [],
+  "publishers": {
+    "entries": [
+      { "publisher": "cargo", "package": "mycrate", "version": "1.2.3", "state": "clean" },
+      { "publisher": "chocolatey", "package": "mycrate", "version": "1.2.3", "state": { "in-moderation": { "reason": "package in moderation queue" } } }
+    ],
+    "warnings": [],
+    "blockers": []
+  },
   "reconcile": [
     { "publisher": "cargo", "state": "complete", "detail": "1.2.3 live with matching cksum", "blocking": false },
     { "publisher": "npm", "state": "absent", "blocking": false }
@@ -191,9 +251,9 @@ publisher with `publisher`, `state`, `detail`, and `blocking`:
 }
 ```
 
-A **skipped** sweep projects to one marker row rather than to `[]`, so
-"this question did not apply" can never be read as "no publisher is
-configured". Its `publisher` is the whole-set wildcard `*`:
+A **skipped** sweep projects to one marker row, so "this question did not
+apply" can never be read as "no publisher is configured". Its `publisher`
+is the whole-set wildcard `*`:
 
 ```json
 {
@@ -208,72 +268,64 @@ configured". Its `publisher` is the whole-set wildcard `*`:
 }
 ```
 
-## Secrets-only pre-tag gate
+## The CI pattern
 
-Decoupled CI pipelines split a release across many runners — build and
-determinism shards on different hosts, plus a dedicated publish runner —
-that carry **different host-local tools** but the **same injected
-secrets** (CI secrets are exported into every job). For those pipelines, a
-single up-front gate should answer "are all the publish credentials
-present and well-formed?" *without* false-failing on a tool that only the
-eventual publish host has.
+A pipeline that tags automatically runs the engine **once, before the tag
+exists**, as the root job every other job depends on, and every job that
+runs `anodizer release` afterwards passes `--skip=preflight`. A missing or
+truncated secret, an unreachable endpoint, or a version a registry already
+holds then aborts the run with nothing tagged and nothing published, and the
+release jobs never spend a second network round on a question that is
+already answered.
 
-`anodizer release --preflight-secrets` is that gate. It collects the full
-release surface, then keeps only the **runner-agnostic credential**
-requirements — env vars and env-borne key material (`COSIGN_KEY`,
-`GITHUB_TOKEN` ladders, `env://` SSH/PGP keys, …) — and drops every
-host-local requirement (CLI tools, the docker daemon, endpoint
-reachability, and on-disk key *files*, which may not be materialized on
-the gate runner). Env-borne key material is still structurally validated,
-so a malformed secret key is caught before a tag is issued; on-disk key
-*files* are not checked by this gate. The check runs zero mutations: no
-`before:` hooks, no network probes, no pipeline.
-
-```bash
-$ anodizer release --preflight-secrets
-     • preflight-secrets: all required publish secrets / credentials present
-```
-
-Wire it as the **root job a release depends on**, so a missing CI secret
-aborts before the tag is created (and before the expensive determinism
-matrix runs):
+Run the job on the runner that will publish, so the endpoints it probes
+are the ones the publish reaches and ambient credentials (a self-hosted
+runner's cloud keys, for instance) are checked in the same pass. Where a
+stage's credential is genuinely absent on the preflight runner, `--skip`
+that stage there and let the publish job carry it:
 
 ```yaml
 jobs:
   preflight:
-    runs-on: ubuntu-latest
+    runs-on: arc-anodizer          # the runner the release job will use
     permissions:
-      id-token: write   # so OIDC-provenance request vars are present to check
+      contents: read
+      id-token: write              # so the OIDC request vars are present to check
     steps:
       - uses: actions/checkout@v6
-      - uses: ./.github/actions/setup-rust
-      # Build from the checkout (not a published anodizer) so a brand-new
-      # release that adds a publisher's secret is gated by THIS commit.
-      # --skip=<stage> any stage whose secret is RUNNER-AMBIENT rather than a
-      # registered CI secret (e.g. a self-hosted runner's ambient cloud creds):
-      # this github-hosted gate cannot see those, so demanding them here would
-      # false-fail and block every release. They are validated in-pipeline on
-      # the runner that holds them.
-      - run: cargo run -q --release -p anodizer -- release --preflight-secrets --skip=blob
+        with:
+          fetch-depth: 0           # the planned version is derived from the tag history
+      - uses: tj-smith47/anodizer-action@v1
+        with:
+          auto-install: true
+          args: preflight
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
-          # …every secret the downstream publish jobs consume as REGISTERED CI
-          # secrets (exclude runner-ambient ones via --skip above)…
+          # …every secret the release job consumes, so the two env blocks match…
 
   tag:
     needs: [preflight]
     if: needs.preflight.result == 'success'
-    # …auto-tag only once the secret gate passes…
+    # …auto-tag only once the gate passes…
+
+  release:
+    needs: [tag]
+    runs-on: arc-anodizer
+    steps:
+      - uses: tj-smith47/anodizer-action@v1
+        with:
+          args: release --publish-only --skip=preflight,npm,pypi,cargo
+          # the pre-tag job already ran the engine on this tree
 ```
 
-The gate runs even when HEAD carries no release tag (it is a *pre-tag*
-check) and ignores dirty-tree / dist state, since it never reads or writes
-either.
+The job runs on an untagged tree by design: the probes use the version the
+tag job is about to cut. anodizer's own pipeline is the worked example, in
+[The Release Pipeline](@/docs/ci/release-pipeline.md).
 
 ## What gets derived
 
-| Surface | Derived requirements |
+| Stage or publisher | Derived requirements |
 |---------|---------------------|
 | `builds` | `cargo` |
 | `nfpms` / `srpms` | `nfpm` / `rpmbuild` + signing key material from `signature:` blocks |

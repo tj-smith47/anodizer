@@ -348,8 +348,6 @@ fn run() {
             host_targets,
             release_notes,
             workspace,
-            preflight,
-            preflight_secrets,
             draft,
             release_header,
             release_header_tmpl,
@@ -372,7 +370,6 @@ fn run() {
             summary_json,
             allow_ai_failure,
             allow_snapshot_publish,
-            no_env_preflight,
             // Removed flags: the clap value parser rejects them before any
             // value can end up here, so there is nothing to dispatch on.
             removed_rollback: _,
@@ -469,8 +466,6 @@ fn run() {
                     announce_only,
                     resume_release,
                     replace_existing,
-                    preflight,
-                    preflight_secrets,
                     no_post_publish_poll,
                     no_gate_submitter,
                     simulate_failure,
@@ -479,7 +474,6 @@ fn run() {
                     summary_json,
                     allow_ai_failure,
                     allow_snapshot_publish,
-                    no_env_preflight,
                 })
             })
         }

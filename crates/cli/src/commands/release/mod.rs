@@ -104,23 +104,6 @@ pub(crate) struct ReleaseOpts {
     /// `--replace-existing`: CLI override for `release.replace_existing_artifacts: true`.
     /// Plumbed into `ContextOptions::replace_existing_artifacts`.
     pub replace_existing: bool,
-    /// `--preflight`: run the pre-flight publisher-state check and exit
-    /// (don't continue into the rest of the release pipeline).
-    pub preflight: bool,
-    /// `--no-env-preflight` (hidden, harness-only): skip the environment
-    /// preflight (tools / secrets / key material) that normally runs as the
-    /// first step of `release`. Set by the determinism harness, whose
-    /// hermetic replica runs in a deliberately credential-less env that the
-    /// config-derived preflight would correctly reject.
-    pub no_env_preflight: bool,
-    /// `--preflight-secrets`: a check-only mode that validates the
-    /// runner-agnostic publish secrets / credentials (env vars and
-    /// env-borne key material) across the full release surface WITHOUT
-    /// checking host-local tools, then exits with zero mutations. Intended
-    /// as a central pre-tag gate ahead of decoupled CI runners that all
-    /// carry the same injected secrets but different host-local tools.
-    /// Short-circuits before the publisher-state probe and mode dispatch.
-    pub preflight_secrets: bool,
     /// `--no-post-publish-poll`: skip the post-publish polling that
     /// otherwise waits on chocolatey moderation / winget PR validation
     /// after the publish step's HTTP 2xx. Plumbed into

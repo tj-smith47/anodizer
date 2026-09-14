@@ -42,14 +42,6 @@ pub struct ContextOptions {
     /// Without this deferral, `setup_env`'s token check would fire FIRST
     /// and pre-empt that richer, per-publisher preflight.
     pub publish_only: bool,
-    /// `--preflight-secrets`: a check-only secrets gate. Like
-    /// [`Self::publish_only`], it defers `setup_env`'s GitHub-token hard
-    /// error to the config-derived environment preflight (run in
-    /// `SecretsOnly` scope), which validates the token ladder alongside
-    /// every other runner-agnostic credential and then exits with zero
-    /// mutations. Without this deferral, `setup_env` would bail on the
-    /// missing token before the secrets gate could report the full set.
-    pub preflight_secrets: bool,
     /// Explicit project root directory. When set, stages use this instead of
     /// discovering the repo root via `git rev-parse --show-toplevel`.
     pub project_root: Option<PathBuf>,
@@ -154,6 +146,14 @@ pub struct ContextOptions {
     /// ONLY the standalone changelog command sets this; the release/tag
     /// pipelines leave it `false` so their guards stay fully intact.
     pub changelog_preview: bool,
+    /// An observational context: the standalone `anodizer preflight`. The
+    /// run mutates nothing and reports every finding in one pass, so the
+    /// shared context setup must not abort on what the report carries
+    /// (a missing token) or on the tree's shape (an untagged HEAD, a dirty
+    /// tree). Every publisher-side gate still reads the real run mode, so
+    /// the crates.io probes and the `cargo publish --dry-run` simulation
+    /// run exactly as they would inside `anodizer release`.
+    pub observe: bool,
     /// Marks the run as the standalone `anodizer notify` command — a
     /// side-channel that sends a one-off message through the configured
     /// announce integrations, NOT part of the `release` pipeline.
@@ -227,7 +227,6 @@ impl Default for ContextOptions {
             partial_target: None,
             merge: false,
             publish_only: false,
-            preflight_secrets: false,
             project_root: None,
             strict: false,
             resume_release: false,
@@ -243,6 +242,7 @@ impl Default for ContextOptions {
             changelog_full_history: false,
             changelog_to: None,
             changelog_preview: false,
+            observe: false,
             notify: false,
             allow_snapshot_publish: false,
             changelog_aggregate_set: None,

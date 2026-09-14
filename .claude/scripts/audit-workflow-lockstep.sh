@@ -14,8 +14,8 @@
 #   2. Publish secret env block: the preflight gate and the release job carry
 #      an identical env map (so the pre-tag gate validates exactly what the
 #      post-tag publish consumes), plus identical gpg/apk key `with:` inputs.
-#   3. Release trigger gate: preflight and blob-preflight share one trigger if:,
-#      and ci.yml's RELEASE_BOOTSTRAP env equals the snapshot job's own if:.
+#   3. Release trigger gate: ci.yml's RELEASE_BOOTSTRAP env equals the
+#      snapshot job's own if:.
 #   4. Release/nightly mutex: both concurrency groups are identical AND both
 #      set cancel-in-progress: false.
 #   5. CI-bootstrap artifact: every literal `from-artifact:` and the
@@ -105,29 +105,23 @@ else
 fi
 
 # --- 2. Publish secret env block -------------------------------------------
-pf_env=$(yqr -o=json -I=0 '.jobs.preflight.steps[] | select(.name == "Validate publish secrets") | .env' "$REL")
+pf_env=$(yqr -o=json -I=0 '.jobs.preflight.steps[] | select(.name == "Run anodizer preflight") | .env' "$REL")
 rl_env=$(yqr -o=json -I=0 '.jobs.release.steps[] | select(.name == "Run anodizer release --publish-only") | .env' "$REL")
 if [[ -z "$pf_env" || "$pf_env" == "null" ]]; then
-    fail "secret env: could not read the preflight 'Validate publish secrets' env block from ${REL}."
+    fail "secret env: could not read the preflight 'Run anodizer preflight' env block from ${REL}."
 elif [[ -z "$rl_env" || "$rl_env" == "null" ]]; then
     fail "secret env: could not read the release publish-only env block from ${REL}."
 elif [[ "$pf_env" != "$rl_env" ]]; then
     fail "secret env drift: the preflight gate and the release job env blocks differ — the pre-tag gate no longer validates what the post-tag publish consumes."
 fi
 
-pf_keys=$(yqr -o=json -I=0 '.jobs.preflight.steps[] | select(.name == "Validate publish secrets") | [.with["gpg-private-key"], .with["apk-private-key"]]' "$REL")
+pf_keys=$(yqr -o=json -I=0 '.jobs.preflight.steps[] | select(.name == "Run anodizer preflight") | [.with["gpg-private-key"], .with["apk-private-key"]]' "$REL")
 rl_keys=$(yqr -o=json -I=0 '.jobs.release.steps[] | select(.name == "Run anodizer release --publish-only") | [.with["gpg-private-key"], .with["apk-private-key"]]' "$REL")
 if [[ "$pf_keys" != "$rl_keys" ]]; then
     fail "secret env drift: gpg/apk key with-inputs differ between preflight [${pf_keys}] and release [${rl_keys}]."
 fi
 
 # --- 3. Release trigger gate -----------------------------------------------
-pf_if=$(yqr -r '.jobs.preflight.if' "$REL")
-blob_if=$(yqr -r '.jobs["blob-preflight"].if' "$REL")
-if [[ "$pf_if" != "$blob_if" ]]; then
-    fail "trigger gate drift: preflight if [${pf_if}] != blob-preflight if [${blob_if}]."
-fi
-
 # ci.yml's test job gates the release-binary bootstrap build/upload on
 # RELEASE_BOOTSTRAP, and the snapshot job that consumes the uploaded artifact
 # gates itself on the same expression. When the two drift, `snapshot` (needs:

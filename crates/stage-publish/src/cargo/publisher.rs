@@ -193,8 +193,11 @@ impl anodizer_core::Publisher for CargoPublisher {
 
         // Every planned crate is already on the index — the recovery-re-run
         // case. Verify content identity crate by crate before claiming
-        // Complete; the binstall table is (re-)emitted first so the local
-        // package reflects the same tree the original publish uploaded.
+        // Complete. The binstall table is rendered first so a template that
+        // cannot render is reported here, but never written: a probe that
+        // rewrote `Cargo.toml` would dirty the tree the release's own
+        // dirty-tree gate then refuses, and `run()` writes it before the
+        // publish anyway.
         let log = ctx.logger("publish");
         for (name, version, index_cksum) in &published {
             let Some(crate_cfg) = plan.all_crates.iter().find(|c| &c.name == name).cloned() else {
@@ -205,7 +208,7 @@ impl anodizer_core::Publisher for CargoPublisher {
             if let Err(e) = ensure_binstall_metadata_with(
                 ctx,
                 &crate_cfg,
-                false,
+                true,
                 &log,
                 &anodizer_core::crate_scope::resolve_crate_tag,
             ) {

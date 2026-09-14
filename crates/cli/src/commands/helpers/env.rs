@@ -295,13 +295,13 @@ pub fn setup_env(
     // and sign-key material together and self-gates per resolved publisher
     // surface. If setup_env bailed here first, publish-only would never get
     // a chance to emit that richer per-publisher error or honor
-    // `--no-env-preflight`. The dispatcher enforces the env preflight
+    // `--skip=preflight`. The dispatcher enforces the env preflight
     // downstream so dropping it here doesn't widen the hole.
     if ctx.options.token.is_none()
         && !ctx.is_snapshot()
         && !ctx.is_dry_run()
+        && !ctx.options.observe
         && !ctx.options.publish_only
-        && !ctx.options.preflight_secrets
     {
         let universe = config.crate_universe();
         let release_skipped = match universe

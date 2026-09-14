@@ -24,7 +24,8 @@ use crate::log::StageLogger;
 // ---------------------------------------------------------------------------
 
 /// The state of a single publisher for the target version.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum PublisherState {
     /// Version not present. Safe to publish.
     Clean,
@@ -109,7 +110,7 @@ impl fmt::Display for PublisherState {
 // ---------------------------------------------------------------------------
 
 /// One publisher's result in the preflight report.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PreflightEntry {
     /// Short publisher name for display (e.g. "cargo", "chocolatey").
     pub publisher: String,
@@ -136,7 +137,7 @@ pub struct PreflightEntry {
 /// stays focused on publisher state, while the
 /// CLI's operator-facing output can still surface every warning and blocker
 /// the preflight pipeline produced.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize)]
 pub struct PreflightReport {
     pub entries: Vec<PreflightEntry>,
     /// Non-blocking concerns surfaced during preflight (missing rollback

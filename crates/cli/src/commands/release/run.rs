@@ -12,10 +12,9 @@ pub(crate) fn selection_depends_on_head_tags(opts: &ReleaseOpts) -> bool {
 ///
 /// The ONE enumeration of those modes: `--snapshot` / `--nightly` /
 /// `--dry-run` build without a real tag, `--publish-only` / `--announce-only`
-/// consume a prior dist tree, `--split` / `--merge` drive a multi-host flow,
-/// and `--preflight-secrets` is a gate that runs before any tag exists. Asked
-/// twice from one list, a mode added to one copy alone could otherwise both
-/// need HEAD's tags and tolerate a repository git cannot read.
+/// consume a prior dist tree, and `--split` / `--merge` drive a multi-host
+/// flow. Asked twice from one list, a mode added to one copy alone could
+/// otherwise both need HEAD's tags and tolerate a repository git cannot read.
 fn is_tagless_mode(opts: &ReleaseOpts) -> bool {
     opts.snapshot
         || opts.nightly
@@ -24,7 +23,6 @@ fn is_tagless_mode(opts: &ReleaseOpts) -> bool {
         || opts.announce_only
         || opts.split
         || opts.merge
-        || opts.preflight_secrets
 }
 
 /// Whether this run can proceed without reading the repository at all.
@@ -218,44 +216,39 @@ pub(crate) fn run(mut opts: ReleaseOpts) -> Result<()> {
         helpers::setup_env(&mut ctx, &config, &log)?;
         helpers::resolve_git_context(&mut ctx, &config, &log)?;
 
-        // `--preflight-secrets`: a central pre-tag gate for decoupled CI
-        // runners (build / determinism shards on many hosts plus a publish
-        // runner) that all carry the SAME injected secrets but different
-        // host-local tools. Validate every runner-agnostic credential across
-        // the full release surface — env vars and env-borne key material,
-        // dropping tools / docker daemon / endpoints / on-disk key files — and
-        // exit with zero mutations. Placed AFTER env / git context resolution
-        // (so `{{ .Env.* }}` refs render) but BEFORE `before:` hooks, the
-        // dirty-tree gate, the publisher-state probe, and mode dispatch, so
-        // the gate runs no hook, makes no network call, and starts no
-        // pipeline. Returns from inside the setup group — the guard drops on
-        // the early return, balancing the section.
-        if ctx.options.preflight_secrets {
-            let report = crate::commands::preflight::run_env_preflight(
-                &ctx,
-                crate::commands::preflight::PreflightScope::SecretsOnly,
-                &log,
-            );
-            if !report.ok() {
-                anyhow::bail!(
-                    "preflight-secrets: {} secret/credential failure(s) across {} check(s); \
-                     set the missing secrets above before tagging the release",
-                    report.failures.len(),
-                    report.checks
-                );
-            }
-            log.status("preflight-secrets: all required publish secrets / credentials present");
-            return Ok(());
+        // The version this run releases is fixed before anything asks about
+        // it: a nightly or snapshot run rewrites `Version`/`Tag` (template
+        // variables only), and the publisher probes below ask the registries
+        // about the rewritten version.
+        if ctx.is_nightly() {
+            apply_nightly_template_vars(&mut ctx, &config, &log)?;
+        }
+        if ctx.is_snapshot() {
+            apply_snapshot_template_vars(&mut ctx, &config, &log)?;
         }
 
-        // Config-derived environment preflight runs BEFORE the `before:` hooks
-        // (which can take minutes): a missing secret / tool / key must abort
-        // with zero mutations and zero wasted hook time, never after a long
-        // prep. It probes declared tool/secret/endpoint *presence*, which is
-        // version-independent; on --nightly it sees the base (pre-nightly)
-        // version vars applied below, so gate nightly-only requirements on the
-        // IsNightly bool rather than a rendered version string.
-        run_release_env_preflight(&ctx, &opts, &log)?;
+        // The preflight runs BEFORE the `before:` hooks (which can take
+        // minutes): a missing secret / tool / key, a pending one-way-door
+        // submission or a diverged publish must abort with zero mutations
+        // before any hook time is spent.
+        if should_run_preflight(
+            opts.snapshot,
+            opts.dry_run,
+            opts.split,
+            ctx.should_skip("preflight"),
+        ) {
+            let scope = if opts.announce_only {
+                crate::commands::preflight::PreflightScope::AnnounceOnly
+            } else if opts.publish_only {
+                crate::commands::preflight::PreflightScope::PublishOnly
+            } else {
+                crate::commands::preflight::PreflightScope::Full
+            };
+            let outcome = crate::commands::preflight::run_engine(&mut ctx, scope, &log)?;
+            if !outcome.ok() {
+                anyhow::bail!(outcome.failure_message());
+            }
+        }
 
         // The run enters the `before:`/`always:` bracket here: from this
         // call on, every exit — including a `before:` hook that failed —
@@ -279,18 +272,13 @@ pub(crate) fn run(mut opts: ReleaseOpts) -> Result<()> {
     // does not cover.
     let outcome = match setup_result {
         Err(err) => Err(err),
-        Ok(()) => match run_publisher_preflight(&mut ctx, &opts, &log) {
-            Err(err) => Err(err),
-            // The preflight answered the whole run; no mode dispatches.
-            Ok(true) => Ok(()),
-            Ok(false) => {
-                let result = dispatch_release_modes(&mut ctx, &config, &opts, &log);
-                if let Err(ref err) = result {
-                    on_error::fire_release_on_error(&ctx, err, &log);
-                }
-                result
+        Ok(()) => {
+            let result = dispatch_release_modes(&mut ctx, &config, &opts, &log);
+            if let Err(ref err) = result {
+                on_error::fire_release_on_error(&ctx, err, &log);
             }
-        },
+            result
+        }
     };
     helpers::finish_with_always_hooks(&ctx, outcome, &log)
 }
@@ -311,13 +299,6 @@ fn run_setup_inside_always_bracket(
     run_before_hooks(ctx, config, opts, log)?;
     render_release_notes_tmpl(ctx, config, opts, release_notes_path, log)?;
     enforce_dirty_repo_gate(ctx)?;
-
-    if ctx.is_nightly() {
-        apply_nightly_template_vars(ctx, config, log)?;
-    }
-    if ctx.is_snapshot() {
-        apply_snapshot_template_vars(ctx, config, log)?;
-    }
 
     // In publish-only the preserved dist/config.yaml is already on disk and
     // its sha256 was recorded at determinism-check time; re-rendering it from

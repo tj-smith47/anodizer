@@ -223,14 +223,9 @@ The `auth` field selects the strategy:
 
 ### Preflight severity for an unusable token
 
-Two different gates are involved, and only one of them touches the registry:
+The [preflight](@/docs/general/preflight.md) — run by `anodizer preflight` on the pre-tag CI job and by `anodizer release` before any stage — asks two things of an npm entry: that the declared credentials are **present** (no network call), and that they **work**: `GET <registry>/-/whoami` when a token resolves, plus `GET <registry>/<pkg>/<version>` for a duplicate version.
 
-| Gate | When it runs | What it checks |
-|------|--------------|----------------|
-| `release --preflight-secrets` | before the tag is cut, on a CI runner that carries only the secrets | **presence** of the declared credentials — no network call, no `whoami` |
-| the publisher pre-publish gate | inside `anodizer release` / `release --publish-only` (and on demand with `release --preflight`) | `GET <registry>/-/whoami` when a token resolves, plus `GET <registry>/<pkg>/<version>` for a duplicate version |
-
-The live gate grades an **unusable** token — one whose `token:` template fails to render, or one `whoami` answers 401/403 on — by whether the run has another way to authenticate:
+The credential probe grades an **unusable** token — one whose `token:` template fails to render, or one `whoami` answers 401/403 on — by whether the run has another way to authenticate:
 
 | `auth` | OIDC context present | Preflight result |
 |--------|----------------------|------------------|

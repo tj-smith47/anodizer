@@ -434,12 +434,14 @@ fn reconcile_fixture(
 ) -> (TempDir, std::sync::Arc<std::sync::atomic::AtomicU32>) {
     let tmp = TempDir::new().unwrap();
     bootstrap_minimal_cargo_repo(tmp.path(), RECONCILE_CRATE_NAME);
-    // Two canned rows rather than one: a single spare keeps a retry from
-    // falling through to the drain phase's 503, which would read as "absent"
-    // and quietly turn a divergence assertion into a false pass.
+    // One run asks the feed up to three times — the publisher-state probe,
+    // the credential probe against the service document, and the reconcile
+    // sweep — plus one spare, which keeps a retry from falling through to the
+    // drain phase's 503 that would read as "absent" and quietly turn a
+    // divergence assertion into a false pass.
     let (addr, calls) =
         anodizer_core::test_helpers::responder::spawn_oneshot_http_responder_with(|_| {
-            vec![rejected_feed_response(), rejected_feed_response()]
+            vec![rejected_feed_response(); 4]
         });
     write_reconcile_fixture_config(tmp.path(), &format!("http://{addr}"));
     run_git(tmp.path(), &["add", "-A"]);
@@ -462,6 +464,19 @@ fn run_reconcile_preflight(
     dir: &std::path::Path,
     env: &[(&str, &str)],
 ) -> (std::process::Output, Vec<serde_json::Value>) {
+    let (out, report) = run_reconcile_preflight_json(dir, env);
+    let rows = report["reconcile"]
+        .as_array()
+        .expect("reconcile array")
+        .clone();
+    (out, rows)
+}
+
+/// Run the reconcile fixture's preflight, returning the whole `--json` report.
+fn run_reconcile_preflight_json(
+    dir: &std::path::Path,
+    env: &[(&str, &str)],
+) -> (std::process::Output, serde_json::Value) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_anodizer"));
     cmd.current_dir(dir)
         .args(["preflight", "--json", "--publish-only"])
@@ -476,18 +491,532 @@ fn run_reconcile_preflight(
         .unwrap_or_else(|| panic!("no JSON object in stdout: {stdout}"));
     let report: serde_json::Value =
         serde_json::from_str(stdout[json_start..].trim()).expect("valid JSON report");
-    let rows = report["reconcile"]
-        .as_array()
-        .expect("reconcile array")
-        .clone();
-    (out, rows)
+    (out, report)
 }
 
-/// End-to-end, HEAD ADVANCED PAST the tag: the resolved version is the last
-/// released one, so the sweep must not run at all. The observable proof is
-/// threefold — the feed is never contacted, the table reports the whole-sweep
-/// skip marker instead of a publisher row, and the command exits ZERO even
-/// though that publisher is required and its feed row is a rejection.
+/// End-to-end, HEAD one `feat:` commit PAST `v0.1.0`: the version this tree
+/// would release is the planned `0.2.0`, so that is what both the
+/// publisher-state probe and the sweep ask the feed about — never the `0.1.0`
+/// the context resolved from the last tag. The planned tag does not exist, so
+/// the sweep applies and probes it.
+#[test]
+fn preflight_probes_the_planned_version_on_an_untagged_head() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let (tmp, calls) = reconcile_fixture(0);
+    run_git(
+        tmp.path(),
+        &["commit", "-q", "--allow-empty", "-m", "feat: something new"],
+    );
+    let (out, report) = run_reconcile_preflight_json(tmp.path(), &[]);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+    let entries = report["publishers"]["entries"]
+        .as_array()
+        .unwrap_or_else(|| panic!("publisher entries in the JSON report: {report}"));
+    assert_eq!(entries.len(), 1, "one chocolatey entry: {entries:?}");
+    assert_eq!(entries[0]["publisher"], "chocolatey");
+    assert_eq!(
+        entries[0]["version"], "0.2.0",
+        "the publisher probe must ask about the planned version; stderr:\n{stderr}"
+    );
+    let rows = report["reconcile"].as_array().expect("reconcile array");
+    assert_eq!(rows.len(), 1, "expected one publisher row, got: {rows:?}");
+    assert_eq!(
+        rows[0]["publisher"], "chocolatey",
+        "the sweep must probe the planned version: {rows:?}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "the publisher state probe, the credential probe and the sweep each ask the feed once"
+    );
+}
+
+/// The previous tag is what the REMOTE still carries, as it is for
+/// `anodizer tag`: a tag deleted on the remote for a re-cut survives in this
+/// clone, and a plan read off local tags alone would bump past the version
+/// the remote will cut. `v0.2.0` is gone from the remote, so the plan bumps
+/// from `v0.1.0` and arrives at `0.2.0` again.
+#[test]
+fn preflight_plans_from_the_tags_the_remote_still_has() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let (origin, _calls) = reconcile_fixture(0);
+    run_git(
+        origin.path(),
+        &["commit", "-q", "--allow-empty", "-m", "feat: one"],
+    );
+    run_git(origin.path(), &["tag", "v0.2.0"]);
+
+    let clone = TempDir::new().unwrap();
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(["clone", "-q"])
+                .arg(origin.path())
+                .arg(clone.path());
+            cmd
+        },
+        "git",
+    );
+    assert!(out.status.success(), "clone: {out:?}");
+    run_git(clone.path(), &["config", "user.email", "test@test.com"]);
+    run_git(clone.path(), &["config", "user.name", "Test"]);
+    run_git(clone.path(), &["config", "commit.gpgsign", "false"]);
+    run_git(origin.path(), &["tag", "-d", "v0.2.0"]);
+    run_git(
+        clone.path(),
+        &["commit", "-q", "--allow-empty", "-m", "feat: two"],
+    );
+
+    let (out, report) = run_reconcile_preflight_json(clone.path(), &[]);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let entries = report["publishers"]["entries"]
+        .as_array()
+        .unwrap_or_else(|| panic!("publisher entries in the JSON report: {report}"));
+    assert_eq!(
+        entries[0]["version"], "0.2.0",
+        "the plan must bump from the remote's newest tag; stderr:\n{stderr}"
+    );
+}
+
+/// A chocolatey fixture whose feed answers 404 to everything, for the tests
+/// about the version derivation, where the feed is beside the point: the sweep reads
+/// `absent`, and no env half requirement is missing.
+fn quiet_choco_fixture() -> (TempDir, std::net::SocketAddr) {
+    let tmp = TempDir::new().unwrap();
+    bootstrap_minimal_cargo_repo(tmp.path(), RECONCILE_CRATE_NAME);
+    let (addr, _requests) =
+        anodizer_core::test_helpers::scripted_responder::spawn_scripted_responder(vec![]);
+    write_reconcile_fixture_config(tmp.path(), &format!("http://{addr}"));
+    run_git(tmp.path(), &["add", "-A"]);
+    (tmp, addr)
+}
+
+fn run_verbose_preflight(dir: &std::path::Path) -> (std::process::Output, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .current_dir(dir)
+        .args([
+            "preflight",
+            "--verbose",
+            "--publish-only",
+            "--publishers=chocolatey",
+        ])
+        .output()
+        .expect("spawn anodizer preflight");
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    (out, stderr)
+}
+
+/// A repository with no commits still gets a report: the git-info failure
+/// takes the same lenient arm nightly and snapshot take, the plan fails on
+/// the empty log and says so, and the sweep still runs on the first version.
+#[test]
+fn preflight_reports_on_a_repository_with_no_commits() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let (tmp, _addr) = quiet_choco_fixture();
+    // Unborn branch: the files stay in the index, the log is empty.
+    run_git(tmp.path(), &["update-ref", "-d", "refs/heads/master"]);
+    let (out, stderr) = run_verbose_preflight(tmp.path());
+    assert!(
+        stderr.contains("could not detect git info in preflight mode, using defaults:"),
+        "the lenient arm must take over; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("could not plan the next version:")
+            && stderr.contains("publisher probes use the current version 0.0.0"),
+        "the plan arm must degrade; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Reconcile state") && stderr.contains("chocolatey"),
+        "the report must still print; stderr:\n{stderr}"
+    );
+    assert!(
+        out.status.success(),
+        "no git error may abort the command; status {:?}; stderr:\n{stderr}",
+        out.status
+    );
+}
+
+/// A tag git cannot place (here a tag on a blob) keeps the current
+/// version: the note is printed and the report still follows.
+#[test]
+fn preflight_keeps_the_current_version_when_the_tag_cannot_be_placed() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let (tmp, _addr) = quiet_choco_fixture();
+    run_git(tmp.path(), &["commit", "-q", "-m", "init"]);
+    let blob = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(["rev-parse", "HEAD:Cargo.toml"])
+                .current_dir(tmp.path());
+            cmd
+        },
+        "git",
+    );
+    let blob = String::from_utf8_lossy(&blob.stdout).trim().to_string();
+    run_git(tmp.path(), &["tag", RECONCILE_TAG, &blob]);
+    run_git(
+        tmp.path(),
+        &["commit", "-q", "--allow-empty", "-m", "feat: one"],
+    );
+    let (out, stderr) = run_verbose_preflight(tmp.path());
+    assert!(
+        stderr.contains(&format!(
+            "could not locate tag {RECONCILE_TAG} relative to HEAD:"
+        )) && stderr.contains(&format!(
+            "publisher probes use the current version {RECONCILE_VERSION}"
+        )),
+        "the tag-position arm must degrade; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Reconcile state") && stderr.contains("chocolatey"),
+        "the report must still print; stderr:\n{stderr}"
+    );
+    assert!(
+        out.status.success(),
+        "status {:?}; stderr:\n{stderr}",
+        out.status
+    );
+}
+
+/// A plan that fails keeps the current version: the empty repository above
+/// covers the git failure inside `plan_next_version`; this one is the same
+/// arm with a tag in place and HEAD past it, so the plan is really asked.
+#[test]
+fn preflight_keeps_the_current_version_when_the_plan_fails() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let (tmp, _addr) = quiet_choco_fixture();
+    run_git(tmp.path(), &["commit", "-q", "-m", "init"]);
+    run_git(tmp.path(), &["tag", RECONCILE_TAG]);
+    run_git(
+        tmp.path(),
+        &["commit", "-q", "--allow-empty", "-m", "feat: one"],
+    );
+    // The plan reads the commit log through git's own `log`, which refuses
+    // a `log.showSignature` it cannot parse; the context build never reads
+    // that key, so only the plan fails.
+    run_git(tmp.path(), &["config", "log.showSignature", "not-a-bool"]);
+    let (out, stderr) = run_verbose_preflight(tmp.path());
+    assert!(
+        stderr.contains("could not plan the next version:")
+            && stderr.contains(&format!(
+                "publisher probes use the current version {RECONCILE_VERSION}"
+            )),
+        "the plan arm must degrade; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Reconcile state") && stderr.contains("chocolatey"),
+        "the report must still print; stderr:\n{stderr}"
+    );
+    assert!(
+        out.status.success(),
+        "status {:?}; stderr:\n{stderr}",
+        out.status
+    );
+}
+
+/// An `origin` that cannot be listed falls back to local tags with a note,
+/// and the plan still bumps.
+#[test]
+fn preflight_plans_from_local_tags_when_the_remote_cannot_be_listed() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let (tmp, _addr) = quiet_choco_fixture();
+    run_git(tmp.path(), &["commit", "-q", "-m", "init"]);
+    run_git(tmp.path(), &["tag", RECONCILE_TAG]);
+    run_git(
+        tmp.path(),
+        &["commit", "-q", "--allow-empty", "-m", "feat: one"],
+    );
+    let missing = tmp.path().join("no-such-remote.git");
+    run_git(
+        tmp.path(),
+        &["remote", "add", "origin", &missing.display().to_string()],
+    );
+    let (out, stderr) = run_verbose_preflight(tmp.path());
+    assert!(
+        stderr.contains("could not list tags on remote 'origin'")
+            && stderr.contains("the plan reads local tags"),
+        "the fallback note must print; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("publisher probes use the planned version 0.2.0 (v0.1.0 → v0.2.0)"),
+        "local tags must still plan the bump; stderr:\n{stderr}"
+    );
+    assert!(
+        out.status.success(),
+        "status {:?}; stderr:\n{stderr}",
+        out.status
+    );
+}
+
+/// One `cargo publish --dry-run` per selected crate: a two-crate lockstep
+/// workspace spawns exactly two, one for each crate, in either order.
+#[test]
+fn preflight_runs_one_cargo_publish_simulation_per_crate() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("Cargo.toml"),
+        "[workspace]\nmembers = [\"fx-alpha\", \"fx-beta\"]\n\n[workspace.package]\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    for name in ["fx-alpha", "fx-beta"] {
+        let dir = tmp.path().join(name);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion.workspace = true\nedition = \"2021\"\n"),
+        )
+        .unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "").unwrap();
+    }
+    std::fs::write(
+        tmp.path().join(".anodizer.yaml"),
+        r#"project_name: fx
+crates:
+  - name: fx-alpha
+    path: fx-alpha
+    tag_template: "v{{ .Version }}"
+    publish:
+      cargo: {}
+  - name: fx-beta
+    path: fx-beta
+    tag_template: "v{{ .Version }}"
+    publish:
+      cargo: {}
+"#,
+    )
+    .unwrap();
+    run_git(tmp.path(), &["init", "-q"]);
+    run_git(tmp.path(), &["config", "user.email", "test@test.com"]);
+    run_git(tmp.path(), &["config", "user.name", "Test"]);
+    run_git(tmp.path(), &["config", "commit.gpgsign", "false"]);
+    run_git(tmp.path(), &["add", "-A"]);
+    run_git(tmp.path(), &["commit", "-q", "-m", "workspace fixture"]);
+    run_git(tmp.path(), &["tag", "v0.1.0"]);
+
+    let (index, _requests) =
+        anodizer_core::test_helpers::scripted_responder::spawn_scripted_responder(vec![]);
+    let tools = anodizer_core::test_helpers::fake_tool::FakeToolDir::new();
+    tools.tool("cargo").stdout("cargo 1.0.0\n").install();
+    let path = std::env::join_paths(std::iter::once(tools.bin_dir().to_path_buf()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .expect("join PATH");
+    let out = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .current_dir(tmp.path())
+        .args([
+            "preflight",
+            "--verbose",
+            "--publish-only",
+            "--publishers=cargo",
+        ])
+        .env("PATH", path)
+        .env("ANODIZE_TEST_HARNESS", "1")
+        .env(
+            "ANODIZER_TEST_CRATES_IO_INDEX_BASE",
+            format!("http://{index}"),
+        )
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .output()
+        .expect("spawn anodizer preflight");
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+    let mut dry_runs: Vec<Vec<String>> = tools
+        .calls("cargo")
+        .into_iter()
+        .filter(|argv| argv.first().map(String::as_str) == Some("publish"))
+        .collect();
+    dry_runs.sort();
+    let expected = |name: &str| {
+        vec![
+            "publish".to_string(),
+            "--dry-run".to_string(),
+            "-p".to_string(),
+            name.to_string(),
+        ]
+    };
+    assert_eq!(
+        dry_runs,
+        vec![expected("fx-alpha"), expected("fx-beta")],
+        "one cargo publish --dry-run per crate; stderr:\n{stderr}"
+    );
+}
+
+/// The publisher half runs live inside the standalone: the crates.io state
+/// probe and the `cargo publish --dry-run` simulation both fire, the
+/// simulation exactly once per crate. A context that presented itself as a
+/// dry run skipped both, and a release invoked with `--skip=preflight`
+/// relies on this command for them.
+#[test]
+fn preflight_runs_the_cargo_publish_simulation_once() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    bootstrap_minimal_cargo_repo(tmp.path(), FIXTURE_CRATE_NAME);
+    std::fs::write(
+        tmp.path().join(".anodizer.yaml"),
+        format!(
+            r#"project_name: {FIXTURE_CRATE_NAME}
+crates:
+  - name: {FIXTURE_CRATE_NAME}
+    path: .
+    tag_template: "v{{{{ .Version }}}}"
+    publish:
+      cargo: {{}}
+"#
+        ),
+    )
+    .unwrap();
+    run_git(tmp.path(), &["add", "-A"]);
+    run_git(tmp.path(), &["commit", "-q", "-m", "cargo fixture config"]);
+    run_git(tmp.path(), &["tag", "v0.1.0"]);
+
+    // Every index route answers 404: nothing is published, so the simulation
+    // reaches its dry-run step.
+    let (index, _requests) =
+        anodizer_core::test_helpers::scripted_responder::spawn_scripted_responder(vec![]);
+    let tools = anodizer_core::test_helpers::fake_tool::FakeToolDir::new();
+    tools.tool("cargo").stdout("cargo 1.0.0\n").install();
+    let path = std::env::join_paths(std::iter::once(tools.bin_dir().to_path_buf()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .expect("join PATH");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .current_dir(tmp.path())
+        .args([
+            "preflight",
+            "--verbose",
+            "--publish-only",
+            "--publishers=cargo",
+        ])
+        .env("PATH", path)
+        .env("ANODIZE_TEST_HARNESS", "1")
+        .env(
+            "ANODIZER_TEST_CRATES_IO_INDEX_BASE",
+            format!("http://{index}"),
+        )
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .output()
+        .expect("spawn anodizer preflight");
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+
+    let dry_runs: Vec<Vec<String>> = tools
+        .calls("cargo")
+        .into_iter()
+        .filter(|argv| argv.first().map(String::as_str) == Some("publish"))
+        .collect();
+    assert_eq!(
+        dry_runs,
+        vec![vec![
+            "publish".to_string(),
+            "--dry-run".to_string(),
+            "-p".to_string(),
+            FIXTURE_CRATE_NAME.to_string()
+        ]],
+        "one cargo publish --dry-run per crate; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("checking cargo for '{FIXTURE_CRATE_NAME}@0.1.0'")),
+        "the crates.io state probe must run; stderr:\n{stderr}"
+    );
+}
+
+/// A nightly release asks the registries about the NIGHTLY version: the
+/// version rewrite runs before the engine, so the state probe never asks
+/// about the base tag the nightly derives from.
+#[test]
+fn release_nightly_probes_the_nightly_version() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let (tmp, _calls) = reconcile_fixture(0);
+    let out = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .current_dir(tmp.path())
+        .args([
+            "release",
+            "--nightly",
+            "--verbose",
+            "--skip=build",
+            "--publishers=chocolatey",
+        ])
+        .env("GITHUB_TOKEN", "dummy-token-for-preflight-test")
+        .env("ANODIZER_GITHUB_API_BASE", "http://127.0.0.1:1")
+        .env_remove("GH_TOKEN")
+        .env_remove("ANODIZER_GITHUB_TOKEN")
+        .output()
+        .expect("spawn anodizer release --nightly");
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let probe = stderr
+        .lines()
+        .find(|l| l.contains("checking chocolatey for '"))
+        .unwrap_or_else(|| panic!("no chocolatey state probe line; stderr:\n{stderr}"));
+    assert!(
+        probe.contains(&format!("{RECONCILE_CRATE_NAME}@0.1.1-")) && probe.contains("-nightly'"),
+        "the probe must name the nightly version: {probe}"
+    );
+}
+
+/// End-to-end, HEAD ADVANCED PAST the tag with no release signal: the
+/// resolved version is the last released one, so the sweep must not run at
+/// all. The observable proof is threefold — the feed is contacted only by the
+/// publisher half (its state probe and its credential probe), the table
+/// reports the whole-sweep skip marker
+/// instead of a publisher row, and the command exits ZERO even though that
+/// publisher is required and its feed row is a rejection.
 #[test]
 fn reconcile_sweep_skipped_end_to_end_when_head_advanced_past_the_tag() {
     if !tool_on_path("git") {
@@ -512,8 +1041,8 @@ fn reconcile_sweep_skipped_end_to_end_when_head_advanced_past_the_tag() {
     );
     assert_eq!(
         calls.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "a skipped sweep must not probe the registry at all"
+        2,
+        "a skipped sweep must not probe the registry; only the publisher half may"
     );
     assert_eq!(rows.len(), 1, "expected one marker row, got: {rows:?}");
     assert_eq!(rows[0]["publisher"], "*");
@@ -555,8 +1084,8 @@ fn reconcile_sweep_probes_end_to_end_and_diverged_exits_nonzero_at_the_tag() {
     );
     assert_eq!(
         calls.load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "the sweep must probe the feed exactly once"
+        3,
+        "the publisher state probe, the credential probe and the sweep each ask the feed once"
     );
     assert_eq!(rows.len(), 1, "expected one publisher row, got: {rows:?}");
     assert_eq!(rows[0]["publisher"], "chocolatey");
@@ -594,7 +1123,7 @@ fn reconcile_sweep_probes_end_to_end_for_an_explicitly_declared_tag() {
     );
     assert_eq!(
         calls.load(std::sync::atomic::Ordering::SeqCst),
-        1,
+        3,
         "a declared tag must be probed even from a tree that has moved past it"
     );
     assert_eq!(rows.len(), 1, "expected one publisher row, got: {rows:?}");

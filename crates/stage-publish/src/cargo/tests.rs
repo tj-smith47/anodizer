@@ -3585,6 +3585,137 @@ fn cargo_publish_plan_derives_order_from_cargo_toml_when_depends_on_unset() {
     );
 }
 
+/// Before the tag writeback the manifests still hold the last release, so a
+/// probe keyed on them asks the index about a version this tree will not
+/// publish. A planned version replaces the manifest read for that crate only.
+#[test]
+fn cargo_publish_plan_reads_the_planned_version_before_the_manifest() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let lib = disk_crate_manifest_deps(tmp.path(), "zzz-lib", "0.1.0", &[]);
+    let app = disk_crate_manifest_deps(tmp.path(), "aaa-app", "0.1.0", &["zzz-lib"]);
+    let mut ctx = TestContextBuilder::new()
+        .tag("v0.1.0")
+        .crates(vec![app, lib])
+        .build();
+    ctx.planned_crate_versions
+        .insert("aaa-app".to_string(), "0.2.0".to_string());
+    let plan = cargo_publish_plan(&mut ctx, &[], &quiet_log()).expect("plan resolves");
+
+    assert_eq!(
+        plan.versions.get("aaa-app").map(String::as_str),
+        Some("0.2.0")
+    );
+    assert_eq!(
+        plan.versions.get("zzz-lib").map(String::as_str),
+        Some("0.1.0")
+    );
+}
+
+/// `reconcile()` is a probe. On a re-run at a tagged HEAD it reaches the
+/// binstall step for every published crate, and that step must leave
+/// `Cargo.toml` as it found it: a rewrite there dirties the tree the
+/// release's dirty-tree gate refuses moments later.
+#[test]
+fn reconcile_renders_binstall_metadata_without_writing_the_manifest() {
+    use anodizer_core::config::BinstallConfig;
+    use anodizer_core::test_helpers::env::EnvGuard;
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+
+    let _env = anodizer_core::test_helpers::env::env_mutex()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let git = |args: &[&str]| {
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = std::process::Command::new("git");
+                cmd.args(args).current_dir(tmp.path());
+                cmd
+            },
+            "git",
+        );
+        assert!(out.status.success(), "git {args:?} failed");
+    };
+    let mut app = disk_crate_manifest_deps(tmp.path(), "aaa-app", "0.1.0", &[]);
+    app.binstall = Some(BinstallConfig {
+        enabled: Some(true),
+        pkg_url: Some("https://example.invalid/{{ Version }}".to_string()),
+        ..Default::default()
+    });
+    let manifest_path = tmp.path().join("aaa-app").join("Cargo.toml");
+    let before = std::fs::read(&manifest_path).expect("manifest");
+    git(&["init", "-q"]);
+    git(&["-c", "user.email=t@t", "-c", "user.name=t", "add", "."]);
+    git(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-q",
+        "-m",
+        "init",
+    ]);
+    git(&["tag", "v0.1.0"]);
+
+    // The index says the version is published, so reconcile goes on to the
+    // binstall step; the cargo stub then fails the content check, which is
+    // after the write this test is about.
+    let body = r#"{"name":"aaa-app","vers":"0.1.0","cksum":"00"}"#;
+    let response: &'static str = Box::leak(
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .into_boxed_str(),
+    );
+    let (addr, _requests) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/aa/a-/aaa-app",
+        response,
+        times: None,
+    }]);
+    let _harness = EnvGuard::set("ANODIZE_TEST_HARNESS", "1");
+    let _index = EnvGuard::set(
+        "ANODIZER_TEST_CRATES_IO_INDEX_BASE",
+        format!("http://{addr}"),
+    );
+    let tools = FakeToolDir::new();
+    tools.tool("cargo").exit(1).install();
+    // The stub cargo goes first; git stays reachable for the tag lookup.
+    let path = std::env::join_paths(std::iter::once(tools.bin_dir().to_path_buf()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .expect("join PATH");
+    let _path = EnvGuard::set("PATH", path);
+
+    let mut ctx = TestContextBuilder::new()
+        .tag("v0.1.0")
+        .project_root(tmp.path().to_path_buf())
+        .crates(vec![app])
+        .build();
+    let state = anodizer_core::Publisher::reconcile(&CargoPublisher::new(), &mut ctx)
+        .expect("reconcile ok");
+
+    // The stub cargo fails the content check, which is after the binstall
+    // step: reaching it proves the binstall render ran and did not fail.
+    let anodizer_core::ReconcileState::Unknown { reason } = &state else {
+        panic!("the content check must run after the binstall step: {state:?}");
+    };
+    assert!(
+        !reason.starts_with("binstall metadata") && reason.contains("cargo"),
+        "the binstall step must render and the cargo check must follow: {reason}"
+    );
+    assert_eq!(
+        std::fs::read(&manifest_path).expect("manifest"),
+        before,
+        "reconcile must not rewrite Cargo.toml"
+    );
+}
+
 /// A dependency cycle in the Cargo.toml graph makes `topological_sort` append
 /// the cycle members in input order — an order that violates a real edge.
 /// `validate_publish_order` must reject it BEFORE any one-way-door publish,

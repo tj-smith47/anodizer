@@ -39,11 +39,16 @@ pub const ROOT_HOOK_LANE_SKIPS: &[&str] = &["before", "after", "always", "on-err
 /// [`ROOT_HOOK_LANE_SKIPS`], which `release` and `build` share. Keep ONLY
 /// non-publisher, non-lane stage tokens here.
 ///
+/// `preflight` is the gate `anodizer release` runs before any stage (the
+/// same engine as the standalone `anodizer preflight`); a CI job whose
+/// pre-tag step already ran it skips the second run with `--skip=preflight`.
+///
 /// Two pairs look like publishers but are stages and belong here:
 /// `snapcraft` is the snap *build* stage (its publisher sibling is
 /// `snapcraft-publish`), and `release` is the GitHub/GitLab/Gitea release
 /// *stage* (its publisher sibling is `github-release`).
 pub(super) const NON_PUBLISHER_RELEASE_SKIPS: &[&str] = &[
+    "preflight",
     "publish",
     "sign",
     "validate",

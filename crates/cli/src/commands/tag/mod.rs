@@ -3,6 +3,7 @@ pub mod rollback;
 mod bump_detect;
 mod crate_info;
 mod per_crate;
+mod plan;
 mod repo_shape;
 mod run;
 mod single_crate;
@@ -12,6 +13,7 @@ mod workspace_bump;
 pub(crate) use bump_detect::*;
 pub(crate) use crate_info::*;
 pub(crate) use per_crate::*;
+pub(crate) use plan::*;
 pub(crate) use repo_shape::*;
 pub(crate) use run::run;
 pub(crate) use single_crate::*;
@@ -42,6 +44,7 @@ use crate::commands::version_files_resolve::{enrolled_units, resolve_version_fil
 
 /// Options of `anodizer tag`: the version override, the crate scope, the
 /// signing and push behaviour, and the write/preview mode.
+#[derive(Default)]
 pub(crate) struct TagOpts {
     pub dry_run: bool,
     pub custom_tag: Option<String>,

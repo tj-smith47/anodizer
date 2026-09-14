@@ -70,6 +70,14 @@ pub struct Context {
     /// — the summary placeholder row uses the pair to distinguish
     /// "publish skipped" from "publish aborted before dispatch".
     pub publish_attempted: bool,
+    /// The version each crate would release from this tree, keyed by crate
+    /// name, when that differs from what the tree records. Empty on a run
+    /// whose HEAD carries the release tag: the manifests and the crate tags
+    /// already name the version. The standalone preflight fills it on an
+    /// untagged HEAD from the plan `anodizer tag` would cut, so a publisher
+    /// that reads a crate's version from its manifest or its latest tag
+    /// probes the version the release will carry after the tag writeback.
+    pub planned_crate_versions: std::collections::HashMap<String, String>,
     /// Verify-release verdict, set by `VerifyReleaseStage::run` immediately
     /// before it returns (clean pass OR `bail!`). `None` until the gate runs
     /// its checks — it stays `None` on the disabled / skipped / dry-run /
@@ -254,6 +262,7 @@ impl Context {
             emission_skips: crate::pipe_skip::SkipMemento::new(),
             publish_report: None,
             publish_attempted: false,
+            planned_crate_versions: std::collections::HashMap::new(),
             verify_release: None,
             verify_gate: None,
             determinism: None,

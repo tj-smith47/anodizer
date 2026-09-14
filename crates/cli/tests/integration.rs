@@ -5727,11 +5727,11 @@ crates:
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
-            // The publish gate, not the credential floor, is what this test
-            // pins: without the bypass the run stops at env preflight
+            // This test checks the publish gate; without the skip the run
+            // stops at the preflight
             // (`cargo` needs CARGO_REGISTRY_TOKEN or the OIDC pair, and the
             // fixture deliberately unsets both).
-            "--no-env-preflight",
+            "--skip=preflight",
             "--simulate-failure",
             "cargo",
             "--skip=build,upx,appbundle,dmg,msi,pkg,nsis,notarize,changelog,archive,source,nfpm,srpm,makeself,snapcraft,flatpak,sbom,templatefiles,checksum,sign,release,docker,docker-sign,blob,snapcraft-publish,announce",

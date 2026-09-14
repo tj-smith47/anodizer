@@ -10,9 +10,11 @@ use super::*;
 /// derivation lives in exactly one place:
 /// - `order` — crate names in dependency-first publish order.
 /// - `cfgs` — per-crate resolved `publish.cargo` block (post `skip:`/`if:`).
-/// - `versions` — per-crate resolved version (each crate's own Cargo.toml
-///   `[package].version`, falling back to the release version), since
-///   mixed-cadence workspaces publish different versions per crate.
+/// - `versions` — per-crate resolved version: the planned version on a tree
+///   whose release has not written it yet
+///   ([`Context::planned_crate_versions`]), else each crate's own Cargo.toml
+///   `[package].version`, since mixed-cadence workspaces publish different
+///   versions per crate.
 /// - `all_crates` — the full crate universe (top-level + workspace overlay)
 ///   the plan was derived from, reused by callers that need `depends_on`.
 pub(crate) struct CargoPublishPlan {
@@ -152,7 +154,12 @@ pub(crate) fn cargo_publish_plan(
             // path). Falling back to the global release version here would key
             // the idempotency probe on the WRONG version in per-crate workspaces
             // and cause the crate's real version to be silently skipped.
-            let v = read_cargo_toml_version(&c.path).unwrap_or_default();
+            let v = ctx
+                .planned_crate_versions
+                .get(&c.name)
+                .cloned()
+                .or_else(|| read_cargo_toml_version(&c.path))
+                .unwrap_or_default();
             (c.name.clone(), v)
         })
         .collect();

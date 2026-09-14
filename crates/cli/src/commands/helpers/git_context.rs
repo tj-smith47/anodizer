@@ -198,8 +198,9 @@ pub fn resolve_git_context(
             // the laggard's version. Take the newest tag across the covered
             // crates' families instead — order-independent, and never older
             // than any track's own last release. A single-crate or lockstep
-            // workspace has one family, so the answer is unchanged.
-            let latest_tag = if ctx.is_nightly() || ctx.is_snapshot() {
+            // workspace has one family, so the answer is unchanged. The
+            // standalone preflight plans its version from the same base.
+            let latest_tag = if ctx.is_nightly() || ctx.is_snapshot() || ctx.options.observe {
                 newest_tag_across_crates(ctx, config, monorepo_prefix, log).map(|(tag, tmpl)| {
                     base_tag_template = tmpl;
                     tag
@@ -234,10 +235,8 @@ pub fn resolve_git_context(
                     } else if ctx.options.dry_run {
                         log.warn("no git tags found, defaulting to v0.0.0 (dry-run mode).");
                         "v0.0.0".to_string()
-                    } else if ctx.options.preflight_secrets {
-                        // The pre-tag secrets gate runs before a tag exists at
-                        // HEAD; it validates only secret presence, so a synthetic
-                        // v0.0.0 suffices to render any `{{ .Env.* }}` refs.
+                    } else if ctx.options.observe {
+                        log.verbose("no git tags found; the report targets the first version");
                         "v0.0.0".to_string()
                     } else if ctx.options.notify {
                         // A notification must not be blocked by the absence of a
@@ -262,7 +261,7 @@ pub fn resolve_git_context(
             && !ctx.options.snapshot
             && !ctx.options.nightly
             && !ctx.options.changelog_preview
-            && !ctx.options.preflight_secrets
+            && !ctx.options.observe
             && !ctx.options.notify
         {
             let head = git::get_short_commit().unwrap_or_else(|_| "unknown".to_string());
@@ -283,7 +282,7 @@ pub fn resolve_git_context(
                     && !ctx.options.snapshot
                     && !ctx.options.nightly
                     && !ctx.options.changelog_preview
-                    && !ctx.options.preflight_secrets
+                    && !ctx.options.observe
                     && !ctx.options.notify
                 {
                     if ctx.options.dry_run {
@@ -344,6 +343,8 @@ pub fn resolve_git_context(
                     Some("snapshot")
                 } else if ctx.options.notify {
                     Some("notify")
+                } else if ctx.options.observe {
+                    Some("preflight")
                 } else {
                     None
                 };

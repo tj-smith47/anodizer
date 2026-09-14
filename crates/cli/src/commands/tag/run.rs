@@ -603,8 +603,8 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
     // The current manifest version for this tagging unit: the workspace
     // `[workspace.package].version` in lockstep mode, else the version-synced
     // crate's own `Cargo.toml`. Read+parsed once here and reused by both the
-    // `cargo_ahead` release-signal check and the downgrade guard below so the
-    // two never drift on which manifest they consult.
+    // `cargo_ahead` release-signal check and the downgrade guard so the two
+    // never drift on which manifest they consult.
     let cargo_current_ver: Option<String> = if let Some(ws) = workspace_info {
         ws.workspace_package_version.clone()
     } else if version_sync_enabled && let Some(ref path) = crate_path {
@@ -615,90 +615,30 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
         None
     };
 
-    // A manually-bumped Cargo.toml that is strictly ahead of the previous
-    // tag is itself a release signal — the operator has explicitly set the
-    // next version. Honor it even when no per-commit bump signal fired and
-    // even when the crate path had no changes. This prevents autotag from
-    // stalling at the old tag after a manual `cargo set-version` bump.
-    let cargo_ahead = manifest_version_ahead(
-        cargo_current_ver.as_deref(),
-        prev_tag
-            .as_deref()
-            .and_then(|t| git::parse_semver_tag(t).ok())
-            .map(|p| (p.major, p.minor, p.patch)),
-    );
-
-    // If #none token detected (and Cargo.toml isn't explicitly ahead), skip.
-    // An explicit `--version` is itself the release signal, so it tags
-    // regardless of any per-commit bump directive.
-    if bump == BumpKind::None && !cargo_ahead && version_override.is_none() {
+    let Some(plan) = planned_version(
+        PlanInputs {
+            cfg: &cfg,
+            prev_tag: prev_tag.as_deref(),
+            bump,
+            cargo_current_ver,
+            version_override,
+        },
+        &log,
+    )?
+    else {
         log.verbose("skipped tag — no bump signal and Cargo.toml not ahead");
         println!("new_tag={}", prev_tag.as_deref().unwrap_or(""));
         println!("old_tag={}", prev_tag.as_deref().unwrap_or(""));
         println!("part=none");
         return Ok(());
-    }
-
-    // Determine base version.
-    // When there is no previous tag, use initial_version directly without bumping
-    // (matching github-tag-action behavior: initial_version IS the first tag).
-    let (new_major, new_minor, new_patch, old_tag_str) = if let Some(ref prev) = prev_tag {
-        let base = git::parse_semver_tag(prev)?;
-        let (maj, min, pat) = apply_bump(base.major, base.minor, base.patch, &bump);
-        (maj, min, pat, prev.as_str())
-    } else {
-        let base = git::parse_semver_tag(&format!("{}{}", cfg.tag_prefix, cfg.initial_version))
-            .unwrap_or(git::SemVer {
-                major: 0,
-                minor: 1,
-                patch: 0,
-                prerelease: None,
-                build_metadata: None,
-            });
-        (base.major, base.minor, base.patch, "")
     };
-
-    // Build new version string
-    let mut new_version = format!("{}.{}.{}", new_major, new_minor, new_patch);
-
-    // Handle prerelease
-    if cfg.prerelease {
-        new_version = format!("{}-{}", new_version, cfg.prerelease_suffix);
-    }
-
-    // When version_sync is enabled, a Cargo.toml version already higher than
-    // the tag-derived version wins, to avoid downgrading a manual bump. This is
-    // the Cargo.toml-ahead guard; computing it here (even with `--version` set)
-    // yields the version autotag *would* have produced, so the override warning
-    // can name the true derived value the operator is overriding.
-    if let Some(cargo_ver) = cargo_current_ver
-        && manifest_version_ahead(Some(&cargo_ver), Some((new_major, new_minor, new_patch)))
-    {
-        if version_override.is_none() {
-            log.status(&format!(
-                "Cargo.toml version {} > tag-derived {}, using Cargo.toml version",
-                cargo_ver, new_version
-            ));
-        }
-        new_version = cargo_ver;
-    }
-
-    if let Some(pinned) = version_override {
-        // The operator is authoritative: pin the explicit version verbatim,
-        // bypassing the autotag bump AND the Cargo.toml-ahead guard above. Warn
-        // when it disagrees with the version derivation would have produced
-        // (`new_version` now holds that fully-derived value) so the divergence
-        // is visible, then proceed with the explicit one.
-        if pinned != new_version {
-            log.warn(&format!(
-                "--version {} overrides the derived version {} (autotag + Cargo.toml-ahead guard bypassed)",
-                pinned, new_version
-            ));
-        }
-        new_version = pinned;
-    }
-
-    let new_tag = format!("{}{}", cfg.tag_prefix, new_version);
+    let TagPlan {
+        new_tag,
+        new_version,
+        old_tag: old_tag_str,
+        ..
+    } = plan;
+    let old_tag_str = old_tag_str.as_str();
 
     log.verbose(&format!("{} → {}", old_tag_str, new_tag));
 

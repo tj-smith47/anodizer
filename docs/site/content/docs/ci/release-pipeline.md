@@ -5,7 +5,7 @@ weight = 3
 template = "docs.html"
 +++
 
-This is the production-grade release pipeline anodizer runs against itself, generalized for any consumer. It is the most hardened shape — a secret gate that runs *before a tag exists*, a commit-driven auto-tag, a sharded byte-for-byte reproducibility proof, a publish step that ships the **proven** artifacts (never a rebuild), and an npm leg split out so npm provenance can be issued from a GitHub-hosted OIDC token.
+This is the production-grade release pipeline anodizer runs against itself, generalized for any consumer. It is the most hardened shape — a preflight that runs *before a tag exists*, a commit-driven auto-tag, a sharded byte-for-byte reproducibility proof, a publish step that ships the **proven** artifacts (never a rebuild), and an npm leg split out so npm provenance can be issued from a GitHub-hosted OIDC token.
 
 If you just want a release on tag-push, start with [GitHub Actions](@/docs/ci/github-actions.md). Reach for this topology when you publish to one-way-door registries (crates.io, chocolatey, winget, snapcraft) and want every byte proven reproducible before it ships.
 
@@ -15,8 +15,10 @@ If you just want a release on tag-push, start with [GitHub Actions](@/docs/ci/gi
 CI (master, success)  ──or──  workflow_dispatch
         │
         ▼
-  preflight            validate every publish secret + key material BEFORE a
-        │              tag exists (release --preflight-secrets). A missing CI
+  preflight            anodizer preflight, BEFORE a tag exists: every tool,
+        │              secret, endpoint and key the release needs, each
+        │              publisher's credential, and the one-way-door state of
+        │              the version the tag job is about to cut. A missing CI
         │              secret aborts here — nothing is tagged.
         ▼
   tag (auto-tag)       anodizer tag --push --changelog. Reads the commit range
@@ -29,44 +31,46 @@ CI (master, success)  ──or──  workflow_dispatch
         │              and uploads its hermetic dist-* artifact.
         ▼
   release (publish)    download + merge all 4 shards' preserved dist →
-        │              release --publish-only --skip=npm,pypi,cargo. Ships the
-        │              PROVEN bytes; never recompiles. Runs every non-OIDC publisher.
+        │              release --publish-only --skip=preflight,npm,pypi,cargo.
+        │              Ships the PROVEN bytes; never recompiles. Runs every
+        │              non-OIDC publisher; the preflight job already ran the engine.
         ▼
   dispatch-oidc        gh workflow run publish-oidc.yml (+ wait for its verdict).
         │              release.yml fires on workflow_run, which crates.io/PyPI
         │              Trusted Publishing REJECT; dispatch hops onto an accepted
         ▼              trigger without tainting the OIDC event_name claim.
-  publish-oidc.yml     release --publish-only --publishers npm,pypi,cargo, on a
-  (workflow_dispatch)  github-hosted runner so the GitHub Actions OIDC identity is
-                       accepted: npm provenance + PyPI + crates.io Trusted Publishing.
+  publish-oidc.yml     release --publish-only --publishers npm,pypi,cargo
+  (workflow_dispatch)  --skip=preflight, on a github-hosted runner so the GitHub
+                       Actions OIDC identity is accepted: npm provenance + PyPI +
+                       crates.io Trusted Publishing.
 ```
 
 The release job **publishes the shards' preserved dist — it never rebuilds.** An artifact ships only if a determinism shard produced it: the stage list that the shards validate is also the produce filter.
 
 ## The jobs, one at a time
 
-### 1. `preflight` — gate secrets before tagging
+### 1. `preflight` — run the whole check before tagging
 
-Tagging is a half-irreversible act: once `vX.Y.Z` is pushed, a downstream release fires. The preflight job validates that **every** runner-agnostic publish secret and key blob the later jobs need is present and well-formed **before** the tag is issued, so a truncated `COSIGN_KEY` or a missing `CARGO_REGISTRY_TOKEN` aborts the run with nothing published and no orphan tag.
+Tagging is a half-irreversible act: once `vX.Y.Z` is pushed, a downstream release fires. The preflight job runs the [one preflight engine](@/docs/general/preflight.md) **before** the tag is issued: every tool, secret, endpoint and key blob the later jobs need is present and well-formed, every publisher's credential works, and no one-way-door registry already holds the version the tag job is about to cut. A truncated `COSIGN_KEY`, a missing `CARGO_REGISTRY_TOKEN`, an unreachable blob endpoint or a crates.io version that already exists aborts the run with nothing published and no orphan tag.
+
+The job runs on the runner the release job will use — anodizer's own runs on `arc-anodizer`, the self-hosted runner that can reach the in-cluster blob store and holds its ambient credentials — so endpoints and secrets are checked in one job, in the same environment that will publish.
 
 ```yaml
   preflight:
-    name: Preflight secrets
+    name: Preflight
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
+    runs-on: arc-anodizer
     permissions:
       contents: read
       id-token: write          # so OIDC request vars are present for the npm/mcp/pypi check
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 0       # the planned version is derived from the tag history
       - uses: tj-smith47/anodizer-action@v1
         with:
           auto-install: true
-          # --skip=blob when blob creds are ambient on the publish runner,
-          # not GitHub repo secrets (this gate cannot see them).
-          args: release --preflight-secrets --skip=blob
+          args: preflight
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
@@ -78,7 +82,7 @@ Tagging is a half-irreversible act: once `vX.Y.Z` is pushed, a downstream releas
           # `id-token: write`) needs no token here — see the npm and PyPI pages.
 ```
 
-`release --preflight-secrets` validates secret presence and key-material shape **without** probing host-local tools, so it runs cleanly on a github-hosted gate even when the real publish runs elsewhere. See [Preflight](@/docs/general/preflight.md) for the full check matrix.
+HEAD carries no tag yet, so the publisher probes use the version `anodizer tag` would cut next (printed under `-v` as `HEAD is not tagged; publisher probes use the planned version …`). Every job that runs `anodizer release` afterwards passes `--skip=preflight`: the question is already answered for this tree, and a second run would only add network round-trips on the irreversible leg. See [Preflight](@/docs/general/preflight.md) for the full check matrix and the JSON report.
 
 ### 2. `tag` — commit-driven auto-tag
 
@@ -177,11 +181,11 @@ The publish job downloads and merges all four shards' preserved dist, asserts ev
           auto-install: true
           download-dist: true        # merge all dist-* shards
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-          args: release --publish-only --skip=npm,pypi,cargo
+          args: release --publish-only --skip=preflight,npm,pypi,cargo
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-          # …the same publish-secret env block the preflight gate validated…
+          # …the same publish-secret env block the preflight job validated…
 ```
 
 There is **no workflow-side rollback step**: a pipeline failure leaves the tag and everything published exactly where it stopped ([`on_failure: hold`](@/docs/advanced/release-resilience.md#release-on-failure)). Recovery is re-running the identical `release` command — publishers [converge](@/docs/advanced/release-resilience.md#convergent-re-run) — or `anodizer tag rollback` for deliberate withdrawal.
@@ -241,7 +245,7 @@ These do **not** run as a job inside `release.yml`. crates.io and PyPI Trusted P
           # every publisher outside the hosted set (including github-release) and
           # self-skips the sign loops, so this runner is never asked for cosign/GPG
           # material — none of npm, pypi, cargo consumes it.
-          args: release --publish-only --publishers npm,pypi,cargo
+          args: release --publish-only --publishers npm,pypi,cargo --skip=preflight
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           # No NPM_TOKEN: all three publishers authenticate through this job's
@@ -296,7 +300,7 @@ The full precedence table, the `Cargo.toml`-ahead guard, and every `tag:` config
 
 | Concern | Where it lives | Why |
 |---------|----------------|-----|
-| Secret presence | `preflight` | Catch a missing/mangled secret **before** a tag exists, not halfway through publishing |
+| Environment, credentials, one-way-door state | `preflight` | Catch a missing/mangled secret, an unreachable endpoint or an already-published version **before** a tag exists; the release jobs pass `--skip=preflight` |
 | Version decision | `tag` | One commit-driven bump + atomic push; downstream gates on `tagged` |
 | Reproducibility | `determinism-check` | Prove every byte is reproducible across hosts before any of it ships |
 | Publishing | `release` | Ship the **proven** bytes; a partial failure holds in place and recovers by re-running |
@@ -311,5 +315,5 @@ For the lighter-weight shapes — single-crate tag-push, lockstep workspace, per
 - [Release Workflow Strategies](@/docs/ci/release-workflows.md) — pick a shape for your repo
 - [Auto-Tagging](@/docs/advanced/auto-tagging.md) — the full version-bump model
 - [Determinism](@/docs/advanced/determinism.md) — the reproducibility harness
-- [Preflight](@/docs/general/preflight.md) — the pre-stage environment gate
+- [Preflight](@/docs/general/preflight.md) — the one engine the pre-tag job and `anodizer release` both run
 - [Release Resilience](@/docs/advanced/release-resilience.md) — convergent re-run, `on_failure: hold`, and `tag rollback`

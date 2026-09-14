@@ -5,51 +5,6 @@ use super::*;
 /// `--merge` / `--split` / `--publish-only` modes — CI already validates
 /// the code before tagging, and hook compilation can dirty the working
 /// tree.
-/// Config-derived environment preflight for a release: every enabled
-/// stage/publisher declares its tools / env vars / endpoints / key material,
-/// and all failures are reported in one pass with ZERO mutations. Runs ahead
-/// of the `before:` hooks and the failure-policy boundary, so a missing secret
-/// surfaces as "fix and re-run" — never after minutes of hook work, and never
-/// as a destructive rollback of a tag the run did not touch.
-///
-/// Snapshot / dry-run / `--split` skip it (no upstream side effects to guard).
-/// `--publish-only` runs it (that mode's missing secrets used to surface
-/// mid-publish); `--announce-only` checks announce requirements alone, since
-/// announcers fire sequentially with real side effects.
-pub(crate) fn run_release_env_preflight(
-    ctx: &Context,
-    opts: &ReleaseOpts,
-    log: &StageLogger,
-) -> Result<()> {
-    if !opts.no_env_preflight && !opts.dry_run && !opts.snapshot && !opts.split {
-        let scope = if opts.announce_only {
-            crate::commands::preflight::PreflightScope::AnnounceOnly
-        } else if opts.publish_only {
-            crate::commands::preflight::PreflightScope::PublishOnly
-        } else {
-            crate::commands::preflight::PreflightScope::Full
-        };
-        let report = crate::commands::preflight::run_env_preflight(ctx, scope, log);
-        if !report.ok() {
-            anyhow::bail!(preflight_failure_message(&report));
-        }
-    }
-    Ok(())
-}
-
-/// The message a failed environment preflight aborts the release with: how
-/// many checks failed, out of how many that ran, and where to look.
-pub(crate) fn preflight_failure_message(
-    report: &anodizer_core::env_preflight::EnvPreflightReport,
-) -> String {
-    format!(
-        "preflight: {} environment failure(s) across {} check(s); \
-         fix the issues above before re-running",
-        report.failures.len(),
-        report.checks
-    )
-}
-
 pub(crate) fn run_before_hooks(
     ctx: &Context,
     config: &Config,
@@ -222,57 +177,6 @@ pub(crate) fn apply_snapshot_template_vars(
 /// without continuing into the rest of the pipeline; `Ok(false)`
 /// otherwise.
 ///
-/// Walks each enabled one-way-door publisher (cargo, choco, winget, aur)
-/// and bails early if the target version is already submitted / approved
-/// / pending — saving an entire wasted release cycle. Skipped in snapshot
-/// / dry-run / split modes (no upstream side-effects) and when `publish`
-/// is already in `skip_stages`.
-pub(crate) fn run_publisher_preflight(
-    ctx: &mut Context,
-    opts: &ReleaseOpts,
-    log: &StageLogger,
-) -> Result<bool> {
-    // Preflight probes publisher state ahead of a publish; an already-published
-    // release has no pending one-way-door transitions to guard against.
-    if opts.announce_only {
-        log.status("skipped preflight — --announce-only does not publish");
-        return Ok(false);
-    }
-    let should_run_preflight = should_run_preflight_auto(
-        opts.snapshot,
-        opts.dry_run,
-        opts.split,
-        ctx.should_skip("publish"),
-    );
-    if !(opts.preflight || should_run_preflight) {
-        return Ok(false);
-    }
-
-    let report = anodizer_stage_publish::preflight::run_preflight(ctx, log)?;
-    if report.entries.is_empty() {
-        log.verbose("skipped one-way-door preflight — no one-way-door publishers configured");
-    } else {
-        report.emit(log);
-    }
-    // Resilience-extension blockers (rollback-scope checks +
-    // `Publisher::preflight()` returns) live in their own channel; bail when
-    // any is present so the operator sees the problem before the pipeline
-    // starts.
-    if !report.blockers.is_empty() {
-        anyhow::bail!(
-            "preflight: {} resilience blocker(s): {}",
-            report.blockers.len(),
-            report.blockers.join("; "),
-        );
-    }
-    log.status(&format!(
-        "preflight found {} publisher(s) clean",
-        report.clean_count()
-    ));
-    // `--preflight` is a check-only mode: signal early-exit to the caller.
-    if opts.preflight { Ok(true) } else { Ok(false) }
-}
-
 /// The end-of-pipeline layer of the shared required-failure exit gate
 /// ([`anodizer_core::publish_report::gate_required_failures`]): the skip
 /// set, the failure filter, the name list, and the recovery hint all live

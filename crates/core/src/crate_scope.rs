@@ -58,6 +58,9 @@ pub fn crate_template_overrides(name: &str, tag: &str) -> Result<Vec<(&'static s
 ///
 /// Resolution order:
 ///
+/// 0. The crate's `tag_template` rendered against its planned version
+///    ([`Context::planned_crate_versions`]) — a tag that does not exist yet,
+///    on a tree whose release will create it.
 /// 1. The crate's `tag_template` rendered against the context's CURRENT
 ///    version, when a tag by that name exists. This is the tag being
 ///    released, which is not always the newest one: re-publishing an older
@@ -71,6 +74,14 @@ pub fn crate_template_overrides(name: &str, tag: &str) -> Result<Vec<(&'static s
 /// than the process cwd.
 pub fn resolve_crate_tag(ctx: &Context, crate_cfg: &CrateConfig) -> Option<String> {
     let monorepo_prefix = ctx.config.monorepo_tag_prefix();
+    if let Some(version) = ctx.planned_crate_versions.get(&crate_cfg.name) {
+        let template = crate_cfg.tag_family_template();
+        // The family template defines the tag, so it cannot read one.
+        return ctx
+            .render_template_for_version(&template, version, "")
+            .ok()
+            .filter(|rendered| rendered != &template);
+    }
     let repo = ctx
         .options
         .project_root
@@ -257,6 +268,41 @@ mod tests {
             "git",
         );
         assert!(out.status.success(), "git {args:?}: {out:?}");
+    }
+
+    /// On an untagged HEAD the release will create the crate's next tag, so
+    /// a planned version resolves that tag before any tag exists for it, and
+    /// the latest existing tag is left alone.
+    #[test]
+    fn a_planned_version_resolves_a_tag_that_does_not_exist_yet() {
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q"]);
+        git(
+            tmp.path(),
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
+        );
+        git(tmp.path(), &["tag", "orphan-v0.1.0"]);
+        let mut ctx = ctx_at(tmp.path());
+        assert_eq!(
+            resolve_crate_tag(&ctx, &crate_cfg()).as_deref(),
+            Some("orphan-v0.1.0")
+        );
+        ctx.planned_crate_versions
+            .insert("orphan".to_string(), "0.2.0".to_string());
+        assert_eq!(
+            resolve_crate_tag(&ctx, &crate_cfg()).as_deref(),
+            Some("orphan-v0.2.0")
+        );
     }
 
     /// A repo with zero tags (rollback debris, fresh/shallow clone) must be
