@@ -1130,3 +1130,87 @@ fn reconcile_sweep_probes_end_to_end_for_an_explicitly_declared_tag() {
     assert_eq!(rows[0]["publisher"], "chocolatey");
     assert_eq!(rows[0]["state"], "diverged");
 }
+
+/// Every GitHub-backed reconcile (scoop, homebrew, nix, krew — the ones that
+/// answer "is there an open PR for this version" through the GitHub search
+/// API) runs under the live standalone. When that API cannot be reached, each
+/// one must report `unknown` and none may fail the run: an unreachable index
+/// host is not a divergence, so the exit stays zero even though every
+/// publisher is `required`.
+#[test]
+fn preflight_reports_unreachable_github_reconciles_as_unknown_without_failing() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    const PUBLISHERS: [&str; 4] = ["scoop", "homebrew", "nix", "krew"];
+    let tmp = TempDir::new().unwrap();
+    bootstrap_minimal_cargo_repo(tmp.path(), RECONCILE_CRATE_NAME);
+    let mut yaml = format!(
+        "project_name: {RECONCILE_CRATE_NAME}\ncrates:\n  - name: {RECONCILE_CRATE_NAME}\n    path: .\n    tag_template: \"v{{{{ .Version }}}}\"\n    publish:\n"
+    );
+    for publisher in PUBLISHERS {
+        yaml.push_str(&format!(
+            "      {publisher}:\n        required: true\n        repository:\n          owner: fixture-org\n          name: fixture-index\n          pull_request:\n            enabled: true\n"
+        ));
+        if publisher == "krew" {
+            yaml.push_str("        short_description: \"fixture plugin\"\n");
+        }
+    }
+    std::fs::write(tmp.path().join(".anodizer.yaml"), yaml).unwrap();
+    run_git(tmp.path(), &["add", "-A"]);
+    run_git(
+        tmp.path(),
+        &["commit", "-q", "-m", "github reconcile fixture"],
+    );
+    run_git(tmp.path(), &["tag", RECONCILE_TAG]);
+
+    // A bound-then-released port: every request is refused at connect time,
+    // which is the failure shape a reconcile must absorb as `unknown`.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead = listener.local_addr().unwrap();
+    drop(listener);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .current_dir(tmp.path())
+        .args(["preflight", "--json", "--publish-only"])
+        .arg(format!("--publishers={}", PUBLISHERS.join(",")))
+        .env("GITHUB_TOKEN", "dummy-token-for-preflight-test")
+        .env("ANODIZER_GITHUB_API_BASE", format!("http://{dead}"))
+        .env_remove("GH_TOKEN")
+        .env_remove("ANODIZER_GITHUB_TOKEN")
+        .output()
+        .expect("spawn anodizer preflight");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let json_start = stdout
+        .find('{')
+        .unwrap_or_else(|| panic!("no JSON object in stdout: {stdout}\nstderr:\n{stderr}"));
+    let report: serde_json::Value =
+        serde_json::from_str(stdout[json_start..].trim()).expect("valid JSON report");
+    let rows = report["reconcile"].as_array().expect("reconcile array");
+
+    assert!(
+        out.status.success(),
+        "an unreachable GitHub API must not fail the preflight; stderr:\n{stderr}"
+    );
+    assert_eq!(
+        rows.len(),
+        PUBLISHERS.len(),
+        "one row per publisher: {rows:?}"
+    );
+    for publisher in PUBLISHERS {
+        let row = rows
+            .iter()
+            .find(|r| r["publisher"] == publisher)
+            .unwrap_or_else(|| panic!("no reconcile row for {publisher}: {rows:?}"));
+        assert_eq!(row["state"], "unknown", "{publisher}: {row}");
+        assert_eq!(row["blocking"], false, "{publisher}: {row}");
+        assert!(
+            row["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("PR search failed")),
+            "{publisher}'s row must say the search failed: {row}"
+        );
+    }
+}

@@ -33,7 +33,7 @@ When `.anodizer.yaml` contains a non-empty `workspaces:` block, that wins over `
 
 `anodizer tag` detects which crates have changed since their last tag, bumps versions, and creates per-crate tags in one commit — locally by default. Pass `--push` (as every recipe below does) to advance the branch and push the tags atomically so the release job can see them. The `crates` step output (a JSON array of crate names) lets downstream jobs skip entirely when nothing changed and drive matrix entries when something did.
 
-Every strategy below is two steps end-to-end: tag, then release. Environment validation is in-process — `anodizer release` runs a config-derived [preflight](@/docs/general/preflight.md) before any stage — and a pipeline failure leaves everything exactly where it stopped ([`on_failure: hold`](@/docs/advanced/release-resilience.md#release-on-failure), the only accepted value). Recovery is re-running the identical command; publishers [converge](@/docs/advanced/release-resilience.md#convergent-re-run) instead of double-publishing. No preflight or rollback steps belong in the workflow YAML:
+Every strategy below is three jobs end-to-end: preflight, tag, then release. The [preflight](@/docs/general/preflight.md) job runs the whole pre-release check (environment requirements, every publisher credential, the cargo publish simulation, a reconcile at the planned version) once, before a tag exists, so a bad secret or an already-published version stops the run with nothing tagged. `anodizer release` runs the same engine itself when nothing ran it earlier; the release jobs below pass `--skip=preflight` because the pre-tag job already did. A pipeline failure leaves everything exactly where it stopped ([`on_failure: hold`](@/docs/advanced/release-resilience.md#release-on-failure), the only accepted value). Recovery is re-running the identical command; publishers [converge](@/docs/advanced/release-resilience.md#convergent-re-run) instead of double-publishing. No rollback steps belong in the workflow YAML:
 
 ```yaml
 # .anodizer.yaml
@@ -65,10 +65,29 @@ permissions:
   contents: write
 
 jobs:
-  tag:
+  # Run the whole pre-release check once, before a tag exists, so a bad secret
+  # or an already-published version stops the run with nothing tagged.
+  preflight:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: tj-smith47/anodizer-action@v1
+        with:
+          auto-install: true
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          args: preflight
+        env:
+          # the same secrets the release job consumes
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+
+  tag:
+    needs: preflight
     runs-on: ubuntu-latest
     outputs:
       crates: ${{ steps.t.outputs.crates }}
@@ -100,7 +119,7 @@ jobs:
         with:
           auto-install: true
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-          args: release --clean
+          args: release --clean --skip=preflight   # the preflight job already ran the engine
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
@@ -143,10 +162,30 @@ permissions:
   packages: write
 
 jobs:
-  tag:
+  # Run the whole pre-release check once, before a tag exists, so a bad secret
+  # or an already-published version stops the run with nothing tagged.
+  preflight:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: tj-smith47/anodizer-action@v1
+        with:
+          auto-install: true
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          args: preflight
+        env:
+          # the same secrets the release job consumes
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  tag:
+    needs: preflight
     runs-on: ubuntu-latest
     outputs:
       crates: ${{ steps.t.outputs.crates }}
@@ -178,7 +217,7 @@ jobs:
         with:
           auto-install: true
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-          args: release --clean
+          args: release --clean --skip=preflight   # the preflight job already ran the engine
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
@@ -220,10 +259,30 @@ permissions:
   packages: write
 
 jobs:
-  tag:
+  # Run the whole pre-release check once, before a tag exists, so a bad secret
+  # or an already-published version stops the run with nothing tagged.
+  preflight:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: tj-smith47/anodizer-action@v1
+        with:
+          auto-install: true
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          args: preflight
+        env:
+          # the same secrets the release job consumes
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  tag:
+    needs: preflight
     runs-on: ubuntu-latest
     outputs:
       crates: ${{ steps.t.outputs.crates }}
@@ -282,7 +341,7 @@ jobs:
           auto-install: true
           download-dist: true
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-          args: release --publish-only
+          args: release --publish-only --skip=preflight   # the preflight job already ran the engine
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
@@ -396,10 +455,30 @@ permissions:
   packages: write
 
 jobs:
-  tag:
+  # Run the whole pre-release check once, before a tag exists, so a bad secret
+  # or an already-published version stops the run with nothing tagged.
+  preflight:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: tj-smith47/anodizer-action@v1
+        with:
+          auto-install: true
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          args: preflight
+        env:
+          # the same secrets the release job consumes
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  tag:
+    needs: preflight
     runs-on: ubuntu-latest
     outputs:
       crates: ${{ steps.t.outputs.crates }}
@@ -458,7 +537,7 @@ jobs:
           auto-install: true
           download-dist: true
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-          args: release --publish-only
+          args: release --publish-only --skip=preflight   # the preflight job already ran the engine
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
@@ -615,10 +694,35 @@ permissions:
   packages: write
 
 jobs:
-  tag:
+  # Run the whole pre-release check once, before a tag exists, so a bad secret
+  # or an already-published version stops the run with nothing tagged.
+  preflight:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: tj-smith47/anodizer-action@v1
+        with:
+          from-artifact: anodizer-linux
+          artifact-run-id: auto
+          artifact-workflow: ci.yml
+          auto-install: true
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          cosign-key: ${{ secrets.COSIGN_KEY }}
+          args: preflight
+        env:
+          # the same secrets the release job consumes
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  tag:
+    needs: preflight
     runs-on: ubuntu-latest
     outputs:
       crates: ${{ steps.t.outputs.crates }}
@@ -660,7 +764,7 @@ jobs:
           auto-install: true
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           cosign-key: ${{ secrets.COSIGN_KEY }}
-          args: release --clean
+          args: release --clean --skip=preflight   # the preflight job already ran the engine
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
@@ -827,10 +931,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  tag:
+  # Run the whole pre-release check once, before a tag exists, so a bad secret
+  # or an already-published version stops the run with nothing tagged.
+  preflight:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: tj-smith47/anodizer-action@v1
+        with:
+          auto-install: true
+          args: preflight
+        env:
+          # the same secrets the release job consumes
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  tag:
+    needs: preflight
     runs-on: ubuntu-latest
     outputs:
       crates: ${{ steps.t.outputs.crates }}
@@ -861,7 +983,7 @@ jobs:
       - uses: tj-smith47/anodizer-action@v1
         with:
           auto-install: true
-          args: release --publish-only
+          args: release --publish-only --skip=preflight   # the preflight job already ran the engine
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -873,3 +995,4 @@ Key changes:
 - CI: bash loop → single `anodizer tag` step with `crates` output
 - Release: per-crate `--crate X` → `--publish-only` (topo order from tags at HEAD)
 - `resolve` job: dropped — `anodizer tag` emits everything it was computing
+- Preflight: one pre-tag `preflight` job; the release job passes `--skip=preflight`

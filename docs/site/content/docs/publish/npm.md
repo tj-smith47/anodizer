@@ -334,7 +334,8 @@ jobs:
   publish:                       # self-hosted: everything except the OIDC publishers
     runs-on: self-hosted
     steps:
-      - run: anodizer release --publish-only --skip=npm,pypi,cargo
+      # --skip=preflight: the pre-tag preflight job already ran the engine on this tree
+      - run: anodizer release --publish-only --skip=preflight,npm,pypi,cargo
 
   dispatch-oidc:                 # dispatches the standalone OIDC workflow and waits
     needs: publish
@@ -352,7 +353,8 @@ jobs:
     permissions:
       id-token: write            # issues npm provenance + PyPI + crates.io upload tokens
     steps:
-      - run: anodizer release --publish-only --publishers npm,pypi,cargo
+      # --skip=preflight: the pre-tag preflight job already ran the engine on this tree
+      - run: anodizer release --publish-only --publishers npm,pypi,cargo --skip=preflight
 ```
 
 The `--publishers`/`--skip` selectors that make this split possible are described in
