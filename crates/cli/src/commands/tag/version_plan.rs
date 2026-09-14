@@ -77,21 +77,25 @@ pub(crate) fn rewrite_and_stage_version_files(
 ///
 /// Two entries INTERACT when they name the same file and either share a `match`
 /// anchor or one of them is bare (a bare entry sweeps the whole file, so it
-/// overlaps every anchored region in it). Interacting entries are refused in
-/// exactly two shapes, because each is a rewrite the file cannot survive:
+/// shares occurrences with every anchored region in it). Interacting entries
+/// are refused in exactly two shapes, because each is a rewrite the file
+/// cannot survive:
 ///
-/// 1. **Same old, two news** — one literal cannot become two different versions.
+/// 1. **Same old, two news** — one literal cannot become two different
+///    versions. This hazard applies to two bare entries and to two entries on
+///    ONE anchor. A bare entry beside an anchored one is exempt: the engine
+///    lets the anchored entry claim its regions first and the bare sweep take
+///    only the occurrences left over, so the anchored lines read one new
+///    version and every other occurrence the other.
 /// 2. **A chain** — one entry's NEW version is still matched by another's OLD
 ///    matcher, so the second rewrite would consume the first's output. No apply
-///    order fixes it, so it is refused rather than reordered.
+///    order fixes it, so it is refused rather than reordered. This is the one
+///    hazard a bare entry and an anchored one share.
 ///
 /// Distinct old versions that do not chain both rewrite: the engine applies
 /// each pair to its own occurrences. Fully identical entries dedupe to a single
-/// rewrite (lockstep crates share one pair, so they never conflict), and two
-/// entries on ONE pair — a bare entry beside an anchored one, from one owner or
-/// two — are exempt from both hazards whatever enrolled them: they express a
-/// single rewrite, which the claiming engine applies to each occurrence exactly
-/// once. On a refusal this `bail!`s naming the file, the anchor overlap, and
+/// rewrite (lockstep crates share one pair, so they never conflict).
+/// On a refusal this `bail!`s naming the file, the anchor overlap, and
 /// each side of the pair: the two crates when the entries came from different
 /// owners, and the two entries themselves — `match <anchor>` or
 /// `the whole-file entry` — when one owner wrote both, because naming "crates"
@@ -415,14 +419,17 @@ fn check_rewrite_pair(a: &FileRewrite, b: &FileRewrite) -> Result<()> {
     if a.old == b.old && a.new == b.new {
         return Ok(());
     }
-    // A bare entry sweeps the whole file, so it overlaps every anchored region
-    // in it; two different anchors are asserted disjoint by their author.
-    let anchor_suffix = match (a.anchor.as_deref(), b.anchor.as_deref()) {
-        (None, None) => String::new(),
-        (Some(x), Some(y)) if x == y => format!(" (match {x})"),
+    // Two different anchors are asserted disjoint by their author. A bare
+    // entry beside an anchored one shares occurrences with it, but the engine
+    // lets the anchored entry claim its regions first and the bare sweep take
+    // only what is left, so one old version CAN become two new ones there;
+    // only a chain can still corrupt that pair.
+    let (anchor_suffix, bare_beside_anchored) = match (a.anchor.as_deref(), b.anchor.as_deref()) {
+        (None, None) => (String::new(), false),
+        (Some(x), Some(y)) if x == y => (format!(" (match {x})"), false),
         (Some(_), Some(_)) => return Ok(()),
         (Some(anchor), None) | (None, Some(anchor)) => {
-            format!(" (whole-file entry overlaps match {anchor})")
+            (format!(" (whole-file entry overlaps match {anchor})"), true)
         }
     };
 
@@ -433,7 +440,7 @@ fn check_rewrite_pair(a: &FileRewrite, b: &FileRewrite) -> Result<()> {
         "is enrolled by crates".to_string()
     };
 
-    if a.old == b.old && a.new != b.new {
+    if a.old == b.old && a.new != b.new && !bare_beside_anchored {
         bail!(
             "version_files conflict: {}{} {} bumping FROM the same version to \
              different versions ({} {} → {} vs {} {} → {}); a file cannot hold two new versions \

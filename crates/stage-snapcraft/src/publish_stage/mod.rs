@@ -122,6 +122,29 @@ impl Stage for SnapcraftPublishStage {
             return Ok(());
         }
 
+        // A `snapcrafts:` block is a snap that gets BUILT; `publish: true` is
+        // what opts it into the store. When no selected config opts in, the
+        // stage is configured out the way a `skip: true` publisher is, and the
+        // run summary must say so — a silent return reads as a publisher
+        // that never existed on the arc run and as `skipped-deselected` on
+        // the hosted one.
+        if !crates.iter().any(|c| {
+            c.snapcrafts
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .any(|cfg| cfg.publish.unwrap_or(false))
+        }) {
+            log.status("snapcraft-publish skipped — no snapcraft config sets publish: true");
+            record_snapcraft_result(
+                ctx,
+                None,
+                PublisherOutcome::Skipped(SkipReason::ConfigSkipped),
+                required,
+            );
+            return Ok(());
+        }
+
         // Collect all snap artifacts that were built
         let snap_artifacts: Vec<Artifact> = ctx
             .artifacts

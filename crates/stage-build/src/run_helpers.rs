@@ -427,9 +427,8 @@ fn resolved_profile_dir(bin_path: &Path, crate_path: &str) -> Option<PathBuf> {
 /// freed once its LAST job has produced its binary — never mid-build while a
 /// sibling crate's job still reads the shared `deps/`.
 ///
-/// Active ONLY inside the hermetic determinism-harness rebuild (gated on the
-/// `ANODIZER_IN_DETERMINISM_HARNESS` marker, the same signal stage-sign and
-/// `Context` read for hermetic behavior). The harness builds into a throwaway
+/// Active ONLY inside the hermetic determinism-harness rebuild
+/// (`Context::in_determinism_harness`). The harness builds into a throwaway
 /// `.det-tmp/target/`; a plain local `--snapshot` build uses the user's
 /// persistent `target/` and MUST keep its cargo cache, so this is a no-op
 /// there — `pending` is empty and `note_build_complete` never prunes.
@@ -489,12 +488,10 @@ impl IntermediateReaper {
 
 /// True when this build is the hermetic determinism-harness rebuild, in which
 /// disk-bound context cargo intermediates are pruned as each triple finishes.
-/// Reads the `ANODIZER_IN_DETERMINISM_HARNESS` marker the harness injects into
-/// every child (see `determinism_harness/env.rs`), the same precedent
-/// stage-sign and `Context` follow. A plain local `--snapshot` lacks the
-/// marker and keeps its persistent cargo cache.
+/// A plain local `--snapshot` lacks the harness marker and keeps its
+/// persistent cargo cache.
 fn harness_intermediate_prune_enabled(ctx: &Context) -> bool {
-    ctx.env_var("ANODIZER_IN_DETERMINISM_HARNESS").is_some()
+    ctx.in_determinism_harness()
 }
 
 /// Sequential path: compile each job in-process, register the produced

@@ -191,10 +191,8 @@ impl Context {
         // Surfaced to user `if_condition:` templates so stages can
         // selectively run inside the determinism harness even when
         // `not IsSnapshot` would otherwise skip them.
-        self.template_vars.set_bool(
-            "IsHarness",
-            self.env_var("ANODIZER_IN_DETERMINISM_HARNESS").is_some(),
-        );
+        self.template_vars
+            .set_bool("IsHarness", self.in_determinism_harness());
         // Wire IsDraft from `release.draft`.
         let is_draft = self
             .config

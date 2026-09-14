@@ -235,6 +235,12 @@ impl Stage for VerifyReleaseStage {
 
         let log = ctx.logger(STAGE_NAME);
 
+        // Attribute the landing probes' propagation waits and transport
+        // retries to this stage; without a scope they are filed under
+        // "(unattributed)" in the retry summary, which is where v0.27.0's
+        // npm propagation wait ended up.
+        let _retry_scope = anodizer_core::retry::RetryScope::enter(STAGE_NAME);
+
         let crates = crates_to_verify(ctx);
 
         if crates.is_empty() {

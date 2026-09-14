@@ -689,23 +689,24 @@ pub(crate) fn process_sign_configs(
             });
         }
 
-        // Keyless cosign contends a host-exclusive sigstore TUF trust store:
-        // two concurrent invocations on one host collide and the loser exits
-        // with `creating cached local store: resource temporarily
-        // unavailable`, whether or not the store is already populated. So a
-        // keyless config runs one invocation at a time and holds the
-        // host-level advisory lock for its whole run, which also queues a
-        // second anodizer process behind this one instead of racing it.
-        // Keyed cosign (`--key=`) never contacts Fulcio/Rekor and keeps the
-        // full parallelism. Decided per job on the argv that job spawns —
-        // one keyless job makes the config keyless.
+        // Cosign contends a host-exclusive sigstore TUF trust store whenever
+        // it talks to Rekor — keyless always, keyed unless the argv pins
+        // `--tlog-upload=false`: two concurrent invocations on one host
+        // collide and the loser exits with `creating cached local store:
+        // resource temporarily unavailable`, whether or not the store is
+        // already populated. So such a config runs one invocation at a time
+        // and holds the host-level advisory lock for its whole run, which
+        // also queues a second anodizer process behind this one instead of
+        // racing it. Offline keyed cosign keeps the full parallelism. Decided
+        // per job on the argv that job spawns — one contending job makes the
+        // config contend.
         let keyless = sign_jobs
             .iter()
-            .any(|job| is_keyless_cosign(&job.cmd, &job.args));
+            .any(|job| contends_tuf_store(&job.cmd, &job.args));
         let tuf_init_locks = if keyless {
             log.verbose(&format!(
-                "keyless cosign: serializing {} invocation(s) — concurrent invocations \
-                 collide on the sigstore TUF trust store",
+                "cosign reads the sigstore TUF trust store: serializing {} invocation(s) — \
+                 concurrent invocations collide on it",
                 sign_jobs.len()
             ));
             // Each cache dir must be resolved from the env the cosign CHILD

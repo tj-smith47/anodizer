@@ -295,6 +295,15 @@ impl Context {
         self.env_source.var(name)
     }
 
+    /// True inside the hermetic determinism-harness rebuild, which exports
+    /// `ANODIZER_IN_DETERMINISM_HARNESS=1` to every child it spawns. The one
+    /// spelling of that question: the `IsHarness` template variable, the
+    /// sign stage's ephemeral-key and offline-cosign paths and the build
+    /// stage's intermediate pruning all read it here.
+    pub fn in_determinism_harness(&self) -> bool {
+        self.env_var("ANODIZER_IN_DETERMINISM_HARNESS").is_some()
+    }
+
     /// Replace the injected environment-variable source.
     ///
     /// Production migration code uses this when wrapping an

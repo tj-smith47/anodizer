@@ -574,16 +574,23 @@ fn choco_key_check(
     }
 }
 
-/// Authenticated GET against the chocolatey push endpoint carrying the
-/// `X-NuGet-ApiKey` header (the same header the PUT push uses). 2xx ⇒ key
-/// accepted, 401/403 ⇒ rejected, transport failure ⇒ unreachable, anything
-/// else ⇒ ambiguous. `push_url` is passed in full so a unit test can point the
-/// probe at a local responder without a network round-trip.
+/// GET against the chocolatey push endpoint carrying the `X-NuGet-ApiKey`
+/// header (the same header the PUT push uses). 2xx ⇒ the feed is reachable
+/// and did not reject the key, 401/403 ⇒ rejected, transport failure ⇒
+/// unreachable, anything else ⇒ ambiguous. `push_url` is passed in full so a
+/// unit test can point the probe at a local responder without a network
+/// round-trip.
 ///
-/// NuGet V2 has no dedicated key-validation endpoint, so this proves the feed
-/// is reachable and the key is not outright rejected at the read layer — the
-/// strongest pre-push signal obtainable without performing the (one-way) write
-/// itself.
+/// NuGet V2 has no dedicated key-validation endpoint and its reads are
+/// anonymous, so a 2xx proves reachability and nothing about the key beyond
+/// "not rejected outright" — the strongest pre-push signal obtainable without
+/// performing the (one-way) write itself. The feed content-negotiates: it
+/// answers `Accept: application/json` with 406 and `application/atom+xml`
+/// with 415, so the probe accepts anything, which is what makes a healthy
+/// feed answer 200 instead of an ambiguous status.
+/// The `Accept` the key probe sends; see [`probe_choco_key`].
+const CHOCO_PROBE_ACCEPT: &str = "*/*";
+
 fn probe_choco_key(
     push_url: &str,
     api_key: &str,
@@ -606,7 +613,7 @@ fn probe_choco_key(
             client
                 .get(push_url)
                 .header("X-NuGet-ApiKey", &key)
-                .header("Accept", "application/json")
+                .header("Accept", CHOCO_PROBE_ACCEPT)
                 .send()
         },
         |status, body| {
@@ -731,6 +738,35 @@ mod publisher_tests {
             p.preflight(&ctx).expect("preflight ok"),
             PreflightCheck::Pass
         ));
+    }
+
+    /// The push feed content-negotiates: `Accept: application/json` gets a
+    /// 406 and `application/atom+xml` a 415, both of which the probe would
+    /// report as ambiguous on a healthy feed. The probe accepts anything and
+    /// still carries the key header the push itself will send.
+    #[test]
+    fn chocolatey_key_probe_accepts_any_content_type() {
+        use anodizer_core::test_helpers::responder::spawn_request_capturing_responder;
+        let (addr, captured) =
+            spawn_request_capturing_responder("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        let ctx = TestContextBuilder::new()
+            .crates(vec![choco_crate_src("demo", &format!("http://{addr}/"))])
+            .env("CHOCOLATEY_API_KEY", "good-key")
+            .build();
+        let p = ChocolateyPublisher::new();
+        assert!(matches!(
+            p.preflight(&ctx).expect("preflight"),
+            PreflightCheck::Pass
+        ));
+        let request = captured.lock().unwrap().to_ascii_lowercase();
+        assert!(
+            request.contains("accept: */*"),
+            "the probe must accept any content type: {request}"
+        );
+        assert!(
+            request.contains("x-nuget-apikey: good-key"),
+            "the probe must carry the push's own key header: {request}"
+        );
     }
 
     #[test]

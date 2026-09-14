@@ -516,6 +516,29 @@ fn signs_loop_skips_only_when_every_consumer_is_deselected() {
     }
 }
 
+/// The determinism harness skips every publisher and signs with ephemeral
+/// keys to prove the sign stage reproduces, so the consumer gate must not
+/// read its `--skip` list as "nobody will consume the signatures". v0.27.0's
+/// four shards each printed `skipped signs — every consumer … is deselected`
+/// and signed nothing.
+#[test]
+fn signs_gate_never_skips_inside_the_determinism_harness() {
+    let mut ctx = TestContextBuilder::new()
+        .publisher_allowlist(vec!["npm".to_string()])
+        .env("ANODIZER_IN_DETERMINISM_HARNESS", "1")
+        .sealed_env()
+        .build();
+    assert!(
+        !crate::signs_fully_deselected(&ctx),
+        "the harness deselects every consumer by construction and must still sign"
+    );
+    ctx.set_env_source(anodizer_core::MapEnvSource::new());
+    assert!(
+        crate::signs_fully_deselected(&ctx),
+        "outside the harness the same allowlist deselects every consumer"
+    );
+}
+
 /// A custom publisher (`config.publishers`) with `signature: true` is a fifth
 /// `signs:` consumer that no static list can name. `signs_fully_deselected`
 /// must keep `signs:` alive when such a publisher is *selected*, and ignore it
@@ -5706,10 +5729,11 @@ mod cosign_tuf_race {
         assert_no_overlap(&state, 6);
     }
 
-    /// Keyed cosign (`--key=`) never contacts Fulcio/Rekor and never touches
-    /// the sigstore TUF store, so it must keep the full `--parallelism`.
+    /// Keyed cosign whose argv pins `--tlog-upload=false` never contacts
+    /// Rekor and never touches the sigstore TUF store, so it must keep the
+    /// full `--parallelism`.
     #[test]
-    fn keyed_cosign_keeps_full_parallelism() {
+    fn offline_keyed_cosign_keeps_full_parallelism() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = tmp.path().join("state");
         std::fs::create_dir(&state).unwrap();
@@ -5725,7 +5749,10 @@ mod cosign_tuf_race {
             .unwrap()
             // Appended, not inserted: the stub writes its signature to the
             // third argv slot, which the sign-blob prefix must keep.
-            .push("--key=env://COSIGN_KEY".to_string());
+            .extend([
+                "--key=env://COSIGN_KEY".to_string(),
+                "--tlog-upload=false".to_string(),
+            ]);
         // The signature bytes are a stub's, so the verify leg would only
         // measure the stub again; parallelism is what this pins.
         signs[0].verify = Some(anodizer_core::config::SignVerifyConfig {
@@ -5745,9 +5772,105 @@ mod cosign_tuf_race {
         let early = starts_before_first_end(&state);
         assert!(
             early > 1,
-            "keyed cosign must fan out at the configured parallelism; got \
+            "offline keyed cosign must fan out at the configured parallelism; got \
              {early} start(s) before the first completion"
         );
+    }
+
+    /// A signature output whose directory does not exist yet is written all
+    /// the same: the stage creates it before the signer runs. The
+    /// determinism harness registers raw binaries at a cwd-relative path
+    /// (`.det-tmp/target/<triple>/release/app`), so their `binary_signs:`
+    /// output is placed under `dist/.det-tmp/target/…`, a tree nothing else
+    /// creates, and every sign attempt failed with `create bundle file: no
+    /// such file or directory`. A `signature:` template naming a
+    /// subdirectory is the same shape, so this drives that.
+    #[test]
+    fn a_signature_output_directory_is_created_before_the_signer_runs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_events_stub_sleeping(tmp.path(), "0");
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir(&dist).unwrap();
+
+        let mut signs = stub_signs(&stub, &state);
+        signs[0].signature = Some("sigs/${artifactName}.sig".to_string());
+        signs[0].verify = Some(anodizer_core::config::SignVerifyConfig {
+            enabled: Some(false),
+            ..Default::default()
+        });
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .dist(dist.clone())
+            .signs(signs)
+            .sealed_env()
+            .build();
+        add_archives(&mut ctx, tmp.path(), 1);
+        SignStage
+            .run(&mut ctx)
+            .expect("the stage creates the output directory, then signs");
+
+        let sig = dist.join("sigs").join("myapp-0.tar.gz.sig");
+        assert_eq!(
+            std::fs::read_to_string(&sig).ok().as_deref(),
+            Some("sig"),
+            "signature must be written at {}",
+            sig.display()
+        );
+    }
+
+    /// Keyed cosign with the transparency-log upload left on uploads to
+    /// Rekor and reads the host's sigstore TUF store for Rekor's key, so it
+    /// collides on that store exactly as keyless does: one invocation at a
+    /// time, under the host lock. v0.27.0's `binary_signs:` verify leg spent
+    /// five retries on `creating cached local store` before this held.
+    #[test]
+    fn keyed_cosign_with_tlog_upload_is_serialized_under_the_host_lock() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_events_stub(tmp.path());
+        let cache = tmp.path().join("tuf-root");
+
+        let mut signs = stub_signs(&stub, &state);
+        signs[0]
+            .args
+            .as_mut()
+            .unwrap()
+            .push("--key=env://COSIGN_KEY".to_string());
+        signs[0].verify = Some(anodizer_core::config::SignVerifyConfig {
+            enabled: Some(false),
+            ..Default::default()
+        });
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .parallelism(4)
+            .signs(signs)
+            .env("TUF_ROOT", cache.to_string_lossy())
+            .sealed_env()
+            .build();
+        let capture = anodizer_core::log::LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+        add_archives(&mut ctx, tmp.path(), 6);
+        SignStage.run(&mut ctx).expect("all stub signs succeed");
+
+        assert!(
+            cache.join(".anodizer-tuf-init.lock").is_file(),
+            "keyed cosign that uploads to Rekor must take the host TUF lock: {:?}",
+            capture.all_messages()
+        );
+        assert!(
+            capture
+                .all_messages()
+                .iter()
+                .any(|(_, msg)| msg.contains("signing 6 artifacts with parallelism=1")),
+            "keyed cosign that uploads to Rekor runs one at a time: {:?}",
+            capture.all_messages()
+        );
+        assert_no_overlap(&state, 6);
     }
 
     /// The host TUF lock must be held for the WHOLE keyless run, not just a
@@ -5815,7 +5938,8 @@ mod cosign_tuf_race {
     }
 
     /// The default-visible status line must report the parallelism the run
-    /// actually uses — a keyless config says 1, a keyed one says 4.
+    /// actually uses — a config that reads the TUF store says 1, an offline
+    /// one says 4.
     #[test]
     fn sign_status_line_reports_effective_parallelism() {
         /// Status lines from a two-artifact run of a config invoking
@@ -5865,17 +5989,22 @@ mod cosign_tuf_race {
                 .collect()
         }
 
-        let keyless = status_lines("cosign", &[]);
-        assert!(
-            keyless
-                .iter()
-                .any(|m| m.contains("signing 2 artifacts with parallelism=1")),
-            "a keyless config runs serialized and must say so: {keyless:?}"
-        );
+        for extra in [&[][..], &["--key=env://COSIGN_KEY"][..]] {
+            let lines = status_lines("cosign", extra);
+            assert!(
+                lines
+                    .iter()
+                    .any(|m| m.contains("signing 2 artifacts with parallelism=1")),
+                "cosign {extra:?} reads the TUF store, runs serialized and must say so: {lines:?}"
+            );
+        }
 
-        // Every other signer keeps the configured parallelism.
+        // Every offline signer keeps the configured parallelism.
         for (signer, extra) in [
-            ("cosign", &["--key=env://COSIGN_KEY"][..]),
+            (
+                "cosign",
+                &["--key=env://COSIGN_KEY", "--tlog-upload=false"][..],
+            ),
             ("gpg", &[][..]),
             ("osslsigncode", &[][..]),
             ("signtool", &[][..]),
@@ -6244,13 +6373,18 @@ mod cosign_tuf_race {
     /// Run `DockerSignStage` with a stub `cosign` and `TUF_ROOT` pointed at
     /// `cache`, and report whether the host lock sentinel was created.
     fn docker_sign_creates_sentinel(keyed: bool) -> bool {
-        docker_sign_creates_sentinel_with(keyed.then(|| "--key=env://COSIGN_KEY".to_string()), &[])
+        let extra: &[&str] = if keyed {
+            &["--key=env://COSIGN_KEY"]
+        } else {
+            &[]
+        };
+        docker_sign_creates_sentinel_with(extra, &[])
     }
 
-    /// [`docker_sign_creates_sentinel`] with one extra sign arg (a template
-    /// is allowed) and `Env.*` template values seeded before the run.
+    /// [`docker_sign_creates_sentinel`] with extra sign args (templates are
+    /// allowed) and `Env.*` template values seeded before the run.
     fn docker_sign_creates_sentinel_with(
-        extra_arg: Option<String>,
+        extra_args: &[&str],
         template_env: &[(&str, &str)],
     ) -> bool {
         use anodizer_core::config::DockerSignConfig;
@@ -6260,7 +6394,7 @@ mod cosign_tuf_race {
         let stub = write_script(tmp.path(), "cosign", "#!/bin/sh\nexit 0\n");
 
         let mut args = vec!["sign".to_string(), "{{ .Artifact }}".to_string()];
-        args.extend(extra_arg);
+        args.extend(extra_args.iter().map(|a| a.to_string()));
         let docker_signs = vec![DockerSignConfig {
             verify: None,
             cmd: Some(stub.to_string_lossy().into_owned()),
@@ -6622,13 +6756,27 @@ mod cosign_tuf_race {
         );
     }
 
-    /// Keyed docker signing never contacts Fulcio/Rekor, so serializing it
-    /// across processes would be pure contention for nothing.
+    /// Keyed docker signing with the tlog upload left on uploads to Rekor
+    /// through the same TUF store, so it takes the host lock too.
     #[test]
-    fn docker_sign_keyed_takes_no_host_lock() {
+    fn docker_sign_keyed_with_tlog_upload_takes_host_lock() {
         assert!(
-            !docker_sign_creates_sentinel(true),
-            "keyed docker signing must not take the host-level TUF lock"
+            docker_sign_creates_sentinel(true),
+            "keyed docker signing that uploads to Rekor must take the host-level TUF lock"
+        );
+    }
+
+    /// Keyed docker signing that pins `--tlog-upload=false` never contacts
+    /// Rekor, so serializing it across processes would be pure contention
+    /// for nothing.
+    #[test]
+    fn offline_keyed_docker_sign_takes_no_host_lock() {
+        assert!(
+            !docker_sign_creates_sentinel_with(
+                &["--key=env://COSIGN_KEY", "--tlog-upload=false"],
+                &[]
+            ),
+            "offline keyed docker signing must not take the host-level TUF lock"
         );
     }
 
@@ -6639,7 +6787,11 @@ mod cosign_tuf_race {
     #[test]
     fn every_keyless_cosign_site_takes_the_host_lock() {
         // A function decides keyless-ness with one of these …
-        const KEYLESS: [&str; 2] = ["is_keyless_cosign(", "ConfigVerifyMode::CosignKeyless"];
+        const KEYLESS: [&str; 3] = [
+            "contends_tuf_store(",
+            "is_keyless_cosign(",
+            "ConfigVerifyMode::CosignKeyless",
+        ];
         // … and spawns cosign through one of these.
         const SPAWNS: [&str; 5] = [
             "run_parallel_chunks(",
@@ -6688,7 +6840,8 @@ mod cosign_tuf_race {
 
     /// A `--key` that arrives through a template is invisible in the
     /// config's raw args. Keyless-ness is decided on the argv each job
-    /// spawns, so such a config is keyed: full parallelism and no host lock.
+    /// spawns, so such a config is keyed; with the tlog upload pinned off
+    /// it is offline: full parallelism and no host lock.
     #[test]
     fn rendered_key_flag_makes_a_sign_config_keyed() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -6698,11 +6851,10 @@ mod cosign_tuf_race {
         let cache = tmp.path().join("tuf-root");
 
         let mut signs = stub_signs(&stub, &state);
-        signs[0]
-            .args
-            .as_mut()
-            .unwrap()
-            .push("{{ .Env.COSIGN_KEY_FLAG }}".to_string());
+        signs[0].args.as_mut().unwrap().extend([
+            "{{ .Env.COSIGN_KEY_FLAG }}".to_string(),
+            "{{ .Env.COSIGN_TLOG_FLAG }}".to_string(),
+        ]);
         // The signature bytes are a stub's; the classification is what this
         // pins, not the verify leg.
         signs[0].verify = Some(anodizer_core::config::SignVerifyConfig {
@@ -6719,6 +6871,8 @@ mod cosign_tuf_race {
             .build();
         ctx.template_vars_mut()
             .set_env("COSIGN_KEY_FLAG", "--key=env://COSIGN_KEY");
+        ctx.template_vars_mut()
+            .set_env("COSIGN_TLOG_FLAG", "--tlog-upload=false");
         let capture = anodizer_core::log::LogCapture::new();
         ctx.with_log_capture(capture.clone());
         add_archives(&mut ctx, tmp.path(), 4);
@@ -6726,7 +6880,7 @@ mod cosign_tuf_race {
 
         assert!(
             !cache.join(".anodizer-tuf-init.lock").exists(),
-            "a `--key` rendered from a template makes the config keyed; no host lock: {:?}",
+            "a `--key` rendered from a template makes the config keyed; offline, no host lock: {:?}",
             capture.all_messages()
         );
         assert!(
@@ -6740,15 +6894,69 @@ mod cosign_tuf_race {
         assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Signature).len(), 4);
     }
 
+    /// A `--tlog-upload=false` that arrives through a template is decided
+    /// on the rendered argv too: the sign leg stays offline and unlocked,
+    /// while the same template rendering only the `--key` still contends.
+    #[test]
+    fn rendered_tlog_flag_decides_the_lock_on_a_sign_config() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_events_stub(tmp.path());
+        let cache = tmp.path().join("tuf-root");
+
+        let mut signs = stub_signs(&stub, &state);
+        signs[0]
+            .args
+            .as_mut()
+            .unwrap()
+            .push("{{ .Env.COSIGN_KEY_FLAG }}".to_string());
+        signs[0].verify = Some(anodizer_core::config::SignVerifyConfig {
+            enabled: Some(false),
+            ..Default::default()
+        });
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .parallelism(4)
+            .signs(signs)
+            .env("TUF_ROOT", cache.to_string_lossy())
+            .sealed_env()
+            .build();
+        ctx.template_vars_mut()
+            .set_env("COSIGN_KEY_FLAG", "--key=env://COSIGN_KEY");
+        add_archives(&mut ctx, tmp.path(), 4);
+        SignStage.run(&mut ctx).expect("all stub signs succeed");
+
+        assert!(
+            cache.join(".anodizer-tuf-init.lock").is_file(),
+            "a rendered `--key` without `--tlog-upload=false` still uploads to Rekor \
+             and must take the host lock"
+        );
+        assert_no_overlap(&state, 4);
+    }
+
     /// The docker path decides on the rendered per-image argv the same way.
     #[test]
     fn rendered_key_flag_makes_a_docker_config_keyed() {
         assert!(
             !docker_sign_creates_sentinel_with(
-                Some("{{ .Env.COSIGN_KEY_FLAG }}".to_string()),
+                &["{{ .Env.COSIGN_KEY_FLAG }}", "{{ .Env.COSIGN_TLOG_FLAG }}"],
+                &[
+                    ("COSIGN_KEY_FLAG", "--key=env://COSIGN_KEY"),
+                    ("COSIGN_TLOG_FLAG", "--tlog-upload=false"),
+                ],
+            ),
+            "a `--key` and `--tlog-upload=false` rendered from templates make docker \
+             signing offline keyed; no host lock"
+        );
+        assert!(
+            docker_sign_creates_sentinel_with(
+                &["{{ .Env.COSIGN_KEY_FLAG }}"],
                 &[("COSIGN_KEY_FLAG", "--key=env://COSIGN_KEY")],
             ),
-            "a `--key` rendered from a template makes docker signing keyed; no host lock"
+            "a `--key` rendered from a template without `--tlog-upload=false` still \
+             uploads to Rekor and takes the host lock"
         );
     }
 
@@ -6986,6 +7194,54 @@ mod cosign_retry_policy {
 
         assert!(!is_keyless_cosign("gpg", &keyless));
         assert!(!is_keyless_cosign("/usr/bin/gpg", &keyless));
+    }
+
+    /// The host-lock discriminator: keyless always contends the TUF store;
+    /// keyed contends unless the argv pins `--tlog-upload=false` in either
+    /// spelling; a non-cosign signer never does.
+    #[test]
+    fn tuf_store_contention_classifier() {
+        use crate::process::contends_tuf_store;
+        let keyless = vec!["sign-blob".to_string(), "artifact.tar.gz".to_string()];
+        assert!(contends_tuf_store("cosign", &keyless));
+        let keyless_offline = vec![
+            "sign-blob".to_string(),
+            "--tlog-upload=false".to_string(),
+            "artifact.tar.gz".to_string(),
+        ];
+        assert!(
+            contends_tuf_store("cosign", &keyless_offline),
+            "keyless still fetches the trust root and a Fulcio certificate"
+        );
+
+        let keyed = vec![
+            "sign-blob".to_string(),
+            "--key=env://COSIGN_KEY".to_string(),
+        ];
+        assert!(contends_tuf_store("/usr/local/bin/cosign", &keyed));
+        let keyed_tlog_on = vec![
+            "sign-blob".to_string(),
+            "--key=env://COSIGN_KEY".to_string(),
+            "--tlog-upload=true".to_string(),
+        ];
+        assert!(contends_tuf_store("cosign", &keyed_tlog_on));
+        let keyed_offline_eq = vec![
+            "sign-blob".to_string(),
+            "--key=env://COSIGN_KEY".to_string(),
+            "--tlog-upload=false".to_string(),
+        ];
+        assert!(!contends_tuf_store("cosign", &keyed_offline_eq));
+        let keyed_offline_split = vec![
+            "sign-blob".to_string(),
+            "--key".to_string(),
+            "cosign.key".to_string(),
+            "--tlog-upload".to_string(),
+            "false".to_string(),
+        ];
+        assert!(!contends_tuf_store("cosign", &keyed_offline_split));
+
+        assert!(!contends_tuf_store("gpg", &keyless));
+        assert!(!contends_tuf_store("osslsigncode", &keyed));
     }
 
     /// A deterministic signer failure (flag typo, unparseable key,

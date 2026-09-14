@@ -2879,6 +2879,56 @@ fn npm_landing_visible_version_passes_and_stamps_verdict() {
     assert!(verdict.issues.is_empty());
 }
 
+/// A probe's transport retry is filed under this stage's name in the retry
+/// summary. v0.27.0's release run attributed its npm propagation wait to
+/// "(unattributed)" because the stage entered no scope.
+#[test]
+fn landing_probe_retries_are_attributed_to_the_stage() {
+    let (addr, _log) = spawn_scripted_responder(vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/app/1.0.0",
+            response: "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+            times: Some(1),
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/app/1.0.0",
+            response: http_ok("{\"version\":\"1.0.0\"}".to_string()),
+            times: None,
+        },
+    ]);
+    let mut ctx = landing_ctx();
+    let retry = ctx.config.retry.as_mut().unwrap();
+    retry.attempts = 2;
+    // `landing_ctx` bounds the run's retry budget at 5ms, which the ladder
+    // spends before its first backoff and gives up after one attempt. The
+    // second ask needs one 1ms backoff to happen.
+    retry.max_elapsed = Some(anodizer_core::config::HumanDuration(
+        std::time::Duration::from_secs(5),
+    ));
+    ctx.set_publish_report(npm_report(&format!("http://{addr}")));
+    let before = stage_retries();
+    assert!(
+        VerifyReleaseStage.run(&mut ctx).is_ok(),
+        "the second ask sees the version"
+    );
+    assert!(
+        stage_retries() > before,
+        "the transport retry must be recorded under the '{STAGE_NAME}' scope: {:?}",
+        anodizer_core::retry::retry_scope_breakdown()
+    );
+}
+
+/// Retries the summary has filed under this stage's scope so far.
+fn stage_retries() -> u32 {
+    anodizer_core::retry::retry_scope_breakdown()
+        .into_iter()
+        .find(|(scope, _, _)| scope == STAGE_NAME)
+        .map(|(_, retries, _)| retries)
+        .unwrap_or(0)
+}
+
 #[test]
 fn npm_landing_missing_version_bails_naming_the_package() {
     let (addr, _log) = spawn_scripted_responder(Vec::new());

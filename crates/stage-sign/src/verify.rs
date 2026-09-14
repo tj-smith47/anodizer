@@ -120,7 +120,7 @@ fn has_flag(args: &[String], flag: &str) -> bool {
 
 /// True when the sign argv disabled the transparency-log upload, meaning no
 /// tlog entry exists for the signature and verification must not demand one.
-fn tlog_upload_disabled(args: &[String]) -> bool {
+pub(crate) fn tlog_upload_disabled(args: &[String]) -> bool {
     flag_value(args, "--tlog-upload").is_some_and(|v| v == "false")
 }
 

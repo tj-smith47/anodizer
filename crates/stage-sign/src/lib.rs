@@ -75,6 +75,12 @@ pub fn signs_consumers() -> &'static [&'static str] {
 /// consumer is deselected. A nameless custom entry resolves to its index label
 /// for the deselection check, matching `select_custom_publishers`.
 pub fn signs_fully_deselected(ctx: &Context) -> bool {
+    // The determinism harness skips every publisher by construction and
+    // signs with ephemeral keys precisely to exercise this stage, so the
+    // consumer gate must not turn the harness into a run that never signs.
+    if ctx.in_determinism_harness() {
+        return false;
+    }
     let builtins_deselected = signs_consumers()
         .iter()
         .all(|p| ctx.publisher_deselected(p));
@@ -512,18 +518,19 @@ impl Stage for DockerSignStage {
                     .map(|f| f.path().to_string_lossy().into_owned());
 
                 // This loop is serial, but another anodizer process on the
-                // same host is not: keyless cosign invocations collide on
-                // the host's sigstore TUF trust store and the loser exits
+                // same host is not: cosign invocations that talk to Rekor
+                // (keyless, or keyed without `--tlog-upload=false`) collide
+                // on the host's sigstore TUF trust store and the loser exits
                 // with `creating cached local store: resource temporarily
                 // unavailable`. Every store the images resolve to is locked
                 // across the whole loop, so the post-sign verify is covered
                 // too and a per-image `TUF_ROOT` leaves none of them racing.
                 // Decided per image on the argv that image spawns — one
-                // keyless image makes the config keyless.
+                // contending image makes the config contend.
                 let _tuf_locks = (!ctx.is_dry_run()
                     && per_image
                         .iter()
-                        .any(|image| crate::process::is_keyless_cosign(&cmd, &image.argv)))
+                        .any(|image| crate::process::contends_tuf_store(&cmd, &image.argv)))
                 .then(|| {
                     let envs: Vec<&[(String, String)]> =
                         per_image.iter().map(|image| image.env.as_slice()).collect();

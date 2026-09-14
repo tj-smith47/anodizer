@@ -935,7 +935,10 @@ notarize:
 
 changelog:
   use: git
-  title: "Changelog"
+  # Empty on purpose: the release body opens with the github `header:` above
+  # and dist/CHANGELOG.md with the `header:` below, so a `## Changelog` line
+  # between either of them and the first group heading was a second title.
+  title: ""
   header: "# Changelog for {{ ProjectName }}"
   divider: "---"
   sort: asc

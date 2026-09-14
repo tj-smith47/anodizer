@@ -1228,7 +1228,7 @@ fn test_print_size_report_filters_and_stores_size() {
     });
 
     let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
-    print_size_report(&mut registry, &log);
+    print_size_report(&mut registry, &dir, &log);
 
     // Archive and Binary should have size populated
     let archive = &registry.all()[0];
@@ -1877,4 +1877,64 @@ fn one_reference_registered_twice_is_probed_once() {
         ));
     }
     assert_eq!(reg.pushed_images().len(), 1);
+}
+
+/// Each row is named by the artifact's path relative to `dist`, so a raw
+/// binary under a per-target directory keeps that directory in its name and
+/// seven of them do not print as seven identical `anodizer` rows; a path
+/// outside `dist` prints in full.
+#[test]
+fn size_report_names_rows_relative_to_dist() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dist = tmp.path().join("dist");
+    let mut registry = ArtifactRegistry::new();
+    for triple in ["app_linux-amd64", "app_linux-arm64"] {
+        let dir = dist.join(triple);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("app");
+        std::fs::write(&path, b"bin").unwrap();
+        registry.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "app".to_string(),
+            path,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+    }
+    let outside = tmp.path().join("elsewhere.tar.gz");
+    std::fs::write(&outside, b"tar").unwrap();
+    registry.add(Artifact {
+        kind: ArtifactKind::Archive,
+        name: "elsewhere.tar.gz".to_string(),
+        path: outside.clone(),
+        target: None,
+        crate_name: "app".to_string(),
+        metadata: Default::default(),
+        size: None,
+    });
+
+    let (log, capture) =
+        crate::log::StageLogger::with_capture("test", crate::log::Verbosity::Normal);
+    print_size_report(&mut registry, &dist, &log);
+
+    let rows: Vec<String> = capture
+        .all_messages()
+        .into_iter()
+        .map(|(_, m)| m.trim().to_string())
+        .collect();
+    assert!(
+        rows.iter().any(|r| r.starts_with("app_linux-amd64/app ")),
+        "rows are named relative to dist: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|r| r.starts_with("app_linux-arm64/app ")),
+        "two binaries of one name keep distinct rows: {rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r.starts_with(&format!("{} ", outside.display()))),
+        "a path outside dist prints in full: {rows:?}"
+    );
 }

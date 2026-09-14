@@ -145,7 +145,7 @@ Target triple components are mapped to Snapcraft architecture names:
 
 ## Publishing to the Snap Store
 
-Set `publish: true` and authenticate with `snapcraft login` (or set `SNAPCRAFT_STORE_CREDENTIALS`) before running anodizer. When `channel_templates` is provided, the snap is released to those channels automatically via `snapcraft upload --release`.
+Set `publish: true` and authenticate with `snapcraft login` (or set `SNAPCRAFT_STORE_CREDENTIALS`) before running anodizer. A `snapcrafts:` block with no `publish: true` entry still builds its snaps, and the publish stage records that as a config skip — `snapcraft-publish skipped — no snapcraft config sets publish: true` at default verbosity and a `skipped-config` row in the run summary — so a build-only snap never reads as a publisher that silently vanished. When `channel_templates` is provided, the snap is released to those channels automatically via `snapcraft upload --release`.
 
 ### Manual-review holds
 

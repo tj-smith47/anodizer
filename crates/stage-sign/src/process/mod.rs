@@ -136,6 +136,27 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
         Stdio::inherit()
     };
 
+    // The signer opens its output file but creates no directory above it,
+    // and a rendered output can sit in one nothing else made: a
+    // `binary_signs:` signature over a cwd-relative build path is placed
+    // under `dist/<that path>`, and a `signature:` template may name a
+    // subdirectory. The determinism harness hit the first shape on every
+    // raw binary.
+    for out in &job.new_artifacts {
+        if let Some(parent) = out.path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "{}: create output directory {} for {}",
+                    job.label,
+                    parent.display(),
+                    job.artifact_display
+                )
+            })?;
+        }
+    }
+
     let mut command = Command::new(&job.cmd);
     command
         .args(&job.args)

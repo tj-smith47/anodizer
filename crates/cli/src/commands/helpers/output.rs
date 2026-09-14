@@ -81,7 +81,7 @@ pub(super) fn yaml_key_sort_key(v: &serde_yaml_ng::Value) -> String {
 /// Print the artifact size report if `report_sizes` is enabled in config.
 pub fn run_report_sizes(ctx: &mut Context, config: &Config, log: &StageLogger) {
     if config.report_sizes.unwrap_or(false) {
-        anodizer_core::artifact::print_size_report(&mut ctx.artifacts, log);
+        anodizer_core::artifact::print_size_report(&mut ctx.artifacts, &ctx.config.dist, log);
     }
 }
 

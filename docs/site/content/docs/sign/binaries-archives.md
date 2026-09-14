@@ -350,19 +350,22 @@ Signing commands run one subprocess per artifact, in parallel, bounded by
 `--parallelism`. Two cosign-specific behaviors keep fresh CI runners from
 flaking:
 
-- **Keyless cosign is serialized** — a keyless config (no `--key` argument)
-  runs one invocation at a time regardless of `--parallelism`, and holds a
-  host-level advisory lock (`~/.sigstore/root/.anodizer-tuf-init.lock`, or
-  `$TUF_ROOT`) so a second anodizer process on the same host queues rather
-  than races. Concurrent keyless cosign invocations collide on the sigstore
-  TUF trust store and the loser exits with `creating cached local store:
-  resource temporarily unavailable` — an already-initialized store does not
-  prevent it. Keyed cosign (`--key=…`) never contacts Fulcio/Rekor and keeps
-  the full `--parallelism`.
+- **Cosign that reads the sigstore trust store is serialized** — a keyless
+  config (no `--key` argument), or a keyed one whose argv does not pin
+  `--tlog-upload=false`, runs one invocation at a time regardless of
+  `--parallelism`, and holds a host-level advisory lock
+  (`~/.sigstore/root/.anodizer-tuf-init.lock`, or `$TUF_ROOT`) so a second
+  anodizer process on the same host queues rather than races. Concurrent
+  cosign invocations collide on the sigstore TUF trust store and the loser
+  exits with `creating cached local store: resource temporarily unavailable`
+  — an already-initialized store does not prevent it. A keyed sign uploads to
+  Rekor and its verify leg checks that entry, and both fetch Rekor's key
+  through the store. Only keyed cosign with `--tlog-upload=false` stays
+  offline and keeps the full `--parallelism`.
 
       $ anodizer release --verbose
            Signing artifacts
-           • keyless cosign: serializing 2 invocation(s) — concurrent invocations collide on the sigstore TUF trust store
+           • cosign reads the sigstore TUF trust store: serializing 2 invocation(s) — concurrent invocations collide on it
            • signing 2 artifacts with parallelism=1
 
 - **Transient retry** — failed cosign invocations are retried up to 5 attempts

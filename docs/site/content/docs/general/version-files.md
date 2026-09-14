@@ -272,15 +272,15 @@ anything is written, identically in `--dry-run` and a real run:
   fires inside `0.1.0-rc2` and would corrupt it to `0.2.0-rc2`. Give each
   enrollment its own `match` anchor.
 
-A **bare** entry sweeps the whole file, so it overlaps every anchored region in
-it. That pairing is judged by the same two hazards, and the message names the
-overlap (`whole-file entry overlaps match …`) — a bare entry bumping `0.7.0 →
-0.8.0` beside an anchored one bumping `0.7.0 → 0.7.1` is refused, and so is a
-chain between them. A bare and an anchored entry on the SAME `old → new` bump
-are legal and both apply: each occurrence is rewritten exactly once, because
-every anchored entry claims its regions in the original file before the bare
-sweep sees what is left. Anchoring every enrollment of a shared file still
-documents the intent best.
+A **bare** entry sweeps the whole file, so it shares occurrences with every
+anchored region in it. Every anchored entry claims its regions in the original
+file before the bare sweep sees what is left, so the pairing is legal on the
+same `old → new` bump and on two different bumps from one old version alike: a
+bare entry bumping `0.7.0 → 0.8.0` beside an anchored one bumping `0.7.0 →
+0.7.1` rewrites the anchored lines to `0.7.1` and every other `0.7.0` to
+`0.8.0`, each occurrence exactly once. Only a chain between the two is refused,
+and its message names the overlap (`whole-file entry overlaps match …`).
+Anchoring every enrollment of a shared file still documents the intent best.
 
 ## A note on matching
 

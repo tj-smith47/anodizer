@@ -445,6 +445,45 @@ fn verify_gate_evaluated_once_when_dispatch_already_ran_it() {
     );
 }
 
+/// A `snapcrafts:` block with no `publish: true` config builds a snap the
+/// store never sees. That is a configured-out publisher, and the run
+/// summary must carry a `skipped-config` row for it — v0.27.0's arc run
+/// printed no snapcraft line at all while the hosted run said
+/// `skipped-deselected`.
+#[test]
+fn publish_false_records_a_config_skip_and_says_so() {
+    let mut krate = snap_crate("demo", None, Some("stable"));
+    krate.snapcrafts.as_mut().unwrap()[0].publish = Some(false);
+    let mut ctx = TestContextBuilder::new().crates(vec![krate]).build();
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+    ctx.artifacts.add(snap_artifact("demo"));
+
+    SnapcraftPublishStage
+        .run(&mut ctx)
+        .expect("a build-only snapcraft config short-circuits to Ok");
+
+    let snap = ctx
+        .publish_report()
+        .expect("the config skip is recorded")
+        .results
+        .iter()
+        .find(|r| r.name == "snapcraft")
+        .expect("snapcraft entry recorded")
+        .clone();
+    assert_eq!(
+        snap.outcome,
+        PublisherOutcome::Skipped(SkipReason::ConfigSkipped),
+        "publish: false is a config-derived skip"
+    );
+    assert!(
+        capture.all_messages().iter().any(|(_, m)| m
+            == "snapcraft-publish skipped — no snapcraft config sets publish: true"),
+        "the skip is said at default verbosity: {:?}",
+        capture.all_messages()
+    );
+}
+
 #[test]
 fn no_configured_crates_records_nothing() {
     // BlobStage parity: when there is no work to attempt, do NOT

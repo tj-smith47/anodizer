@@ -30,16 +30,31 @@ pub(crate) fn is_keyless_cosign(cmd: &str, args: &[String]) -> bool {
     !has_key
 }
 
+/// True when a rendered cosign argv reads the host's sigstore TUF trust
+/// store, which concurrent cosign invocations on one host collide on.
+///
+/// Keyless mode always does (Fulcio, Rekor and the trust root itself). Keyed
+/// mode does too whenever the transparency-log upload is left on: the sign
+/// leg uploads to Rekor and checks the returned entry against Rekor's public
+/// key, and the verify leg demands a tlog entry, and both fetch that key
+/// through the same store. Only a keyed invocation whose argv pins
+/// `--tlog-upload=false` stays offline — that is what the determinism harness
+/// appends. `args` is the RENDERED argv, as for [`is_keyless_cosign`].
+pub(crate) fn contends_tuf_store(cmd: &str, args: &[String]) -> bool {
+    if !is_cosign_cmd(cmd) {
+        return false;
+    }
+    is_keyless_cosign(cmd, args) || !crate::verify::tlog_upload_disabled(args)
+}
+
 /// True when a rendered sign argv is keyless cosign AND the determinism
 /// harness is active.
 ///
 /// The discriminator is purely `cmd == cosign` + absence of `--key`, so it is
 /// config-mode-agnostic (single-crate, workspace-lockstep, workspace
-/// per-crate all flow through these loops). The harness signal mirrors the
-/// `IsHarness` derivation in `Context::populate_runtime_vars`: the
-/// `ANODIZER_IN_DETERMINISM_HARNESS` env var is set.
+/// per-crate all flow through these loops).
 pub(crate) fn is_keyless_cosign_under_harness(cmd: &str, args: &[String], ctx: &Context) -> bool {
-    if ctx.env_var("ANODIZER_IN_DETERMINISM_HARNESS").is_none() {
+    if !ctx.in_determinism_harness() {
         return false;
     }
     is_keyless_cosign(cmd, args)
@@ -87,7 +102,7 @@ pub(crate) fn harden_cosign_args_for_harness(
     mut args: Vec<String>,
     ctx: &Context,
 ) -> Vec<String> {
-    if ctx.env_var("ANODIZER_IN_DETERMINISM_HARNESS").is_none() {
+    if !ctx.in_determinism_harness() {
         return args;
     }
     let basename = std::path::Path::new(cmd)

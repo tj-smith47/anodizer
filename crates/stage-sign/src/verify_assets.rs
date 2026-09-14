@@ -324,12 +324,19 @@ pub fn verify_signature_assets(
             }
         );
 
-        // Keyless cosign verification reads the host's sigstore TUF trust
-        // store, which concurrent cosign invocations collide on — the loser
-        // exits with `creating cached local store: resource temporarily
-        // unavailable`. This loop is serial, but another anodizer process on
-        // the same host is not, so hold the host lock across it.
-        let _tuf_lock = matches!(&mode, ConfigVerifyMode::CosignKeyless { .. })
+        // A cosign verification that consults the transparency log — keyless,
+        // or keyed for a signature whose upload was not disabled — reads the
+        // host's sigstore TUF trust store, which concurrent cosign
+        // invocations collide on: the loser exits with `creating cached
+        // local store: resource temporarily unavailable`. This loop is
+        // serial, but another anodizer process on the same host is not, so
+        // hold the host lock across it.
+        let consults_tlog = match &mode {
+            ConfigVerifyMode::CosignKeyless { .. } => true,
+            ConfigVerifyMode::CosignKeyed { ignore_tlog, .. } => !ignore_tlog,
+            _ => false,
+        };
+        let _tuf_lock = consults_tlog
             .then(|| crate::tuf_cache::keyless_cosign_host_lock(&env, ctx.env_source(), log))
             .flatten();
 
@@ -1280,7 +1287,8 @@ mod tests {
 
     /// A `--key` arriving through a template makes the sign keyed. The
     /// re-verification classifies on the rendered argv, so it verifies with
-    /// the derived public key and takes no host TUF lock.
+    /// the derived public key; with the tlog upload pinned off it consults no
+    /// transparency log and takes no host TUF lock.
     #[test]
     fn rendered_key_flag_reverifies_keyed_without_the_host_lock() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -1290,10 +1298,10 @@ mod tests {
         let cache = tmp.path().join("tuf-root");
 
         let mut cfg = keyless_bundle_config(&stub, &state);
-        cfg.args
-            .as_mut()
-            .unwrap()
-            .push("{{ .Env.COSIGN_KEY_FLAG }}".to_string());
+        cfg.args.as_mut().unwrap().extend([
+            "{{ .Env.COSIGN_KEY_FLAG }}".to_string(),
+            "{{ .Env.COSIGN_TLOG_FLAG }}".to_string(),
+        ]);
         cfg.env
             .as_mut()
             .unwrap()
@@ -1302,6 +1310,8 @@ mod tests {
         let mut ctx = ctx_with(tmp.path(), vec![cfg]);
         ctx.template_vars_mut()
             .set_env("COSIGN_KEY_FLAG", "--key=env://COSIGN_KEY");
+        ctx.template_vars_mut()
+            .set_env("COSIGN_TLOG_FLAG", "--tlog-upload=false");
         add_file_artifact(
             &mut ctx,
             tmp.path(),
@@ -1329,7 +1339,7 @@ mod tests {
         let calls = calls(&state);
         assert!(
             !cache.join(".anodizer-tuf-init.lock").exists(),
-            "a keyed re-verification must not take the host-level TUF lock: {calls:?}"
+            "an offline keyed re-verification must not take the host-level TUF lock: {calls:?}"
         );
         assert!(
             calls
@@ -1342,6 +1352,65 @@ mod tests {
                 .iter()
                 .any(|c| c.starts_with("verify-blob") && c.contains("--key")),
             "the verifier must run in keyed mode: {calls:?}"
+        );
+    }
+
+    /// A keyed signature whose upload was NOT disabled has a Rekor entry
+    /// the verifier demands, and `verify-blob --key` fetches Rekor's key
+    /// through the host TUF store — so this re-verification takes the lock.
+    #[test]
+    fn keyed_reverification_with_a_tlog_entry_takes_the_host_lock() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).expect("state dir");
+        let stub = recording_stub(tmp.path(), "cosign");
+        let cache = tmp.path().join("tuf-root");
+
+        let mut cfg = keyless_bundle_config(&stub, &state);
+        cfg.args
+            .as_mut()
+            .unwrap()
+            .push("--key=env://COSIGN_KEY".to_string());
+        cfg.env
+            .as_mut()
+            .unwrap()
+            .push(format!("TUF_ROOT={}", cache.display()));
+
+        let mut ctx = ctx_with(tmp.path(), vec![cfg]);
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Archive,
+            "app.tar.gz",
+            "app",
+        );
+        add_file_artifact(
+            &mut ctx,
+            tmp.path(),
+            ArtifactKind::Signature,
+            "app.tar.gz.sig",
+            "app",
+        );
+
+        let log = ctx.logger("verify-release");
+        verify_signature_assets(
+            &ctx,
+            "app",
+            None,
+            &PublishedSignatureSource::default(),
+            &log,
+        );
+
+        let calls = calls(&state);
+        assert!(
+            cache.join(".anodizer-tuf-init.lock").is_file(),
+            "a keyed re-verification that checks the tlog must take the host-level TUF lock: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|c| c.starts_with("verify-blob")
+                && c.contains("--key")
+                && !c.contains("--insecure-ignore-tlog")),
+            "the verifier must demand the tlog entry: {calls:?}"
         );
     }
 

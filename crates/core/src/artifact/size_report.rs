@@ -23,8 +23,15 @@ pub fn format_size(bytes: u64) -> String {
 ///
 /// Filters artifacts to [`size_reportable_kinds`] (the
 /// `reportsizes` pipe), stores the file size in each artifact's `size` field,
-/// and prints a human-readable table.
-pub fn print_size_report(registry: &mut ArtifactRegistry, log: &crate::log::StageLogger) {
+/// and prints a human-readable table. Each row is named by the artifact's
+/// path relative to `dist`, so seven raw binaries that all sit at
+/// `dist/<crate>_<target>/anodizer` print as seven distinct rows instead of
+/// seven bare `anodizer` lines; a path outside `dist` prints in full.
+pub fn print_size_report(
+    registry: &mut ArtifactRegistry,
+    dist: &std::path::Path,
+    log: &crate::log::StageLogger,
+) {
     let reportable = size_reportable_kinds();
     let mut entries: Vec<(String, u64)> = Vec::new();
     let mut total: u64 = 0;
@@ -38,9 +45,10 @@ pub fn print_size_report(registry: &mut ArtifactRegistry, log: &crate::log::Stag
             artifact.size = Some(size);
             let name = artifact
                 .path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| artifact.path.display().to_string());
+                .strip_prefix(dist)
+                .unwrap_or(&artifact.path)
+                .to_string_lossy()
+                .replace('\\', "/");
             entries.push((name, size));
             total += size;
         }

@@ -2373,10 +2373,67 @@ fn plan_version_files_rewrites_distinct_anchors_do_not_conflict() {
     );
 }
 
-/// A bare entry sweeps the WHOLE file, so it overlaps every anchored region in
-/// it — pairing one with an anchored entry at the same old version is refused.
+/// A bare entry beside an anchored one, both bumping FROM one old version to
+/// two different new ones, is planned: the engine lets the anchored entry
+/// claim its region first and the bare sweep take the rest, so the file can
+/// hold both new versions. cfgd reaches this shape the day the operator's
+/// version equals cfgd's and the two bump differently in one release.
 #[test]
-fn plan_version_files_rewrites_bare_conflicts_with_anchored() {
+fn plan_version_files_rewrites_bare_beside_anchored_plans_both() {
+    let groups = vec![
+        group_result(
+            &["cfgd"],
+            &[("cfgd-v0.11.0", "m")],
+            &[("crates/cfgd", "0.11.0")],
+            Some("0.10.0"),
+            Some("cfgd-v0.10.0"),
+            vec![vec![vf("docs/installation.md")]],
+        ),
+        group_result(
+            &["operator"],
+            &[("operator-v0.10.1", "m")],
+            &[("crates/operator", "0.10.1")],
+            Some("0.10.0"),
+            Some("operator-v0.10.0"),
+            vec![vec![vf_at("docs/installation.md", r"Operator\s+{version}")]],
+        ),
+    ];
+    let plan = plan_version_files_rewrites(&groups).unwrap();
+    let got: Vec<(Option<&str>, &str, &str)> = plan
+        .iter()
+        .map(|r| (r.anchor.as_deref(), r.old.as_str(), r.new.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (None, "0.10.0", "0.11.0"),
+            (Some(r"Operator\s+{version}"), "0.10.0", "0.10.1"),
+        ],
+        "plan: {plan:?}"
+    );
+
+    // What the engine writes for that plan: the anchored line takes the
+    // anchored new version, every other occurrence the bare one.
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("docs")).unwrap();
+    let file = dir.path().join("docs/installation.md");
+    std::fs::write(
+        &file,
+        "cfgd 0.10.0\nOperator 0.10.0\ndownload/v0.10.0/cfgd\n",
+    )
+    .unwrap();
+    anodizer_core::version_files::rewrite_version_in_files(dir.path(), &plan, false).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "cfgd 0.11.0\nOperator 0.10.1\ndownload/v0.11.0/cfgd\n"
+    );
+}
+
+/// Two BARE entries on one file bumping from one old version to two new ones
+/// stay refused: nothing scopes either sweep, so one literal would have to
+/// become two versions.
+#[test]
+fn plan_version_files_rewrites_two_bare_entries_still_conflict() {
     let groups = vec![
         group_result(
             &["operator"],
@@ -2392,15 +2449,47 @@ fn plan_version_files_rewrites_bare_conflicts_with_anchored() {
             &[("crates/csi", "0.7.1")],
             Some("0.7.0"),
             Some("csi-v0.7.0"),
-            vec![vec![vf_at("values.yaml", r"csi:\s+image:.*:v{version}")]],
+            vec![vec![vf("values.yaml")]],
         ),
     ];
     let err = plan_version_files_rewrites(&groups)
         .unwrap_err()
         .to_string();
     assert!(
-        err.contains("whole-file entry overlaps match") && err.contains("values.yaml"),
-        "conflict must name the whole-file overlap, got: {err}"
+        err.contains("bumping FROM the same version to different versions")
+            && err.contains("values.yaml"),
+        "two bare sweeps must still be refused, got: {err}"
+    );
+}
+
+/// A bare entry and an anchored one whose bumps chain stay refused: the bare
+/// sweep's matcher would consume the anchored entry's output.
+#[test]
+fn plan_version_files_rewrites_bare_beside_anchored_still_refuses_a_chain() {
+    let groups = vec![
+        group_result(
+            &["cfgd"],
+            &[("cfgd-v0.10.1", "m")],
+            &[("crates/cfgd", "0.10.1")],
+            Some("0.10.0"),
+            Some("cfgd-v0.10.0"),
+            vec![vec![vf("docs/installation.md")]],
+        ),
+        group_result(
+            &["operator"],
+            &[("operator-v0.11.0", "m")],
+            &[("crates/operator", "0.11.0")],
+            Some("0.10.1"),
+            Some("operator-v0.10.1"),
+            vec![vec![vf_at("docs/installation.md", r"Operator\s+{version}")]],
+        ),
+    ];
+    let err = plan_version_files_rewrites(&groups)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("whose bumps chain") && err.contains("whole-file entry overlaps match"),
+        "the chain must still be refused and name the overlap, got: {err}"
     );
 }
 
