@@ -791,8 +791,10 @@ fn preflight_plans_from_local_tags_when_the_remote_cannot_be_listed() {
     );
 }
 
-/// One `cargo publish --dry-run` per selected crate: a two-crate lockstep
-/// workspace spawns exactly two, one for each crate, in either order.
+/// One `cargo publish --dry-run` for the whole selected set: a two-crate
+/// lockstep workspace spawns exactly one, carrying `-p` for each crate. One
+/// invocation is what lets cargo verify a crate against its sibling's local
+/// package instead of the last released copy on crates.io.
 ///
 /// Unix only: the stub is a `cargo.cmd` on Windows, and the binary's plain
 /// `cargo` spawn resolves `.exe` alone there, so the real cargo would run.
@@ -871,30 +873,36 @@ crates:
         .expect("spawn anodizer preflight");
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
 
-    let mut dry_runs: Vec<Vec<String>> = tools
+    let dry_runs: Vec<Vec<String>> = tools
         .calls("cargo")
         .into_iter()
         .filter(|argv| argv.first().map(String::as_str) == Some("publish"))
         .collect();
-    dry_runs.sort();
-    let expected = |name: &str| {
-        vec![
-            "publish".to_string(),
-            "--dry-run".to_string(),
-            "-p".to_string(),
-            name.to_string(),
-        ]
-    };
     assert_eq!(
-        dry_runs,
-        vec![expected("fx-alpha"), expected("fx-beta")],
-        "one cargo publish --dry-run per crate; stderr:\n{stderr}"
+        dry_runs.len(),
+        1,
+        "one cargo publish --dry-run for the whole set; got {dry_runs:?}; stderr:\n{stderr}"
+    );
+    let argv = &dry_runs[0];
+    assert_eq!(&argv[..2], ["publish", "--dry-run"], "argv: {argv:?}");
+    let mut packages: Vec<&str> = argv[2..]
+        .chunks(2)
+        .map(|pair| {
+            assert_eq!(pair[0], "-p", "argv: {argv:?}");
+            pair[1].as_str()
+        })
+        .collect();
+    packages.sort_unstable();
+    assert_eq!(
+        packages,
+        ["fx-alpha", "fx-beta"],
+        "both crates ride the one invocation; stderr:\n{stderr}"
     );
 }
 
 /// The publisher half runs live inside the standalone: the crates.io state
 /// probe and the `cargo publish --dry-run` simulation both fire, the
-/// simulation exactly once per crate. A context that presented itself as a
+/// simulation exactly once. A context that presented itself as a
 /// dry run skipped both, and a release invoked with `--skip=preflight`
 /// relies on this command for them.
 ///
@@ -970,7 +978,7 @@ crates:
             "-p".to_string(),
             FIXTURE_CRATE_NAME.to_string()
         ]],
-        "one cargo publish --dry-run per crate; stderr:\n{stderr}"
+        "one cargo publish --dry-run over the one crate; stderr:\n{stderr}"
     );
     assert!(
         stderr.contains(&format!("checking cargo for '{FIXTURE_CRATE_NAME}@0.1.0'")),

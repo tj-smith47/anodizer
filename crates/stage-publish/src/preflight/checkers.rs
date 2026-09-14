@@ -598,7 +598,7 @@ impl CheckerFactory for RealCheckerFactory {
 pub fn run_preflight(ctx: &mut Context, log: &StageLogger) -> Result<PreflightReport> {
     // Production entry point: wires the REAL `cargo publish --dry-run` spawn
     // for the publish-simulation preflight.
-    let dry_run_runner = |krate: &str| run_cargo_dry_run(krate, log);
+    let dry_run_runner = |crates: &[String]| run_cargo_dry_run(crates, log);
     run_preflight_inner(ctx, log, &RealCheckerFactory, &dry_run_runner, true)
 }
 
@@ -623,7 +623,7 @@ pub fn run_preflight_with_factory(
 /// unavailable, so the caller degrades to the index-only partial-publish
 /// check (which contributes no blocker on a clean/single-crate fixture).
 /// Used by every preflight entry point except the production [`run_preflight`].
-pub(super) fn noop_dry_run_runner(_krate: &str) -> DryRunOutcome {
+pub(super) fn noop_dry_run_runner(_crates: &[String]) -> DryRunOutcome {
     DryRunOutcome::Unavailable("dry-run simulation disabled in this preflight path".into())
 }
 

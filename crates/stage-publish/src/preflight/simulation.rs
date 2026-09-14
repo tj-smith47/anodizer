@@ -10,7 +10,7 @@ use super::*;
 // crates.io publish-simulation preflight
 // ---------------------------------------------------------------------------
 
-/// Outcome of simulating one crate's `cargo publish --dry-run`.
+/// Outcome of simulating the publish set's `cargo publish --dry-run`.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum DryRunOutcome {
     /// The dry-run compiled and packaged cleanly.
@@ -19,9 +19,9 @@ pub(super) enum DryRunOutcome {
     /// of its dependency that the registry would resolve. Carries the matched
     /// stderr line so the abort message points the operator at the cause.
     CompileError(String),
-    /// `cargo` resolved a sibling crate that is itself in the to-publish set
-    /// but not yet on the registry. Benign during a real publish (cargo
-    /// publishes siblings first), so it must NOT abort.
+    /// `cargo` could not resolve a crate on the registry. Benign when the
+    /// crate is itself in the to-publish set (the real publish uploads it
+    /// first), so the caller decides; a genuinely absent dependency aborts.
     BenignSiblingMissing(String),
     /// The dry-run could not run for an environmental reason (cargo absent,
     /// spawn failure). The caller degrades to the partial-publish check rather
@@ -34,10 +34,11 @@ pub(super) enum DryRunOutcome {
 /// network round-trip.
 type IndexQuery<'a> = dyn Fn(&str, &str) -> PublisherState + 'a;
 
-/// Pluggable `cargo publish --dry-run` runner. Production wires
-/// [`run_cargo_dry_run`] (a real spawn); tests inject a closure or drive the
-/// real spawn against a PATH-injected `cargo` stub.
-pub(super) type DryRunRunner<'a> = dyn Fn(&str) -> DryRunOutcome + 'a;
+/// Pluggable `cargo publish --dry-run` runner over the crates still to
+/// publish, in publish order. Production wires [`run_cargo_dry_run`] (a real
+/// spawn); tests inject a closure or drive the real spawn against a
+/// PATH-injected `cargo` stub.
+pub(super) type DryRunRunner<'a> = dyn Fn(&[String]) -> DryRunOutcome + 'a;
 
 /// Simulate the crates.io publish BEFORE the irreversible cargo publisher
 /// fires, aborting (via report blockers) when the workspace cannot publish
@@ -285,16 +286,26 @@ fn check_partial_publish(
     }
 }
 
-/// (2) `cargo publish --dry-run` simulation in dependency order.
+/// (2) ONE `cargo publish --dry-run -p <a> -p <b> …` over every still-Clean
+/// crate, in publish order (crates already Published are left out — the real
+/// publish skips them, and the dry-run would refuse an existing version).
 ///
-/// For each still-Clean crate (skipping any already-Published — the real
-/// publish would skip those), run the dry-run and classify:
-/// - [`DryRunOutcome::Ok`] → continue.
-/// - [`DryRunOutcome::CompileError`] → push a blocker and stop: a dependent
-///   cannot build against the dependency version the registry resolves (the
-///   `probe_dir` failure mode).
-/// - [`DryRunOutcome::BenignSiblingMissing`] → continue: cargo couldn't find a
-///   sibling that is itself in the to-publish set and will be published first.
+/// The crates go in one invocation because the simulation runs BEFORE the
+/// tag, when the workspace manifests still carry the last released version.
+/// A per-crate dry-run verifies a dependent against the crates.io copy of
+/// its sibling at that old version, so a sibling that gained API this release
+/// reads as a compile error on a tree that publishes fine. Packaging the set
+/// together makes cargo resolve in-set siblings from the local packages
+/// (`cargo publish` accepts several `-p` since 1.90; this workspace needs
+/// 1.94).
+///
+/// Classification:
+/// - [`DryRunOutcome::Ok`] → done.
+/// - [`DryRunOutcome::CompileError`] → blocker: a dependent cannot build
+///   against the dependency version the registry resolves (the `probe_dir`
+///   failure mode).
+/// - [`DryRunOutcome::BenignSiblingMissing`] → benign when the named crate is
+///   in the to-publish set, a blocker otherwise.
 /// - [`DryRunOutcome::Unavailable`] → warn and fall back to check (1) (already
 ///   run) rather than hard-failing the release on infrastructure.
 fn simulate_dry_run_publishes(
@@ -307,64 +318,74 @@ fn simulate_dry_run_publishes(
     let in_set: std::collections::HashSet<&str> =
         to_publish.iter().map(|(n, _)| n.as_str()).collect();
 
-    for (name, version) in to_publish {
-        // Skip crates already on the registry — the real publish skips them,
-        // and `cargo publish --dry-run` would refuse an existing version.
-        if matches!(index_query(name, version), PublisherState::Published) {
-            continue;
-        }
+    let pending: Vec<String> = to_publish
+        .iter()
+        .filter(|(name, version)| !matches!(index_query(name, version), PublisherState::Published))
+        .map(|(name, _)| name.clone())
+        .collect();
+    if pending.is_empty() {
+        return;
+    }
 
-        log.verbose(&format!(
-            "running cargo publish --dry-run -p {name} (publish simulation)"
-        ));
-        match dry_run_runner(name) {
-            DryRunOutcome::Ok => {}
-            DryRunOutcome::BenignSiblingMissing(detail) => {
-                // Benign ONLY when the unresolved crate is itself in the
-                // to-publish set (a sibling the real publish uploads first). A
-                // missing crate that is NOT in the set is a genuine resolution
-                // failure that would also break the real publish — abort.
-                if in_set.iter().any(|sib| detail.contains(sib)) {
-                    log.verbose(&format!(
-                        "'{name}' dry-run resolved a not-yet-published sibling \
-                         ({detail}); benign — the real publish orders siblings first"
-                    ));
-                } else {
-                    report.blockers.push(format!(
-                        "cargo publish-simulation: `cargo publish --dry-run -p {name}` could \
-                         not resolve a dependency ({detail}); it is not a workspace crate this \
-                         release publishes, so the real publish would fail the same way — fix \
-                         the dependency before releasing"
-                    ));
-                    return;
-                }
-            }
-            DryRunOutcome::CompileError(detail) => {
+    let argv = dry_run_argv(&pending);
+    log.verbose(&format!("running cargo {argv} (publish simulation)"));
+    match dry_run_runner(&pending) {
+        DryRunOutcome::Ok => {}
+        DryRunOutcome::BenignSiblingMissing(detail) => {
+            // Benign ONLY when the unresolved crate is itself in the
+            // to-publish set (a sibling the real publish uploads first). A
+            // missing crate that is NOT in the set is a genuine resolution
+            // failure that would also break the real publish — abort.
+            if in_set.iter().any(|sib| detail.contains(sib)) {
+                log.verbose(&format!(
+                    "the dry-run resolved a not-yet-published sibling ({detail}); \
+                     benign — the real publish orders siblings first"
+                ));
+            } else {
                 report.blockers.push(format!(
-                    "cargo publish-simulation: `cargo publish --dry-run -p {name}` failed to \
-                     build ({detail}); a published dependency is missing API this crate needs, \
-                     so the real publish would fire the irreversible cargo publisher and then \
-                     fail mid-release — bump to a new version or fix the dependency"
-                ));
-                return;
-            }
-            DryRunOutcome::Unavailable(detail) => {
-                log.warn(&format!(
-                    "skipped `cargo publish --dry-run -p {name}` — {detail} \
-                     (relying on the partial-publish index check alone)"
+                    "cargo publish-simulation: `cargo {argv}` could not resolve a \
+                     dependency ({detail}); it is not a workspace crate this release \
+                     publishes, so the real publish would fail the same way — fix the \
+                     dependency before releasing"
                 ));
             }
+        }
+        DryRunOutcome::CompileError(detail) => {
+            report.blockers.push(format!(
+                "cargo publish-simulation: `cargo {argv}` failed to build ({detail}); a \
+                 published dependency is missing API a crate in the set needs, so the \
+                 real publish would fire the irreversible cargo publisher and then fail \
+                 mid-release — bump to a new version or fix the dependency"
+            ));
+        }
+        DryRunOutcome::Unavailable(detail) => {
+            log.warn(&format!(
+                "skipped `cargo {argv}` — {detail} (relying on the partial-publish \
+                 index check alone)"
+            ));
         }
     }
 }
 
-/// Spawn `cargo publish --dry-run -p <crate>` and classify the result.
+/// The argv after `cargo` for one dry-run over `crates`, for the spawn and
+/// for every message that quotes it.
+fn dry_run_argv(crates: &[String]) -> String {
+    let mut argv = String::from("publish --dry-run");
+    for name in crates {
+        argv.push_str(" -p ");
+        argv.push_str(name);
+    }
+    argv
+}
+
+/// Spawn `cargo publish --dry-run -p <a> -p <b> …` over `crates` and classify
+/// the result.
 ///
 /// Best-effort: a spawn failure (cargo absent / not executable) yields
 /// [`DryRunOutcome::Unavailable`] so the caller degrades gracefully rather
 /// than failing the release on a missing toolchain.
-pub(super) fn run_cargo_dry_run(crate_name: &str, log: &StageLogger) -> DryRunOutcome {
-    run_cargo_dry_run_with_binary(std::path::Path::new("cargo"), crate_name, log)
+pub(super) fn run_cargo_dry_run(crates: &[String], log: &StageLogger) -> DryRunOutcome {
+    run_cargo_dry_run_with_binary(std::path::Path::new("cargo"), crates, log)
 }
 
 /// Path-taking sibling of [`run_cargo_dry_run`]: `cargo_binary` is the
@@ -376,10 +397,10 @@ pub(super) fn run_cargo_dry_run(crate_name: &str, log: &StageLogger) -> DryRunOu
 /// `core::git::gh_api_get_with_binary`.
 pub(super) fn run_cargo_dry_run_with_binary(
     cargo_binary: &std::path::Path,
-    crate_name: &str,
+    crates: &[String],
     log: &StageLogger,
 ) -> DryRunOutcome {
-    run_cargo_dry_run_spawning(cargo_binary, crate_name, log, |cmd| cmd.output())
+    run_cargo_dry_run_spawning(cargo_binary, crates, log, |cmd| cmd.output())
 }
 
 /// Sibling of [`run_cargo_dry_run_with_binary`] taking the spawn as an
@@ -392,14 +413,17 @@ pub(super) fn run_cargo_dry_run_with_binary(
 /// cannot hit that race.
 pub(super) fn run_cargo_dry_run_spawning(
     cargo_binary: &std::path::Path,
-    crate_name: &str,
+    crates: &[String],
     log: &StageLogger,
     spawn: impl FnOnce(&mut std::process::Command) -> std::io::Result<std::process::Output>,
 ) -> DryRunOutcome {
     use std::process::Command;
 
     let mut cmd = Command::new(cargo_binary);
-    cmd.args(["publish", "--dry-run", "-p", crate_name]);
+    cmd.args(["publish", "--dry-run"]);
+    for name in crates {
+        cmd.args(["-p", name]);
+    }
 
     let output = match spawn(&mut cmd) {
         Ok(o) => o,
@@ -412,7 +436,8 @@ pub(super) fn run_cargo_dry_run_spawning(
 
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     log.verbose(&format!(
-        "`cargo publish --dry-run -p {crate_name}` exited non-zero:\n{}",
+        "`cargo {}` exited non-zero:\n{}",
+        dry_run_argv(crates),
         anodizer_core::redact::redact_bearer_tokens(stderr.trim_end())
     ));
     classify_dry_run_stderr(&stderr)

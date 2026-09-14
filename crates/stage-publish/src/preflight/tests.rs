@@ -1346,7 +1346,7 @@ mod publish_simulation {
 
     /// A dry-run runner that panics if invoked — paired with [`PanicFactory`]
     /// so a gated-out simulation proves it spawns nothing.
-    fn panic_runner(_krate: &str) -> DryRunOutcome {
+    fn panic_runner(_crates: &[String]) -> DryRunOutcome {
         panic!("gated-out simulation must never spawn cargo")
     }
 
@@ -1394,9 +1394,9 @@ mod publish_simulation {
         };
         // The Clean dependent builds fine against the published dep → the
         // resume completes. (Published crates are skipped by the dry-run.)
-        let ran_for = std::cell::RefCell::new(Vec::<String>::new());
-        let dry = |krate: &str| -> DryRunOutcome {
-            ran_for.borrow_mut().push(krate.to_string());
+        let ran_for = std::cell::RefCell::new(Vec::<Vec<String>>::new());
+        let dry = |crates: &[String]| -> DryRunOutcome {
+            ran_for.borrow_mut().push(crates.to_vec());
             DryRunOutcome::Ok
         };
         run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
@@ -1412,8 +1412,8 @@ mod publish_simulation {
         assert!(w.contains("resuming"), "explains the resume: {w}");
         assert_eq!(
             *ran_for.borrow(),
-            vec!["anodizer-stage-blob"],
-            "dry-run verified only the Clean crate (proceeded past the probe)"
+            vec![vec!["anodizer-stage-blob".to_string()]],
+            "one dry-run, over only the Clean crate (proceeded past the probe)"
         );
     }
 
@@ -1432,8 +1432,9 @@ mod publish_simulation {
                 PublisherState::Clean
             }
         };
-        let dry =
-            |_krate: &str| DryRunOutcome::CompileError("anodizer-core 0.19.0 API mismatch".into());
+        let dry = |_crates: &[String]| {
+            DryRunOutcome::CompileError("anodizer-core 0.19.0 API mismatch".into())
+        };
         run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
 
         assert_eq!(
@@ -1457,13 +1458,25 @@ mod publish_simulation {
         let log = quiet_log();
         let mut report = PreflightReport::new();
         let index = |_krate: &str, _v: &str| PublisherState::Clean;
-        // All clean → dry-run runs for both, all succeed.
-        let dry = |_krate: &str| DryRunOutcome::Ok;
+        // All clean → one dry-run over both, which succeeds.
+        let ran_for = std::cell::RefCell::new(Vec::<Vec<String>>::new());
+        let dry = |crates: &[String]| {
+            ran_for.borrow_mut().push(crates.to_vec());
+            DryRunOutcome::Ok
+        };
         run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
         assert!(
             report.blockers.is_empty(),
             "all-clean must not block: {:?}",
             report.blockers
+        );
+        assert_eq!(
+            *ran_for.borrow(),
+            vec![vec![
+                "anodizer-core".to_string(),
+                "anodizer-stage-blob".to_string()
+            ]],
+            "one dry-run carrying both crates in publish order"
         );
     }
 
@@ -1474,8 +1487,8 @@ mod publish_simulation {
         let mut report = PreflightReport::new();
         let index = |_krate: &str, _v: &str| PublisherState::Published;
         // Every crate already published → dry-run must be skipped entirely.
-        let dry = |krate: &str| -> DryRunOutcome {
-            panic!("dry-run must skip already-published crates (ran for {krate})")
+        let dry = |crates: &[String]| -> DryRunOutcome {
+            panic!("dry-run must skip already-published crates (ran for {crates:?})")
         };
         run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
         assert!(
@@ -1499,7 +1512,7 @@ mod publish_simulation {
                 PublisherState::Clean
             }
         };
-        let dry = |_krate: &str| DryRunOutcome::Ok;
+        let dry = |_crates: &[String]| DryRunOutcome::Ok;
         run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
         assert_eq!(report.blockers.len(), 1, "Unknown surfaces a blocker");
         let b = &report.blockers[0];
@@ -1515,12 +1528,8 @@ mod publish_simulation {
         let log = quiet_log();
         let mut report = PreflightReport::new();
         let index = |_krate: &str, _v: &str| PublisherState::Clean;
-        let dry = |krate: &str| {
-            if krate == "anodizer-stage-blob" {
-                DryRunOutcome::CompileError("error[E0425]: cannot find function `probe_dir`".into())
-            } else {
-                DryRunOutcome::Ok
-            }
+        let dry = |_crates: &[String]| {
+            DryRunOutcome::CompileError("error[E0425]: cannot find function `probe_dir`".into())
         };
         run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
         assert_eq!(report.blockers.len(), 1, "compile error aborts");
@@ -1530,7 +1539,10 @@ mod publish_simulation {
             b.contains("probe_dir"),
             "carries the compiler diagnostic: {b}"
         );
-        assert!(b.contains("anodizer-stage-blob"), "names the crate: {b}");
+        assert!(
+            b.contains("`cargo publish --dry-run -p anodizer-core -p anodizer-stage-blob`"),
+            "quotes the one invocation over the set: {b}"
+        );
     }
 
     #[test]
@@ -1539,16 +1551,12 @@ mod publish_simulation {
         let log = quiet_log();
         let mut report = PreflightReport::new();
         let index = |_krate: &str, _v: &str| PublisherState::Clean;
-        // stage-blob can't resolve anodizer-core (a sibling published first
-        // in the real run) — benign, must NOT abort.
-        let dry = |krate: &str| {
-            if krate == "anodizer-stage-blob" {
-                DryRunOutcome::BenignSiblingMissing(
-                    "no matching package named `anodizer-core` found".into(),
-                )
-            } else {
-                DryRunOutcome::Ok
-            }
+        // cargo reports anodizer-core unresolved (a sibling the real run
+        // publishes first) — benign, must NOT abort.
+        let dry = |_crates: &[String]| {
+            DryRunOutcome::BenignSiblingMissing(
+                "no matching package named `anodizer-core` found".into(),
+            )
         };
         run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
         assert!(
@@ -1566,14 +1574,10 @@ mod publish_simulation {
         let index = |_krate: &str, _v: &str| PublisherState::Clean;
         // A missing crate that is NOT in the to-publish set is a real
         // resolution failure that would also break the real publish.
-        let dry = |krate: &str| {
-            if krate == "anodizer-stage-blob" {
-                DryRunOutcome::BenignSiblingMissing(
-                    "no matching package named `some-external-crate` found".into(),
-                )
-            } else {
-                DryRunOutcome::Ok
-            }
+        let dry = |_crates: &[String]| {
+            DryRunOutcome::BenignSiblingMissing(
+                "no matching package named `some-external-crate` found".into(),
+            )
         };
         run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
         assert_eq!(report.blockers.len(), 1, "missing external dep aborts");
@@ -1591,7 +1595,7 @@ mod publish_simulation {
         let mut report = PreflightReport::new();
         let index = |_krate: &str, _v: &str| PublisherState::Clean;
         // cargo unavailable → warn + fall back to (1), which already passed.
-        let dry = |_krate: &str| DryRunOutcome::Unavailable("cargo not on PATH".into());
+        let dry = |_crates: &[String]| DryRunOutcome::Unavailable("cargo not on PATH".into());
         run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
         assert!(
             report.blockers.is_empty(),
@@ -1891,7 +1895,7 @@ mod publish_simulation {
         // The default test runner never spawns and always degrades to
         // the index-only check; carry a reason so the caller's warn line is
         // honest about why the dry-run was skipped.
-        match noop_dry_run_runner("anodizer-core") {
+        match noop_dry_run_runner(&["anodizer-core".to_string()]) {
             DryRunOutcome::Unavailable(reason) => {
                 assert!(reason.contains("disabled"), "reason: {reason}")
             }
@@ -1918,7 +1922,7 @@ mod publish_simulation {
                 PublisherState::Clean
             }
         };
-        let dry = |_krate: &str| DryRunOutcome::Ok;
+        let dry = |_crates: &[String]| DryRunOutcome::Ok;
         run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
         assert!(
             report.blockers.is_empty(),
@@ -1957,8 +1961,8 @@ mod publish_simulation {
         let index = |krate: &str, _v: &str| -> PublisherState {
             panic!("index must not be queried when the plan fails (queried {krate})")
         };
-        let dry = |krate: &str| -> DryRunOutcome {
-            panic!("dry-run must not run when the plan fails (ran for {krate})")
+        let dry = |crates: &[String]| -> DryRunOutcome {
+            panic!("dry-run must not run when the plan fails (ran for {crates:?})")
         };
         run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
         assert_eq!(report.blockers.len(), 1, "plan render failure blocks");
@@ -2001,8 +2005,9 @@ mod publish_simulation_spawn {
     /// sibling test thread's `fork` window can hold its fd briefly). Without
     /// this the raw production `.output()` would surface the transient
     /// `ETXTBSY` as `Unavailable` and flake the assertion.
-    fn dry_run_via_stub(fake: &FakeToolDir, crate_name: &str) -> DryRunOutcome {
-        run_cargo_dry_run_spawning(&fake.tool_path("cargo"), crate_name, &quiet_log(), |cmd| {
+    fn dry_run_via_stub(fake: &FakeToolDir, crates: &[&str]) -> DryRunOutcome {
+        let crates: Vec<String> = crates.iter().map(|c| c.to_string()).collect();
+        run_cargo_dry_run_spawning(&fake.tool_path("cargo"), &crates, &quiet_log(), |cmd| {
             Ok(output_retrying_etxtbsy(cmd))
         })
     }
@@ -2013,15 +2018,26 @@ mod publish_simulation_spawn {
         let fake = FakeToolDir::new();
         fake.tool("cargo").exit(0).install();
 
-        let out = dry_run_via_stub(&fake, "anodizer-core");
+        let out = dry_run_via_stub(&fake, &["anodizer-core", "anodizer-stage-blob"]);
         assert_eq!(out, DryRunOutcome::Ok);
 
         let calls = fake.calls("cargo");
-        assert_eq!(calls.len(), 1, "cargo invoked exactly once");
+        assert_eq!(
+            calls.len(),
+            1,
+            "cargo invoked exactly once for the whole set"
+        );
         assert_eq!(
             calls[0],
-            vec!["publish", "--dry-run", "-p", "anodizer-core"],
-            "argv must be `cargo publish --dry-run -p <crate>`"
+            vec![
+                "publish",
+                "--dry-run",
+                "-p",
+                "anodizer-core",
+                "-p",
+                "anodizer-stage-blob"
+            ],
+            "argv must be `cargo publish --dry-run -p <a> -p <b>` in the order given"
         );
     }
 
@@ -2034,7 +2050,7 @@ mod publish_simulation_spawn {
             .stderr("error[E0425]: cannot find function `probe_dir` in this scope")
             .install();
 
-        let out = dry_run_via_stub(&fake, "anodizer-stage-blob");
+        let out = dry_run_via_stub(&fake, &["anodizer-stage-blob"]);
         match out {
             DryRunOutcome::CompileError(line) => {
                 assert!(line.contains("probe_dir"), "line: {line}")
@@ -2052,7 +2068,7 @@ mod publish_simulation_spawn {
             .stderr("error: no matching package named `anodizer-core` found")
             .install();
 
-        let out = dry_run_via_stub(&fake, "anodizer-stage-blob");
+        let out = dry_run_via_stub(&fake, &["anodizer-stage-blob"]);
         match out {
             DryRunOutcome::BenignSiblingMissing(line) => {
                 assert!(line.contains("anodizer-core"), "line: {line}")
@@ -2074,7 +2090,8 @@ mod publish_simulation_spawn {
         let tmp = tempfile::TempDir::new().expect("temp dir");
         let missing = tmp.path().join("nonexistent-cargo");
 
-        let out = run_cargo_dry_run_with_binary(&missing, "anodizer-core", &quiet_log());
+        let out =
+            run_cargo_dry_run_with_binary(&missing, &["anodizer-core".to_string()], &quiet_log());
 
         match out {
             DryRunOutcome::Unavailable(reason) => {

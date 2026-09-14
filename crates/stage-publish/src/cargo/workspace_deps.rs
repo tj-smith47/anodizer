@@ -504,9 +504,11 @@ fn collect_workspace_dep_entries(
 /// `no matching package named '<dep>' found`, because cargo strips path deps
 /// and resolves the version against the crates.io index — exactly the failure
 /// that burned the CLI publish on 0.6.0 and 0.7.0 (the stage crates the CLI
-/// depends on were missing from the publish set). `cargo publish --dry-run`
-/// does NOT catch this: dry-run resolves the dep via the local workspace
-/// PATH, so it passes even when the dep is absent from the set and the index.
+/// depends on were missing from the publish set). The preflight's
+/// `cargo publish --dry-run` does NOT catch this: it packages the publish set
+/// in one invocation, so an in-set sibling resolves from its local package,
+/// and a sibling left OUT of the set resolves from the index at whatever
+/// version the manifest still names — the last release — which passes.
 ///
 /// `index_probe` is injected so the guard is testable without a network round
 /// trip; production wires it over [`is_already_published`]. An inconclusive
