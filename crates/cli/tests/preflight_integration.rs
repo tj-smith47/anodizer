@@ -793,7 +793,11 @@ fn preflight_plans_from_local_tags_when_the_remote_cannot_be_listed() {
 
 /// One `cargo publish --dry-run` per selected crate: a two-crate lockstep
 /// workspace spawns exactly two, one for each crate, in either order.
+///
+/// Unix only: the stub is a `cargo.cmd` on Windows, and the binary's plain
+/// `cargo` spawn resolves `.exe` alone there, so the real cargo would run.
 #[test]
+#[cfg(unix)]
 fn preflight_runs_one_cargo_publish_simulation_per_crate() {
     if !tool_on_path("git") {
         eprintln!("skipping: git not on PATH");
@@ -893,7 +897,11 @@ crates:
 /// simulation exactly once per crate. A context that presented itself as a
 /// dry run skipped both, and a release invoked with `--skip=preflight`
 /// relies on this command for them.
+///
+/// Unix only: the stub is a `cargo.cmd` on Windows, and the binary's plain
+/// `cargo` spawn resolves `.exe` alone there, so the real cargo would run.
 #[test]
+#[cfg(unix)]
 fn preflight_runs_the_cargo_publish_simulation_once() {
     if !tool_on_path("git") {
         eprintln!("skipping: git not on PATH");

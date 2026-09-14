@@ -1932,9 +1932,12 @@ fn size_report_names_rows_relative_to_dist() {
         rows.iter().any(|r| r.starts_with("app_linux-arm64/app ")),
         "two binaries of one name keep distinct rows: {rows:?}"
     );
+    // The report prints every name with forward slashes, whatever the
+    // platform's separator.
+    let outside_name = outside.display().to_string().replace('\\', "/");
     assert!(
         rows.iter()
-            .any(|r| r.starts_with(&format!("{} ", outside.display()))),
+            .any(|r| r.starts_with(&format!("{outside_name} "))),
         "a path outside dist prints in full: {rows:?}"
     );
 }
