@@ -3714,12 +3714,17 @@ fn reconcile_packages_with_the_binstall_table_and_restores_the_manifest() {
     );
     let tools = FakeToolDir::new();
     // The stub captures the manifest as it stands when `cargo package` runs,
-    // then fails so the probe stops at the content check.
+    // then fails so the probe stops at the content check. The capture is a
+    // shell script, which the fake tool renders on unix only; the Windows
+    // stub just fails, and the restore half is still checked there.
     let captured = tmp.path().join("captured-Cargo.toml");
+    #[cfg(unix)]
     tools
         .tool("cargo")
         .script(format!("cp Cargo.toml '{}'\nexit 1\n", captured.display()))
         .install();
+    #[cfg(not(unix))]
+    tools.tool("cargo").exit(1).install();
     // The stub cargo goes first; git stays reachable for the tag lookup.
     let path = std::env::join_paths(std::iter::once(tools.bin_dir().to_path_buf()).chain(
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
@@ -3744,11 +3749,16 @@ fn reconcile_packages_with_the_binstall_table_and_restores_the_manifest() {
         !reason.starts_with("binstall metadata") && reason.contains("cargo"),
         "the binstall step must render and the cargo check must follow: {reason}"
     );
-    let seen_by_cargo = std::fs::read_to_string(&captured).expect("the stub cargo ran");
-    assert!(
-        seen_by_cargo.contains("[package.metadata.binstall]"),
-        "cargo package must see the binstall table the publish wrote: {seen_by_cargo}"
-    );
+    #[cfg(unix)]
+    {
+        let seen_by_cargo = std::fs::read_to_string(&captured).expect("the stub cargo ran");
+        assert!(
+            seen_by_cargo.contains("[package.metadata.binstall]"),
+            "cargo package must see the binstall table the publish wrote: {seen_by_cargo}"
+        );
+    }
+    #[cfg(not(unix))]
+    let _ = captured;
     assert_eq!(
         std::fs::read(&manifest_path).expect("manifest"),
         before,
