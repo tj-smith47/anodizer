@@ -78,6 +78,31 @@ pub(crate) fn active_cargo_configs(
         .collect()
 }
 
+/// Puts a crate's `Cargo.toml` back to the bytes it held when the guard was
+/// taken. The reconcile probe rewrites the manifest the way the publish does
+/// so the two package the same tree, and this undoes that on every exit path.
+struct ManifestRestore {
+    path: std::path::PathBuf,
+    bytes: Vec<u8>,
+}
+
+impl ManifestRestore {
+    fn snapshot(crate_path: &str) -> std::io::Result<Self> {
+        let path = std::path::Path::new(crate_path).join("Cargo.toml");
+        let bytes = std::fs::read(&path)?;
+        Ok(Self { path, bytes })
+    }
+}
+
+impl Drop for ManifestRestore {
+    fn drop(&mut self) {
+        // The probe answers a question about the tree as committed; a manifest
+        // left rewritten is the dirty tree the release gate refuses, so the
+        // restore is attempted even when the comparison already failed.
+        let _ = std::fs::write(&self.path, &self.bytes);
+    }
+}
+
 impl anodizer_core::Publisher for CargoPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -193,11 +218,13 @@ impl anodizer_core::Publisher for CargoPublisher {
 
         // Every planned crate is already on the index — the recovery-re-run
         // case. Verify content identity crate by crate before claiming
-        // Complete. The binstall table is rendered first so a template that
-        // cannot render is reported here, but never written: a probe that
-        // rewrote `Cargo.toml` would dirty the tree the release's own
-        // dirty-tree gate then refuses, and `run()` writes it before the
-        // publish anyway.
+        // Complete. `run()` writes the binstall table into `Cargo.toml`
+        // before it packages, so the published `.crate` carries it; the
+        // probe must package the same tree or every binstall crate reads as
+        // diverged on a re-run of the sha that published it. The write is
+        // undone once the comparison is done: a probe that left `Cargo.toml`
+        // rewritten would dirty the tree the release's own dirty-tree gate
+        // refuses moments later.
         let log = ctx.logger("publish");
         for (name, version, index_cksum) in &published {
             let Some(crate_cfg) = plan.all_crates.iter().find(|c| &c.name == name).cloned() else {
@@ -205,10 +232,18 @@ impl anodizer_core::Publisher for CargoPublisher {
                     reason: format!("no crate config for published crate '{name}'"),
                 });
             };
+            let _restore = match ManifestRestore::snapshot(&crate_cfg.path) {
+                Ok(guard) => guard,
+                Err(e) => {
+                    return Ok(ReconcileState::Unknown {
+                        reason: format!("reading {}/Cargo.toml: {e:#}", crate_cfg.path),
+                    });
+                }
+            };
             if let Err(e) = ensure_binstall_metadata_with(
                 ctx,
                 &crate_cfg,
-                true,
+                false,
                 &log,
                 &anodizer_core::crate_scope::resolve_crate_tag,
             ) {

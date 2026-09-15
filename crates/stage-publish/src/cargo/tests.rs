@@ -470,6 +470,32 @@ fn crates_equal_modulo_vcs_differs_only_in_vcs_sha1_matches() {
     );
 }
 
+/// cargo 1.84+ writes `"dirty": true` into the stamp when it packages a tree
+/// under `--allow-dirty`, which the binstall rewrite before a publish makes
+/// every binstall crate. The flag says nothing about the packaged sources.
+#[test]
+fn crates_equal_modulo_vcs_differs_only_in_vcs_dirty_flag_matches() {
+    let local = make_crate_tarball(&[
+        ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
+        (
+            "c-1.0.0/.cargo_vcs_info.json",
+            br#"{"git":{"sha1":"commit_a"},"path_in_vcs":"."}"#,
+        ),
+    ]);
+    let published = make_crate_tarball(&[
+        ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
+        (
+            "c-1.0.0/.cargo_vcs_info.json",
+            br#"{"git":{"sha1":"commit_b","dirty":true},"path_in_vcs":"."}"#,
+        ),
+    ]);
+    let m = crates_equal_modulo_vcs(&local, &published, false).expect("compare");
+    assert!(
+        matches!(m, CrateContentMatch::Equivalent { .. }),
+        "a git.dirty delta beside the commit stamp is a same-source re-cut: {m:?}"
+    );
+}
+
 #[test]
 fn crates_equal_modulo_vcs_differs_in_src_file_reports_path() {
     let local = make_crate_tarball(&[
@@ -3611,12 +3637,15 @@ fn cargo_publish_plan_reads_the_planned_version_before_the_manifest() {
     );
 }
 
-/// `reconcile()` is a probe. On a re-run at a tagged HEAD it reaches the
-/// binstall step for every published crate, and that step must leave
-/// `Cargo.toml` as it found it: a rewrite there dirties the tree the
-/// release's dirty-tree gate refuses moments later.
+/// `reconcile()` packages the tree the publish packaged: the binstall table
+/// is written into `Cargo.toml` before `cargo package` runs, so the stub
+/// cargo must see it there. v0.28.0's publish-oidc re-run compared a
+/// packaging of the unrewritten tree against the published crate and called
+/// every crate diverged. And the probe puts the manifest back afterwards: a
+/// rewrite left behind dirties the tree the release's dirty-tree gate refuses
+/// moments later.
 #[test]
-fn reconcile_renders_binstall_metadata_without_writing_the_manifest() {
+fn reconcile_packages_with_the_binstall_table_and_restores_the_manifest() {
     use anodizer_core::config::BinstallConfig;
     use anodizer_core::test_helpers::env::EnvGuard;
     use anodizer_core::test_helpers::fake_tool::FakeToolDir;
@@ -3684,7 +3713,13 @@ fn reconcile_renders_binstall_metadata_without_writing_the_manifest() {
         format!("http://{addr}"),
     );
     let tools = FakeToolDir::new();
-    tools.tool("cargo").exit(1).install();
+    // The stub captures the manifest as it stands when `cargo package` runs,
+    // then fails so the probe stops at the content check.
+    let captured = tmp.path().join("captured-Cargo.toml");
+    tools
+        .tool("cargo")
+        .script(format!("cp Cargo.toml '{}'\nexit 1\n", captured.display()))
+        .install();
     // The stub cargo goes first; git stays reachable for the tag lookup.
     let path = std::env::join_paths(std::iter::once(tools.bin_dir().to_path_buf()).chain(
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
@@ -3709,10 +3744,15 @@ fn reconcile_renders_binstall_metadata_without_writing_the_manifest() {
         !reason.starts_with("binstall metadata") && reason.contains("cargo"),
         "the binstall step must render and the cargo check must follow: {reason}"
     );
+    let seen_by_cargo = std::fs::read_to_string(&captured).expect("the stub cargo ran");
+    assert!(
+        seen_by_cargo.contains("[package.metadata.binstall]"),
+        "cargo package must see the binstall table the publish wrote: {seen_by_cargo}"
+    );
     assert_eq!(
         std::fs::read(&manifest_path).expect("manifest"),
         before,
-        "reconcile must not rewrite Cargo.toml"
+        "reconcile must put Cargo.toml back once the comparison is done"
     );
 }
 

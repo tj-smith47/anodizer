@@ -288,7 +288,9 @@ pub(crate) fn fetch_published_crate(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecutNormalization {
     /// Crate-root `.cargo_vcs_info.json`, compared modulo its `git.sha1`
-    /// field (the release commit stamp of a same-source re-cut).
+    /// field (the release commit stamp of a same-source re-cut) and its
+    /// `git.dirty` flag (cargo 1.84+ stamps a tree packaged under
+    /// `--allow-dirty`, which the binstall rewrite before a publish is).
     VcsCommitStamp,
     /// Crate-root `CHANGELOG.md`, forgiven because the bump commit that last
     /// touched it carries anodizer's regeneration provenance marker for this
@@ -354,9 +356,10 @@ pub(crate) fn read_crate_entries(
     Ok(entries)
 }
 
-/// Parse `.cargo_vcs_info.json` bytes and strip the `git.sha1` field — the
-/// one field that legitimately differs between two same-source re-cuts (it
-/// records the commit `cargo package` ran at, not the packaged sources).
+/// Parse `.cargo_vcs_info.json` bytes and strip the `git.sha1` and
+/// `git.dirty` fields — the two that legitimately differ between two
+/// same-source re-cuts (the commit `cargo package` ran at, and whether the
+/// tree was dirty when it ran, neither of which is the packaged sources).
 ///
 /// Returns `None` when the bytes don't parse as JSON — the caller then falls
 /// back to a raw byte compare, which fails closed (real drift) rather than
@@ -367,6 +370,7 @@ fn vcs_info_modulo_sha(bytes: &[u8]) -> Option<serde_json::Value> {
         && let Some(obj) = git.as_object_mut()
     {
         obj.remove("sha1");
+        obj.remove("dirty");
     }
     Some(value)
 }
@@ -460,8 +464,8 @@ pub(crate) fn packaged_crate_has_bin_targets(
 /// bytes are equal, EXCEPT (crate-root position only — see
 /// [`is_crate_root_entry`]):
 ///
-/// - `.cargo_vcs_info.json` — compared modulo its `git.sha1` field (a
-///   legitimate per-commit delta — see [`local_crate_cksum`]).
+/// - `.cargo_vcs_info.json` — compared modulo its `git.sha1` and `git.dirty`
+///   fields (a legitimate per-packaging delta — see [`local_crate_cksum`]).
 /// - `CHANGELOG.md` — forgiven ONLY when `changelog_regenerated` is true
 ///   (the bump-commit history carries a provenance marker proving anodizer
 ///   regenerated the file for this crate@version — see
@@ -518,8 +522,8 @@ pub(crate) fn crates_equal_modulo_vcs(
                     normalized.push(RecutNormalization::VcsCommitStamp);
                 }
                 // Either side failed to parse, or a field OTHER than git.sha1
-                // differs — a structural change beyond the commit stamp is
-                // real drift.
+                // and git.dirty differs — a structural change beyond the
+                // commit stamp is real drift.
                 _ => differs.push(path_str),
             }
         } else if is_crate_root_entry(path, "CHANGELOG.md") {
@@ -587,7 +591,7 @@ pub(crate) enum CargoSkipDecision {
 ///    then compare local vs published with [`crates_equal_modulo_vcs`].
 ///    The equivalence set is built in (never user-configurable) and covers,
 ///    at the crate-root position only:
-///    - `.cargo_vcs_info.json` modulo `git.sha1` (always);
+///    - `.cargo_vcs_info.json` modulo `git.sha1` and `git.dirty` (always);
 ///    - `CHANGELOG.md` (only when `changelog_regenerated` — a bump-commit
 ///      provenance marker proves anodizer regenerated it for this
 ///      crate@version; see [`changelog_provenance_recorded`]);
