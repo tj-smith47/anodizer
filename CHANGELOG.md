@@ -7,13 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.28.1] - 2026-09-15
-
-### Bug Fixes
-
-* ba7728eb415d package the binstall table in the reconcile probe so a re-run of the sha that published no longer reads as diverged ([@tj-smith47](https://github.com/tj-smith47))
-* f8aa8e0a6f12 retry an npm publish whose OIDC identity token could not be fetched ([@tj-smith47](https://github.com/tj-smith47))
-
 ## [0.28.0] - 2026-09-14
 
 ### Features
@@ -1152,8 +1145,7 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.28.1...HEAD
-[0.28.1]: https://github.com/tj-smith47/anodizer/compare/v0.28.0...v0.28.1
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.28.0...HEAD
 [0.28.0]: https://github.com/tj-smith47/anodizer/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/tj-smith47/anodizer/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/tj-smith47/anodizer/compare/v0.25.2...v0.26.0
