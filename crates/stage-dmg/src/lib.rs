@@ -112,6 +112,68 @@ pub fn dmg_command(
     }
 }
 
+/// The stderr `hdiutil create` prints when the eject of its temporary
+/// read/write image loses a race with a system service still holding the
+/// volume (XProtectBehaviorService on macOS 13 and later; exit 49168).
+const HDIUTIL_RESOURCE_BUSY: &str = "Resource busy";
+
+/// Whether a failed `hdiutil create` is the transient eject race rather than a
+/// real failure. Only this stderr is worth re-asking; every other non-zero
+/// exit (no space, bad source folder) is deterministic and spawns once.
+fn hdiutil_resource_busy(output: &std::process::Output) -> bool {
+    !output.status.success()
+        && String::from_utf8_lossy(&output.stderr).contains(HDIUTIL_RESOURCE_BUSY)
+}
+
+/// A completed `hdiutil create` that failed on the eject race, carried
+/// through the retry engine so the exhausted ladder still hands the last
+/// [`std::process::Output`] to `check_output` and the operator reads
+/// hdiutil's own message.
+enum CreateFailure {
+    Busy(std::process::Output),
+    Spawn(std::io::Error),
+}
+
+impl std::fmt::Display for CreateFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy(out) => f.write_str(String::from_utf8_lossy(&out.stderr).trim()),
+            Self::Spawn(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// Run the imaging command, re-asking a `Resource busy` `hdiutil create` under
+/// the run's `retry:` policy. Any other completed process is returned as-is
+/// for `check_output` to judge; a spawn failure is returned at once.
+fn create_image(
+    cmd_args: &[String],
+    policy: &anodizer_core::retry::RetryPolicy,
+    deadline: Option<std::time::Instant>,
+    log: &anodizer_core::log::StageLogger,
+) -> std::io::Result<std::process::Output> {
+    use std::ops::ControlFlow;
+    let outcome = anodizer_core::retry::retry_sync_deadline(
+        anodizer_core::retry::RetryLog::new("dmg create", log),
+        policy,
+        deadline,
+        |_attempt| {
+            let output = Command::new(&cmd_args[0])
+                .args(&cmd_args[1..])
+                .output()
+                .map_err(|e| ControlFlow::Break(CreateFailure::Spawn(e)))?;
+            if hdiutil_resource_busy(&output) {
+                return Err(ControlFlow::Continue(CreateFailure::Busy(output)));
+            }
+            Ok(output)
+        },
+    );
+    match outcome {
+        Ok(output) | Err(CreateFailure::Busy(output)) => Ok(output),
+        Err(CreateFailure::Spawn(e)) => Err(e),
+    }
+}
+
 /// Explicit `hdiutil` image size, in whole MiB, for a staging directory:
 /// measured staged content plus 50 % headroom (64 MiB floor), rounded up.
 ///
@@ -256,6 +318,8 @@ impl Stage for DmgStage {
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("dmg");
+        let policy = ctx.retry_policy();
+        let deadline = ctx.retry_deadline();
         let selected = ctx.options.selected_crates.clone();
         let dry_run = ctx.options.dry_run;
         let dist = ctx.config.dist.clone();
@@ -704,9 +768,7 @@ impl Stage for DmgStage {
 
                         log.verbose(&format!("running {}", cmd_args.join(" ")));
 
-                        let output = Command::new(&cmd_args[0])
-                            .args(&cmd_args[1..])
-                            .output()
+                        let output = create_image(&cmd_args, &policy, deadline, &log)
                             .with_context(|| {
                                 format!(
                                     "execute dmg tool for crate {} target {:?}",
@@ -2972,5 +3034,149 @@ crates:
             .expect("distinct names across configs must not collide");
         let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
         assert_eq!(dmgs.len(), 2, "expected one DMG per distinct-named config");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod hdiutil_retry_tests {
+    use super::*;
+    use anodizer_core::config::{Config, CrateConfig, DmgConfig, HumanDuration, RetryConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+    use std::time::Duration;
+
+    fn live_context(tmp: &std::path::Path) -> Context {
+        let binary_path = tmp.join("myapp");
+        fs::write(&binary_path, b"fake-binary").unwrap();
+        let config = Config {
+            project_name: "myapp".to_string(),
+            dist: tmp.join("dist"),
+            retry: Some(RetryConfig {
+                attempts: 4,
+                delay: HumanDuration(Duration::from_millis(1)),
+                max_delay: HumanDuration(Duration::from_millis(1)),
+                max_elapsed: None,
+            }),
+            crates: vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                dmgs: Some(vec![DmgConfig::default()]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: binary_path,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+        ctx
+    }
+
+    /// A stub `hdiutil` that fails `busy_times` creates with the macOS 13+
+    /// runner error, then writes the image. `detach` always succeeds silently.
+    fn install_hdiutil(tools: &FakeToolDir, busy_times: u32) {
+        let counter = tools.bin_dir().join("busy-count");
+        tools
+            .tool("hdiutil")
+            .script(format!(
+                "[ \"$1\" = detach ] && exit 0\n\
+                 n=$(cat '{c}' 2>/dev/null || echo 0)\n\
+                 if [ \"$n\" -lt {busy} ]; then echo $((n+1)) > '{c}'; \
+                 echo 'hdiutil: create failed - Resource busy' >&2; exit 1; fi\n\
+                 for last; do :; done; echo dmg > \"$last\"\n",
+                c = counter.display(),
+                busy = busy_times,
+            ))
+            .install();
+    }
+
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn a_resource_busy_create_is_retried_until_it_succeeds() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tools = FakeToolDir::new();
+        install_hdiutil(&tools, 2);
+        let _path = tools.activate();
+        let mut ctx = live_context(tmp.path());
+
+        let result = DmgStage.run(&mut ctx);
+
+        assert!(
+            result.is_ok(),
+            "expected the third create to succeed: {:#}",
+            result.unwrap_err()
+        );
+        let creates = tools
+            .calls("hdiutil")
+            .into_iter()
+            .filter(|argv| argv.first().is_some_and(|a| a == "create"))
+            .count();
+        assert_eq!(creates, 3, "two busy creates and one success");
+        assert!(
+            ctx.artifacts
+                .all()
+                .iter()
+                .any(|a| a.kind == ArtifactKind::DiskImage)
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn a_create_that_stays_busy_fails_with_hdiutils_own_message() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tools = FakeToolDir::new();
+        install_hdiutil(&tools, 99);
+        let _path = tools.activate();
+        let mut ctx = live_context(tmp.path());
+
+        let err = format!("{:#}", DmgStage.run(&mut ctx).unwrap_err());
+
+        assert!(err.contains("Resource busy"), "got: {err}");
+        let creates = tools
+            .calls("hdiutil")
+            .into_iter()
+            .filter(|argv| argv.first().is_some_and(|a| a == "create"))
+            .count();
+        assert_eq!(
+            creates, 4,
+            "every configured attempt is spent, then the run fails"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn any_other_create_failure_is_not_retried() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tools = FakeToolDir::new();
+        tools
+            .tool("hdiutil")
+            .script("[ \"$1\" = detach ] && exit 0\necho 'hdiutil: create failed - No space left on device' >&2; exit 1\n")
+            .install();
+        let _path = tools.activate();
+        let mut ctx = live_context(tmp.path());
+
+        let err = format!("{:#}", DmgStage.run(&mut ctx).unwrap_err());
+
+        assert!(err.contains("No space left"), "got: {err}");
+        let creates = tools
+            .calls("hdiutil")
+            .into_iter()
+            .filter(|argv| argv.first().is_some_and(|a| a == "create"))
+            .count();
+        assert_eq!(creates, 1, "a deterministic failure is spawned once");
     }
 }
