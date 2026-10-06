@@ -857,6 +857,8 @@ fn reconcile_sweep(ctx: &Context, log: &StageLogger) -> ReconcileSweep {
 }
 
 mod standalone;
+#[cfg(test)]
+pub(crate) use standalone::shallow_checkout_refusal;
 pub use standalone::{PreflightOpts, run};
 #[cfg(test)]
 mod tests;

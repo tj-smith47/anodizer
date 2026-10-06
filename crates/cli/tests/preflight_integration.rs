@@ -750,6 +750,163 @@ fn preflight_keeps_the_current_version_when_the_plan_fails() {
     );
 }
 
+/// A shallow checkout whose `HEAD` is not tagged is refused before any probe:
+/// its history ends before the last tag, so the plan would keep the version
+/// the last release published and every changed crate would read `diverged`
+/// (cfgd's release run 37383248541, on a depth-1 `actions/checkout`). The
+/// same tree with its full history plans the bump.
+#[test]
+fn preflight_refuses_to_plan_from_a_shallow_checkout() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let (tmp, _addr) = quiet_choco_fixture();
+    run_git(tmp.path(), &["commit", "-q", "-m", "init"]);
+    run_git(tmp.path(), &["tag", RECONCILE_TAG]);
+    run_git(
+        tmp.path(),
+        &["commit", "-q", "--allow-empty", "-m", "feat: one"],
+    );
+    let shallow = TempDir::new().unwrap();
+    let origin = format!("file://{}", tmp.path().display());
+    run_git(
+        shallow.path(),
+        &[
+            "clone", "-q", "--depth", "1", "--branch", "master", &origin, ".",
+        ],
+    );
+    let (out, stderr) = run_verbose_preflight(shallow.path());
+    assert!(
+        stderr.contains("this checkout is shallow and HEAD's history does not reach the last tag")
+            && stderr.contains("git fetch --unshallow"),
+        "the refusal must name the remedy; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("Reconcile state") && !stderr.contains("publisher probes use"),
+        "nothing may be probed from a shallow checkout; stderr:\n{stderr}"
+    );
+    assert!(
+        !out.status.success(),
+        "a shallow checkout must exit non-zero; stderr:\n{stderr}"
+    );
+
+    // The same clone, unshallowed, plans the bump the full tree plans.
+    run_git(shallow.path(), &["fetch", "-q", "--unshallow", "--tags"]);
+    let (out, stderr) = run_verbose_preflight(shallow.path());
+    assert!(
+        stderr.contains("publisher probes use the planned version 0.2.0 (v0.1.0 → v0.2.0)"),
+        "the unshallowed clone must plan; stderr:\n{stderr}"
+    );
+    assert!(
+        out.status.success(),
+        "status {:?}; stderr:\n{stderr}",
+        out.status
+    );
+}
+
+/// A depth-1 clone of a repository that has never been tagged is not refused:
+/// the tag is missing from the clone AND from the remote, so there is no last
+/// release the truncation could be hiding, and the first version is planned
+/// the way a full clone plans it.
+#[test]
+fn preflight_plans_the_first_version_from_a_shallow_checkout_of_an_untagged_repository() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let (tmp, _addr) = quiet_choco_fixture();
+    run_git(tmp.path(), &["commit", "-q", "-m", "feat: first"]);
+    // The full tree's own plan is the oracle for the shallow clone's.
+    let (_, full_stderr) = run_verbose_preflight(tmp.path());
+    let planned = full_stderr
+        .lines()
+        .find(|l| l.contains("publisher probes use the planned version"))
+        .unwrap_or_else(|| panic!("the full tree plans the first version; stderr:\n{full_stderr}"))
+        .trim()
+        .to_string();
+    assert!(
+        planned.contains("((none) → v"),
+        "a first version: {planned}"
+    );
+
+    let shallow = TempDir::new().unwrap();
+    let origin = format!("file://{}", tmp.path().display());
+    run_git(
+        shallow.path(),
+        &[
+            "clone", "-q", "--depth", "1", "--branch", "master", &origin, ".",
+        ],
+    );
+    let (out, stderr) = run_verbose_preflight(shallow.path());
+    assert!(
+        !stderr.contains("this checkout is shallow"),
+        "a never-tagged repository is not refused; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(&planned),
+        "the shallow clone must plan what the full tree plans ({planned}); stderr:\n{stderr}"
+    );
+    assert!(
+        out.status.success(),
+        "status {:?}; stderr:\n{stderr}",
+        out.status
+    );
+}
+
+/// A shallow clone deep enough to hold the last tag plans the bump a full
+/// clone plans: the refusal is about history that does not reach the tag,
+/// not about shallowness itself.
+#[test]
+fn preflight_plans_from_a_shallow_checkout_that_reaches_the_last_tag() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let (tmp, _addr) = quiet_choco_fixture();
+    run_git(tmp.path(), &["commit", "-q", "-m", "init"]);
+    run_git(tmp.path(), &["tag", RECONCILE_TAG]);
+    run_git(
+        tmp.path(),
+        &["commit", "-q", "--allow-empty", "-m", "feat: one"],
+    );
+    let shallow = TempDir::new().unwrap();
+    let origin = format!("file://{}", tmp.path().display());
+    run_git(
+        shallow.path(),
+        &[
+            "clone", "-q", "--depth", "2", "--branch", "master", &origin, ".",
+        ],
+    );
+    run_git(shallow.path(), &["fetch", "-q", "--depth", "2", "--tags"]);
+    let (out, stderr) = run_verbose_preflight(shallow.path());
+    assert!(
+        !stderr.contains("this checkout is shallow"),
+        "a shallow clone that reaches the tag is not refused; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("publisher probes use the planned version 0.2.0 (v0.1.0 → v0.2.0)"),
+        "the depth-2 clone must plan; stderr:\n{stderr}"
+    );
+    assert!(
+        out.status.success(),
+        "status {:?}; stderr:\n{stderr}",
+        out.status
+    );
+}
+
 /// An `origin` that cannot be listed falls back to local tags with a note,
 /// and the plan still bumps.
 #[test]

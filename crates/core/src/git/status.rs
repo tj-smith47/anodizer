@@ -134,8 +134,7 @@ pub fn list_tracked_files_in(cwd: &Path) -> Result<Vec<String>> {
 
 /// Check whether the current repository is a shallow clone.
 ///
-/// Returns `true` if the `.git/shallow` sentinel file exists, which git creates
-/// when a repository was cloned with `--depth`.
+/// Delegates to [`is_shallow_clone_in`] on the process cwd.
 pub fn is_shallow_clone() -> bool {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     is_shallow_clone_in(&cwd)
@@ -143,22 +142,23 @@ pub fn is_shallow_clone() -> bool {
 
 /// Check whether the repository at `cwd` is a shallow clone.
 ///
-/// Path-taking sibling of [`is_shallow_clone`]. The `.git/shallow` sentinel
-/// is resolved relative to `cwd` via `git rev-parse --git-dir`; when that
-/// command returns a relative path (the common case for non-worktree repos),
-/// it is joined onto `cwd` so the check stays self-contained.
+/// Path-taking sibling of [`is_shallow_clone`]. Asks `git rev-parse
+/// --is-shallow-repository`, which reads the `shallow` file in the COMMON
+/// dir, so a linked worktree of a shallow clone answers `true` too; a
+/// `<git-dir>/shallow` probe missed it, the file living beside the main
+/// worktree's `.git` only. A git older than 2.15 does not know the flag and
+/// echoes it back instead of `true` / `false`; that answer falls back to the
+/// existence of `<git-common-dir>/shallow`, the file the flag reads. A git
+/// failure answers `false`.
 pub fn is_shallow_clone_in(cwd: &Path) -> bool {
-    // Use `git rev-parse --git-dir` to find the actual .git directory,
-    // which handles worktrees and non-standard layouts.
-    let git_dir =
-        git_output_in(cwd, &["rev-parse", "--git-dir"]).unwrap_or_else(|_| ".git".to_string());
-    let git_dir_path = Path::new(&git_dir);
-    let shallow = if git_dir_path.is_absolute() {
-        git_dir_path.join("shallow")
-    } else {
-        cwd.join(git_dir_path).join("shallow")
-    };
-    shallow.exists()
+    match git_output_in(cwd, &["rev-parse", "--is-shallow-repository"]) {
+        Ok(out) if out.trim() == "true" => true,
+        Ok(out) if out.trim() == "false" => false,
+        Ok(_) => git_output_in(cwd, &["rev-parse", "--git-common-dir"])
+            .map(|common| cwd.join(common.trim()).join("shallow").exists())
+            .unwrap_or(false),
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
@@ -311,6 +311,85 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         assert!(!is_shallow_clone_in(tmp.path()));
+    }
+
+    #[test]
+    fn is_shallow_clone_in_is_true_for_a_shallow_clone_and_its_linked_worktree() {
+        let origin = tempfile::tempdir().unwrap();
+        init_repo(origin.path());
+        let git = |dir: &Path, args: &[&str]| {
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args).current_dir(dir);
+                    cmd
+                },
+                "git",
+            );
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let shallow = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", origin.path().display());
+        git(shallow.path(), &["clone", "-q", "--depth", "1", &url, "."]);
+        assert!(is_shallow_clone_in(shallow.path()));
+
+        let linked = shallow.path().join("linked");
+        git(
+            shallow.path(),
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                linked.to_str().unwrap(),
+            ],
+        );
+        assert!(
+            is_shallow_clone_in(&linked),
+            "a linked worktree shares the shallow clone's history"
+        );
+    }
+
+    /// A git that does not know `--is-shallow-repository` echoes the flag;
+    /// the answer then comes from the `shallow` file in the common dir.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn is_shallow_clone_in_falls_back_to_the_shallow_file_when_git_echoes_the_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let real_git = which_git();
+        let tools = anodizer_core::test_helpers::fake_tool::FakeToolDir::new();
+        tools
+            .tool("git")
+            .script(format!(
+                "case \"$*\" in *--is-shallow-repository*) printf '%s\\n' --is-shallow-repository ;; \
+                 *) exec \"{real_git}\" \"$@\" ;; esac\n"
+            ))
+            .install();
+        let _path = tools.activate();
+        assert!(
+            !is_shallow_clone_in(tmp.path()),
+            "no shallow file: a full clone"
+        );
+        std::fs::write(tmp.path().join(".git/shallow"), "").unwrap();
+        assert!(is_shallow_clone_in(tmp.path()), "the shallow file decides");
+    }
+
+    /// The real `git` on PATH, resolved before a stub shadows it.
+    #[cfg(unix)]
+    fn which_git() -> String {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        std::env::split_paths(&path)
+            .map(|p| p.join("git"))
+            .find(|p| p.is_file())
+            .expect("git on PATH")
+            .to_string_lossy()
+            .into_owned()
     }
 
     #[test]

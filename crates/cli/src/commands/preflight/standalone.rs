@@ -40,16 +40,29 @@ pub struct PreflightOpts {
 /// A git failure while planning keeps the current version, the same way
 /// [`super::reconcile_sweep`] keeps probing when it cannot place the tag: an
 /// unanswerable question must not turn the report into an abort.
+///
+/// A shallow checkout whose history does not reach the last tag is the one
+/// shape that is refused instead. The plan would start from no tag at all and
+/// keep the manifest version — the one the LAST release published — and every
+/// crate changed since then would probe as `diverged`. That answer is wrong
+/// with certainty, so the run stops before any probe and names the remedy
+/// ([`shallow_checkout_refusal`]). A shallow clone deep enough to hold the
+/// last tag plans the same bump a full clone plans and is not refused, and
+/// neither is a shallow checkout of a repository that has never been tagged:
+/// the tag is missing from the truncated history, so the push remote's tag
+/// listing decides ([`shallow_history_hides_a_tag`]) — a remote holding no
+/// tag of this family means there is no last release to reach, and the plan
+/// cuts the first version the way a full clone would.
 fn seed_planned_version(
     ctx: &mut Context,
     config_override: Option<&std::path::Path>,
     log: &StageLogger,
-) {
+) -> Result<()> {
     let Some(git_info) = ctx.git_info.as_ref() else {
-        return;
+        return Ok(());
     };
     if git_info.tag_source == TagSource::Declared {
-        return;
+        return Ok(());
     }
     let tag = git_info.tag.clone();
     let root = ctx
@@ -57,13 +70,20 @@ fn seed_planned_version(
         .project_root
         .clone()
         .unwrap_or_else(|| PathBuf::from("."));
-    let plan = anodizer_core::git::tag_position_in(&root, &tag)
-        .map_err(|e| format!("could not locate tag {tag} relative to HEAD: {e:#}"))
-        .and_then(|position| match position {
-            TagPosition::AtHead => Ok(None),
-            _ => crate::commands::tag::plan_next_version(config_override, log)
-                .map_err(|e| format!("could not plan the next version: {e:#}")),
-        });
+    let position = anodizer_core::git::tag_position_in(&root, &tag)
+        .map_err(|e| format!("could not locate tag {tag} relative to HEAD: {e:#}"));
+    // A tag the truncated history still reaches plans correctly; only a tag
+    // the history does not reach (or cannot be placed) is the wrong plan.
+    if anodizer_core::git::is_shallow_clone_in(&root)
+        && shallow_history_hides_a_tag(&root, &tag, &position, log)
+    {
+        anyhow::bail!(shallow_checkout_refusal());
+    }
+    let plan = position.and_then(|position| match position {
+        TagPosition::AtHead => Ok(None),
+        _ => crate::commands::tag::plan_next_version(config_override, log)
+            .map_err(|e| format!("could not plan the next version: {e:#}")),
+    });
     match plan {
         Ok(None) => {}
         Ok(Some(plan)) => {
@@ -73,7 +93,7 @@ fn seed_planned_version(
                     plan.new_tag,
                     ctx.version()
                 ));
-                return;
+                return Ok(());
             };
             log.verbose(&format!(
                 "HEAD is not tagged; publisher probes use the planned version {} ({} → {})",
@@ -98,6 +118,57 @@ fn seed_planned_version(
             ctx.version()
         )),
     }
+    Ok(())
+}
+
+/// Whether a shallow checkout's truncated history is hiding the last tag
+/// from the plan.
+///
+/// A tag at `HEAD` or behind it is reached and plans correctly. A tag that
+/// resolves elsewhere, or cannot be placed, is not. A tag that does not
+/// resolve at all is either cut off by the truncation or never cut: the
+/// push remote's listing tells the two apart, so a remote holding any tag of
+/// this tag's family hides one, a remote holding none has no last release to
+/// reach, and a listing that fails is treated as hiding one — the plan is
+/// refused rather than guessed. A checkout with no push remote plans from
+/// its local tags the way `anodizer tag` would.
+fn shallow_history_hides_a_tag(
+    root: &std::path::Path,
+    tag: &str,
+    position: &std::result::Result<TagPosition, String>,
+    log: &StageLogger,
+) -> bool {
+    match position {
+        Ok(TagPosition::AtHead | TagPosition::AncestorOfHead) => false,
+        Ok(TagPosition::UnrelatedToHead) | Err(_) => true,
+        Ok(TagPosition::Missing) => {
+            let remote = "origin";
+            if !anodizer_core::git::has_remote_in(root, remote) {
+                return false;
+            }
+            let family = anodizer_core::git::split_tag_family(tag).map(|(prefix, _)| prefix);
+            match anodizer_core::git::list_remote_tag_names_in(root, remote) {
+                Ok(names) => names.iter().any(|name| {
+                    anodizer_core::git::split_tag_family(name).map(|(prefix, _)| prefix) == family
+                }),
+                Err(e) => {
+                    log.verbose(&format!(
+                        "could not list tags on remote '{remote}' ({e}); a shallow checkout                          cannot tell a never-tagged repository from a truncated one"
+                    ));
+                    true
+                }
+            }
+        }
+    }
+}
+
+/// The abort for a shallow checkout whose history does not reach the last
+/// tag, quoted on `docs/site/content/docs/general/preflight.md`.
+pub(crate) fn shallow_checkout_refusal() -> String {
+    "preflight: this checkout is shallow and HEAD's history does not reach the last tag, so \
+     the version this tree would release cannot be planned; fetch the whole history \
+     (actions/checkout fetch-depth: 0, or git fetch --unshallow) and re-run"
+        .to_string()
 }
 
 /// Standalone `anodizer preflight`: load the config, derive the version this
@@ -129,7 +200,7 @@ pub fn run(opts: PreflightOpts) -> Result<()> {
         ctx_opts,
         &log,
     )?;
-    seed_planned_version(&mut ctx, opts.config_override.as_deref(), &log);
+    seed_planned_version(&mut ctx, opts.config_override.as_deref(), &log)?;
 
     let scope = if opts.publish_only {
         PreflightScope::PublishOnly

@@ -173,7 +173,20 @@ $ anodizer preflight -v
 ```
 
 The derivation needs the tag history, so a CI checkout that runs it passes
-`fetch-depth: 0`.
+`fetch-depth: 0`. A shallow checkout whose history ends before the last tag
+cannot plan: the plan would start from no tag and the probes would ask the
+registries about the version the LAST release published, which reads as
+`diverged` on every crate the tree has changed since. Such a checkout is
+refused before any probe runs. A shallow clone deep enough to still hold the
+last tag plans the same bump a full clone plans, and a shallow clone of a
+repository the push remote holds no tag for has no last release to reach and
+plans the first version; when the remote's tags cannot be listed the checkout
+is refused rather than guessed at:
+
+```text
+$ anodizer preflight
+Error preflight: this checkout is shallow and HEAD's history does not reach the last tag, so the version this tree would release cannot be planned; fetch the whole history (actions/checkout fetch-depth: 0, or git fetch --unshallow) and re-run
+```
 
 #### When the reconcile sweep is skipped
 

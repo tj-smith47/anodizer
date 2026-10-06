@@ -2435,9 +2435,11 @@ fn the_abort_quoted_in_the_preflight_docs_is_what_a_failed_preflight_produces() 
     produced.push(crate::commands::preflight::preflight_failure_message(
         &report,
     ));
+    // The shallow-checkout refusal is quoted further down the page.
+    produced.push(crate::commands::preflight::shallow_checkout_refusal());
 
     assert_eq!(quoted, produced, "the page's Error lines");
-    assert_eq!(quoted.len(), 6, "the errors the page quotes");
+    assert_eq!(quoted.len(), 7, "the errors the page quotes");
 }
 
 /// Read every `Error ` line a docs page quotes, in page order, with the label
