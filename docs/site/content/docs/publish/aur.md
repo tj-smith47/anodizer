@@ -343,6 +343,19 @@ aur_sources:
 
 Each entry generates its own PKGBUILD and .SRCINFO, written to `dist/aur_source/<name>/` and optionally pushed to the configured AUR git URL.
 
+## One package name per entry
+
+The AUR keys a package on its name, so two entries that render the same `name:` would push one PKGBUILD over the other and the second config would ship silently. The pre-publish guard renders every `publish.aur`, `publish.aur_source` and `aur_sources[]` entry (each in its own crate's scope) and fails the release before any push when two of them name one package:
+
+```bash
+$ anodizer release --snapshot
+...
+       Error publisher artifact schema validation failed:
+aur: field 'pkgname' — package name 'myapp' is rendered by both crate 'cli' (publish.aur) and aur_sources[0] — two entries sharing one AUR package push one PKGBUILD over the other; give each entry its own `name:`
+```
+
+An entry that is skipped (`skip`, `skip_upload`, a falsy `if:`) pushes nothing and claims no name.
+
 ## SSH key setup
 
 AUR publishing requires SSH access. To configure this:

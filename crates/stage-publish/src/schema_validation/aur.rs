@@ -50,6 +50,10 @@ impl PublisherSchemaValidator for AurSchemaValidator {
         // leaves a missing `bash` a warn+skip — but the signal is wired uniformly.
         let strict = ctx.render_is_strict();
         let mut findings = Vec::new();
+        // Every rendered entry claims its package name here; two claims on one
+        // name are reported after all three walks, so each entry is still
+        // rendered and validated on its own before the pair is named.
+        let mut claimed: Vec<(String, String)> = Vec::new();
 
         // BINARY AUR (`publish.aur`). Walk exactly the crate set the live
         // binary-AUR publisher iterates (honoring `--crate` selection, else
@@ -112,6 +116,10 @@ impl PublisherSchemaValidator for AurSchemaValidator {
                             .with_context(|| format!("aur: '{crate_name}'"))?
                     {
                         validate_rendered(&mut out, &rendered, strict, &log)?;
+                        claimed.push((
+                            format!("crate '{crate_name}' (publish.aur)"),
+                            rendered.package_name,
+                        ));
                     }
                     Ok(out)
                 })?;
@@ -138,6 +146,10 @@ impl PublisherSchemaValidator for AurSchemaValidator {
                         render_aur_source_pkgbuild_and_srcinfo_for_crate(ctx, crate_name, &log)?
                     {
                         validate_rendered(&mut out, &rendered, strict, &log)?;
+                        claimed.push((
+                            format!("crate '{crate_name}' (publish.aur_source)"),
+                            rendered.package_name,
+                        ));
                     }
                     Ok(out)
                 })?;
@@ -146,10 +158,15 @@ impl PublisherSchemaValidator for AurSchemaValidator {
 
         // Top-level `aur_sources:` array (not per-crate). Empty when unset or
         // every entry is skipped.
-        for rendered in render_top_level_aur_source(ctx, &log)? {
+        for (i, rendered) in render_top_level_aur_source(ctx, &log)?
+            .into_iter()
+            .enumerate()
+        {
             validate_rendered(&mut findings, &rendered, strict, &log)?;
+            claimed.push((format!("aur_sources[{i}]"), rendered.package_name));
         }
 
+        findings.extend(duplicate_name_findings(&claimed));
         Ok(findings)
     }
 }
@@ -166,6 +183,31 @@ fn validate_rendered(
     findings.extend(validate_srcinfo_structural(&rendered.srcinfo));
     findings.extend(validate_pkgbuild_syntax(&rendered.pkgbuild, strict, log)?);
     Ok(())
+}
+
+/// One finding per pair of entries that rendered the same package name.
+///
+/// The AUR keys a package on its name, so two entries sharing one would push
+/// one PKGBUILD over the other and the second config would ship silently.
+/// Only rendered entries are in `claimed`:
+/// a skipped entry pushes nothing and so claims no name.
+fn duplicate_name_findings(claimed: &[(String, String)]) -> Vec<SchemaFinding> {
+    let mut out = Vec::new();
+    for (i, (first, name)) in claimed.iter().enumerate() {
+        for (second, other) in &claimed[i + 1..] {
+            if name == other {
+                out.push(finding(
+                    "pkgname",
+                    &format!(
+                        "package name '{name}' is rendered by both {first} and {second} — two \
+                         entries sharing one AUR package push one PKGBUILD over the other; \
+                         give each entry its own `name:`"
+                    ),
+                ));
+            }
+        }
+    }
+    out
 }
 
 fn finding(field: &str, expected: &str) -> SchemaFinding {
@@ -1293,5 +1335,192 @@ mod tests {
             !findings.is_empty(),
             "a syntactically-broken PKGBUILD must produce a bash -n finding"
         );
+    }
+
+    /// Two binary-AUR crates whose `name:` renders to one package: the guard
+    /// reports the pair before any push, and both crates were still rendered
+    /// (no other finding, so neither PKGBUILD was skipped on the way).
+    #[test]
+    fn two_crates_rendering_one_aur_name_are_reported_as_a_duplicate() {
+        let alpha = aur_crate("alpha", "v{{ .Version }}", every_option_aur_cfg());
+        let beta = aur_crate("beta", "v{{ .Version }}", every_option_aur_cfg());
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![alpha, beta])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        add_linux_archive(&mut ctx, "alpha", "1.0.0");
+        add_linux_archive(&mut ctx, "beta", "1.0.0");
+
+        let findings = AurSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
+        assert_eq!(
+            findings.len(),
+            1,
+            "one duplicate finding, got: {findings:?}"
+        );
+        let f = &findings[0];
+        assert_eq!(f.publisher, "aur");
+        assert_eq!(f.field, "pkgname");
+        assert_eq!(
+            f.expected,
+            "package name 'widget-bin' is rendered by both crate 'alpha' (publish.aur) and \
+             crate 'beta' (publish.aur) — two entries sharing one AUR package push one \
+             PKGBUILD over the other; give each entry its own `name:`"
+        );
+    }
+
+    /// The question spans every AUR entry kind: a per-crate `publish.aur_source`
+    /// and a top-level `aur_sources[]` entry naming one package collide too.
+    #[test]
+    fn a_source_crate_and_a_top_level_entry_rendering_one_name_are_reported() {
+        let beta = aur_source_crate("beta", "v{{ .Version }}", every_option_aur_source_cfg());
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .project_name("widget")
+            .crates(vec![beta])
+            .build();
+        ctx.config.aur_sources = Some(vec![every_option_aur_source_cfg()]);
+        scope_version(&mut ctx, "1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "widget");
+
+        let findings = AurSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
+        assert_eq!(
+            findings.len(),
+            1,
+            "one duplicate finding, got: {findings:?}"
+        );
+        assert!(
+            findings[0].expected.starts_with(
+                "package name 'widget' is rendered by both crate 'beta' (publish.aur_source) \
+                 and aur_sources[0]"
+            ),
+            "got: {}",
+            findings[0].expected
+        );
+    }
+
+    /// Distinct names, and skipped entries that would otherwise collide, report
+    /// nothing: a skipped entry pushes no PKGBUILD, so it claims no name —
+    /// whichever of `skip:`, `skip_upload:` and a falsy `if:` skipped it.
+    #[test]
+    fn distinct_names_and_a_skipped_duplicate_report_nothing() {
+        let alpha = aur_crate("alpha", "v{{ .Version }}", every_option_aur_cfg());
+        let beta = aur_crate(
+            "beta",
+            "v{{ .Version }}",
+            AurConfig {
+                name: Some("beta-bin".to_string()),
+                ..every_option_aur_cfg()
+            },
+        );
+        let gamma = aur_crate(
+            "gamma",
+            "v{{ .Version }}",
+            AurConfig {
+                skip: Some(StringOrBool::Bool(true)),
+                ..every_option_aur_cfg()
+            },
+        );
+        let delta = aur_crate(
+            "delta",
+            "v{{ .Version }}",
+            AurConfig {
+                skip_upload: Some(StringOrBool::Bool(true)),
+                ..every_option_aur_cfg()
+            },
+        );
+        let epsilon = aur_crate(
+            "epsilon",
+            "v{{ .Version }}",
+            AurConfig {
+                if_condition: Some("false".to_string()),
+                ..every_option_aur_cfg()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![alpha, beta, gamma, delta, epsilon])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        for c in ["alpha", "beta", "gamma", "delta", "epsilon"] {
+            add_linux_archive(&mut ctx, c, "1.0.0");
+        }
+
+        let findings = AurSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
+        assert!(findings.is_empty(), "got: {findings:?}");
+    }
+
+    /// The AUR page quotes the abort a duplicate package name produces. The
+    /// page's own situation — a `publish.aur` crate and an `aur_sources[]`
+    /// entry both named `myapp` — is fed to the real pass, so a reworded
+    /// finding leaves the page showing bytes the binary no longer prints.
+    #[test]
+    fn the_abort_quoted_in_the_aur_docs_is_what_the_pass_produces() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/site/content/docs/publish/aur.md"
+        );
+        let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let quoted: Vec<String> = page
+            .lines()
+            .filter_map(|line| line.trim_start().strip_prefix("Error "))
+            .filter(|line| !line.contains('\u{2026}'))
+            .map(str::to_string)
+            .collect();
+
+        let cli = aur_crate(
+            "cli",
+            "v{{ .Version }}",
+            AurConfig {
+                name: Some("myapp".to_string()),
+                ..every_option_aur_cfg()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .project_name("myapp")
+            .crates(vec![cli])
+            .build();
+        ctx.config.aur_sources = Some(vec![AurSourceConfig {
+            name: Some("myapp".to_string()),
+            ..every_option_aur_source_cfg()
+        }]);
+        scope_version(&mut ctx, "1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+        add_linux_archive(&mut ctx, "cli", "1.0.0");
+
+        let log = ctx.logger("publish");
+        let err = crate::schema_validation::validate_publisher_schemas(
+            &mut ctx,
+            &log,
+            &crate::schema_validation::test_current_version_resolver(),
+        )
+        .expect_err("two entries naming one package fail the pass");
+        let message = format!("{err:#}");
+        let mut lines = message.lines();
+
+        assert_eq!(quoted.len(), 1, "the aborts the page quotes");
+        assert_eq!(quoted[0], lines.next().expect("the abort's first line"));
+        let finding = lines.next().expect("the abort names the duplicate");
+        assert!(
+            page.contains(finding),
+            "the page quotes the finding line the pass produced, got: {finding}"
+        );
+        assert!(lines.next().is_none(), "one finding: {message}");
     }
 }
