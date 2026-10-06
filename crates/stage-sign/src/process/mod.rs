@@ -174,6 +174,7 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
     for k in &job.env_remove {
         command.env_remove(k);
     }
+    let log = &log.with_child_env(&command);
 
     let mut child = match command.spawn() {
         Ok(child) => child,

@@ -530,15 +530,15 @@ pub(crate) fn run_sequential(
             .cmd
             .as_ref()
             .context("build job has no cmd (programmer bug: planner should populate)")?;
-        exec.log
-            .verbose(&format!("running {} {}", cmd.program, cmd.args.join(" ")));
         let mut command = Command::new(&cmd.program);
         command.args(&cmd.args).envs(&cmd.env).current_dir(&cmd.cwd);
+        let child_log = exec.log.with_child_env(&command);
+        child_log.verbose(&format!("running {} {}", cmd.program, cmd.args.join(" ")));
         // Target-qualify the label so the liveness heartbeat attributes a slow
         // build to its target (`still running cargo (aarch64-…)`) instead of a
         // bare `cargo` that is ambiguous once builds run concurrently.
         let label = format!("{} ({})", cmd.program, job.target);
-        anodizer_core::run::run_checked(&mut command, exec.log, &label)?;
+        anodizer_core::run::run_checked(&mut command, &child_log, &label)?;
         exec.log.status(&format!(
             "built {}/{} for {}",
             job.crate_name, job.binary_name, job.target
@@ -716,14 +716,15 @@ pub(crate) fn run_parallel(
                             )?;
                         }
 
-                        thread_log.verbose(&format!("running {} {}", program, args.join(" ")));
                         let mut command = Command::new(&program);
                         command.args(&args).envs(&env).current_dir(&cwd);
+                        let child_log = thread_log.with_child_env(&command);
+                        child_log.verbose(&format!("running {} {}", program, args.join(" ")));
                         // Target-qualify the label so concurrent build heartbeats
                         // are distinguishable (`still running cargo (aarch64-…)`)
                         // rather than an ambiguous bare `cargo` shared by all jobs.
                         let label = format!("{program} ({target})");
-                        anodizer_core::run::run_checked(&mut command, &thread_log, &label)?;
+                        anodizer_core::run::run_checked(&mut command, &child_log, &label)?;
 
                         let bin_path = resolve_binary_path(&bin_path, &job_crate_path);
 
@@ -2530,6 +2531,66 @@ mod run_exec_tests {
             msg.contains("build succeeded but binary not found") && msg.contains("ghost"),
             "error must name the missing binary path, got: {msg}"
         );
+    }
+
+    /// A secret written literally in the job's rendered `env:` never reaches
+    /// the process env, so the logger's own table does not know it; the
+    /// failure embed, the verbose argv echo and the live tee are all redacted
+    /// against the child's env instead. Sequential and parallel paths alike.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_build_redacts_the_job_env_from_its_error_and_verbose_output() {
+        for parallel in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let dist = tmp.path().join("dist");
+            std::fs::create_dir_all(&dist).unwrap();
+            let work = tmp.path().join("crate");
+            std::fs::create_dir_all(&work).unwrap();
+
+            let tools = FakeToolDir::new();
+            tools
+                .tool("cargo")
+                .script("echo \"error: token $BUILD_API_TOKEN rejected\" >&2\nexit 1\n")
+                .install();
+            let mut job = building_job(
+                &tools.tool_path("cargo"),
+                &work,
+                "app",
+                "x86_64-unknown-linux-gnu",
+            );
+            job.cmd.as_mut().unwrap().env.insert(
+                "BUILD_API_TOKEN".to_string(),
+                "hunter2-build-secret".to_string(),
+            );
+
+            let (log, capture) = StageLogger::with_capture("test", Verbosity::Verbose);
+            let tvars = TemplateVars::default();
+            let exec = mk_exec(&log, &tvars, &dist, "0");
+            let mut ctx = mk_ctx();
+            let err = if parallel {
+                run_parallel(&mut ctx, &exec, &[job], &[], 1).unwrap_err()
+            } else {
+                run_sequential(&mut ctx, &exec, &[job], &[]).unwrap_err()
+            };
+            let text = format!("{err:#}");
+            assert!(
+                text.contains("rejected"),
+                "parallel={parallel}: stderr must still be embedded: {text}"
+            );
+            assert!(
+                !text.contains("hunter2-build-secret"),
+                "parallel={parallel}: the job env secret leaked into the error: {text}"
+            );
+            let logged: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+            assert!(
+                logged.iter().any(|m| m.contains("running")),
+                "parallel={parallel}: the verbose argv echo must be captured: {logged:?}"
+            );
+            assert!(
+                !logged.iter().any(|m| m.contains("hunter2-build-secret")),
+                "parallel={parallel}: the job env secret leaked into the log: {logged:?}"
+            );
+        }
     }
 
     /// The compiler exits non-zero: `check_output` surfaces a failure naming the

@@ -136,6 +136,7 @@ pub(crate) fn build_sdist(
     {
         cmd.env("SOURCE_DATE_EPOCH", epoch);
     }
+    let log = &log.with_child_env(&cmd);
     anodizer_core::run::run_checked(&mut cmd, log, "maturin sdist")
         .context("pypi: run `maturin sdist`")?;
 

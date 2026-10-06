@@ -289,7 +289,7 @@ pub(crate) fn execute_nfpm_jobs(
             && [&output.stdout, &output.stderr]
                 .iter()
                 .any(|s| String::from_utf8_lossy(s).contains("no packager registered"));
-        let checked = thread_log.check_output(output, "nfpm");
+        let checked = thread_log.with_child_env(&cmd).check_output(output, "nfpm");
         match checked {
             Err(e) if unregistered_packager => {
                 return Err(e.context("the 'msix' packager requires nfpm >= 2.46.0"));

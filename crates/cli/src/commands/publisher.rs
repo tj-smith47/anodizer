@@ -243,6 +243,7 @@ pub fn run_publishers(
                     }
                 }
 
+                let log = &log.with_child_env(&cmd);
                 anodizer_core::run::run_checked(&mut cmd, log, &format!("publisher {}", label))?;
             }
             Ok(())

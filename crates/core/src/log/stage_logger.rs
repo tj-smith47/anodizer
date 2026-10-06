@@ -491,6 +491,27 @@ impl StageLogger {
             .unwrap_or_default()
     }
 
+    /// A sibling logger whose redaction table also holds the env `cmd` will
+    /// be spawned with.
+    ///
+    /// A secret written literally in a job's rendered `env:` reaches the
+    /// child's environment without ever being in the process env, so the
+    /// table this logger carries does not know it: the verbose live tee, the
+    /// failure embed in [`StageLogger::check_output`] and any argv echo would
+    /// print it unmasked. Every path that spawns a `Command` carrying its own
+    /// `env` logs through the logger this returns. An entry `cmd` REMOVES
+    /// (`env_remove`) has no value to mask and is skipped.
+    pub fn with_child_env(&self, cmd: &std::process::Command) -> Self {
+        let mut pairs = self.redaction_env();
+        pairs.extend(cmd.get_envs().filter_map(|(k, v)| {
+            Some((
+                k.to_string_lossy().into_owned(),
+                v?.to_string_lossy().into_owned(),
+            ))
+        }));
+        self.clone().with_env(pairs)
+    }
+
     /// Check if verbose output is enabled.
     pub fn is_verbose(&self) -> bool {
         self.verbosity >= Verbosity::Verbose

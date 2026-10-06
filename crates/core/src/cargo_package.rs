@@ -95,6 +95,7 @@ pub fn package_workspace(
     for (k, v) in env {
         cmd.env(k, v);
     }
+    let log = &log.with_child_env(&cmd);
     crate::run::run_checked(&mut cmd, log, "cargo package")
         .with_context(|| format!("`cargo package` failed in {}", manifest_dir.display()))?;
     Ok(())
@@ -137,6 +138,7 @@ pub fn package_one(
     for (k, v) in env {
         cmd.env(k, v);
     }
+    let log = &log.with_child_env(&cmd);
     crate::run::run_checked(&mut cmd, log, "cargo package").with_context(|| {
         format!(
             "`cargo package -p {crate_name}` failed in {}",

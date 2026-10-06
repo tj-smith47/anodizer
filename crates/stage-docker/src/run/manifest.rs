@@ -330,6 +330,7 @@ fn run_manifest_create_with_retry(
             for (key, value) in manifest_env_vars {
                 create_command.env(key, value);
             }
+            let log = &log.with_child_env(&create_command);
             let output = match run_capture_timeout(
                 &mut create_command,
                 log,
@@ -407,6 +408,7 @@ fn run_manifest_push_with_retry(
             for (key, value) in manifest_env_vars {
                 push_command.env(key, value);
             }
+            let log = &log.with_child_env(&push_command);
             let output = match run_capture_timeout(
                 &mut push_command,
                 log,

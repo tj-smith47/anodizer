@@ -260,8 +260,8 @@ pub(crate) fn build_universal_binary(
             .with_context(|| format!("failed to spawn lipo for {crate_name}"))?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("lipo failed for {crate_name}: {}", stderr.trim());
+            let stderr = log.redact(String::from_utf8_lossy(&output.stderr).trim());
+            anyhow::bail!("lipo failed for {crate_name}: {stderr}");
         }
     }
 

@@ -141,19 +141,25 @@ pub(crate) fn run_cargo_publish_with_retry(
         Exited(std::process::Output),
     }
 
+    // Trusted Publishing: inject the issued token via env only. Passing it
+    // as `--token` on the argv would expose it in the process list.
+    let build_command = || {
+        let mut command = Command::new(&cmd[0]);
+        command.args(&cmd[1..]);
+        if let Some(tok) = registry_token {
+            command.env("CARGO_REGISTRY_TOKEN", tok);
+        }
+        command
+    };
+    let log = &log.with_child_env(&build_command());
+
     let desc = format!("cargo publish for {label}");
     let res = retry_steps_sync(
         RetryLog::new(&desc, log),
         PUBLISH_PROPAGATION_RETRIES,
         None,
         |_attempt| -> RetryStep<std::process::Output, PublishFailure> {
-            let mut command = Command::new(&cmd[0]);
-            command.args(&cmd[1..]);
-            // Trusted Publishing: inject the issued token via env only. Passing
-            // it as `--token` on the argv would expose it in the process list.
-            if let Some(tok) = registry_token {
-                command.env("CARGO_REGISTRY_TOKEN", tok);
-            }
+            let mut command = build_command();
             let output = match command.output() {
                 Ok(o) => o,
                 Err(e) => {

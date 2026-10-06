@@ -160,6 +160,7 @@ pub fn oci_build_fixture(
     // `run_checked` captures both streams (surfacing the tail on failure) and
     // tees them live only under `-v`, so build errors still reach the operator
     // without leaking BuildKit chatter into every passing run.
+    let log = &log.with_child_env(&cmd);
     crate::run::run_checked(&mut cmd, log, "docker buildx build")
         .with_context(|| format!("`docker buildx build` failed in {}", context_dir.display()))?;
 

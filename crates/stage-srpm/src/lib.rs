@@ -348,7 +348,8 @@ impl Stage for SrpmStage {
         // Route through the logger so stderr/stdout are passed through
         // env-driven redaction before they reach the error chain. rpmbuild
         // echoes GPG_PASSPHRASE / SRPM_PASSPHRASE on signing failure.
-        log.check_output(output, "rpmbuild -bs")?;
+        log.with_child_env(&rpmbuild_cmd)
+            .check_output(output, "rpmbuild -bs")?;
 
         // Find the generated SRPM in SRPMS/
         let generated: Vec<PathBuf> = glob::glob(&format!("{}/**/*.src.rpm", srpms_dir.display()))

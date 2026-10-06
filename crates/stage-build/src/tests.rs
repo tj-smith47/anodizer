@@ -3242,6 +3242,101 @@ fn test_rustup_target_add_failure_is_hard_error() {
     }
 }
 
+/// A failed `rustup target add` embeds its stderr in the error, and that
+/// stderr is redacted against the env the child was spawned with — the
+/// build job's rendered `env:` included, which the stage logger never sees.
+#[cfg(unix)]
+#[test]
+fn a_failed_rustup_target_add_redacts_the_build_env_from_its_error() {
+    use crate::workspace::ensure_targets_installed;
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let bin_dir = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
+        &bin_dir.join("rustup"),
+        "echo \"error: token $BUILD_API_TOKEN rejected\" >&2\nexit 1\n",
+    );
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    let log = ctx.logger("build");
+    let prep = crate::workspace::TargetPrep {
+        target: non_host_triple().to_string(),
+        dir: std::path::PathBuf::new(),
+        env: HashMap::from([
+            ("PATH".to_string(), bin_dir.to_string_lossy().into_owned()),
+            (
+                "BUILD_API_TOKEN".to_string(),
+                "hunter2-rustup-secret".to_string(),
+            ),
+        ]),
+    };
+
+    let err = ensure_targets_installed(&ctx, &[prep], &log, false).unwrap_err();
+    let text = format!("{err:#}");
+    assert!(text.contains("rustup target add"), "{text}");
+    assert!(
+        text.contains("rejected"),
+        "stderr must still be embedded: {text}"
+    );
+    assert!(
+        !text.contains("hunter2-rustup-secret"),
+        "the build env secret leaked into the error: {text}"
+    );
+}
+
+/// A failed `lipo` embeds its stderr in the error, redacted against the
+/// context's secret env.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(path_env)]
+fn a_failed_lipo_redacts_secrets_from_its_error() {
+    use anodizer_core::config::{Config, UniversalBinaryConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+    let tools = FakeToolDir::new();
+    tools
+        .tool("lipo")
+        .stderr("fatal: signing with hunter2-lipo-secret failed\n")
+        .exit(1)
+        .install();
+    let _path = tools.activate();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.set_env_source(MapEnvSource::new().with("LIPO_API_TOKEN", "hunter2-lipo-secret"));
+    register_binary(
+        &mut ctx,
+        "myapp",
+        "aarch64-apple-darwin",
+        tmp.path().join("arm64/myapp"),
+    );
+    register_binary(
+        &mut ctx,
+        "myapp",
+        "x86_64-apple-darwin",
+        tmp.path().join("x86_64/myapp"),
+    );
+
+    let err = build_universal_binary("myapp", &UniversalBinaryConfig::default(), &mut ctx, false)
+        .unwrap_err();
+    let text = format!("{err:#}");
+    assert!(text.contains("lipo failed for myapp"), "{text}");
+    assert!(
+        text.contains("signing with"),
+        "stderr must still be embedded: {text}"
+    );
+    assert!(
+        !text.contains("hunter2-lipo-secret"),
+        "the secret leaked into the error: {text}"
+    );
+}
+
 /// A glibc-pinned target (`<triple>.<ver>`) must have its cargo-zigbuild suffix
 /// stripped before the host comparison and the `rustup target add` arg — rustup
 /// only knows the bare triple. Here the pin is on the *host* triple, so the

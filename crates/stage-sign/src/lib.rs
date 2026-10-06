@@ -591,6 +591,7 @@ impl Stage for DockerSignStage {
                         command.env(k, v);
                     }
 
+                    let log = &log.with_child_env(&command);
                     let mut child = command.spawn().with_context(|| {
                         format!(
                             "sign: failed to spawn '{}' for docker image {}",
@@ -688,9 +689,9 @@ impl Stage for DockerSignStage {
                         };
                         crate::process::retry_transient(
                             &crate::process::COSIGN_TRANSIENT_RETRY,
-                            &log,
+                            log,
                             &format!("verification of {signed_ref}"),
-                            &mut || crate::verify::execute_verify_job(&vjob, &log),
+                            &mut || crate::verify::execute_verify_job(&vjob, log),
                         )?;
                         log.status(&format!("verified image signature {signed_ref}")); // status-ok: per-image verification result
                     }

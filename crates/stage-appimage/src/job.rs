@@ -188,12 +188,13 @@ pub(crate) fn execute_appimage_job(
     })?;
 
     if !output.status.success() {
+        let log = thread_log.with_child_env(&command);
         bail!(
             "appimage: linuxdeploy failed for '{}' (id={}): {}{}",
             job.filename,
             job.id,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            log.redact(&String::from_utf8_lossy(&output.stdout)),
+            log.redact(&String::from_utf8_lossy(&output.stderr))
         );
     }
 

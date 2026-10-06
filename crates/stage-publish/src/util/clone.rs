@@ -162,6 +162,7 @@ pub(crate) fn clone_repo_ssh(
 
     // Bounded: the SSH clone hits the remote (AUR, a tap), so a wedged ssh
     // handshake must not hang the release. A deadline kill is a Retriable error.
+    let log = &log.with_child_env(&cmd);
     let output = run_capture_timeout(
         &mut cmd,
         log,

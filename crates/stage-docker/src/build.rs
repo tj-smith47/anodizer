@@ -217,6 +217,7 @@ pub(crate) fn execute_docker_build(
             for (key, value) in &job.env_vars {
                 cmd.env(key, value);
             }
+            let log = &log.with_child_env(&cmd);
             let mut output = match run_capture_timeout(
                 &mut cmd,
                 log,
@@ -460,6 +461,7 @@ fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<BTreeMap<
                 for (key, value) in &job.env_vars {
                     cmd.env(key, value);
                 }
+                let log = &log.with_child_env(&cmd);
                 let mut output =
                     match run_capture_timeout(&mut cmd, log, "podman push", PODMAN_PUSH_TIMEOUT) {
                         Ok(o) => o,

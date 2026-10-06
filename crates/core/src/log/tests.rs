@@ -1037,3 +1037,209 @@ fn skip_line_records_status_when_shown() {
     assert_eq!(cap.status_count(), 1);
     assert_eq!(cap.debug_count(), 0);
 }
+
+/// Every production function that spawns a `Command` carrying an env of its
+/// own AND hands that child's output to a logger or an error must log
+/// through [`StageLogger::with_child_env`]: the logger's own table was built
+/// from the process env, so a secret a rendered `env:` plants on the child
+/// reaches the live tee, the failure embed and the `running …` echo unmasked.
+///
+/// Trigger, per function body, after the shared scanner has split the
+/// workspace's production sources into bodies:
+///
+/// - the body sets an env on a `Command`: `.envs(`, `.env_clear(`, or an
+///   `.env(` whose VALUE argument is not a string literal. `::env` (as in
+///   `std::env::var`) is excluded by the character before the dot; `.env.`
+///   and `.env_var(` never match the spellings asked for. A literal value
+///   (`.env("LC_ALL", "C")`, `.env("GIT_TERMINAL_PROMPT", "0")`) is no
+///   secret, and a body that sets only those is outside the class — that
+///   is what keeps the thirty-odd git helpers out of the walk. Known
+///   negative: a literal value that is a secret written in source, which
+///   this workspace does not do and a review catches.
+/// - the body reads the child's output somewhere a line can be printed:
+///   `run_checked(`, `run_capture_timeout(`, `check_output(`, `.redact(`
+///   or a `.stderr)` read (`from_utf8_lossy(&output.stderr)`). Known
+///   positive: a `.stderr)` read that is compared and never printed; none
+///   exists today, and such a body is listed as an exemption rather than
+///   relaxing the trigger.
+///
+/// A body that does both and does not mention `with_child_env` fails,
+/// unless it is listed in `EXEMPT` with the reason it needs no child table:
+/// either it has no logger and scrubs its own error embed, or the only env
+/// it sets is a git author identity read from config.
+#[test]
+fn every_spawn_with_its_own_env_logs_through_the_child_env_redactor() {
+    use crate::test_helpers::test_sources::{
+        function_bodies, production_half, workspace_production_sources,
+    };
+
+    const SINKS: [&str; 5] = [
+        "run_checked(",
+        "run_capture_timeout(",
+        "check_output(",
+        ".redact(",
+        ".stderr)",
+    ];
+    // (file suffix, fn name, why no child table is needed)
+    const EXEMPT: [(&str, &str, &str); 8] = [
+        (
+            "core/src/hooks.rs",
+            "run_hooks_inner",
+            "composes a superset table with `with_env(effective_env)` before the Command exists, because the dry-run line needs it",
+        ),
+        (
+            "core/src/git/github_api.rs",
+            "gh_api_get_with_binary_with_env",
+            "no logger; scrubs the token out of its bail! with `redact_gh_stderr_with_env`",
+        ),
+        (
+            "core/src/git/github_api.rs",
+            "gh_api_delete_with_binary",
+            "no logger; scrubs the token out of its bail! with `redact_gh_stderr_with_env`",
+        ),
+        (
+            "core/src/git/github_api.rs",
+            "gh_api_get_paginated_with_binary",
+            "no logger; scrubs the token out of its bail! with `redact_gh_stderr_with_env`",
+        ),
+        (
+            "stage-publish/src/util/cmd.rs",
+            "run_cmd_in_envs",
+            "no logger; its one env-carrying caller passes a git author identity from config, never a secret",
+        ),
+        (
+            "stage-publish/src/util/git_revert.rs",
+            "revert_head_in",
+            "no logger; sets only the git author identity from config",
+        ),
+        (
+            "stage-sign/src/keyload.rs",
+            "verify_cosign_key_loads_with_env",
+            "no logger; returns a verdict whose text the preflight prints through the context logger, whose table already holds the process env the password is read from",
+        ),
+        (
+            "stage-sign/src/verify.rs",
+            "derive_cosign_public_key",
+            "no logger; scrubs its bail! with `redact::string` over the job env plus the process env",
+        ),
+    ];
+
+    let mut checked = 0usize;
+    let mut converted = 0usize;
+    let mut exempt_seen = Vec::new();
+    let mut offenders = Vec::new();
+    for source in workspace_production_sources() {
+        let text = std::fs::read_to_string(&source).expect("read source");
+        let path = source.to_string_lossy().replace('\\', "/");
+        for body in function_bodies(production_half(&text)) {
+            if !sets_command_env(&body) || !SINKS.iter().any(|s| body.contains(s)) {
+                continue;
+            }
+            checked += 1;
+            let name = fn_name(&body);
+            if body.contains("with_child_env") {
+                converted += 1;
+                continue;
+            }
+            if let Some(entry) = EXEMPT
+                .iter()
+                .find(|(suffix, fn_name, _)| path.ends_with(suffix) && *fn_name == name)
+            {
+                exempt_seen.push(*entry);
+                continue;
+            }
+            offenders.push(format!("{path}: fn {name}"));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these functions spawn a Command with its own env and log its output \
+         without `StageLogger::with_child_env`:\n{}",
+        offenders.join("\n")
+    );
+    assert_eq!(
+        exempt_seen.len(),
+        EXEMPT.len(),
+        "every exemption must still name a live site; stale: {:?}",
+        EXEMPT
+            .iter()
+            .filter(|e| !exempt_seen.contains(e))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        checked,
+        converted + EXEMPT.len(),
+        "the population is every converted site plus every exemption"
+    );
+    assert_eq!(
+        converted, 22,
+        "the count of sites logging through with_child_env moved; update \
+         .claude/rules/child-env-redaction.md's population table"
+    );
+}
+
+/// The first `fn` name in a body the shared scanner produced.
+fn fn_name(body: &str) -> String {
+    let after = body.split_once("fn ").map(|(_, rest)| rest).unwrap_or("");
+    after
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect()
+}
+
+/// Whether `body` sets an env on a `Command` with a value that is not a
+/// string literal (see the doc comment on the pin above).
+fn sets_command_env(body: &str) -> bool {
+    let bytes = body.as_bytes();
+    let mut from = 0;
+    while let Some(at) = body[from..].find(".env") {
+        let start = from + at;
+        from = start + 4;
+        if start > 0 && bytes[start - 1] == b':' {
+            continue;
+        }
+        let rest = &body[start + 4..];
+        if rest.starts_with("s(") || rest.starts_with("_clear(") {
+            return true;
+        }
+        let Some(args) = rest.strip_prefix('(') else {
+            continue;
+        };
+        // The value is whatever follows the first top-level comma.
+        let mut depth = 0usize;
+        let mut value = None;
+        for (i, c) in args.char_indices() {
+            match c {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' if depth == 0 => break,
+                ')' | ']' | '}' => depth -= 1,
+                ',' if depth == 0 => {
+                    value = Some(args[i + 1..].trim_start());
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if let Some(value) = value
+            && !value.starts_with('"')
+        {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn the_command_env_trigger_tells_a_literal_value_from_a_variable() {
+    assert!(!sets_command_env(
+        r#"cmd.env("LC_ALL", "C").env("GIT_TERMINAL_PROMPT", "0")"#
+    ));
+    assert!(!sets_command_env("std::env::var(\"X\")"));
+    assert!(!sets_command_env("ctx.env_var(\"X\")"));
+    assert!(!sets_command_env("ctx.env.get(\"X\")"));
+    assert!(sets_command_env("cmd.env(k, v)"));
+    assert!(sets_command_env("cmd.env(\"TOKEN\", &tok)"));
+    assert!(sets_command_env("cmd.env(format!(\"{k}\"), v)"));
+    assert!(sets_command_env("cmd.envs(pairs)"));
+    assert!(sets_command_env("cmd.env_clear()"));
+}

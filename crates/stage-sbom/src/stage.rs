@@ -315,7 +315,9 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
             .with_context(|| format!("sbom[{}]: failed to run '{}'", id, cmd))?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr = log
+                .with_child_env(&command)
+                .redact(&String::from_utf8_lossy(&output.stderr));
             bail!("sbom[{}]: '{}' failed: {}", id, cmd, stderr.trim());
         }
 

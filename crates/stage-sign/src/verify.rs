@@ -454,28 +454,6 @@ fn run_verify_command_with_timeout(
     log: &StageLogger,
     timeout: std::time::Duration,
 ) -> Result<std::process::Output> {
-    // A secret written literally in the sign config's `env:` reaches the
-    // child's environment without ever being in the process env, so the
-    // logger's redaction table doesn't know it and the verbose live tee
-    // inside `run_capture_timeout` would stream it unmasked. Extend a
-    // sibling logger's table with the rendered job-env values (same
-    // snapshot-and-extend mechanism as the blob KMS path) so the tee masks
-    // them exactly like process-env secrets; the post-spawn scrub below
-    // stays as defense-in-depth for the captured buffers.
-    let log = match &job.env {
-        Some(env_vars) if !env_vars.is_empty() => {
-            let mut pairs = log.redaction_env();
-            pairs.extend(env_vars.iter().cloned());
-            log.clone().with_env(pairs)
-        }
-        _ => log.clone(),
-    };
-    log.verbose(&format!(
-        "verifying {}: {} {}",
-        job.what,
-        job.cmd,
-        job.args.join(" ")
-    ));
     let mut command = Command::new(&job.cmd);
     command.args(&job.args).stdin(Stdio::null());
     if let Some(ref env_vars) = job.env {
@@ -483,6 +461,16 @@ fn run_verify_command_with_timeout(
             command.env(k, v);
         }
     }
+    // The verbose live tee inside `run_capture_timeout` masks the job's own
+    // `env:` through this logger; the post-spawn scrub below stays as
+    // defense-in-depth for the captured buffers.
+    let log = log.with_child_env(&command);
+    log.verbose(&format!(
+        "verifying {}: {} {}",
+        job.what,
+        job.cmd,
+        job.args.join(" ")
+    ));
     let output = anodizer_core::run::run_capture_timeout(
         &mut command,
         &log,

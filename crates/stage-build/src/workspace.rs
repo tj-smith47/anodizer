@@ -267,11 +267,13 @@ pub(crate) fn ensure_targets_installed(
         } else {
             &prep.dir
         };
-        let output = Command::new("rustup")
+        let mut command = Command::new("rustup");
+        command
             .args(["target", "add", rustup_target])
             .current_dir(dir)
-            .envs(&prep.env)
-            .output();
+            .envs(&prep.env);
+        let child_log = log.with_child_env(&command);
+        let output = command.output();
         match output {
             Ok(o) if o.status.success() => {
                 log.verbose(&format!(
@@ -280,16 +282,10 @@ pub(crate) fn ensure_targets_installed(
                 ));
             }
             Ok(o) => {
-                // `rustup target add` failure is a hard
-                // error (returns
-                // `fmt.Errorf("could not add target %s: %w: %s", ...)`).
-                // The previous warn-and-continue let the subsequent
-                // `cargo build --target=...` fail with a less-clear
-                // "no such target" error.
-                anyhow::bail!(
-                    "rustup target add {rustup_target} failed: {}",
-                    String::from_utf8_lossy(&o.stderr).trim()
-                );
+                // A hard error: continuing would let `cargo build --target`
+                // fail later with a less clear "no such target".
+                let stderr = child_log.redact(String::from_utf8_lossy(&o.stderr).trim());
+                anyhow::bail!("rustup target add {rustup_target} failed: {stderr}");
             }
             Err(_) => {
                 ctx.strict_guard(log, "skipped target installation — rustup not found")?;
