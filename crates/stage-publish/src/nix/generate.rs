@@ -252,15 +252,19 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> Result<String> {
 /// - `\"` escapes a literal double quote.
 /// - `\${` escapes a literal dollar-brace so it is NOT interpreted as the
 ///   start of an antiquotation (string interpolation).
+/// - `\n`, `\r` and `\t` write the newline, carriage return and tab, so a
+///   multi-line value stays one `"…"` literal on one line.
 ///
 /// Apply replacements in this order: backslash first (so the backslashes
-/// introduced for `"` and `${` are not themselves re-escaped), then quote,
-/// then `${`.
+/// introduced for the other escapes are not themselves re-escaped), then
+/// the rest.
 pub(super) fn nix_escape_string(s: &str) -> String {
-    let mut out = s.replace('\\', "\\\\");
-    out = out.replace('"', "\\\"");
-    out = out.replace("${", "\\${");
-    out
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace("${", "\\${")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
 }
 
 /// Escape a value for inclusion inside a Nix indented-string literal

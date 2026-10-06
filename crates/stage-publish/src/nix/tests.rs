@@ -584,6 +584,73 @@ fn test_generate_nix_expression_escapes_main_program_quotes_backslashes_and_doll
     );
 }
 
+/// A Nix `"…"` literal cannot hold a raw newline, carriage return or tab
+/// without changing the rendered value; each is written as its escape.
+#[test]
+fn nix_escape_string_escapes_newline_carriage_return_and_tab() {
+    use super::generate::nix_escape_string;
+    assert_eq!(nix_escape_string("a\nb"), r"a\nb");
+    assert_eq!(nix_escape_string("a\rb"), r"a\rb");
+    assert_eq!(nix_escape_string("a\tb"), r"a\tb");
+    // A literal backslash before one of them is doubled first, so the
+    // escape introduced here is never re-escaped.
+    assert_eq!(nix_escape_string("a\\\nb"), r"a\\\nb");
+}
+
+/// The description reaches the derivation with its control characters
+/// escaped, exactly once, and is not handed to the template engine as a
+/// template of its own: a value that looks like a template expression
+/// renders as its own text.
+#[test]
+fn a_multi_line_description_escapes_control_characters() {
+    let archives = vec![(
+        "x86_64-linux".to_string(),
+        "https://example.com/tool.tar.gz".to_string(),
+        "abc".to_string(),
+    )];
+    let install = vec!["mkdir -p $out/bin".to_string()];
+    let expr = generate_nix_expression(&NixParams {
+        name: "mytool",
+        version: "1.0.0",
+        description: "line one\nline two\t{{ Version }}",
+        homepage: "",
+        license_expr: "lib.licenses.mit",
+        long_description: "",
+        changelog: "",
+        maintainers: &[],
+        main_program: "mytool",
+        archives: &archives,
+        install_lines: &install,
+        post_install_lines: &[],
+        needs_unzip: false,
+        needs_make_wrapper: false,
+        dep_args: &[],
+        source_root: Some("."),
+        source_root_map: None,
+        dynamically_linked: false,
+    })
+    .unwrap();
+    let line = expr
+        .lines()
+        .find(|l| l.trim_start().starts_with("description = "))
+        .unwrap_or_else(|| panic!("no description line in:\n{expr}"));
+    assert_eq!(
+        line.trim(),
+        r#"description = "line one\nline two\t{{ Version }}";"#,
+        "the escaped `\\n` and `\\t` bytes must be on the one description line, \
+         never re-rendered; got:\n{expr}"
+    );
+    assert!(
+        !expr.contains("line one\nline two") && !expr.contains("line two\t"),
+        "a raw newline or tab reached the derivation:\n{expr}"
+    );
+    assert_eq!(
+        expr.matches("description = ").count(),
+        1,
+        "description rendered more than once:\n{expr}"
+    );
+}
+
 #[test]
 fn test_nix_escape_string_handles_backslash_quote_and_dollar_brace() {
     use super::generate::nix_escape_string;
