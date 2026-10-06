@@ -1863,15 +1863,15 @@ fn is_transient_network_failure_rejects_unrelated_errors() {
 /// appear verbatim in the new cargo before bumping `VERIFIED_CARGO_MINOR`
 /// below.
 ///
-/// Last verified against cargo 1.98.0 on 2026-09-08 by checking that each
+/// Last verified against cargo 1.99.0 on 2026-10-06 by checking that each
 /// substring is still present in the shipped cargo binary
 /// (`strings $(rustup which cargo) | grep -F "<substring>"`). That proves the
-/// wording survives in 1.98; it does not prove cargo emits it for an
+/// wording survives in 1.99; it does not prove cargo emits it for an
 /// index-propagation failure, which would need a live crates.io publish race.
 #[test]
 fn cargo_version_matches_pinned_discriminator_strings() {
     // Last-verified cargo minor. Update together with re-verification.
-    const VERIFIED_CARGO_MINOR: u64 = 98;
+    const VERIFIED_CARGO_MINOR: u64 = 99;
 
     // Resolve cargo via the `CARGO` env var — the absolute path cargo
     // exports when it spawns the test binary — not PATH: a peer `#[serial]`

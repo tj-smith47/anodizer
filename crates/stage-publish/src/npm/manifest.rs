@@ -408,7 +408,7 @@ pub(crate) fn insert_common_metadata(
 ) {
     let render = |s: &str| ctx.render_template(s).unwrap_or_else(|_| s.to_string());
 
-    let description = cfg.description.as_deref().map(&render).or_else(|| {
+    let description = cfg.description.as_deref().map(render).or_else(|| {
         ctx.config
             .meta_description_for(crate_name)
             .map(str::to_string)
@@ -420,7 +420,7 @@ pub(crate) fn insert_common_metadata(
     let homepage = cfg
         .homepage
         .as_deref()
-        .map(&render)
+        .map(render)
         .or_else(|| ctx.config.meta_homepage_for(crate_name).map(str::to_string));
     if let Some(h) = homepage {
         root.insert("homepage".into(), serde_json::Value::String(h));
@@ -429,7 +429,7 @@ pub(crate) fn insert_common_metadata(
     let license = cfg
         .license
         .as_deref()
-        .map(&render)
+        .map(render)
         .or_else(|| ctx.config.meta_license_for(crate_name).map(str::to_string));
     if let Some(l) = license {
         root.insert("license".into(), serde_json::Value::String(l));
@@ -438,7 +438,7 @@ pub(crate) fn insert_common_metadata(
     // Honour the documented `author` fallback: explicit config, else the
     // project's `metadata.maintainers[0]`, else the crate's
     // `Cargo.toml [package].authors[0]` (both via `meta_first_maintainer_for`).
-    let author = cfg.author.as_deref().map(&render).or_else(|| {
+    let author = cfg.author.as_deref().map(render).or_else(|| {
         ctx.config
             .meta_first_maintainer_for(crate_name)
             .map(str::to_string)
@@ -464,7 +464,7 @@ pub(crate) fn insert_common_metadata(
     // OIDC-claimed repository. Fall back to the crate's
     // `Cargo.toml [package].repository` so the field is correct by default and
     // never requires the operator to restate it in the publisher config.
-    let repository = cfg.repository_url.as_deref().map(&render).or_else(|| {
+    let repository = cfg.repository_url.as_deref().map(render).or_else(|| {
         ctx.config
             .meta_repository_for(crate_name)
             .map(str::to_string)
