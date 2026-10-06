@@ -25,9 +25,9 @@ on:
         required: true
         default: ""
       publish_from_artifact:
-        description: "anodizer binary artifact to install the publisher from (resolve-release-target's publish_from_artifact; normally anodizer-linux)."
+        description: "anodizer binary artifact to install the publisher from (resolve-release-target's publish_from_artifact). Empty with publish_version at its default installs from the anodizer-linux CI artifact; empty with a publish_version set installs that release. A dispatch cannot send an empty value past a non-empty default, so the default is empty and the fallback is applied in the job."
         required: false
-        default: "anodizer-linux"
+        default: ""
       publish_version:
         description: "anodizer version to install (resolve-release-target's publish_version; normally latest)."
         required: false
@@ -58,7 +58,7 @@ jobs:
   publish-oidc:
     name: Publish OIDC (npm, PyPI, crates.io)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     # id-token: write injects ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN — the request
     # env npm provenance, PyPI Trusted Publishing, AND crates.io Trusted
     # Publishing all exchange for their short-lived upload token. No stored
@@ -83,7 +83,10 @@ jobs:
       - name: Run anodizer release --publish-only --publishers ${{ env.HOSTED_PUBLISHERS }}
         uses: tj-smith47/anodizer-action@v1
         with:
-          from-artifact: ${{ inputs.publish_from_artifact }}
+          # Empty from_artifact + default version → the CI artifact, the
+          # fresh-cut shape. Empty from_artifact + a pinned version → that
+          # release, the backfill shape; the action refuses both at once.
+          from-artifact: ${{ inputs.publish_from_artifact || (inputs.publish_version == 'latest' && 'anodizer-linux') || '' }}
           version: ${{ inputs.publish_version }}
           artifact-run-id: auto
           artifact-workflow: ci.yml

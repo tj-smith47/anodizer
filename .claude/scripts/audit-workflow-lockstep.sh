@@ -163,10 +163,27 @@ else
     for f in "$CI" "$REL" "$OIDC"; do
         while IFS= read -r val; do
             [[ -z "$val" ]] && continue
-            # A GHA expression (e.g. the resolve output) is not a literal name.
+            # A GHA expression (e.g. the resolve output) is not a literal
+            # name, but a quoted literal in VALUE position inside it — the
+            # operand right after a `&&` or `||` — is what the expression
+            # can evaluate to, so every non-empty one must be the producer's
+            # name. A literal used as a comparison operand
+            # (`inputs.publish_version == 'latest'`) names nothing the
+            # action downloads and is not checked.
             # shellcheck disable=SC2016  # the literal ${{ is the match target, not an expansion
             case "$val" in
-                *'${{'*) continue ;;
+                *'${{'*)
+                    rest="$val"
+                    while [[ "$rest" =~ (\&\&|\|\|)[[:space:]]*\'([^\']*)\'(.*)$ ]]; do
+                        lit="${BASH_REMATCH[2]}"
+                        rest="${BASH_REMATCH[3]}"
+                        [[ -z "$lit" ]] && continue
+                        if [[ "$lit" != "$producer" ]]; then
+                            fail "bootstrap artifact drift: literal '${lit}' inside from-artifact expression in ${f} != producer '${producer}'."
+                        fi
+                    done
+                    continue
+                    ;;
             esac
             if [[ "$val" != "$producer" ]]; then
                 fail "bootstrap artifact drift: literal from-artifact '${val}' in ${f} != producer '${producer}'."
