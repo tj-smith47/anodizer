@@ -70,11 +70,11 @@ pub struct VerifyReleaseConfig {
     /// push recorded. Default `true` (no extra config: the run's own publish
     /// report and artifact set already carry every coordinate the probes
     /// need). Publishers that did not run — or did not succeed — are skipped,
-    /// as is an image the run built without pushing. A target the registry has not served yet is
-    /// re-asked (5s backoff doubling to a 30s cap, 8 attempts) inside ONE
-    /// 3-minute window shared by the whole sweep, shortened whenever
-    /// `retry.max_elapsed` leaves less than that; an absence is reported when
-    /// the window closes.
+    /// as is an image the run built without pushing. A target the registry
+    /// has not served yet is re-asked (5s backoff doubling to a 30s cap)
+    /// inside ONE 12-minute window shared by the whole sweep, shortened
+    /// whenever `retry.max_elapsed` leaves less than that; an absence is
+    /// reported when the window closes.
     pub assert_landing: bool,
     /// Per-package install smoke-test images. When `None`, smoke-testing is
     /// off. When present, each package type that produced an artifact is

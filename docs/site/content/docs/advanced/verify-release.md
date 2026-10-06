@@ -189,11 +189,12 @@ needed a propagation wait, and how many could not be reached at all:
 
 A registry that has accepted a publish does not always serve it on the next
 request. Every probe above therefore keeps asking — backing off from 5 seconds
-to a 30-second cap, over 8 attempts — before it reports an absence.
+to a 30-second cap — before it reports an absence. npm has been observed to
+take ten minutes to serve a package after `npm publish` returned.
 
 The window belongs to the **whole sweep**, not to each target: it opens once,
-runs for 3 minutes, and every probe of that run shares it. A release publishing
-43 targets to a registry that never serves them therefore costs one 3-minute
+runs for 12 minutes, and every probe of that run shares it. A release publishing
+43 targets to a registry that never serves them therefore costs one 12-minute
 window, not 43 of them. `retry.max_elapsed` caps the window too, so lowering
 that lowers this; a dry run probes once and never waits.
 

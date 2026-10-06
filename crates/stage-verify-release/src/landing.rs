@@ -119,15 +119,20 @@ pub struct PropagationRetry {
 }
 
 impl PropagationRetry {
-    /// 5s base doubling to a 30s cap over 8 attempts inside a 3-minute window
-    /// (5+10+20+30×4 = 155s of backoff).
+    /// 5s base doubling to a 30s cap inside a 12-minute window; the attempt
+    /// count (5+10+20+30×25 = 785s of backoff) outlasts the window, so the
+    /// deadline is what ends the ladder.
+    ///
+    /// npm has been observed to serve a package about ten minutes after
+    /// `npm publish` returned (`@tj-smith47/anodizer-win32-arm64@0.28.1` on a
+    /// nine-package release), so the window is sized past that.
     pub const DEFAULT: PropagationRetry = PropagationRetry {
         policy: anodizer_core::retry::RetryPolicy {
-            max_attempts: 8,
+            max_attempts: 28,
             base_delay: std::time::Duration::from_secs(5),
             max_delay: std::time::Duration::from_secs(30),
         },
-        budget: std::time::Duration::from_secs(180),
+        budget: std::time::Duration::from_secs(720),
         sweep_deadline: None,
     };
 
@@ -2072,9 +2077,9 @@ mod tests {
 
         let anchored = Instant::now();
         let open = retry.starting_now(None).sweep_deadline.expect("anchored");
-        assert!(open >= anchored + Duration::from_secs(179), "{open:?}");
+        assert!(open >= anchored + Duration::from_secs(719), "{open:?}");
         assert!(
-            open <= Instant::now() + Duration::from_secs(180),
+            open <= Instant::now() + Duration::from_secs(720),
             "{open:?}"
         );
 
