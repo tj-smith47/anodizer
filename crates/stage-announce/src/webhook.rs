@@ -38,6 +38,9 @@ pub(crate) fn format_unexpected_status_message(
 
 /// POST to an arbitrary HTTP endpoint with custom headers and content type.
 ///
+/// A user header named like a default (`Content-Type`) replaces it; the
+/// request never carries two values for one name.
+///
 /// When `skip_tls_verify` is true the client will accept invalid / self-signed
 /// TLS certificates (the `skip_tls_verify` webhook option).
 ///
@@ -48,14 +51,12 @@ pub(crate) fn format_unexpected_status_message(
 /// upstream commit bba909e). `policy` enables retry on 5xx / 429 / network
 /// failures.
 ///
-/// `headers` is a [`BTreeMap`] (not a `HashMap`) so the iteration
-/// order in the request builder loop is deterministic (alphabetical by header
-/// name). This makes wire traces reproducible across runs and matches
-/// First-set-wins ordering for the env-supplied `Authorization`
-/// header. Sort order is irrelevant on the wire because RFC 7230 §3.2.2
-/// forbids semantically meaningful ordering for headers with distinct names;
-/// the user-supplied `headers.Authorization` precedence is enforced at the
-/// builder level (`resolve_webhook_headers`) before this point.
+/// `headers` is a [`BTreeMap`] (not a `HashMap`) so the headers are
+/// inserted in a deterministic order (alphabetical by name) and wire traces
+/// are reproducible across runs. The order carries no meaning on the wire
+/// (RFC 7230 §3.2.2 forbids it for headers with distinct names), and which
+/// `Authorization` value is sent — the user's over the env-supplied one — is
+/// decided before this point, in `resolve_webhook_headers`.
 #[allow(clippy::too_many_arguments)]
 pub fn send_webhook(
     endpoint_url: &str,
@@ -75,14 +76,30 @@ pub fn send_webhook(
 
     let client = crate::http::blocking_client_accept_invalid_certs(skip_tls_verify)?;
 
+    // Defaults first, then each user header REPLACES the default of the
+    // same name: `HeaderMap::insert` drops any value already held, where
+    // `RequestBuilder::header` would append a second `Content-Type`.
+    let mut header_map = reqwest::header::HeaderMap::new();
+    header_map.insert(
+        reqwest::header::CONTENT_TYPE,
+        effective_ct
+            .parse()
+            .with_context(|| format!("webhook: invalid content_type '{effective_ct}'"))?,
+    );
+    for (key, value) in headers {
+        let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
+            .with_context(|| format!("webhook: invalid header name '{key}'"))?;
+        let value = value
+            .parse()
+            .with_context(|| format!("webhook: invalid value for header '{key}'"))?;
+        header_map.insert(name, value);
+    }
+
     retry_sync(RetryLog::new("webhook announce", log), policy, |_attempt| {
-        let mut builder = client
+        let builder = client
             .post(endpoint_url)
-            .header("Content-Type", effective_ct)
+            .headers(header_map.clone())
             .body(message.to_string());
-        for (key, value) in headers {
-            builder = builder.header(key.as_str(), value.as_str());
-        }
 
         match builder.send() {
             Err(e) => {
@@ -277,6 +294,45 @@ mod tests {
         let lower = req.to_ascii_lowercase();
         assert!(lower.contains("authorization: bearer secret-xyz"), "{req}");
         assert!(lower.contains("x-custom: marker-value"), "{req}");
+    }
+
+    /// A user-supplied `Content-Type` replaces the default one: the request
+    /// carries exactly one such header, with the user's value.
+    #[test]
+    fn a_user_content_type_header_replaces_the_default_instead_of_joining_it() {
+        let (addr, captured) =
+            spawn_request_capturing_responder("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        let url = format!("http://{addr}/hook");
+        let mut headers: BTreeMap<String, String> = BTreeMap::new();
+        headers.insert("Content-Type".into(), "text/plain".into());
+        send_webhook(
+            &url,
+            "hello",
+            &headers,
+            "application/json",
+            false,
+            &[200],
+            &no_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let req = captured.lock().unwrap().clone();
+        let content_types: Vec<&str> = req
+            .lines()
+            .filter(|l| l.to_ascii_lowercase().starts_with("content-type:"))
+            .collect();
+        assert_eq!(
+            content_types.len(),
+            1,
+            "exactly one Content-Type header must be sent: {req}"
+        );
+        assert!(
+            content_types[0]
+                .to_ascii_lowercase()
+                .ends_with("text/plain"),
+            "the user's value must win: {req}"
+        );
     }
 
     #[test]

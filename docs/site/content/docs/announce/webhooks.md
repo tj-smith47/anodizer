@@ -23,6 +23,6 @@ Use webhooks to integrate with any service that accepts HTTP POST requests. The 
 |-------|------|-------------|
 | `enabled` | bool | Enable webhook notifications |
 | `endpoint_url` | string | Endpoint URL |
-| `headers` | map | Custom HTTP headers |
+| `headers` | map | Custom HTTP headers. A header named here replaces the default of the same name, including `Content-Type`, `User-Agent` and the `Authorization` header derived from `BASIC_AUTH_HEADER_VALUE` / `BEARER_TOKEN_HEADER_VALUE` |
 | `content_type` | string | Content-Type header (e.g., `application/json`) |
 | `message_template` | string | POST body (templates supported) |
