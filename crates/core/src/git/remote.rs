@@ -22,31 +22,57 @@ pub fn has_remote_in(cwd: &Path, remote: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Parse owner and repo name from a GitHub remote URL.
-/// Supports HTTPS (`https://github.com/owner/repo.git`) and SSH (`git@github.com:owner/repo.git`).
-pub(crate) fn parse_github_remote(url: &str) -> Option<(String, String)> {
-    let url = url.trim();
+/// Trim a remote URL down to the path a parser reads: surrounding
+/// whitespace, any trailing `/` (git accepts `…/repo.git/` verbatim), then
+/// the `.git` suffix. Returns `None` for an empty URL.
+fn normalize_remote_url(url: &str) -> Option<&str> {
+    let url = url.trim().trim_end_matches('/');
     if url.is_empty() {
         return None;
     }
+    Some(url.strip_suffix(".git").unwrap_or(url))
+}
 
-    // Strip trailing ".git" if present
-    let url = url.strip_suffix(".git").unwrap_or(url);
-
-    // HTTPS: https://github.com/owner/repo
-    if let Some(path) = url.strip_prefix("https://github.com/") {
-        let parts: Vec<&str> = path.splitn(3, '/').collect();
-        if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-            return Some((parts[0].to_string(), parts[1].to_string()));
-        }
+/// Split a URL with a scheme (`https://`, `http://`, `ssh://`) into
+/// `(host, path)`, dropping any userinfo from the host segment. An `ssh://`
+/// port is the SSH port and is dropped too; an `http(s)://` port is the web
+/// port and stays. `None` when the URL has no such scheme, no host or no path.
+fn split_scheme_url(url: &str) -> Option<(&str, &str)> {
+    let (scheme, rest) = ["https://", "http://", "ssh://"]
+        .iter()
+        .find_map(|scheme| url.strip_prefix(scheme).map(|rest| (*scheme, rest)))?;
+    let slash = rest.find('/')?;
+    let host_seg = &rest[..slash];
+    let path = &rest[slash + 1..];
+    let host = host_seg.rsplit('@').next().unwrap_or(host_seg);
+    let host = if scheme == "ssh://" {
+        host.split(':').next().unwrap_or(host)
+    } else {
+        host
+    };
+    if host.is_empty() || path.is_empty() {
+        return None;
     }
+    Some((host, path))
+}
 
-    // SSH: git@github.com:owner/repo
-    if let Some(path) = url.strip_prefix("git@github.com:") {
-        let parts: Vec<&str> = path.splitn(3, '/').collect();
-        if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-            return Some((parts[0].to_string(), parts[1].to_string()));
-        }
+/// Parse owner and repo name from a GitHub remote URL.
+/// Supports HTTPS (`https://github.com/owner/repo.git`) and both SSH
+/// spellings (`git@github.com:owner/repo.git`,
+/// `ssh://git@github.com/owner/repo.git`).
+pub(crate) fn parse_github_remote(url: &str) -> Option<(String, String)> {
+    let url = normalize_remote_url(url)?;
+
+    // HTTPS / ssh://: scheme, github.com, owner/repo
+    let path = match split_scheme_url(url) {
+        Some(("github.com", path)) => Some(path),
+        Some(_) => None,
+        // scp-like SSH: git@github.com:owner/repo
+        None => url.strip_prefix("git@github.com:"),
+    };
+    let parts: Vec<&str> = path?.splitn(3, '/').collect();
+    if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+        return Some((parts[0].to_string(), parts[1].to_string()));
     }
 
     None
@@ -72,38 +98,27 @@ pub(crate) fn detect_github_repo_in(cwd: &Path) -> Result<(String, String)> {
 
 /// Parse owner and repo from any git remote URL, regardless of host.
 ///
-/// Supports HTTPS (`https://host/owner/repo.git`) and SSH (`git@host:owner/repo.git`)
-/// formats. Returns `(owner, repo)` with `.git` suffix stripped.
+/// Supports HTTPS (`https://host/owner/repo.git`) and both SSH spellings
+/// (`git@host:owner/repo.git`, `ssh://git@host/owner/repo.git`). Returns
+/// `(owner, repo)` with `.git` suffix stripped; nested groups keep every
+/// segment but the last in `owner`.
 ///
 /// This is a host-agnostic version of [`parse_github_remote`], suitable for
 /// GitLab, Gitea, and other SCM providers.
 pub(crate) fn parse_remote_owner_repo(url: &str) -> Option<(String, String)> {
-    let url = url.trim();
-    if url.is_empty() {
-        return None;
-    }
+    let url = normalize_remote_url(url)?;
 
-    // Strip trailing ".git" if present
-    let url = url.strip_suffix(".git").unwrap_or(url);
-
-    // HTTPS: https://host/owner/repo or https://host/group/subgroup/repo
-    if url.starts_with("https://") || url.starts_with("http://") {
-        // Strip scheme and host
-        let after_scheme = if let Some(rest) = url.strip_prefix("https://") {
-            rest
-        } else {
-            url.strip_prefix("http://")?
-        };
-        // Strip any credentials (user:pass@host or user@host)
-        let after_host = after_scheme.find('/').map(|i| &after_scheme[i + 1..])?;
+    // https://host/owner/repo, https://host/group/subgroup/repo, ssh://git@host/owner/repo
+    if let Some((_, path)) = split_scheme_url(url) {
         // For nested groups (e.g. group/subgroup/repo), the owner is everything
         // up to the last slash.
-        let last_slash = after_host.rfind('/')?;
-        let owner = &after_host[..last_slash];
-        let repo = &after_host[last_slash + 1..];
+        let last_slash = path.rfind('/')?;
+        let owner = &path[..last_slash];
+        let repo = &path[last_slash + 1..];
         if !owner.is_empty() && !repo.is_empty() {
             return Some((owner.to_string(), repo.to_string()));
         }
+        return None;
     }
 
     // SSH: git@host:owner/repo or git@host:group/subgroup/repo
@@ -127,10 +142,10 @@ pub(crate) fn parse_remote_owner_repo(url: &str) -> Option<(String, String)> {
 /// Convert a git remote URL into its web base (`https://host/owner/repo`),
 /// regardless of SCM host.
 ///
-/// Accepts HTTPS (`https://host/owner/repo.git`) and SSH
-/// (`git@host:owner/repo.git`) forms, normalizes both to
-/// `https://host/owner/repo` (no `.git` suffix), and preserves nested
-/// groups (`group/subgroup/repo`). Returns `None` when the URL has no
+/// Accepts HTTPS (`https://host/owner/repo.git`) and both SSH spellings
+/// (`git@host:owner/repo.git`, `ssh://git@host/owner/repo.git`), normalizes
+/// each to `https://host/owner/repo` (no `.git` suffix), and preserves
+/// nested groups (`group/subgroup/repo`). Returns `None` when the URL has no
 /// recognizable host or path.
 ///
 /// This is the host-preserving counterpart of `parse_remote_owner_repo`:
@@ -138,25 +153,11 @@ pub(crate) fn parse_remote_owner_repo(url: &str) -> Option<(String, String)> {
 /// build links against a self-hosted GitLab/Gitea instead of assuming
 /// `github.com`.
 pub fn parse_remote_web_base(url: &str) -> Option<String> {
-    let url = url.trim();
-    if url.is_empty() {
-        return None;
-    }
-    let url = url.strip_suffix(".git").unwrap_or(url);
+    let url = normalize_remote_url(url)?;
 
-    // HTTPS/HTTP: normalize the scheme to https and drop any userinfo.
-    if let Some(rest) = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-    {
-        // Split host[:port]/path; drop credentials in the host segment.
-        let slash = rest.find('/')?;
-        let host_seg = &rest[..slash];
-        let path = &rest[slash + 1..];
-        let host = host_seg.rsplit('@').next().unwrap_or(host_seg);
-        if host.is_empty() || path.is_empty() {
-            return None;
-        }
+    // https://, http://, ssh://: the scheme becomes https, userinfo and the
+    // port are dropped.
+    if let Some((host, path)) = split_scheme_url(url) {
         return Some(format!("https://{}/{}", host, path));
     }
 

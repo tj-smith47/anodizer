@@ -150,6 +150,83 @@ fn test_parse_github_remote_ssh_no_dotgit() {
     assert_eq!(result, Some(("owner".to_string(), "repo".to_string())));
 }
 
+/// A remote URL can end in `/` (`git remote add origin https://host/o/r.git/`
+/// is accepted verbatim), and the trailing slash must not survive into the
+/// repository name.
+#[test]
+fn a_trailing_slash_on_a_remote_url_is_ignored_by_every_parser() {
+    let want = Some(("owner".to_string(), "repo".to_string()));
+    for url in [
+        "https://github.com/owner/repo.git/",
+        "https://github.com/owner/repo/",
+        "git@github.com:owner/repo.git/",
+        "git@github.com:owner/repo/",
+    ] {
+        assert_eq!(parse_github_remote(url), want, "github: {url}");
+        assert_eq!(parse_remote_owner_repo(url), want, "owner/repo: {url}");
+    }
+    for url in [
+        "https://gitlab.example.com/group/repo.git/",
+        "https://gitlab.example.com/group/repo/",
+        "git@gitlab.example.com:group/repo.git/",
+        "git@gitlab.example.com:group/repo/",
+    ] {
+        assert_eq!(
+            parse_remote_owner_repo(url),
+            Some(("group".to_string(), "repo".to_string())),
+            "owner/repo: {url}"
+        );
+        assert_eq!(
+            parse_remote_web_base(url).as_deref(),
+            Some("https://gitlab.example.com/group/repo"),
+            "web base: {url}"
+        );
+    }
+    // A nested group keeps every segment but the last as the owner.
+    assert_eq!(
+        parse_remote_owner_repo("https://gitlab.example.com/a/b/repo/"),
+        Some(("a/b".to_string(), "repo".to_string()))
+    );
+    assert_eq!(
+        parse_remote_web_base("https://gitlab.example.com/a/b/repo/").as_deref(),
+        Some("https://gitlab.example.com/a/b/repo")
+    );
+}
+
+/// The `ssh://` spelling of an SSH remote (`ssh://git@host/o/r.git`, the one
+/// `git clone` prints for a non-default port) parses like the scp-like
+/// `git@host:o/r.git`: the user and port are dropped, nested groups kept.
+#[test]
+fn an_ssh_scheme_remote_parses_like_the_scp_spelling() {
+    let want = Some(("owner".to_string(), "repo".to_string()));
+    for url in [
+        "ssh://git@github.com/owner/repo.git",
+        "ssh://git@github.com/owner/repo",
+        "ssh://git@github.com:22/owner/repo.git/",
+    ] {
+        assert_eq!(parse_github_remote(url), want, "github: {url}");
+        assert_eq!(parse_remote_owner_repo(url), want, "owner/repo: {url}");
+        assert_eq!(
+            parse_remote_web_base(url).as_deref(),
+            Some("https://github.com/owner/repo"),
+            "web base: {url}"
+        );
+    }
+    assert_eq!(
+        parse_remote_owner_repo("ssh://git@gitlab.example.com:2222/a/b/repo.git"),
+        Some(("a/b".to_string(), "repo".to_string()))
+    );
+    assert_eq!(
+        parse_remote_web_base("ssh://git@gitlab.example.com:2222/a/b/repo.git").as_deref(),
+        Some("https://gitlab.example.com/a/b/repo")
+    );
+    assert_eq!(
+        parse_github_remote("ssh://git@gitlab.example.com/owner/repo.git"),
+        None,
+        "another host is not GitHub"
+    );
+}
+
 #[test]
 fn test_parse_github_remote_invalid() {
     let result = parse_github_remote("https://gitlab.com/foo/bar.git");
