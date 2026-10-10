@@ -29,11 +29,15 @@ pub enum PublisherGroup {
     /// (chocolatey, winget, snapcraft, upstream-AUR force-push); **cargo**,
     /// **npm**, and **pypi** are immutable registries whose completed publish
     /// burns the version (npm/pypi rollback is warn-only; cargo has a real
-    /// programmatic `yank`). The one exception with a programmatic rollback
+    /// programmatic `yank`). The one member with a programmatic rollback
     /// is **cargo**: a multi-crate `cargo publish` that succeeds on crate A
     /// then fails on crate B records A in its evidence, and `anodizer tag
     /// rollback`'s replay path issues `cargo yank` for A even though the
     /// row's outcome is `Failed`.
+    ///
+    /// A `Failed` row is replayed in every group when it carries evidence:
+    /// a publisher that commits part of its work and then fails records
+    /// what it committed, so the withdrawal can remove it.
     Submitter,
 }
 
@@ -229,6 +233,15 @@ pub struct PublishReport {
     /// `verify_gate_blocked` as already authoritative.
     #[serde(default)]
     pub verify_gate_evaluated: bool,
+    /// Rows an earlier run of this release recorded whose published work is
+    /// still live and that this run did not redo: the publisher was skipped
+    /// as already published, deselected, or failed before committing
+    /// anything. `anodizer tag rollback` withdraws them beside `results`.
+    /// Kept apart from `results` so an earlier run's outcome never reads as
+    /// this run's to the announce gate or the exit code. Empty (and absent
+    /// from the JSON) on a first run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub carried_forward: Vec<PublisherResult>,
 }
 
 impl PublishReport {

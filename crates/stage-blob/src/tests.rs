@@ -17,8 +17,8 @@ use crate::kms::{KmsProvider, encrypt_with_kms, parse_kms_provider, validate_kms
 use crate::provider::Provider;
 use crate::store::build_s3_store;
 use crate::upload::{
-    build_put_options, collect_artifacts, format_remote_path, handle_upload_error,
-    resolve_extra_files, upload_files_owned,
+    UploadDestination, build_put_options, collect_artifacts, format_remote_path,
+    handle_upload_error, resolve_extra_files, upload_files_owned,
 };
 use anodizer_core::config::RetryConfig;
 
@@ -397,14 +397,33 @@ fn awskms_rejects_payloads_over_4096_bytes() {
     );
 }
 
-/// Only AWS carries the ceiling; a GCP key of any size passes the guard.
+/// Each client-side provider is refused at its own ceiling, and a key that
+/// names none of them carries no ceiling here.
 #[test]
-fn gcpkms_has_no_size_limit() {
-    validate_kms_plaintext_size(
-        "gcpkms://projects/p/locations/l/keyRings/r/cryptoKeys/k",
-        8192,
-    )
-    .expect("gcpkms has no direct-encrypt ceiling here");
+fn each_kms_provider_is_refused_past_its_own_ceiling() {
+    let gcp = "gcpkms://projects/p/locations/l/keyRings/r/cryptoKeys/k";
+    validate_kms_plaintext_size(gcp, 65536).expect("64 KiB is at the ceiling");
+    assert_eq!(
+        validate_kms_plaintext_size(gcp, 65537)
+            .unwrap_err()
+            .to_string(),
+        "failed to encrypt with kms: gcpkms encryption supports files up to 65536 bytes \
+         (8192 under an HSM-protected key), got 65537 bytes"
+    );
+
+    let azure = "azurekeyvault://vault/keys/key";
+    validate_kms_plaintext_size(azure, 446).expect("446 bytes fits a 4096-bit key");
+    assert_eq!(
+        validate_kms_plaintext_size(azure, 447)
+            .unwrap_err()
+            .to_string(),
+        "failed to encrypt with kms: azurekeyvault encryption supports files up to 446 bytes \
+         (RSA-OAEP-256 under a 4096-bit key; 318 under a 3072-bit key, 190 under a 2048-bit \
+         key), got 447 bytes"
+    );
+
+    validate_kms_plaintext_size("arn:aws:kms:us-east-1:1:key/k", usize::MAX)
+        .expect("a server-side key encrypts nothing on this machine");
 }
 
 #[test]
@@ -1372,7 +1391,7 @@ fn test_upload_to_in_memory_store() {
         .map(|(_, k)| build_put_options(&config, k, &ctx).unwrap())
         .collect();
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let result = upload_files_owned(
+    let (_, result) = upload_files_owned(
         &rt,
         Arc::clone(&store),
         upload_items.clone(),
@@ -1380,6 +1399,7 @@ fn test_upload_to_in_memory_store() {
         put_opts,
         1,
         None,
+        UploadDestination::test_s3(),
         &log,
     );
     assert!(result.is_ok(), "upload failed: {:?}", result.err());
@@ -1422,7 +1442,7 @@ fn test_upload_to_in_memory_store_empty_directory() {
         .map(|(_, k)| build_put_options(&config, k, &ctx).unwrap())
         .collect();
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let result = upload_files_owned(
+    let (_, result) = upload_files_owned(
         &rt,
         Arc::clone(&store),
         upload_items.clone(),
@@ -1430,6 +1450,7 @@ fn test_upload_to_in_memory_store_empty_directory() {
         put_opts,
         1,
         None,
+        UploadDestination::test_s3(),
         &log,
     );
     assert!(result.is_ok());
@@ -1467,7 +1488,7 @@ fn upload_files_owned_returns_successful_keys() {
         .map(|(_, k)| build_put_options(&config, k, &ctx).unwrap())
         .collect();
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let report = upload_files_owned(
+    let (report, result) = upload_files_owned(
         &rt,
         store,
         upload_items,
@@ -1475,9 +1496,10 @@ fn upload_files_owned_returns_successful_keys() {
         put_opts,
         1,
         None,
+        UploadDestination::test_s3(),
         &log,
-    )
-    .expect("upload should succeed");
+    );
+    result.expect("upload should succeed");
     // Order is sorted (deterministic across runs) so evidence is stable.
     assert_eq!(report.uploaded, vec!["drop/alpha.txt", "drop/bravo.txt"]);
     // Fresh InMemory store → nothing was an idempotent skip.
@@ -1505,7 +1527,7 @@ fn upload_files_owned_skips_identical_object_on_rerun() {
             .iter()
             .map(|(_, k)| build_put_options(&config, k, &ctx).unwrap())
             .collect();
-        upload_files_owned(
+        let (report, result) = upload_files_owned(
             &rt,
             Arc::clone(&store),
             items,
@@ -1513,9 +1535,11 @@ fn upload_files_owned_skips_identical_object_on_rerun() {
             opts,
             1,
             None,
+            UploadDestination::test_s3(),
             &log,
-        )
-        .expect("upload ok")
+        );
+        result.expect("upload ok");
+        report
     };
 
     // First run: fresh object → uploaded.
@@ -1564,7 +1588,7 @@ fn test_upload_with_content_disposition() {
         .map(|(_, k)| build_put_options(&config, k, &ctx).unwrap())
         .collect();
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let result = upload_files_owned(
+    let (_, result) = upload_files_owned(
         &rt,
         store,
         upload_items.clone(),
@@ -1572,6 +1596,7 @@ fn test_upload_with_content_disposition() {
         put_opts,
         1,
         None,
+        UploadDestination::test_s3(),
         &log,
     );
     assert!(result.is_ok());
@@ -1585,7 +1610,7 @@ fn test_log() -> anodizer_core::log::StageLogger {
     anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet)
 }
 
-fn make_ctx() -> Context {
+pub(crate) fn make_ctx() -> Context {
     let config = anodizer_core::config::Config {
         project_name: "test".to_string(),
         ..Default::default()
@@ -1637,6 +1662,7 @@ fn mk_target(key: &str) -> crate::publisher::BlobTarget {
         key: key.to_string(),
         region: None,
         endpoint: None,
+        overwrote: false,
     }
 }
 
@@ -1688,11 +1714,8 @@ fn blob_stage_appends_failed_to_publish_report() {
     use anodizer_core::PublisherOutcome;
 
     let mut ctx = make_ctx();
-    // Mid-stream failure: one key uploaded before the upload errored. The
-    // partial-success list is preserved on the helper input, but
-    // failed entries record no evidence so a downstream rollback can't
-    // mistakenly treat the failed publisher as having a clean
-    // artifact_paths snapshot.
+    // Mid-stream failure: one key uploaded before the upload errored. That
+    // object exists, so the failed row names it and a rollback deletes it.
     let partial = vec![mk_target("proj/v1/a.tar.gz")];
     let err = anyhow::anyhow!("upload failed: 503 Service Unavailable");
     record_blob_result(
@@ -1715,10 +1738,25 @@ fn blob_stage_appends_failed_to_publish_report() {
         }
         other => panic!("expected Failed, got {other:?}"),
     }
-    assert!(
-        r.evidence.is_none(),
-        "Failed entries must not carry evidence (downstream rollback safety)"
+    let evidence = r
+        .evidence
+        .as_ref()
+        .expect("a failed row keeps the objects written before the failure");
+    assert_eq!(
+        evidence.artifact_paths,
+        vec![std::path::PathBuf::from("s3://my-bucket/proj/v1/a.tar.gz")]
     );
+    assert_eq!(
+        crate::publisher::decode_blob_targets(&evidence.extra),
+        partial,
+        "the structured targets are what a rollback deletes"
+    );
+
+    // The same failure with nothing written leaves nothing to withdraw.
+    let mut ctx = make_ctx();
+    record_blob_result(&mut ctx, &[], &Err(anyhow::anyhow!("boom")), false, false);
+    let report = ctx.publish_report().expect("publish_report initialized");
+    assert!(report.results[0].evidence.is_none());
 }
 
 #[test]

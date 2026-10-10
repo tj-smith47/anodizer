@@ -2035,6 +2035,95 @@ fn dist_holding_only_its_own_bookkeeping_passes_the_dist_gate() {
     enforce_dist_state(&config, &base_release_opts(), &log).unwrap();
 }
 
+/// `--clean` empties dist but keeps each run's record directory, in both
+/// layouts: a re-run uploads only what a failed run left missing, and the
+/// earlier record is what lets a rollback still find the rest.
+#[test]
+fn clean_keeps_the_run_records_and_removes_everything_else() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let dist = tmp.path().join("dist");
+    let write = |rel: &str| {
+        let path = dist.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "x").unwrap();
+    };
+    for rel in [
+        "artifacts.json",
+        "app.tar.gz",
+        "linux/app",
+        "run-v1.0.0/report.json",
+        "run-v1.0.0/rollback.json",
+        "run-v1.0.0/summary.json",
+        "run-v1.0.0/app.tar.gz",
+        "run-v1.0.0/logs/publish.log",
+        "run-v0.9.0/app.tar.gz",
+        "run-local/report.json",
+        "core/core.tar.gz",
+        "core/run-core-v1.0.0/report.json",
+        "core/run-core-v1.0.0/core.tar.gz",
+        "core/run-core-v0.9.0/notes.txt",
+        "api/run-api-v1.0.0/notes.txt",
+        "runner/notes.txt",
+    ] {
+        write(rel);
+    }
+    let config = Config {
+        dist: dist.clone(),
+        ..Default::default()
+    };
+    let log = StageLogger::new("test", Verbosity::Quiet);
+    let mut opts = base_release_opts();
+    opts.clean = true;
+    enforce_dist_state(&config, &opts, &log).unwrap();
+
+    let mut left: Vec<String> = Vec::new();
+    let mut stack = vec![dist.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            if entry.path().is_dir() {
+                stack.push(entry.path());
+            } else {
+                let rel = entry.path().strip_prefix(&dist).unwrap().to_path_buf();
+                left.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    left.sort();
+    assert_eq!(
+        left,
+        [
+            "core/run-core-v1.0.0/report.json",
+            "run-v1.0.0/report.json",
+            "run-v1.0.0/rollback.json",
+            "run-v1.0.0/summary.json",
+        ]
+    );
+    assert!(!dist.join("linux").exists());
+    assert!(
+        !dist.join("run-v0.9.0").exists() && !dist.join("api").exists(),
+        "a run directory holding no record is removed with its parent"
+    );
+    assert!(
+        !dist.join("run-local").exists(),
+        "the no-git run id belongs to no release and is not kept"
+    );
+    assert!(
+        !dist.join("runner").exists(),
+        "a name that only starts like a run dir's parent is removed"
+    );
+
+    // With no record to keep, the directory itself goes, as it always did.
+    let bare = tmp.path().join("bare");
+    std::fs::create_dir_all(bare.join("sub")).unwrap();
+    std::fs::write(bare.join("sub/file"), "x").unwrap();
+    let config = Config {
+        dist: bare.clone(),
+        ..Default::default()
+    };
+    enforce_dist_state(&config, &opts, &log).unwrap();
+    assert!(!bare.exists());
+}
+
 /// A `--split` run creates its shard directory before any stage runs, so a
 /// run refused after that point leaves an empty `dist/<shard>/` behind. The
 /// retry must not trip over it: population is files, not directories, and a

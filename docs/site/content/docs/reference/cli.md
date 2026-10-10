@@ -36,7 +36,7 @@ Run the full release pipeline. Re-running the identical command converges on alr
 | `--snapshot` | — | — | Build without publishing (snapshot mode) |
 | `--nightly` | — | — | Create a nightly release with date-based version |
 | `--dry-run` | — | — | Run full pipeline without side effects |
-| `--clean` | — | — | Remove dist directory before starting |
+| `--clean` | — | — | Empty the dist directory before starting (report.json, rollback.json and summary.json under run-<tag>/ are kept) |
 | `--skip` | — | — | Skip stages or publishers (comma-separated, e.g. docker,announce,npm). Unified denylist: a stage name skips the stage, a publisher name (npm, homebrew, chocolatey, …) skips that publisher. |
 | `--publishers` | — | — | Comma-separated publishers to run (default: all configured). --skip always wins over --publishers. |
 | `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN env vars) |

@@ -672,7 +672,8 @@ fn revert_commit_in_uses_injected_identity_envs() {
     );
 
     // Repo config must remain unchanged — env-only fallback, no
-    // `git config user.email ...` mutation.
+    // `git config user.email ...` mutation. The repository holds the fixture
+    // identity `git init` copied in, never the injected one.
     let cfg = anodizer_core::test_helpers::output_with_spawn_retry(
         || {
             let mut cmd = Command::new("git");
@@ -684,10 +685,10 @@ fn revert_commit_in_uses_injected_identity_envs() {
         },
         "git",
     );
-    assert!(
-        !cfg.status.success() || cfg.stdout.is_empty(),
-        "revert must not write user.email into the repo's local config; got: {}",
-        String::from_utf8_lossy(&cfg.stdout)
+    assert_ne!(
+        String::from_utf8_lossy(&cfg.stdout).trim(),
+        "rollback-bot@anodizer.test",
+        "revert must not write the injected user.email into the repo's local config"
     );
 }
 

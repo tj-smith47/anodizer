@@ -52,9 +52,10 @@ pub(crate) use artifacts::{
     OsArtifact, filter_by_ids, find_all_platform_artifacts_with_variant,
     find_artifacts_by_os_with_variant,
 };
-pub(crate) use branch::{crate_scoped_version, resolve_branch, resolve_branch_or_versioned};
+pub(crate) use branch::{resolve_branch, resolve_branch_or_versioned};
 pub(crate) use clone::{
-    aur_default_git_url, clone_repo, clone_repo_ssh, clone_repo_with_auth, ssh_auth_probe,
+    aur_push_git_url, aur_push_git_url_or_else, clone_repo, clone_repo_ssh, clone_repo_with_auth,
+    ssh_auth_probe,
 };
 pub(crate) use cmd::{run_cmd_in, run_cmd_in_timeout};
 pub(crate) use commit::{
@@ -81,8 +82,8 @@ pub(crate) use github_pr::{
     find_open_pr_numbers_for_head_with_env,
 };
 pub(crate) use parallelism::{
-    ROLLBACK_PARALLELISM, join_or_warn, lock_recover, run_revert_targets_parallel,
-    run_token_revert_rollback,
+    ROLLBACK_PARALLELISM, RevertCounts, join_or_warn, lock_recover, revert_summary_line,
+    run_revert_targets_parallel, run_token_revert_rollback,
 };
 pub(crate) use pr::{
     PrOrigin, PrReconcileTarget, SubmitPrOpts, maybe_submit_pr, maybe_submit_pr_with_env,
@@ -90,6 +91,6 @@ pub(crate) use pr::{
     submit_pr_via_gh_with_opts_with_env,
 };
 pub(crate) use template::{
-    guard_no_unrendered, render_or_warn, render_or_warn_with_vars, render_url_template,
-    render_url_template_with_ctx, render_url_template_with_ctx_and_artifact, render_with_ctx_vars,
+    UrlTarget, guard_no_unrendered, render_or_warn, render_or_warn_with_vars, render_url_template,
+    render_url_template_with_ctx, render_url_template_with_ctx_and_artifact,
 };

@@ -103,7 +103,7 @@ fn probe_artifact_presence(
 
 /// Outcome of [`upload_single_artifact_prepared`]: whether bytes were PUT or the
 /// upload was an idempotent no-op.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum UploadOutcome {
     Uploaded,
     AlreadyPresent,
@@ -170,12 +170,11 @@ pub(crate) fn render_custom_headers(
         let mut vars = ctx.template_vars().clone();
         vars.set("ArtifactName", artifact.name());
         vars.set("ArtifactExt", &artifact.ext());
-        if let Some(ref target) = artifact.target {
-            let (os, arch) = anodizer_core::target::map_target(target);
-            vars.set("Os", &os);
-            vars.set("Arch", &arch);
-            vars.set("Target", target);
-        }
+        anodizer_core::archive_name::seed_artifact_target_vars(
+            &mut vars,
+            artifact.target.as_deref(),
+            artifact.metadata.get("amd64_variant").map(String::as_str),
+        );
         let rendered_v = anodizer_core::template::render(v, &vars).with_context(|| {
             format!("rendering custom header '{}' for '{}'", k, artifact.name())
         })?;
@@ -398,6 +397,19 @@ impl ArtifactoryUploadSummary {
 pub fn publish_to_artifactory(
     ctx: &Context,
     log: &StageLogger,
+) -> Result<ArtifactoryUploadSummary> {
+    publish_to_artifactory_recording(ctx, log, &std::sync::Mutex::new(Vec::new()))
+}
+
+/// [`publish_to_artifactory`], appending every URL a PUT of this run wrote
+/// to `written` as it succeeds. The publisher builds its evidence — the
+/// `Succeeded` row and the `Failed` row alike — from that list, so a
+/// rollback deletes what this run wrote and nothing a configured entry
+/// merely names.
+pub(crate) fn publish_to_artifactory_recording(
+    ctx: &Context,
+    log: &StageLogger,
+    written: &std::sync::Mutex<Vec<ArtifactoryTarget>>,
 ) -> Result<ArtifactoryUploadSummary> {
     let mut summary = ArtifactoryUploadSummary::default();
     let entries = match ctx.config.artifactories {
@@ -733,6 +745,8 @@ pub fn publish_to_artifactory(
                 password: &password,
                 custom_artifact_name,
                 overwrite,
+                entry: name,
+                written,
             },
             &policy,
             ctx.options.parallelism,

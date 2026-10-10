@@ -261,7 +261,7 @@ impl RunSummary {
         let irreversibly_published = report.is_some_and(|r| {
             r.results
                 .iter()
-                .any(|p| p.group == PublisherGroup::Submitter && outcome_landed(&p.outcome))
+                .any(|p| p.group == PublisherGroup::Submitter && outcome_landed(p))
         });
 
         let verify_release = ctx.verify_release.as_ref().map(|v| VerifyReleaseRecord {
@@ -312,7 +312,7 @@ impl RunSummary {
     pub fn burned_submitter_names(&self) -> Vec<String> {
         self.results
             .iter()
-            .filter(|r| r.group == PublisherGroup::Submitter && status_landed(&r.status))
+            .filter(|r| r.group == PublisherGroup::Submitter && status_landed(r))
             .map(|r| r.name.clone())
             .collect()
     }
@@ -320,8 +320,14 @@ impl RunSummary {
 
 /// Status-string twin of [`outcome_landed`], for deserialized summaries
 /// where only the kebab-case status survives.
-fn status_landed(status: &str) -> bool {
-    status != "failed" && !status.starts_with("skipped-")
+fn status_landed(result: &RunSummaryResult) -> bool {
+    if result.status == "failed" {
+        return result
+            .evidence
+            .as_ref()
+            .is_some_and(PublishEvidence::records_published_work);
+    }
+    !result.status.starts_with("skipped-")
 }
 
 /// Fold per-publisher outcomes into the top-level
@@ -351,17 +357,22 @@ fn count_publish_state(results: &[anodizer_core::publish_report::PublisherResult
     (succeeded, failed)
 }
 
-/// True when the outcome records that the publish ACTION ended up at the
-/// remote at some point — regardless of any later rollback. Only
-/// `skipped-*` (never ran) and `failed` (ran, published nothing) are
-/// unpublished. Distinct from [`count_publish_state`]'s "durable state"
-/// rule: a `rolled-back` publisher has no live state left, but for a
-/// Submitter target the publish itself burned the version slot.
-fn outcome_landed(outcome: &PublisherOutcome) -> bool {
-    !matches!(
-        outcome,
-        PublisherOutcome::Skipped(_) | PublisherOutcome::Failed(_)
-    )
+/// True when the row records that the publish ACTION ended up at the
+/// remote at some point — regardless of any later rollback. `skipped-*`
+/// never ran; `failed` published nothing unless its evidence records
+/// work, as a multi-crate `cargo publish` that failed on the second crate
+/// does for the first. Distinct from [`count_publish_state`]'s "durable
+/// state" rule: a `rolled-back` publisher has no live state left, but for
+/// a Submitter target the publish itself burned the version slot.
+fn outcome_landed(result: &anodizer_core::publish_report::PublisherResult) -> bool {
+    match result.outcome {
+        PublisherOutcome::Skipped(_) => false,
+        PublisherOutcome::Failed(_) => result
+            .evidence
+            .as_ref()
+            .is_some_and(PublishEvidence::records_published_work),
+        _ => true,
+    }
 }
 
 /// Map a `PublisherOutcome` to the kebab-case status string defined
@@ -477,6 +488,60 @@ pub fn persist_summary_snapshot(
     };
     let summary = RunSummary::from_context_with_report(ctx, Some(report));
     write_summary_json(&summary, &path).map(|_| ())
+}
+
+/// Rewrite the rows of the `summary.json` at `path` that a withdrawal just
+/// decided, so the ledger reads the publisher as withdrawn rather than as
+/// published. The summary is the record a re-cut's reconcile fast path
+/// reads, and `release --clean` keeps it; left saying `succeeded`, it
+/// would skip the publisher on the re-cut of a version that was
+/// withdrawn. A missing or unreadable summary is left alone.
+pub(crate) fn mark_withdrawn_in_summary(
+    path: &Path,
+    rollback: &anodizer_core::publish_report::PublishReport,
+    log: &anodizer_core::log::StageLogger,
+) {
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
+    let Some(mut summary) = parse_run_summary_lenient(&text) else {
+        log.warn(&format!(
+            "left {} as it was — it could not be parsed to record the withdrawal",
+            path.display()
+        ));
+        return;
+    };
+    let withdrawn = rollback
+        .results
+        .iter()
+        .chain(&rollback.carried_forward)
+        .filter(|r| {
+            matches!(
+                r.outcome,
+                PublisherOutcome::RolledBack
+                    | PublisherOutcome::RollbackFailed(_)
+                    | PublisherOutcome::RollbackSkippedNoScope
+            )
+        });
+    let mut changed = false;
+    for row in withdrawn {
+        for summary_row in summary.results.iter_mut().filter(|s| s.name == row.name) {
+            let status = outcome_to_status_string(&row.outcome);
+            if summary_row.status != status {
+                summary_row.status = status;
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return;
+    }
+    if let Err(e) = write_summary_json(&summary, path) {
+        log.warn(&format!(
+            "failed to record the withdrawal in {}: {e:#}",
+            path.display()
+        ));
+    }
 }
 
 /// Every `summary.json` under `<dist>/run-*/` (single-crate / lockstep
@@ -1266,16 +1331,67 @@ mod tests {
     fn outcome_landed_classifies_every_outcome() {
         for outcome in every_outcome() {
             assert_eq!(
-                outcome_landed(&outcome),
+                outcome_landed(&result_in(PublisherGroup::Submitter, outcome.clone())),
                 expect_landed(&outcome),
                 "outcome_landed({outcome:?})"
             );
         }
         assert!(
-            !outcome_landed(&PublisherOutcome::Skipped(SkipReason::EntriesSkipped)),
+            !outcome_landed(&result_in(
+                PublisherGroup::Submitter,
+                PublisherOutcome::Skipped(SkipReason::EntriesSkipped)
+            )),
             "a publisher whose every entry disqualified itself landed nothing — \
              which is why one that DID land keeps its own outcome instead"
         );
+    }
+
+    /// A multi-crate `cargo publish` that fails on the second crate has
+    /// published the first: the row is `failed`, its evidence names the
+    /// crate, and the version is burned on both sides of the round-trip.
+    #[test]
+    fn a_failed_submitter_whose_evidence_records_work_burns_the_version() {
+        let with_work = |extra| {
+            let mut r = result_in(
+                PublisherGroup::Submitter,
+                PublisherOutcome::Failed("x".into()),
+            );
+            let mut e = anodizer_core::PublishEvidence::new("cargo");
+            e.extra = extra;
+            r.evidence = Some(e);
+            r
+        };
+        let published = anodizer_core::PublishEvidenceExtra::Cargo(
+            anodizer_core::publish_evidence::CargoExtra {
+                cargo_yank_targets: vec![
+                    anodizer_core::publish_evidence::CargoYankTargetSnapshot {
+                        name: "core".into(),
+                        version: "1.0.0".into(),
+                        registry: None,
+                        index: None,
+                    },
+                ],
+            },
+        );
+        let nothing = anodizer_core::PublishEvidenceExtra::Cargo(
+            anodizer_core::publish_evidence::CargoExtra {
+                cargo_yank_targets: Vec::new(),
+            },
+        );
+        for (extra, burned) in [(published, true), (nothing, false)] {
+            let row = with_work(extra);
+            assert_eq!(outcome_landed(&row), burned);
+            let mut ctx = anodizer_core::context::Context::test_fixture();
+            ctx.publish_report = Some(PublishReport {
+                results: vec![row],
+                ..Default::default()
+            });
+            let s = RunSummary::from_context(&ctx);
+            assert_eq!(s.irreversibly_published, burned);
+            let back: RunSummary =
+                serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+            assert_eq!(!back.burned_submitter_names().is_empty(), burned);
+        }
     }
 
     /// Every status token, walked over the whole outcome space: these strings
@@ -1470,6 +1586,7 @@ mod tests {
     fn from_context_pulls_tag_and_gate_flags() {
         let mut ctx = anodizer_core::context::Context::test_fixture();
         let report = PublishReport {
+            carried_forward: Vec::new(),
             submitter_gated: true,
             announce_gated: true,
             verify_gate_blocked: false,
@@ -1514,6 +1631,7 @@ mod tests {
         // flips only when a Submitter (one-way-door) publish succeeded.
         let mut ctx = anodizer_core::context::Context::test_fixture();
         ctx.publish_report = Some(PublishReport {
+            carried_forward: Vec::new(),
             submitter_gated: false,
             announce_gated: false,
             verify_gate_blocked: false,
@@ -1535,6 +1653,7 @@ mod tests {
         );
 
         ctx.publish_report = Some(PublishReport {
+            carried_forward: Vec::new(),
             submitter_gated: false,
             announce_gated: false,
             verify_gate_blocked: false,
@@ -1557,6 +1676,7 @@ mod tests {
         // burned — a same-version re-publish is rejected by crates.io.
         let mut ctx = anodizer_core::context::Context::test_fixture();
         ctx.publish_report = Some(PublishReport {
+            carried_forward: Vec::new(),
             submitter_gated: false,
             announce_gated: false,
             verify_gate_blocked: false,
@@ -1578,6 +1698,7 @@ mod tests {
         for outcome in every_outcome() {
             let mut ctx = anodizer_core::context::Context::test_fixture();
             ctx.publish_report = Some(PublishReport {
+                carried_forward: Vec::new(),
                 submitter_gated: false,
                 announce_gated: false,
                 verify_gate_blocked: false,

@@ -351,6 +351,11 @@ pub fn emit_summary(ctx: &mut Context) {
             )),
             Err(err) => log.warn(&format!("failed to write {}: {err}", path.display())),
         }
+        // The blob, snapcraft-publish and release stages record rows whether
+        // or not the publish stage runs, and `anodizer tag rollback` reads
+        // them from `report.json`; the publish stage writes that file only
+        // when it runs itself.
+        anodizer_stage_publish::write_report_to_run_dir(ctx, &log);
     }
     // Always emit the per-publisher status rows so non-CI runs see the
     // outcome at a glance — kv rows under their own `Summary` section,
@@ -1192,6 +1197,47 @@ mod summary_tests {
         assert_eq!(summary.schema_version, RunSummary::CURRENT_SCHEMA_VERSION);
     }
 
+    /// `release --skip=publish` still runs the blob, snapcraft-publish and
+    /// release stages, and each records a row; the pipeline end is the one
+    /// place that writes those rows to `report.json` for a rollback.
+    #[test]
+    fn emit_summary_writes_the_run_report_the_publish_stage_did_not() {
+        use anodizer_core::publish_report::{PublisherGroup, PublisherOutcome, PublisherResult};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut evidence = anodizer_core::PublishEvidence::new("blob");
+        evidence.primary_ref = Some("s3://b/k".into());
+        let report = PublishReport {
+            results: vec![PublisherResult {
+                name: "blob".into(),
+                group: PublisherGroup::Assets,
+                required: true,
+                outcome: PublisherOutcome::Succeeded,
+                evidence: Some(evidence),
+                entry_skips: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        let mut ctx = ctx_with(ContextOptions::default(), None, Some(report.clone()));
+        ctx.config.dist = tmp.path().to_path_buf();
+        ctx.git_info = Some(anodizer_core::test_helpers::make_git_info(false, None));
+        emit_summary(&mut ctx);
+
+        let path = tmp.path().join("run-v1.2.3").join("report.json");
+        let written: PublishReport =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("report.json written"))
+                .unwrap();
+        assert_eq!(written.results, report.results);
+
+        // After the publish stage has written the same report, the pipeline
+        // end leaves the file as it is.
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        emit_summary(&mut ctx);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            before
+        );
+    }
+
     #[test]
     fn emit_summary_default_path_skipped_for_snapshot_and_dry_run() {
         // Snapshot / dry-run are not real releases; without an explicit
@@ -1284,6 +1330,7 @@ mod summary_tests {
         let mut release_ctx = ctx_with(ContextOptions::default(), None, None);
         release_ctx.config.dist = tmp.path().to_path_buf();
         release_ctx.publish_report = Some(PublishReport {
+            carried_forward: Vec::new(),
             submitter_gated: false,
             announce_gated: false,
             verify_gate_blocked: false,

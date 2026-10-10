@@ -152,8 +152,104 @@ pub(crate) const RUN_BOOKKEEPING_FILES: &[&str] = &[
     anodizer_core::dist::MATRIX_JSON,
 ];
 
-/// Enforce the dist directory state: `--clean` removes it (logs in dry-run);
-/// otherwise a dist holding anything beyond the run's own bookkeeping
+/// The files a run's record directory (`run-<tag>/`) is kept for.
+const RUN_RECORD_FILES: &[&str] = &[
+    anodizer_core::dist::REPORT_JSON,
+    anodizer_core::dist::ROLLBACK_JSON,
+    anodizer_core::dist::SUMMARY_JSON,
+];
+
+/// Whether `entry` is a run's record directory (`run-<tag>/`) whose records
+/// a later run may read. `run-local/` is the id a run with no git
+/// information falls back to, so its records belong to no release.
+fn is_run_dir(entry: &std::fs::DirEntry) -> bool {
+    let name = entry.file_name();
+    let name = name.to_string_lossy();
+    entry.file_type().is_ok_and(|t| t.is_dir())
+        && name.starts_with(anodizer_core::dist::RUN_DIR_PREFIX)
+        && name
+            != format!(
+                "{}{}",
+                anodizer_core::dist::RUN_DIR_PREFIX,
+                anodizer_stage_publish::NO_GIT_RUN_ID
+            )
+}
+
+/// Empty `dist`, keeping each run's records: `dist/run-<tag>/{report,rollback,summary}.json`,
+/// and `dist/<crate>/run-<tag>/…` in a per-crate workspace.
+///
+/// Those records are the only account of what an earlier run published. A
+/// re-run after a failure is started with `--clean`, and it uploads only
+/// what the failed run left missing, so without the earlier record
+/// `anodizer tag rollback` would withdraw a part of the release and leave
+/// the rest live. Anything else inside a run directory is produced output
+/// and goes with the rest of `dist`; a run directory holding no record goes
+/// too.
+fn clean_dist_keeping_run_records(dist: &Path) -> Result<()> {
+    fn remove(entry: &std::fs::DirEntry) -> std::io::Result<()> {
+        if entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(entry.path())
+        } else {
+            std::fs::remove_file(entry.path())
+        }
+    }
+
+    /// Strip a run directory down to its record files; `false` when none
+    /// was there and the directory was removed.
+    fn keep_run_records(run_dir: &std::fs::DirEntry) -> std::io::Result<bool> {
+        let mut kept = false;
+        for child in std::fs::read_dir(run_dir.path())? {
+            let child = child?;
+            let is_record = child.file_type()?.is_file()
+                && RUN_RECORD_FILES
+                    .iter()
+                    .any(|f| child.file_name() == std::ffi::OsStr::new(f));
+            if is_record {
+                kept = true;
+            } else {
+                remove(&child)?;
+            }
+        }
+        if !kept {
+            std::fs::remove_dir(run_dir.path())?;
+        }
+        Ok(kept)
+    }
+
+    let mut kept_any = false;
+    for entry in std::fs::read_dir(dist)? {
+        let entry = entry?;
+        if is_run_dir(&entry) {
+            kept_any |= keep_run_records(&entry)?;
+            continue;
+        }
+        if !entry.file_type()?.is_dir() {
+            remove(&entry)?;
+            continue;
+        }
+        let mut kept_here = false;
+        for child in std::fs::read_dir(entry.path())? {
+            let child = child?;
+            if is_run_dir(&child) {
+                kept_here |= keep_run_records(&child)?;
+            } else {
+                remove(&child)?;
+            }
+        }
+        if kept_here {
+            kept_any = true;
+        } else {
+            std::fs::remove_dir(entry.path())?;
+        }
+    }
+    if !kept_any {
+        std::fs::remove_dir(dist)?;
+    }
+    Ok(())
+}
+
+/// Enforce the dist directory state: `--clean` empties it, keeping the run
+/// records (logs in dry-run); otherwise a dist holding anything beyond the run's own bookkeeping
 /// ([`RUN_BOOKKEEPING_FILES`]) is a hard error, and the bookkeeping a previous
 /// run left is removed so this run starts from only what it writes itself.
 /// `--merge` / `--publish-only` skip the non-empty check because each of
@@ -166,7 +262,7 @@ pub(crate) fn enforce_dist_state(
     if opts.clean && !opts.dry_run {
         let dist = &config.dist;
         if dist.exists() {
-            std::fs::remove_dir_all(dist)?;
+            clean_dist_keeping_run_records(dist)?;
         }
     } else if opts.clean && opts.dry_run {
         log.status("(dry-run) would clean dist directory");

@@ -45,28 +45,6 @@ pub(crate) fn resolve_branch_or_versioned(
     })
 }
 
-/// Per-crate version for rollback-target branch derivation: the crate's own
-/// tag-derived version when one resolves (matching the value
-/// `with_crate_scope` stamps during the publish), falling back to the
-/// context-global version. Keeps the recorded rollback branch identical to
-/// the branch the per-crate publish actually pushed, including in workspace
-/// per-crate independent-version mode.
-pub(crate) fn crate_scoped_version(
-    ctx: &Context,
-    crate_cfg: &anodizer_core::config::CrateConfig,
-) -> String {
-    anodizer_core::crate_scope::resolve_crate_tag(ctx, crate_cfg)
-        .and_then(|tag| {
-            anodizer_core::crate_scope::crate_template_overrides(&crate_cfg.name, &tag).ok()
-        })
-        .and_then(|ov| {
-            ov.into_iter()
-                .find(|(k, _)| *k == "Version")
-                .map(|(_, v)| v)
-        })
-        .unwrap_or_else(|| ctx.version())
-}
-
 /// Look up a GitHub repo's `default_branch` via the REST API, resolving
 /// the API base through the injected `env` (honoring
 /// `ANODIZER_GITHUB_API_BASE`) so an in-process responder can intercept

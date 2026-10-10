@@ -51,6 +51,20 @@ fn active_artifactory_configs(ctx: &Context) -> Vec<&anodizer_core::config::Arti
         .collect()
 }
 
+/// The evidence for the URLs this run wrote.
+fn artifactory_evidence(targets: &[ArtifactoryTarget]) -> anodizer_core::PublishEvidence {
+    let mut evidence = anodizer_core::PublishEvidence::new("artifactory");
+    if let Some(first) = targets.first() {
+        evidence.primary_ref = Some(first.url.clone());
+    }
+    evidence.artifact_paths = targets
+        .iter()
+        .map(|t| std::path::PathBuf::from(&t.url))
+        .collect();
+    evidence.extra = encode_artifactory_targets(targets);
+    evidence
+}
+
 impl anodizer_core::Publisher for ArtifactoryPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -102,7 +116,15 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
-        let summary = publish_to_artifactory(ctx, &log)?;
+        // Each URL is recorded the moment its request succeeds, so a failure
+        // on a later artifact still leaves the ones written on the record.
+        let written = std::sync::Mutex::new(Vec::new());
+        let published = publish_to_artifactory_recording(ctx, &log, &written);
+        let written = written.into_inner().unwrap_or_else(|p| p.into_inner());
+        let summary = crate::publisher_helpers::keep_committed_on_failure(ctx, published, |_| {
+            Some(artifactory_evidence(&written))
+                .filter(anodizer_core::PublishEvidence::records_published_work)
+        })?;
         // Every matched artifact was already present at its target path (an
         // idempotent re-run): record a SKIP, not a fresh publish.
         if summary.is_fully_idempotent_skip() {
@@ -118,17 +140,7 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
             crate::publisher_helpers::RunLanding::from_landed(summary.uploaded > 0),
             configured_entries,
         );
-        let mut evidence = anodizer_core::PublishEvidence::new("artifactory");
-        let targets = collect_artifactory_targets(ctx);
-        if let Some(first) = targets.first() {
-            evidence.primary_ref = Some(first.url.clone());
-        }
-        evidence.artifact_paths = targets
-            .iter()
-            .map(|t| std::path::PathBuf::from(&t.url))
-            .collect();
-        evidence.extra = encode_artifactory_targets(&targets);
-        Ok(evidence)
+        Ok(artifactory_evidence(&written))
     }
 
     fn rollback(

@@ -91,3 +91,15 @@ pub(crate) fn derive_snapcraft_required(ctx: &Context) -> bool {
         .filter(|cfg| cfg.publish.unwrap_or(false))
         .any(|cfg| cfg.required.unwrap_or(false))
 }
+
+/// The evidence for a run that uploaded `recorded`. A failed run keeps the
+/// revisions it uploaded before failing: the store holds them, and the
+/// evidence is the only record of which. A failure that uploaded nothing
+/// has none.
+pub(crate) fn row_evidence(
+    outcome: &PublisherOutcome,
+    recorded: &[SnapcraftTarget],
+) -> Option<PublishEvidence> {
+    (matches!(outcome, PublisherOutcome::Succeeded) || !recorded.is_empty())
+        .then(|| build_snapcraft_evidence(recorded))
+}

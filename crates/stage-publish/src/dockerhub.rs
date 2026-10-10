@@ -191,24 +191,17 @@ fn resolve_dockerhub_username(
 // publish_to_dockerhub
 // ---------------------------------------------------------------------------
 
-/// Sync descriptions to Docker Hub repositories.
-///
-/// This is a top-level publisher: it reads from `ctx.config.dockerhub` rather
-/// than from per-crate publish configs.
-///
-/// Returns one [`DockerhubTarget`] per repository the PATCH actually
-/// mutated. Each target carries the pre-PATCH `description` and
-/// `full_description` snapshot (captured via a GET that runs
-/// immediately before the mutation) so the
-/// [`Publisher::rollback`](anodizer_core::Publisher::rollback)
-/// path can re-authenticate and restore the prior values. Dry-run,
-/// skipped entries, and configurations that short-circuit the PATCH
-/// (empty descriptions) produce no targets.
-fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<DockerhubTarget>> {
-    let mut targets: Vec<DockerhubTarget> = Vec::new();
+/// [`publish_to_dockerhub`], writing each mutated repository into `targets`
+/// as it is changed so a failure on a later entry still leaves the caller the
+/// snapshots needed to restore the repositories changed before it.
+fn publish_to_dockerhub_into(
+    ctx: &Context,
+    log: &StageLogger,
+    targets: &mut Vec<DockerhubTarget>,
+) -> Result<()> {
     let entries = match ctx.config.dockerhub {
         Some(ref v) if !v.is_empty() => v,
-        _ => return Ok(targets),
+        _ => return Ok(()),
     };
 
     // One shared HTTP client for every entry: connection pool and TLS
@@ -558,7 +551,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
         }
     }
 
-    Ok(targets)
+    Ok(())
 }
 
 /// Re-authenticate to DockerHub and PATCH a single target back to its
@@ -703,6 +696,30 @@ fn active_dockerhub_configs(ctx: &Context) -> Vec<&anodizer_core::config::Docker
         .collect()
 }
 
+/// The evidence for the repositories `targets` names. `artifact_paths`
+/// indexes every repo this run actually mutated (driven off the targets, not
+/// config) so dry-run / skip paths do not leak phantom entries; `primary_ref`
+/// points at the first mutated repo for log-line continuity.
+fn dockerhub_evidence(targets: Vec<DockerhubTarget>) -> anodizer_core::PublishEvidence {
+    let mut evidence = anodizer_core::PublishEvidence::new("dockerhub");
+    let paths: Vec<std::path::PathBuf> = targets
+        .iter()
+        .map(|t| std::path::PathBuf::from(&t.repo_url))
+        .collect();
+    if let Some(first) = paths.first() {
+        evidence.primary_ref = Some(first.display().to_string());
+    }
+    evidence.artifact_paths = paths;
+    if !targets.is_empty() {
+        evidence.extra = anodizer_core::PublishEvidenceExtra::Dockerhub(
+            anodizer_core::publish_evidence::DockerhubExtra {
+                dockerhub_targets: targets,
+            },
+        );
+    }
+    evidence
+}
+
 impl anodizer_core::Publisher for DockerhubPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -755,28 +772,12 @@ impl anodizer_core::Publisher for DockerhubPublisher {
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
-        let targets = publish_to_dockerhub(ctx, &log)?;
-        let mut evidence = anodizer_core::PublishEvidence::new("dockerhub");
-        // `artifact_paths` indexes every repo this run actually mutated
-        // (driven off the returned targets, not config) so dry-run / skip
-        // paths do not leak phantom entries. `primary_ref` points at the
-        // first mutated repo for log-line continuity.
-        let paths: Vec<std::path::PathBuf> = targets
-            .iter()
-            .map(|t| std::path::PathBuf::from(&t.repo_url))
-            .collect();
-        if let Some(first) = paths.first() {
-            evidence.primary_ref = Some(first.display().to_string());
-        }
-        evidence.artifact_paths = paths;
-        if !targets.is_empty() {
-            evidence.extra = anodizer_core::PublishEvidenceExtra::Dockerhub(
-                anodizer_core::publish_evidence::DockerhubExtra {
-                    dockerhub_targets: targets,
-                },
-            );
-        }
-        Ok(evidence)
+        let mut targets = Vec::new();
+        let synced = publish_to_dockerhub_into(ctx, &log, &mut targets);
+        crate::publisher_helpers::keep_committed_on_failure(ctx, synced, |_| {
+            (!targets.is_empty()).then(|| dockerhub_evidence(targets.clone()))
+        })?;
+        Ok(dockerhub_evidence(targets))
     }
 
     fn rollback(
@@ -965,6 +966,26 @@ impl anodizer_core::Publisher for DockerhubPublisher {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+/// Sync descriptions to Docker Hub repositories.
+///
+/// This is a top-level publisher: it reads from `ctx.config.dockerhub` rather
+/// than from per-crate publish configs.
+///
+/// Returns one [`DockerhubTarget`] per repository the PATCH actually
+/// mutated. Each target carries the pre-PATCH `description` and
+/// `full_description` snapshot (captured via a GET that runs
+/// immediately before the mutation) so the
+/// [`Publisher::rollback`](anodizer_core::Publisher::rollback)
+/// path can re-authenticate and restore the prior values. Dry-run,
+/// skipped entries, and configurations that short-circuit the PATCH
+/// (empty descriptions) produce no targets.
+#[cfg(test)]
+fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<DockerhubTarget>> {
+    let mut targets: Vec<DockerhubTarget> = Vec::new();
+    publish_to_dockerhub_into(ctx, log, &mut targets)?;
+    Ok(targets)
+}
 
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]

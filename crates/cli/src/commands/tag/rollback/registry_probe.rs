@@ -161,6 +161,7 @@ pub(super) fn check_not_burned_on_crates_io(
         &pending,
         MAX_PROBE_WORKERS,
         "crates.io burn probe",
+        "probe",
         log,
         |(_, name, version)| Ok(index_probe(name, version)),
     )?;
@@ -372,6 +373,7 @@ pub(super) fn check_not_burned_on_npm_pypi(
         &pending,
         MAX_PROBE_WORKERS,
         "npm/pypi burn probe",
+        "probe",
         log,
         |probe| {
             Ok(match probe {

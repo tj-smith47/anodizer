@@ -80,7 +80,6 @@ fn git_init(dir: &Path) {
     run_git(dir, &["init", "-q", "-b", "master"]);
     run_git(dir, &["config", "user.email", "test@test.com"]);
     run_git(dir, &["config", "user.name", "Test"]);
-    run_git(dir, &["config", "commit.gpgsign", "false"]);
 }
 
 /// Identity-less init variant: skips the per-repo `user.email` /
@@ -95,7 +94,10 @@ fn git_init(dir: &Path) {
 /// `GIT_AUTHOR_*` / `GIT_COMMITTER_*` and exercises the fallback.
 fn git_init_no_identity(dir: &Path) {
     run_git(dir, &["init", "-q", "-b", "master"]);
-    run_git(dir, &["config", "commit.gpgsign", "false"]);
+    // The fixture template writes an identity into every new repository;
+    // this fixture is the host that has none.
+    run_git(dir, &["config", "--unset", "user.email"]);
+    run_git(dir, &["config", "--unset", "user.name"]);
 }
 
 /// Give the fixture a resolvable non-github.com origin: the

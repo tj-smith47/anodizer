@@ -5,7 +5,7 @@
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::retry::RetryPolicy;
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -33,17 +33,19 @@ pub(crate) const GIT_FETCH_TIMEOUT: Duration = Duration::from_secs(300);
 /// staged tree (idempotent retry) or the staged index has no delta vs HEAD
 /// (writer produced identical content), no git objects were created and
 /// nothing was pushed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommitOutcome {
-    /// A commit was created and pushed to the remote.
-    Pushed,
+    /// A commit was created and pushed to the remote; `commit` is its
+    /// hash, which the rollback record names so the revert undoes this
+    /// commit and no other.
+    Pushed { commit: String },
     /// The remote or local state was already up to date; nothing was committed or pushed.
     NoChanges,
 }
 
 impl CommitOutcome {
-    pub(crate) fn is_pushed(self) -> bool {
-        matches!(self, Self::Pushed)
+    pub(crate) fn is_pushed(&self) -> bool {
+        matches!(self, Self::Pushed { .. })
     }
 }
 
@@ -459,7 +461,20 @@ pub(crate) fn commit_and_push_with_opts(
             deadline: opts.push_deadline,
         },
     )?;
-    Ok(CommitOutcome::Pushed)
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repo_path)
+        .output()
+        .with_context(|| format!("{label}: git rev-parse HEAD after push"))?;
+    if !head.status.success() {
+        anyhow::bail!(
+            "{label}: git rev-parse HEAD after push failed: {}",
+            String::from_utf8_lossy(&head.stderr).trim()
+        );
+    }
+    Ok(CommitOutcome::Pushed {
+        commit: String::from_utf8_lossy(&head.stdout).trim().to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -472,7 +487,12 @@ mod tests {
 
     #[test]
     fn is_pushed_reflects_variant() {
-        assert!(CommitOutcome::Pushed.is_pushed());
+        assert!(
+            CommitOutcome::Pushed {
+                commit: "abc".into()
+            }
+            .is_pushed()
+        );
         assert!(!CommitOutcome::NoChanges.is_pushed());
     }
 
@@ -548,7 +568,20 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(outcome, CommitOutcome::Pushed);
+        // The recorded commit is the one the remote now holds.
+        let remote_head = Cmd::new("git")
+            .args(["rev-parse", "main"])
+            .current_dir(&remote_dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            outcome,
+            CommitOutcome::Pushed {
+                commit: String::from_utf8_lossy(&remote_head.stdout)
+                    .trim()
+                    .to_string()
+            }
+        );
     }
 
     #[test]
@@ -657,7 +690,7 @@ mod tests {
             &StageLogger::new("test", Verbosity::Normal),
         )
         .unwrap();
-        assert_eq!(first, CommitOutcome::Pushed);
+        assert!(first.is_pushed(), "{first:?}");
 
         // Capture the head sha on the versioned branch before the retry —
         // a successful no-op must leave it untouched.
@@ -760,7 +793,7 @@ mod tests {
             &StageLogger::new("test", Verbosity::Normal),
         )
         .unwrap();
-        assert_eq!(outcome, CommitOutcome::Pushed);
+        assert!(outcome.is_pushed(), "{outcome:?}");
 
         let an = Cmd::new("git")
             .args(["log", "-1", "--pretty=%an"])

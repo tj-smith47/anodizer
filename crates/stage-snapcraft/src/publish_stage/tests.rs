@@ -133,6 +133,21 @@ fn build_snapcraft_evidence_pins_success_wire_shape() {
 }
 
 #[test]
+fn a_failed_run_keeps_the_revisions_it_uploaded() {
+    let uploaded = vec![SnapcraftTarget {
+        crate_name: "demo".into(),
+        package_name: "demo-snap".into(),
+        ..Default::default()
+    }];
+    let failed = PublisherOutcome::Failed("second upload failed".into());
+
+    let kept = row_evidence(&failed, &uploaded).expect("the uploaded revision is recorded");
+    assert_eq!(decode_snapcraft_targets(&kept.extra), uploaded);
+    assert!(row_evidence(&failed, &[]).is_none());
+    assert!(row_evidence(&PublisherOutcome::Succeeded, &[]).is_some());
+}
+
+#[test]
 fn build_snapcraft_evidence_handles_empty_targets() {
     // Edge case: success path with no resolved targets — should
     // still produce a well-formed evidence stub with no

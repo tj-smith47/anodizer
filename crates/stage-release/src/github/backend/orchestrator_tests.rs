@@ -2144,3 +2144,56 @@ fn immutable_release_for_the_tag_fails_before_any_upload() {
             .collect::<Vec<_>>()
     );
 }
+
+/// The stage records each release as the forge call that wrote it returns,
+/// so a failure on a later crate leaves the earlier crate's release on
+/// record for a rollback and nothing for the crate whose create failed.
+#[test]
+fn the_stage_records_the_releases_it_wrote_before_a_later_crate_failed() {
+    use anodizer_core::stage::Stage;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let release = release_json(addr, 42, true, "v1.2.3");
+    let routes = vec![
+        ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/o/r/releases",
+            response: http_201(release),
+            times: Some(1),
+        },
+        ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/o/broken/releases",
+            response: http_404(),
+            times: None,
+        },
+    ];
+    let (_addr2, _log) = spawn_scripted_responder_on(listener, |_| routes);
+
+    let mut ctx = build_ctx_attempts_one(addr);
+    let crate_for = |name: &str, repo: &str| {
+        let mut c = build_crate_cfg();
+        c.name = name.to_string();
+        let release = c.release.as_mut().unwrap();
+        release.github.as_mut().unwrap().name = repo.to_string();
+        release.draft = Some(true);
+        release.skip_upload = Some(anodizer_core::config::StringOrBool::Bool(true));
+        c
+    };
+    ctx.config.crates = vec![crate_for("demo", "r"), crate_for("other", "broken")];
+
+    crate::ReleaseStage
+        .run(&mut ctx)
+        .expect_err("the second crate's create fails the stage");
+
+    assert_eq!(
+        ctx.stage_outputs.releases_written,
+        vec![anodizer_core::context::WrittenRelease {
+            crate_name: "demo".into(),
+            owner: "o".into(),
+            repo: "r".into(),
+            tag: "v1.2.3".into(),
+        }]
+    );
+}

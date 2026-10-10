@@ -183,6 +183,7 @@ pub(super) fn check_not_burned_on_moderated_registries(
         &pending,
         MAX_PROBE_WORKERS,
         "moderated-registry burn probe",
+        "probe",
         log,
         |probe| {
             Ok(match probe {

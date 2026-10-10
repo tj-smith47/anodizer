@@ -58,20 +58,19 @@ fn decode_homebrew_targets(extra: &PublishEvidenceExtra) -> Vec<HomebrewTarget> 
 }
 
 /// Collapse the recorded tap-push targets to a unique set keyed by
-/// `(repo_url, branch)`. The first entry seen wins (so its `target`
+/// `(repo_url, branch, commit)`. The first entry seen wins (so its `target`
 /// label surfaces in warn lines).
 ///
-/// One tap can hold many formulae/casks across different crates: if
-/// the rollback issued `git revert HEAD --no-edit` twice against the
-/// same tap, the second revert would undo the first, silently
-/// restoring the bad release. Dedup before fan-out so each tap is
-/// reverted exactly once. See module rustdoc.
+/// One push is one commit, whatever it carried (a formula and its same-tap
+/// cask go in one commit), and each commit is reverted once. Two records
+/// of one push — a carried-forward row joined with a re-run's — collapse
+/// to one revert. See module rustdoc.
 fn dedup_homebrew_targets(targets: &[HomebrewTarget]) -> Vec<HomebrewTarget> {
-    let mut seen: std::collections::BTreeSet<(String, Option<String>)> =
+    let mut seen: std::collections::BTreeSet<(String, Option<String>, Option<String>)> =
         std::collections::BTreeSet::new();
     let mut out: Vec<HomebrewTarget> = Vec::with_capacity(targets.len());
     for t in targets {
-        let key = (t.repo_url.clone(), t.branch.clone());
+        let key = (t.repo_url.clone(), t.branch.clone(), t.commit.clone());
         if seen.insert(key) {
             out.push(t.clone());
         }
@@ -79,74 +78,37 @@ fn dedup_homebrew_targets(targets: &[HomebrewTarget]) -> Vec<HomebrewTarget> {
     out
 }
 
-/// Build the list of (target, RepositoryConfig, token) triples for
-/// every homebrew push this run would record. Reads `ctx.config`
-/// only — does not touch the artifact tree — so it stays safe to
-/// call before `run` fires and after `rollback` is requested.
-fn collect_run_targets(ctx: &Context) -> Vec<HomebrewTarget> {
-    let mut out: Vec<HomebrewTarget> = Vec::new();
+/// The label a top-level cask's rollback target is recorded under.
+pub(super) fn cask_evidence_label(cask: &anodizer_core::config::HomebrewCaskConfig) -> String {
+    cask.name.clone().unwrap_or_else(|| "homebrew_casks".into())
+}
 
-    // Per-crate formulae (and same-tap casks share the formula's tap).
-    let selected = &ctx.options.selected_crates;
-    for c in ctx.config.selected_crates(selected) {
-        let Some(hb) = c.publish.as_ref().and_then(|p| p.homebrew.as_ref()) else {
-            continue;
-        };
-        if let Some((owner, name)) = crate::util::resolve_repo_owner_name(hb.repository.as_ref()) {
-            // Mirror the publish path's branch resolution (including the
-            // versioned PR-branch default) so the recorded rollback branch
-            // matches the branch actually pushed.
-            let formula_raw = hb.name.as_deref().unwrap_or(&c.name);
-            let formula_name = ctx
-                .render_template(formula_raw)
-                .unwrap_or_else(|_| formula_raw.to_string());
-            let version = crate::util::crate_scoped_version(ctx, c);
-            out.push(HomebrewTarget {
-                target: c.name.clone(),
-                repo_url: format!("https://github.com/{}/{}.git", owner, name),
-                branch: crate::util::resolve_branch_or_versioned(
-                    ctx,
-                    hb.repository.as_ref(),
-                    &formula_name,
-                    &version,
-                ),
-                token_env_var: Some("HOMEBREW_TAP_TOKEN".to_string()),
-            });
-        }
-    }
+/// Record one tap push the moment it went through, so the row — success
+/// or failure — names the commit a rollback must revert.
+pub(super) fn record_tap_push(
+    ctx: &mut Context,
+    target: String,
+    repo_owner: &str,
+    repo_name: &str,
+    branch: Option<&str>,
+    commit: &str,
+) {
+    ctx.record_committed_work(homebrew_evidence(vec![HomebrewTarget {
+        target,
+        repo_url: format!("https://github.com/{repo_owner}/{repo_name}.git"),
+        branch: branch.map(str::to_string),
+        token_env_var: Some("HOMEBREW_TAP_TOKEN".to_string()),
+        commit: Some(commit.to_string()),
+    }]));
+}
 
-    // Top-level homebrew_casks. The dispatch in `publish_top.rs` walks
-    // every entry; mirror that walk so every published cask gets a
-    // rollback record.
-    if let Some(casks) = ctx.config.homebrew_casks.as_ref() {
-        for cask in casks {
-            let label = cask.name.clone().unwrap_or_else(|| "homebrew_casks".into());
-            if let Some((owner, name)) =
-                crate::util::resolve_repo_owner_name(cask.repository.as_ref())
-            {
-                // Top-level casks always publish at the context-global
-                // version; mirror publish_top's branch resolution (its
-                // nameless-cask fallback is the project name, not the
-                // "homebrew_casks" evidence label).
-                let cask_name = super::cask::cask_name_for(
-                    cask.name.as_deref().unwrap_or(&ctx.config.project_name),
-                );
-                out.push(HomebrewTarget {
-                    target: label.clone(),
-                    repo_url: format!("https://github.com/{}/{}.git", owner, name),
-                    branch: crate::util::resolve_branch_or_versioned(
-                        ctx,
-                        cask.repository.as_ref(),
-                        &cask_name,
-                        &ctx.version(),
-                    ),
-                    token_env_var: Some("HOMEBREW_TAP_TOKEN".to_string()),
-                });
-            }
-        }
-    }
-
-    out
+/// The evidence for the taps `targets` names.
+fn homebrew_evidence(targets: Vec<HomebrewTarget>) -> anodizer_core::PublishEvidence {
+    let mut evidence = anodizer_core::PublishEvidence::new("homebrew");
+    evidence.extra = PublishEvidenceExtra::Homebrew(HomebrewExtra {
+        homebrew_targets: targets,
+    });
+    evidence
 }
 
 /// Message emitted just before delegating to `publish_to_homebrew`.
@@ -594,19 +556,22 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             // Re-scope the version/name template vars to THIS crate's own tag so
             // the rendered formula carries the crate's version, not the first
             // crate's (workspace per-crate independent-version mode).
-            let pushed = crate::publisher_helpers::with_published_crate_scope(
+            let scoped = crate::publisher_helpers::with_published_crate_scope(
                 ctx,
                 crate_name,
                 &anodizer_core::crate_scope::resolve_crate_tag,
                 |ctx| super::publish_to_homebrew(ctx, crate_name, &log),
-            )?;
-            if pushed {
+            );
+            // Each push was recorded as it went through (`record_tap_push`),
+            // so an error here leaves the pushed taps in the pending
+            // evidence for the `Failed` row.
+            if scoped? {
                 any_pushed = true;
             }
         }
         // Top-level casks (single invocation; the entrypoint itself
         // iterates over `ctx.config.homebrew_casks`).
-        let cask_result = super::publish_top_level_homebrew_casks(ctx, &log)?;
+        let cask_result = super::publish_top::publish_top_level_homebrew_casks(ctx, &log)?;
         if cask_result.pushed_any {
             any_pushed = true;
         }
@@ -637,17 +602,10 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             log.status(&run_done_message(processed, cask_result.applicable));
         }
 
-        let mut evidence = anodizer_core::PublishEvidence::new("homebrew");
-        // Only record rollback targets when at least one push was made.
-        // The rollback path's existing empty-check then short-circuits
-        // correctly when nothing was published.
-        if any_pushed {
-            let targets = collect_run_targets(ctx);
-            evidence.extra = PublishEvidenceExtra::Homebrew(HomebrewExtra {
-                homebrew_targets: targets,
-            });
-        }
-        Ok(evidence)
+        // The taps pushed this run, recorded as each push went through;
+        // nothing pushed is an empty record.
+        let evidence = ctx.take_pending_evidence().filter(|_| any_pushed);
+        Ok(evidence.unwrap_or_else(|| homebrew_evidence(Vec::new())))
     }
 
     fn rollback(
@@ -655,9 +613,6 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         ctx: &mut Context,
         evidence: &anodizer_core::PublishEvidence,
     ) -> anyhow::Result<()> {
-        // Dedup by `(repo_url, branch)` so a tap that holds multiple
-        // formulae/casks isn't reverted twice (second revert undoes
-        // the first).
         let targets = decode_homebrew_targets(&evidence.extra);
         let unique = dedup_homebrew_targets(&targets);
         crate::util::run_token_revert_rollback(
@@ -852,6 +807,7 @@ mod publisher_tests {
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: Some("main".into()),
                 token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+                commit: None,
             }],
         });
         let s = serde_json::to_string(&e).expect("serialize");
@@ -882,12 +838,14 @@ mod publisher_tests {
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: Some("main".into()),
                 token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+                commit: None,
             },
             HomebrewTarget {
                 target: "demo-cask".into(),
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: None,
                 token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+                commit: None,
             },
         ];
         let extra = PublishEvidenceExtra::Homebrew(HomebrewExtra {
@@ -937,28 +895,6 @@ mod publisher_tests {
     }
 
     #[test]
-    fn homebrew_collect_run_targets_includes_per_crate_and_top_level() {
-        let mut ctx = TestContextBuilder::new()
-            .crates(vec![homebrew_crate("demo")])
-            .build();
-        ctx.config.homebrew_casks = Some(vec![HomebrewCaskConfig {
-            name: Some("demo-cask".into()),
-            repository: Some(RepositoryConfig {
-                owner: Some("acme".into()),
-                name: Some("homebrew-cask".into()),
-                branch: Some("main".into()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }]);
-        let targets = collect_run_targets(&ctx);
-        assert_eq!(targets.len(), 2, "expected 1 per-crate + 1 top-level cask");
-        let names: Vec<&str> = targets.iter().map(|t| t.target.as_str()).collect();
-        assert!(names.contains(&"demo"), "{names:?}");
-        assert!(names.contains(&"demo-cask"), "{names:?}");
-    }
-
-    #[test]
     fn homebrew_rollback_dedups_shared_tap() {
         // 3 targets pointing at the same tap collapse to 1. The
         // shape mirrors how a workspace with 3 crates plus a
@@ -971,18 +907,21 @@ mod publisher_tests {
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: Some("main".into()),
                 token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+                commit: None,
             },
             HomebrewTarget {
                 target: "beta".into(),
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: Some("main".into()),
                 token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+                commit: None,
             },
             HomebrewTarget {
                 target: "gamma".into(),
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: Some("main".into()),
                 token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+                commit: None,
             },
         ];
         let unique = dedup_homebrew_targets(&targets);
@@ -1001,16 +940,37 @@ mod publisher_tests {
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: Some("main".into()),
                 token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+                commit: None,
             },
             HomebrewTarget {
                 target: "beta".into(),
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: Some("legacy".into()),
                 token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+                commit: None,
             },
         ];
         let unique = dedup_homebrew_targets(&cross_branch);
         assert_eq!(unique.len(), 2);
+
+        // Two pushes to one branch are two commits, each reverted once.
+        let two_commits = vec![
+            HomebrewTarget {
+                target: "alpha".into(),
+                repo_url: "https://github.com/acme/homebrew-tap.git".into(),
+                branch: Some("main".into()),
+                token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+                commit: Some("aaa".into()),
+            },
+            HomebrewTarget {
+                target: "beta".into(),
+                repo_url: "https://github.com/acme/homebrew-tap.git".into(),
+                branch: Some("main".into()),
+                token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+                commit: Some("bbb".into()),
+            },
+        ];
+        assert_eq!(dedup_homebrew_targets(&two_commits).len(), 2);
     }
 
     // -----------------------------------------------------------------------

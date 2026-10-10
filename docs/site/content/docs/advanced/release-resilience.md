@@ -31,7 +31,7 @@ section explains why each one is safe.
 | Situation | What you type | Why it works |
 |---|---|---|
 | A release failed partway | the **identical** `anodizer release` command — same tag, same flags | publishers that already published this exact version `reconcile()` to `Complete` and skip themselves; the failed ones retry |
-| This version should not exist at all | `anodizer tag rollback` | deletes the anodizer-managed tag(s), reverts the bump commit, and unwinds every publisher recorded `Succeeded` |
+| This version should not exist at all | `anodizer tag rollback` | deletes the anodizer-managed tag(s), reverts the bump commit, and unwinds every publisher recorded `Succeeded`, plus every one that failed after publishing part of its work |
 | A publisher reports `Diverged` | bump the version, then release again | the version is already published upstream with *different* bytes, and that registry slot is immutable — no re-run and no rollback can overwrite it |
 
 > **Re-running is for a failed PUBLISHER; `anodizer continue` is for a failed
@@ -831,7 +831,9 @@ live release automatically.
 half of `tag rollback`'s job. The other half is unwinding whatever already
 published for that tag — each Assets/Manager publisher recorded as
 `Succeeded` in that run's `report.json` gets its `rollback()` override
-invoked:
+invoked, and so does one recorded as `Failed` when its row names work it
+published before failing (see
+[What a failed publisher leaves on record](#what-a-failed-publisher-leaves-on-record)):
 
 ```
 github-release  delete release + delete uploaded assets (tag refs untouched)
@@ -900,6 +902,98 @@ The unwind runs **after** the published-state guard (a burned version must
 refuse before anything is withdrawn) and **before** the tags are deleted (the
 github-release publisher's own rollback reads the release that `delete_tags`
 is about to remove).
+
+#### What a failed publisher leaves on record
+
+A publisher that handles several things in one run — objects, packages,
+crates, taps — can publish the first and fail on the second. The part that
+was published is written to the `Failed` row's `evidence`, and `tag rollback`
+withdraws it. A `blob` row from `report.json` after two objects were written
+and a third failed:
+
+```json
+{
+  "name": "blob",
+  "group": "Assets",
+  "required": false,
+  "outcome": {
+    "Failed": "blobs: the multipart upload was aborted or expired part way through (releases/v1.0.0/app.tar.gz): uploading dist/app.tar.gz → releases/v1.0.0/app.tar.gz; run the release again to upload the file"
+  },
+  "evidence": {
+    "schema_version": 2,
+    "publisher": "blob",
+    "primary_ref": "s3://my-bucket/releases/v1.0.0/app.zip",
+    "artifact_paths": [
+      "s3://my-bucket/releases/v1.0.0/app.zip",
+      "s3://my-bucket/releases/v1.0.0/checksums.txt"
+    ],
+    "extra": {
+      "blob_targets": [
+        { "provider": "s3", "bucket": "my-bucket", "key": "releases/v1.0.0/app.zip", "region": "us-east-1" },
+        { "provider": "s3", "bucket": "my-bucket", "key": "releases/v1.0.0/checksums.txt", "region": "us-east-1" }
+      ]
+    }
+  }
+}
+```
+
+| A `Failed` row… | `tag rollback` |
+|---|---|
+| with `evidence` naming published work | invokes the publisher's rollback on exactly that work, then records `RolledBack` (a Submitter keeps `Failed`: the release did fail) |
+| with no `evidence`, or evidence that names nothing | leaves the row alone — nothing was published |
+
+What each publisher records when it fails part way:
+
+| Publisher | On the `Failed` row |
+|---|---|
+| blob, cloudsmith | each object / package uploaded before the failure |
+| artifactory, uploads | each URL whose PUT returned 2xx before the failure |
+| github-release | each release the stage created or updated in this run |
+| dockerhub | each repository whose description was already changed |
+| homebrew, scoop, nix, aur, krew | each crate (and cask) whose push went through |
+| cargo, npm, pypi, homebrew-core | each crate / package / file / pull request published before the failure |
+| chocolatey, winget, upstream-aur, snapcraft | each package pushed before the failure, for the warn-only rollback to name |
+| gemfury | nothing — it deletes its own partial push before reporting the failure |
+| mcp, schemastore | nothing — one request, so nothing exists until it succeeds |
+
+Re-running the release and then withdrawing it still removes everything. A
+re-run uploads only what the failed run left missing, so on its own its
+report would name a part of the release; when `report.json` is written, the
+work an earlier run of the same tag recorded and nobody has withdrawn is
+carried into it:
+
+| Publisher in the re-run | What the new `report.json` holds |
+|---|---|
+| blob, cloudsmith, artifactory, uploads, and the re-run uploaded something | one row listing both runs' objects, each once |
+| a tap publisher (homebrew, scoop, nix, krew, aur) that pushed again | one row listing both runs' commits — the rollback reverts each commit it recorded, never the branch head |
+| any publisher the re-run skipped as already published, or that failed before publishing anything, or a re-run for one crate (`--crate`) of a workspace | the earlier run's row, under `carried_forward` |
+| a Submitter publisher the re-run ran (succeeded, failed, or skipped as already published) | the re-run's row only |
+| a Submitter publisher the re-run did not reach | the earlier run's row, under `carried_forward` |
+
+A row whose rollback has already run (`rolled-back`, `rollback-failed`,
+`rollback-skipped-no-scope` in `rollback.json`) is not carried, and the
+withdrawal rewrites the same run's `summary.json` so the ledger a later
+release consults no longer counts that publisher as published.
+
+This needs the run directory to survive between the two runs. `--clean`
+empties `dist` and keeps `report.json`, `rollback.json` and `summary.json`
+of every `run-<tag>/` directory in it for that reason; everything else under
+a run directory is removed with the rest of `dist`. A run outside a git
+checkout has no tag or commit to name its directory after, writes to
+`run-local/`, and neither carries an earlier record nor survives `--clean`.
+On a runner that starts from a fresh checkout and does not restore
+`dist/run-<tag>/`, the re-run starts a new record and a later rollback
+withdraws only what that run published.
+
+An earlier `report.json` that cannot be parsed is moved aside to
+`report.json.unreadable-<unix-seconds>` with a warning, and the new report is
+written; the moved file still holds whatever the earlier run recorded.
+
+A `Failed` Submitter row whose evidence names published work — a workspace
+`cargo publish` that published the first crate and failed on the second —
+counts as having burned that version: `tag rollback` refuses the same way it
+does for a `Succeeded` row, and the run summary's `irreversibly_published`
+is `true`.
 
 Most publishers are idempotent on re-run: they detect that the current
 version was already published and record a `skipped-already-published`
@@ -978,8 +1072,10 @@ Every outbound announce notification body — from both `anodizer notify` and
 the release pipeline's `announce` stage — has known secret env values masked
 before it is sent. This is the same redaction anodizer applies to its own
 logs: a secret env value is replaced with `$VAR_NAME` (a real `ghp_…` token
-becomes `$GITHUB_TOKEN`). Redaction is on by default; no secret value can
-leak into a notification unless you explicitly opt out.
+becomes `$GITHUB_TOKEN`). Which variables count as secrets is described in
+[Secret redaction in log output](../../general/environment/#secret-redaction-in-log-output).
+Redaction is on by default; no value those rules match can leak into a
+notification unless you explicitly opt out.
 
 ### Two redaction surfaces
 

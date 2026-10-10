@@ -275,6 +275,22 @@ fn collect_release_targets(ctx: &Context) -> anyhow::Result<Vec<GithubReleaseTar
     Ok(out)
 }
 
+/// The releases the release stage created or updated this run, as rollback
+/// targets. `release_id` is left `None` for [`capture_release_ids`].
+fn written_release_targets(ctx: &Context) -> Vec<GithubReleaseTarget> {
+    ctx.stage_outputs
+        .releases_written
+        .iter()
+        .map(|w| GithubReleaseTarget {
+            crate_name: w.crate_name.clone(),
+            owner: w.owner.clone(),
+            repo: w.repo.clone(),
+            tag: w.tag.clone(),
+            release_id: None,
+        })
+        .collect()
+}
+
 /// Resolve each target's numeric release ID via
 /// [`GitHubClient::get_release_by_tag`], memoized by `(owner, repo, tag)`.
 ///
@@ -320,6 +336,23 @@ fn capture_release_ids(
         target.release_id = resolved;
         memo.insert(key, resolved);
     }
+}
+
+/// The evidence for the releases `targets` names.
+fn release_evidence(targets: Vec<GithubReleaseTarget>) -> anodizer_core::PublishEvidence {
+    let mut evidence = anodizer_core::PublishEvidence::new(GithubReleasePublisher::PUBLISHER_NAME);
+    if let Some(first) = targets.first() {
+        evidence.primary_ref = Some(format!(
+            "https://github.com/{}/{}/releases/tag/{}",
+            first.owner, first.repo, first.tag
+        ));
+    }
+    evidence.extra = anodizer_core::PublishEvidenceExtra::GithubRelease(
+        anodizer_core::publish_evidence::GithubReleaseExtra {
+            github_release_targets: targets,
+        },
+    );
+    evidence
 }
 
 // ---------------------------------------------------------------------------
@@ -521,8 +554,20 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
         if ctx.stage_outputs.release_stage_ran {
             ctx.logger("publish")
                 .verbose("github-release: release stage already ran this run; capturing ids only");
-        } else {
-            <ReleaseStage as Stage>::run(&ReleaseStage, ctx)?;
+        } else if let Err(err) = <ReleaseStage as Stage>::run(&ReleaseStage, ctx) {
+            // The stage creates a release per crate and then uploads its
+            // assets, so a failure can leave releases behind. The ones the
+            // stage wrote before failing are what a rollback has to delete;
+            // a release that existed before the run is not its work.
+            if !ctx.is_dry_run() && !ctx.is_snapshot() {
+                let mut targets = written_release_targets(ctx);
+                capture_release_ids(self.client.as_ref(), &mut targets);
+                targets.retain(|t| t.release_id.is_some());
+                if !targets.is_empty() {
+                    ctx.record_pending_evidence(release_evidence(targets));
+                }
+            }
+            return Err(err);
         }
 
         let mut targets = collect_release_targets(ctx)?;
@@ -533,20 +578,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
         if !ctx.is_dry_run() && !ctx.is_snapshot() {
             capture_release_ids(self.client.as_ref(), &mut targets);
         }
-
-        let mut evidence = anodizer_core::PublishEvidence::new(Self::PUBLISHER_NAME);
-        if let Some(first) = targets.first() {
-            evidence.primary_ref = Some(format!(
-                "https://github.com/{}/{}/releases/tag/{}",
-                first.owner, first.repo, first.tag
-            ));
-        }
-        evidence.extra = anodizer_core::PublishEvidenceExtra::GithubRelease(
-            anodizer_core::publish_evidence::GithubReleaseExtra {
-                github_release_targets: targets,
-            },
-        );
-        Ok(evidence)
+        Ok(release_evidence(targets))
     }
 
     fn rollback(
@@ -1708,5 +1740,55 @@ mod publisher_tests {
             err.to_string().contains("replace_existing_draft"),
             "the delegated stage must have entered its per-crate loop; got: {err}"
         );
+    }
+
+    /// A delegated stage that fails can have created releases already. The
+    /// ones the stage wrote this run are kept for the `Failed` row; a
+    /// release that existed before the run, which the stage never touched,
+    /// is not this run's work and is not recorded.
+    #[test]
+    fn a_failed_delegation_keeps_only_the_releases_the_stage_wrote() {
+        let run = |written: bool, existing: Option<u64>| {
+            let mut ctx = TestContextBuilder::new()
+                .tag("v1.0.0")
+                .crates(vec![tripwire_release_crate()])
+                .build();
+            if written {
+                ctx.stage_outputs
+                    .releases_written
+                    .push(anodizer_core::context::WrittenRelease {
+                        crate_name: "demo".into(),
+                        owner: "acme".into(),
+                        repo: "widget".into(),
+                        tag: "v1.0.0".into(),
+                    });
+            }
+            let mock = MockGitHubClient::new();
+            mock.set_get_release_by_tag_response(Ok(existing.map(|id| {
+                anodizer_core::github_client::ReleaseInfo {
+                    id,
+                    html_url: "https://github.com/acme/widget/releases/1".into(),
+                    tag_name: "v1.0.0".into(),
+                    name: None,
+                    draft: false,
+                }
+            })));
+            GithubReleasePublisher::with_client(Arc::new(mock))
+                .run(&mut ctx)
+                .expect_err("the tripwire crate fails the delegated stage");
+            ctx.take_pending_evidence()
+        };
+
+        let kept = run(true, Some(7)).expect("the release the stage wrote is recorded");
+        let targets = decode_github_release_targets(&kept.extra);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].release_id, Some(7));
+        assert!(kept.records_published_work());
+
+        assert!(
+            run(false, Some(7)).is_none(),
+            "a release that existed before the run is not its work"
+        );
+        assert!(run(true, None).is_none());
     }
 }

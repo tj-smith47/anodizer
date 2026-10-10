@@ -38,6 +38,12 @@ pub struct HomebrewTargetSnapshot {
     /// NEVER the token VALUE.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_env_var: Option<String>,
+    /// Full sha of the commit this run pushed to the repository. A rollback
+    /// reverts exactly this commit; a record without one (written before the
+    /// field existed) is skipped with a warning, because the branch head may
+    /// by then be someone else's commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -55,6 +61,12 @@ pub struct ScoopTargetSnapshot {
     pub branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_env_var: Option<String>,
+    /// Full sha of the commit this run pushed to the repository. A rollback
+    /// reverts exactly this commit; a record without one (written before the
+    /// field existed) is skipped with a warning, because the branch head may
+    /// by then be someone else's commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -72,6 +84,12 @@ pub struct NixTargetSnapshot {
     pub branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_env_var: Option<String>,
+    /// Full sha of the commit this run pushed to the repository. A rollback
+    /// reverts exactly this commit; a record without one (written before the
+    /// field existed) is skipped with a warning, because the branch head may
+    /// by then be someone else's commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -148,6 +166,12 @@ pub struct AurTargetSnapshot {
     pub target: String,
     /// AUR SSH URL — operator-public coordinate.
     pub git_url: String,
+    /// Full sha of the commit this run pushed to the repository. A rollback
+    /// reverts exactly this commit; a record without one (written before the
+    /// field existed) is skipped with a warning, because the branch head may
+    /// by then be someone else's commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -279,6 +303,13 @@ pub struct BlobTargetSnapshot {
     pub region: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// The key already held an object before this release wrote to it —
+    /// different content, or content that could not be compared. A rollback
+    /// leaves such an object in place and says so: deleting it would remove
+    /// a key this release did not create, and the earlier content cannot be
+    /// put back.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub overwrote: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -632,7 +663,146 @@ where
     serde_json::from_value(value).map_err(serde::de::Error::custom)
 }
 
+/// Append to `into` every element of `from` it does not already hold.
+fn union_into<T: PartialEq + Clone>(into: &mut Vec<T>, from: &[T]) {
+    for item in from {
+        if !into.contains(item) {
+            into.push(item.clone());
+        }
+    }
+}
+
 impl PublishEvidence {
+    /// Whether this evidence names work the run committed — something a
+    /// rollback could act on.
+    ///
+    /// A typed `extra` answers through its own list, so an empty list is no
+    /// work whatever `primary_ref` says. Two kinds list entries that are not
+    /// this run's work: a PyPI file the index already held
+    /// (`skipped_existing`) and a snap entry with no uploaded revision.
+    pub fn records_published_work(&self) -> bool {
+        use PublishEvidenceExtra as E;
+        match &self.extra {
+            E::Empty => self.primary_ref.is_some() || !self.artifact_paths.is_empty(),
+            E::Homebrew(x) => !x.homebrew_targets.is_empty(),
+            E::Scoop(x) => !x.scoop_targets.is_empty(),
+            E::Nix(x) => !x.nix_targets.is_empty(),
+            E::Winget(x) => !x.winget_targets.is_empty(),
+            E::Chocolatey(x) => !x.chocolatey_targets.is_empty(),
+            E::Krew(x) => !x.krew_targets.is_empty(),
+            E::Aur(x) => !x.aur_our_targets.is_empty(),
+            E::AurSource(x) => !x.aur_source_targets.is_empty(),
+            E::Mcp(x) => !x.mcp_targets.is_empty(),
+            E::Dockerhub(x) => !x.dockerhub_targets.is_empty(),
+            E::Cargo(x) => !x.cargo_yank_targets.is_empty(),
+            E::Artifactory(x) => !x.artifactory_targets.is_empty(),
+            E::Cloudsmith(x) => !x.cloudsmith_targets.is_empty(),
+            E::Blob(x) => !x.blob_targets.is_empty(),
+            E::Snapcraft(x) => x.snapcraft_targets.iter().any(|t| t.revision.is_some()),
+            E::GithubRelease(x) => !x.github_release_targets.is_empty(),
+            E::Npm(x) => !x.npm_targets.is_empty(),
+            E::GemFury(x) => !x.gemfury_targets.is_empty(),
+            E::Pypi(x) => x.pypi_files.iter().any(|f| !f.skipped_existing),
+            E::Schemastore(x) => !x.schemastore_targets.is_empty(),
+            E::HomebrewCore(x) => !x.homebrew_core_targets.is_empty(),
+        }
+    }
+
+    /// Fold what an earlier run of the same release recorded into this
+    /// run's evidence, returning whether the two could be combined.
+    ///
+    /// Two records of the same kind combine into one list holding each
+    /// entry once. A re-run publishes only what the earlier run left
+    /// missing, so without the union its record would name a part of the
+    /// release and a rollback would leave the rest behind. A tap entry
+    /// carries the commit it pushed, so two pushes to one tap are two
+    /// entries and each is reverted by its own sha.
+    ///
+    /// Records of different kinds, and a record with no typed list, return
+    /// `false` and are left alone; the caller keeps the earlier row beside
+    /// this one. A record equal to this one is already held and returns
+    /// `true`.
+    pub fn absorb_prior(&mut self, prior: &PublishEvidence) -> bool {
+        use PublishEvidenceExtra as E;
+        // The same record read back (the pipeline end rewriting what the
+        // publish stage wrote) adds nothing and is not a second row.
+        if *self == *prior {
+            return true;
+        }
+        match (&mut self.extra, &prior.extra) {
+            (E::Blob(mine), E::Blob(theirs)) => {
+                for earlier in &theirs.blob_targets {
+                    let same_object = |t: &&mut BlobTargetSnapshot| {
+                        (&t.provider, &t.bucket, &t.key, &t.region, &t.endpoint)
+                            == (
+                                &earlier.provider,
+                                &earlier.bucket,
+                                &earlier.key,
+                                &earlier.region,
+                                &earlier.endpoint,
+                            )
+                    };
+                    match mine.blob_targets.iter_mut().find(same_object) {
+                        // The earliest write of the release is the one that
+                        // saw whether the key existed before it.
+                        Some(t) => t.overwrote = earlier.overwrote,
+                        None => mine.blob_targets.push(earlier.clone()),
+                    }
+                }
+            }
+            (E::Homebrew(m), E::Homebrew(t)) => {
+                union_into(&mut m.homebrew_targets, &t.homebrew_targets)
+            }
+            (E::Scoop(m), E::Scoop(t)) => union_into(&mut m.scoop_targets, &t.scoop_targets),
+            (E::Nix(m), E::Nix(t)) => union_into(&mut m.nix_targets, &t.nix_targets),
+            (E::Winget(m), E::Winget(t)) => union_into(&mut m.winget_targets, &t.winget_targets),
+            (E::Chocolatey(m), E::Chocolatey(t)) => {
+                union_into(&mut m.chocolatey_targets, &t.chocolatey_targets)
+            }
+            (E::Krew(m), E::Krew(t)) => union_into(&mut m.krew_targets, &t.krew_targets),
+            (E::Aur(m), E::Aur(t)) => union_into(&mut m.aur_our_targets, &t.aur_our_targets),
+            (E::AurSource(m), E::AurSource(t)) => {
+                union_into(&mut m.aur_source_targets, &t.aur_source_targets)
+            }
+            (E::Mcp(m), E::Mcp(t)) => union_into(&mut m.mcp_targets, &t.mcp_targets),
+            (E::Dockerhub(m), E::Dockerhub(t)) => {
+                union_into(&mut m.dockerhub_targets, &t.dockerhub_targets)
+            }
+            (E::Cargo(m), E::Cargo(t)) => {
+                union_into(&mut m.cargo_yank_targets, &t.cargo_yank_targets)
+            }
+            (E::Artifactory(m), E::Artifactory(t)) => {
+                union_into(&mut m.artifactory_targets, &t.artifactory_targets)
+            }
+            (E::Cloudsmith(m), E::Cloudsmith(t)) => {
+                union_into(&mut m.cloudsmith_targets, &t.cloudsmith_targets)
+            }
+            (E::Snapcraft(m), E::Snapcraft(t)) => {
+                union_into(&mut m.snapcraft_targets, &t.snapcraft_targets)
+            }
+            (E::GithubRelease(m), E::GithubRelease(t)) => {
+                union_into(&mut m.github_release_targets, &t.github_release_targets)
+            }
+            (E::Npm(m), E::Npm(t)) => union_into(&mut m.npm_targets, &t.npm_targets),
+            (E::GemFury(m), E::GemFury(t)) => {
+                union_into(&mut m.gemfury_targets, &t.gemfury_targets)
+            }
+            (E::Pypi(m), E::Pypi(t)) => union_into(&mut m.pypi_files, &t.pypi_files),
+            (E::Schemastore(m), E::Schemastore(t)) => {
+                union_into(&mut m.schemastore_targets, &t.schemastore_targets)
+            }
+            (E::HomebrewCore(m), E::HomebrewCore(t)) => {
+                union_into(&mut m.homebrew_core_targets, &t.homebrew_core_targets)
+            }
+            _ => return false,
+        }
+        union_into(&mut self.artifact_paths, &prior.artifact_paths);
+        if self.primary_ref.is_none() {
+            self.primary_ref = prior.primary_ref.clone();
+        }
+        true
+    }
+
     /// Version of the evidence wire format. Operators reading the
     /// constant know whether their installed anodizer matches the
     /// producer that wrote a given `report.json` blob; a format change
@@ -657,6 +827,181 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_evidence_naming_something_records_published_work() {
+        assert!(!PublishEvidence::new("x").records_published_work());
+        let mut by_ref = PublishEvidence::new("x");
+        by_ref.primary_ref = Some("r".into());
+        assert!(by_ref.records_published_work());
+        let mut by_path = PublishEvidence::new("x");
+        by_path.artifact_paths.push(PathBuf::from("p"));
+        assert!(by_path.records_published_work());
+    }
+
+    /// A typed list that names nothing is no work, whatever else the record
+    /// carries: every variant is asked with its default (empty) payload and
+    /// a `primary_ref` set.
+    #[test]
+    fn an_empty_typed_list_records_no_published_work() {
+        use PublishEvidenceExtra as E;
+        let empties = [
+            E::Homebrew(Default::default()),
+            E::Scoop(Default::default()),
+            E::Nix(Default::default()),
+            E::Winget(Default::default()),
+            E::Chocolatey(Default::default()),
+            E::Krew(Default::default()),
+            E::Aur(Default::default()),
+            E::AurSource(Default::default()),
+            E::Mcp(Default::default()),
+            E::Dockerhub(Default::default()),
+            E::Cargo(Default::default()),
+            E::Artifactory(Default::default()),
+            E::Cloudsmith(Default::default()),
+            E::Blob(Default::default()),
+            E::Snapcraft(Default::default()),
+            E::GithubRelease(Default::default()),
+            E::Npm(Default::default()),
+            E::GemFury(Default::default()),
+            E::Pypi(Default::default()),
+            E::Schemastore(Default::default()),
+            E::HomebrewCore(Default::default()),
+        ];
+        for extra in empties {
+            let mut e = PublishEvidence::new("x");
+            e.primary_ref = Some("r".into());
+            e.extra = extra;
+            assert!(!e.records_published_work(), "{:?}", e.extra);
+        }
+
+        let mut blob = PublishEvidence::new("blob");
+        blob.extra = E::Blob(BlobExtra {
+            blob_targets: vec![BlobTargetSnapshot::default()],
+        });
+        assert!(blob.records_published_work());
+    }
+
+    /// Entries that are listed without being this run's work: a file the
+    /// index already held, and a snap with no uploaded revision.
+    #[test]
+    fn entries_the_run_did_not_publish_are_not_work() {
+        let mut pypi = PublishEvidence::new("pypi");
+        let file = |skipped_existing| PypiFileSnapshot {
+            skipped_existing,
+            ..Default::default()
+        };
+        pypi.extra = PublishEvidenceExtra::Pypi(PypiExtra {
+            pypi_files: vec![file(true)],
+        });
+        assert!(!pypi.records_published_work());
+        pypi.extra = PublishEvidenceExtra::Pypi(PypiExtra {
+            pypi_files: vec![file(true), file(false)],
+        });
+        assert!(pypi.records_published_work());
+
+        let mut snap = PublishEvidence::new("snapcraft");
+        let entry = |revision: Option<&str>| SnapcraftTargetSnapshot {
+            revision: revision.map(str::to_string),
+            ..Default::default()
+        };
+        snap.extra = PublishEvidenceExtra::Snapcraft(SnapcraftExtra {
+            snapcraft_targets: vec![entry(None)],
+        });
+        assert!(!snap.records_published_work());
+        snap.extra = PublishEvidenceExtra::Snapcraft(SnapcraftExtra {
+            snapcraft_targets: vec![entry(None), entry(Some("7"))],
+        });
+        assert!(snap.records_published_work());
+    }
+
+    #[test]
+    fn absorb_prior_joins_same_kind_lists_once_and_leaves_other_kinds_alone() {
+        let blob = |keys: &[&str]| {
+            let mut e = PublishEvidence::new("blob");
+            e.artifact_paths = keys.iter().map(PathBuf::from).collect();
+            e.extra = PublishEvidenceExtra::Blob(BlobExtra {
+                blob_targets: keys
+                    .iter()
+                    .map(|k| BlobTargetSnapshot {
+                        provider: "s3".into(),
+                        bucket: "b".into(),
+                        key: (*k).into(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            });
+            e
+        };
+        let mut mine = blob(&["c", "b"]);
+        assert!(mine.absorb_prior(&blob(&["a", "b"])));
+        assert_eq!(mine, blob(&["c", "b", "a"]));
+
+        // Evidence with no typed list has nothing to join, unless it is the
+        // same record.
+        let mut untyped = PublishEvidence::new("homebrew");
+        untyped.primary_ref = Some("second".into());
+        let before = untyped.clone();
+        let mut earlier = PublishEvidence::new("homebrew");
+        earlier.primary_ref = Some("first".into());
+        assert!(!untyped.absorb_prior(&earlier));
+        assert_eq!(untyped, before);
+        assert!(untyped.absorb_prior(&before));
+        assert_eq!(untyped, before);
+        // Two different kinds never join either.
+        assert!(!mine.absorb_prior(&earlier));
+    }
+
+    /// Two pushes to one tap are two commits: both stay, each under its own
+    /// sha, and the same push recorded twice stays once.
+    #[test]
+    fn absorb_prior_keeps_one_tap_entry_per_pushed_commit() {
+        let tap = |commits: &[&str]| {
+            let mut e = PublishEvidence::new("homebrew");
+            e.extra = PublishEvidenceExtra::Homebrew(HomebrewExtra {
+                homebrew_targets: commits
+                    .iter()
+                    .map(|c| HomebrewTargetSnapshot {
+                        target: "app".into(),
+                        repo_url: "https://github.com/o/tap.git".into(),
+                        commit: Some((*c).into()),
+                        ..Default::default()
+                    })
+                    .collect(),
+            });
+            e
+        };
+        let mut mine = tap(&["bbb"]);
+        assert!(mine.absorb_prior(&tap(&["aaa", "bbb"])));
+        assert_eq!(mine, tap(&["bbb", "aaa"]));
+    }
+
+    /// Whether a key existed before the release is known to the run that
+    /// wrote it first; a later run overwriting its own object does not make
+    /// the key one the release did not create, and the reverse holds too.
+    #[test]
+    fn absorb_prior_takes_overwrote_from_the_earliest_write() {
+        let blob = |overwrote| {
+            let mut e = PublishEvidence::new("blob");
+            e.extra = PublishEvidenceExtra::Blob(BlobExtra {
+                blob_targets: vec![BlobTargetSnapshot {
+                    provider: "s3".into(),
+                    bucket: "b".into(),
+                    key: "latest/app".into(),
+                    overwrote,
+                    ..Default::default()
+                }],
+            });
+            e
+        };
+        let mut rerun = blob(true);
+        assert!(rerun.absorb_prior(&blob(false)));
+        assert_eq!(rerun, blob(false));
+
+        let mut rerun = blob(false);
+        assert!(rerun.absorb_prior(&blob(true)));
+        assert_eq!(rerun, blob(true));
+    }
+
+    #[test]
     fn publish_evidence_roundtrips_through_json() {
         let mut e = PublishEvidence::new("homebrew");
         e.primary_ref = Some("refs/heads/main".to_string());
@@ -668,6 +1013,7 @@ mod tests {
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: Some("main".into()),
                 token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+                commit: None,
             }],
         });
 
@@ -874,6 +1220,7 @@ mod tests {
                     repo_url: "https://github.com/owner/tap".into(),
                     branch: Some("anodizer-update".into()),
                     token_env_var: Some("ANODIZER_GITHUB_TOKEN".into()),
+                    commit: None,
                 }],
             }),
             ..PublishEvidence::new("homebrew")

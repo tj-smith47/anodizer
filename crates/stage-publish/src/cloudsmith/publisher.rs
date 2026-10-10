@@ -135,6 +135,24 @@ pub(crate) fn active_cloudsmith_configs(
         .collect()
 }
 
+/// The evidence for the packages `targets` names. The `artifact_paths` slot
+/// keeps the operator-readable `<org>/<repo>/<filename>` form for the
+/// text-only `anodizer tag rollback` summary; the structured copy in `extra`
+/// is the authoritative source for the DELETE call.
+fn cloudsmith_evidence(targets: &[CloudsmithTarget]) -> anodizer_core::PublishEvidence {
+    let mut evidence = anodizer_core::PublishEvidence::new("cloudsmith");
+    let path_view: Vec<std::path::PathBuf> = targets
+        .iter()
+        .map(|t| std::path::PathBuf::from(format!("{}/{}/{}", t.org, t.repo, t.filename)))
+        .collect();
+    if let Some(first) = path_view.first() {
+        evidence.primary_ref = Some(first.display().to_string());
+    }
+    evidence.artifact_paths = path_view;
+    evidence.extra = encode_cloudsmith_targets(targets);
+    evidence
+}
+
 impl anodizer_core::Publisher for CloudsmithPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -181,22 +199,12 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         // never captures the slug. SkipIdempotent matches (artifact
         // already on Cloudsmith with matching md5) are NOT in `targets`
         // because rollback only undoes what THIS run did.
-        let targets = publish_to_cloudsmith(ctx, &log)?;
-        let mut evidence = anodizer_core::PublishEvidence::new("cloudsmith");
-        // The `artifact_paths` slot keeps the operator-readable
-        // `<org>/<repo>/<filename>` form for the text-only
-        // anodizer tag rollback summary; the structured copy in `extra` is the
-        // authoritative source for the DELETE call.
-        let path_view: Vec<std::path::PathBuf> = targets
-            .iter()
-            .map(|t| std::path::PathBuf::from(format!("{}/{}/{}", t.org, t.repo, t.filename)))
-            .collect();
-        if let Some(first) = path_view.first() {
-            evidence.primary_ref = Some(first.display().to_string());
-        }
-        evidence.artifact_paths = path_view;
-        evidence.extra = encode_cloudsmith_targets(&targets);
-        Ok(evidence)
+        let mut targets = Vec::new();
+        let uploaded = publish_to_cloudsmith_into(ctx, &log, &mut targets);
+        crate::publisher_helpers::keep_committed_on_failure(ctx, uploaded, |_| {
+            (!targets.is_empty()).then(|| cloudsmith_evidence(&targets))
+        })?;
+        Ok(cloudsmith_evidence(&targets))
     }
 
     fn rollback(

@@ -127,6 +127,14 @@ pub(crate) fn submit_winget_manifests(
         util::resolve_branch(ctx, winget_cfg.repository.as_ref()).unwrap_or(auto_branch);
     let branch_name = branch_name.as_str();
     let commit_opts = util::resolve_commit_opts(ctx, winget_cfg.commit_author.as_ref(), log)?;
+    // Rendered before the push: a template error here must not come
+    // after a branch already reached the fork.
+    let update_existing_pr = match winget_cfg.update_existing_pr.as_ref() {
+        Some(v) => v
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+            .context("winget: render update_existing_pr condition")?,
+        None => false,
+    };
     let outcome = util::commit_and_push_with_opts(
         repo_path,
         &["."],
@@ -137,7 +145,7 @@ pub(crate) fn submit_winget_manifests(
         log,
     )?;
     match outcome {
-        util::CommitOutcome::Pushed => {
+        util::CommitOutcome::Pushed { .. } => {
             log.status(&format!(
                 "WinGet manifest pushed to {}/{} branch '{}'",
                 repo_owner, repo_name, branch_name
@@ -150,13 +158,6 @@ pub(crate) fn submit_winget_manifests(
             ));
         }
     }
-
-    let update_existing_pr = match winget_cfg.update_existing_pr.as_ref() {
-        Some(v) => v
-            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-            .context("winget: render update_existing_pr condition")?,
-        None => false,
-    };
 
     let pr_outcome = submit_winget_pr(
         repo_path,
@@ -381,6 +382,22 @@ pub(crate) fn active_winget_configs(ctx: &Context) -> Vec<&anodizer_core::config
         .collect()
 }
 
+/// The evidence for the pull requests `targets` names.
+fn winget_evidence(targets: Vec<WingetTarget>) -> anodizer_core::PublishEvidence {
+    let mut evidence = anodizer_core::PublishEvidence::new("winget");
+    if let Some(first) = targets.first() {
+        evidence.primary_ref = Some(format!(
+            "https://github.com/{}/{}/pulls?q=head%3A{}%3A{}",
+            first.upstream_owner, first.upstream_repo, first.fork_owner, first.branch
+        ));
+    }
+    evidence.extra =
+        anodizer_core::PublishEvidenceExtra::Winget(anodizer_core::publish_evidence::WingetExtra {
+            winget_targets: targets,
+        });
+    evidence
+}
+
 impl anodizer_core::Publisher for WingetPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -598,10 +615,14 @@ impl anodizer_core::Publisher for WingetPublisher {
                     Ok(target.filter(|_| submitted))
                 },
             );
-            let target = crate::publisher_helpers::absorb_entry_skip(
+            let absorbed = crate::publisher_helpers::absorb_entry_skip(
                 ctx, &log, "winget", crate_name, scoped,
-            )?
-            .flatten();
+            );
+            let target =
+                crate::publisher_helpers::keep_committed_on_failure(ctx, absorbed, |_| {
+                    (!targets.is_empty()).then(|| winget_evidence(targets.clone()))
+                })?
+                .flatten();
             if let Some(t) = target {
                 targets.push(t);
             }
@@ -625,19 +646,7 @@ impl anodizer_core::Publisher for WingetPublisher {
                 "winget", processed,
             ));
         }
-        let mut evidence = anodizer_core::PublishEvidence::new("winget");
-        if let Some(first) = targets.first() {
-            evidence.primary_ref = Some(format!(
-                "https://github.com/{}/{}/pulls?q=head%3A{}%3A{}",
-                first.upstream_owner, first.upstream_repo, first.fork_owner, first.branch
-            ));
-        }
-        evidence.extra = anodizer_core::PublishEvidenceExtra::Winget(
-            anodizer_core::publish_evidence::WingetExtra {
-                winget_targets: targets,
-            },
-        );
-        Ok(evidence)
+        Ok(winget_evidence(targets))
     }
 
     fn rollback(

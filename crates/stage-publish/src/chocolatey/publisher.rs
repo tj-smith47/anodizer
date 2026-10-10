@@ -121,6 +121,23 @@ fn active_chocolatey_configs(ctx: &Context) -> Vec<&anodizer_core::config::Choco
         .collect()
 }
 
+/// The evidence for the packages `targets` names.
+fn chocolatey_evidence(targets: Vec<ChocolateyTarget>) -> anodizer_core::PublishEvidence {
+    let mut evidence = anodizer_core::PublishEvidence::new("chocolatey");
+    if let Some(first) = targets.first() {
+        evidence.primary_ref = Some(format!(
+            "https://community.chocolatey.org/packages/{}",
+            first.package_id
+        ));
+    }
+    evidence.extra = anodizer_core::PublishEvidenceExtra::Chocolatey(
+        anodizer_core::publish_evidence::ChocolateyExtra {
+            chocolatey_targets: targets,
+        },
+    );
+    evidence
+}
+
 impl anodizer_core::Publisher for ChocolateyPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -334,7 +351,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
             // (returns Ok(true)). Recording a target for a skipped run produces
             // a misleading "manual withdrawal required" warning at rollback time
             // for a package this run never submitted.
-            let (pushed, snapshot) = crate::publisher_helpers::with_published_crate_scope(
+            let scoped = crate::publisher_helpers::with_published_crate_scope(
                 ctx,
                 crate_name,
                 &anodizer_core::crate_scope::resolve_crate_tag,
@@ -343,7 +360,11 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
                     let pushed = super::publish::publish_to_chocolatey(ctx, crate_name, &log)?;
                     Ok((pushed, snapshot))
                 },
-            )?;
+            );
+            let (pushed, snapshot) =
+                crate::publisher_helpers::keep_committed_on_failure(ctx, scoped, |_| {
+                    (!targets.is_empty()).then(|| chocolatey_evidence(targets.clone()))
+                })?;
             if pushed && let Some(t) = snapshot {
                 targets.push(t);
             }
@@ -366,19 +387,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
                 processed,
             ));
         }
-        let mut evidence = anodizer_core::PublishEvidence::new("chocolatey");
-        if let Some(first) = targets.first() {
-            evidence.primary_ref = Some(format!(
-                "https://community.chocolatey.org/packages/{}",
-                first.package_id
-            ));
-        }
-        evidence.extra = anodizer_core::PublishEvidenceExtra::Chocolatey(
-            anodizer_core::publish_evidence::ChocolateyExtra {
-                chocolatey_targets: targets,
-            },
-        );
-        Ok(evidence)
+        Ok(chocolatey_evidence(targets))
     }
 
     fn rollback(

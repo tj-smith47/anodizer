@@ -269,8 +269,7 @@ impl Stage for SnapcraftPublishStage {
             Ok(()) => PublisherOutcome::Succeeded,
             Err(e) => PublisherOutcome::Failed(format!("{e:#}")),
         };
-        let evidence = matches!(outcome, PublisherOutcome::Succeeded)
-            .then(|| build_snapcraft_evidence(&recorded));
+        let evidence = row_evidence(&outcome, &recorded);
         record_snapcraft_result(ctx, evidence, outcome, required);
         // End-of-stage accountability for review holds: a per-upload warn can
         // scroll away inside a long publish log, and the store's eventual

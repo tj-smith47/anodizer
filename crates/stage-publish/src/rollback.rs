@@ -12,15 +12,27 @@
 //! transient failure or exported a missing scope var re-runs
 //! `anodizer tag rollback` and expects those rows to retry).
 //!
-//! Two kinds of target are reverted:
+//! Three kinds of target are reverted:
 //!
 //! - every Assets/Manager publisher that successfully published
 //!   (`PublisherOutcome::Succeeded`) — reverted via its API delete / PR
 //!   close, transitioning the row to `RolledBack`;
-//! - a *failed* required Submitter (cargo) that already pushed crates to
+//! - an Assets/Manager publisher that FAILED after committing part of its
+//!   work — two of three objects uploaded, one of two taps pushed. Its
+//!   row carries what it committed as evidence, and the same revert moves
+//!   it to `RolledBack`. A failed row with no evidence committed nothing
+//!   and is not replayed;
+//! - a *failed* Submitter (cargo) that already pushed crates to
 //!   crates.io — its recorded yank-target evidence drives the revert. The
 //!   row KEEPS its `Failed` outcome on a successful yank (the release
 //!   genuinely failed); only a yank failure moves it to `RollbackFailed`.
+//!
+//! A release that took several runs to finish is withdrawn as one. Each
+//! `report.json` write folds in what the earlier runs of the same tag
+//! recorded and have not withdrawn (`report::carry_prior_work`): object
+//! lists are joined into this run's row, and a row this run did not redo
+//! rides in `PublishReport::carried_forward`, which [`run`] replays beside
+//! `results`.
 //!
 //! Each rollback step is independent: a step's failure becomes
 //! `RollbackFailed(err)` on its `PublisherResult`, but the next step still
@@ -38,9 +50,11 @@
 //!
 //! The on-disk reports at `<dist>/run-<id>/report.json` and
 //! `<dist>/run-<id>/rollback.json` share the same schema — `serde_json`
-//! of [`PublishReport`]. `report.json` is the immutable end-of-pipeline
-//! snapshot from the original run; `rollback.json` is the mutable
-//! replay-state file, overwritten on every invocation.
+//! of [`PublishReport`]. `report.json` is the end-of-pipeline snapshot of
+//! the latest run of the tag; `rollback.json` is the mutable replay-state
+//! file, overwritten on every invocation and removed when a later run of
+//! the tag writes a new `report.json`, which already holds what the
+//! replay left outstanding.
 
 use anodizer_core::context::Context;
 use anodizer_core::{PublishReport, Publisher, PublisherGroup, PublisherOutcome};
@@ -100,6 +114,12 @@ pub(crate) fn run_with_publishers(
     // `RollbackFailed("publisher not found")`.
     let aux = crate::registry::rollback_publishers(ctx);
 
+    // The rows an earlier run of this release left behind are withdrawn in
+    // the same pass; they are split back out before the state is persisted.
+    let own_rows = report.results.len();
+    let mut carried = std::mem::take(&mut report.carried_forward);
+    report.results.append(&mut carried);
+
     let target_indices = rollback_candidates(&report);
 
     if target_indices.is_empty() {
@@ -158,6 +178,8 @@ pub(crate) fn run_with_publishers(
         rolled_back, failed, not_found, skipped_no_scope,
     ));
 
+    report.carried_forward = report.results.split_off(own_rows);
+
     // Persist the updated state to <dist>/run-<id>/rollback.json so the
     // operator has an audit trail of what was attempted on this pass.
     let out_path = rollback_path(ctx, run_id);
@@ -171,6 +193,12 @@ pub(crate) fn run_with_publishers(
     fs::write(&out_path, rollback_text)
         .with_context(|| format!("failed to write rollback state to {}", out_path.display()))?;
     log.status(&format!("wrote {}", out_path.display()));
+
+    crate::run_summary::mark_withdrawn_in_summary(
+        &crate::run_dir(ctx, run_id).join(anodizer_core::dist::SUMMARY_JSON),
+        &report,
+        &log,
+    );
 
     Ok(report)
 }
@@ -196,9 +224,13 @@ pub fn prior_state_exists(ctx: &Context, run_id: &str) -> bool {
 pub fn planned_rollback_names(ctx: &Context, run_id: &str) -> Result<Vec<String>> {
     validate_run_id(run_id)?;
     let report = load_prior_state(ctx, run_id, None)?;
-    Ok(rollback_candidates(&report)
+    Ok([&report.results, &report.carried_forward]
         .into_iter()
-        .map(|i| report.results[i].name.clone())
+        .flat_map(|rows| {
+            candidate_rows(rows)
+                .into_iter()
+                .map(|i| rows[i].name.clone())
+        })
         .collect())
 }
 
@@ -219,7 +251,7 @@ pub fn planned_rollback_names(ctx: &Context, run_id: &str) -> Result<Vec<String>
 ///
 /// `log` is `Some` only for the executing path; the read-only preview
 /// stays silent so a dry-run does not narrate file reads.
-fn load_prior_state(
+pub(crate) fn load_prior_state(
     ctx: &Context,
     run_id: &str,
     log: Option<&anodizer_core::log::StageLogger>,
@@ -275,7 +307,7 @@ fn report_path(ctx: &Context, run_id: &str) -> PathBuf {
 
 /// Resolve the path [`run`] writes its updated state to:
 /// `<ctx.config.dist>/run-<id>/rollback.json`.
-fn rollback_path(ctx: &Context, run_id: &str) -> PathBuf {
+pub(crate) fn rollback_path(ctx: &Context, run_id: &str) -> PathBuf {
     crate::run_dir(ctx, run_id).join(anodizer_core::dist::ROLLBACK_JSON)
 }
 
@@ -351,32 +383,43 @@ pub fn validate_run_id(run_id: &str) -> Result<()> {
 /// - Assets/Manager: `Succeeded` (revert a recorded success via API
 ///   delete / PR close), plus `RollbackFailed` / `RollbackSkippedNoScope`
 ///   (retry a prior attempt that failed, or one that was blocked on a
-///   scope env var the operator may since have exported).
-/// - Submitter: a *failed* required Submitter (cargo) that already
-///   pushed remote state still has a real yank to run, plus the same
-///   `RollbackFailed` / `RollbackSkippedNoScope` retry arm. Every other
-///   Submitter outcome — `Succeeded`, `Skipped`, etc. — is not a
-///   candidate; Submitter rollback exists only to undo a partial
-///   publish, not to revert a clean one.
+///   scope env var the operator may since have exported), plus a `Failed`
+///   row whose evidence names work it committed before failing (two of
+///   three objects uploaded, one of two taps pushed).
+/// - Submitter: a *failed* Submitter (cargo) that already pushed remote
+///   state still has a real yank to run, plus the same `RollbackFailed` /
+///   `RollbackSkippedNoScope` retry arm. Every other Submitter outcome —
+///   `Succeeded`, `Skipped`, etc. — is not a candidate; Submitter rollback
+///   exists only to undo a partial publish, not to revert a clean one.
 ///
 /// `Succeeded` rows without recorded evidence are still candidates —
 /// [`run`]'s loop surfaces the gap as
 /// `RollbackFailed("no evidence in prior report")` rather than silently
 /// leaving the row untouched, so a missing-evidence row is visible to the
-/// operator instead of stranded.
+/// operator instead of stranded. A failed Assets/Manager row without
+/// evidence is NOT one: its `run` committed nothing, so there is nothing
+/// to withdraw and nothing missing to report.
 pub(crate) fn rollback_candidates(report: &PublishReport) -> Vec<usize> {
-    report
-        .results
-        .iter()
+    candidate_rows(&report.results)
+}
+
+/// [`rollback_candidates`] over any slice of rows — `results`, or the
+/// `carried_forward` rows an earlier run of the release left behind.
+pub(crate) fn candidate_rows(rows: &[anodizer_core::PublisherResult]) -> Vec<usize> {
+    rows.iter()
         .enumerate()
         .filter_map(|(i, r)| {
             let candidate = match r.group {
-                PublisherGroup::Assets | PublisherGroup::Manager => matches!(
-                    r.outcome,
+                PublisherGroup::Assets | PublisherGroup::Manager => match r.outcome {
                     PublisherOutcome::Succeeded
-                        | PublisherOutcome::RollbackFailed(_)
-                        | PublisherOutcome::RollbackSkippedNoScope
-                ),
+                    | PublisherOutcome::RollbackFailed(_)
+                    | PublisherOutcome::RollbackSkippedNoScope => true,
+                    PublisherOutcome::Failed(_) => r
+                        .evidence
+                        .as_ref()
+                        .is_some_and(anodizer_core::PublishEvidence::records_published_work),
+                    _ => false,
+                },
                 PublisherGroup::Submitter => matches!(
                     r.outcome,
                     PublisherOutcome::Failed(_)
@@ -459,11 +502,14 @@ pub(crate) fn execute_rollback_step(
 
     // A failed Submitter (cargo) keeps its `Failed` outcome on a SUCCESSFUL
     // yank: the release genuinely failed (crate B never went live) and
-    // reporting `RolledBack` would mask that. Only a succeeded-then-reverted
-    // Assets/Manager publisher transitions to `RolledBack`. A yank FAILURE
-    // transitions to `RollbackFailed` for both — a live artifact that could
-    // not be pulled, the manual-intervention signal.
-    let was_failure = matches!(current, PublisherOutcome::Failed(_));
+    // reporting `RolledBack` would mask that. An Assets/Manager publisher
+    // transitions to `RolledBack` whatever it started as: a `Failed` row
+    // left in place stays a candidate, and a second pass over a tap
+    // publisher would revert the revert. A rollback FAILURE transitions to
+    // `RollbackFailed` for both — a live artifact that could not be pulled,
+    // the manual-intervention signal.
+    let was_failure =
+        row.group == PublisherGroup::Submitter && matches!(current, PublisherOutcome::Failed(_));
     log.status(&format!("invoking rollback for '{name}'"));
     // A rollback is its own publisher invocation — the publish budget belonged
     // to a call that already returned — so it anchors its own.
@@ -1641,5 +1687,136 @@ mod tests {
             updated.results[0].outcome,
             PublisherOutcome::RolledBack
         ));
+    }
+
+    /// A failed row naming what it wrote before failing, the shape a
+    /// publisher records through `keep_committed_on_failure`.
+    fn failed_with_work(name: &str, group: PublisherGroup) -> PublisherResult {
+        let mut evidence = PublishEvidence::new(name);
+        evidence.primary_ref = Some(format!("{name}://committed"));
+        PublisherResult {
+            evidence: Some(evidence),
+            ..failed(name, group, false, "boom")
+        }
+    }
+
+    #[test]
+    fn a_failed_row_is_replayed_only_when_it_recorded_committed_work() {
+        for group in [PublisherGroup::Assets, PublisherGroup::Manager] {
+            let (mut ctx, _tmp) = ctx_with_dist();
+            let mut report = PublishReport::default();
+            report.results.push(failed_with_work("partial", group));
+            report.results.push(failed("empty", group, false, "boom"));
+            // Evidence that names nothing is the same as no evidence.
+            report.results.push(PublisherResult {
+                evidence: Some(PublishEvidence::new("hollow")),
+                ..failed("hollow", group, false, "boom")
+            });
+            write_fixture_report(&ctx, "fixt", &report);
+
+            let (partial, partial_calls) = fake_counting("partial", group, false);
+            let (empty, empty_calls) = fake_counting("empty", group, false);
+            let (hollow, hollow_calls) = fake_counting("hollow", group, false);
+            let publishers: Vec<Box<dyn Publisher>> = vec![partial, empty, hollow];
+
+            let updated = run_with_publishers(&mut ctx, "fixt", &publishers).expect("rollback");
+
+            assert_eq!(
+                partial_calls.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "{group:?}"
+            );
+            assert_eq!(
+                empty_calls.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "{group:?}"
+            );
+            assert_eq!(
+                hollow_calls.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "{group:?}"
+            );
+            assert_eq!(updated.results[0].outcome, PublisherOutcome::RolledBack);
+            assert!(matches!(
+                updated.results[1].outcome,
+                PublisherOutcome::Failed(_)
+            ));
+            assert!(matches!(
+                updated.results[2].outcome,
+                PublisherOutcome::Failed(_)
+            ));
+
+            // A withdrawn row is not withdrawn again: a second revert of a
+            // tap would put the formula back.
+            run_with_publishers(&mut ctx, "fixt", &publishers).expect("second pass");
+            assert_eq!(
+                partial_calls.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "{group:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_submitter_keeps_its_outcome_after_its_rollback() {
+        let (mut ctx, _tmp) = ctx_with_dist();
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(failed_with_work("sub", PublisherGroup::Submitter));
+        write_fixture_report(&ctx, "fixt", &report);
+        let (sub, calls) = fake_counting("sub", PublisherGroup::Submitter, false);
+        let publishers: Vec<Box<dyn Publisher>> = vec![sub];
+
+        let updated = run_with_publishers(&mut ctx, "fixt", &publishers).expect("rollback");
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(matches!(
+            updated.results[0].outcome,
+            PublisherOutcome::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn rows_carried_from_an_earlier_run_are_withdrawn_and_stay_separate() {
+        let (mut ctx, _tmp) = ctx_with_dist();
+        let mut report = PublishReport::default();
+        report.results.push(PublisherResult {
+            name: "current".into(),
+            group: PublisherGroup::Assets,
+            required: false,
+            outcome: PublisherOutcome::Skipped(SkipReason::AlreadyPublished),
+            evidence: None,
+            entry_skips: Vec::new(),
+        });
+        report
+            .carried_forward
+            .push(failed_with_work("earlier", PublisherGroup::Assets));
+        write_fixture_report(&ctx, "fixt", &report);
+        let (earlier, calls) = fake_counting("earlier", PublisherGroup::Assets, false);
+        let publishers: Vec<Box<dyn Publisher>> = vec![earlier];
+
+        assert_eq!(
+            planned_rollback_names(&ctx, "fixt").expect("plan"),
+            vec!["earlier".to_string()]
+        );
+        let updated = run_with_publishers(&mut ctx, "fixt", &publishers).expect("rollback");
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(updated.results.len(), 1);
+        assert_eq!(updated.results[0].name, "current");
+        assert_eq!(updated.carried_forward.len(), 1);
+        assert_eq!(
+            updated.carried_forward[0].outcome,
+            PublisherOutcome::RolledBack
+        );
+
+        let persisted: PublishReport = serde_json::from_str(
+            &std::fs::read_to_string(rollback_path(&ctx, "fixt")).expect("read rollback.json"),
+        )
+        .expect("parse rollback.json");
+        assert_eq!(persisted, updated);
+        run_with_publishers(&mut ctx, "fixt", &publishers).expect("second pass");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

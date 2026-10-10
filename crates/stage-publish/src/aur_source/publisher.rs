@@ -108,11 +108,7 @@ pub(super) fn resolve_aur_source_package_name(
 /// `ssh://aur@aur.archlinux.org/<pkg_name>.git` from the resolved package
 /// name, so the push target tracks `pkgbase` and cannot drift.
 pub(super) fn aur_source_push_git_url(cfg: &AurSourceConfig, pkg_name: &str) -> String {
-    cfg.git_url
-        .as_deref()
-        .filter(|u| !u.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| util::aur_default_git_url(pkg_name))
+    util::aur_push_git_url(cfg.git_url.as_deref(), pkg_name)
 }
 
 /// Build an [`AurSourceTarget`] for a single per-crate `aur_source:` block.
@@ -193,6 +189,23 @@ fn any_aur_source_active(ctx: &Context) -> bool {
         )
     });
     per_crate_active || top_level_active
+}
+
+/// The evidence for the AUR packages `targets` names.
+fn aur_source_evidence(targets: Vec<AurSourceTarget>) -> anodizer_core::PublishEvidence {
+    let mut evidence = anodizer_core::PublishEvidence::new("upstream-aur");
+    if let Some(first) = targets.first() {
+        evidence.primary_ref = Some(format!(
+            "https://aur.archlinux.org/packages/{}",
+            first.package
+        ));
+    }
+    evidence.extra = anodizer_core::PublishEvidenceExtra::AurSource(
+        anodizer_core::publish_evidence::AurSourceExtra {
+            aur_source_targets: targets,
+        },
+    );
+    evidence
 }
 
 impl anodizer_core::Publisher for AurSourcePublisher {
@@ -323,13 +336,17 @@ impl anodizer_core::Publisher for AurSourcePublisher {
                     Ok((pushed, target))
                 },
             );
-            let Some((pushed, target)) = crate::publisher_helpers::absorb_entry_skip(
+            let absorbed = crate::publisher_helpers::absorb_entry_skip(
                 ctx,
                 &log,
                 "aur_source",
                 crate_name,
                 outcome,
-            )?
+            );
+            let Some((pushed, target)) =
+                crate::publisher_helpers::keep_committed_on_failure(ctx, absorbed, |_| {
+                    (!targets.is_empty()).then(|| aur_source_evidence(targets.clone()))
+                })?
             else {
                 continue;
             };
@@ -345,12 +362,18 @@ impl anodizer_core::Publisher for AurSourcePublisher {
         // before the pushes and indexed by the entries that pushed, so a
         // gated-off or unchanged entry leaves no rollback target behind.
         let top_level_targets = collect_aur_source_top_level_targets(ctx);
-        for i in publish_top_level_aur_sources(ctx, &log)? {
+        let mut pushed_entries = Vec::new();
+        let top_level =
+            super::publish::publish_top_level_aur_sources_into(ctx, &log, &mut pushed_entries);
+        for i in pushed_entries {
             any_pushed = true;
             if let Some(t) = top_level_targets.get(i) {
                 targets.push(t.clone());
             }
         }
+        crate::publisher_helpers::keep_committed_on_failure(ctx, top_level, |_| {
+            (!targets.is_empty()).then(|| aur_source_evidence(targets.clone()))
+        })?;
         crate::publisher_helpers::evaluate_entry_skips(
             ctx,
             &log,
@@ -358,19 +381,7 @@ impl anodizer_core::Publisher for AurSourcePublisher {
             crate::publisher_helpers::RunLanding::from_landed(any_pushed),
             selected.len(),
         );
-        let mut evidence = anodizer_core::PublishEvidence::new("upstream-aur");
-        if let Some(first) = targets.first() {
-            evidence.primary_ref = Some(format!(
-                "https://aur.archlinux.org/packages/{}",
-                first.package
-            ));
-        }
-        evidence.extra = anodizer_core::PublishEvidenceExtra::AurSource(
-            anodizer_core::publish_evidence::AurSourceExtra {
-                aur_source_targets: targets,
-            },
-        );
-        Ok(evidence)
+        Ok(aur_source_evidence(targets))
     }
 
     fn rollback(

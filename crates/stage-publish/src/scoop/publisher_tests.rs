@@ -121,6 +121,7 @@ fn scoop_target_extra_carries_no_secret_material() {
                 repo_url: "https://github.com/acme/scoop-bucket.git".into(),
                 branch: Some("main".into()),
                 token_env_var: Some("SCOOP_BUCKET_TOKEN".into()),
+                commit: None,
             }],
         });
     let s = serde_json::to_string(&e).expect("serialize");
@@ -137,7 +138,12 @@ fn scoop_target_extra_carries_no_secret_material() {
 
 #[test]
 fn commit_outcome_is_pushed() {
-    assert!(util::CommitOutcome::Pushed.is_pushed());
+    assert!(
+        util::CommitOutcome::Pushed {
+            commit: "abc".into()
+        }
+        .is_pushed()
+    );
     assert!(!util::CommitOutcome::NoChanges.is_pushed());
 }
 
@@ -148,6 +154,7 @@ fn scoop_target_extra_roundtrips() {
         repo_url: "https://github.com/acme/scoop-bucket.git".into(),
         branch: Some("main".into()),
         token_env_var: Some("SCOOP_BUCKET_TOKEN".into()),
+        commit: None,
     }];
     let extra =
         anodizer_core::PublishEvidenceExtra::Scoop(anodizer_core::publish_evidence::ScoopExtra {
@@ -155,40 +162,6 @@ fn scoop_target_extra_roundtrips() {
         });
     let decoded = decode_scoop_targets(&extra);
     assert_eq!(decoded, original);
-}
-
-#[test]
-fn scoop_collect_run_targets_walks_per_crate_config() {
-    let ctx = TestContextBuilder::new()
-        .crates(vec![scoop_crate("demo")])
-        .build();
-    let targets = collect_scoop_run_targets(&ctx);
-    assert_eq!(targets.len(), 1);
-    assert_eq!(targets[0].target, "demo");
-    assert_eq!(targets[0].branch.as_deref(), Some("main"));
-}
-
-/// A pure-workspace config (empty top-level `crates:`, the cfgd shape)
-/// must still record an evidence/rollback target: the run loop
-/// dispatches the workspace crate and pushes the bucket commit, so an
-/// empty target list here means a push with no rollback evidence
-/// ("no targets recorded").
-#[test]
-fn scoop_collect_run_targets_sees_workspace_only_crate() {
-    let ctx = TestContextBuilder::new()
-        .workspaces(vec![anodizer_core::config::WorkspaceConfig {
-            name: "ws".to_string(),
-            crates: vec![scoop_crate("ws-only")],
-            ..Default::default()
-        }])
-        .build();
-    assert!(
-        ctx.config.crates.is_empty(),
-        "fixture must be a pure-workspace config"
-    );
-    let targets = collect_scoop_run_targets(&ctx);
-    assert_eq!(targets.len(), 1, "{targets:?}");
-    assert_eq!(targets[0].target, "ws-only");
 }
 
 #[test]
@@ -228,21 +201,22 @@ fn scoop_effective_publish_crates_honors_non_empty_selection() {
 
 #[test]
 fn scoop_rollback_dedups_shared_bucket() {
-    // A single bucket can be configured for multiple crates;
-    // dedup so the second `git revert HEAD` doesn't undo the
-    // first. Mirror of homebrew_rollback_dedups_shared_tap.
+    // One push recorded twice (a carried row joined with a re-run's)
+    // is reverted once. Mirror of homebrew_rollback_dedups_shared_tap.
     let targets = vec![
         ScoopTarget {
             target: "alpha".into(),
             repo_url: "https://github.com/acme/scoop-bucket.git".into(),
             branch: Some("main".into()),
             token_env_var: Some("SCOOP_BUCKET_TOKEN".into()),
+            commit: None,
         },
         ScoopTarget {
             target: "beta".into(),
             repo_url: "https://github.com/acme/scoop-bucket.git".into(),
             branch: Some("main".into()),
             token_env_var: Some("SCOOP_BUCKET_TOKEN".into()),
+            commit: None,
         },
     ];
     let unique = dedup_scoop_targets(&targets);

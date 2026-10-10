@@ -1,7 +1,12 @@
-//! Shared `git revert HEAD --no-edit` + `git push` helper used by every
-//! git-revert publisher (homebrew / scoop / nix / our-AUR) whose rollback
+//! Shared `git revert <commit> --no-edit` + `git push` helper used by every
+//! git-revert publisher (homebrew / scoop / nix / aur) whose rollback
 //! shape is "create a revert commit on the publisher-owned repo, push
 //! it to the same branch".
+//!
+//! The commit reverted is the one the publish pushed, recorded in the
+//! evidence at push time. Reverting `HEAD` instead undid whatever was
+//! newest on the branch at rollback time: another release's commit, or a
+//! revert already made, which re-applied the withdrawn release.
 //!
 //! Why re-clone instead of reuse a `target/anodizer/<publisher>/` clone?
 //! All four git-revert publishers clone into a `tempfile::tempdir()` that
@@ -9,7 +14,7 @@
 //! change the publish path's working-tree footprint (each publisher's
 //! `publish_to_X` body intentionally leaves no on-disk state) and would
 //! leak secrets onto disk for longer than necessary. Recording
-//! `{repo_url, branch, ssh hints}` in
+//! `{repo_url, branch, commit, ssh hints}` in
 //! [`anodizer_core::PublishEvidence::extra`] and re-cloning at rollback
 //! time keeps the publish path intact and trades one extra `git clone`
 //! (rare, only on rollback) for less risk of touching unrelated state.
@@ -25,7 +30,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use super::clone::{clone_repo_ssh, clone_repo_with_auth};
-use super::cmd::{PushLadder, run_git_push_retrying};
+use super::cmd::{PushLadder, run_cmd_in, run_cmd_in_timeout, run_git_push_retrying};
+use super::commit::GIT_FETCH_TIMEOUT;
 use anodizer_core::log::StageLogger;
 use anodizer_core::retry::RetryPolicy;
 
@@ -35,8 +41,8 @@ use anodizer_core::retry::RetryPolicy;
 /// remote push.
 const GIT_REVERT_PUSH_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// Description of a publisher-owned repo whose HEAD should be reverted +
-/// pushed.
+/// Description of a publisher-owned repo whose pushed commit should be
+/// reverted + pushed.
 ///
 /// This is the structured form of what gets serialized into
 /// `PublishEvidence.extra` and decoded back at rollback time. Each
@@ -57,6 +63,11 @@ pub(crate) struct RevertTarget {
     /// branch" — `clone --depth=1` puts HEAD on the default branch,
     /// so the helper falls back to `HEAD` in the push refspec.
     pub branch: Option<String>,
+    /// The commit the publish pushed, as recorded at push time. `None`
+    /// is a record written before the commit was recorded: nothing can
+    /// be reverted safely from it, and the target is skipped with a
+    /// warning.
+    pub commit: Option<String>,
     /// Auth token (used only when `repo_url` is HTTPS). Captured at
     /// run-time from the same env-var resolver `clone_repo` uses so
     /// rollback works without re-resolving config. `None` means use
@@ -78,24 +89,42 @@ pub(crate) struct RevertTarget {
     pub ssh_command: Option<String>,
 }
 
-/// Re-clone the publisher-owned repo, create a `git revert HEAD --no-edit`
-/// commit on top, and push it to the same branch.
+/// What one target's revert did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RevertOutcome {
+    /// A revert commit for the recorded commit was pushed.
+    Reverted,
+    /// Nothing was pushed, for the reason given: no commit recorded, the
+    /// commit is not on the branch, or it was already reverted.
+    Skipped(String),
+}
+
+/// Re-clone the publisher-owned repo, create a `git revert <commit>
+/// --no-edit` commit on top of the branch, and push it.
 ///
 /// Failure modes (any one is a hard error from this helper — callers
 /// catch + warn so other targets still get tried):
 ///
-/// 1. Clone fails (network, auth, repo gone).
-/// 2. `git revert HEAD --no-edit` fails (empty repo, merge conflict).
+/// 1. Clone or fetch fails (network, auth, repo gone).
+/// 2. `git revert <commit> --no-edit` fails (conflict with a later commit).
 /// 3. `git push` fails (branch protection, race, auth revoked).
 ///
-/// Success path on a clean repo: a single new commit reaches the
-/// branch, formatted by `git revert` as `Revert "<subject>"`.
+/// A target whose recorded commit cannot be reverted safely is
+/// [`RevertOutcome::Skipped`], never an error: no commit recorded, the
+/// commit absent from the repository or not on the branch (force-pushed
+/// away, or the branch deleted), or a revert of it already on the branch.
 pub(crate) fn run_git_revert_and_push(
     target: &RevertTarget,
     retry: &RetryPolicy,
     deadline: Option<Instant>,
     log: &StageLogger,
-) -> Result<()> {
+) -> Result<RevertOutcome> {
+    let Some(commit) = target.commit.as_deref() else {
+        return Ok(RevertOutcome::Skipped(
+            "the record names no pushed commit (written by an earlier anodizer); nothing reverted"
+                .into(),
+        ));
+    };
     let tmp_dir = tempfile::tempdir().context("git_revert: create temp dir")?;
     let repo_path = tmp_dir.path();
 
@@ -124,14 +153,141 @@ pub(crate) fn run_git_revert_and_push(
             log,
         )?;
     }
+    check_out_branch_with_history(repo_path, target.branch.as_deref(), log)?;
 
-    revert_head_in(repo_path)?;
+    let branch_label = target.branch.as_deref().unwrap_or("the default branch");
+    if !git_succeeds(
+        repo_path,
+        &["cat-file", "-e", &format!("{commit}^{{commit}}")],
+    )? {
+        return Ok(RevertOutcome::Skipped(format!(
+            "commit {commit} is not in the repository; nothing reverted"
+        )));
+    }
+    if !git_succeeds(repo_path, &["merge-base", "--is-ancestor", commit, "HEAD"])? {
+        return Ok(RevertOutcome::Skipped(format!(
+            "commit {commit} is not on {branch_label}; nothing reverted"
+        )));
+    }
+    if let Some(by) = existing_revert_of(repo_path, commit)? {
+        return Ok(RevertOutcome::Skipped(format!(
+            "commit {commit} was already reverted by {by}; nothing reverted"
+        )));
+    }
+
+    revert_commit_in(repo_path, commit)?;
     push_after_revert(repo_path, target.branch.as_deref(), retry, deadline, log)?;
+    Ok(RevertOutcome::Reverted)
+}
+
+/// Put the clone on `branch` with enough history to find the recorded
+/// commit. The publish path clones `--depth=1`, so the history is fetched
+/// whole; `branch` is fetched and checked out when it is not the default.
+fn check_out_branch_with_history(
+    repo_path: &Path,
+    branch: Option<&str>,
+    log: &StageLogger,
+) -> Result<()> {
+    if git_stdout(repo_path, &["rev-parse", "--is-shallow-repository"])?.trim() == "true" {
+        run_cmd_in_timeout(
+            repo_path,
+            "git",
+            &["fetch", "--unshallow", "origin"],
+            "git_revert: git fetch --unshallow",
+            None,
+            log,
+            GIT_FETCH_TIMEOUT,
+        )?;
+    }
+    if let Some(branch) = branch {
+        let refspec = format!("+refs/heads/{branch}:refs/remotes/origin/{branch}");
+        run_cmd_in_timeout(
+            repo_path,
+            "git",
+            &["fetch", "origin", &refspec],
+            &format!("git_revert: git fetch origin {branch}"),
+            None,
+            log,
+            GIT_FETCH_TIMEOUT,
+        )?;
+        run_cmd_in(
+            repo_path,
+            "git",
+            &[
+                "checkout",
+                "-B",
+                branch,
+                &format!("refs/remotes/origin/{branch}"),
+            ],
+            &format!("git_revert: git checkout -B {branch}"),
+        )?;
+    }
     Ok(())
 }
 
-/// Run `git revert HEAD --no-edit` inside `path`. Captures stderr on
-/// failure so a merge-conflict / empty-repo failure mode is visible.
+/// The hash of a commit after `commit` on the current branch whose body
+/// says it reverts it, if there is one. `git revert` writes
+/// `This reverts commit <full hash>.` into every revert it creates.
+fn existing_revert_of(repo_path: &Path, commit: &str) -> Result<Option<String>> {
+    let full = git_stdout(
+        repo_path,
+        &["rev-parse", "--verify", &format!("{commit}^{{commit}}")],
+    )?;
+    let out = git_stdout(
+        repo_path,
+        &[
+            "log",
+            "--format=%H",
+            "-F",
+            &format!("--grep=This reverts commit {}", full.trim()),
+            &format!("{commit}..HEAD"),
+        ],
+    )?;
+    Ok(out.lines().next().map(str::to_string))
+}
+
+fn git_succeeds(repo_path: &Path, args: &[&str]) -> Result<bool> {
+    let status = Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .output()
+        .with_context(|| {
+            format!(
+                "git_revert: git {} in {}",
+                args.join(" "),
+                repo_path.display()
+            )
+        })?;
+    Ok(status.status.success())
+}
+
+fn git_stdout(repo_path: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .output()
+        .with_context(|| {
+            format!(
+                "git_revert: git {} in {}",
+                args.join(" "),
+                repo_path.display()
+            )
+        })?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git_revert: git {} failed in {} (exit {})\nstderr: {}",
+            args.join(" "),
+            repo_path.display(),
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Run `git revert <commit> --no-edit` inside `path`. Captures stderr on
+/// failure so a conflict failure mode is visible, and aborts the revert so
+/// the clone is not left mid-operation.
 ///
 /// `--no-edit` keeps the revert non-interactive (no $EDITOR invocation
 /// in CI / non-tty environments). The revert commit carries an explicit
@@ -141,7 +297,7 @@ pub(crate) fn run_git_revert_and_push(
 /// runners without a global `~/.gitconfig` have no ambient identity for
 /// `git revert` to fall back on, and would otherwise fail every rollback
 /// with "Author identity unknown" (exit 128).
-fn revert_head_in(path: &Path) -> Result<()> {
+fn revert_commit_in(path: &Path, commit: &str) -> Result<()> {
     // Reject a dirty working tree up front. `git revert` would otherwise
     // either succeed against a clean tree or fail with a less actionable
     // "your local changes would be overwritten" message. The dirty-tree
@@ -170,7 +326,7 @@ fn revert_head_in(path: &Path) -> Result<()> {
 
     let (author_name, author_email) = super::commit::resolved_commit_identity();
     let output = Command::new("git")
-        .args(["revert", "HEAD", "--no-edit"])
+        .args(["revert", commit, "--no-edit"])
         .current_dir(path)
         .env("GIT_AUTHOR_NAME", &author_name)
         .env("GIT_AUTHOR_EMAIL", &author_email)
@@ -179,8 +335,14 @@ fn revert_head_in(path: &Path) -> Result<()> {
         .output()
         .with_context(|| format!("git_revert: git revert in {}", path.display()))?;
     if !output.status.success() {
+        // Best effort: a conflicted revert leaves the clone mid-revert, and
+        // the temp dir is removed anyway.
+        let _ = Command::new("git")
+            .args(["revert", "--abort"])
+            .current_dir(path)
+            .output();
         anyhow::bail!(
-            "git_revert: git revert HEAD failed in {} (exit {})\nstderr: {}",
+            "git_revert: git revert {commit} failed in {} (exit {})\nstderr: {}",
             path.display(),
             output.status.code().unwrap_or(-1),
             String::from_utf8_lossy(&output.stderr),
@@ -265,7 +427,6 @@ mod tests {
             vec!["init", "-b", "master"],
             vec!["config", "user.email", "test@example.invalid"],
             vec!["config", "user.name", "Test"],
-            vec!["config", "commit.gpgsign", "false"],
         ] {
             anodizer_core::test_helpers::git_test_ok(work.path(), &args);
         }
@@ -312,22 +473,66 @@ mod tests {
         (url, bare, work)
     }
 
-    #[test]
-    fn git_revert_and_push_creates_revert_commit_on_clean_repo() {
-        let (url, _bare, _work) = init_bare_remote_with_one_commit();
-        let log = StageLogger::new("test", Verbosity::Normal);
-        let target = RevertTarget {
+    fn head_of(repo: &Path) -> String {
+        git_stdout(repo, &["rev-parse", "HEAD"])
+            .expect("rev-parse")
+            .trim()
+            .to_string()
+    }
+
+    fn commit_file(repo: &Path, name: &str, body: &str, subject: &str) -> String {
+        std::fs::write(repo.join(name), body).unwrap();
+        for args in [vec!["add", name], vec!["commit", "-m", subject]] {
+            anodizer_core::test_helpers::git_test_ok(repo, &args);
+        }
+        anodizer_core::test_helpers::git_test_ok(repo, &["push", "origin", "master"]);
+        head_of(repo)
+    }
+
+    fn target_for(url: &str, commit: Option<&str>) -> RevertTarget {
+        RevertTarget {
             target: "demo".into(),
-            repo_url: url.clone(),
+            repo_url: url.into(),
             branch: Some("master".into()),
+            commit: commit.map(str::to_string),
             token: None,
             private_key: None,
             ssh_command: None,
-        };
-        // The helper re-clones, reverts HEAD, pushes back to the bare
-        // remote. A fresh clone must then have HEAD as a revert
+        }
+    }
+
+    fn subjects(url: &str) -> Vec<String> {
+        let verify_dir = tempfile::tempdir().expect("verify tempdir");
+        assert!(
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["clone", url]).arg(verify_dir.path().join("repo"));
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
+        );
+        git_stdout(&verify_dir.path().join("repo"), &["log", "--pretty=%s"])
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn git_revert_and_push_creates_revert_commit_on_clean_repo() {
+        let (url, _bare, work) = init_bare_remote_with_one_commit();
+        let log = StageLogger::new("test", Verbosity::Normal);
+        let target = target_for(&url, Some(&head_of(work.path())));
+        // The helper re-clones, reverts the recorded commit, pushes back to
+        // the bare remote. A fresh clone must then have HEAD as a revert
         // commit (subject starts with `Revert`).
-        run_git_revert_and_push(&target, &TEST_PUSH_RETRY, None, &log).expect("revert+push ok");
+        let outcome =
+            run_git_revert_and_push(&target, &TEST_PUSH_RETRY, None, &log).expect("revert+push ok");
+        assert_eq!(outcome, RevertOutcome::Reverted);
 
         let verify_dir = tempfile::tempdir().expect("verify tempdir");
         let ok = anodizer_core::test_helpers::output_with_spawn_retry(
@@ -358,14 +563,106 @@ mod tests {
         );
     }
 
+    /// The revert undoes the recorded commit and nothing newer: a commit
+    /// pushed after the release stays, and the release's own commit is the
+    /// one reverted. Reverting `HEAD` would have undone the newer commit.
+    #[test]
+    fn the_recorded_commit_is_reverted_not_the_branch_head() {
+        let (url, _bare, work) = init_bare_remote_with_one_commit();
+        let log = StageLogger::new("test", Verbosity::Normal);
+        let released = commit_file(work.path(), "formula.rb", "v1\n", "release 1.0.0");
+        let later = commit_file(work.path(), "other.rb", "x\n", "unrelated later change");
+        let target = target_for(&url, Some(&released));
+        let outcome = run_git_revert_and_push(&target, &TEST_PUSH_RETRY, None, &log).unwrap();
+        assert_eq!(outcome, RevertOutcome::Reverted);
+        let subjects = subjects(&url);
+        assert_eq!(subjects[0], "Revert \"release 1.0.0\"");
+        assert_eq!(subjects[1], "unrelated later change");
+        assert_eq!(head_of(work.path()), later, "the later commit is untouched");
+    }
+
+    /// A record with no commit, a commit the branch no longer holds, and a
+    /// commit already reverted are each skipped with a reason, and the
+    /// remote is left as it was.
+    #[test]
+    fn a_commit_that_cannot_be_reverted_safely_is_skipped() {
+        let (url, _bare, work) = init_bare_remote_with_one_commit();
+        let log = StageLogger::new("test", Verbosity::Normal);
+        let released = commit_file(work.path(), "formula.rb", "v1\n", "release 1.0.0");
+        let before = subjects(&url);
+
+        let none =
+            run_git_revert_and_push(&target_for(&url, None), &TEST_PUSH_RETRY, None, &log).unwrap();
+        assert!(
+            matches!(&none, RevertOutcome::Skipped(why) if why.contains("names no pushed commit")),
+            "{none:?}"
+        );
+
+        let gone = "0123456789abcdef0123456789abcdef01234567";
+        let absent =
+            run_git_revert_and_push(&target_for(&url, Some(gone)), &TEST_PUSH_RETRY, None, &log)
+                .unwrap();
+        assert!(
+            matches!(&absent, RevertOutcome::Skipped(why) if why.contains("is not in the repository")),
+            "{absent:?}"
+        );
+        assert_eq!(subjects(&url), before, "a skip pushes nothing");
+
+        let first = run_git_revert_and_push(
+            &target_for(&url, Some(&released)),
+            &TEST_PUSH_RETRY,
+            None,
+            &log,
+        )
+        .unwrap();
+        assert_eq!(first, RevertOutcome::Reverted);
+        let again = run_git_revert_and_push(
+            &target_for(&url, Some(&released)),
+            &TEST_PUSH_RETRY,
+            None,
+            &log,
+        )
+        .unwrap();
+        assert!(
+            matches!(&again, RevertOutcome::Skipped(why) if why.contains("was already reverted by")),
+            "{again:?}"
+        );
+        assert_eq!(subjects(&url).len(), before.len() + 1, "reverted once");
+    }
+
+    /// A commit on another branch of the same repository is not on the
+    /// recorded branch, so it is skipped rather than reverted onto it.
+    #[test]
+    fn a_commit_on_another_branch_is_skipped() {
+        let (url, _bare, work) = init_bare_remote_with_one_commit();
+        let log = StageLogger::new("test", Verbosity::Normal);
+        anodizer_core::test_helpers::git_test_ok(work.path(), &["checkout", "-b", "side"]);
+        std::fs::write(work.path().join("side.rb"), "s\n").unwrap();
+        for args in [
+            vec!["add", "side.rb"],
+            vec!["commit", "-m", "side commit"],
+            vec!["push", "origin", "side"],
+        ] {
+            anodizer_core::test_helpers::git_test_ok(work.path(), &args);
+        }
+        let side = head_of(work.path());
+        let outcome =
+            run_git_revert_and_push(&target_for(&url, Some(&side)), &TEST_PUSH_RETRY, None, &log)
+                .unwrap();
+        assert!(
+            matches!(&outcome, RevertOutcome::Skipped(why) if why.contains("is not on master")),
+            "{outcome:?}"
+        );
+    }
+
     #[test]
     fn git_revert_and_push_fails_loudly_on_dirty_tree() {
         // Stand up a real repo, add a stray unstaged file, then call
-        // `revert_head_in` directly: it must refuse and bail.
+        // `revert_commit_in` directly: it must refuse and bail.
         let (_url, _bare, work) = init_bare_remote_with_one_commit();
         std::fs::write(work.path().join("stray"), "dirty\n").unwrap();
-        let err =
-            revert_head_in(work.path()).expect_err("dirty tree should fail before revert runs");
+        let err = revert_commit_in(work.path(), "HEAD")
+            .expect_err("dirty tree should fail before revert runs");
         let msg = format!("{err:?}");
         assert!(
             msg.contains("dirty working tree"),
@@ -377,16 +674,16 @@ mod tests {
     /// identity anywhere in the resolution chain (`GIT_AUTHOR_*`/
     /// `GIT_COMMITTER_*` env unset, no global config, no system config, and a
     /// fresh clone has no local `user.*` either), `git revert` used to fail
-    /// with "Author identity unknown" because `revert_head_in` set no
+    /// with "Author identity unknown" because `revert_commit_in` set no
     /// identity on the child. It now applies the same resolved identity the
     /// forward publish commit uses. This test does NOT use
     /// `init_bare_remote_with_one_commit()` — its fixture commits would
     /// otherwise be indistinguishable from the identity resolution under
     /// test; the guards below strip every ambient `GIT_*` identity source
-    /// so only `revert_head_in`'s own resolution can supply one.
+    /// so only `revert_commit_in`'s own resolution can supply one.
     #[test]
     #[serial(git_env)]
-    fn revert_head_in_succeeds_with_no_ambient_identity() {
+    fn revert_commit_in_succeeds_with_no_ambient_identity() {
         let bare = tempfile::tempdir().expect("bare tempdir");
         let work = tempfile::tempdir().expect("work tempdir");
 
@@ -394,7 +691,7 @@ mod tests {
         // first git command runs, so the clone's checkout obeys it too: on a
         // host whose system gitconfig enables `core.autocrlf` (git-for-Windows)
         // a clone under the real config would check `README` out as CRLF, and
-        // the later autocrlf-off neutralization would make `revert_head_in`'s
+        // the later autocrlf-off neutralization would make `revert_commit_in`'s
         // dirty-tree guard compare that CRLF tree against the LF blob and
         // fabricate a phantom `M README`. With one config in effect throughout
         // (autocrlf off), the checkout stays LF, the tree is clean, and the
@@ -425,7 +722,6 @@ mod tests {
             vec!["init", "-b", "master"],
             vec!["config", "user.email", "seed@example.invalid"],
             vec!["config", "user.name", "Seed"],
-            vec!["config", "commit.gpgsign", "false"],
         ] {
             assert!(
                 anodizer_core::test_helpers::output_with_spawn_retry(
@@ -512,7 +808,7 @@ mod tests {
             .success()
         );
 
-        revert_head_in(&repo_path).expect(
+        revert_commit_in(&repo_path, "HEAD").expect(
             "revert must succeed even with no ambient GIT_AUTHOR_*/GIT_COMMITTER_* env, \
              no global config, and no system config -- the fix must supply an explicit \
              identity on the git-revert child, or this fails with 'Author identity unknown'",

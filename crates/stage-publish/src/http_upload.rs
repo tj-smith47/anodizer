@@ -158,6 +158,20 @@ pub(crate) struct UploadEntryRequest<'a> {
     pub password: &'a str,
     pub custom_artifact_name: bool,
     pub overwrite: bool,
+    /// The config entry's `name:`, recorded beside each URL written.
+    pub entry: &'a str,
+    /// Every URL a PUT/POST of this run wrote, appended the moment the
+    /// request succeeded. Survives an error on a later artifact, so the
+    /// `Failed` row and the rollback name exactly what this run wrote.
+    pub written: &'a std::sync::Mutex<Vec<crate::artifactory::ArtifactoryTarget>>,
+}
+
+/// A rollback target for one URL the run wrote.
+pub(crate) fn written_target(entry: &str, url: &str) -> crate::artifactory::ArtifactoryTarget {
+    crate::artifactory::ArtifactoryTarget {
+        entry: entry.to_string(),
+        url: url.to_string(),
+    }
 }
 
 /// Upload one entry's resolved artifact set over the shared HTTP-PUT/POST
@@ -224,9 +238,10 @@ pub(crate) fn upload_artifact_set(
         &jobs,
         parallelism,
         "http upload",
+        "upload",
         log,
         |(artifact, url, rendered_headers)| {
-            crate::artifactory::upload_single_artifact_prepared(
+            let outcome = crate::artifactory::upload_single_artifact_prepared(
                 client,
                 &UploadHeaders {
                     publisher: req.publisher,
@@ -244,7 +259,12 @@ pub(crate) fn upload_artifact_set(
                 &policy,
                 deadline,
                 log,
-            )
+            )?;
+            if outcome == UploadOutcome::Uploaded {
+                crate::util::lock_recover(req.written, log, req.publisher)
+                    .push(written_target(req.entry, url));
+            }
+            Ok(outcome)
         },
     )?;
 

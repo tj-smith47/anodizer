@@ -95,7 +95,7 @@ pub(crate) fn decode_blob_targets(extra: &anodizer_core::PublishEvidenceExtra) -
 /// [`anodizer_core::Publisher`] adapter over [`BlobStage`]'s `run`.
 ///
 /// Evidence records ONLY files that actually ended up in the store (via
-/// `BlobStage::run_with_evidence`). The prior pre-upload capture would
+/// `BlobStage::run_report`). The prior pre-upload capture would
 /// have given an operator running `anodizer tag rollback` a checklist of paths
 /// that never existed when a mid-stream upload failed; the post-upload
 /// snapshot is the safer end state — fewer rollback items, no phantom
@@ -147,6 +147,23 @@ pub(crate) fn blob_manual_cleanup_msg(target: &str) -> String {
     )
 }
 
+/// The evidence for the objects `uploaded` names. The `artifact_paths` slot
+/// keeps the operator-readable `<provider>://<bucket>/<key>` form for the
+/// text-only `anodizer tag rollback` summary; the structured copy in
+/// `extra.blob_targets` is the authoritative source for the DELETE call.
+pub(crate) fn blob_evidence(uploaded: &[BlobTarget]) -> anodizer_core::PublishEvidence {
+    let mut evidence = anodizer_core::PublishEvidence::new("blob");
+    if let Some(first) = uploaded.first() {
+        evidence.primary_ref = Some(blob_target_url(first));
+    }
+    evidence.artifact_paths = uploaded
+        .iter()
+        .map(|t| std::path::PathBuf::from(blob_target_url(t)))
+        .collect();
+    evidence.extra = encode_blob_targets(uploaded);
+    evidence
+}
+
 impl anodizer_core::Publisher for BlobPublisher {
     fn name(&self) -> &str {
         "blob"
@@ -171,31 +188,17 @@ impl anodizer_core::Publisher for BlobPublisher {
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
-        // Capture only files that actually uploaded. On failure the
-        // returned error is re-raised (so the dispatch path treats the
-        // publisher as failed) but the partial-success list inside
-        // `run_with_evidence` is already discarded by `?` — that's the
-        // accepted trade-off: evidence is post-upload truth, errors
-        // bubble up cleanly. A future refactor that wants partial
-        // evidence on a failure path can switch to a `(Vec, Result)`
-        // shape; for now the publish run is either fully evidenced or
-        // failed.
-        let uploaded: Vec<BlobTarget> = BlobStage::new().run_with_evidence(ctx)?;
-        let mut evidence = anodizer_core::PublishEvidence::new("blob");
-        // The `artifact_paths` slot keeps the operator-readable
-        // `<provider>://<bucket>/<key>` form for the text-only
-        // `anodizer tag rollback` summary; the structured copy in
-        // `extra.blob_targets` is the authoritative source for the
-        // DELETE call.
-        if let Some(first) = uploaded.first() {
-            evidence.primary_ref = Some(blob_target_url(first));
+        // Only objects that actually uploaded are recorded. On a failure
+        // the ones written before it ride to the `Failed` row, so a rollback
+        // can delete them.
+        let report = BlobStage::new().run_report(ctx)?;
+        if let Some(Err(err)) = report.exec {
+            if !report.targets.is_empty() {
+                ctx.record_pending_evidence(blob_evidence(&report.targets));
+            }
+            return Err(err);
         }
-        evidence.artifact_paths = uploaded
-            .iter()
-            .map(|t| std::path::PathBuf::from(blob_target_url(t)))
-            .collect();
-        evidence.extra = encode_blob_targets(&uploaded);
-        Ok(evidence)
+        Ok(blob_evidence(&report.targets))
     }
 
     fn rollback(
@@ -328,6 +331,7 @@ fn rollback_via_object_store(
     let mut deleted = 0usize;
     let mut already_absent = 0usize;
     let mut failed = 0usize;
+    let mut overwritten = 0usize;
 
     for ((provider_str, bucket, region, endpoint), group_targets) in &groups {
         // Synthesize a minimal `BlobConfig` sufficient for
@@ -373,6 +377,17 @@ fn rollback_via_object_store(
         for t in group_targets {
             let path = object_store::path::Path::from(t.key.as_str());
             let url = blob_target_url(t);
+            // The run replaced an object that was there before it. Deleting
+            // the key would not bring the previous version back, so the
+            // object this run wrote stays and the operator is told.
+            if t.overwrote {
+                log.warn(&format!(
+                    "{} overwrote an object that existed before this release; left in place (restore the previous version from the bucket's own versioning or a backup)",
+                    url
+                ));
+                overwritten += 1;
+                continue;
+            }
             match rt.block_on(store.delete(&path)) {
                 Ok(()) => {
                     log.status(&format!("deleted {}", url));
@@ -397,8 +412,8 @@ fn rollback_via_object_store(
     }
 
     log.status(&format!(
-        "blob rollback complete — {} deleted, {} already absent, {} failed",
-        deleted, already_absent, failed
+        "blob rollback complete — {} deleted, {} already absent, {} overwritten (left in place), {} failed",
+        deleted, already_absent, overwritten, failed
     ));
     Ok(())
 }
@@ -479,6 +494,7 @@ mod publisher_tests {
             key: "k".to_string(),
             region: None,
             endpoint: None,
+            overwrote: false,
         };
         assert!(blob_object_exists(&ctx, &target).is_err());
     }
@@ -629,6 +645,7 @@ mod publisher_tests {
             key: "myapp/v1.0.0/foo.tar.gz".to_string(),
             region: Some("us-west-2".to_string()),
             endpoint: Some("https://s3.example.com".to_string()),
+            overwrote: false,
         };
         let encoded = encode_blob_targets(std::slice::from_ref(&t));
         let decoded = decode_blob_targets(&encoded);
@@ -778,6 +795,7 @@ mod publisher_tests {
             // 127.0.0.1:1 is reserved + nothing listens on port 1.
             region: Some("us-east-1".to_string()),
             endpoint: Some("http://127.0.0.1:1".to_string()),
+            overwrote: false,
         };
         evidence.artifact_paths = vec![std::path::PathBuf::from(blob_target_url(&target))];
         evidence.extra = encode_blob_targets(&[target]);
@@ -786,6 +804,81 @@ mod publisher_tests {
         // endpoint or build_store-time error), rollback returns Ok so
         // sibling publishers' rollbacks aren't aborted.
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
+    }
+
+    /// An object the run overwrote existed before the release, so deleting
+    /// it would not restore anything: the rollback leaves it, says so, and
+    /// still deletes the object the run created. The warning is the one the
+    /// blob storage page quotes, for the bucket and key the page names; the
+    /// page's other warnings are held by
+    /// `the_warning_quoted_in_the_blob_docs_is_what_an_unanswered_abort_produces`.
+    #[test]
+    #[serial_test::serial(aws_env)]
+    fn blob_rollback_leaves_an_overwritten_object_in_place() {
+        use anodizer_core::config::{HumanDuration, RetryConfig};
+        let _skip_signature =
+            anodizer_core::test_helpers::env::EnvGuard::set("AWS_SKIP_SIGNATURE", "true");
+        let _endpoint = anodizer_core::test_helpers::env::EnvGuard::remove("AWS_ENDPOINT");
+        let _endpoint_url = anodizer_core::test_helpers::env::EnvGuard::remove("AWS_ENDPOINT_URL");
+        let (addr, requests) =
+            anodizer_core::test_helpers::responder::spawn_capturing_http_responder_with(|_| {
+                let body = "<DeleteResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Deleted><Key>releases/v1.0.0/app.tar.gz</Key></Deleted></DeleteResult>";
+                vec![format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )]
+            });
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.with_log_capture(capture.clone());
+        ctx.config.retry = Some(RetryConfig {
+            attempts: 1,
+            delay: HumanDuration(std::time::Duration::from_millis(1)),
+            max_delay: HumanDuration(std::time::Duration::from_millis(1)),
+            max_elapsed: None,
+        });
+        let target = |key: &str, overwrote: bool| BlobTarget {
+            provider: "s3".to_string(),
+            bucket: "my-release-bucket".to_string(),
+            key: key.to_string(),
+            region: Some("us-east-1".to_string()),
+            endpoint: Some(format!("http://{addr}")),
+            overwrote,
+        };
+        let mut evidence = PublishEvidence::new("blob");
+        evidence.extra = encode_blob_targets(&[
+            target("releases/v1.0.0/checksums.txt", true),
+            target("releases/v1.0.0/app.tar.gz", false),
+        ]);
+        assert!(BlobPublisher::new().rollback(&mut ctx, &evidence).is_ok());
+
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        assert!(requests[0].contains("app.tar.gz"), "{}", requests[0]);
+        assert!(!requests[0].contains("checksums.txt"), "{}", requests[0]);
+        let page = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/site/content/docs/publish/blob-storage.md"
+        ))
+        .unwrap();
+        let quoted: Vec<&str> = page
+            .lines()
+            .filter_map(|line| line.trim_start().strip_prefix("Warning "))
+            .filter(|line| !line.contains('\u{2026}'))
+            .collect();
+        assert_eq!(quoted.len(), 3);
+        assert_eq!(capture.warn_messages(), vec![quoted[0].to_string()]);
+        let statuses: Vec<String> = capture
+            .all_messages()
+            .into_iter()
+            .filter(|(level, _)| *level == anodizer_core::log::LogLevel::Status)
+            .map(|(_, m)| m)
+            .collect();
+        assert!(
+            statuses.iter().any(|m| m
+                == "blob rollback complete — 1 deleted, 0 already absent, 1 overwritten (left in place), 0 failed"),
+            "{statuses:?}"
+        );
     }
 
     /// Evidence credential-contract regression: serialised `BlobTarget`
@@ -804,6 +897,7 @@ mod publisher_tests {
             key: "myapp/v1.0.0/foo.tar.gz".to_string(),
             region: Some("us-west-2".to_string()),
             endpoint: Some("https://s3.example.com".to_string()),
+            overwrote: false,
         };
         let mut e = anodizer_core::PublishEvidence::new("blob");
         e.extra = encode_blob_targets(&[t]);

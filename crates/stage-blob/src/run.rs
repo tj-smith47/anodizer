@@ -84,6 +84,8 @@ impl Default for BlobStage {
 /// Workers never touch `ctx`.
 struct BlobJob {
     provider_display: &'static str,
+    /// What a warning about a leftover upload names for cleanup.
+    destination: crate::upload::UploadDestination,
     rendered_bucket: String,
     rendered_directory: String,
     /// Rendered (post-template) S3 region, threaded through so the
@@ -102,9 +104,9 @@ struct BlobJob {
 /// Outcome of [`BlobStage::run_report`]: the rollback targets, the upload
 /// execution result, and how many objects were skipped because an identical
 /// copy already existed (drives the idempotent-skip outcome).
-struct BlobRunReport {
-    targets: Vec<BlobTarget>,
-    exec: Option<Result<()>>,
+pub(crate) struct BlobRunReport {
+    pub(crate) targets: Vec<BlobTarget>,
+    pub(crate) exec: Option<Result<()>>,
     skipped_identical: usize,
 }
 
@@ -166,7 +168,7 @@ impl Stage for BlobStage {
         // Per-target failure becomes `PublisherOutcome::Failed(_)` + Ok(()).
         // Catastrophic errors (missing required config, malformed
         // provider, IO impossible at the stage boundary) still bubble up
-        // via the `?` operator in `run_with_evidence` -> `prepare_jobs`.
+        // via the `?` operator in `run_report` -> `prepare_jobs`.
 
         // Gate check: defends against any required failure already recorded in
         // `ctx.publish_report` before blob runs (none in the standard pipeline,
@@ -252,19 +254,9 @@ pub(crate) fn record_blob_result(
         Ok(()) => PublisherOutcome::Succeeded,
         Err(e) => PublisherOutcome::Failed(format!("{e:#}")),
     };
-    let evidence = match exec_result {
-        Ok(()) if !uploaded.is_empty() => {
-            let mut e = anodizer_core::PublishEvidence::new("blob");
-            e.primary_ref = Some(blob_target_url(&uploaded[0]));
-            e.artifact_paths = uploaded
-                .iter()
-                .map(|t| std::path::PathBuf::from(blob_target_url(t)))
-                .collect();
-            e.extra = crate::publisher::encode_blob_targets(uploaded);
-            Some(e)
-        }
-        _ => None,
-    };
+    // A failed run keeps what it wrote before failing: those objects exist,
+    // and the evidence is the only record a rollback has of them.
+    let evidence = (!uploaded.is_empty()).then(|| crate::publisher::blob_evidence(uploaded));
     if ctx.publish_report.is_none() {
         ctx.publish_report = Some(PublishReport::default());
     }
@@ -384,22 +376,8 @@ impl BlobStage {
     /// produced a rollback checklist that referenced files which never
     /// existed when a mid-stream upload failed.
     ///
-    /// On error: returns the list of files that succeeded before the
-    /// failure (via [`anyhow::Error::downcast`] handoff), so the caller
-    /// can still emit a partial rollback checklist. The current
-    /// implementation runs the upload phase atomically per job; partial
-    /// success is captured up to the failing job's boundary.
-    pub(crate) fn run_with_evidence(&self, ctx: &mut Context) -> Result<Vec<BlobTarget>> {
-        let report = self.run_report(ctx)?;
-        if let Some(r) = report.exec {
-            r?;
-        }
-        Ok(report.targets)
-    }
-
-    /// Like [`Self::run_with_evidence`] but splits the catastrophic
-    /// pre-flight / setup errors (returned as the outer `Result::Err`,
-    /// matching the public `run_with_evidence` contract) from the
+    /// Run every configured upload, keeping the catastrophic pre-flight /
+    /// setup errors (returned as the outer `Result::Err`) apart from the
     /// upload-phase outcome.
     ///
     /// Return shape (see [`BlobRunReport`]):
@@ -419,7 +397,7 @@ impl BlobStage {
     /// `Stage::run` consumes `exec` to decide whether to record a
     /// `PublisherOutcome::Succeeded` / `Failed(_)` / `Skipped(AlreadyPublished)`
     /// entry.
-    fn run_report(&self, ctx: &mut Context) -> Result<BlobRunReport> {
+    pub(crate) fn run_report(&self, ctx: &mut Context) -> Result<BlobRunReport> {
         let log = ctx.logger("blob");
         if ctx.skip_in_snapshot(&log, "blob") {
             return Ok(BlobRunReport::no_work());
@@ -684,7 +662,10 @@ impl BlobStage {
                     preflight_kms_cli(kms_provider)?;
                     match kms_provider {
                         KmsProvider::ServerSide => None,
-                        _ => Some((key.to_string(), kms_provider)),
+                        _ => {
+                            validate_kms_item_sizes(key, &upload_items)?;
+                            Some((key.to_string(), kms_provider))
+                        }
                     }
                 } else {
                     None
@@ -697,6 +678,11 @@ impl BlobStage {
 
                 jobs.push(BlobJob {
                     provider_display: provider.display_name(),
+                    destination: crate::upload::UploadDestination {
+                        provider,
+                        bucket: rendered_bucket.clone(),
+                        endpoint: rendered_endpoint.clone(),
+                    },
                     rendered_bucket,
                     rendered_directory,
                     rendered_region,
@@ -728,13 +714,8 @@ impl BlobStage {
             .context("blob: failed to construct tokio runtime")?;
         let runtime_ref = &runtime;
         // Shared accumulator of uploaded [`BlobTarget`]s across every
-        // job. `upload_files_owned` records each successful upload on
-        // its own task; the per-job wrapper translates the returned
-        // object keys into structured `BlobTarget` tuples (provider,
-        // bucket, key, region, endpoint) before appending to the shared
-        // list. On failure the partial list is preserved so
-        // PublishEvidence captures only files that uploaded — and carries
-        // the structured shape needed for the rollback DELETE path.
+        // job; `run_blob_job` appends each job's written keys, including
+        // those of a job that then failed on a later file.
         let uploaded_targets: std::sync::Arc<std::sync::Mutex<Vec<BlobTarget>>> =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         // Count of objects skipped because an identical copy already existed.
@@ -743,63 +724,20 @@ impl BlobStage {
             std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let job_log = log.clone();
         let run_job = |job: &BlobJob| -> Result<()> {
-            match upload_files_owned(
+            run_blob_job(
+                job,
                 runtime_ref,
-                Arc::clone(&job.store),
-                job.upload_items.clone(),
-                job.rendered_directory.clone(),
-                job.put_opts_per_item.clone(),
-                job.parallelism_inner,
-                job.client_kms.clone(),
+                &uploaded_targets,
+                &skipped_identical,
                 &job_log,
-            ) {
-                Ok(report) => {
-                    // One factual default-verbosity line per job, collapsing
-                    // the per-file `uploading …`/`skipping …` firehose (now
-                    // verbose-only). Counts come straight from this job's
-                    // report, so per-crate mode reports one summary per
-                    // published crate's job with that crate's own counts.
-                    let destination = crate::upload::format_remote_prefix(
-                        job.provider_display,
-                        &job.rendered_bucket,
-                        &job.rendered_directory,
-                    );
-                    job_log.status(&crate::upload::blob_upload_summary(
-                        report.uploaded.len(),
-                        report.skipped_identical.len(),
-                        &destination,
-                    ));
-                    skipped_identical.fetch_add(
-                        report.skipped_identical.len(),
-                        std::sync::atomic::Ordering::SeqCst,
-                    );
-                    let mut acc = anodizer_core::parallel::lock_recover(
-                        &uploaded_targets,
-                        &job_log,
-                        "blob targets",
-                    );
-                    // Only freshly-uploaded (or overwritten) keys become
-                    // rollback targets; skipped-identical objects predate
-                    // this run and must not be deleted on rollback.
-                    for key in report.uploaded {
-                        acc.push(BlobTarget {
-                            provider: job.provider_display.to_string(),
-                            bucket: job.rendered_bucket.clone(),
-                            key,
-                            region: job.rendered_region.clone(),
-                            endpoint: job.rendered_endpoint.clone(),
-                        });
-                    }
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
+            )
         };
 
         let result = anodizer_core::parallel::run_parallel_chunks(
             &jobs,
             global_parallelism,
             "blob",
+            "object",
             &log,
             run_job,
         );
@@ -822,6 +760,77 @@ impl BlobStage {
             skipped_identical: skipped_identical.load(std::sync::atomic::Ordering::SeqCst),
         })
     }
+}
+
+/// Run one prepared job and fold what it wrote into the shared accumulators.
+///
+/// The keys a job wrote are recorded whether or not the job then failed: an
+/// object committed before a later file's failure exists in the bucket, and
+/// the rollback removes exactly the objects recorded here.
+fn run_blob_job(
+    job: &BlobJob,
+    runtime: &tokio::runtime::Runtime,
+    uploaded_targets: &std::sync::Mutex<Vec<BlobTarget>>,
+    skipped_identical: &std::sync::atomic::AtomicUsize,
+    log: &anodizer_core::log::StageLogger,
+) -> Result<()> {
+    let (report, result) = upload_files_owned(
+        runtime,
+        Arc::clone(&job.store),
+        job.upload_items.clone(),
+        job.rendered_directory.clone(),
+        job.put_opts_per_item.clone(),
+        job.parallelism_inner,
+        job.client_kms.clone(),
+        job.destination.clone(),
+        log,
+    );
+    // One line per job at default verbosity; the per-file lines are
+    // verbose-only. Per-crate mode reports one summary per published
+    // crate's job with that crate's own counts. A failed job prints it too:
+    // the objects written before the failure are in the bucket.
+    let destination = crate::upload::format_remote_prefix(
+        job.provider_display,
+        &job.rendered_bucket,
+        &job.rendered_directory,
+    );
+    log.status(&crate::upload::blob_upload_summary(
+        report.uploaded.len(),
+        report.skipped_identical.len(),
+        &destination,
+    ));
+    skipped_identical.fetch_add(
+        report.skipped_identical.len(),
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    // Only freshly-uploaded (or overwritten) keys become rollback targets;
+    // skipped-identical objects predate this run and must not be deleted on
+    // rollback.
+    anodizer_core::parallel::lock_recover(uploaded_targets, log, "blob targets").extend(
+        report.uploaded.into_iter().map(|key| BlobTarget {
+            provider: job.provider_display.to_string(),
+            bucket: job.rendered_bucket.clone(),
+            overwrote: report.overwrote.contains(&key),
+            key,
+            region: job.rendered_region.clone(),
+            endpoint: job.rendered_endpoint.clone(),
+        }),
+    );
+    result
+}
+
+/// Refuse, before any object is written, a file the job's client-side KMS
+/// provider cannot encrypt. A file that cannot be read is left for the
+/// upload to report.
+fn validate_kms_item_sizes(kms_key: &str, items: &[(PathBuf, String)]) -> Result<()> {
+    for (path, _) in items {
+        if let Ok(meta) = std::fs::metadata(path) {
+            let size = usize::try_from(meta.len()).unwrap_or(usize::MAX);
+            crate::kms::validate_kms_plaintext_size(kms_key, size)
+                .with_context(|| format!("blobs: cannot upload {}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -870,6 +879,128 @@ mod run_tests {
             metadata: Default::default(),
             size: None,
         });
+    }
+
+    // -------------------------------------------------------------------
+    // run_blob_job — the keys a job wrote reach the rollback targets
+    // whether or not the job then failed.
+    // -------------------------------------------------------------------
+
+    /// A job of three files under `bucket`, whose store refuses `c.txt`.
+    fn job_refusing_c(dir: &std::path::Path, bucket: &str) -> BlobJob {
+        use crate::upload_tests::{Fault, Faults, Probe};
+
+        let upload_items: Vec<(PathBuf, String)> = ["a.txt", "b.txt", "c.txt"]
+            .into_iter()
+            .map(|name| {
+                let path = dir.join(name);
+                std::fs::write(&path, name).unwrap();
+                (path, name.to_string())
+            })
+            .collect();
+        let (store, _) = Probe::in_memory(Faults {
+            put: Some((Fault::PermissionDenied, "c.txt")),
+            ..Default::default()
+        });
+        BlobJob {
+            provider_display: "s3",
+            destination: crate::upload::UploadDestination {
+                provider: Provider::S3,
+                bucket: bucket.to_string(),
+                endpoint: None,
+            },
+            rendered_bucket: bucket.to_string(),
+            rendered_directory: "demo/v1.0.0".to_string(),
+            rendered_region: Some("us-east-1".to_string()),
+            rendered_endpoint: None,
+            put_opts_per_item: vec![PutOptions::default(); upload_items.len()],
+            upload_items,
+            store,
+            parallelism_inner: 2,
+            client_kms: None,
+        }
+    }
+
+    /// Two jobs — two blob configs, or one config on each of two crates —
+    /// each commit two objects before their third file fails. Every
+    /// committed object is a rollback target under its own bucket, and
+    /// nothing else is.
+    #[test]
+    fn a_job_that_fails_part_way_records_the_objects_it_committed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let log =
+            anodizer_core::log::StageLogger::new("blob-test", anodizer_core::log::Verbosity::Quiet);
+        let targets = std::sync::Mutex::new(Vec::new());
+        let skipped = std::sync::atomic::AtomicUsize::new(0);
+
+        for bucket in ["first", "second"] {
+            let err = run_blob_job(
+                &job_refusing_c(tmp.path(), bucket),
+                &runtime,
+                &targets,
+                &skipped,
+                &log,
+            )
+            .unwrap_err();
+            assert!(
+                err.to_string()
+                    .starts_with("blobs: access denied — check permissions."),
+                "{err}"
+            );
+        }
+
+        let mut recorded: Vec<String> = targets
+            .lock()
+            .unwrap()
+            .iter()
+            .map(blob_target_url)
+            .collect();
+        recorded.sort();
+        assert_eq!(
+            recorded,
+            vec![
+                "s3://first/demo/v1.0.0/a.txt",
+                "s3://first/demo/v1.0.0/b.txt",
+                "s3://second/demo/v1.0.0/a.txt",
+                "s3://second/demo/v1.0.0/b.txt",
+            ]
+        );
+        assert!(
+            targets
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|t| t.region.as_deref() == Some("us-east-1"))
+        );
+    }
+
+    /// A file its KMS provider cannot encrypt is refused by name before any
+    /// job exists; a file that cannot be read is left to the upload.
+    #[test]
+    fn an_oversized_client_side_kms_file_is_refused_before_any_upload() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let fits = tmp.path().join("fits.sig");
+        std::fs::write(&fits, vec![b'x'; 4096]).unwrap();
+        let over = tmp.path().join("over.tar.gz");
+        std::fs::write(&over, vec![b'x'; 4097]).unwrap();
+        let item = |path: &std::path::Path| (path.to_path_buf(), "k".to_string());
+
+        validate_kms_item_sizes(
+            "awskms://alias/release",
+            &[item(&fits), item(&tmp.path().join("missing"))],
+        )
+        .unwrap();
+        let err = validate_kms_item_sizes("awskms://alias/release", &[item(&fits), item(&over)])
+            .unwrap_err();
+        assert_eq!(
+            format!("{err:#}"),
+            format!(
+                "blobs: cannot upload {}: failed to encrypt with kms: awskms encryption \
+                 supports files up to 4096 bytes, got 4097 bytes",
+                over.display()
+            )
+        );
     }
 
     // -------------------------------------------------------------------

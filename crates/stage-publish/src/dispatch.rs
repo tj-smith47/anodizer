@@ -145,6 +145,9 @@ fn ledger_fast_path(
         if summary.tag != tag {
             continue;
         }
+        if withdrawn_beside(&path, publisher_name) {
+            continue;
+        }
         for result in &summary.results {
             if result.name != publisher_name {
                 continue;
@@ -170,6 +173,34 @@ fn ledger_fast_path(
         }
     }
     None
+}
+
+/// Whether the `rollback.json` beside `summary_path` records a withdrawal
+/// of `publisher_name`. The summary row is rewritten at the same time, so
+/// this is the second reading of one fact: a summary written before the
+/// rewrite existed, or a rewrite that failed, still never passes as proof.
+fn withdrawn_beside(summary_path: &std::path::Path, publisher_name: &str) -> bool {
+    let path = summary_path.with_file_name(anodizer_core::dist::ROLLBACK_JSON);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok(report) = serde_json::from_str::<anodizer_core::publish_report::PublishReport>(&text)
+    else {
+        return false;
+    };
+    report
+        .results
+        .iter()
+        .chain(&report.carried_forward)
+        .any(|r| {
+            r.name == publisher_name
+                && matches!(
+                    r.outcome,
+                    PublisherOutcome::RolledBack
+                        | PublisherOutcome::RollbackFailed(_)
+                        | PublisherOutcome::RollbackSkippedNoScope
+                )
+        })
 }
 
 /// Dispatch publishers in Assets -> Manager -> Submitter order, applying
@@ -2521,6 +2552,116 @@ mod tests {
             report.results[0].outcome,
             PublisherOutcome::Skipped(SkipReason::AlreadyPublished)
         ));
+    }
+
+    /// The withdrawn-then-re-cut sequence: a publisher succeeded, the
+    /// release was withdrawn, and the same version is cut again with the
+    /// same bytes. The withdrawal rewrote the summary row and left its
+    /// `rollback.json` beside it; either alone keeps the publisher running.
+    #[test]
+    fn ledger_fast_path_ignores_a_publisher_the_run_dir_withdrew() {
+        let digests = || {
+            std::collections::BTreeMap::from([(
+                "cargo-crate.tar.gz".to_string(),
+                "sha256:aaa".to_string(),
+            )])
+        };
+        let withdrawn_row = |outcome| anodizer_core::PublisherResult {
+            name: "cargo".into(),
+            group: PublisherGroup::Submitter,
+            required: true,
+            outcome,
+            evidence: None,
+            entry_skips: Vec::new(),
+        };
+        let rollback_report = |rows| anodizer_core::publish_report::PublishReport {
+            results: rows,
+            ..Default::default()
+        };
+
+        // The rewritten summary alone.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        write_ledger_summary(tmp.path(), "v0.0.0-test", "cargo", "succeeded", digests());
+        let summary_path = tmp.path().join("run-fixture/summary.json");
+        let log =
+            anodizer_core::log::StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
+        crate::run_summary::mark_withdrawn_in_summary(
+            &summary_path,
+            &rollback_report(vec![withdrawn_row(PublisherOutcome::RolledBack)]),
+            &log,
+        );
+        let rewritten = crate::run_summary::parse_run_summary_lenient(
+            &std::fs::read_to_string(&summary_path).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(rewritten.results[0].status, "rolled-back");
+        let mut ctx = Context::test_fixture();
+        ctx.config.dist = tmp.path().to_path_buf();
+        ctx.artifacts
+            .add(ledger_artifact("cargo-crate.tar.gz", "sha256:aaa"));
+        let (p, run_calls, _) = fake_reconciling(
+            "cargo",
+            PublisherGroup::Submitter,
+            true,
+            ReconcileState::Absent,
+        );
+        dispatch(&[p], &mut ctx, &DispatchOptions::default()).expect("Ok");
+        assert_eq!(
+            run_calls.load(Ordering::SeqCst),
+            1,
+            "the re-cut publishes again"
+        );
+
+        // The rollback.json alone, beside a summary still saying succeeded,
+        // for each outcome a withdrawal leaves.
+        for outcome in [
+            PublisherOutcome::RolledBack,
+            PublisherOutcome::RollbackFailed("x".into()),
+            PublisherOutcome::RollbackSkippedNoScope,
+        ] {
+            let tmp = tempfile::tempdir().expect("tmpdir");
+            write_ledger_summary(tmp.path(), "v0.0.0-test", "cargo", "succeeded", digests());
+            std::fs::write(
+                tmp.path().join("run-fixture/rollback.json"),
+                serde_json::to_string(&rollback_report(vec![withdrawn_row(outcome)])).unwrap(),
+            )
+            .unwrap();
+            let mut ctx = Context::test_fixture();
+            ctx.config.dist = tmp.path().to_path_buf();
+            ctx.artifacts
+                .add(ledger_artifact("cargo-crate.tar.gz", "sha256:aaa"));
+            let (p, run_calls, _) = fake_reconciling(
+                "cargo",
+                PublisherGroup::Submitter,
+                true,
+                ReconcileState::Absent,
+            );
+            dispatch(&[p], &mut ctx, &DispatchOptions::default()).expect("Ok");
+            assert_eq!(run_calls.load(Ordering::SeqCst), 1);
+        }
+
+        // A rollback.json naming another publisher changes nothing.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        write_ledger_summary(tmp.path(), "v0.0.0-test", "cargo", "succeeded", digests());
+        let mut other = withdrawn_row(PublisherOutcome::RolledBack);
+        other.name = "npm".into();
+        std::fs::write(
+            tmp.path().join("run-fixture/rollback.json"),
+            serde_json::to_string(&rollback_report(vec![other])).unwrap(),
+        )
+        .unwrap();
+        let mut ctx = Context::test_fixture();
+        ctx.config.dist = tmp.path().to_path_buf();
+        ctx.artifacts
+            .add(ledger_artifact("cargo-crate.tar.gz", "sha256:aaa"));
+        let (p, run_calls, _) = fake_reconciling(
+            "cargo",
+            PublisherGroup::Submitter,
+            true,
+            ReconcileState::Absent,
+        );
+        dispatch(&[p], &mut ctx, &DispatchOptions::default()).expect("Ok");
+        assert_eq!(run_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

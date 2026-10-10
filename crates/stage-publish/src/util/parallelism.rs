@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use std::thread::ScopedJoinHandle;
 use std::time::Instant;
 
-use super::git_revert::{RevertTarget, run_git_revert_and_push};
+use super::git_revert::{RevertOutcome, RevertTarget, run_git_revert_and_push};
 
 // `lock_recover` is the canonical poisoned-mutex recovery helper in
 // `anodizer_core::parallel`; re-exported here so existing `crate::util::lock_recover`
@@ -66,9 +66,21 @@ pub(crate) fn join_or_warn<'scope, T>(
 /// stays comfortably under.
 pub(crate) const ROLLBACK_PARALLELISM: usize = 4;
 
+/// What a fan-out did, per target.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RevertCounts {
+    pub reverted: usize,
+    /// Targets whose commit could not be reverted safely (see
+    /// [`super::git_revert::RevertOutcome::Skipped`]); each is warned about.
+    pub skipped: usize,
+    pub failed: usize,
+}
+
 /// Fan out [`run_git_revert_and_push`] across `targets` under the
-/// [`ROLLBACK_PARALLELISM`] cap and return `(reverted, failed)`
-/// counts.
+/// [`ROLLBACK_PARALLELISM`] cap.
+///
+/// Targets on one `(repo_url, branch)` are reverted by one worker, newest
+/// recorded first, so two pushes to one tap never race each other's push.
 ///
 /// `publisher` and `env_var_hint` are forwarded to the canonical
 /// [`crate::publisher_helpers::rollback_failure_warning_msg`] so the
@@ -87,38 +99,55 @@ pub(crate) fn run_revert_targets_parallel(
     retry: &RetryPolicy,
     deadline: Option<Instant>,
     log: &StageLogger,
-) -> (usize, usize) {
-    let counts = Mutex::new((0usize, 0usize));
+) -> RevertCounts {
+    let mut groups: Vec<Vec<&RevertTarget>> = Vec::new();
+    for target in targets {
+        match groups
+            .iter_mut()
+            .find(|g| g[0].repo_url == target.repo_url && g[0].branch == target.branch)
+        {
+            // Newest first: the record lists pushes in the order made.
+            Some(group) => group.insert(0, target),
+            None => groups.push(vec![target]),
+        }
+    }
+    let counts = Mutex::new(RevertCounts::default());
     let retry_scope = anodizer_core::retry::current_scope();
-    let chunks = targets.chunks(ROLLBACK_PARALLELISM);
-    for chunk in chunks {
+    for chunk in groups.chunks(ROLLBACK_PARALLELISM) {
         std::thread::scope(|s| {
             let mut handles = Vec::with_capacity(chunk.len());
-            for target in chunk {
+            for group in chunk {
                 let log = log.clone();
                 let counts = &counts;
                 let retry_scope = retry_scope.clone();
                 handles.push(s.spawn(move || {
                     let _scope = anodizer_core::retry::RetryScope::inherit(retry_scope);
-                    log.status(&format!(
-                        "reverting and pushing {} for {} ({})",
-                        target.target, publisher, target.repo_url
-                    ));
-                    match run_git_revert_and_push(target, retry, deadline, &log) {
-                        Ok(()) => {
-                            let mut c = lock_recover(counts, &log, publisher);
-                            c.0 += 1;
-                        }
-                        Err(err) => {
-                            let mut c = lock_recover(counts, &log, publisher);
-                            c.1 += 1;
-                            log.warn(&crate::publisher_helpers::rollback_failure_warning_msg(
-                                publisher,
-                                &target.target,
-                                &target.repo_url,
-                                &err,
-                                env_var_hint,
-                            ));
+                    for target in group {
+                        log.status(&format!(
+                            "reverting and pushing {} for {} ({})",
+                            target.target, publisher, target.repo_url
+                        ));
+                        match run_git_revert_and_push(target, retry, deadline, &log) {
+                            Ok(RevertOutcome::Reverted) => {
+                                lock_recover(counts, &log, publisher).reverted += 1;
+                            }
+                            Ok(RevertOutcome::Skipped(why)) => {
+                                lock_recover(counts, &log, publisher).skipped += 1;
+                                log.warn(&format!(
+                                    "{publisher} rollback skipped {} ({}): {why}",
+                                    target.target, target.repo_url
+                                ));
+                            }
+                            Err(err) => {
+                                lock_recover(counts, &log, publisher).failed += 1;
+                                log.warn(&crate::publisher_helpers::rollback_failure_warning_msg(
+                                    publisher,
+                                    &target.target,
+                                    &target.repo_url,
+                                    &err,
+                                    env_var_hint,
+                                ));
+                            }
                         }
                     }
                 }));
@@ -167,6 +196,9 @@ pub(crate) trait TokenRevertTarget {
     /// NAME of the env var holding the rollback re-clone token (never the
     /// token VALUE — that is resolved from the live env at rollback time).
     fn token_env_var(&self) -> Option<&str>;
+    /// The commit the publish pushed; `None` on a record written before
+    /// it was recorded.
+    fn commit(&self) -> Option<&str>;
 }
 
 macro_rules! impl_token_revert_target {
@@ -184,6 +216,9 @@ macro_rules! impl_token_revert_target {
             fn token_env_var(&self) -> Option<&str> {
                 self.token_env_var.as_deref()
             }
+            fn commit(&self) -> Option<&str> {
+                self.commit.as_deref()
+            }
         }
     };
 }
@@ -192,6 +227,19 @@ impl_token_revert_target!(anodizer_core::publish_evidence::ScoopTargetSnapshot);
 impl_token_revert_target!(anodizer_core::publish_evidence::HomebrewTargetSnapshot);
 impl_token_revert_target!(anodizer_core::publish_evidence::NixTargetSnapshot);
 
+/// The one summary line every git-revert publisher prints.
+pub(crate) fn revert_summary_line(
+    publisher: &str,
+    noun: &str,
+    reverted: usize,
+    skipped: usize,
+    failed: usize,
+) -> String {
+    format!(
+        "{publisher} rollback reverted {reverted} {noun}(s), {skipped} skipped, {failed} failure(s)"
+    )
+}
+
 /// Drive the full token-publisher rollback for a set of already-deduped
 /// [`TokenRevertTarget`]s: resolve each target's token from the live env,
 /// map to [`RevertTarget`], fan out [`run_revert_targets_parallel`], and
@@ -199,7 +247,7 @@ impl_token_revert_target!(anodizer_core::publish_evidence::NixTargetSnapshot);
 ///
 /// Collapses the byte-identical `rollback()` bodies of scoop / homebrew /
 /// nix into one call. The caller supplies the decode + dedup (its evidence
-/// variant and `(repo_url, branch)` dedup are publisher-typed) plus the
+/// variant and `(repo_url, branch, commit)` dedup are publisher-typed) plus the
 /// publisher's nouns:
 /// - `default_env_hint` — token env var named in failure warns when a
 ///   target carries none (e.g. `HOMEBREW_TAP_TOKEN`).
@@ -234,6 +282,7 @@ pub(crate) fn run_token_revert_rollback<T: TokenRevertTarget>(
             target: t.target().to_string(),
             repo_url: t.repo_url().to_string(),
             branch: t.branch().map(str::to_string),
+            commit: t.commit().map(str::to_string),
             token: crate::util::resolve_rollback_token(env, t.token_env_var()),
             private_key: None,
             ssh_command: None,
@@ -248,7 +297,11 @@ pub(crate) fn run_token_revert_rollback<T: TokenRevertTarget>(
     // Resolved on the dispatching thread: the wall-clock budget is anchored in
     // a thread-local the fan-out's worker threads cannot see, so reading it
     // inside a worker would silently restart the budget per target.
-    let (reverted, failed) = run_revert_targets_parallel(
+    let RevertCounts {
+        reverted,
+        skipped,
+        failed,
+    } = run_revert_targets_parallel(
         &prepared,
         publisher,
         Some(env_hint),
@@ -256,8 +309,12 @@ pub(crate) fn run_token_revert_rollback<T: TokenRevertTarget>(
         ctx.retry_deadline(),
         &log,
     );
-    log.status(&format!(
-        "{publisher} rollback reverted {reverted} {reverted_noun}(s), {failed} failure(s)"
+    log.status(&revert_summary_line(
+        publisher,
+        reverted_noun,
+        reverted,
+        skipped,
+        failed,
     ));
     // A per-target git-revert failure must surface as `Err` here so
     // `execute_rollback_step` maps this publisher's row to
@@ -312,7 +369,6 @@ mod tests {
             vec!["init", "-b", "master"],
             vec!["config", "user.email", "t@example.invalid"],
             vec!["config", "user.name", "T"],
-            vec!["config", "commit.gpgsign", "false"],
         ] {
             anodizer_core::test_helpers::git_test_ok(work.path(), &args);
         }
@@ -354,14 +410,108 @@ mod tests {
     /// don't start with `https://`) take the SSH dispatch branch inside
     /// `run_git_revert_and_push`, which is fine for local bare remotes.
     fn target(label: &str, url: &str) -> RevertTarget {
+        // The bare remote holds one commit, so that commit is the pushed one.
+        let commit = if std::path::Path::new(url).is_dir() {
+            Some(head_of(url))
+        } else {
+            Some("0123456789abcdef0123456789abcdef01234567".into())
+        };
         RevertTarget {
             target: label.into(),
             repo_url: url.into(),
             branch: Some("master".into()),
+            commit,
             token: None,
             private_key: None,
             ssh_command: None,
         }
+    }
+
+    fn head_of(repo: &str) -> String {
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(["rev-parse", "master"]).current_dir(repo);
+                cmd
+            },
+            "git",
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Two pushes to one branch are two records; both are reverted, by one
+    /// worker, and a record without a commit is counted as skipped and
+    /// warned about rather than failed.
+    #[test]
+    fn two_pushes_to_one_branch_are_both_reverted_and_an_old_record_is_skipped() {
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let (url, _bare, work) = bare_with_one_commit();
+        let first = head_of(&url);
+        std::fs::write(work.path().join("second"), "2\n").unwrap();
+        for args in [
+            vec!["add", "second"],
+            vec!["commit", "-m", "second push"],
+            vec!["push", "origin", "master"],
+        ] {
+            anodizer_core::test_helpers::git_test_ok(work.path(), &args);
+        }
+        let second = head_of(&url);
+        let mut a = target("a", &url);
+        a.commit = Some(first);
+        let mut b = target("b", &url);
+        b.commit = Some(second);
+        let mut old = target("old", &url);
+        old.commit = None;
+
+        let counts = run_revert_targets_parallel(
+            &[a, b, old],
+            "homebrew",
+            Some("HB"),
+            &TEST_PUSH_RETRY,
+            None,
+            &log,
+        );
+        assert_eq!(
+            counts,
+            RevertCounts {
+                reverted: 2,
+                skipped: 1,
+                failed: 0
+            }
+        );
+        let warns: Vec<String> = cap
+            .all_messages()
+            .into_iter()
+            .filter_map(|(lvl, m)| (lvl == anodizer_core::log::LogLevel::Warn).then_some(m))
+            .collect();
+        assert_eq!(warns.len(), 1, "{warns:?}");
+        assert!(
+            warns[0].starts_with("homebrew rollback skipped old (")
+                && warns[0].contains("names no pushed commit"),
+            "{}",
+            warns[0]
+        );
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(["log", "--pretty=%s", "master"]).current_dir(&url);
+                cmd
+            },
+            "git",
+        );
+        let subjects: Vec<String> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            subjects,
+            [
+                "Revert \"initial\"",
+                "Revert \"second push\"",
+                "second push",
+                "initial"
+            ]
+        );
     }
 
     /// Empty input must return (0, 0) without spawning a scope.
@@ -369,10 +519,9 @@ mod tests {
     #[test]
     fn run_revert_targets_parallel_handles_empty_slice() {
         let log = StageLogger::new("test", Verbosity::Normal);
-        let (ok, err) =
+        let counts =
             run_revert_targets_parallel(&[], "homebrew", Some("X"), &TEST_PUSH_RETRY, None, &log);
-        assert_eq!(ok, 0);
-        assert_eq!(err, 0);
+        assert_eq!(counts, RevertCounts::default());
     }
 
     /// Happy path: every target points at a real bare remote with a
@@ -390,7 +539,7 @@ mod tests {
             .map(|(i, (url, _, _))| target(&format!("t{i}"), url))
             .collect();
 
-        let (ok, err) = run_revert_targets_parallel(
+        let counts = run_revert_targets_parallel(
             &targets,
             "homebrew",
             Some("HB"),
@@ -398,8 +547,14 @@ mod tests {
             None,
             &log,
         );
-        assert_eq!(ok, 3, "all three targets should report success");
-        assert_eq!(err, 0, "no failures expected on clean bare remotes");
+        assert_eq!(
+            counts.reverted, 3,
+            "all three targets should report success"
+        );
+        assert_eq!(
+            counts.failed, 0,
+            "no failures expected on clean bare remotes"
+        );
 
         // Independently verify a revert commit reached each bare. Fresh
         // shallow clone + log -1 — same shape as git_revert.rs's
@@ -451,7 +606,7 @@ mod tests {
             target("bad", "/this/path/must/not/exist/anywhere/zzz.git"),
         ];
 
-        let (ok, err) = run_revert_targets_parallel(
+        let counts = run_revert_targets_parallel(
             &targets,
             "scoop",
             Some("SCOOP_KEY"),
@@ -459,8 +614,11 @@ mod tests {
             None,
             &log,
         );
-        assert_eq!(ok, 1, "the good target must still complete");
-        assert_eq!(err, 1, "the bad target must register as a failure");
+        assert_eq!(counts.reverted, 1, "the good target must still complete");
+        assert_eq!(
+            counts.failed, 1,
+            "the bad target must register as a failure"
+        );
 
         // The per-failure warn line is routed through
         // `publisher_helpers::rollback_failure_warning_msg`, which
@@ -499,10 +657,13 @@ mod tests {
             .map(|(i, (url, _, _))| target(&format!("c{i}"), url))
             .collect();
 
-        let (ok, err) =
+        let counts =
             run_revert_targets_parallel(&targets, "nix", None, &TEST_PUSH_RETRY, None, &log);
-        assert_eq!(ok, n, "every chunk's targets must be processed");
-        assert_eq!(err, 0);
+        assert_eq!(
+            counts.reverted, n,
+            "every chunk's targets must be processed"
+        );
+        assert_eq!(counts.failed, 0);
     }
 
     /// `join_or_warn` on a worker that returned normally must NOT emit
@@ -568,12 +729,14 @@ mod tests {
                 repo_url: r0.0.clone(),
                 branch: Some("master".into()),
                 token_env_var: None,
+                commit: Some(head_of(&r0.0)),
             },
             ScoopTargetSnapshot {
                 target: "b".into(),
                 repo_url: r1.0.clone(),
                 branch: Some("master".into()),
                 token_env_var: None,
+                commit: Some(head_of(&r1.0)),
             },
         ];
 
@@ -630,7 +793,7 @@ mod tests {
         assert!(
             status
                 .iter()
-                .any(|m| m == "scoop rollback reverted 2 bucket(s), 0 failure(s)"),
+                .any(|m| m == "scoop rollback reverted 2 bucket(s), 0 skipped, 0 failure(s)"),
             "expected the canonical summary line, got: {status:?}"
         );
     }
@@ -692,6 +855,7 @@ mod tests {
             repo_url: "/this/path/must/not/exist/anywhere/zzz.git".into(),
             branch: Some("master".into()),
             token_env_var: None,
+            commit: Some("0123456789abcdef0123456789abcdef01234567".into()),
         }];
 
         let err = run_token_revert_rollback(

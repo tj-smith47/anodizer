@@ -115,7 +115,10 @@ pub enum Commands {
         nightly: bool,
         #[arg(long, help = "Run full pipeline without side effects")]
         dry_run: bool,
-        #[arg(long, help = "Remove dist directory before starting")]
+        #[arg(
+            long,
+            help = "Empty the dist directory before starting (report.json, rollback.json and summary.json under run-<tag>/ are kept)"
+        )]
         clean: bool,
         #[arg(
             long,

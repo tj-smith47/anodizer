@@ -16,8 +16,8 @@ use anyhow::{Context as _, Result};
 use std::collections::HashMap;
 
 use crate::artifactory::{
-    ArtifactoryTarget, CollectFlags, build_reqwest_client, collect_target_artifacts_best_effort,
-    collect_upload_artifacts_owned, render_artifact_url, validate_upload_mode,
+    ArtifactoryTarget, CollectFlags, build_reqwest_client, collect_upload_artifacts_owned,
+    render_artifact_url, validate_upload_mode,
 };
 
 /// Tally of what a generic-uploads publish run did, so the caller can decide
@@ -63,6 +63,19 @@ fn entry_collect_flags(entry: &UploadConfig) -> CollectFlags {
 /// checksum/signature/meta inclusion toggles. Mirrors GoReleaser's generic
 /// upload pipe; the per-artifact upload loop is shared with Artifactory.
 pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummary> {
+    publish_uploads_recording(ctx, log, &std::sync::Mutex::new(Vec::new()))
+}
+
+/// [`publish_uploads`], appending every URL a request of this run wrote to
+/// `written` as it succeeds. The publisher builds its evidence — the
+/// `Succeeded` row and the `Failed` row alike — from that list, so a
+/// rollback deletes what this run wrote and nothing a configured entry
+/// merely names.
+pub(crate) fn publish_uploads_recording(
+    ctx: &Context,
+    log: &StageLogger,
+    written: &std::sync::Mutex<Vec<ArtifactoryTarget>>,
+) -> Result<UploadsSummary> {
     let mut summary = UploadsSummary::default();
     let entries = match ctx.config.uploads {
         Some(ref v) if !v.is_empty() => v,
@@ -377,6 +390,8 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
                 password: &password,
                 custom_artifact_name,
                 overwrite,
+                entry: name,
+                written,
             },
             &policy,
             ctx.options.parallelism,
@@ -394,76 +409,6 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
     }
 
     Ok(summary)
-}
-
-/// Re-walk the configured `uploads:` entries to produce the fully rendered
-/// upload URLs that [`publish_uploads`] would PUT/POST to. Drives the
-/// [`Publisher`](anodizer_core::Publisher) wrapper's rollback evidence so a
-/// later rollback can DELETE each URL using the same credential resolution the
-/// publish path used.
-///
-/// Best-effort: entries that hit a render or filter error are silently
-/// skipped, since failures here only narrow the rollback checklist (the
-/// publish path's own error handling has already surfaced any blocker).
-pub(crate) fn collect_upload_targets(ctx: &Context) -> Vec<ArtifactoryTarget> {
-    let mut out: Vec<ArtifactoryTarget> = Vec::new();
-    let entries = match ctx.config.uploads.as_ref() {
-        Some(v) if !v.is_empty() => v,
-        _ => return out,
-    };
-    for entry in entries {
-        // Skip evaluation must match publish_uploads's behaviour so a skipped
-        // entry doesn't leak phantom rollback targets.
-        if let Some(ref s) = entry.skip
-            && s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                .unwrap_or(false)
-        {
-            continue;
-        }
-        // The `if:` gate must match publish_uploads's active-entry check, or a
-        // deselected entry (`if: false`) leaks a phantom rollback target that a
-        // later rollback would then DELETE. Best-effort: a render error proceeds
-        // (never narrows the rollback checklist on ambiguity), mirroring the
-        // skip branch's `.unwrap_or(false)`.
-        if !anodizer_core::config::evaluate_if_condition(
-            entry.if_condition.as_deref(),
-            "uploads",
-            |t| ctx.render_template(t),
-        )
-        .unwrap_or(true)
-        {
-            continue;
-        }
-        let entry_name = match entry.name.as_deref() {
-            Some(n) if !n.is_empty() => n.to_string(),
-            _ => continue,
-        };
-        if entry.target.is_empty() {
-            continue;
-        }
-        let target_template = entry.target.as_str();
-        let mode = entry.mode.as_deref().unwrap_or("archive");
-        let custom_artifact_name = entry.custom_artifact_name.unwrap_or(false);
-        let artifacts = collect_target_artifacts_best_effort(
-            ctx,
-            "uploads",
-            mode,
-            entry.ids.as_deref(),
-            entry.exclude.as_deref(),
-            entry.exts.as_deref(),
-            entry_collect_flags(entry),
-            entry.extra_files.as_deref(),
-        );
-        for a in &artifacts {
-            if let Ok(url) = render_artifact_url(ctx, target_template, a, custom_artifact_name) {
-                out.push(ArtifactoryTarget {
-                    entry: entry_name.clone(),
-                    url,
-                });
-            }
-        }
-    }
-    out
 }
 
 /// Reduce a target URL template to its `scheme://host[:port]` origin, dropping
@@ -529,6 +474,20 @@ fn active_upload_configs(ctx: &Context) -> Vec<&anodizer_core::config::UploadCon
             )
         })
         .collect()
+}
+
+/// The evidence for the URLs this run wrote.
+fn uploads_evidence(targets: &[ArtifactoryTarget]) -> anodizer_core::PublishEvidence {
+    let mut evidence = anodizer_core::PublishEvidence::new("uploads");
+    if let Some(first) = targets.first() {
+        evidence.primary_ref = Some(first.url.clone());
+    }
+    evidence.artifact_paths = targets
+        .iter()
+        .map(|t| std::path::PathBuf::from(&t.url))
+        .collect();
+    evidence.extra = crate::artifactory::encode_artifactory_targets(targets);
+    evidence
 }
 
 impl anodizer_core::Publisher for UploadsPublisher {
@@ -631,7 +590,15 @@ impl anodizer_core::Publisher for UploadsPublisher {
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
-        let summary = publish_uploads(ctx, &log)?;
+        // Each URL is recorded the moment its request succeeds, so a failure
+        // on a later artifact still leaves the ones written on the record.
+        let written = std::sync::Mutex::new(Vec::new());
+        let published = publish_uploads_recording(ctx, &log, &written);
+        let written = written.into_inner().unwrap_or_else(|p| p.into_inner());
+        let summary = crate::publisher_helpers::keep_committed_on_failure(ctx, published, |_| {
+            Some(uploads_evidence(&written))
+                .filter(anodizer_core::PublishEvidence::records_published_work)
+        })?;
         // Every matched artifact was already present at its target path (an
         // idempotent re-run): record a SKIP, not a fresh publish.
         if summary.is_fully_idempotent_skip() {
@@ -647,17 +614,7 @@ impl anodizer_core::Publisher for UploadsPublisher {
             crate::publisher_helpers::RunLanding::from_landed(summary.uploaded > 0),
             configured_entries,
         );
-        let mut evidence = anodizer_core::PublishEvidence::new("uploads");
-        let targets = collect_upload_targets(ctx);
-        if let Some(first) = targets.first() {
-            evidence.primary_ref = Some(first.url.clone());
-        }
-        evidence.artifact_paths = targets
-            .iter()
-            .map(|t| std::path::PathBuf::from(&t.url))
-            .collect();
-        evidence.extra = crate::artifactory::encode_artifactory_targets(&targets);
-        Ok(evidence)
+        Ok(uploads_evidence(&written))
     }
 
     fn rollback(
@@ -2369,6 +2326,137 @@ mod live_http_tests {
             "the upload that landed must still be rollback-eligible"
         );
     }
+
+    /// A run that fails part way wrote some of its URLs and not others. The
+    /// failed row names exactly the URLs whose request succeeded — the one
+    /// that was refused is not on the record, because a rollback that
+    /// deleted it would be undoing work this run never did.
+    #[test]
+    fn a_failed_run_stays_a_rollback_candidate_naming_only_the_urls_it_wrote() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (_addr, _log) = spawn_scripted_responder_on(listener, |_| {
+            vec![
+                ScriptedRoute {
+                    method: "HEAD",
+                    path_pattern: "/repo/app-1.0.0.tar.gz",
+                    response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "HEAD",
+                    path_pattern: "/repo/app-1.0.0.zip",
+                    response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "PUT",
+                    path_pattern: "/repo/app-1.0.0.tar.gz",
+                    response: "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "PUT",
+                    path_pattern: "/repo/app-1.0.0.zip",
+                    response: "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n",
+                    times: None,
+                },
+            ]
+        });
+        let (dir, mut ctx, _checksum, name) = live_ctx(addr, MapEnvSource::new(), |_| {});
+        // Uploads run one at a time so the refused artifact is the second.
+        ctx.options.parallelism = 1;
+        let refused = dir.path().join("app-1.0.0.zip");
+        std::fs::write(&refused, b"refused-bytes").unwrap();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: "app-1.0.0.zip".to_string(),
+            path: refused,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        });
+
+        let publishers: Vec<Box<dyn anodizer_core::Publisher>> =
+            vec![Box::new(UploadsPublisher::new())];
+        let report = crate::dispatch::dispatch(
+            &publishers,
+            &mut ctx,
+            &crate::dispatch::DispatchOptions::default(),
+        )
+        .expect("dispatch ok");
+
+        assert!(
+            matches!(
+                report.results[0].outcome,
+                anodizer_core::PublisherOutcome::Failed(_)
+            ),
+            "{:?}",
+            report.results[0]
+        );
+        let evidence = report.results[0]
+            .evidence
+            .as_ref()
+            .expect("the failed row names what the run wrote");
+        assert_eq!(
+            evidence.artifact_paths,
+            vec![std::path::PathBuf::from(format!(
+                "http://{addr}/repo/{name}"
+            ))],
+            "only the URL whose PUT succeeded is on the record"
+        );
+        assert_eq!(crate::rollback::rollback_candidates(&report), vec![0]);
+    }
+
+    /// A run whose only request was refused wrote nothing, so its failed row
+    /// carries no evidence and it is not a rollback candidate.
+    #[test]
+    fn a_failed_run_that_wrote_nothing_records_no_evidence() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (_addr, _log) = spawn_scripted_responder_on(listener, |_| {
+            vec![
+                ScriptedRoute {
+                    method: "HEAD",
+                    path_pattern: "/repo/app-1.0.0.tar.gz",
+                    response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "PUT",
+                    path_pattern: "/repo/app-1.0.0.tar.gz",
+                    response: "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n",
+                    times: None,
+                },
+            ]
+        });
+        let (_dir, mut ctx, _checksum, _name) = live_ctx(addr, MapEnvSource::new(), |_| {});
+
+        let publishers: Vec<Box<dyn anodizer_core::Publisher>> =
+            vec![Box::new(UploadsPublisher::new())];
+        let report = crate::dispatch::dispatch(
+            &publishers,
+            &mut ctx,
+            &crate::dispatch::DispatchOptions::default(),
+        )
+        .expect("dispatch ok");
+
+        assert!(
+            matches!(
+                report.results[0].outcome,
+                anodizer_core::PublisherOutcome::Failed(_)
+            ),
+            "{:?}",
+            report.results[0]
+        );
+        assert!(
+            report.results[0].evidence.is_none(),
+            "a run that wrote nothing has nothing on record: {:?}",
+            report.results[0].evidence
+        );
+        assert!(crate::rollback::rollback_candidates(&report).is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -2620,121 +2708,12 @@ mod dryrun_and_pure_tests {
         assert_eq!(target_origin("http:///path-only"), None);
     }
 
-    #[test]
-    fn collect_upload_targets_renders_active_and_skips_inactive() {
-        let dir = tempfile::tempdir().unwrap();
-        let art_path = dir.path().join("app-2.0.0.tar.gz");
-        std::fs::write(&art_path, b"bytes").unwrap();
-        let mut config = Config::default();
-        config.project_name = "app".to_string();
-        config.uploads = Some(vec![
-            // Active entry — renders a concrete rollback URL.
-            UploadConfig {
-                name: Some("active".to_string()),
-                target: "http://host/repo/{{ .Version }}/".to_string(),
-                ..Default::default()
-            },
-            // Skipped entry (`skip: true`) — must NOT leak a phantom rollback
-            // target, mirroring publish_uploads's skip handling.
-            UploadConfig {
-                name: Some("inactive".to_string()),
-                target: "http://host/other/".to_string(),
-                skip: Some(anodizer_core::config::StringOrBool::Bool(true)),
-                ..Default::default()
-            },
-            // Nameless entry — skipped (name keys the credential cascade).
-            UploadConfig {
-                name: None,
-                target: "http://host/nameless/".to_string(),
-                ..Default::default()
-            },
-            // Empty-target entry — skipped.
-            UploadConfig {
-                name: Some("no-target".to_string()),
-                target: String::new(),
-                ..Default::default()
-            },
-        ]);
-        let mut ctx = Context::new(config, ContextOptions::default());
-        ctx.template_vars_mut().set("Version", "2.0.0");
-        ctx.artifacts.add(Artifact {
-            kind: ArtifactKind::Archive,
-            name: "app-2.0.0.tar.gz".to_string(),
-            path: art_path,
-            target: None,
-            crate_name: "app".to_string(),
-            metadata: HashMap::new(),
-            size: None,
-        });
-
-        let targets = collect_upload_targets(&ctx);
-        // Only the active entry contributes, with the Version-rendered URL.
-        assert_eq!(
-            targets.len(),
-            1,
-            "only the active entry yields a target: {targets:?}"
-        );
-        assert_eq!(targets[0].entry, "active");
-        assert_eq!(targets[0].url, "http://host/repo/2.0.0/app-2.0.0.tar.gz");
-    }
-
     /// Regression: an entry with `skip: false` but `if: false` is DESELECTED
     /// by `publish_uploads` and therefore uploads nothing — so its URL must NOT
     /// appear in the rollback checklist, or a rollback would DELETE a resource
     /// this run never created. Guards against `collect_upload_targets` honoring
     /// only `skip` while ignoring the `if:` gate (divergence from
     /// `should_skip_publisher_with_if`).
-    #[test]
-    fn collect_upload_targets_excludes_if_false_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let art_path = dir.path().join("app-3.0.0.tar.gz");
-        std::fs::write(&art_path, b"bytes").unwrap();
-        let mut config = Config::default();
-        config.project_name = "app".to_string();
-        config.uploads = Some(vec![
-            // `skip` is explicitly false (would-not-skip on skip alone) yet the
-            // `if:` condition is falsy — the entry is deselected and must not
-            // contribute a rollback target.
-            UploadConfig {
-                name: Some("gated".to_string()),
-                target: "http://host/repo/{{ .Version }}/".to_string(),
-                skip: Some(anodizer_core::config::StringOrBool::Bool(false)),
-                if_condition: Some("false".to_string()),
-                ..Default::default()
-            },
-            // A plainly-active entry so the vector is non-empty when the gate
-            // works — proving the test asserts on exclusion, not on an empty run.
-            UploadConfig {
-                name: Some("active".to_string()),
-                target: "http://host/live/{{ .Version }}/".to_string(),
-                ..Default::default()
-            },
-        ]);
-        let mut ctx = Context::new(config, ContextOptions::default());
-        ctx.template_vars_mut().set("Version", "3.0.0");
-        ctx.artifacts.add(Artifact {
-            kind: ArtifactKind::Archive,
-            name: "app-3.0.0.tar.gz".to_string(),
-            path: art_path,
-            target: None,
-            crate_name: "app".to_string(),
-            metadata: HashMap::new(),
-            size: None,
-        });
-
-        let targets = collect_upload_targets(&ctx);
-        assert_eq!(
-            targets.len(),
-            1,
-            "the `if: false` entry must be excluded; only `active` remains: {targets:?}"
-        );
-        assert_eq!(targets[0].entry, "active");
-        assert!(
-            !targets.iter().any(|t| t.entry == "gated"),
-            "deselected `if: false` entry leaked a phantom rollback target: {targets:?}"
-        );
-    }
-
     /// The rollback scope is the per-entry credential cascade, never a
     /// variable literally named `UPLOAD_<NAME>_SECRET`: an entry whose pair
     /// resolves has its scope, one whose pair is absent does not.

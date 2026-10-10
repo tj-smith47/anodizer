@@ -1,32 +1,16 @@
 use super::*;
 
-/// Upload packages to CloudSmith via the CloudSmith API.
-///
-/// This is a top-level publisher: it reads from `ctx.config.cloudsmiths` rather
-/// than from per-crate publish configs.  Each entry specifies an organization,
-/// repository, optional credential env var, and optional format/distribution
-/// filters.
-///
-/// Returns the list of [`CloudsmithTarget`]s actually uploaded this run, with
-/// the `slug` (Cloudsmith's per-package permanent identifier) populated when
-/// the step-3 `packages/upload/<format>/` response surfaced one. The returned
-/// list drives `PublishEvidence::extra.cloudsmith_targets` so
-/// [`Publisher::rollback`](anodizer_core::Publisher::rollback)
-/// can issue real `DELETE /v1/packages/<org>/<repo>/<slug>/` calls; targets
-/// whose slug couldn't be parsed degrade to the warn-only manual-cleanup
-/// path (see [`cloudsmith_manual_cleanup_msg`]).
-///
-/// SkipIdempotent matches (artifact already present with matching md5) are
-/// NOT included in the return — rollback's semantic is "undo what this run
-/// uploaded," and a remote-side hit was put there by an earlier run.
-pub(crate) fn publish_to_cloudsmith(
+/// [`publish_to_cloudsmith`], writing each uploaded package into `uploaded`
+/// as it is uploaded so a failure on a later artifact still leaves the caller the
+/// packages uploaded before it.
+pub(crate) fn publish_to_cloudsmith_into(
     ctx: &Context,
     log: &StageLogger,
-) -> Result<Vec<CloudsmithTarget>> {
-    let mut uploaded: Vec<CloudsmithTarget> = Vec::new();
+    uploaded: &mut Vec<CloudsmithTarget>,
+) -> Result<()> {
     let entries = match ctx.config.cloudsmiths {
         Some(ref v) if !v.is_empty() => v,
-        _ => return Ok(uploaded),
+        _ => return Ok(()),
     };
 
     // Single retry policy resolved from the top-level `retry:` block; reused
@@ -659,5 +643,34 @@ pub(crate) fn publish_to_cloudsmith(
         }
     }
 
+    Ok(())
+}
+
+/// Upload packages to CloudSmith via the CloudSmith API.
+///
+/// This is a top-level publisher: it reads from `ctx.config.cloudsmiths` rather
+/// than from per-crate publish configs.  Each entry specifies an organization,
+/// repository, optional credential env var, and optional format/distribution
+/// filters.
+///
+/// Returns the list of [`CloudsmithTarget`]s actually uploaded this run, with
+/// the `slug` (Cloudsmith's per-package permanent identifier) populated when
+/// the step-3 `packages/upload/<format>/` response surfaced one. The returned
+/// list drives `PublishEvidence::extra.cloudsmith_targets` so
+/// [`Publisher::rollback`](anodizer_core::Publisher::rollback)
+/// can issue real `DELETE /v1/packages/<org>/<repo>/<slug>/` calls; targets
+/// whose slug couldn't be parsed degrade to the warn-only manual-cleanup
+/// path (see [`cloudsmith_manual_cleanup_msg`]).
+///
+/// SkipIdempotent matches (artifact already present with matching md5) are
+/// NOT included in the return — rollback's semantic is "undo what this run
+/// uploaded," and a remote-side hit was put there by an earlier run.
+#[cfg(test)]
+pub(crate) fn publish_to_cloudsmith(
+    ctx: &Context,
+    log: &StageLogger,
+) -> Result<Vec<CloudsmithTarget>> {
+    let mut uploaded: Vec<CloudsmithTarget> = Vec::new();
+    publish_to_cloudsmith_into(ctx, log, &mut uploaded)?;
     Ok(uploaded)
 }

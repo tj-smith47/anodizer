@@ -1,5 +1,7 @@
 //! Partial-publish rollback tests.
 
+// path-stubs: cargo — the EnvGuard swaps below put a hand-built `cargo` on PATH
+
 // ---------------------------------------------------------------------------
 // Partial-publish rollback: a multi-crate publish that succeeds on crate A
 // then fails on crate B must record A (and only A) so rollback yanks the
@@ -202,7 +204,7 @@ fn cargo_crate(name: &str, path: &str, deps: &[&str], cfg: CargoPublishConfig) -
 /// per-crate version and configured registry — never crate-b
 /// (publish failed) or any skipped/never-published crate.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn partial_publish_records_only_succeeded_crate() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path_a = write_crate_dir(tmp.path(), "crate-a", "1.0.0");
@@ -284,7 +286,7 @@ fn partial_publish_records_only_succeeded_crate() {
 /// and issues exactly one `cargo yank` — for crate-a, on its configured
 /// registry — and never touches crate-b (never published).
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn run_failure_then_rollback_yanks_only_succeeded_crate() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path_a = write_crate_dir(tmp.path(), "crate-a", "1.0.0");
@@ -371,7 +373,7 @@ fn run_failure_then_rollback_yanks_only_succeeded_crate() {
 /// publish, or nothing was eligible): rollback is a clean no-op — it
 /// spawns no `cargo` and returns Ok, rather than emitting a scary warn.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn rollback_is_clean_noop_when_nothing_published() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let argv_log = tmp.path().join("argv.log");
@@ -460,7 +462,7 @@ fn with_path<R>(new_path: &str, f: impl FnOnce() -> R) -> R {
 /// version and rollback must return Ok despite the non-zero
 /// exit.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn rollback_continues_and_warns_when_yank_fails() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let argv_log = tmp.path().join("argv.log");
@@ -503,7 +505,7 @@ fn rollback_continues_and_warns_when_yank_fails() {
 /// `--index <url>` into the yank argv. Pins the index-arg branch of the
 /// rollback yank command builder.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn rollback_yank_threads_index_arg() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let argv_log = tmp.path().join("argv.log");
@@ -545,7 +547,7 @@ fn rollback_yank_threads_index_arg() {
 /// for auto-yank: the loop emits the "CANNOT be auto-yanked" warn and the
 /// success record stays empty, so a later failure leaves nothing to yank.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn empty_version_publish_is_not_recorded_for_yank() {
     let tmp = tempfile::tempdir().expect("tempdir");
     // Manifest with NO version field ⇒ read_cargo_toml_version → None.
@@ -609,7 +611,7 @@ fn empty_version_publish_is_not_recorded_for_yank() {
 /// recorded. The content-vs-version guard only treats a match as a safe
 /// skip; the identical-content path is the legitimate idempotent re-cut.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn already_published_crate_is_skipped_not_republished() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = write_crate_dir(tmp.path(), "live-crate", "9.9.9");
@@ -673,7 +675,7 @@ fn already_published_crate_is_skipped_not_republished() {
 /// artifact, because silently skipping a possibly-poisoned version is the
 /// exact failure the content-vs-version guard prevents.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn index_check_error_fails_closed() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = write_crate_dir(tmp.path(), "flaky", "1.0.0");
@@ -736,7 +738,7 @@ fn index_check_error_fails_closed() {
 /// the poll stays on this host; a tiny max_wait then makes the gate's TIMEOUT
 /// error surface through the publish loop's context, proving the wiring fires.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn wait_for_workspace_deps_gate_is_wired_into_publish_loop() {
     let tmp = tempfile::tempdir().expect("tempdir");
     // Leaf with a literal-pinned workspace-internal dep that will never
@@ -819,7 +821,7 @@ fn wait_for_workspace_deps_gate_is_wired_into_publish_loop() {
 /// (the Err arm of `run`) so the dispatcher can recover it for rollback.
 /// Asserts the stashed evidence records ONLY the first (succeeded) crate.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn run_failure_stashes_partial_evidence_on_context() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path_a = write_crate_dir(tmp.path(), "crate-a", "1.0.0");
@@ -889,7 +891,7 @@ fn run_failure_stashes_partial_evidence_on_context() {
 /// `Some(cksum)` → the crate was silently skipped even though its real
 /// version had never been published.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn manifest_read_failure_does_not_skip_publish() {
     let tmp = tempfile::tempdir().expect("tempdir");
     // Write a Cargo.toml WITHOUT a version field — simulates the case
@@ -978,7 +980,7 @@ fn publish_count(argv_log: &Path, name: &str) -> usize {
 
 /// version-not-published → guard inert, crate publishes normally.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn guard_publishes_when_version_not_on_crates_io() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = write_crate_dir(tmp.path(), "alpha", "1.0.0");
@@ -1027,7 +1029,7 @@ fn guard_publishes_when_version_not_on_crates_io() {
 /// poison hole if an unverifiable tree slips through. Mirrors the real risk:
 /// a manual `--publish-only` invoked from a non-repo cwd.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn guard_refuses_when_git_status_indeterminate() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = write_crate_dir(tmp.path(), "alpha", "1.0.0");
@@ -1085,7 +1087,7 @@ fn guard_refuses_when_git_status_indeterminate() {
 
 /// already-published + local checksum IDENTICAL → safe idempotent skip.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn guard_skips_when_already_published_identical() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = write_crate_dir(tmp.path(), "beta", "2.1.0");
@@ -1139,7 +1141,7 @@ fn guard_skips_when_already_published_identical() {
 /// vcs commit stamp) → the slow path fetches the published `.crate` and
 /// hard-fails on the real drift.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn guard_hard_fails_when_already_published_different() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = write_crate_dir(tmp.path(), "gamma", "3.0.0");
@@ -1227,7 +1229,7 @@ fn guard_hard_fails_when_already_published_different() {
 /// already-published but the crates.io index is UNREACHABLE → fail closed
 /// (never silently skip a possibly-poisoned version).
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn guard_fails_closed_when_index_unreachable() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = write_crate_dir(tmp.path(), "delta", "4.2.0");
@@ -1289,7 +1291,7 @@ fn guard_fails_closed_when_index_unreachable() {
 /// already-published but the local `.crate` checksum is UNCOMPUTABLE
 /// (packaging error) → fail closed; cannot prove identity, refuse to skip.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn guard_fails_closed_when_local_cksum_uncomputable() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = write_crate_dir(tmp.path(), "epsilon", "5.0.0");
@@ -1342,7 +1344,7 @@ fn guard_fails_closed_when_local_cksum_uncomputable() {
 /// target registry's server governs idempotency). The local-cksum point
 /// must never be consulted.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn guard_skipped_for_custom_registry_publishes() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = write_crate_dir(tmp.path(), "zeta", "6.0.0");
@@ -1402,7 +1404,7 @@ fn guard_skipped_for_custom_registry_publishes() {
 /// content (hard fail) — so the run aborts on b. crate-a (skipped, not
 /// published this run) must NOT be recorded for rollback.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn guard_per_crate_workspace_each_checked_independently() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path_a = write_crate_dir(tmp.path(), "ws-a", "0.3.0");
@@ -1520,7 +1522,7 @@ fn guard_per_crate_workspace_each_checked_independently() {
 /// 403s mid-loop — after earlier crates in topological order already published
 /// at the release version.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn tp_token_new_crate_aborts_before_any_publish() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = write_crate_dir(tmp.path(), "brand-new", "1.0.0");
@@ -1570,7 +1572,7 @@ fn tp_token_new_crate_aborts_before_any_publish() {
 /// token with every crate already on the index publishes exactly as before —
 /// the guard passes and the loop runs.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn tp_token_existing_crate_publishes_normally() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = write_crate_dir(tmp.path(), "alpha", "1.0.0");
@@ -1616,7 +1618,7 @@ fn tp_token_existing_crate_publishes_normally() {
 /// hazard, and a probing guard there would be pure new false-positive
 /// surface.
 #[test]
-#[serial(cargo_stub_path)]
+#[serial(cargo_stub_path, path_env)]
 fn token_path_never_consults_existence_probe() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = write_crate_dir(tmp.path(), "alpha", "1.0.0");

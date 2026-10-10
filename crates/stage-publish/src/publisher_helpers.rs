@@ -418,6 +418,28 @@ pub(crate) fn with_published_crate_scope<T>(
     anodizer_core::crate_scope::with_crate_scope(ctx, &crate_cfg, resolve_tag, body)
 }
 
+/// Hand the dispatcher what a failing `run` had already committed.
+///
+/// A publisher that walks several entries (crates, objects, taps) can push
+/// the first and fail on the second. Its `Err` return carries no evidence,
+/// so without this the pushed entry is missing from the run report and
+/// `anodizer tag rollback` leaves it live. On `Err`, `committed` builds the
+/// evidence for what was pushed so far; it is recorded as pending evidence,
+/// which dispatch attaches to the `Failed` row. `None` — nothing was
+/// committed — records nothing, and the row is not replayed.
+pub(crate) fn keep_committed_on_failure<T>(
+    ctx: &mut anodizer_core::context::Context,
+    result: anyhow::Result<T>,
+    committed: impl FnOnce(&anodizer_core::context::Context) -> Option<anodizer_core::PublishEvidence>,
+) -> anyhow::Result<T> {
+    if result.is_err()
+        && let Some(evidence) = committed(ctx)
+    {
+        ctx.record_pending_evidence(evidence);
+    }
+    result
+}
+
 /// Resolve one open-PR probe target per crate, each inside that crate's own
 /// published-version scope so the probed version matches what the crate would
 /// actually publish under independent-version workspaces.
@@ -1266,7 +1288,7 @@ mod tests {
             }
         }
         assert!(
-            checked >= 20,
+            checked >= 19,
             "the resolve_repo_owner_name population shrank to {checked}; a rename \
              likely slipped the walk"
         );
@@ -1276,6 +1298,183 @@ mod tests {
              `repository:`, stranding every entry after it; raise an \
              `entry_skip` instead:\n{}",
             offenders.join("\n")
+        );
+    }
+
+    /// A publisher that can write part of its work and then fail must leave
+    /// a record of that part: the `Failed` row's evidence is the only thing
+    /// `anodizer tag rollback` has to find it by. Every `Publisher::run` in
+    /// the workspace either hands the committed part over on its failure
+    /// path or is listed here with the reason it has none.
+    #[test]
+    fn every_publisher_run_keeps_its_committed_work_on_failure() {
+        use anodizer_core::test_helpers::test_sources::{
+            function_bodies, production_half, workspace_production_sources,
+        };
+
+        // How a failure path hands committed work to the row: pending
+        // evidence beside the `Err` (directly or through the helper), or an
+        // `Ok(evidence)` with a recorded `Failed` outcome.
+        const HANDS_OVER: [&str; 4] = [
+            "keep_committed_on_failure(",
+            "record_pending_evidence(",
+            "record_publisher_outcome(",
+            "take_pending_evidence(",
+        ];
+        // A target list read from the whole configuration names every
+        // configured destination, pushed or not, so evidence built from one
+        // sends a rollback into repositories the run never wrote to. Each
+        // publisher's evidence is built from what it pushed; the two calls
+        // left are named with the reason they are not that defect.
+        const WHOLE_CONFIG_READS_OK: [(&str, &str, &str); 2] = [
+            (
+                "aur_source/publisher.rs",
+                "collect_aur_source_top_level_targets(ctx)",
+                "a snapshot indexed by the entries that pushed; nothing enters the evidence unindexed",
+            ),
+            (
+                "stage-release/src/publisher.rs",
+                "collect_release_targets(ctx)",
+                "the success path only: the stage wrote every active crate's release, and the failure path reads `releases_written`",
+            ),
+        ];
+        const EXEMPT: [(&str, &str); 4] = [
+            (
+                "stage-publish/src/testing.rs",
+                "test doubles behind the `test-support` feature; they publish nothing",
+            ),
+            (
+                "gemfury/publisher.rs",
+                "deletes the packages it pushed before returning the error",
+            ),
+            (
+                "mcp/publisher.rs",
+                "one registry POST; nothing exists until it succeeds",
+            ),
+            (
+                "schemastore/mod.rs",
+                "one pull request; nothing exists until it is opened",
+            ),
+        ];
+
+        let mut handing_over = 0usize;
+        let mut exempt_seen = Vec::new();
+        let mut offenders = Vec::new();
+        let mut whole_config_seen = Vec::new();
+        let mut whole_config_offenders = Vec::new();
+        for path in workspace_production_sources() {
+            let text = std::fs::read_to_string(&path).expect("readable source");
+            let shown = path.to_string_lossy().replace('\\', "/");
+            for body in function_bodies(production_half(&text)) {
+                let Some((header, _)) = body.split_once('{') else {
+                    continue;
+                };
+                // The trait's own declaration has no body to ask.
+                if !header.trim_start().starts_with("fn run(")
+                    || !header.contains("PublishEvidence>")
+                    || header.contains(';')
+                {
+                    continue;
+                }
+                if let Some((file, _)) = EXEMPT.iter().find(|(file, _)| shown.ends_with(file)) {
+                    if !exempt_seen.contains(file) {
+                        exempt_seen.push(*file);
+                    }
+                } else if HANDS_OVER.iter().any(|marker| body.contains(marker)) {
+                    handing_over += 1;
+                } else {
+                    offenders.push(shown.clone());
+                }
+                for (at, _) in body.match_indices("collect_") {
+                    let call = &body[at..];
+                    let Some(open) = call.find('(') else {
+                        continue;
+                    };
+                    let name = &call[..open];
+                    if !name.ends_with("targets")
+                        || !call[open + 1..].trim_start().starts_with("ctx")
+                        || call[open + 1..]
+                            .trim_start()
+                            .trim_start_matches("ctx")
+                            .starts_with(',')
+                    {
+                        continue;
+                    }
+                    let spelled = format!("{name}(ctx)");
+                    match WHOLE_CONFIG_READS_OK
+                        .iter()
+                        .find(|(file, read, _)| shown.ends_with(file) && *read == spelled)
+                    {
+                        Some((file, _, _)) => {
+                            if !whole_config_seen.contains(file) {
+                                whole_config_seen.push(*file);
+                            }
+                        }
+                        None => whole_config_offenders.push(format!("{shown}: {spelled}")),
+                    }
+                }
+            }
+        }
+        assert!(
+            whole_config_offenders.is_empty(),
+            "these publishers read a target list from the whole configuration \
+             inside `run`, so their evidence can name a destination the run \
+             never pushed to; build the evidence from what was pushed, or name \
+             the call in WHOLE_CONFIG_READS_OK with the reason:\n{}",
+            whole_config_offenders.join("\n")
+        );
+        whole_config_seen.sort_unstable();
+        let mut whole_config = WHOLE_CONFIG_READS_OK.map(|(file, _, _)| file);
+        whole_config.sort_unstable();
+        assert_eq!(
+            whole_config_seen, whole_config,
+            "every whole-configuration read named must still exist"
+        );
+        assert!(
+            offenders.is_empty(),
+            "these publishers return an error without recording what they had \
+             already published, so a rollback cannot find it; wrap the failing \
+             call in `keep_committed_on_failure`, or list the publisher in \
+             EXEMPT with the reason nothing can be left behind:\n{}",
+            offenders.join("\n")
+        );
+        exempt_seen.sort_unstable();
+        let mut exempt = EXEMPT.map(|(file, _)| file);
+        exempt.sort_unstable();
+        assert_eq!(
+            exempt_seen, exempt,
+            "every exemption must still match a publisher"
+        );
+        assert_eq!(
+            handing_over, 18,
+            "the publisher population changed; a rename likely slipped the walk"
+        );
+    }
+
+    #[test]
+    fn keep_committed_on_failure_records_only_on_an_error_with_work() {
+        let mut ctx = anodizer_core::context::Context::test_fixture();
+        let work = |_: &anodizer_core::context::Context| {
+            let mut e = anodizer_core::PublishEvidence::new("x");
+            e.primary_ref = Some("committed".into());
+            Some(e)
+        };
+
+        let ok: anyhow::Result<u8> = keep_committed_on_failure(&mut ctx, Ok(1), work);
+        assert_eq!(ok.unwrap(), 1);
+        assert!(ctx.take_pending_evidence().is_none());
+
+        let err: anyhow::Result<u8> =
+            keep_committed_on_failure(&mut ctx, Err(anyhow::anyhow!("boom")), |_| None);
+        assert!(err.is_err());
+        assert!(ctx.take_pending_evidence().is_none());
+
+        let err: anyhow::Result<u8> =
+            keep_committed_on_failure(&mut ctx, Err(anyhow::anyhow!("boom")), work);
+        assert_eq!(err.unwrap_err().to_string(), "boom");
+        assert_eq!(
+            ctx.take_pending_evidence().and_then(|e| e.primary_ref),
+            Some("committed".to_string())
         );
     }
 

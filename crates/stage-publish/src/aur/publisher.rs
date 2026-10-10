@@ -25,7 +25,7 @@ use super::*;
 /// rotated SSH key is correctly picked up; if the user rotated and
 /// the new key lacks AUR push access, the failure surfaces clearly
 /// in the per-target warn line.
-use crate::util::{RevertTarget, run_revert_targets_parallel};
+use crate::util::{RevertCounts, RevertTarget, revert_summary_line, run_revert_targets_parallel};
 use serde::{Deserialize, Serialize};
 
 /// AUR has a single branch convention: every package repo lives on
@@ -74,6 +74,8 @@ pub(crate) struct AurOurTarget {
     /// secret-sensitive.
     #[serde(skip)]
     pub(crate) git_ssh_command: Option<String>,
+    /// The commit this run pushed; a rollback reverts exactly this one.
+    pub(crate) commit: Option<String>,
 }
 
 /// Walk the crate universe for a `publish.aur` block whose `git_url`
@@ -120,17 +122,14 @@ pub(crate) fn resolve_aur_credentials_from_config(
 }
 
 /// Collapse the recorded rollback targets to a unique set keyed by
-/// `git_url` (AUR always pushes to `master`, so branch is implicit).
-///
-/// The first entry seen for a given `git_url` wins; later entries that
-/// share the same URL are dropped because the second `git revert HEAD`
-/// against the same repo would revert the first revert and restore
-/// the bad release.
+/// `(git_url, commit)` (AUR always pushes to `master`, so branch is
+/// implicit). One pushed commit recorded twice is reverted once.
 pub(crate) fn dedup_aur_targets(targets: &[AurOurTarget]) -> Vec<AurOurTarget> {
-    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut seen: std::collections::BTreeSet<(String, Option<String>)> =
+        std::collections::BTreeSet::new();
     let mut out: Vec<AurOurTarget> = Vec::with_capacity(targets.len());
     for t in targets {
-        if seen.insert(t.git_url.clone()) {
+        if seen.insert((t.git_url.clone(), t.commit.clone())) {
             out.push(t.clone());
         }
     }
@@ -142,6 +141,7 @@ impl From<&AurOurTarget> for anodizer_core::publish_evidence::AurTargetSnapshot 
         Self {
             target: t.target.clone(),
             git_url: t.git_url.clone(),
+            commit: t.commit.clone(),
         }
     }
 }
@@ -159,6 +159,7 @@ impl From<anodizer_core::publish_evidence::AurTargetSnapshot> for AurOurTarget {
             // produced when the serialized evidence round-tripped.
             private_key: None,
             git_ssh_command: None,
+            commit: s.commit,
         }
     }
 }
@@ -216,6 +217,7 @@ pub(crate) fn collect_aur_our_target(
         git_url,
         private_key,
         git_ssh_command,
+        commit: None,
     }))
 }
 
@@ -277,6 +279,20 @@ pub(crate) fn active_aur_configs(ctx: &Context) -> Vec<&anodizer_core::config::A
         .collect()
 }
 
+/// The evidence for the AUR repositories `targets` names. Only a crate
+/// that pushed is recorded, at the moment its push went through:
+/// phantom evidence causes rollback to git-revert in repos that were
+/// never touched (dry-run, skip_upload, no-op NoChanges, or an entry
+/// this run skipped).
+fn aur_evidence(targets: &[AurOurTarget]) -> anodizer_core::PublishEvidence {
+    let mut evidence = anodizer_core::PublishEvidence::new("aur");
+    evidence.extra =
+        anodizer_core::PublishEvidenceExtra::Aur(anodizer_core::publish_evidence::AurExtra {
+            aur_our_targets: targets.iter().map(Into::into).collect(),
+        });
+    evidence
+}
+
 impl anodizer_core::Publisher for AurOurPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -336,7 +352,6 @@ impl anodizer_core::Publisher for AurOurPublisher {
         ));
         let mut processed = 0usize;
         let mut any_pushed = false;
-        let mut targets: Vec<AurOurTarget> = Vec::new();
         for crate_name in &selected {
             // Defensive guard for explicit `--crate=X` selection when X has no
             // publisher block; implicit-all is already filtered by effective_publish_crates above.
@@ -361,25 +376,27 @@ impl anodizer_core::Publisher for AurOurPublisher {
                 crate_name,
                 &anodizer_core::crate_scope::resolve_crate_tag,
                 |ctx| {
+                    // Resolved before the push so a render error cannot
+                    // leave a pushed commit unrecorded.
+                    let target = collect_aur_our_target(ctx, &log, crate_name)?;
                     let pushed = publish_to_aur(ctx, crate_name, &log)?;
-                    let target = if pushed {
-                        collect_aur_our_target(ctx, &log, crate_name)?
-                    } else {
-                        None
-                    };
-                    Ok((pushed, target))
+                    if let (Some(commit), Some(mut target)) = (pushed.clone(), target) {
+                        target.commit = Some(commit);
+                        ctx.record_committed_work(aur_evidence(&[target]));
+                    }
+                    Ok(pushed.is_some())
                 },
             );
-            let Some((pushed, target)) =
-                crate::publisher_helpers::absorb_entry_skip(ctx, &log, "aur", crate_name, outcome)?
-            else {
+            let absorbed =
+                crate::publisher_helpers::absorb_entry_skip(ctx, &log, "aur", crate_name, outcome);
+            // Each push was recorded as it went through, so an error here
+            // leaves the pushed repositories in the pending evidence for
+            // the `Failed` row.
+            let Some(pushed) = absorbed? else {
                 continue;
             };
             if pushed {
                 any_pushed = true;
-                if let Some(target) = target {
-                    targets.push(target);
-                }
             }
         }
         if should_warn_no_eligible(processed, selected.len()) {
@@ -399,19 +416,8 @@ impl anodizer_core::Publisher for AurOurPublisher {
             crate::publisher_helpers::RunLanding::from_landed(any_pushed),
             selected.len(),
         );
-        let mut evidence = anodizer_core::PublishEvidence::new("aur");
-        // Only the crates that actually pushed carry a rollback target.
-        // Phantom evidence causes rollback to git-revert in repos that
-        // were never touched (dry-run, skip_upload, no-op NoChanges, or an
-        // entry this run skipped).
-        if !targets.is_empty() {
-            evidence.extra = anodizer_core::PublishEvidenceExtra::Aur(
-                anodizer_core::publish_evidence::AurExtra {
-                    aur_our_targets: targets.iter().map(Into::into).collect(),
-                },
-            );
-        }
-        Ok(evidence)
+        let evidence = ctx.take_pending_evidence().filter(|_| any_pushed);
+        Ok(evidence.unwrap_or_else(|| aur_evidence(&[])))
     }
 
     fn rollback(
@@ -429,13 +435,8 @@ impl anodizer_core::Publisher for AurOurPublisher {
             ));
             return Ok(());
         }
-        // Dedup recorded targets by `(git_url, AUR_REPO_BRANCH)` before
-        // fanning out. When two crates share the same AUR repo
-        // (unusual for binary PKGBUILDs but possible if a workspace
-        // packages multiple binaries into one repo), running `git
-        // revert HEAD` twice would revert the first revert — restoring
-        // the bad release. Keep the first-seen entry's label so the
-        // warn lines still name a meaningful target.
+        // One pushed commit recorded twice (a carried row joined with a
+        // re-run's) is reverted once.
         let unique = dedup_aur_targets(&targets);
         // SSH credentials are not in the serialized evidence
         // (`#[serde(skip)]`). Resolve them from the live config now
@@ -452,10 +453,15 @@ impl anodizer_core::Publisher for AurOurPublisher {
                     token: None,
                     private_key: pk,
                     ssh_command: ssh_cmd,
+                    commit: t.commit.clone(),
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let (reverted, failed) = run_revert_targets_parallel(
+        let RevertCounts {
+            reverted,
+            skipped,
+            failed,
+        } = run_revert_targets_parallel(
             &prepared,
             "aur",
             None,
@@ -463,9 +469,8 @@ impl anodizer_core::Publisher for AurOurPublisher {
             ctx.retry_deadline(),
             &log,
         );
-        log.status(&format!(
-            "aur rollback reverted {} repo(s), {} failure(s)",
-            reverted, failed
+        log.status(&revert_summary_line(
+            "aur", "repo", reverted, skipped, failed,
         ));
         // See the matching comment in `run_token_revert_rollback`: without
         // this, a failed AUR revert is silently folded into the outer

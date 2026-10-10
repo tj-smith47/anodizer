@@ -461,12 +461,10 @@ mod tests {
     #[test]
     fn rollback_skips_target_when_no_token_resolvable() {
         let capture = LogCapture::new();
-        // Bind then drop a listener to obtain an address that refuses
-        // connections — proving the skip arm makes no request (a connect would
-        // surface as a query-failure warn instead of the no-token warn).
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let dead_addr = listener.local_addr().expect("addr");
-        drop(listener);
+        // An address that refuses connections proves the skip arm makes no
+        // request (a connect would surface as a query-failure warn instead of
+        // the no-token warn).
+        let dead_addr = anodizer_core::test_helpers::refusing_addr::refusing_addr();
 
         // env carries the API base but NONE of SCHEMASTORE_TOKEN /
         // ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN.

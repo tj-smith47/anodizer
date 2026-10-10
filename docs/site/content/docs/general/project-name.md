@@ -28,4 +28,4 @@ project_name: myapp
 dist: ./dist       # default
 ```
 
-All compiled binaries, archives, checksums, and other artifacts are written to this directory. It's created automatically if it doesn't exist. Use `--clean` to remove it before a release.
+All compiled binaries, archives, checksums, and other artifacts are written to this directory. It's created automatically if it doesn't exist. Use `--clean` to empty it before a release; the `run-<tag>/` records of earlier runs are kept, because `anodizer tag rollback` reads them.

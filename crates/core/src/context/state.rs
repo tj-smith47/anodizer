@@ -77,6 +77,21 @@ pub struct StageOutputs {
     /// this marker a pipeline that runs both creates every release — and
     /// fires every nightly retention sweep — twice per run.
     pub release_stage_ran: bool,
+    /// The forge releases the release stage created or updated this run,
+    /// one per crate, recorded as each backend call returns. A failure
+    /// later in the stage leaves these behind, and they are what a rollback
+    /// may delete; a release that existed before the run and was not
+    /// touched is not among them.
+    pub releases_written: Vec<WrittenRelease>,
+}
+
+/// A forge release the release stage created or updated this run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrittenRelease {
+    pub crate_name: String,
+    pub owner: String,
+    pub repo: String,
+    pub tag: String,
 }
 
 /// Callback that re-runs release-content verification against the already
@@ -111,6 +126,23 @@ impl Context {
     /// what went live. See [`Context::pending_evidence`].
     pub fn record_pending_evidence(&mut self, evidence: crate::PublishEvidence) {
         self.pending_evidence = Some(evidence);
+    }
+
+    /// Publisher-side recorder for one unit of work the moment it is
+    /// committed (a tap push, a pull request, an uploaded object): the
+    /// fragment is folded into the pending evidence, so whatever the
+    /// publisher does afterwards — succeed, or fail on a later entry or a
+    /// render — the record already names it. A publisher that records this
+    /// way returns `take_pending_evidence()` from its success path, so both
+    /// rows are built from the same accumulator.
+    pub fn record_committed_work(&mut self, fragment: crate::PublishEvidence) {
+        let absorbed = self
+            .pending_evidence
+            .as_mut()
+            .is_some_and(|pending| pending.absorb_prior(&fragment));
+        if !absorbed {
+            self.pending_evidence = Some(fragment);
+        }
     }
 
     /// Dispatch-side consumer: take the partial evidence (if any) a

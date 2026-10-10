@@ -321,6 +321,14 @@ fn release_one_crate(
     )?;
 
     if let Some((release_url, download_base, repo_owner, repo_name)) = backend_result {
+        ctx.stage_outputs
+            .releases_written
+            .push(anodizer_core::context::WrittenRelease {
+                crate_name: crate_name.to_string(),
+                owner: repo_owner.clone(),
+                repo: repo_name.clone(),
+                tag: tag.clone(),
+            });
         if !flags.skip_upload {
             populate_artifact_download_urls(
                 ctx,
