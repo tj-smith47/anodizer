@@ -87,11 +87,10 @@ pub(crate) fn message_has_token(msg: &str, token: &str) -> bool {
 /// *drives* the bump. Those three are matched ahead of the conventional-commit
 /// layer in [`detect_bump_from_tokens`], so their presence always determines the
 /// result — the bump is explicit operator intent that pre-major demotion must
-/// not touch. `#none` is excluded on purpose: it is the lowest-priority token (a
-/// conventional marker overrides it), so a `#none` sharing a range with a
-/// `feat!:` does NOT drive the bump and must not block that breaking change's
-/// demotion; a `#none` that does win already yields `BumpKind::None`, which
-/// demotion passes through untouched. Whole-word match mirrors
+/// not touch. `#none` is excluded on purpose: when it wins the bump is already
+/// `BumpKind::None`, which demotion passes through untouched, and when an
+/// explicit token outranks it that token is what this function reports.
+/// Whole-word match mirrors
 /// [`detect_bump_from_tokens`] (a token embedded in prose does not count).
 pub(crate) fn has_explicit_bump_token(messages: &[String], cfg: &ResolvedConfig) -> bool {
     let has = |token: &str| messages.iter().any(|m| message_has_token(m, token));
@@ -130,15 +129,14 @@ pub(crate) fn demote_pre_major(
 /// Resolution order (highest precedence first):
 /// 1. Explicit bump tokens `#major` > `#minor` > `#patch` — operator intent,
 ///    always wins. `#none` is deliberately NOT in this layer.
-/// 2. Conventional-commit markers when no `#major`/`#minor`/`#patch` matched —
-///    a line containing `BREAKING CHANGE` or a `<type>!:` shorthand → major,
-///    `feat:` → minor, `fix:` / `perf:` / `revert:` → patch. A message that
-///    starts with `chore:` / `docs:` / `style:` / `refactor:` / `test:` /
-///    `build:` / `ci:` is NOT release-worthy, so it contributes nothing. A
-///    release-worthy marker beats `#none` (an explicit release signal
-///    overrides the veto).
-/// 3. `#none` — vetoes the `default_bump` fallback, so a range whose only
-///    signal is `#none` skips the release.
+/// 2. `#none` — operator intent too: anywhere in the range it vetoes every
+///    INFERRED bump below it, so commits can be pushed without releasing.
+///    Only an explicit `#major`/`#minor`/`#patch` outranks it.
+/// 3. Conventional-commit markers when no token matched — a line containing
+///    `BREAKING CHANGE` or a `<type>!:` shorthand → major, `feat:` → minor,
+///    `fix:` / `perf:` / `revert:` → patch. A message that starts with
+///    `chore:` / `docs:` / `style:` / `refactor:` / `test:` / `build:` /
+///    `ci:` is NOT release-worthy, so it contributes nothing.
 /// 4. `default_bump` fallback when nothing above matched (default `none`:
 ///    chore-only ranges no-op; set `patch`/`minor` to release every range).
 pub(crate) fn detect_bump_from_tokens(
@@ -180,19 +178,16 @@ pub(crate) fn detect_bump_from_tokens(
         return BumpKind::Patch;
     }
 
-    // Conventional-commit layer: fires when no explicit #token matched. A
-    // release-worthy conventional marker wins over `#none` because `#none`
-    // represents "no default bump intended" — it's a veto over the implicit
-    // fallback, not a veto over explicit release signals.
-    if let Some(bump) = detect_conventional_bump(messages) {
-        return bump;
-    }
-
-    // No explicit token, no conventional marker. `#none` now takes effect:
-    // ranges where the only "signal" is `#none` explicitly skip, regardless
-    // of default_bump.
+    // `#none` is read before the inferred layers: a `fix:` beside a
+    // `ci: … #none` used to cut a patch release the operator had asked to
+    // hold, and anodizer's own `default_bump` is `none`, so the veto had no
+    // effect anywhere.
     if has_none {
         return BumpKind::None;
+    }
+
+    if let Some(bump) = detect_conventional_bump(messages) {
+        return bump;
     }
 
     // Fall back to default_bump

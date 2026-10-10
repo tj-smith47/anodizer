@@ -277,13 +277,13 @@ The `tag` job decides whether to cut a release — and which part to bump — fr
 | `fix:` / `perf:` / `revert:` | patch |
 | `chore`/`docs`/`style`/`refactor`/`test`/`build`/`ci` | none |
 
-Precedence, highest first: **explicit `#token`** → **conventional marker** → **`#none`** → **`default_bump`** (config, default `none`). A release-worthy conventional marker beats a `#none` in the same range; an explicit token is never demoted.
+Precedence, highest first: **explicit `#major`/`#minor`/`#patch`** → **`#none`** → **conventional marker** → **`default_bump`** (config, default `none`). A `#none` anywhere in the range holds every inferred bump, so a fix can be pushed without releasing it; only an explicit token outranks it, and an explicit token is never demoted.
 
 ```bash
 # These commits, since the last tag:
 fix: handle empty target list        # → patch
-docs: clarify retry semantics #none  # → none (but the fix above wins)
-# Result: a patch bump. #none only vetoes the default fallback, not a real fix.
+ci: tighten the workflow #none       # → none, and it vetoes the fix above
+# Result: no release. The fix ships with the next range that carries no #none.
 ```
 
 ```bash

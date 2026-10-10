@@ -140,15 +140,18 @@ fn test_detect_bump_none_suppresses_default_fallback() {
 }
 
 #[test]
-fn test_detect_bump_none_loses_to_conventional_fix() {
-    // A legit `fix:` in the range is a release signal. A `#none` on a
-    // sibling cleanup commit must not mask it.
+fn test_detect_bump_none_vetoes_a_conventional_fix() {
+    // `#none` is the operator's way to push a fix without releasing it; the
+    // inferred patch from `fix:` is held until a later range without it.
     let messages = vec![
         "fix: deref bug".to_string(),
-        "chore: revert local-only churn #none".to_string(),
+        "ci: tighten workflow #none".to_string(),
     ];
     let result = detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "none");
-    assert_eq!(result, BumpKind::Patch);
+    assert_eq!(result, BumpKind::None);
+    let messages = vec!["feat!: break #none".to_string()];
+    let result = detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "patch");
+    assert_eq!(result, BumpKind::None);
 }
 
 #[test]
@@ -461,20 +464,19 @@ fn detect_bump_demoted_precedence() {
     );
 }
 
-/// A `#none` token is overridden by a conventional marker in the same range,
-/// so it must NOT suppress that breaking change's pre-major demotion.
+/// A `#none` token vetoes the conventional marker beside it, and the `None`
+/// it yields passes through pre-major demotion untouched.
 #[test]
-fn detect_bump_demoted_none_token_does_not_block_demotion() {
-    // #none loses to feat!: -> the breaking change still demotes to Minor.
+fn detect_bump_demoted_none_token_vetoes_the_inferred_bump() {
     assert_eq!(
         detect_bump_demoted(
             &["feat!: break #none".to_string()],
             &cfg_with_pre_major(true, false),
             Some("v0.5.0")
         ),
-        BumpKind::Minor
+        BumpKind::None
     );
-    // A standalone #none (no conventional marker) still skips the bump.
+    // A standalone #none (no conventional marker) skips the bump too.
     assert_eq!(
         detect_bump_demoted(
             &["chore: housekeeping #none".to_string()],
