@@ -1,0 +1,142 @@
+version: 1
+
+metadata:
+  ota:
+    minimum_version: "1.6.28"
+
+project:
+  name: anodizer
+  description: Bounded disposable determinism review for Anodizer's Rust release CLI
+  type: application
+
+execution:
+  default_context: host
+  contexts:
+    host:
+      backend: native
+      env:
+        CARGO_HOME: .ota/cache/cargo-native
+
+toolchains:
+  rust:
+    version: ">=1.98,<1.99"
+
+tasks:
+  setup:cargo:native:
+    description: Hydrate locked Cargo dependencies into Ota's native cache
+    category: setup
+    command:
+      exe: cargo
+      args: [fetch, --locked]
+    requirements:
+      toolchains: [rust]
+    effects:
+      writes: [.ota/cache/cargo-native]
+      network: true
+      network_kind: dependency_hydration
+    safe_for_agent: false
+
+  pressure:build-cli:
+    description: Build Anodizer's CLI for a disposable Linux determinism exercise
+    category: setup
+    command:
+      exe: cargo
+      args: [build, --locked, -p, anodizer, --bin, anodizer]
+    depends_on: [setup:cargo:native]
+    requirements:
+      toolchains: [rust]
+    effects:
+      writes: [target]
+    safe_for_agent: false
+
+  pressure:prepare:
+    description: Create a tiny disposable Rust workspace with a fixed Git revision
+    category: setup
+    command:
+      exe: bash
+      args: [.github/ota/determinism-fixture.sh, prepare]
+    depends_on: [pressure:build-cli]
+    requirements:
+      tools:
+        awk: "*"
+        git: "*"
+    effects:
+      writes: [.ota/pressure]
+    safe_for_agent: false
+
+  pressure:preflight:
+    description: Record Anodizer's configuration preflight for the disposable workspace
+    category: verify
+    command:
+      exe: bash
+      args: [.github/ota/determinism-fixture.sh, preflight]
+    depends_on: [pressure:prepare]
+    effects:
+      writes: [.ota/pressure]
+    safe_for_agent: false
+
+  pressure:determinism:
+    description: Require two builds of the disposable workspace to compare byte-for-byte
+    category: verify
+    command:
+      exe: bash
+      args: [.github/ota/determinism-fixture.sh, positive]
+    depends_on: [pressure:preflight]
+    requirements:
+      tools:
+        jq: "*"
+    effects:
+      writes: [.ota/pressure]
+    safe_for_agent: false
+
+  pressure:controlled-failure:
+    description: Require Anodizer to detect an injected archive-byte drift
+    category: verify
+    command:
+      exe: bash
+      args: [.github/ota/determinism-fixture.sh, negative]
+    depends_on: [pressure:determinism]
+    requirements:
+      tools:
+        jq: "*"
+    effects:
+      writes: [.ota/pressure]
+    safe_for_agent: false
+
+  pressure:verify:
+    description: Retain separate preflight, reproducibility, and controlled-drift results
+    category: verify
+    aggregate:
+      tasks: [pressure:controlled-failure]
+    safe_for_agent: false
+
+workflows:
+  default: pressure
+  pressure:
+    intent: ci_validation
+    description: Exercise Anodizer's CLI on one disposable Linux Rust workspace
+    run:
+      task: pressure:verify
+    notes: |
+      This records config preflight, a positive two-build byte comparison, and deliberate
+      archive drift detection. It does not prove the upstream release determinism matrix,
+      registry publication, signing, rollback, or recovery.
+
+agent:
+  posture: readiness_strict
+  safe_tasks: []
+  protected_paths:
+    - .github/workflows
+    - Cargo.lock
+    - Taskfile.yml
+    - ota.yaml
+  bootstrap:
+    ota:
+      note: Install the reviewed Ota v1.6.28 release for this advisory review lane.
+      source:
+        kind: version
+        version: v1.6.28
+  notes: |
+    The disposable fixture uses a deliberate failure injection and is not agent-safe.
+    Anodizer owns release-system correctness; this contract only selects and records the
+    bounded fixture exercise. Do not infer release readiness or publication approval.
