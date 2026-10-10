@@ -164,6 +164,21 @@ pub fn libc_from_target(triple: &str) -> &'static str {
     }
 }
 
+/// The ABI component of a target triple, for the `{{ .Abi }}` template var.
+///
+/// The fourth dash-separated component (`gnu`, `musl`, `gnueabihf`, `msvc`,
+/// `gnullvm`, …) with any glibc version suffix (`gnu.2.17`) dropped. A triple
+/// of three components or fewer (`aarch64-apple-darwin`,
+/// `aarch64-linux-android`, `wasm32-unknown-unknown`) names no ABI and
+/// returns the empty string.
+pub fn abi_from_target(triple: &str) -> &str {
+    triple
+        .split('-')
+        .nth(3)
+        .and_then(|abi| abi.split('.').next())
+        .unwrap_or("")
+}
+
 /// A target triple whose architecture has no known Debian (`dpkg`)
 /// architecture name.
 ///
@@ -559,6 +574,23 @@ mod tests {
         assert_eq!(rust_arch_to_goarch("arm", true), None);
         assert_eq!(rust_arch_to_goarch("armv7", false), None);
         assert_eq!(rust_arch_to_goarch("frob", false), None);
+    }
+
+    #[test]
+    fn abi_is_the_fourth_triple_component_without_a_glibc_version() {
+        assert_eq!(abi_from_target("x86_64-unknown-linux-gnu"), "gnu");
+        assert_eq!(abi_from_target("x86_64-unknown-linux-musl"), "musl");
+        assert_eq!(abi_from_target("x86_64-pc-windows-msvc"), "msvc");
+        assert_eq!(abi_from_target("x86_64-pc-windows-gnu"), "gnu");
+        assert_eq!(
+            abi_from_target("armv7-unknown-linux-gnueabihf"),
+            "gnueabihf"
+        );
+        assert_eq!(abi_from_target("aarch64-unknown-linux-gnu.2.17"), "gnu");
+        assert_eq!(abi_from_target("aarch64-linux-android"), "");
+        assert_eq!(abi_from_target("aarch64-apple-darwin"), "");
+        assert_eq!(abi_from_target("darwin-universal"), "");
+        assert_eq!(abi_from_target(""), "");
     }
 
     #[test]

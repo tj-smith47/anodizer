@@ -26,7 +26,7 @@ simple_publisher!(
 /// Aliased to the core-owned snapshot so the evidence schema lives in
 /// [`anodizer_core::publish_evidence`] and credential-shaped fields
 /// have no slot to fill.
-type NixTarget = anodizer_core::publish_evidence::NixTargetSnapshot;
+pub(super) type NixTarget = anodizer_core::publish_evidence::NixTargetSnapshot;
 
 fn decode_nix_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<NixTarget> {
     match extra {
@@ -39,45 +39,13 @@ fn decode_nix_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<NixTar
 /// `(repo_url, branch)`. First entry seen wins. See homebrew's
 /// `dedup_homebrew_targets` for the same-revert-twice hazard.
 fn dedup_nix_targets(targets: &[NixTarget]) -> Vec<NixTarget> {
-    let mut seen: std::collections::BTreeSet<(String, Option<String>)> =
+    let mut seen: std::collections::BTreeSet<(String, Option<String>, Option<String>)> =
         std::collections::BTreeSet::new();
     let mut out: Vec<NixTarget> = Vec::with_capacity(targets.len());
     for t in targets {
-        let key = (t.repo_url.clone(), t.branch.clone());
+        let key = (t.repo_url.clone(), t.branch.clone(), t.commit.clone());
         if seen.insert(key) {
             out.push(t.clone());
-        }
-    }
-    out
-}
-
-fn collect_nix_run_targets(ctx: &Context) -> Vec<NixTarget> {
-    let mut out: Vec<NixTarget> = Vec::new();
-    let selected = &ctx.options.selected_crates;
-    for c in ctx.config.selected_crates(selected) {
-        let Some(nc) = c.publish.as_ref().and_then(|p| p.nix.as_ref()) else {
-            continue;
-        };
-        if let Some((owner, name)) = crate::util::resolve_repo_owner_name(nc.repository.as_ref()) {
-            // Mirror the publish path's branch resolution (including the
-            // versioned PR-branch default) so the recorded rollback branch
-            // matches the branch actually pushed.
-            let pkg_raw = nc.name.as_deref().unwrap_or(&c.name);
-            let pkg_name = ctx
-                .render_template(pkg_raw)
-                .unwrap_or_else(|_| pkg_raw.to_string());
-            let version = crate::util::crate_scoped_version(ctx, c);
-            out.push(NixTarget {
-                target: c.name.clone(),
-                repo_url: format!("https://github.com/{}/{}.git", owner, name),
-                branch: crate::util::resolve_branch_or_versioned(
-                    ctx,
-                    nc.repository.as_ref(),
-                    &pkg_name,
-                    &version,
-                ),
-                token_env_var: Some("NIX_PKGS_TOKEN".to_string()),
-            });
         }
     }
     out
@@ -198,6 +166,16 @@ pub(crate) fn build_nix_reconcile_target(
         version,
         token,
     }))
+}
+
+/// The evidence for the repositories `targets` names.
+pub(super) fn nix_evidence(targets: Vec<NixTarget>) -> anodizer_core::PublishEvidence {
+    let mut evidence = anodizer_core::PublishEvidence::new("nix");
+    evidence.extra =
+        anodizer_core::PublishEvidenceExtra::Nix(anodizer_core::publish_evidence::NixExtra {
+            nix_targets: targets,
+        });
+    evidence
 }
 
 impl anodizer_core::Publisher for NixPublisher {
@@ -373,13 +351,16 @@ impl anodizer_core::Publisher for NixPublisher {
             // Re-scope the version/name template vars to THIS crate's own tag so
             // the rendered derivation carries the crate's version, not the first
             // crate's (workspace per-crate independent-version mode).
-            let pushed = crate::publisher_helpers::with_published_crate_scope(
+            let scoped = crate::publisher_helpers::with_published_crate_scope(
                 ctx,
                 crate_name,
                 &anodizer_core::crate_scope::resolve_crate_tag,
                 |ctx| super::publish_to_nix(ctx, crate_name, &log),
-            )?;
-            if pushed {
+            );
+            // Each push was recorded as it went through (`finalize_publish`),
+            // so an error here leaves the pushed overlays in the pending
+            // evidence for the `Failed` row.
+            if scoped? {
                 any_pushed = true;
             }
         }
@@ -400,16 +381,9 @@ impl anodizer_core::Publisher for NixPublisher {
                 "nix", processed,
             ));
         }
-        let mut evidence = anodizer_core::PublishEvidence::new("nix");
-        if any_pushed {
-            let targets = collect_nix_run_targets(ctx);
-            evidence.extra = anodizer_core::PublishEvidenceExtra::Nix(
-                anodizer_core::publish_evidence::NixExtra {
-                    nix_targets: targets,
-                },
-            );
-        }
-        Ok(evidence)
+        // The overlays pushed this run, recorded as each push went through.
+        let evidence = ctx.take_pending_evidence().filter(|_| any_pushed);
+        Ok(evidence.unwrap_or_else(|| nix_evidence(Vec::new())))
     }
 
     fn rollback(
@@ -816,6 +790,7 @@ mod publisher_tests {
                     repo_url: "https://github.com/acme/nixpkgs-overlay.git".into(),
                     branch: Some("master".into()),
                     token_env_var: Some("NIX_PKGS_TOKEN".into()),
+                    commit: None,
                 }],
             });
         let s = serde_json::to_string(&e).expect("serialize");
@@ -837,6 +812,7 @@ mod publisher_tests {
             repo_url: "https://github.com/acme/nixpkgs-overlay.git".into(),
             branch: Some("master".into()),
             token_env_var: Some("NIX_PKGS_TOKEN".into()),
+            commit: None,
         }];
         let extra =
             anodizer_core::PublishEvidenceExtra::Nix(anodizer_core::publish_evidence::NixExtra {
@@ -879,17 +855,6 @@ mod publisher_tests {
         let names =
             crate::publisher_helpers::effective_publish_crates(&ctx, is_nix_per_crate_configured);
         assert_eq!(names, vec!["beta".to_string()]);
-    }
-
-    #[test]
-    fn nix_collect_run_targets_walks_per_crate_config() {
-        let ctx = TestContextBuilder::new()
-            .crates(vec![nix_crate("demo")])
-            .build();
-        let targets = collect_nix_run_targets(&ctx);
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].target, "demo");
-        assert_eq!(targets[0].branch.as_deref(), Some("master"));
     }
 
     fn nix_crate_with_formatter(name: &str, formatter: Option<&str>) -> CrateConfig {
@@ -1032,12 +997,14 @@ mod publisher_tests {
                 repo_url: "https://github.com/acme/nixpkgs-overlay.git".into(),
                 branch: Some("master".into()),
                 token_env_var: Some("NIX_PKGS_TOKEN".into()),
+                commit: None,
             },
             NixTarget {
                 target: "beta".into(),
                 repo_url: "https://github.com/acme/nixpkgs-overlay.git".into(),
                 branch: Some("master".into()),
                 token_env_var: Some("NIX_PKGS_TOKEN".into()),
+                commit: None,
             },
         ];
         let unique = dedup_nix_targets(&targets);

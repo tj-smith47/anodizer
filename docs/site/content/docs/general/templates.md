@@ -112,6 +112,15 @@ instead of silently baking a blank into a release artifact.
   `Arch`; a top-level render adds 20+ git-derived variables) and isn't
   reproduced here since it isn't a fixed contract.
 
+  The eight [target variant](#target-variant) variables (`Arm`, `Mips`,
+  `Amd64`, `Arm64`, `I386`, `Ppc64`, `Riscv64`, `Abi`) follow the same rule:
+  a per-target scope (a build, an archive, a signature, an SBOM document, an
+  upload URL, a publisher command) writes all eight, so inside one they are
+  always defined, and outside one — an announce template, a release name —
+  `"{{ ProjectName }}{{ Abi }}"` is that error. `targetVariant` is the one
+  reader that tolerates the absence: it renders empty where no target is in
+  scope.
+
 - **An undefined operand inside `~` string-concat renders as empty**, not an
   error — this is Tera's own coercion rule for the `~` operator, not
   something anodizer configures:
@@ -252,7 +261,10 @@ If you hit a construct not covered here, open an issue with the failing template
 | `Amd64` | x86-64 micro-architecture level from the binary's build metadata; untagged binaries carry the `v1` baseline in every context. Default name templates suppress `v1` (`{% if Amd64 and Amd64 != "v1" %}`), so only tuned `v2`/`v3` builds get a suffix | `v1`, `v3` |
 | `Mips` | Always empty — `Arch` carries the full mips token (`mips64el`), so a suffix would double it | (empty) |
 | `I386` | 32-bit x86 instruction floor (build, makeself, AppImage, sign) | `sse2` |
+| `Ppc64` | 64-bit PowerPC level (build, makeself, AppImage, sign); every `powerpc64` / `powerpc64le` build carries the `power8` baseline, which `targetVariant` suppresses | `power8` |
+| `Riscv64` | 64-bit RISC-V profile (build, makeself, AppImage, sign); every `riscv64gc` build carries the `rva20u64` baseline, which `targetVariant` suppresses | `rva20u64` |
 | `Target` | Full target triple | `x86_64-unknown-linux-gnu` |
+| `Abi` | The triple's ABI component — its fourth part, without a glibc version suffix. Set wherever `Target` is; empty for a triple that names none (`aarch64-apple-darwin`, `aarch64-linux-android`) | `gnu`, `musl`, `msvc`, `gnueabihf` |
 | `Binary` | Current binary name | `myapp` |
 | `ArtifactName` | Current artifact name | `myapp-1.0.0-linux-amd64.tar.gz` |
 | `ArtifactPath` | Full path to artifact | `/path/to/dist/myapp-1.0.0.tar.gz` |
@@ -496,6 +508,78 @@ message_template: "built for {{ englishJoin(items=[Os, Arch]) }}"              #
      zola parses such inline code as a shortcode invocation and fails the build
      on the unknown name. Calls that reference variables (e.g. s=Branch) do not
      parse as shortcodes, are left alone by zola, and need no escape. -->
+
+### Target variant
+
+| Helper | Form | Example | Result |
+|--------|------|---------|--------|
+| `targetVariant` | fn | `{{/* targetVariant() */}}` — or the Go form `{{ targetVariant . }}` | `_musl`, `v3_gnu`, `v7_gnueabihf`, empty |
+
+`targetVariant` renders the suffix that tells apart builds sharing an OS and
+architecture but built for different target variants. It reads the per-target
+variables of the current scope and writes each one that is set and is not the
+toolchain baseline:
+
+| Variable | Written as | Baseline (renders nothing) |
+|---|---|---|
+| `Arm` | `v<value>` | — |
+| `Mips` | `_<value>` | — |
+| `Amd64` | `<value>` | `v1` |
+| `Arm64` | `<value>`, a `,` written as `-` | `v8`, `v8.0` |
+| `I386` | `<value>` | `sse2` |
+| `Ppc64` | `<value>` | `power8` |
+| `Riscv64` | `<value>` | `rva20u64` |
+| `Abi` | `_<value>` | — |
+
+The ABI belongs to the target and not to the architecture: a gnu and a musl
+build of one machine render the same `Os` and `Arch`, and `targetVariant` is
+what separates them.
+
+```yaml
+crates:
+  - name: myapp
+    archives:
+      - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ targetVariant . }}"
+```
+
+| Target | Rendered name |
+|---|---|
+| `x86_64-unknown-linux-gnu` | `myapp_1.2.3_linux_amd64_gnu` |
+| `x86_64-unknown-linux-musl` | `myapp_1.2.3_linux_amd64_musl` |
+| `x86_64-unknown-linux-gnu`, `amd64_variant: v3` | `myapp_1.2.3_linux_amd64v3_gnu` |
+| `armv7-unknown-linux-gnueabihf` | `myapp_1.2.3_linux_armv7_gnueabihf` |
+| `x86_64-pc-windows-msvc` | `myapp_1.2.3_windows_amd64_msvc` |
+| `aarch64-apple-darwin` | `myapp_1.2.3_darwin_arm64` |
+
+The default [SBOM document name](@/docs/packages/source-sbom.md) for
+`artifacts: binary` ends in it. The default archive name does not: it carries
+the micro-architecture level only, so a crate that archives both a gnu and a
+musl build of one machine needs `targetVariant`, `Abi` or `Target` in its
+`name_template`. In a scope with no target, `targetVariant` renders empty.
+
+The eight variables in the table render empty in such a scope too, where any
+other name that was never set fails the render:
+
+```yaml
+announce:
+  email:
+    message_template: "{{ ProjectName }} {{ Tag }}{{ Abi }}"   # myapp v1.2.3 — no target here, so Abi is empty
+    # "{{ ProjectName }} {{ Abii }}" fails: Variable `Abii` is not defined
+```
+
+`targetVariant` takes the template context and nothing else. Inside a
+`{{ with }}` or `{{ range }}` block the `.` is the block's own value, so the
+call is written `{{ targetVariant $ }}` there; `{{ targetVariant .Env }}`,
+`{{ targetVariant "x" }}` and `{{ .Os | targetVariant }}` are refused, by the
+render and by `anodizer check config`, with a message that names what was
+passed and the spelling that works (``got `.Env`: use it as '{{ targetVariant . }}'``).
+
+`Abi` on its own names just that component:
+
+```yaml
+binary_signs:
+  - asset_name_template: "{{ Binary }}-{{ Version }}-{{ Os }}-{{ Arch }}-{{ Abi }}"   # app-1.2.3-linux-amd64-musl
+```
 
 ### Environment
 

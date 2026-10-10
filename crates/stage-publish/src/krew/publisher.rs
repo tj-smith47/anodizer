@@ -221,6 +221,16 @@ pub(crate) fn build_krew_reconcile_target(
     }))
 }
 
+/// The evidence for the pull requests `targets` names.
+fn krew_evidence(targets: Vec<KrewPrTarget>) -> anodizer_core::PublishEvidence {
+    let mut evidence = anodizer_core::PublishEvidence::new("krew");
+    evidence.extra =
+        anodizer_core::PublishEvidenceExtra::Krew(anodizer_core::publish_evidence::KrewExtra {
+            krew_targets: targets,
+        });
+    evidence
+}
+
 impl anodizer_core::Publisher for KrewPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -327,7 +337,6 @@ impl anodizer_core::Publisher for KrewPublisher {
         ));
         let mut processed = 0usize;
         let mut any_pushed = false;
-        let mut targets: Vec<KrewPrTarget> = Vec::new();
         for crate_name in &selected {
             // Defensive guard for explicit `--crate=X` selection when X has no
             // publisher block; implicit-all is already filtered by effective_publish_crates above.
@@ -345,25 +354,26 @@ impl anodizer_core::Publisher for KrewPublisher {
             // crate's version, not the first crate's (workspace per-crate
             // independent-version mode). The target snapshot is collected inside
             // the same scope so its recorded branch matches the one pushed.
-            let (pushed, target) = crate::publisher_helpers::with_published_crate_scope(
+            let scoped = crate::publisher_helpers::with_published_crate_scope(
                 ctx,
                 crate_name,
                 &anodizer_core::crate_scope::resolve_crate_tag,
                 |ctx| {
+                    // Resolved before the push so a render error cannot
+                    // leave a pushed branch unrecorded.
+                    let target = collect_krew_target(ctx, crate_name, &log)?;
                     let outcome = publish_to_krew(ctx, crate_name, &log)?;
-                    let target = if outcome.pushed {
-                        collect_krew_target(ctx, crate_name, &log)?
-                    } else {
-                        None
-                    };
-                    Ok((outcome.pushed, target))
+                    if let Some(t) = target.filter(|_| outcome.pushed) {
+                        ctx.record_committed_work(krew_evidence(vec![t]));
+                    }
+                    Ok(outcome.pushed)
                 },
-            )?;
-            if pushed {
+            );
+            // Each push was recorded as it went through, so an error here
+            // leaves the pushed branches in the pending evidence for the
+            // `Failed` row.
+            if scoped? {
                 any_pushed = true;
-            }
-            if let Some(t) = target {
-                targets.push(t);
             }
         }
         let entry_skips = crate::publisher_helpers::evaluate_entry_skips(
@@ -383,20 +393,13 @@ impl anodizer_core::Publisher for KrewPublisher {
                 "krew", processed,
             ));
         }
-        let mut evidence = anodizer_core::PublishEvidence::new("krew");
         // Record rollback evidence only for the PrDirect flow, which
         // pushes a branch + opens a PR anodizer can later close. The
         // BotWebhook flow has no anodizer-owned PR (the krew-release-bot
         // server opens it), so there is nothing to roll back and no
         // evidence to record.
-        if any_pushed {
-            evidence.extra = anodizer_core::PublishEvidenceExtra::Krew(
-                anodizer_core::publish_evidence::KrewExtra {
-                    krew_targets: targets,
-                },
-            );
-        }
-        Ok(evidence)
+        let evidence = ctx.take_pending_evidence().filter(|_| any_pushed);
+        Ok(evidence.unwrap_or_else(|| krew_evidence(Vec::new())))
     }
 
     fn rollback(

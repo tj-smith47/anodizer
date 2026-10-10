@@ -37,6 +37,7 @@ mod vars;
 #[cfg(test)]
 mod tests;
 
+pub use crate::template_preprocess::check_target_variant_calls;
 #[cfg(test)]
 pub(crate) use base_tera::registered_builtin_names;
 pub use base_tera::ruby_escape_str;

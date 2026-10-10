@@ -1080,7 +1080,6 @@ fn init_bare_fork() -> (String, tempfile::TempDir) {
     git_ok(seed.path(), &["init", "-b", "main"]);
     git_ok(seed.path(), &["config", "user.email", "t@example.invalid"]);
     git_ok(seed.path(), &["config", "user.name", "Test"]);
-    git_ok(seed.path(), &["config", "commit.gpgsign", "false"]);
     std::fs::write(seed.path().join("README"), "krew-index\n").unwrap();
     git_ok(seed.path(), &["add", "README"]);
     git_ok(seed.path(), &["commit", "-m", "seed"]);
@@ -1235,6 +1234,102 @@ fn build_ctx(crates: Vec<CrateConfig>, version: &str) -> Context {
             ),
     );
     ctx
+}
+
+/// A krew `url_template` renders the archive's own target variant in the
+/// manifest `uri`: the ABI of its triple and the amd64 level its metadata
+/// records.
+#[test]
+fn krew_url_template_renders_the_target_variant() {
+    let render = |target: &str, amd64_variant: Option<&str>| {
+        let mut c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+        if let Some(k) = c.publish.as_mut().and_then(|p| p.krew.as_mut()) {
+            k.url_template =
+                Some("https://example.com/{{ Os }}_{{ Arch }}{{ targetVariant . }}".to_string());
+            if amd64_variant.is_some() {
+                k.amd64_variant = Some(anodizer_core::config::Amd64Variant::V3);
+            }
+        }
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        let mut meta = HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            "https://ignored/original.tar.gz".to_string(),
+        );
+        meta.insert("sha256".to_string(), "a".repeat(64));
+        meta.insert("format".to_string(), "tar.gz".to_string());
+        meta.insert("extra_binaries".to_string(), "kubectl-widget".to_string());
+        if let Some(v) = amd64_variant {
+            meta.insert("amd64_variant".to_string(), v.to_string());
+        }
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/dist/kubectl-widget-linux-amd64.tar.gz"),
+            name: "kubectl-widget-linux-amd64.tar.gz".to_string(),
+            target: Some(target.to_string()),
+            crate_name: "widget".to_string(),
+            metadata: meta,
+            size: None,
+        });
+        render_krew_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("render ok")
+            .expect("not skipped")
+    };
+    let gnu = render("x86_64-unknown-linux-gnu", None);
+    assert!(
+        gnu.contains("uri: https://example.com/linux_amd64_gnu\n"),
+        "{gnu}"
+    );
+    let musl = render("x86_64-unknown-linux-musl", None);
+    assert!(
+        musl.contains("uri: https://example.com/linux_amd64_musl\n"),
+        "{musl}"
+    );
+    let v3 = render("x86_64-unknown-linux-gnu", Some("v3"));
+    assert!(
+        v3.contains("uri: https://example.com/linux_amd64v3_gnu\n"),
+        "{v3}"
+    );
+}
+
+/// krew's selector is the bare `arm`, so the URL scope carries `Arch="arm"`
+/// and `Arm` holds the version from the triple: `{{ Arch }}v{{ Arm }}`
+/// renders the `armv7` an archive name renders.
+#[test]
+fn krew_url_template_renders_arm_from_the_triple() {
+    let mut c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+    if let Some(k) = c.publish.as_mut().and_then(|p| p.krew.as_mut()) {
+        k.url_template = Some(
+            "https://example.com/{{ Os }}_{{ Arch }}v{{ Arm }}{{ targetVariant . }}".to_string(),
+        );
+        k.arm_variant = Some("7".to_string());
+    }
+    let mut ctx = build_ctx(vec![c], "1.0.0");
+    let mut meta = HashMap::new();
+    meta.insert(
+        "url".to_string(),
+        "https://ignored/original.tar.gz".to_string(),
+    );
+    meta.insert("sha256".to_string(), "a".repeat(64));
+    meta.insert("format".to_string(), "tar.gz".to_string());
+    meta.insert("extra_binaries".to_string(), "kubectl-widget".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        path: std::path::PathBuf::from("/dist/kubectl-widget-linux-armv7.tar.gz"),
+        name: "kubectl-widget-linux-armv7.tar.gz".to_string(),
+        target: Some("armv7-unknown-linux-gnueabihf".to_string()),
+        crate_name: "widget".to_string(),
+        metadata: meta,
+        size: None,
+    });
+    let manifest = render_krew_manifest_for_crate(&ctx, "widget", &quiet())
+        .expect("render ok")
+        .expect("not skipped");
+    assert!(
+        manifest.contains("uri: https://example.com/linux_armv7v7_gnueabihf\n"),
+        "{manifest}"
+    );
+    assert!(manifest.contains("arch: arm\n"), "{manifest}");
 }
 
 // -----------------------------------------------------------------

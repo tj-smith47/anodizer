@@ -32,8 +32,6 @@
 //! memento check above sees that skip. `docker_signs:` signatures live in the
 //! registry, not on the release.
 
-use std::collections::HashMap;
-
 use anyhow::Result;
 
 use anodizer_core::config::SignConfig;
@@ -144,7 +142,7 @@ pub fn expected_signature_assets(
                 let (sig_name, cert_name) = if binary_slice {
                     expected_binary_sign_names(cfg, artifact, ctx, &mut claimed_names)?
                 } else {
-                    expected_output_names(cfg, &artifact.path, &artifact.metadata, ctx)?
+                    expected_output_names(cfg, artifact, ctx)?
                 };
                 if !uploaded {
                     continue;
@@ -175,11 +173,10 @@ pub fn expected_signature_assets(
 /// test in `tests.rs` pins the two paths together so they cannot drift.
 fn expected_output_names(
     cfg: &SignConfig,
-    artifact_path: &std::path::Path,
-    artifact_metadata: &HashMap<String, String>,
+    artifact: &anodizer_core::artifact::Artifact,
     ctx: &Context,
 ) -> Result<(String, Option<String>)> {
-    let (sig_path, cert_path) = expected_output_paths(cfg, artifact_path, artifact_metadata, ctx)?;
+    let (sig_path, cert_path) = expected_output_paths(cfg, artifact, ctx, false)?;
     Ok((
         basename_of(&sig_path),
         cert_path.as_deref().map(basename_of),
@@ -191,17 +188,36 @@ fn expected_output_names(
 /// writes to. Shared naming source for [`expected_output_names`] (which takes
 /// the basenames) and the standalone re-verification path (which needs the
 /// on-disk files), so the two can never drift.
+///
+/// `binary_slice` says the config is a `binary_signs:` entry: the sign stage
+/// renders those templates in the binary's own per-target scope
+/// ([`crate::helpers::seed_binary_sign_scope`]), so the same scope is seeded
+/// here on a clone of the run's variables.
 pub(crate) fn expected_output_paths(
     cfg: &SignConfig,
-    artifact_path: &std::path::Path,
-    artifact_metadata: &HashMap<String, String>,
+    artifact: &anodizer_core::artifact::Artifact,
     ctx: &Context,
+    binary_slice: bool,
 ) -> Result<(std::path::PathBuf, Option<std::path::PathBuf>)> {
+    let scoped;
+    let vars = if binary_slice {
+        let mut vars = ctx.template_vars().clone();
+        crate::helpers::seed_binary_sign_scope(
+            &mut vars,
+            artifact.target.as_deref(),
+            &artifact.metadata,
+        );
+        scoped = vars;
+        &scoped
+    } else {
+        ctx.template_vars()
+    };
     crate::helpers::resolve_output_paths(
         cfg,
-        artifact_path,
-        artifact_metadata,
-        ctx,
+        &artifact.path,
+        &artifact.metadata,
+        vars,
+        &ctx.config.dist,
         SignConfig::DEFAULT_SIGNATURE_TEMPLATE,
     )
 }
@@ -223,8 +239,7 @@ fn expected_binary_sign_names(
     ctx: &Context,
     claimed_names: &mut crate::asset_names::BinarySignAssetNames,
 ) -> Result<(String, Option<String>)> {
-    let (sig_path, cert_path) =
-        expected_output_paths(cfg, &artifact.path, &artifact.metadata, ctx)?;
+    let (sig_path, cert_path) = expected_output_paths(cfg, artifact, ctx, true)?;
     let Some(target) = artifact.target.as_deref() else {
         return Ok((
             basename_of(&sig_path),
@@ -272,6 +287,7 @@ mod tests {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::config::{ArchiveConfig, ArchivesConfig, BuildConfig, CrateConfig};
     use anodizer_core::test_helpers::TestContextBuilder;
+    use std::collections::HashMap;
 
     /// The crate whose `archives:` config names every binary signature of the
     /// binary-sign fixtures below.
@@ -744,6 +760,7 @@ mod subject_provenance_tests {
     use crate::process::{ArtifactFilter, process_sign_configs};
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::test_helpers::TestContextBuilder;
+    use std::collections::HashMap;
 
     fn id_archive(name: &str, id: &str) -> Artifact {
         let mut metadata = HashMap::new();

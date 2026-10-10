@@ -186,7 +186,7 @@ When no `cmd` or `args` are specified, anodizer uses built-in mode. It locates `
 | `cmd` | string | none (built-in mode) | External command to run (e.g., `syft`) |
 | `args` | list | syft defaults | Command-line arguments (supports `$artifact`, `$document` variables) |
 | `env` | map or list | syft defaults | Environment variables for the command |
-| `documents` | list | auto | Output document path templates. The default for `artifacts: binary` is the binary's own name plus `.sbom.json` — `{{ Binary }}_{{ Version }}_{{ Os }}_{{ Arch }}` and the micro-architecture variant suffix — so two `amd64_variant` builds of one binary produce two documents; every other filter defaults to `{{ ArtifactName }}.sbom.json` |
+| `documents` | list | auto | Output document path templates. In built-in mode (no `cmd:` and no `args:`) the paths only select the format and the stage writes one `<project>-<version>.cdx.json` or `.spdx.json`; the defaults below name the document of each artifact an external command is run for, which needs `cmd:` or `args:` set. There, the default for `artifacts: binary` is `{{ Binary }}_{{ Version }}_{{ Os }}_{{ Arch }}{{ targetVariant . }}.sbom.json` — the binary, version, OS and architecture, then the [target variant](@/docs/general/templates.md#target-variant): the micro-architecture level when it is not the baseline, and the target's ABI (`myapp_1.2.3_linux_amd64_gnu.sbom.json`, `myapp_1.2.3_linux_amd64_musl.sbom.json`, `myapp_1.2.3_darwin_arm64.sbom.json`) — so two `amd64_variant` builds, or a gnu and a musl build, of one binary produce two documents; every other filter defaults to `{{ ArtifactName }}.sbom.json` |
 | `artifacts` | string | `"archive"` | Which artifact type to catalog: `source`, `archive`, `binary`, `package`, `diskimage`, `installer`, `any` |
 | `ids` | list | none | Filter to only catalog artifacts matching these IDs |
 | `disable` | bool or string | `false` | Disable this config (accepts template strings) |
@@ -263,6 +263,19 @@ Document path templates have access to all standard template variables plus:
 | `{{ Os }}` | Target operating system |
 | `{{ Arch }}` | Target architecture |
 | `{{ Amd64 }}` / `{{ Arm64 }}` / `{{ I386 }}` | Micro-architecture level of the artifact's target (`v1`, `v3`, `v8`, `sse2`) |
+| `{{ Target }}` | Full target triple of the artifact |
+| `{{ Abi }}` | ABI component of the target triple (`gnu`, `musl`, `msvc`; empty when the triple names none) |
+| `{{ targetVariant . }}` | The micro-architecture level and ABI as one name suffix (`_gnu`, `v3_musl`) |
+
+To keep the document names an earlier release used for a single-ABI project,
+set `documents:` without the ABI:
+
+```yaml
+sboms:
+  - artifacts: binary
+    documents:
+      - "{{ Binary }}_{{ Version }}_{{ Os }}_{{ Arch }}.sbom.json"
+```
 
 ### External command example
 

@@ -4257,10 +4257,9 @@ fn test_standalone_tera_comment_still_stripped() {
 
 /// Pins the live behavior backing every example in
 /// `docs/site/content/docs/general/templates.md`'s "Undefined variables"
-/// section. The literal `Available variables: ...` list was dropped from
-/// that doc (round-3 tera-2.0 review finding) because it's context-shaped —
-/// this test proves that shape actually varies rather than asserting a
-/// specific list, so the doc's "varies by stage" claim stays honest.
+/// section. The page leaves out the literal `Available variables: ...` list
+/// because it is context-shaped — this test proves that shape varies instead
+/// of asserting a specific list, so the page's "varies by stage" claim holds.
 #[test]
 fn docs_undefined_variable_examples_stay_live_accurate() {
     use super::render;
@@ -4754,3 +4753,544 @@ fn the_join_path_function_never_spells_the_platform_separator() {
         "the separator the function joins on must be a literal slash"
     );
 }
+
+// --- `Abi` and `targetVariant` ---
+
+/// `Abi` is the triple's fourth component, per target class.
+#[test]
+fn abi_follows_the_target_per_target_class() {
+    for (target, abi) in [
+        ("x86_64-unknown-linux-gnu", "gnu"),
+        ("x86_64-unknown-linux-musl", "musl"),
+        ("x86_64-pc-windows-msvc", "msvc"),
+        ("aarch64-pc-windows-gnullvm", "gnullvm"),
+        ("armv7-unknown-linux-gnueabihf", "gnueabihf"),
+        ("armv7-unknown-linux-musleabihf", "musleabihf"),
+        ("aarch64-unknown-linux-gnu.2.17", "gnu"),
+        ("armv7-unknown-linux-gnueabihf.2.17", "gnueabihf"),
+        ("aarch64-linux-android", ""),
+        ("aarch64-apple-darwin", ""),
+        ("x86_64-unknown-freebsd", ""),
+        ("wasm32-unknown-unknown", ""),
+        ("darwin-universal", ""),
+    ] {
+        let mut vars = TemplateVars::new();
+        vars.set("Target", target);
+        assert_eq!(
+            render("{{ .Abi }}|{{ Abi }}", &vars).unwrap(),
+            format!("{abi}|{abi}"),
+            "{target}"
+        );
+    }
+}
+
+/// Clearing or re-seeding `Target` moves `Abi` with it, so a prior target's
+/// ABI cannot leak into the next render.
+#[test]
+fn abi_is_cleared_and_reseeded_with_the_target() {
+    use super::vars::clear_per_target_vars;
+    let mut vars = TemplateVars::new();
+    vars.set("Target", "x86_64-unknown-linux-musl");
+    vars.set("Target", "aarch64-apple-darwin");
+    assert_eq!(vars.get("Abi").map(String::as_str), Some(""));
+    vars.set("Target", "x86_64-unknown-linux-musl");
+    clear_per_target_vars(&mut vars);
+    assert_eq!(vars.get("Abi").map(String::as_str), Some(""));
+}
+
+/// Every dimension at its baseline and off it, in both template spellings.
+#[test]
+fn target_variant_renders_each_dimension_off_its_baseline() {
+    for (seeded, expected) in [
+        (&[][..], ""),
+        (&[("Amd64", "v1")][..], ""),
+        (&[("Arm64", "v8")][..], ""),
+        (&[("Arm64", "v8.0")][..], ""),
+        (&[("I386", "sse2")][..], ""),
+        (&[("Ppc64", "power8")][..], ""),
+        (&[("Riscv64", "rva20u64")][..], ""),
+        (&[("Amd64", "v3")][..], "v3"),
+        (&[("Arm64", "v9.0")][..], "v9.0"),
+        (&[("I386", "softfloat")][..], "softfloat"),
+        (&[("Ppc64", "power10")][..], "power10"),
+        (&[("Riscv64", "rva22u64")][..], "rva22u64"),
+        (&[("Arm", "7")][..], "v7"),
+        (&[("Mips", "hardfloat")][..], "_hardfloat"),
+        (&[("Arm64", "v9.0,lse,crypto")][..], "v9.0-lse-crypto"),
+        (&[("Arm64", "v8.0,lse")][..], "v8.0-lse"),
+        (&[("Target", "x86_64-unknown-linux-musl")][..], "_musl"),
+        (
+            &[
+                ("Arm", "7"),
+                ("Mips", "softfloat"),
+                ("Amd64", "v3"),
+                ("Target", "x86_64-unknown-linux-gnu"),
+            ][..],
+            "v7_softfloatv3_gnu",
+        ),
+    ] {
+        let mut vars = TemplateVars::new();
+        for (key, value) in seeded {
+            vars.set(key, value);
+        }
+        for spelling in [
+            "{{ targetVariant . }}",
+            "{{targetVariant .}}",
+            "{{ targetVariant() }}",
+        ] {
+            assert_eq!(
+                render(spelling, &vars).unwrap(),
+                expected,
+                "{spelling} over {seeded:?}"
+            );
+        }
+    }
+}
+
+/// Used as a sub-expression and through a pipe, the Go call still resolves.
+#[test]
+fn target_variant_composes_with_filters_and_sub_expressions() {
+    let mut vars = TemplateVars::new();
+    vars.set("Target", "x86_64-unknown-linux-musl");
+    assert_eq!(
+        render("{{ targetVariant . | upper }}", &vars).unwrap(),
+        "_MUSL"
+    );
+    assert_eq!(
+        render("{{ trimprefix (targetVariant .) \"_\" }}", &vars).unwrap(),
+        "musl"
+    );
+}
+
+/// `targetVariant` takes the template context and nothing else; every other
+/// argument is refused with the spelling that works.
+#[test]
+fn target_variant_refuses_anything_but_the_template_context() {
+    for (template, got) in [
+        ("{{ targetVariant .Env }}", "`.Env`"),
+        ("{{ targetVariant \"x\" }}", "`\"x\"`"),
+        ("{{ targetVariant .Abi }}", "`.Abi`"),
+        ("{{ targetVariant Abi }}", "`Abi`"),
+        ("{{ targetVariant(x=1) }}", "`(x=1)`"),
+        ("{{ targetVariant (print .Os) }}", "`(print .Os)`"),
+        ("{{ targetVariant }}", "no argument"),
+        ("{{ .Os | targetVariant }}", "the piped value `.Os`"),
+        ("{% if targetVariant .Os %}x{% endif %}", "`.Os`"),
+    ] {
+        let err = render(template, &TemplateVars::new()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "targetVariant: expected the template context, got {got}: \
+                 use it as '{{{{ targetVariant . }}}}'"
+            ),
+            "{template}"
+        );
+        assert_eq!(
+            super::check_target_variant_calls(template)
+                .unwrap_err()
+                .to_string(),
+            err.to_string(),
+            "{template}"
+        );
+    }
+}
+
+/// Inside `{{ with … }}` and `{{ range … }}` the `.` is the block's own
+/// value, not the template context, so the call is refused there and `$`
+/// (the root context) is the spelling that works.
+#[test]
+fn target_variant_refuses_a_dot_that_a_block_rebound() {
+    let mut vars = TemplateVars::new();
+    vars.set("Os", "linux");
+    vars.set("Target", "x86_64-unknown-linux-musl");
+    for (template, block) in [
+        (
+            "{{ with .Os }}{{ targetVariant . }}{{ end }}",
+            "{{ with .Os }}",
+        ),
+        (
+            "{{ range .Env }}{{ targetVariant . }}{{ end }}",
+            "{{ range .Env }}",
+        ),
+        (
+            "{{ with .Os }}{{ if .Arch }}{{ targetVariant . }}{{ end }}{{ end }}",
+            "{{ with .Os }}",
+        ),
+    ] {
+        assert_eq!(
+            render(template, &vars).unwrap_err().to_string(),
+            format!(
+                "targetVariant: expected the template context, got the `.` that `{block}` \
+                 rebinds: use it as '{{{{ targetVariant $ }}}}'"
+            ),
+            "{template}"
+        );
+    }
+    for template in [
+        "{{ with .Os }}{{ targetVariant $ }}{{ end }}",
+        "{{ with .Os }}x{{ end }}{{ targetVariant . }}",
+        "{{ with .Missing }}x{{ else }}{{ targetVariant . }}{{ end }}",
+        "{{ if .Os }}{{ targetVariant . }}{{ end }}",
+    ] {
+        let rendered = render(template, &vars).unwrap();
+        assert!(rendered.ends_with("_musl"), "{template}: {rendered}");
+    }
+}
+
+/// `define` and `block` open a block their `end` closes, and an `else with` /
+/// `else range` arm rebinds `.` the way its opener does: a tracker that let
+/// a `define`'s `end` close the enclosing `with` accepted a rebound `.`, and
+/// one that read every `else` as the outer `.` accepted the `else with` arm.
+#[test]
+fn target_variant_tracks_define_block_and_else_with_arms() {
+    use super::check_target_variant_calls;
+    for (template, block) in [
+        (
+            "{{ with .Os }}{{ define \"x\" }}a{{ end }}{{ targetVariant . }}{{ end }}",
+            "{{ with .Os }}",
+        ),
+        (
+            "{{ block \"x\" .Os }}{{ targetVariant . }}{{ end }}",
+            "{{ block \"x\" .Os }}",
+        ),
+        (
+            "{{ with .Missing }}x{{ else with .Os }}{{ targetVariant . }}{{ end }}",
+            "{{ else with .Os }}",
+        ),
+        (
+            "{{ range .Missing }}x{{ else range .Env }}{{ targetVariant . }}{{ end }}",
+            "{{ else range .Env }}",
+        ),
+    ] {
+        assert_eq!(
+            check_target_variant_calls(template)
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "targetVariant: expected the template context, got the `.` that `{block}` \
+                 rebinds: use it as '{{{{ targetVariant $ }}}}'"
+            ),
+            "{template}"
+        );
+    }
+    for template in [
+        "{{ define \"x\" }}{{ targetVariant . }}{{ end }}",
+        "{{ with .Os }}{{ block \"x\" .Arch }}a{{ end }}{{ targetVariant $ }}{{ end }}",
+        "{{ with .Os }}x{{ else if .Arch }}{{ targetVariant . }}{{ end }}",
+        "{{ with .Missing }}x{{ else with .Os }}y{{ end }}{{ targetVariant . }}",
+    ] {
+        assert!(
+            check_target_variant_calls(template).is_ok(),
+            "{template}: {:?}",
+            check_target_variant_calls(template).err()
+        );
+    }
+}
+
+/// The root-context spelling `$`, the piped spelling, and a name that only
+/// contains `targetVariant` or sits inside a string literal.
+#[test]
+fn target_variant_accepts_every_spelling_of_the_template_context() {
+    let mut vars = TemplateVars::new();
+    vars.set("Target", "x86_64-unknown-linux-musl");
+    vars.set("Amd64", "v3");
+    for (template, expected) in [
+        ("{{ targetVariant $ }}", "v3_musl"),
+        ("{{targetVariant $}}", "v3_musl"),
+        ("{{ . | targetVariant }}", "v3_musl"),
+        ("{{ $ | targetVariant | upper }}", "V3_MUSL"),
+        ("{{ \"targetVariant .Env\" }}", "targetVariant .Env"),
+    ] {
+        assert_eq!(render(template, &vars).unwrap(), expected, "{template}");
+    }
+    assert!(
+        super::check_target_variant_calls("{{ myTargetVariantName }} {{ .targetVariant }}").is_ok()
+    );
+}
+
+/// A scope that never set `Target` renders `targetVariant` as nothing, while
+/// a bare `{{ Abi }}` or `{{ Arm }}` there is an undefined variable like any
+/// other name the scope never seeded: the per-target variables are written by
+/// the per-target scopes alone, and a template reading one outside such a
+/// scope is a template error, not an empty string.
+#[test]
+fn abi_renders_empty_where_no_target_was_ever_set() {
+    let vars = TemplateVars::new();
+    assert_eq!(render("[{{ targetVariant $ }}]", &vars).unwrap(), "[]");
+    for name in [
+        "Abi", "Arm", "Mips", "Amd64", "Arm64", "I386", "Ppc64", "Riscv64", "Abii",
+    ] {
+        let err = format!(
+            "{:#}",
+            render(&format!("{{{{ {name} }}}}"), &vars).unwrap_err()
+        );
+        assert!(
+            err.contains(&format!("Variable `{name}` is not defined")),
+            "{name} must be undefined where no target was ever set: {err}"
+        );
+    }
+    let mut seeded = TemplateVars::new();
+    crate::template::clear_per_target_vars(&mut seeded);
+    assert_eq!(
+        render(
+            "[{{ Abi }}|{{ Arm }}|{{ Ppc64 }}|{{ Riscv64 }}|{{ targetVariant $ }}]",
+            &seeded
+        )
+        .unwrap(),
+        "[||||]"
+    );
+}
+
+/// Every variable `targetVariant` reads is written by both seeders, so a
+/// template reading any of them inside a per-target scope never meets an
+/// undefined variable.
+#[test]
+fn both_seeders_write_every_variable_target_variant_reads() {
+    use crate::archive_name::{seed_target_vars_in, seed_variant_vars};
+    let names = [
+        "Arm", "Mips", "Amd64", "Arm64", "I386", "Ppc64", "Riscv64", "Abi",
+    ];
+    let mut archive = TemplateVars::new();
+    seed_target_vars_in(&mut archive, "aarch64-apple-darwin");
+    let mut build = TemplateVars::new();
+    build.set("Target", "aarch64-apple-darwin");
+    seed_variant_vars(&mut build, "aarch64-apple-darwin", None);
+    for vars in [&archive, &build] {
+        for name in names {
+            assert!(
+                vars.get(name).is_some(),
+                "{name} is not written by the seeder"
+            );
+        }
+    }
+}
+
+/// Unsetting `Target` unsets the `Abi` derived from it.
+#[test]
+fn unsetting_the_target_unsets_the_abi() {
+    let mut vars = TemplateVars::new();
+    vars.set("Target", "x86_64-unknown-linux-musl");
+    assert_eq!(vars.get("Abi").map(String::as_str), Some("musl"));
+    assert!(vars.unset("Target"));
+    assert_eq!(vars.get("Target"), None);
+    assert_eq!(vars.get("Abi"), None);
+}
+
+/// The shared per-artifact seeding writes the whole scope `targetVariant`
+/// reads, and re-seeding replaces every part of it.
+#[test]
+fn the_artifact_scope_seeds_everything_target_variant_reads() {
+    use crate::archive_name::seed_artifact_target_vars;
+    let mut vars = TemplateVars::new();
+    for (target, variant, expected) in [
+        ("x86_64-unknown-linux-gnu", Some("v3"), "linux|amd64|v3_gnu"),
+        ("x86_64-unknown-linux-musl", None, "linux|amd64|_musl"),
+        ("aarch64-apple-darwin", None, "darwin|arm64|"),
+        (
+            "armv7-unknown-linux-gnueabihf",
+            None,
+            "linux|armv7|_gnueabihf",
+        ),
+    ] {
+        seed_artifact_target_vars(&mut vars, Some(target), variant);
+        assert_eq!(
+            render("{{ Os }}|{{ Arch }}|{{ targetVariant . }}", &vars).unwrap(),
+            expected,
+            "{target} {variant:?}"
+        );
+    }
+}
+
+/// For every value the per-target seeders produce, `targetVariant` is the
+/// micro-architecture suffix the archive defaults append, plus the ABI.
+#[test]
+fn target_variant_is_the_micro_arch_suffix_plus_the_abi() {
+    use crate::archive_name::{MICRO_ARCH_VARIANT_SUFFIX, seed_target_vars_in, seed_variant_vars};
+    for target in [
+        "x86_64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-gnu",
+        "armv7-unknown-linux-gnueabihf",
+        "i686-pc-windows-msvc",
+        "mips64el-unknown-linux-gnuabi64",
+        "aarch64-apple-darwin",
+    ] {
+        for variant in [None, Some("v3")] {
+            let mut archive = TemplateVars::new();
+            seed_target_vars_in(&mut archive, target);
+            let mut build = TemplateVars::new();
+            build.set("Target", target);
+            seed_variant_vars(&mut build, target, variant);
+            for vars in [&archive, &build] {
+                let abi = crate::target::abi_from_target(target);
+                let tail = if abi.is_empty() {
+                    String::new()
+                } else {
+                    format!("_{abi}")
+                };
+                assert_eq!(
+                    render("{{ targetVariant . }}", vars).unwrap(),
+                    format!("{}{tail}", render(MICRO_ARCH_VARIANT_SUFFIX, vars).unwrap()),
+                    "{target} {variant:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Flattened production function bodies of the whole workspace that contain
+/// `trigger`, each paired with `<file>: <signature line>`.
+fn per_target_bodies(trigger: &str) -> Vec<(String, String)> {
+    use crate::test_helpers::test_sources::{
+        function_bodies, production_half, workspace_production_sources,
+    };
+    let mut found = Vec::new();
+    for source in workspace_production_sources() {
+        let text = std::fs::read_to_string(&source).expect("read source");
+        for body in function_bodies(production_half(&text)) {
+            let flat: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+            if flat.contains(trigger) {
+                let name = body.lines().next().unwrap_or_default().trim().to_string();
+                found.push((format!("{}: {name}", source.display()), flat));
+            }
+        }
+    }
+    found
+}
+
+fn names(bodies: &[(String, String)]) -> String {
+    bodies
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A function that writes `Arch` opens a per-target scope, and `Abi` rides
+/// on `Target`: a scope that seeds one without the other renders `{{ Abi }}`
+/// from whichever target was seeded last, or fails on an undefined variable.
+/// `("Arch",` matches both the `.set("Arch", …)` call and the tuple spelling
+/// of an overlay list.
+#[test]
+fn every_per_target_scope_seeds_the_target() {
+    const SEEDERS: [&str; 4] = [
+        r#"("Target","#,
+        "seed_target_vars(",
+        "seed_target_vars_in(",
+        "seed_artifact_target_vars(",
+    ];
+    let bodies = per_target_bodies(r#"("Arch","#);
+    let offenders: Vec<(String, String)> = bodies
+        .iter()
+        .filter(|(_, flat)| !SEEDERS.iter().any(|s| flat.contains(s)))
+        .cloned()
+        .collect();
+    assert_eq!(
+        bodies.len(),
+        ARCH_WRITERS,
+        "the population of per-target scopes changed; a new one must seed `Target`:\n{}",
+        names(&bodies)
+    );
+    assert!(
+        offenders.is_empty(),
+        "these functions write `Arch` without seeding `Target`, so `Abi` is stale or \
+         undefined in their templates:\n{}",
+        names(&offenders)
+    );
+}
+
+/// A function that seeds `Target` from a real triple also seeds the variant
+/// variables, or goes through a helper that does: `targetVariant` reads both,
+/// so a scope with the triple alone renders a v3 build as `_gnu` and a
+/// previous artifact's `Amd64` as this one's.
+#[test]
+fn every_scope_that_seeds_a_real_target_seeds_the_variant_vars() {
+    const VARIANT_SEEDERS: [&str; 3] = [
+        "seed_variant_vars(",
+        "seed_amd64_variant_var(",
+        "seed_artifact_target_vars(",
+    ];
+    // The archive-asset policy's own definition: it resets every variant
+    // variable and then splits `Arm` out of `Arch` itself.
+    const DEFINITIONS: [&str; 1] = ["pub fn seed_target_vars_in("];
+    let bodies: Vec<(String, String)> = per_target_bodies(r#"("Target","#)
+        .into_iter()
+        .filter(|(_, flat)| {
+            flat.replace(r#"("Target","")"#, "")
+                .contains(r#"("Target","#)
+        })
+        .collect();
+    let offenders: Vec<(String, String)> = bodies
+        .iter()
+        .filter(|(name, flat)| {
+            !VARIANT_SEEDERS.iter().any(|s| flat.contains(s))
+                && !DEFINITIONS.iter().any(|d| name.contains(d))
+        })
+        .cloned()
+        .collect();
+    assert_eq!(
+        bodies.len(),
+        REAL_TARGET_WRITERS,
+        "the population of scopes seeding a real `Target` changed:\n{}",
+        names(&bodies)
+    );
+    assert!(
+        offenders.is_empty(),
+        "these functions seed `Target` from a triple without the variant variables, so \
+         `targetVariant` loses the micro-architecture level there:\n{}",
+        names(&offenders)
+    );
+}
+
+/// A scope that renders per artifact hands `seed_artifact_target_vars` the
+/// artifact's target as the `Option` it is, so an artifact with no target
+/// clears the scope instead of keeping the previous artifact's. A caller that
+/// destructures the `Option` first and seeds only in the `Some` arm is the
+/// shape that rendered a checksum file's upload URL with the last binary's
+/// `Target` and `Abi`.
+#[test]
+fn every_artifact_scope_hands_the_seeder_its_optional_target() {
+    const DEFINITION: &str = "pub fn seed_artifact_target_vars(";
+    // The npm platform renderer takes the triple's target as a `&str` the
+    // caller already resolved, so `Some(target)` is the whole answer there.
+    const ALWAYS_TARGETED: [&str; 1] =
+        ["npm/platform_render.rs: pub(super) fn render_platform_name("];
+    let bodies: Vec<(String, String)> = per_target_bodies("seed_artifact_target_vars(")
+        .into_iter()
+        .filter(|(name, _)| !name.contains(DEFINITION))
+        .collect();
+    let offenders: Vec<(String, String)> = bodies
+        .iter()
+        .filter(|(name, flat)| {
+            !ALWAYS_TARGETED.iter().any(|a| name.ends_with(a))
+                && flat
+                    .split("seed_artifact_target_vars(")
+                    .skip(1)
+                    .any(|call| {
+                        call.split_once(',')
+                            .is_some_and(|(_, rest)| rest.starts_with("Some("))
+                    })
+        })
+        .cloned()
+        .collect();
+    assert_eq!(
+        bodies.len(),
+        ARTIFACT_SCOPE_CALLERS,
+        "the population of per-artifact scopes changed:\n{}",
+        names(&bodies)
+    );
+    assert!(
+        offenders.is_empty(),
+        "these functions seed the artifact scope only when the artifact has a target, so \
+         an artifact without one renders the previous artifact's target:\n{}",
+        names(&offenders)
+    );
+}
+
+/// How many production function bodies write `Arch`.
+const ARCH_WRITERS: usize = 17;
+/// How many production function bodies call `seed_artifact_target_vars`.
+const ARTIFACT_SCOPE_CALLERS: usize = 7;
+/// How many production function bodies seed `Target` from a real triple.
+const REAL_TARGET_WRITERS: usize = 14;

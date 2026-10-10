@@ -47,6 +47,12 @@ impl TemplateVars {
         // overriding `IsSnapshot` on a fully-constructed `Context`).
         self.structured.remove(key);
         self.vars.insert(key.to_string(), value.to_string());
+        // `Abi` is a function of the triple, so it is derived at the one
+        // write every per-target scope makes rather than at each scope:
+        // wherever `Target` is seeded or cleared, `Abi` follows.
+        if key == "Target" {
+            self.set("Abi", crate::target::abi_from_target(value));
+        }
     }
 
     /// Set a boolean template variable as a real `Value::Bool` so that
@@ -65,8 +71,13 @@ impl TemplateVars {
     ///
     /// Removes from both the string and structured maps so "unset" means
     /// gone regardless of which setter last owned the key — same
-    /// one-map-per-key invariant the setters enforce.
+    /// one-map-per-key invariant the setters enforce. Unsetting `Target`
+    /// also unsets the `Abi` that [`set`](Self::set) derived from it.
     pub fn unset(&mut self, key: &str) -> bool {
+        // `Abi` exists only as a function of `Target`, so it goes with it.
+        if key == "Target" {
+            self.unset("Abi");
+        }
         let in_vars = self.vars.remove(key).is_some();
         let in_structured = self.structured.remove(key).is_some();
         in_vars || in_structured
@@ -182,7 +193,7 @@ impl Default for TemplateVars {
     }
 }
 
-/// Clear per-target template variables (`Os`, `Arch`, `Target`, `Libc`,
+/// Clear per-target template variables (`Os`, `Arch`, `Target`, `Abi`, `Libc`,
 /// `Arm`, `Arm64`, `Amd64`, `Mips`, `I386`) so they don't leak to downstream
 /// stages after a packaging stage's per-target loop finishes.
 ///
@@ -208,7 +219,8 @@ pub fn clear_per_target_vars(tv: &mut TemplateVars) {
 /// templates that branch on `{{ .Ppc64 }}` / `{{ .Riscv64 }}` from raising
 /// a Tera "missing key" error in strict-mode rendering.
 pub const PER_TARGET_VARS: &[&str] = &[
-    "Os", "Arch", "Target", "Libc", "Arm", "Arm64", "Amd64", "Mips", "I386", "Ppc64", "Riscv64",
+    "Os", "Arch", "Target", "Abi", "Libc", "Arm", "Arm64", "Amd64", "Mips", "I386", "Ppc64",
+    "Riscv64",
 ];
 
 /// Per-artifact template variable keys (set inside per-artifact loops in

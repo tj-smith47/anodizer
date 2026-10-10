@@ -267,6 +267,7 @@ const BOUNDED_VARIABLES: &[&str] = &[
     "Version",
     "Binary",
     "Target",
+    "Abi",
     "Os",
     "Arch",
     "Arm",

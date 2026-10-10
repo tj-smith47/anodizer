@@ -128,6 +128,7 @@ fn aur_target_extra_roundtrips() {
         git_url: "ssh://aur@aur.archlinux.org/demo-bin.git".into(),
         private_key: None,
         git_ssh_command: None,
+        commit: None,
     }];
     let extra =
         anodizer_core::PublishEvidenceExtra::Aur(anodizer_core::publish_evidence::AurExtra {
@@ -200,6 +201,7 @@ fn aur_our_target_extra_omits_private_key_after_serde_roundtrip() {
         git_url: "ssh://aur@aur.archlinux.org/demo-bin.git".into(),
         private_key: Some("PRIVATE-KEY-CONTENTS".into()),
         git_ssh_command: Some("ssh -i /tmp/key".into()),
+        commit: None,
     };
     let extra =
         anodizer_core::PublishEvidenceExtra::Aur(anodizer_core::publish_evidence::AurExtra {
@@ -277,12 +279,14 @@ fn aur_dedup_targets_collapses_shared_git_url() {
             git_url: "ssh://aur@aur.archlinux.org/demo-bin.git".into(),
             private_key: None,
             git_ssh_command: None,
+            commit: None,
         },
         AurOurTarget {
             target: "demo-alias".into(),
             git_url: "ssh://aur@aur.archlinux.org/demo-bin.git".into(),
             private_key: None,
             git_ssh_command: None,
+            commit: None,
         },
     ];
     let unique = dedup_aur_targets(&targets);

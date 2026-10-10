@@ -149,8 +149,7 @@ pub(super) fn build_cask_platform_blocks(
                     tmpl,
                     art.name(),
                     version,
-                    &arch,
-                    &os,
+                    crate::util::UrlTarget::of(art, &os, &arch),
                 )
             } else if let Some(u) = art.metadata.get("url") {
                 u.clone()
@@ -275,8 +274,7 @@ pub(super) fn generate_cask_from_context(
             tmpl,
             primary_artifact.name(),
             &version,
-            &arch,
-            &os,
+            crate::util::UrlTarget::of(primary_artifact, &os, &arch),
         )
     } else {
         primary_artifact.metadata.get("url").cloned().ok_or_else(|| {

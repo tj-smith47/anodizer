@@ -15,23 +15,28 @@ use super::optional_deps::{MetaCommand, PlatformPackage, join_bin_dir, validate_
 
 /// Render one per-platform package name from `platform_name_template`.
 ///
-/// Beyond the standard release context, seeds the per-platform naming vars
-/// from [`NpmTriple::name_template_vars`] (`Os`/`Arch`/`Target` +
-/// `NpmOs`/`NpmCpu`/`NpmLibc`). A rendered name without a leading `@` is
-/// prefixed with `scope` when one is configured; the final name is validated
-/// as a legal npm name.
+/// Beyond the standard release context, seeds the artifact's per-target
+/// scope (`Os` / `Arch` / `Target` / `Abi` and the variant variables, the
+/// amd64 level from `amd64_variant`) and the npm selectors from
+/// [`NpmTriple::name_template_vars`]. A rendered name without a leading `@`
+/// is prefixed with `scope` when one is configured; the final name is
+/// validated as a legal npm name.
 pub(super) fn render_platform_name(
     ctx: &Context,
     template: &str,
     scope: Option<&str>,
     target: &str,
+    amd64_variant: Option<&str>,
     triple: &NpmTriple,
 ) -> Result<String> {
-    let rendered =
-        crate::util::render_with_ctx_vars(ctx, template, &triple.name_template_vars(target))
-            .with_context(|| {
-                format!("npm: render platform_name_template {template:?} for target '{target}'")
-            })?;
+    let mut vars = ctx.template_vars().clone();
+    anodizer_core::archive_name::seed_artifact_target_vars(&mut vars, Some(target), amd64_variant);
+    for (key, value) in triple.name_template_vars() {
+        vars.set(key, value);
+    }
+    let rendered = anodizer_core::template::render(template, &vars).with_context(|| {
+        format!("npm: render platform_name_template {template:?} for target '{target}'")
+    })?;
     let rendered = rendered.trim();
     let full = match scope {
         Some(scope) if !rendered.starts_with('@') => format!("{}/{}", scope, rendered),

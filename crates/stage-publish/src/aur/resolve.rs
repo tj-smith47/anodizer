@@ -133,14 +133,10 @@ pub(crate) fn aur_resolve_push_git_url(
     crate_name: &str,
     log: &StageLogger,
 ) -> Result<String> {
-    match aur_cfg.git_url.as_deref().filter(|u| !u.trim().is_empty()) {
-        Some(url) => Ok(url.to_string()),
-        None => {
-            let raw_name = aur_default_package_name(aur_cfg, crate_name);
-            let package_name = util::render_or_warn(ctx, log, "aur.name", &raw_name)?;
-            Ok(crate::util::aur_default_git_url(&package_name))
-        }
-    }
+    crate::util::aur_push_git_url_or_else(aur_cfg.git_url.as_deref(), || {
+        let raw_name = aur_default_package_name(aur_cfg, crate_name);
+        util::render_or_warn(ctx, log, "aur.name", &raw_name)
+    })
 }
 
 /// Evaluate the early-exit gates (`skip`, `skip_upload`, dry-run) for the

@@ -31,12 +31,13 @@ use crate::target::map_target;
 use crate::template::TemplateVars;
 
 /// The per-target template vars the build planner seeds before rendering a
-/// target's binary name, paths, and env values (`Target`/`Os`/`Arch`, the
+/// target's binary name, paths, and env values (`Target`/`Abi`/`Os`/`Arch`, the
 /// arch-family variant vars, `ArtifactExt`, `ArtifactID`) — and that the
 /// config-time env projection must therefore seed too, so a `build.env` value
 /// templated on them renders identically in both passes.
 pub const BUILD_TARGET_VARS: &[&str] = &[
     "Target",
+    "Abi",
     "Os",
     "Arch",
     "Arm64",
@@ -44,6 +45,8 @@ pub const BUILD_TARGET_VARS: &[&str] = &[
     "Amd64",
     "Mips",
     "I386",
+    "Ppc64",
+    "Riscv64",
     "ArtifactExt",
     "ArtifactID",
 ];

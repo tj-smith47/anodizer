@@ -75,25 +75,15 @@ pub(crate) fn artifact_template_vars(
     {
         vars.set("Binary", &binary);
     }
-    // A stage that ran earlier may have left its own target's variant vars on
-    // the shared context, so every render starts from a cleared set rather
-    // than inheriting a suffix from an unrelated artifact.
-    anodizer_core::archive_name::reset_variant_vars(&mut vars);
     let target = artifact_target.or_else(|| artifact_meta.get("target").map(String::as_str));
-    if let Some(target) = target {
-        let (os, arch) = anodizer_core::target::map_target(target);
-        vars.set("Os", &os);
-        vars.set("Arch", &arch);
-        vars.set("Target", target);
-        // `Arch` carries the composite token (`armv7`), so this is the policy
-        // that leaves `Arm`/`Mips` empty — seeding them would double the
-        // suffix the default document template appends.
-        anodizer_core::archive_name::seed_variant_vars(
-            &mut vars,
-            target,
-            artifact_meta.get("amd64_variant").map(String::as_str),
-        );
-    }
+    // `Arch` carries the composite token (`armv7`), so this is the policy
+    // that leaves `Arm`/`Mips` empty — seeding them would double the
+    // suffix the default document template appends.
+    anodizer_core::archive_name::seed_artifact_target_vars(
+        &mut vars,
+        target,
+        artifact_meta.get("amd64_variant").map(String::as_str),
+    );
     vars
 }
 

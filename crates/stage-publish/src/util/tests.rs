@@ -8,7 +8,7 @@ use super::artifacts::{
     find_artifacts_by_os_with_variant, infer_arch, infer_os,
 };
 use super::config::{resolve_artifact_kind, resolve_repo_owner_name, should_skip_upload};
-use super::template::{render_or_warn, render_url_template};
+use super::template::{UrlTarget, render_or_warn, render_url_template};
 
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::{Config, CrateConfig};
@@ -362,14 +362,22 @@ fn test_resolve_artifact_kind_unknown_defaults_to_archive() {
 // render_url_template tests
 // -----------------------------------------------------------------------
 
+fn url_target<'a>(os: &'a str, arch: &'a str, triple: &'a str) -> UrlTarget<'a> {
+    UrlTarget {
+        os,
+        arch,
+        triple,
+        amd64_variant: None,
+    }
+}
+
 #[test]
 fn test_render_url_template_basic() {
     let url = render_url_template(
         "https://example.com/{{ name }}/{{ version }}/{{ arch }}-{{ os }}.zip",
         "mytool",
         "1.2.3",
-        "amd64",
-        "windows",
+        url_target("windows", "amd64", ""),
     );
     assert_eq!(url, "https://example.com/mytool/1.2.3/amd64-windows.zip");
 }
@@ -380,8 +388,7 @@ fn test_render_url_template_invalid_fallback() {
         "https://example.com/{{ bad unclosed",
         "mytool",
         "1.0.0",
-        "amd64",
-        "linux",
+        url_target("linux", "amd64", ""),
     );
     assert_eq!(url, "https://example.com/{{ bad unclosed");
 }
@@ -411,8 +418,7 @@ fn test_render_url_template_with_ctx_full_surface() {
         "https://github.com/{{ ProjectName }}/releases/download/{{ Tag }}/{{ name }}-{{ os }}-{{ arch }}.tar.gz",
         "myapp",
         "1.2.3",
-        "amd64",
-        "linux",
+        url_target("linux", "amd64", ""),
     );
     assert_eq!(
         url,
@@ -426,10 +432,48 @@ fn test_render_url_template_with_ctx_full_surface() {
         "https://example.com/{{ ProjectName }}-{{ Os }}-{{ Arch }}.zip",
         "myapp",
         "1.2.3",
-        "amd64",
-        "windows",
+        url_target("windows", "amd64", ""),
     );
     assert_eq!(url2, "https://example.com/myapp-windows-amd64.zip");
+}
+
+/// A `UrlTarget` seeds `Target`, `Abi` and the amd64 level for the artifact
+/// the URL is for, so `targetVariant` renders that artifact's own suffix; an
+/// empty triple renders every one of them empty without failing the render.
+#[test]
+fn url_target_seeds_the_abi_and_the_variant_of_its_triple() {
+    use crate::util::render_url_template_with_ctx;
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    let render = |triple: &str, amd64_variant: Option<&str>| {
+        render_url_template_with_ctx(
+            &ctx,
+            "abi={{ Abi }} target={{ Target }} amd64={{ Amd64 }} variant={{ targetVariant . }}",
+            "myapp",
+            "1.2.3",
+            UrlTarget {
+                os: "linux",
+                arch: "amd64",
+                triple,
+                amd64_variant,
+            },
+        )
+    };
+    assert_eq!(
+        render("x86_64-unknown-linux-gnu", None),
+        "abi=gnu target=x86_64-unknown-linux-gnu amd64=v1 variant=_gnu"
+    );
+    assert_eq!(
+        render("x86_64-unknown-linux-musl", None),
+        "abi=musl target=x86_64-unknown-linux-musl amd64=v1 variant=_musl"
+    );
+    assert_eq!(
+        render("x86_64-unknown-linux-gnu", Some("v3")),
+        "abi=gnu target=x86_64-unknown-linux-gnu amd64=v3 variant=v3_gnu"
+    );
+    assert_eq!(render("", None), "abi= target= amd64= variant=");
 }
 
 // -----------------------------------------------------------------------
@@ -1142,4 +1186,43 @@ mod commit_opts_tests {
         assert!(opts.author_email.is_some());
         assert!(!opts.use_github_app_token);
     }
+}
+
+/// A publisher that hands over the bare `arm` token gets `Arm` from the
+/// triple, so `{{ Arch }}v{{ Arm }}` renders `armv7` the way an archive name
+/// does; a publisher carrying the composite `armv7` token keeps `Arm` empty.
+#[test]
+fn url_target_seeds_arm_from_the_triple_under_a_bare_arm_token() {
+    use crate::util::render_url_template_with_ctx;
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    let render = |arch: &str, triple: &str| {
+        render_url_template_with_ctx(
+            &ctx,
+            "{{ Arch }}v{{ Arm }}|{{ targetVariant . }}",
+            "myapp",
+            "1.2.3",
+            UrlTarget {
+                os: "linux",
+                arch,
+                triple,
+                amd64_variant: None,
+            },
+        )
+    };
+    assert_eq!(
+        render("arm", "armv7-unknown-linux-gnueabihf"),
+        "armv7|v7_gnueabihf"
+    );
+    assert_eq!(
+        render("arm", "arm-unknown-linux-gnueabi"),
+        "armv6|v6_gnueabi"
+    );
+    assert_eq!(
+        render("armv7", "armv7-unknown-linux-gnueabihf"),
+        "armv7v|_gnueabihf"
+    );
+    assert_eq!(render("arm64", "aarch64-unknown-linux-gnu"), "arm64v|_gnu");
 }

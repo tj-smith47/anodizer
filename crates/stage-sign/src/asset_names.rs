@@ -1106,4 +1106,21 @@ mod binary_sign_asset_name_tests {
             format!("app-{LINUX}-signed.sig")
         );
     }
+
+    /// `Abi` renders in the signature naming scope, so a hand-written
+    /// `{{ Os }}-{{ Arch }}` name can separate a gnu and a musl build.
+    #[test]
+    fn the_signature_naming_scope_carries_the_abi() {
+        let ctx = ctx_with(vec![archive("default", TEMPLATE)]);
+        let cfg = SignConfig {
+            asset_name_template: Some(
+                "{{ .Binary }}-{{ Os }}-{{ Arch }}{{ targetVariant . }}".to_string(),
+            ),
+            ..Default::default()
+        };
+        let gnu = binary_sign_asset_base(&ctx, &cfg, &binary(LINUX, None), LINUX).unwrap();
+        let musl = binary_sign_asset_base(&ctx, &cfg, &binary(MUSL, None), MUSL).unwrap();
+        assert_eq!(gnu, "app-linux-amd64_gnu");
+        assert_eq!(musl, "app-linux-amd64_musl");
+    }
 }

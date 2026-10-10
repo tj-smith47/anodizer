@@ -160,7 +160,13 @@ pub(crate) fn resolve_installer_url(
     raw_arch: &str,
 ) -> String {
     if let Some(tmpl) = url_template {
-        util::render_url_template_with_ctx(ctx, tmpl, name, version, raw_arch, "windows")
+        util::render_url_template_with_ctx(
+            ctx,
+            tmpl,
+            name,
+            version,
+            util::UrlTarget::of(a, "windows", raw_arch),
+        )
     } else {
         a.metadata
             .get("url")

@@ -376,7 +376,7 @@ pub(crate) fn render_aur_source_pkgbuild_and_srcinfo_for_crate(
 pub(crate) fn render_top_level_aur_source(
     ctx: &Context,
     log: &StageLogger,
-) -> Result<Vec<AurRendered>> {
+) -> Result<Vec<(usize, AurRendered)>> {
     let entries = match ctx.config.aur_sources {
         Some(ref v) if !v.is_empty() => v.clone(),
         _ => return Ok(Vec::new()),
@@ -402,7 +402,7 @@ pub(crate) fn render_top_level_aur_source(
             continue;
         }
         let render = render_aur_source_inner(ctx, cfg, &project_name, true, &label, log)?;
-        out.push(render.rendered);
+        out.push((i, render.rendered));
     }
     Ok(out)
 }

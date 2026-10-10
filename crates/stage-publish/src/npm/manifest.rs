@@ -52,22 +52,15 @@ pub(crate) struct NpmTriple {
 }
 
 impl NpmTriple {
-    /// The per-platform naming template variables for one built target:
-    /// anodizer's `Os`/`Arch` mapping (from a single
-    /// [`anodizer_core::target::map_target`] call), the raw `Target` triple,
-    /// and the npm selector vars (`NpmOs`/`NpmCpu`/`NpmLibc`) from this
-    /// triple. Lives beside [`npm_triple`] so the target→npm naming authority
-    /// is single-sourced; `platform_name_template` rendering consumes these
-    /// pairs verbatim.
-    pub(crate) fn name_template_vars(&self, target: &str) -> Vec<(&'static str, String)> {
-        let (os, arch) = anodizer_core::target::map_target(target);
-        vec![
-            ("Os", os),
-            ("Arch", arch),
-            ("Target", target.to_string()),
-            ("NpmOs", self.os.clone()),
-            ("NpmCpu", self.cpu.clone()),
-            ("NpmLibc", self.libc.clone()),
+    /// The npm selector variables (`NpmOs` / `NpmCpu` / `NpmLibc`) a
+    /// `platform_name_template` reads beside the per-target scope. Lives
+    /// beside [`npm_triple`] so the target→npm naming authority is
+    /// single-sourced.
+    pub(crate) fn name_template_vars(&self) -> [(&'static str, &str); 3] {
+        [
+            ("NpmOs", &self.os),
+            ("NpmCpu", &self.cpu),
+            ("NpmLibc", &self.libc),
         ]
     }
 }
@@ -382,7 +375,13 @@ fn resolve_artifact_url(
     os: &str,
 ) -> String {
     if let Some(tmpl) = url_template {
-        return util::render_url_template_with_ctx(ctx, tmpl, pkg_name, version, arch, os);
+        return util::render_url_template_with_ctx(
+            ctx,
+            tmpl,
+            pkg_name,
+            version,
+            util::UrlTarget::of(art, os, arch),
+        );
     }
     art.metadata
         .get("url")

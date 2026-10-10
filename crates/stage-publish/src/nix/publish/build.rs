@@ -110,7 +110,12 @@ pub(super) fn build_archive_tuples(
                 return None;
             }
             let download_url = if let Some(tmpl) = url_template {
-                util::render_url_template(tmpl, crate_name, version, &a.arch, &a.os)
+                util::render_url_template(
+                    tmpl,
+                    crate_name,
+                    version,
+                    util::UrlTarget::of_os_artifact(a, &a.os, &a.arch),
+                )
             } else {
                 a.url.clone()
             };
@@ -537,6 +542,19 @@ pub(super) fn finalize_publish(
         &commit_opts,
         log,
     )?;
+    if let util::CommitOutcome::Pushed { commit } = &outcome {
+        // Recorded the moment the push went through, so the row names
+        // this commit whatever happens after it.
+        ctx.record_committed_work(super::super::publisher::nix_evidence(vec![
+            super::super::publisher::NixTarget {
+                target: crate_name.to_string(),
+                repo_url: format!("https://github.com/{repo_owner}/{repo_name}.git"),
+                branch: branch.clone(),
+                token_env_var: Some("NIX_PKGS_TOKEN".to_string()),
+                commit: Some(commit.clone()),
+            },
+        ]));
+    }
 
     // Clone the repository config so `maybe_submit_pr` no longer
     // borrows from `ctx.config` (via `nix_cfg`). NLL then drops the
@@ -570,7 +588,7 @@ pub(super) fn finalize_publish(
     );
 
     match outcome {
-        util::CommitOutcome::Pushed => {
+        util::CommitOutcome::Pushed { .. } => {
             log.status(&format!(
                 "Nix expression pushed to {}/{} for '{}'",
                 repo_owner, repo_name, crate_name

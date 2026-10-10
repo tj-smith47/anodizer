@@ -344,7 +344,13 @@ pub(super) fn build_install_mode(
         let target = a.target.as_deref().unwrap_or("");
         let (_, raw_arch) = anodizer_core::target::map_target(target);
         let resolved_url = if let Some(tmpl) = url_template {
-            util::render_url_template_with_ctx(ctx, tmpl, pkg_name, version, &raw_arch, "windows")
+            util::render_url_template_with_ctx(
+                ctx,
+                tmpl,
+                pkg_name,
+                version,
+                util::UrlTarget::of(a, "windows", &raw_arch),
+            )
         } else {
             a.metadata
                 .get("url")

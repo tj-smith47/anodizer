@@ -120,6 +120,7 @@ pub fn run_checks(
     check_source_format(config, &mut errors);
     check_sbom_configs(config, &mut errors);
     check_blob_configs(config, &mut errors);
+    check_target_variant_calls(config, &mut errors);
 
     if check_env {
         check_environment(config, &mut warnings);

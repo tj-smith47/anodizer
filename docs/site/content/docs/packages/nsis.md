@@ -85,7 +85,7 @@ NSIS scripts go through the [Tera](https://keats.github.io/tera/) template engin
 |----------|-------|-------|
 | `{{ ProjectName }}` | configured project name | from top-level config |
 | `{{ Version }}`, `{{ Tag }}`, etc. | release metadata | standard anodizer vars |
-| `{{ Os }}`, `{{ Target }}` | binary target metadata | global vars |
+| `{{ Os }}`, `{{ Target }}`, `{{ Abi }}` | binary target metadata | global vars; `Abi` is the triple's ABI component (`msvc`, `gnu`, `gnullvm`), e.g. `name: "{{ ProjectName }}-{{ Arch }}-{{ Abi }}-setup"` |
 | `{{ Arch }}` | NSIS-native arch (`x86`, `x64`, `arm64`) | overridden only inside the NSIS render context — global `Arch` retains the Go-style value (`amd64`, `386`, `arm64`) for other stages |
 | `{{ Name }}` | rendered output stem (the `name` template result) | use as `OutFile "{{ Name }}.exe"` |
 | `{{ ProgramFiles }}` | `$PROGRAMFILES64` for 64-bit (`x64`, `arm64`), `$PROGRAMFILES` for 32-bit | use as `InstallDir "{{ ProgramFiles }}\YourApp"` to avoid the WOW6432-redirected `Program Files (x86)` path on 64-bit Windows |

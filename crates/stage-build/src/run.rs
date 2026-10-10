@@ -910,6 +910,14 @@ mod per_target_var_tests {
     }
 
     #[test]
+    fn the_build_scope_carries_the_abi() {
+        let v = vars_for("x86_64-unknown-linux-musl", "linux", "");
+        assert_eq!(v.get("Abi").map(String::as_str), Some("musl"));
+        let v = vars_for("aarch64-apple-darwin", "darwin", "");
+        assert_eq!(v.get("Abi").map(String::as_str), Some(""));
+    }
+
+    #[test]
     fn clear_empties_every_set_var() {
         let mut v = vars_for("x86_64-pc-windows-msvc", "windows", "cli");
         clear_build_target_vars(&mut v);

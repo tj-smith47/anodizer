@@ -904,6 +904,59 @@ fn render_scoop_url_template_overrides_metadata_url() {
     );
 }
 
+/// A scoop `url_template` renders the archive's own target variant: the ABI
+/// of its triple and the amd64 level its metadata records.
+#[test]
+fn scoop_url_template_renders_the_target_variant() {
+    let render = |target: &str, amd64_variant: Option<&str>| {
+        let mut c = scoop_crate_for_bucket("widget", "/unused");
+        if let Some(s) = c.publish.as_mut().and_then(|p| p.scoop.as_mut()) {
+            s.url_template =
+                Some("https://example.com/{{ Os }}_{{ Arch }}{{ targetVariant . }}".to_string());
+            if amd64_variant.is_some() {
+                s.amd64_variant = Some(anodizer_core::config::Amd64Variant::V3);
+            }
+        }
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        let mut meta = HashMap::new();
+        meta.insert("sha256".to_string(), "a".repeat(64));
+        meta.insert("format".to_string(), "zip".to_string());
+        meta.insert("binary".to_string(), "widget".to_string());
+        if let Some(v) = amd64_variant {
+            meta.insert("amd64_variant".to_string(), v.to_string());
+        }
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/dist/widget-windows-amd64.zip"),
+            name: "widget-windows-amd64.zip".to_string(),
+            target: Some(target.to_string()),
+            crate_name: "widget".to_string(),
+            metadata: meta,
+            size: None,
+        });
+        let manifest = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+        let json: serde_json::Value = serde_json::from_str(&manifest).expect("valid JSON");
+        json["architecture"]["64bit"]["url"]
+            .as_str()
+            .expect("64bit url")
+            .to_string()
+    };
+    assert_eq!(
+        render("x86_64-pc-windows-msvc", None),
+        "https://example.com/windows_amd64_msvc"
+    );
+    assert_eq!(
+        render("x86_64-pc-windows-gnu", None),
+        "https://example.com/windows_amd64_gnu"
+    );
+    assert_eq!(
+        render("x86_64-pc-windows-msvc", Some("v3")),
+        "https://example.com/windows_amd64v3_msvc"
+    );
+}
+
 /// A `scoop.name` override drives both the manifest body and is rendered
 /// through the template engine; the homepage falls back to it when no
 /// release-github / explicit homepage is present.
@@ -1057,7 +1110,7 @@ mod e2e {
     }
 
     /// [`init_bare_bucket`] variant seeding extra `(path, contents)` files
-    /// into the initial commit (e.g. a pre-existing root-level manifest).
+    /// into the initial commit (e.g. a root-level manifest the bucket already holds).
     fn init_bare_bucket_with_files(files: &[(&str, &str)]) -> (String, tempfile::TempDir) {
         let bare = tempfile::tempdir().expect("bare tempdir");
         let seed = tempfile::tempdir().expect("seed tempdir");
@@ -1065,7 +1118,6 @@ mod e2e {
         git_ok(seed.path(), &["init", "-b", "main"]);
         git_ok(seed.path(), &["config", "user.email", "t@example.invalid"]);
         git_ok(seed.path(), &["config", "user.name", "Test"]);
-        git_ok(seed.path(), &["config", "commit.gpgsign", "false"]);
         std::fs::write(seed.path().join("README"), "bucket\n").unwrap();
         for (path, contents) in files {
             let p = seed.path().join(path);

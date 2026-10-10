@@ -18,7 +18,12 @@ use std::process::Command;
 
 #[test]
 fn commit_outcome_is_pushed() {
-    assert!(CommitOutcome::Pushed.is_pushed());
+    assert!(
+        CommitOutcome::Pushed {
+            commit: "abc".into()
+        }
+        .is_pushed()
+    );
     assert!(!CommitOutcome::NoChanges.is_pushed());
 }
 
@@ -66,7 +71,6 @@ fn make_bare_tap(branch: &str) -> (String, tempfile::TempDir) {
     git_ok(seed.path(), &["init", "-b", branch]);
     git_ok(seed.path(), &["config", "user.email", "t@example.invalid"]);
     git_ok(seed.path(), &["config", "user.name", "T"]);
-    git_ok(seed.path(), &["config", "commit.gpgsign", "false"]);
     std::fs::write(seed.path().join("README"), "tap\n").unwrap();
     git_ok(seed.path(), &["add", "README"]);
     git_ok(seed.path(), &["commit", "-m", "seed tap"]);
@@ -1325,5 +1329,47 @@ fn render_formula_per_crate_distinct_license_and_completions() {
     assert!(
         !body_b.contains("a.bash"),
         "no cross-contamination; b:\n{body_b}"
+    );
+}
+
+/// A formula `url_template` renders each archive's own target variant: the
+/// ABI of its triple and the amd64 level its metadata records, and nothing
+/// for a darwin triple, which has no ABI component.
+#[test]
+fn homebrew_formula_url_template_renders_the_target_variant() {
+    let render = |target: &str, amd64_variant: Option<&str>| {
+        let hb = HomebrewConfig {
+            url_template: Some(
+                "https://example.com/{{ Os }}_{{ Arch }}{{ targetVariant . }}".to_string(),
+            ),
+            amd64_variant: amd64_variant.map(|_| anodizer_core::config::Amd64Variant::V3),
+            ..Default::default()
+        };
+        let mut art = archive(target, "https://ignored/original.tar.gz", "sha");
+        if let Some(v) = amd64_variant {
+            art.metadata
+                .insert("amd64_variant".to_string(), v.to_string());
+        }
+        let ctx = single_crate_ctx(hb.clone(), vec![art]);
+        let got =
+            collect_archive_entries(&ctx, &hb, "mytool", "1.2.3", &quiet_log()).expect("collect");
+        assert_eq!(got.len(), 1, "{got:?}");
+        got[0].1.clone()
+    };
+    assert_eq!(
+        render("x86_64-unknown-linux-gnu", None),
+        "https://example.com/linux_amd64_gnu"
+    );
+    assert_eq!(
+        render("x86_64-unknown-linux-musl", None),
+        "https://example.com/linux_amd64_musl"
+    );
+    assert_eq!(
+        render("x86_64-unknown-linux-gnu", Some("v3")),
+        "https://example.com/linux_amd64v3_gnu"
+    );
+    assert_eq!(
+        render("aarch64-apple-darwin", None),
+        "https://example.com/darwin_arm64"
     );
 }

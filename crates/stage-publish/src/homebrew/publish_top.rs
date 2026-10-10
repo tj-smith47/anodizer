@@ -228,8 +228,7 @@ fn render_top_level_cask_inner(
                 tmpl,
                 macos_artifact.name(),
                 &version,
-                &arch,
-                &os,
+                crate::util::UrlTarget::of(macos_artifact, &os, &arch),
             )
         } else {
             macos_artifact.metadata.get("url").cloned().ok_or_else(|| {
@@ -526,7 +525,9 @@ pub(crate) fn render_top_level_homebrew_casks(
 }
 
 /// Render and push every entry in `homebrew_casks:`. See
-/// `TopLevelCaskRunResult` for the returned counts.
+/// `TopLevelCaskRunResult` for the returned counts. Each push is recorded
+/// as it goes through (`record_tap_push`), so a failure on a later cask
+/// still leaves the taps written before it on the row.
 pub fn publish_top_level_homebrew_casks(
     ctx: &mut Context,
     log: &StageLogger,
@@ -689,6 +690,14 @@ pub fn publish_top_level_homebrew_casks(
         let commit_opts =
             crate::util::resolve_commit_opts(ctx, cask_cfg.commit_author.as_ref(), log)?;
         let branch = crate::util::resolve_branch_or_versioned(ctx, repo_cfg, &cask_name, &version);
+        // Rendered before the push: a template error here must not come
+        // after a commit already reached the tap.
+        let update_existing_pr = match cask_cfg.update_existing_pr.as_ref() {
+            Some(v) => v
+                .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                .context("homebrew cask: render update_existing_pr condition")?,
+            None => false,
+        };
         let outcome = crate::util::commit_and_push_with_opts(
             repo_path,
             &path_refs,
@@ -698,9 +707,17 @@ pub fn publish_top_level_homebrew_casks(
             &commit_opts,
             log,
         )?;
-        match outcome {
-            crate::util::CommitOutcome::Pushed => {
+        match &outcome {
+            crate::util::CommitOutcome::Pushed { commit } => {
                 pushed_any = true;
+                super::publisher::record_tap_push(
+                    ctx,
+                    super::publisher::cask_evidence_label(cask_cfg),
+                    &repo_owner,
+                    &repo_name,
+                    branch.as_deref(),
+                    commit,
+                );
                 log.status(&format!(
                     "Homebrew tap {}/{} updated with cask '{}' in {}",
                     repo_owner, repo_name, cask_name, directory
@@ -716,12 +733,6 @@ pub fn publish_top_level_homebrew_casks(
 
         // Submit a PR if pull_request.enabled is set.
         let pr_branch = branch.as_deref().unwrap_or("main");
-        let update_existing_pr = match cask_cfg.update_existing_pr.as_ref() {
-            Some(v) => v
-                .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                .context("homebrew cask: render update_existing_pr condition")?,
-            None => false,
-        };
         let pr_outcome = crate::util::maybe_submit_pr(
             repo_path,
             repo_cfg,

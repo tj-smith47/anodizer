@@ -2299,3 +2299,95 @@ fn credentials_refuse_anonymous_when_required() {
         "unexpected: {err}"
     );
 }
+
+/// The upload URL and a `custom_headers` value render the artifact's own
+/// target variant: its ABI, and its amd64 level when that is not the baseline.
+#[test]
+fn the_upload_url_and_headers_render_the_artifacts_target_variant() {
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    for (target, level, variant) in [
+        ("x86_64-unknown-linux-gnu", None, "linux_amd64_gnu"),
+        ("x86_64-unknown-linux-musl", None, "linux_amd64_musl"),
+        ("x86_64-unknown-linux-gnu", Some("v3"), "linux_amd64v3_gnu"),
+    ] {
+        let mut metadata = HashMap::new();
+        if let Some(level) = level {
+            metadata.insert("amd64_variant".to_string(), level.to_string());
+        }
+        let artifact = Artifact {
+            kind: ArtifactKind::Archive,
+            name: "myapp.tar.gz".to_string(),
+            path: PathBuf::from("dist/myapp.tar.gz"),
+            target: Some(target.to_string()),
+            crate_name: "myapp".to_string(),
+            metadata,
+            size: None,
+        };
+        let url = render_artifact_url(
+            &ctx,
+            "https://art.example.com/{{ Os }}_{{ Arch }}{{ targetVariant . }}",
+            &artifact,
+            true,
+        )
+        .unwrap();
+        assert_eq!(url, format!("https://art.example.com/{variant}"));
+
+        let headers = crate::artifactory::render_custom_headers(
+            &ctx,
+            &HashMap::from([(
+                "X-Platform".to_string(),
+                "{{ Os }}_{{ Arch }}{{ targetVariant . }}".to_string(),
+            )]),
+            &artifact,
+        )
+        .unwrap();
+        assert_eq!(
+            headers,
+            vec![("X-Platform".to_string(), variant.to_string())]
+        );
+    }
+}
+
+/// An artifact with no target renders an empty per-target scope in the URL
+/// and the headers, whatever target a stage that ran before left on the
+/// shared variables.
+#[test]
+fn an_untargeted_artifact_renders_no_stale_target_in_the_url_or_the_headers() {
+    let config = Config::default();
+    let mut ctx = Context::new(config, ContextOptions::default());
+    anodizer_core::archive_name::seed_artifact_target_vars(
+        ctx.template_vars_mut(),
+        Some("x86_64-unknown-linux-musl"),
+        Some("v3"),
+    );
+    let artifact = Artifact {
+        kind: ArtifactKind::Checksum,
+        name: "checksums.txt".to_string(),
+        path: PathBuf::from("dist/checksums.txt"),
+        target: None,
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    };
+    let url = render_artifact_url(
+        &ctx,
+        "https://art.example.com/[{{ Os }}|{{ Arch }}|{{ Target }}|{{ Abi }}{{ targetVariant . }}]",
+        &artifact,
+        true,
+    )
+    .unwrap();
+    assert_eq!(url, "https://art.example.com/[|||]");
+    let headers = crate::artifactory::render_custom_headers(
+        &ctx,
+        &HashMap::from([(
+            "X-Platform".to_string(),
+            "[{{ Os }}|{{ Arch }}|{{ Target }}|{{ Abi }}{{ targetVariant . }}]".to_string(),
+        )]),
+        &artifact,
+    )
+    .unwrap();
+    assert_eq!(
+        headers,
+        vec![("X-Platform".to_string(), "[|||]".to_string())]
+    );
+}

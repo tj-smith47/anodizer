@@ -196,7 +196,7 @@ fn maybe_write_cask_into_tap(
 /// `branch` argument is the pre-resolved push target (None ⇒ default).
 #[allow(clippy::too_many_arguments)]
 fn commit_files_to_tap(
-    ctx: &Context,
+    ctx: &mut Context,
     hb_cfg: &HomebrewConfig,
     ident: &FormulaIdentity<'_>,
     tap: &TapLocation<'_>,
@@ -244,8 +244,16 @@ fn commit_files_to_tap(
         &commit_opts,
         log,
     )?;
-    match outcome {
-        crate::util::CommitOutcome::Pushed => {
+    match &outcome {
+        crate::util::CommitOutcome::Pushed { commit } => {
+            super::super::publisher::record_tap_push(
+                ctx,
+                ident.crate_name.to_string(),
+                tap.repo_owner,
+                tap.repo_name,
+                branch,
+                commit,
+            );
             if let Some(ref cask_name) = cask.cask_name {
                 log.status(&format!(
                     "Homebrew tap {}/{} updated with formula '{}' and cask '{}'",

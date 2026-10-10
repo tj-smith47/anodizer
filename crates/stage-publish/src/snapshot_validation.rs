@@ -523,7 +523,7 @@ fn validate_derived_asset_names(
     // The derivation render seeds the per-target vars; snapshot and restore
     // them so later emission checks in this pass see their own values.
     const SEEDED: &[&str] = &[
-        "Os", "Arch", "Target", "Arm", "Arm64", "Amd64", "Mips", "I386",
+        "Os", "Arch", "Target", "Abi", "Arm", "Arm64", "Amd64", "Mips", "I386", "Ppc64", "Riscv64",
     ];
     let prior: Vec<(&str, Option<String>)> = SEEDED
         .iter()

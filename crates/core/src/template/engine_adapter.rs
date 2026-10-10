@@ -102,6 +102,14 @@ pub(super) trait JsonRegisterExt {
             + Send
             + Sync
             + 'static;
+
+    /// Register a zero-argument function that computes a string from the
+    /// render's own variables. `f` is handed a lookup resolving a variable
+    /// name to its string value, or to the empty string when the variable is
+    /// unset or not a string.
+    fn register_context_function<F>(&mut self, name: &'static str, f: F)
+    where
+        F: Fn(&dyn Fn(&str) -> String) -> String + Send + Sync + 'static;
 }
 
 impl JsonRegisterExt for tera::Tera {
@@ -144,6 +152,22 @@ impl JsonRegisterExt for tera::Tera {
             move |kwargs: Kwargs, _: &State| -> TeraResult<tera::Value> {
                 let args = kwargs_to_map(&kwargs)?;
                 from_json(&f(&args)?)
+            },
+        );
+    }
+
+    fn register_context_function<F>(&mut self, name: &'static str, f: F)
+    where
+        F: Fn(&dyn Fn(&str) -> String) -> String + Send + Sync + 'static,
+    {
+        #[cfg(test)]
+        record_name(name);
+        self.register_function(
+            name,
+            move |_: Kwargs, state: &State| -> TeraResult<tera::Value> {
+                let lookup =
+                    |key: &str| state.get::<String>(key).ok().flatten().unwrap_or_default();
+                from_json(&serde_json::Value::String(f(&lookup)))
             },
         );
     }

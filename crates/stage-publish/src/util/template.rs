@@ -7,51 +7,113 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::template::{self, TemplateVars, assert_no_unrendered_logged};
 use anyhow::{Result, bail};
 
-/// Render a `url_template` string with Tera, providing only the four
-/// per-artifact lower-case helper vars: `name`, `version`, `arch`, `os`.
+/// The build target one `url_template` render is for.
+///
+/// `os` and `arch` are the publisher's own tokens for the artifact (a
+/// publisher may rename them: AUR passes pacman's `x86_64`). `triple` is the
+/// artifact's real target triple and `amd64_variant` its `amd64_variant`
+/// metadata; together they seed `Target`, `Abi` and the variant variables,
+/// so `{{ targetVariant . }}` renders the artifact's own `v3_gnu`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct UrlTarget<'a> {
+    pub os: &'a str,
+    pub arch: &'a str,
+    pub triple: &'a str,
+    pub amd64_variant: Option<&'a str>,
+}
+
+impl<'a> UrlTarget<'a> {
+    /// The target of `artifact`, under the publisher's `os` / `arch` tokens.
+    pub(crate) fn of(
+        artifact: &'a anodizer_core::artifact::Artifact,
+        os: &'a str,
+        arch: &'a str,
+    ) -> Self {
+        Self {
+            os,
+            arch,
+            triple: artifact.target.as_deref().unwrap_or(""),
+            amd64_variant: artifact.metadata.get("amd64_variant").map(String::as_str),
+        }
+    }
+
+    /// The target of an [`OsArtifact`](super::OsArtifact), under the
+    /// publisher's `os` / `arch` tokens.
+    pub(crate) fn of_os_artifact(
+        artifact: &'a super::OsArtifact,
+        os: &'a str,
+        arch: &'a str,
+    ) -> Self {
+        Self {
+            os,
+            arch,
+            triple: &artifact.target,
+            amd64_variant: artifact.amd64_variant.as_deref(),
+        }
+    }
+
+    /// Write the per-artifact variables onto `vars`: the lower-case
+    /// shorthand (`arch`, `os`), `Os`, `Arch`, `Target` (`Abi` follows it)
+    /// and the variant variables.
+    fn seed(self, vars: &mut TemplateVars) {
+        vars.set("arch", self.arch);
+        vars.set("os", self.os);
+        vars.set("Os", self.os);
+        vars.set("Arch", self.arch);
+        vars.set("Target", self.triple);
+        anodizer_core::archive_name::seed_variant_vars(vars, self.triple, self.amd64_variant);
+        // A publisher handing over the bare `arm` token (krew, whose selector
+        // is `runtime.GOARCH`) has stripped the version the archive policy
+        // keeps in `Arm`; restoring it from the triple lets
+        // `{{ Arch }}v{{ Arm }}` render `armv7` here as it does in an archive
+        // name. A composite `armv7` token keeps `Arm` empty, as everywhere.
+        if self.arch == "arm"
+            && let Some(version) = anodizer_core::target::map_target(self.triple)
+                .1
+                .strip_prefix("armv")
+        {
+            vars.set("Arm", version);
+        }
+    }
+}
+
+/// Render a `url_template` string with Tera, providing only the per-artifact
+/// variables: `name`, `version` and everything [`UrlTarget`] seeds.
 ///
 /// Prefer [`render_url_template_with_ctx`] for new call sites — that variant
 /// also exposes the full project template surface (`ProjectName`, `Tag`,
 /// `Version`, `Env.*`, `ArtifactName`, etc.) so a dotted-variable config
 /// like `url_template: "{{ .Tag }}/{{ .ArtifactName }}"` resolves correctly.
 /// This thin wrapper is retained for the rare site that has no `&Context`
-/// available (and only for backward compatibility).
+/// available.
 pub(crate) fn render_url_template(
     url_template: &str,
     name: &str,
     version: &str,
-    arch: &str,
-    os: &str,
+    target: UrlTarget<'_>,
 ) -> String {
     let mut vars = TemplateVars::new();
     vars.set("name", name);
     vars.set("version", version);
-    vars.set("arch", arch);
-    vars.set("os", os);
+    target.seed(&mut vars);
     template::render(url_template, &vars).unwrap_or_else(|_| url_template.to_string())
 }
 
 /// Render a `url_template` string with the full context template-vars surface
 /// (Tag, ProjectName, Version, Env.\*, Major/Minor/Patch, Commit, Branch,
-/// PreviousTag, ArtifactName, …) plus the per-artifact overlays
-/// (`name`, `version`, `arch`, `os`, `Os`, `Arch`, `Binary`, `ArtifactName`).
-///
-/// The url-template render exposes
-/// 30+ variables to publisher URL templates; without overlay-style merging,
-/// migrated configs that reference `{{ .Tag }}` or `{{ .Env.GITHUB_TOKEN }}`
-/// silently produce empty fields.
+/// PreviousTag, ArtifactName, …) plus the per-artifact overlays (`name`,
+/// `version`, `ArtifactName` and everything [`UrlTarget`] seeds).
 ///
 /// On render error (malformed template), returns the raw input unchanged —
-/// matching the legacy [`render_url_template`] failure path.
+/// matching the [`render_url_template`] failure path.
 pub(crate) fn render_url_template_with_ctx(
     ctx: &Context,
     url_template: &str,
     name: &str,
     version: &str,
-    arch: &str,
-    os: &str,
+    target: UrlTarget<'_>,
 ) -> String {
-    render_url_template_with_ctx_and_artifact(ctx, url_template, name, None, version, arch, os)
+    render_url_template_with_ctx_and_artifact(ctx, url_template, name, None, version, target)
 }
 
 /// Like [`render_url_template_with_ctx`] but also sets `ArtifactName`
@@ -68,55 +130,19 @@ pub(crate) fn render_url_template_with_ctx_and_artifact(
     name: &str,
     artifact_name: Option<&str>,
     version: &str,
-    arch: &str,
-    os: &str,
+    target: UrlTarget<'_>,
 ) -> String {
-    // Per-artifact overlays — both the lower-case shorthand (legacy
-    // `name`/`version`/`arch`/`os`) and the canonical `Os`/`Arch`
-    // dotted keys, so a config of either flavor renders.
-    let mut extra: Vec<(&str, String)> = vec![
-        ("name", name.to_string()),
-        ("version", version.to_string()),
-        ("arch", arch.to_string()),
-        ("os", os.to_string()),
-        ("Os", os.to_string()),
-        ("Arch", arch.to_string()),
-    ];
-    match artifact_name {
-        // Explicit artifact filename takes precedence.
-        Some(af) => extra.push(("ArtifactName", af.to_string())),
-        // When no explicit artifact filename is given, fall back: set
-        // ArtifactName only if `name` itself looks like a filename (has an
-        // extension). This preserves callers that pass a project/cask token.
-        None => {
-            if name.contains('.') {
-                extra.push(("ArtifactName", name.to_string()));
-            }
-        }
-    }
-    render_with_ctx_vars(ctx, url_template, &extra).unwrap_or_else(|_| url_template.to_string())
-}
-
-/// Render `template` against the full context template-vars surface
-/// (`ProjectName`, `Tag`, `Version`, `Env.*`, …) plus per-call `extra`
-/// overlay pairs, propagating render errors to the caller.
-///
-/// The single owner of the clone-vars + overlay + render idiom: every
-/// publisher-side render that needs extra per-call variables (URL templates'
-/// per-artifact vars, npm's per-platform naming vars) goes through here so
-/// the variable-surface convention lives in one place. The clone is cheap
-/// (small string maps) and keeps the original `ctx.template_vars()`
-/// immutable for sibling calls.
-pub(crate) fn render_with_ctx_vars(
-    ctx: &Context,
-    template: &str,
-    extra: &[(&str, String)],
-) -> Result<String> {
     let mut vars = ctx.template_vars().clone();
-    for (k, v) in extra {
-        vars.set(k, v);
+    vars.set("name", name);
+    vars.set("version", version);
+    target.seed(&mut vars);
+    // An explicit artifact filename takes precedence. Without one,
+    // `ArtifactName` is set only when `name` itself looks like a filename
+    // (has an extension), which keeps a project or cask token out of it.
+    if let Some(filename) = artifact_name.or_else(|| name.contains('.').then_some(name)) {
+        vars.set("ArtifactName", filename);
     }
-    template::render(template, &vars)
+    template::render(url_template, &vars).unwrap_or_else(|_| url_template.to_string())
 }
 
 /// Render `raw` through the context template engine, named by `field` (e.g.

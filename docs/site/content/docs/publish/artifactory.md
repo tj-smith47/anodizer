@@ -140,6 +140,8 @@ The `target` URL and `custom_headers` values support artifact-specific template 
 | `{{ Os }}` | Target OS |
 | `{{ Arch }}` | Target architecture |
 | `{{ Target }}` | Rust target triple |
+| `{{ Abi }}` | ABI component of the triple (`gnu`, `musl`, `msvc`; empty when the triple names none), e.g. `target: "https://uploads.example.com/{{ Os }}-{{ Arch }}-{{ Abi }}/"` |
+| `{{ targetVariant . }}` | The [target variant](@/docs/general/templates.md#target-variant) of the artifact being uploaded: its micro-architecture level when that is not the baseline, then its ABI (`_gnu`, `_musl`, `v3_gnu`), e.g. `target: "https://uploads.example.com/{{ Os }}_{{ Arch }}{{ targetVariant . }}/"` uploads a v3 gnu build under `linux_amd64v3_gnu/`. It renders the same in `custom_headers` values |
 
 ## Full example
 

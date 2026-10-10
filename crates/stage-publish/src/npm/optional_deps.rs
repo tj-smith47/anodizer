@@ -590,9 +590,14 @@ pub(crate) fn generate_layout(
                 validate_npm_package_name(&name)?;
                 name
             }
-            PlatformNaming::Template { template, scope } => {
-                render_platform_name(ctx, template, scope, target, &triple)?
-            }
+            PlatformNaming::Template { template, scope } => render_platform_name(
+                ctx,
+                template,
+                scope,
+                target,
+                art.metadata.get("amd64_variant").map(String::as_str),
+                &triple,
+            )?,
         };
         let subpath = join_bin_dir(platform_bin_dir(cfg), &art.name);
         raws.push(RawPlatform {

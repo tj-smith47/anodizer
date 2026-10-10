@@ -60,8 +60,9 @@ pub(crate) fn set_image_template_vars<'a>(
 /// strings: a `--key` can arrive through a template, and a `TUF_ROOT` that
 /// depends on the image (`{{ .Digest }}`, `{{ .ArtifactID }}`) names a store
 /// that must be known — and locked — before the first signature is made. A
-/// dry run spawns nothing and renders no env, matching the loop, which
-/// prints the argv and moves on.
+/// dry run spawns nothing; its env is rendered only so the loop can mask the
+/// argv it prints, and an entry that fails to render is dropped there rather
+/// than failing the run.
 ///
 /// Returns `None` when the determinism harness skips the config: keyless
 /// cosign cannot run there (no ambient OIDC; the ephemeral `COSIGN_KEY` env
@@ -136,7 +137,13 @@ pub(crate) fn render_image_signs(
         }
 
         let env = if ctx.is_dry_run() {
-            Vec::new()
+            // Nothing is spawned, so the env is rendered only to mask the
+            // dry-run echo; an entry that does not render has no value the
+            // argv could repeat.
+            anodizer_core::config::render_env_entries_that_render(
+                cfg.env.as_deref().unwrap_or(&[]),
+                |v| ctx.render_template(v),
+            )
         } else {
             let mut env =
                 anodizer_core::config::render_env_entries(cfg.env.as_deref().unwrap_or(&[]), |v| {

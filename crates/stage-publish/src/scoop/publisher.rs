@@ -129,6 +129,16 @@ pub(crate) fn build_scoop_reconcile_target(
     }))
 }
 
+/// The evidence for the repositories `targets` names.
+pub(super) fn scoop_evidence(targets: Vec<ScoopTarget>) -> anodizer_core::PublishEvidence {
+    let mut evidence = anodizer_core::PublishEvidence::new("scoop");
+    evidence.extra =
+        anodizer_core::PublishEvidenceExtra::Scoop(anodizer_core::publish_evidence::ScoopExtra {
+            scoop_targets: targets,
+        });
+    evidence
+}
+
 impl anodizer_core::Publisher for ScoopPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -261,13 +271,16 @@ impl anodizer_core::Publisher for ScoopPublisher {
             // Re-scope the version/name template vars to THIS crate's own tag so
             // the rendered manifest carries the crate's version, not the first
             // crate's (workspace per-crate independent-version mode).
-            let pushed = crate::publisher_helpers::with_published_crate_scope(
+            let scoped = crate::publisher_helpers::with_published_crate_scope(
                 ctx,
                 crate_name,
                 &anodizer_core::crate_scope::resolve_crate_tag,
                 |ctx| publish_to_scoop(ctx, crate_name, &log),
-            )?;
-            if pushed {
+            );
+            // Each push was recorded as it went through (`publish_to_scoop`),
+            // so an error here leaves the pushed buckets in the pending
+            // evidence for the `Failed` row.
+            if scoped? {
                 any_pushed = true;
             }
         }
@@ -288,16 +301,9 @@ impl anodizer_core::Publisher for ScoopPublisher {
                 "scoop", processed,
             ));
         }
-        let mut evidence = anodizer_core::PublishEvidence::new("scoop");
-        if any_pushed {
-            let targets = collect_scoop_run_targets(ctx);
-            evidence.extra = anodizer_core::PublishEvidenceExtra::Scoop(
-                anodizer_core::publish_evidence::ScoopExtra {
-                    scoop_targets: targets,
-                },
-            );
-        }
-        Ok(evidence)
+        // The buckets pushed this run, recorded as each push went through.
+        let evidence = ctx.take_pending_evidence().filter(|_| any_pushed);
+        Ok(evidence.unwrap_or_else(|| scoop_evidence(Vec::new())))
     }
 
     fn rollback(

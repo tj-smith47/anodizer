@@ -188,7 +188,13 @@ pub(crate) fn render_aur_pkgbuild_and_srcinfo_for_crate(
     )?))
 }
 
-pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
+/// Returns the sha of the commit pushed to the AUR repository, or `None`
+/// when the entry was skipped or the repository was already up to date.
+pub fn publish_to_aur(
+    ctx: &Context,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<Option<String>> {
     let (crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "aur")?;
 
     let aur_cfg = publish
@@ -198,7 +204,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
 
     let git_url = match aur_check_skip_and_resolve_git_url(ctx, aur_cfg, crate_name, log)? {
         Some(u) => u,
-        None => return Ok(false),
+        None => return Ok(None),
     };
 
     // The skip / `if` / `skip_upload` gate was already evaluated above by

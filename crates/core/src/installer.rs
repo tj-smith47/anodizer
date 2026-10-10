@@ -67,7 +67,7 @@ const UNAME_ARCH_CASES: &[(&str, &str)] = &[
 /// so a sibling `template_files:` entry that reads `{{ Os }}` / `{{ Arch }}`
 /// still sees its own values, not the last target's.
 const SEEDED_VARS: &[&str] = &[
-    "Os", "Arch", "Target", "Arm", "Arm64", "Amd64", "Mips", "I386",
+    "Os", "Arch", "Target", "Abi", "Arm", "Arm64", "Amd64", "Mips", "I386", "Ppc64", "Riscv64",
 ];
 
 /// The template-var keys the templatefiles stage binds [`InstallerCases`] to

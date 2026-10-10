@@ -20,10 +20,13 @@ pub(crate) fn pr_title(manifest_name: &str, version: &str) -> String {
 pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "scoop")?;
 
+    // Cloned so the push site can record into `ctx` while the config is in use.
     let scoop_cfg = publish
         .scoop
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("scoop: no scoop config for '{}'", crate_name))?;
+        .ok_or_else(|| anyhow::anyhow!("scoop: no scoop config for '{}'", crate_name))?
+        .clone();
+    let scoop_cfg = &scoop_cfg;
 
     // Check skip_upload / `if:` gate before doing any work, matching the order
     // the shared renderer applies — so a skipped crate short-circuits before
@@ -177,8 +180,17 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         &commit_opts,
         log,
     )?;
-    match outcome {
-        util::CommitOutcome::Pushed => {
+    match &outcome {
+        util::CommitOutcome::Pushed { commit } => {
+            // Recorded the moment the push went through, so the row names
+            // this commit whatever happens after it.
+            ctx.record_committed_work(super::publisher::scoop_evidence(vec![ScoopTarget {
+                target: crate_name.to_string(),
+                repo_url: format!("https://github.com/{repo_owner}/{repo_name}.git"),
+                branch: branch.clone(),
+                token_env_var: Some("SCOOP_BUCKET_TOKEN".to_string()),
+                commit: Some(commit.clone()),
+            }]));
             log.status(&format!(
                 "Scoop bucket {}/{} updated for '{}'",
                 repo_owner, repo_name, crate_name
@@ -250,48 +262,16 @@ pub(crate) fn decode_scoop_targets(
 }
 
 /// Collapse recorded bucket-push targets to a unique set keyed by
-/// `(repo_url, branch)`. First entry seen wins. See homebrew's
-/// `dedup_homebrew_targets` for the same-revert-twice hazard.
+/// `(repo_url, branch, commit)`. First entry seen wins. See homebrew's
+/// `dedup_homebrew_targets`.
 pub(crate) fn dedup_scoop_targets(targets: &[ScoopTarget]) -> Vec<ScoopTarget> {
-    let mut seen: std::collections::BTreeSet<(String, Option<String>)> =
+    let mut seen: std::collections::BTreeSet<(String, Option<String>, Option<String>)> =
         std::collections::BTreeSet::new();
     let mut out: Vec<ScoopTarget> = Vec::with_capacity(targets.len());
     for t in targets {
-        let key = (t.repo_url.clone(), t.branch.clone());
+        let key = (t.repo_url.clone(), t.branch.clone(), t.commit.clone());
         if seen.insert(key) {
             out.push(t.clone());
-        }
-    }
-    out
-}
-
-pub(crate) fn collect_scoop_run_targets(ctx: &Context) -> Vec<ScoopTarget> {
-    let mut out: Vec<ScoopTarget> = Vec::new();
-    let selected = &ctx.options.selected_crates;
-    for c in ctx.config.selected_crates(selected) {
-        let Some(sc) = c.publish.as_ref().and_then(|p| p.scoop.as_ref()) else {
-            continue;
-        };
-        if let Some((owner, name)) = util::resolve_repo_owner_name(sc.repository.as_ref()) {
-            // Mirror the publish path's branch resolution (including the
-            // versioned PR-branch default) so the recorded rollback branch
-            // matches the branch actually pushed.
-            let manifest_raw = sc.name.as_deref().unwrap_or(&c.name);
-            let manifest_name = ctx
-                .render_template(manifest_raw)
-                .unwrap_or_else(|_| manifest_raw.to_string());
-            let version = util::crate_scoped_version(ctx, c);
-            out.push(ScoopTarget {
-                target: c.name.clone(),
-                repo_url: format!("https://github.com/{}/{}.git", owner, name),
-                branch: util::resolve_branch_or_versioned(
-                    ctx,
-                    sc.repository.as_ref(),
-                    &manifest_name,
-                    &version,
-                ),
-                token_env_var: Some("SCOOP_BUCKET_TOKEN".to_string()),
-            });
         }
     }
     out

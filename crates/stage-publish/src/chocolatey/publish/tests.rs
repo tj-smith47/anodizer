@@ -1459,3 +1459,41 @@ fn in_moderation_republish_status_contains_replacing() {
     assert!(msg.contains("republish_in_moderation=true"), "{msg}");
     assert!(msg.contains("replacing in-moderation copy"), "{msg}");
 }
+
+/// A chocolatey `url_template` renders the archive's own target variant: the
+/// ABI of its triple and the amd64 level its metadata records.
+#[test]
+fn chocolatey_url_template_renders_the_target_variant() {
+    let ctx = ctx_with_choco(ChocolateyConfig::default());
+    let cfg = ChocolateyConfig {
+        url_template: Some(
+            "https://example.com/{{ Os }}_{{ Arch }}{{ targetVariant . }}".to_string(),
+        ),
+        ..Default::default()
+    };
+    let render = |target: &str, amd64_variant: Option<&str>| {
+        let mut a64 = windows_artifact("mytool", target, "ignored.zip");
+        if let Some(v) = amd64_variant {
+            a64.metadata
+                .insert("amd64_variant".to_string(), v.to_string());
+        }
+        match build_install_mode(&ctx, &cfg, "mytool", "9.9.9", None, Some(&a64), "mytool")
+            .expect("install mode")
+        {
+            InstallMode::Single { url, .. } => url,
+            _ => panic!("expected Single from template"),
+        }
+    };
+    assert_eq!(
+        render("x86_64-pc-windows-msvc", None),
+        "https://example.com/windows_amd64_msvc"
+    );
+    assert_eq!(
+        render("x86_64-pc-windows-gnu", None),
+        "https://example.com/windows_amd64_gnu"
+    );
+    assert_eq!(
+        render("x86_64-pc-windows-msvc", Some("v3")),
+        "https://example.com/windows_amd64v3_msvc"
+    );
+}

@@ -183,7 +183,7 @@ pub(super) fn publish_aur_source_entry(
         log,
     )?;
     match outcome {
-        util::CommitOutcome::Pushed => {
+        util::CommitOutcome::Pushed { .. } => {
             log.status(&format!(
                 "pushed package '{}' for {} to {}",
                 pkg_name, label, git_url
@@ -245,9 +245,22 @@ pub fn publish_to_aur_source(
 /// gated-off entry, or for one whose push reported no changes, points
 /// `tag rollback` at a repository this run never wrote to.
 pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Result<Vec<usize>> {
+    let mut pushed_entries = Vec::new();
+    publish_top_level_aur_sources_into(ctx, log, &mut pushed_entries)?;
+    Ok(pushed_entries)
+}
+
+/// [`publish_top_level_aur_sources`], writing each pushed entry's index into
+/// `pushed_entries` as it is pushed so a failure on a later entry still leaves
+/// the caller the entries pushed before it.
+pub(crate) fn publish_top_level_aur_sources_into(
+    ctx: &mut Context,
+    log: &StageLogger,
+    pushed_entries: &mut Vec<usize>,
+) -> Result<()> {
     let entries = match ctx.config.aur_sources {
         Some(ref v) if !v.is_empty() => v.clone(),
-        _ => return Ok(Vec::new()),
+        _ => return Ok(()),
     };
 
     let project_name = ctx
@@ -256,7 +269,6 @@ pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Re
         .cloned()
         .unwrap_or_default();
 
-    let mut pushed_entries = Vec::new();
     for (i, cfg) in entries.iter().enumerate() {
         let label = format!("aur_sources[{}]", i);
         if crate::util::should_skip_publisher_with_if(
@@ -283,5 +295,5 @@ pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Re
         }
     }
 
-    Ok(pushed_entries)
+    Ok(())
 }

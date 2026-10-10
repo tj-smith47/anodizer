@@ -209,8 +209,7 @@ pub(crate) fn render_scoop_manifest_for_crate(
                     tmpl,
                     manifest_name,
                     &version,
-                    &raw_arch,
-                    "windows",
+                    util::UrlTarget::of(a, "windows", &raw_arch),
                 )
             } else {
                 a.metadata

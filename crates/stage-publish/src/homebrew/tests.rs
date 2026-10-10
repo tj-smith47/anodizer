@@ -3474,7 +3474,6 @@ fn make_bare_cask_tap(branch: &str) -> (String, tempfile::TempDir) {
     git_ok(seed.path(), &["init", "-b", branch]);
     git_ok(seed.path(), &["config", "user.email", "t@example.invalid"]);
     git_ok(seed.path(), &["config", "user.name", "T"]);
-    git_ok(seed.path(), &["config", "commit.gpgsign", "false"]);
     std::fs::write(seed.path().join("README"), "cask tap\n").unwrap();
     git_ok(seed.path(), &["add", "README"]);
     git_ok(seed.path(), &["commit", "-m", "seed"]);
@@ -5235,5 +5234,137 @@ fn top_level_cask_excludes_watchos_from_macos_block() {
     assert!(
         !c.contains("sha_watchos"),
         "watchOS archive must never reach the on_macos cask block:\n{c}"
+    );
+}
+
+/// One archive for `mytool` on `target`, with `amd64_variant` metadata when
+/// a level is given.
+fn variant_archive(target: &str, amd64_variant: Option<&str>) -> Artifact {
+    let mut art = art_with_url_sha(
+        ArtifactKind::Archive,
+        &format!("mytool-{target}.tar.gz"),
+        target,
+        "https://ignored/original.tar.gz",
+        &format!("sha_{target}"),
+    );
+    if let Some(v) = amd64_variant {
+        art.metadata
+            .insert("amd64_variant".to_string(), v.to_string());
+    }
+    art
+}
+
+/// A top-level `homebrew_casks` `url.template` renders the macOS artifact's
+/// own target variant: the amd64 level its metadata records, and nothing for
+/// a plain arm64 build (a darwin triple has no ABI component).
+#[test]
+fn homebrew_top_level_cask_url_template_renders_the_target_variant() {
+    use anodizer_core::config::{HomebrewCaskConfig, HomebrewCaskURL};
+    let render = |target: &str, amd64_variant: Option<&str>| {
+        let cask_cfg = HomebrewCaskConfig {
+            name: Some("mytool".to_string()),
+            url: Some(HomebrewCaskURL {
+                template: Some(
+                    "https://example.com/{{ Os }}_{{ Arch }}{{ targetVariant . }}".to_string(),
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let config = Config {
+            crates: vec![CrateConfig {
+                name: "mytool".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                ..Default::default()
+            }],
+            homebrew_casks: Some(vec![cask_cfg.clone()]),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.2.3");
+        ctx.template_vars_mut().set("Version", "1.2.3");
+        ctx.artifacts.add(variant_archive(target, amd64_variant));
+        super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+            .expect("top-level cask render")
+            .expect("cask applies")
+            .content
+    };
+    let v3 = render("x86_64-apple-darwin", Some("v3"));
+    assert!(
+        v3.contains("url \"https://example.com/darwin_amd64v3\""),
+        "{v3}"
+    );
+    let arm = render("aarch64-apple-darwin", None);
+    assert!(
+        arm.contains("url \"https://example.com/darwin_arm64\""),
+        "{arm}"
+    );
+}
+
+/// A per-crate cask `url_template` renders each artifact's own target
+/// variant, in the multi-platform `on_macos` / `on_linux` blocks and in the
+/// flat single-artifact body alike.
+#[test]
+fn homebrew_cask_url_template_renders_the_target_variant() {
+    use anodizer_core::config::{HomebrewCaskConfig, HomebrewConfig};
+    let render = |artifacts: Vec<Artifact>| {
+        let config = Config {
+            crates: vec![CrateConfig {
+                name: "mytool".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.2.3");
+        for art in artifacts {
+            ctx.artifacts.add(art);
+        }
+        let cask_cfg = HomebrewCaskConfig {
+            url_template: Some(
+                "https://example.com/{{ Os }}_{{ Arch }}{{ targetVariant . }}".to_string(),
+            ),
+            ..Default::default()
+        };
+        super::cask_scope::generate_cask_from_context(
+            &ctx,
+            "mytool",
+            &HomebrewConfig::default(),
+            &cask_cfg,
+            &test_log(),
+        )
+        .expect("cask render")
+        .content
+    };
+
+    let multi = render(vec![
+        variant_archive("x86_64-apple-darwin", Some("v3")),
+        variant_archive("aarch64-apple-darwin", None),
+        variant_archive("x86_64-unknown-linux-gnu", None),
+        variant_archive("aarch64-unknown-linux-musl", None),
+    ]);
+    assert!(multi.contains("on_linux do"), "{multi}");
+    for url in [
+        "url \"https://example.com/darwin_amd64v3\"",
+        "url \"https://example.com/darwin_arm64\"",
+        "url \"https://example.com/linux_amd64_gnu\"",
+        "url \"https://example.com/linux_arm64_musl\"",
+    ] {
+        assert!(multi.contains(url), "missing {url}\n{multi}");
+    }
+
+    let single = render(vec![variant_archive("x86_64-apple-darwin", Some("v3"))]);
+    assert!(!single.contains("on_intel do"), "{single}");
+    assert!(
+        single.contains("url \"https://example.com/darwin_amd64v3\""),
+        "{single}"
+    );
+    let arm = render(vec![variant_archive("aarch64-apple-darwin", None)]);
+    assert!(
+        arm.contains("url \"https://example.com/darwin_arm64\""),
+        "{arm}"
     );
 }

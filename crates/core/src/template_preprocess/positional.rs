@@ -397,11 +397,21 @@ fn lookup_positional(name: &str) -> Option<PositionalSyntax> {
 /// Builtins the preprocessor rewrites outside [`lookup_positional`], each named
 /// with the pass that owns it: `list`, `join` and `map` are variadic constructors
 /// ([`try_rewrite_variadic`] / [`preprocess_map_syntax`]), `printf` / `print` /
-/// `println` are variadic formatters ([`try_rewrite_variadic`]), and `slice`
-/// becomes a piped filter ([`try_rewrite_slice`]).
+/// `println` are variadic formatters ([`try_rewrite_variadic`]), `slice`
+/// becomes a piped filter ([`try_rewrite_slice`]), and `targetVariant .`
+/// drops its context argument in Pass 4
+/// ([`preprocess_method_calls`](super::methods::preprocess_method_calls)).
 #[cfg(test)]
-pub(super) const PREPROCESSED_ELSEWHERE: &[&str] =
-    &["join", "list", "map", "print", "printf", "println", "slice"];
+pub(super) const PREPROCESSED_ELSEWHERE: &[&str] = &[
+    "join",
+    "list",
+    "map",
+    "print",
+    "printf",
+    "println",
+    "slice",
+    "targetVariant",
+];
 
 /// Builtins that have no Go positional form to rewrite, each with its reason:
 ///

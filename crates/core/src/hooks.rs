@@ -731,16 +731,11 @@ fn bind_per_artifact_vars(vars: &mut TemplateVars, artifact: &Artifact) {
             .map(String::as_str)
             .unwrap_or(""),
     );
-    if let Some(target) = artifact.target.as_deref() {
-        let (os, arch) = crate::target::map_target(target);
-        vars.set("Os", &os);
-        vars.set("Arch", &arch);
-        vars.set("Target", target);
-    } else {
-        vars.set("Os", "");
-        vars.set("Arch", "");
-        vars.set("Target", "");
-    }
+    crate::archive_name::seed_artifact_target_vars(
+        vars,
+        artifact.target.as_deref(),
+        artifact.metadata.get("amd64_variant").map(String::as_str),
+    );
 }
 
 #[cfg(test)]
@@ -889,8 +884,8 @@ mod tests {
 
     #[test]
     fn build_env_reaches_build_hook() {
-        let dir = std::env::temp_dir().join(format!("anodizer-be-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("reaches.txt");
         let _ = std::fs::remove_file(&out);
 
@@ -909,8 +904,8 @@ mod tests {
 
     #[test]
     fn hook_env_overrides_build_env_on_key_conflict() {
-        let dir = std::env::temp_dir().join(format!("anodizer-be-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("precedence.txt");
         let _ = std::fs::remove_file(&out);
 
@@ -966,8 +961,8 @@ mod tests {
 
     #[test]
     fn extra_env_reaches_hook() {
-        let dir = std::env::temp_dir().join(format!("anodizer-ee-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("reaches.txt");
         let _ = std::fs::remove_file(&out);
 
@@ -984,8 +979,8 @@ mod tests {
 
     #[test]
     fn hook_env_overrides_extra_env_on_key_conflict() {
-        let dir = std::env::temp_dir().join(format!("anodizer-ee-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("precedence.txt");
         let _ = std::fs::remove_file(&out);
 
@@ -1008,8 +1003,8 @@ mod tests {
 
     #[test]
     fn absent_build_env_is_unchanged_behavior() {
-        let dir = std::env::temp_dir().join(format!("anodizer-be-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("absent.txt");
         let _ = std::fs::remove_file(&out);
 
@@ -1026,8 +1021,8 @@ mod tests {
 
     #[test]
     fn empty_build_env_map_adds_nothing() {
-        let dir = std::env::temp_dir().join(format!("anodizer-be-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("empty.txt");
         let _ = std::fs::remove_file(&out);
 
@@ -1258,8 +1253,8 @@ mod tests {
     fn hook_executes_the_unredacted_command() {
         // Redaction is a logging concern: the argv handed to `sh -c` keeps the
         // real value, or the hook cannot do its job.
-        let dir = std::env::temp_dir().join(format!("anodizer-hookexec-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("executed.txt");
         let _ = std::fs::remove_file(&out);
         let out_fwd = out.display().to_string().replace('\\', "/");
@@ -1401,8 +1396,8 @@ mod tests {
     /// `before_publish` (absent here) does not fire.
     #[test]
     fn per_crate_before_publish_scopes_version_and_artifacts() {
-        let dir = std::env::temp_dir().join(format!("anodizer-pcbp-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("scoped.txt");
         let _ = std::fs::remove_file(&out);
         let out_s = out.display().to_string().replace('\\', "/");
@@ -1450,8 +1445,8 @@ mod tests {
     /// selected crate, so a sibling's hooks must not leak into that iteration.
     #[test]
     fn per_crate_before_publish_honors_selected_crates() {
-        let dir = std::env::temp_dir().join(format!("anodizer-pcbp-sel-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("selected.txt");
         let _ = std::fs::remove_file(&out);
         let out_s = out.display().to_string().replace('\\', "/");
@@ -1516,8 +1511,8 @@ mod tests {
     /// implicit-all selection iterates every crate.
     #[test]
     fn before_publish_stage_empty_selection_fires_every_crate() {
-        let dir = std::env::temp_dir().join(format!("anodizer-bps-all-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("all.txt");
         let _ = std::fs::remove_file(&out);
         let out_s = out.display().to_string().replace('\\', "/");
@@ -1673,8 +1668,8 @@ mod tests {
     /// `run_once: true` executes the command exactly once regardless of how many artifacts match.
     #[test]
     fn before_publish_run_once_executes_a_single_time_for_many_artifacts() {
-        let dir = std::env::temp_dir().join(format!("anodizer-bp-runonce-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("runs.txt");
         let _ = std::fs::remove_file(&out);
         let out_s = out.display().to_string().replace('\\', "/");
@@ -1797,9 +1792,8 @@ mod tests {
     /// `run_once: true` ignores the per-artifact `ids` / `artifacts` filters and still runs once.
     #[test]
     fn before_publish_run_once_ignores_artifact_filters() {
-        let dir =
-            std::env::temp_dir().join(format!("anodizer-bp-runonce-flt-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("flt.txt");
         let _ = std::fs::remove_file(&out);
         let out_s = out.display().to_string().replace('\\', "/");
@@ -1835,8 +1829,8 @@ mod tests {
     /// `run_once: false` (and absent) runs the command once per matching artifact.
     #[test]
     fn before_publish_run_once_false_stays_per_artifact() {
-        let dir = std::env::temp_dir().join(format!("anodizer-bp-perart-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("perart.txt");
         let _ = std::fs::remove_file(&out);
         let out_s = out.display().to_string().replace('\\', "/");
@@ -1878,8 +1872,8 @@ mod tests {
     /// wired, not fiction.
     #[test]
     fn before_publish_binds_anodizer_artifact_env_per_artifact() {
-        let dir = std::env::temp_dir().join(format!("anodizer-bp-env-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("env.txt");
         let _ = std::fs::remove_file(&out);
         let out_s = out.display().to_string().replace('\\', "/");
@@ -1923,8 +1917,8 @@ mod tests {
     /// prints the bracketed env value must see it empty.
     #[test]
     fn before_publish_run_once_does_not_bind_anodizer_artifact_env() {
-        let dir = std::env::temp_dir().join(format!("anodizer-bp-env1-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("env-once.txt");
         let _ = std::fs::remove_file(&out);
         let out_s = out.display().to_string().replace('\\', "/");
@@ -1990,8 +1984,8 @@ mod tests {
     /// release previously no-op'd these hooks.
     #[test]
     fn per_crate_before_fires_once_per_crate_full_release() {
-        let dir = std::env::temp_dir().join(format!("anodizer-pcb-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("before.txt");
         let _ = std::fs::remove_file(&out);
         let out_s = out.display().to_string().replace('\\', "/");
@@ -2038,8 +2032,8 @@ mod tests {
     /// hook surface `--publish-only`'s per-crate loop already honors.
     #[test]
     fn per_crate_lifecycle_fires_for_workspace_only_crates() {
-        let dir = std::env::temp_dir().join(format!("anodizer-pcb-ws-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("ws-before.txt");
         let _ = std::fs::remove_file(&out);
         let out_s = out.display().to_string().replace('\\', "/");
@@ -2077,8 +2071,8 @@ mod tests {
     /// lifecycle hooks, on the publish-head surface.
     #[test]
     fn per_crate_before_publish_fires_for_workspace_only_crates() {
-        let dir = std::env::temp_dir().join(format!("anodizer-pcbp-ws-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("ws-before-publish.txt");
         let _ = std::fs::remove_file(&out);
         let out_s = out.display().to_string().replace('\\', "/");
@@ -2111,8 +2105,8 @@ mod tests {
     /// per crate — the tail counterpart of the before test.
     #[test]
     fn per_crate_after_fires_once_per_crate_full_release() {
-        let dir = std::env::temp_dir().join(format!("anodizer-pca-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("after.txt");
         let _ = std::fs::remove_file(&out);
         let out_s = out.display().to_string().replace('\\', "/");
@@ -2157,8 +2151,8 @@ mod tests {
         fn fixed_lockstep(_ctx: &Context, _c: &CrateConfig) -> Option<String> {
             Some("v2.0.0".to_string())
         }
-        let dir = std::env::temp_dir().join(format!("anodizer-pcl-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("lockstep.txt");
         let _ = std::fs::remove_file(&out);
         let out_s = out.display().to_string().replace('\\', "/");
@@ -2202,8 +2196,8 @@ mod tests {
     /// crate, each with `selected_crates=[one]`).
     #[test]
     fn per_crate_before_honors_selected_crates_single_fire() {
-        let dir = std::env::temp_dir().join(format!("anodizer-pcb-sel-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let out = dir.join("selected.txt");
         let _ = std::fs::remove_file(&out);
         let out_s = out.display().to_string().replace('\\', "/");
@@ -2301,5 +2295,50 @@ mod tests {
             "long command must be elided: {summary}"
         );
         assert_eq!(summary.chars().count(), 81, "80 chars + the ellipsis");
+    }
+}
+
+#[cfg(test)]
+mod per_artifact_target_tests {
+    use super::*;
+    use crate::artifact::ArtifactKind;
+
+    fn artifact(target: Option<&str>, level: Option<&str>) -> Artifact {
+        Artifact {
+            kind: ArtifactKind::Binary,
+            name: "app".to_string(),
+            path: std::path::PathBuf::from("dist/app"),
+            target: target.map(str::to_string),
+            crate_name: "app".to_string(),
+            metadata: level
+                .map(|l| ("amd64_variant".to_string(), l.to_string()))
+                .into_iter()
+                .collect(),
+            size: None,
+        }
+    }
+
+    /// A `before_publish` hook renders the artifact's own target variant, and
+    /// an artifact with no target carries none over from the one before it.
+    #[test]
+    fn a_before_publish_hook_renders_the_artifacts_target_variant() {
+        let mut vars = TemplateVars::new();
+        for (target, level, expected) in [
+            (Some("x86_64-unknown-linux-gnu"), None, "linux_amd64_gnu"),
+            (Some("x86_64-unknown-linux-musl"), None, "linux_amd64_musl"),
+            (
+                Some("x86_64-unknown-linux-gnu"),
+                Some("v3"),
+                "linux_amd64v3_gnu",
+            ),
+            (None, None, "_"),
+        ] {
+            bind_per_artifact_vars(&mut vars, &artifact(target, level));
+            assert_eq!(
+                template::render("{{ Os }}_{{ Arch }}{{ targetVariant . }}", &vars).unwrap(),
+                expected,
+                "{target:?} {level:?}"
+            );
+        }
     }
 }

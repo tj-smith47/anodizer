@@ -89,12 +89,11 @@ pub fn render_artifact_url(
     let art_name = artifact.name();
     vars.set("ArtifactName", art_name);
     vars.set("ArtifactExt", &artifact.ext());
-    if let Some(ref target) = artifact.target {
-        let (os, arch) = anodizer_core::target::map_target(target);
-        vars.set("Os", &os);
-        vars.set("Arch", &arch);
-        vars.set("Target", target);
-    }
+    anodizer_core::archive_name::seed_artifact_target_vars(
+        &mut vars,
+        artifact.target.as_deref(),
+        artifact.metadata.get("amd64_variant").map(String::as_str),
+    );
 
     let mut rendered = anodizer_core::template::render(template, &vars)
         .with_context(|| "artifactory: failed to render target URL template")?;

@@ -74,6 +74,7 @@ pub(super) fn set_msi_template_vars(
     ctx: &mut Context,
     target: Option<&str>,
     arch: &str,
+    amd64_variant: Option<&str>,
     msi_arch: &str,
     binary_path: &str,
     product_code: &str,
@@ -82,6 +83,13 @@ pub(super) fn set_msi_template_vars(
     ctx.template_vars_mut().set("Os", "windows");
     ctx.template_vars_mut().set("Arch", arch);
     ctx.template_vars_mut().set("Target", target.unwrap_or(""));
+    // Two amd64 builds share one target triple, so the level is what keeps
+    // the default (or a custom) name template from naming both alike.
+    anodizer_core::archive_name::seed_amd64_variant_var(
+        ctx.template_vars_mut(),
+        arch,
+        amd64_variant,
+    );
     ctx.template_vars_mut().set("MsiArch", msi_arch);
     ctx.template_vars_mut().set("BinaryPath", binary_path);
     ctx.template_vars_mut().set("MsiProductCode", product_code);

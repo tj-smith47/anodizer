@@ -162,6 +162,12 @@ binary_signs:
   - asset_name_template: "{{ Binary }}-{{ Version }}-{{ Target }}"
 ```
 
+`{{ targetVariant . }}` writes both dimensions as one suffix — the level when
+it is not the baseline, then the ABI — for a name that keeps the short
+`{{ Os }}-{{ Arch }}` form (`app-1.2.3-linux-amd64_musl.sig`,
+`app-1.2.3-linux-amd64v3_gnu.sig`): set `asset_name_template:` to
+`"{{ Binary }}-{{ Version }}-{{ Os }}-{{ Arch }}{{ targetVariant . }}"`.
+
 The raw binary is called `app` (or `app.exe`) under every target's directory,
 so its own basename would collapse every target's signature onto one asset:
 
@@ -203,7 +209,7 @@ app-1.2.3-linux-amd64.sig          <- binary_signs, the primary entry's name
 entries only — `anodizer check config` warns when a `signs:` entry sets it. It
 renders the asset's BASE name in the same per-target scope an archive
 `name_template` renders under
-(`Os`, `Arch`, `Target`, the micro-architecture variants, `CrateName`,
+(`Os`, `Arch`, `Target`, `Abi`, the micro-architecture variants, `CrateName`,
 `Binary`); the `signature:` / `certificate:` suffix still carries over, so one
 template names both assets:
 

@@ -662,25 +662,53 @@ fn test_sbom_resolved_artifacts_user_value_wins() {
 fn test_sbom_resolved_documents_default_binary() {
     assert_eq!(
         SbomConfig::default().resolved_documents("binary"),
-        vec![format!(
-            "{}.sbom.json",
-            crate::archive_name::DEFAULT_BINARY_NAME_TEMPLATE
-        )]
+        vec![SbomConfig::DEFAULT_DOCUMENT_BINARY.to_string()]
     );
 }
 
-/// The default binary document is the binary's own default name plus
-/// `.sbom.json`; drift between the two would let a variant build overwrite
-/// its sibling's document.
+/// The default binary document names the whole target variant, so a gnu and
+/// a musl build of one binary — one OS, one architecture — catalog into two
+/// documents, and a target with no ABI keeps its historical name.
 #[test]
-fn default_binary_sbom_document_matches_the_binary_name_template() {
-    assert_eq!(
-        SbomConfig::DEFAULT_DOCUMENT_BINARY,
-        format!(
-            "{}.sbom.json",
-            crate::archive_name::DEFAULT_BINARY_NAME_TEMPLATE
-        )
-    );
+fn default_binary_sbom_document_separates_builds_by_abi() {
+    let tpl = SbomConfig::DEFAULT_DOCUMENT_BINARY;
+    let render = |target: &str| {
+        let mut vars = crate::template::TemplateVars::new();
+        vars.set("Binary", "app");
+        vars.set("Version", "1.0.0");
+        let (os, arch) = crate::target::map_target(target);
+        vars.set("Os", &os);
+        vars.set("Arch", &arch);
+        vars.set("Target", target);
+        crate::archive_name::seed_variant_vars(&mut vars, target, None);
+        crate::template::render(tpl, &vars).unwrap()
+    };
+    for (target, expected) in [
+        (
+            "x86_64-unknown-linux-gnu",
+            "app_1.0.0_linux_amd64_gnu.sbom.json",
+        ),
+        (
+            "x86_64-unknown-linux-musl",
+            "app_1.0.0_linux_amd64_musl.sbom.json",
+        ),
+        (
+            "aarch64-unknown-linux-gnu",
+            "app_1.0.0_linux_arm64_gnu.sbom.json",
+        ),
+        (
+            "armv7-unknown-linux-gnueabihf",
+            "app_1.0.0_linux_armv7_gnueabihf.sbom.json",
+        ),
+        (
+            "x86_64-pc-windows-msvc",
+            "app_1.0.0_windows_amd64_msvc.sbom.json",
+        ),
+        ("aarch64-apple-darwin", "app_1.0.0_darwin_arm64.sbom.json"),
+        ("aarch64-linux-android", "app_1.0.0_android_arm64.sbom.json"),
+    ] {
+        assert_eq!(render(target), expected, "{target}");
+    }
 }
 
 /// Two amd64 micro-architecture builds of one binary must catalog into two

@@ -1062,7 +1062,8 @@ fn render_top_level_handles_empty_populated_and_skip() {
     ctx2.template_vars_mut().set("Version", "1.0.0");
     let out = render_top_level_aur_source(&ctx2, &quiet_log()).expect("render ok");
     assert_eq!(out.len(), 1, "skipped entry must be dropped");
-    assert_eq!(out[0].package_name, "first");
+    assert_eq!(out[0].0, 0);
+    assert_eq!(out[0].1.package_name, "first");
 }
 
 // -----------------------------------------------------------------------
@@ -1146,7 +1147,6 @@ fn make_bare_aur_repo() -> (String, tempfile::TempDir) {
     git_ok(seed.path(), &["init", "-b", "master"]);
     git_ok(seed.path(), &["config", "user.email", "t@example.invalid"]);
     git_ok(seed.path(), &["config", "user.name", "T"]);
-    git_ok(seed.path(), &["config", "commit.gpgsign", "false"]);
     std::fs::write(seed.path().join("README"), "aur\n").unwrap();
     git_ok(seed.path(), &["add", "README"]);
     git_ok(seed.path(), &["commit", "-m", "seed"]);

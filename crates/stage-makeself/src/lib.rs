@@ -553,6 +553,7 @@ impl Stage for MakeselfStage {
             &jobs,
             parallelism,
             "makeself",
+            "installer",
             &log,
             |job: &MakeselfJob| execute_makeself_job(job, verbosity),
         )?;

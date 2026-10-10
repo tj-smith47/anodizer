@@ -33,23 +33,6 @@ macro_rules! micro_arch_variant_suffix {
     };
 }
 
-/// The `format: binary` default name template as a literal, so a default that
-/// appends an extension to it (the SBOM document path) can be built with
-/// `concat!` rather than re-typing the stem.
-///
-/// [`DEFAULT_BINARY_NAME_TEMPLATE`] is the value every non-literal consumer
-/// should read.
-macro_rules! default_binary_name_template {
-    () => {
-        concat!(
-            "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}",
-            $crate::archive_name::micro_arch_variant_suffix!()
-        )
-    };
-}
-
-pub(crate) use {default_binary_name_template, micro_arch_variant_suffix};
-
 /// Canonical archive name template used when a crate sets no
 /// `archive.name_template:`. The default
 /// (`{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}…`) with the
@@ -66,7 +49,10 @@ pub const DEFAULT_NAME_TEMPLATE_MULTI_CRATE: &str = DEFAULT_NAME_TEMPLATE;
 
 /// Default name template for `format: binary` archives (uses `{{ .Binary }}`
 /// rather than `{{ .ProjectName }}` so each binary is named individually).
-pub const DEFAULT_BINARY_NAME_TEMPLATE: &str = default_binary_name_template!();
+pub const DEFAULT_BINARY_NAME_TEMPLATE: &str = concat!(
+    "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}",
+    micro_arch_variant_suffix!()
+);
 
 /// The full micro-architecture variant suffix — the `Arm` / `Mips` / `Amd64`
 /// tail shared by the Linux-capable asset namers: the archive stage's
@@ -115,7 +101,8 @@ pub const INSTALLER_AMD64_VARIANT_SUFFIX: &str =
 
 /// Seed the per-target template variables a `name_template` reads.
 ///
-/// Sets `Os`, `Arch`, and `Target` from [`map_target`], plus the
+/// Sets `Os`, `Arch`, and `Target` from [`map_target`] (`Abi` follows
+/// `Target`, see [`crate::target::abi_from_target`]), plus the
 /// micro-architecture variant vars (`Arm`, `Arm64`, `Amd64`, `Mips`, `I386`),
 /// all reset every call so a prior target's value can never leak.
 ///
@@ -168,7 +155,7 @@ pub fn seed_target_vars_in(vars: &mut crate::template::TemplateVars, target: &st
 }
 
 /// Reset every micro-architecture variant template var (`Arm`, `Arm64`,
-/// `Amd64`, `Mips`, `I386`) to the empty string.
+/// `Amd64`, `Mips`, `I386`, `Ppc64`, `Riscv64`) to the empty string.
 ///
 /// The single reset behind [`seed_target_vars`] and [`seed_variant_vars`],
 /// also called directly by stages whose host-build (no-triple) paths must
@@ -180,11 +167,22 @@ pub fn reset_variant_vars(vars: &mut crate::template::TemplateVars) {
     vars.set("Amd64", "");
     vars.set("Mips", "");
     vars.set("I386", "");
+    vars.set("Ppc64", "");
+    vars.set("Riscv64", "");
 }
 
+/// The `Ppc64` level every 64-bit PowerPC build is seeded with: the toolchain
+/// baseline, so `targetVariant` renders nothing for it.
+pub const PPC64_BASELINE_VARIANT: &str = "power8";
+
+/// The `Riscv64` profile every 64-bit RISC-V build is seeded with: the
+/// toolchain baseline, so `targetVariant` renders nothing for it.
+pub const RISCV64_BASELINE_VARIANT: &str = "rva20u64";
+
 /// Seed the micro-architecture variant template vars (`Arm`, `Arm64`, `Amd64`,
-/// `Mips`, `I386`) from a target triple's first component — the build/installer
-/// naming policy, distinct from [`seed_target_vars`]'s archive-asset policy.
+/// `Mips`, `I386`, `Ppc64`, `Riscv64`) from a target triple's first component
+/// — the build/installer naming policy, distinct from [`seed_target_vars`]'s
+/// archive-asset policy.
 ///
 /// Where [`seed_target_vars`] arm-splits `Arch` for archive-asset names, this
 /// policy never touches `Arch`; it seeds each family's GoReleaser-default
@@ -193,7 +191,8 @@ pub fn reset_variant_vars(vars: &mut crate::template::TemplateVars) {
 /// name and in a makeself/AppImage filename for the same binary:
 /// `aarch64` → `Arm64="v8"`, `x86_64` → `Amd64=<variant>` (the binary's
 /// `amd64_variant` metadata, defaulting to the `"v1"` baseline when untagged),
-/// `i686` → `I386="sse2"`.
+/// `i686` → `I386="sse2"`, `powerpc64` / `powerpc64le` →
+/// `Ppc64="power8"`, `riscv64gc` → `Riscv64="rva20u64"`.
 ///
 /// `Arm` and `Mips` are NEVER seeded: every consumer of this policy carries
 /// the whole `map_target` arch token (`armv7`, `mips64el`, …) in `Arch`, so a
@@ -204,7 +203,7 @@ pub fn reset_variant_vars(vars: &mut crate::template::TemplateVars) {
 /// archive names, where the composite token instead splits into
 /// `Arch="arm"` + `Arm="7"`.
 ///
-/// All five vars are reset every call so a prior target's value cannot leak.
+/// All seven vars are reset every call so a prior target's value cannot leak.
 pub fn seed_variant_vars(
     vars: &mut crate::template::TemplateVars,
     target: &str,
@@ -215,8 +214,43 @@ pub fn seed_variant_vars(
         "aarch64" => vars.set("Arm64", "v8"),
         "x86_64" => vars.set("Amd64", amd64_variant.unwrap_or(AMD64_BASELINE_VARIANT)),
         "i686" | "i386" | "i586" => vars.set("I386", "sse2"),
+        "powerpc64" | "powerpc64le" | "ppc64" | "ppc64le" => {
+            vars.set("Ppc64", PPC64_BASELINE_VARIANT);
+        }
+        "riscv64" | "riscv64gc" => vars.set("Riscv64", RISCV64_BASELINE_VARIANT),
         _ => {}
     }
+}
+
+/// Seed the whole per-target scope of one built artifact under the
+/// build/installer naming policy: `Os`, the composite `Arch` token
+/// ([`map_target`]), `Target` (`Abi` follows it) and every variant var
+/// ([`seed_variant_vars`]).
+///
+/// The one spelling for a scope that renders a template per artifact — a
+/// signature name, an SBOM document, an upload URL, a publisher command — so
+/// `{{ targetVariant . }}` reads the same `v3_gnu` in each of them for the
+/// same binary. `amd64_variant` is the artifact's `amd64_variant` metadata.
+///
+/// An artifact with no target (a checksum file, a source archive, an SBOM of
+/// the whole release) clears the whole scope instead
+/// ([`crate::template::clear_per_target_vars`]): the variables are shared
+/// with every stage that ran before, so a scope that only skipped the seeding
+/// rendered the previous artifact's `Target` and `Abi` into this one's name.
+pub fn seed_artifact_target_vars(
+    vars: &mut crate::template::TemplateVars,
+    target: Option<&str>,
+    amd64_variant: Option<&str>,
+) {
+    let Some(target) = target else {
+        crate::template::clear_per_target_vars(vars);
+        return;
+    };
+    let (os, arch) = map_target(target);
+    vars.set("Os", &os);
+    vars.set("Arch", &arch);
+    vars.set("Target", target);
+    seed_variant_vars(vars, target, amd64_variant);
 }
 
 /// Seed the `Amd64` micro-architecture variant template var from a built
@@ -550,6 +584,43 @@ mod tests {
         assert_eq!(c.template_vars().get("Arm").unwrap(), "");
     }
 
+    /// `Abi` is seeded wherever the archive naming scope is: the stem render,
+    /// the derived asset name binstall and the install script read, and the
+    /// cloned scope a binary signature is named under.
+    #[test]
+    fn the_archive_naming_scope_carries_the_abi() {
+        const TEMPLATE: &str = "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}-{{ .Abi }}";
+        let mut c = ctx();
+        assert_eq!(
+            render_archive_stem(&mut c, TEMPLATE, "x86_64-unknown-linux-musl").unwrap(),
+            "anodizer-linux-amd64-musl"
+        );
+        assert_eq!(
+            render_archive_asset_name_with_variant(
+                &mut c,
+                TEMPLATE,
+                "x86_64-unknown-linux-gnu",
+                "tar.gz",
+                Some("v3"),
+            )
+            .unwrap(),
+            "anodizer-linux-amd64-gnu.tar.gz"
+        );
+        assert_eq!(
+            render_archive_asset_name(&mut c, TEMPLATE, "aarch64-apple-darwin", "tar.gz").unwrap(),
+            "anodizer-darwin-arm64-.tar.gz"
+        );
+        let mut vars = c.template_vars().clone();
+        seed_archive_name_vars(
+            &mut vars,
+            "x86_64-pc-windows-msvc",
+            "anodizer",
+            "anodizer",
+            None,
+        );
+        assert_eq!(vars.get("Abi").map(String::as_str), Some("msvc"));
+    }
+
     #[test]
     fn armv7_splits_arch_and_arm() {
         // The ARM split: Arch reduces to "arm", Arm carries the digit, so the
@@ -803,6 +874,33 @@ mod tests {
         seed_variant_vars(&mut v, "i686-unknown-linux-gnu", None);
         assert_eq!(v.get("I386").map(String::as_str), Some("sse2"));
         assert_eq!(v.get("Arm64").map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn variant_vars_seed_the_ppc64_and_riscv64_baselines_and_reset_them() {
+        use crate::template::TemplateVars;
+        let mut v = TemplateVars::new();
+        for target in [
+            "powerpc64-unknown-linux-gnu",
+            "powerpc64le-unknown-linux-gnu",
+        ] {
+            seed_variant_vars(&mut v, target, None);
+            assert_eq!(
+                v.get("Ppc64").map(String::as_str),
+                Some(PPC64_BASELINE_VARIANT),
+                "{target}"
+            );
+            assert_eq!(v.get("Riscv64").map(String::as_str), Some(""), "{target}");
+        }
+        seed_variant_vars(&mut v, "riscv64gc-unknown-linux-gnu", None);
+        assert_eq!(
+            v.get("Riscv64").map(String::as_str),
+            Some(RISCV64_BASELINE_VARIANT)
+        );
+        assert_eq!(v.get("Ppc64").map(String::as_str), Some(""));
+        seed_variant_vars(&mut v, "x86_64-unknown-linux-gnu", None);
+        assert_eq!(v.get("Riscv64").map(String::as_str), Some(""));
+        assert_eq!(v.get("Ppc64").map(String::as_str), Some(""));
     }
 
     #[test]

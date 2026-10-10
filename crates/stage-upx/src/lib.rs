@@ -305,6 +305,7 @@ impl Stage for UpxStage {
                 &matching_artifacts,
                 parallelism,
                 "upx",
+                "binary",
                 &log,
                 run_job,
             )?;

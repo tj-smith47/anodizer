@@ -28,6 +28,18 @@ pub(super) fn artifacts_to_platforms(
     artifacts: &[OsArtifact],
     default_binary_name: &str,
 ) -> Vec<KrewPlatform> {
+    artifacts_to_platforms_with(artifacts, default_binary_name, |a, _, _| a.url.clone())
+}
+
+/// [`artifacts_to_platforms`] with the download URL of each platform entry
+/// computed by `url`, which is handed the source artifact and the entry's
+/// krew `os` and `arch` — an `all` artifact yields two entries, and each asks
+/// for its own URL.
+pub(super) fn artifacts_to_platforms_with(
+    artifacts: &[OsArtifact],
+    default_binary_name: &str,
+    url: impl Fn(&OsArtifact, &str, &str) -> String,
+) -> Vec<KrewPlatform> {
     fn resolve_bin(a: &OsArtifact, default: &str, target_os: &str) -> String {
         let base = a.binary.clone().unwrap_or_else(|| default.to_string());
         if target_os == "windows" && !base.to_ascii_lowercase().ends_with(".exe") {
@@ -48,7 +60,7 @@ pub(super) fn artifacts_to_platforms(
                 platforms.push(KrewPlatform {
                     os: os.clone(),
                     arch: expanded_arch.to_string(),
-                    url: a.url.clone(),
+                    url: url(a, &os, expanded_arch),
                     sha256: a.sha256.clone(),
                     bin: bin.clone(),
                     files: files.clone(),
@@ -57,7 +69,7 @@ pub(super) fn artifacts_to_platforms(
         } else {
             platforms.push(KrewPlatform {
                 arch: krew_arch(&a.arch).to_string(),
-                url: a.url.clone(),
+                url: url(a, &os, krew_arch(&a.arch)),
                 sha256: a.sha256.clone(),
                 bin: bin.clone(),
                 files: files.clone(),
@@ -456,16 +468,17 @@ pub(crate) fn render_krew_manifest_for_crate(
             empty.arch,
         );
     }
-    let platforms = {
-        let mut plats = artifacts_to_platforms(&all_artifacts, crate_name);
-        if let Some(tmpl) = url_template {
-            for p in &mut plats {
-                p.url = util::render_url_template_with_ctx(
-                    ctx, tmpl, crate_name, &version, &p.arch, &p.os,
-                );
-            }
-        }
-        plats
+    let platforms = match url_template {
+        Some(tmpl) => artifacts_to_platforms_with(&all_artifacts, crate_name, |a, os, arch| {
+            util::render_url_template_with_ctx(
+                ctx,
+                tmpl,
+                crate_name,
+                &version,
+                util::UrlTarget::of_os_artifact(a, os, arch),
+            )
+        }),
+        None => artifacts_to_platforms(&all_artifacts, crate_name),
     };
 
     // Resolve the plugin name (honoring the `krew.name` override) so the

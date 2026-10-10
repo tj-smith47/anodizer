@@ -128,7 +128,7 @@ impl Stage for NfpmStage {
         clear_nfpm_template_vars(ctx);
 
         if !jobs.is_empty() {
-            let results = execute_nfpm_jobs(&jobs, parallelism, log.verbosity())?;
+            let results = execute_nfpm_jobs(&jobs, parallelism, &log)?;
             new_artifacts.extend(results);
         }
 
@@ -285,19 +285,6 @@ fn process_nfpm_format(
     let pkg_name: &str = pkg_name_owned.as_str();
     let ext = format_extension(format);
 
-    // Seed `Amd64` BEFORE rendering so a config field referencing `{{ .Amd64 }}`
-    // (description/maintainer/conflicts/…) AND the `file_name_template` both see
-    // this group's micro-arch variant. The conventional default filename
-    // deliberately omits the variant (deb/rpm/apk require a bare `amd64` arch
-    // field); the guard below is what stops two variants from colliding under
-    // that default. `None` on an amd64 binary seeds the unified `v1` baseline
-    // (same value every seeding policy gives an untagged x86_64 binary).
-    anodizer_core::archive_name::seed_amd64_variant_var(
-        ctx.template_vars_mut(),
-        base_arch,
-        amd64_variant,
-    );
-
     let yaml_content = render_and_generate_nfpm_yaml(
         ctx,
         nfpm_cfg,
@@ -333,6 +320,7 @@ fn process_nfpm_format(
         &os,
         &arch,
         target.as_deref(),
+        amd64_variant,
         format,
         pkg_name,
         ext,

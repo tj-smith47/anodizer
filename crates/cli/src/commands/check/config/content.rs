@@ -434,3 +434,42 @@ pub(super) fn check_blob_configs(config: &Config, errors: &mut Vec<String>) {
         }
     }
 }
+
+/// Report every `targetVariant` call that passes something other than the
+/// template context, wherever in the config it is written.
+///
+/// The call takes the context (`{{ targetVariant . }}`, or `$` inside a
+/// `with` / `range` block) and nothing else; any other argument fails the
+/// render of that field in the stage that reads it, which for a publisher is
+/// after the release exists. Every string of the config is asked, so a field
+/// added later is covered without being listed here.
+pub(super) fn check_target_variant_calls(config: &Config, errors: &mut Vec<String>) {
+    fn walk(value: &serde_json::Value, path: &str, errors: &mut Vec<String>) {
+        match value {
+            serde_json::Value::String(text) => {
+                if let Err(e) = anodizer_core::template::check_target_variant_calls(text) {
+                    errors.push(format!("{path}: {e}"));
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    walk(item, &format!("{path}[{index}]"), errors);
+                }
+            }
+            serde_json::Value::Object(fields) => {
+                for (key, field) in fields {
+                    let child = if path.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{path}.{key}")
+                    };
+                    walk(field, &child, errors);
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Ok(value) = serde_json::to_value(config) {
+        walk(&value, "", errors);
+    }
+}

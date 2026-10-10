@@ -73,7 +73,8 @@ pub(crate) use poll::run_post_publish_pollers;
 pub(crate) use poll::{PollCandidate, poll_eligibility};
 pub(crate) use report::existing_run_report_path;
 pub use report::{
-    derive_run_id, load_prior_report, report_path_for, run_dir, write_report_to_run_dir,
+    NO_GIT_RUN_ID, derive_run_id, load_prior_report, report_path_for, run_dir,
+    write_report_to_run_dir,
 };
 
 /// Collect crate names that match the selection filter and have a specific

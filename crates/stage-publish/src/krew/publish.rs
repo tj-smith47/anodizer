@@ -216,6 +216,14 @@ pub fn publish_to_krew(
     let commit_opts = util::resolve_commit_opts(ctx, krew_cfg.commit_author.as_ref(), log)?;
     // Always create a versioned branch for Krew PRs.
     let branch = Some(branch_name.as_str());
+    // Rendered before the push: a template error here must not come
+    // after a branch already reached the fork.
+    let update_existing_pr = match krew_cfg.update_existing_pr.as_ref() {
+        Some(v) => v
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+            .context("krew: render update_existing_pr condition")?,
+        None => false,
+    };
     let push_outcome = util::commit_and_push_with_opts(
         repo_path,
         &["."],
@@ -226,7 +234,7 @@ pub fn publish_to_krew(
         log,
     )?;
     let pushed = match push_outcome {
-        util::CommitOutcome::Pushed => {
+        util::CommitOutcome::Pushed { .. } => {
             log.status(&format!(
                 "Krew manifest pushed to {}/{} branch '{}'",
                 repo_owner, repo_name, branch_name
@@ -252,13 +260,6 @@ pub fn publish_to_krew(
         .and_then(|r| r.pull_request.as_ref())
         .and_then(|pr| pr.enabled)
         .unwrap_or(false);
-
-    let update_existing_pr = match krew_cfg.update_existing_pr.as_ref() {
-        Some(v) => v
-            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-            .context("krew: render update_existing_pr condition")?,
-        None => false,
-    };
 
     // Clone the repository config so the PR submission helpers no
     // longer borrow from `ctx.config` (via `krew_cfg`). NLL then

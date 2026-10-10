@@ -344,8 +344,7 @@ pub(super) fn collect_archive_entries(
                         tmpl,
                         a.name(),
                         version,
-                        &arch,
-                        &os,
+                        crate::util::UrlTarget::of(a, &os, &arch),
                     )
                 } else {
                     a.metadata

@@ -11,6 +11,7 @@
 //   `{{ slice Commit 0 7 }}` → `{{ Commit | slice(start=0, end=7) }}`
 //   `{{ printf "%04d" Patch }}` → `{{ printf(format="%04d", args=[Patch]) }}`
 //   `{{ .Now.Format "2006-01-02" }}` → `{{ Now | now_format(format="2006-01-02") }}`
+//   `{{ targetVariant . }}` → `{{ targetVariant() }}`
 //   `{{ list.0 }}` → `{{ list[0] }}`
 
 use anyhow::{Result, bail};
@@ -34,6 +35,7 @@ pub(crate) use blocks::{raw_span_at, raw_spans};
 use builtins::{preprocess_go_builtins, preprocess_list_subexpr};
 use dots_dollars::{preprocess_strip_dots, rewrite_numeric_index_segments};
 use go_blocks::{extract_block_parts, preprocess_go_blocks};
+pub use methods::check_target_variant_calls;
 use methods::preprocess_method_calls;
 use positional::{preprocess_map_syntax, preprocess_positional_syntax};
 pub(crate) use shell_guard::{protect_shell_param_length, restore_shell_param_length};
@@ -134,7 +136,8 @@ fn quote_block(block: &str) -> String {
 /// Pass 2c: rewrite Go-style `map "k1" "v1" ...` variadic positional to
 ///          `map(pairs=["k1", "v1", ...])` named-arg syntax.
 /// Pass 3: convert positional function syntax to named-arg syntax.
-/// Pass 4: rewrite Go-style `.Now.Format "..."` method calls to Tera filter syntax.
+/// Pass 4: rewrite Go-style `.Now.Format "..."` method calls to Tera filter syntax,
+///         and `targetVariant .` to `targetVariant()`.
 /// Pass 5: rewrite tera 1.x numeric path segments (`list.0`) to tera 2.0
 ///         index syntax (`list[0]`).
 pub fn preprocess(template: &str) -> String {

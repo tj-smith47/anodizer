@@ -217,7 +217,7 @@ pub(crate) fn render_and_generate_nfpm_yaml(
     skip_sign: bool,
     dry_run: bool,
 ) -> Result<String> {
-    set_nfpm_per_target_template_vars(ctx, os, arch, target);
+    set_nfpm_per_target_template_vars(ctx, os, arch, target, amd64_variant);
 
     let mut rendered_cfg =
         render_nfpm_config_fields(nfpm_cfg, &ctx.config, ctx.template_vars(), crate_name)?;

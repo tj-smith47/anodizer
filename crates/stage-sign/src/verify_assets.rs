@@ -269,7 +269,7 @@ pub fn verify_signature_assets(
             if !anodizer_core::artifact::matches_id_filter(artifact, release_ids) {
                 continue;
             }
-            match expected_output_paths(cfg, &artifact.path, &artifact.metadata, ctx) {
+            match expected_output_paths(cfg, artifact, ctx, false) {
                 Ok((sig, cert)) => pairs.push((artifact.path.clone(), sig, cert)),
                 Err(e) => {
                     skip_config(&format!("could not derive signature paths: {e:#}"));

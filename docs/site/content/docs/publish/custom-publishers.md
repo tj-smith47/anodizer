@@ -20,6 +20,19 @@ publishers:
     args: ["{{ ArtifactPath }}", "{{ Version }}"]
 ```
 
+`cmd` and `args` render once per artifact, with that artifact's
+`Os`, `Arch`, `Target` and `Abi` in scope. `{{ targetVariant . }}` is the
+[target variant](@/docs/general/templates.md#target-variant) of the artifact:
+its micro-architecture level when that is not the baseline, then its ABI.
+
+```yaml
+publishers:
+  - name: upload-binaries
+    cmd: ./scripts/upload.sh
+    artifact_types: [binary]
+    args: ["{{ ArtifactPath }}", "{{ Os }}_{{ Arch }}{{ targetVariant . }}"]   # linux_amd64_gnu, linux_amd64_musl, linux_amd64v3_gnu
+```
+
 ## Full config reference
 
 ```yaml

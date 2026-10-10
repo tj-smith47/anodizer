@@ -23,6 +23,47 @@ fn failing_job(dir: &tempfile::TempDir, msg: &str) -> NfpmJob {
     }
 }
 
+#[cfg(unix)]
+fn quiet_log() -> anodizer_core::log::StageLogger {
+    anodizer_core::log::StageLogger::new("nfpm", anodizer_core::log::Verbosity::Quiet)
+}
+
+/// An nfpm argument can repeat a value the job's own env carries, and the
+/// verbose `running …` echo prints the whole argv: the echo is masked against
+/// that env and the failure never carries the value.
+#[test]
+#[cfg(unix)]
+fn the_nfpm_echo_masks_a_job_env_value_repeated_in_the_argv() {
+    let secret = "hunter2-nfpm-argv-secret";
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut job = failing_job(&dir, "packaging failed");
+    job.cmd_args.push(format!("--passphrase={secret}"));
+    job.extra_env
+        .push(("NFPM_MSIX_PASSPHRASE".to_string(), secret.to_string()));
+
+    let (log, capture) = anodizer_core::log::StageLogger::with_capture(
+        "nfpm",
+        anodizer_core::log::Verbosity::Verbose,
+    );
+    let err = execute_nfpm_jobs(&[job], 1, &log).expect_err("stub exits 1");
+    let text = format!("{err:#}");
+    assert!(
+        !text.contains(secret),
+        "the value leaked into the error: {text}"
+    );
+    let logged: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+    assert!(
+        logged
+            .iter()
+            .any(|m| m.starts_with("running ") && m.contains("--passphrase=$NFPM_MSIX_PASSPHRASE")),
+        "the argv echo must be captured with the value masked: {logged:?}"
+    );
+    assert!(
+        !logged.iter().any(|m| m.contains(secret)),
+        "the job env value leaked into the log: {logged:?}"
+    );
+}
+
 /// The version-floor hint fires only on the unregistered-packager
 /// signature an old nfpm emits — not on other msix failures.
 #[test]
@@ -30,16 +71,14 @@ fn failing_job(dir: &tempfile::TempDir, msg: &str) -> NfpmJob {
 fn msix_version_floor_hint_scoped_to_unregistered_packager() {
     let dir = tempfile::TempDir::new().unwrap();
     let job = failing_job(&dir, "no packager registered for the format msix");
-    let err = execute_nfpm_jobs(&[job], 1, anodizer_core::log::Verbosity::Quiet)
-        .expect_err("stub exits 1");
+    let err = execute_nfpm_jobs(&[job], 1, &quiet_log()).expect_err("stub exits 1");
     assert!(
         format!("{err:#}").contains("requires nfpm >= 2.46.0"),
         "hint must fire on the unregistered-packager signature: {err:#}"
     );
 
     let job = failing_job(&dir, "package msix.applications must be provided");
-    let err = execute_nfpm_jobs(&[job], 1, anodizer_core::log::Verbosity::Quiet)
-        .expect_err("stub exits 1");
+    let err = execute_nfpm_jobs(&[job], 1, &quiet_log()).expect_err("stub exits 1");
     assert!(
         !format!("{err:#}").contains("requires nfpm >= 2.46.0"),
         "hint must NOT fire on a config-validation failure: {err:#}"

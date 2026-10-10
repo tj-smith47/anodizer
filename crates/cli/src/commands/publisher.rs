@@ -218,12 +218,29 @@ pub fn run_publishers(
             if shell_args.is_empty() {
                 anyhow::bail!("publisher {:?}: command is empty", label);
             }
-            log.status(&run_line(
-                label,
-                &artifact.path.display().to_string(),
-                &full_cmd,
-                dry_run,
-            ));
+            // Rendered ahead of the run line: a secret written in `env:` can
+            // be repeated by a rendered argument, and the line prints the
+            // whole command.
+            // A dry run spawns nothing and renders the env only for that
+            // mask, so an entry that does not render there (a variable the
+            // dry-run machine does not hold) is left out instead of failing.
+            let env_list = publisher.env.as_deref().unwrap_or(&[]);
+            let render_value = |v: &str| template::render(v, base_vars);
+            let rendered_env = if dry_run {
+                anodizer_core::config::render_env_entries_that_render(env_list, render_value)
+            } else {
+                anodizer_core::config::render_env_entries(env_list, render_value)
+                    .with_context(|| "publisher env: parse and render entries")?
+            };
+            log.status(
+                &log.with_job_env(rendered_env.iter().cloned())
+                    .redact(&run_line(
+                        label,
+                        &artifact.path.display().to_string(),
+                        &full_cmd,
+                        dry_run,
+                    )),
+            );
             if !dry_run {
                 let mut cmd = anodizer_core::user_command::whitelisted(&shell_args)?;
 
@@ -233,14 +250,8 @@ pub fn run_publishers(
                     cmd.current_dir(rendered_dir);
                 }
 
-                if let Some(ref env_list) = publisher.env {
-                    let rendered = anodizer_core::config::render_env_entries(env_list, |v| {
-                        template::render(v, base_vars)
-                    })
-                    .with_context(|| "publisher env: parse and render entries")?;
-                    for (k, v) in &rendered {
-                        cmd.env(k, v);
-                    }
+                for (k, v) in &rendered_env {
+                    cmd.env(k, v);
                 }
 
                 let log = &log.with_child_env(&cmd);
@@ -403,16 +414,11 @@ pub fn build_publisher_command(
 
     // Expose per-artifact Os, Arch, and Target template variables
     // (custom publishers can reference {{ .Os }}, {{ .Arch }}, {{ .Target }})
-    if let Some(ref target) = artifact.target {
-        let (os, arch) = anodizer_core::target::map_target(target);
-        vars.set("Os", &os);
-        vars.set("Arch", &arch);
-        vars.set("Target", target);
-    } else {
-        vars.set("Os", "");
-        vars.set("Arch", "");
-        vars.set("Target", "");
-    }
+    anodizer_core::archive_name::seed_artifact_target_vars(
+        &mut vars,
+        artifact.target.as_deref(),
+        artifact.metadata.get("amd64_variant").map(String::as_str),
+    );
 
     // Also expose artifact metadata entries as template vars under the same key
     for (k, v) in &artifact.metadata {
@@ -824,6 +830,111 @@ mod tests {
             result.is_ok(),
             "dry-run should not execute commands: {:?}",
             result.err()
+        );
+    }
+
+    /// An argument can repeat a value the publisher's `env:` carries, and
+    /// the run line prints the whole command: live and dry-run alike, the
+    /// line is masked against that env and the command still receives the
+    /// value.
+    #[cfg(unix)]
+    #[test]
+    fn the_publisher_run_line_masks_an_env_value_repeated_in_the_argv() {
+        let secret = "hunter2-publisher-argv-secret";
+        for dry_run in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let seen = tmp.path().join("seen");
+            let publishers = vec![PublisherConfig {
+                name: Some("upload".to_string()),
+                cmd: format!(
+                    "sh -c 'printf %s \"$1\" > {}' sh --token={secret}",
+                    seen.display()
+                ),
+                env: Some(vec![format!("UPLOAD_TOKEN={secret}")]),
+                ..Default::default()
+            }];
+            let artifacts = vec![make_artifact(
+                ArtifactKind::Archive,
+                "/dist/myapp.tar.gz",
+                None,
+            )];
+            let (log, capture) =
+                StageLogger::with_capture("publisher", anodizer_core::log::Verbosity::Verbose);
+            run_publishers(
+                &publishers,
+                &artifacts,
+                &base_vars(),
+                dry_run,
+                &log,
+                1,
+                None,
+            )
+            .expect("publisher runs");
+
+            if !dry_run {
+                assert_eq!(
+                    std::fs::read_to_string(&seen).unwrap(),
+                    format!("--token={secret}"),
+                    "the command itself still receives the value"
+                );
+            }
+            let logged: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+            assert!(
+                logged
+                    .iter()
+                    .any(|m| m.contains("publisher upload") && m.contains("--token=$UPLOAD_TOKEN")),
+                "dry_run={dry_run}: the run line must be captured with the value masked: \
+                 {logged:?}"
+            );
+            assert!(
+                !logged.iter().any(|m| m.contains(secret)),
+                "dry_run={dry_run}: the publisher env value leaked into the log: {logged:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dry_run_drops_an_env_entry_that_does_not_render_and_a_live_run_fails_on_it() {
+        let secret = "hunter2-publisher-dry-secret";
+        let publishers = vec![PublisherConfig {
+            name: Some("upload".to_string()),
+            cmd: format!("true --token={secret}"),
+            env: Some(vec![
+                "ABSENT_TOKEN={{ NeverSetPublisherVariable }}".to_string(),
+                format!("UPLOAD_TOKEN={secret}"),
+            ]),
+            ..Default::default()
+        }];
+        let artifacts = vec![make_artifact(
+            ArtifactKind::Archive,
+            "/dist/myapp.tar.gz",
+            None,
+        )];
+
+        let (log, capture) =
+            StageLogger::with_capture("publisher", anodizer_core::log::Verbosity::Verbose);
+        run_publishers(&publishers, &artifacts, &base_vars(), true, &log, 1, None)
+            .expect("a dry run does not fail on an env entry it would never use");
+        let logged: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+        assert!(
+            logged.iter().any(|m| m.contains("--token=$UPLOAD_TOKEN")),
+            "the entry that renders still masks the dry-run line: {logged:?}"
+        );
+        assert!(!logged.iter().any(|m| m.contains(secret)), "{logged:?}");
+
+        let err = run_publishers(
+            &publishers,
+            &artifacts,
+            &base_vars(),
+            false,
+            &test_logger(),
+            1,
+            None,
+        )
+        .expect_err("a live run needs every env entry");
+        assert!(
+            format!("{err:#}").contains("render env value for 'ABSENT_TOKEN'"),
+            "{err:#}"
         );
     }
 
@@ -1497,6 +1608,55 @@ crates:
         assert_eq!(
             format_command_line("curl", &["-T".to_string(), "f".to_string()]),
             "curl -T f"
+        );
+    }
+
+    /// A publisher command renders the artifact's own target variant: its
+    /// ABI, and its amd64 level when that is not the baseline.
+    #[test]
+    fn the_publisher_command_renders_the_artifacts_target_variant() {
+        let vars = base_vars();
+        for (target, level, variant) in [
+            ("x86_64-unknown-linux-gnu", None, "linux_amd64_gnu"),
+            ("x86_64-unknown-linux-musl", None, "linux_amd64_musl"),
+            ("x86_64-unknown-linux-gnu", Some("v3"), "linux_amd64v3_gnu"),
+        ] {
+            let mut artifact = make_artifact(ArtifactKind::Binary, "/dist/myapp", None);
+            artifact.target = Some(target.to_string());
+            if let Some(level) = level {
+                artifact
+                    .metadata
+                    .insert("amd64_variant".to_string(), level.to_string());
+            }
+            let (cmd, args) = build_publisher_command(
+                "upload {{ Os }}_{{ Arch }}{{ targetVariant . }}",
+                Some(&["{{ Arch }}{{ targetVariant . }}".to_string()]),
+                &artifact,
+                &vars,
+            )
+            .unwrap();
+            assert_eq!(cmd, format!("upload {variant}"));
+            assert_eq!(args, vec![variant.trim_start_matches("linux_").to_string()]);
+        }
+
+        let mut untargeted = make_artifact(ArtifactKind::Checksum, "/dist/checksums.txt", None);
+        untargeted.target = None;
+        let mut stale = vars.clone();
+        anodizer_core::archive_name::seed_artifact_target_vars(
+            &mut stale,
+            Some("x86_64-unknown-linux-musl"),
+            Some("v3"),
+        );
+        let (cmd, _) = build_publisher_command(
+            "upload [{{ Os }}{{ targetVariant . }}]",
+            None,
+            &untargeted,
+            &stale,
+        )
+        .unwrap();
+        assert_eq!(
+            cmd, "upload []",
+            "an artifact with no target carries none over"
         );
     }
 }

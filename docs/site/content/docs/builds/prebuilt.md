@@ -68,6 +68,7 @@ globals like `{{ Version }}` and `{{ ProjectName }}`):
 | Variable | Example | Notes |
 |---|---|---|
 | `{{ Target }}` | `x86_64-unknown-linux-gnu` | Full Rust target triple. |
+| `{{ Abi }}` | `gnu` | ABI component of the triple (`gnu`, `musl`, `msvc`, `gnueabihf`); empty for a triple that names none, such as `aarch64-apple-darwin`. Example: `path: "output/{{ Os }}_{{ Arch }}_{{ Abi }}/myapp"`. |
 | `{{ Os }}` | `linux` | GoReleaser-style OS slug (`linux`, `darwin`, `windows`, …). |
 | `{{ Arch }}` | `amd64` | GoReleaser-style arch slug (`amd64`, `arm64`, `armv7`, …). |
 | `{{ Amd64 }}` | `v1` | AMD64 micro-arch variant; set for `x86_64-*` triples. Imports default to the `v1` baseline; declare `amd64_variant: "v3"` on the build entry when importing a tuned binary so its metadata and asset names carry the real level. |

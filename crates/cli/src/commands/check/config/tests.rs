@@ -2872,7 +2872,7 @@ fn message_literals(src: &str) -> Vec<String> {
 /// How many function bodies under `check/config/` build a message. Pinned
 /// so a rename or a move that empties the walk fails instead of passing
 /// with nothing to ask.
-const MESSAGE_BUILDING_BODIES: usize = 31;
+const MESSAGE_BUILDING_BODIES: usize = 33;
 
 #[test]
 fn no_check_config_message_carries_a_run_of_spaces() {
@@ -3810,5 +3810,46 @@ fn the_membership_errors_quoted_in_the_docs_are_what_the_guard_produces() {
         resilience.len(),
         5,
         "the errors the release-resilience page quotes"
+    );
+}
+
+/// A `targetVariant` call with the wrong argument is reported at check time,
+/// under the path of the field that holds it, with the spelling that works.
+#[test]
+fn a_target_variant_call_with_the_wrong_argument_is_an_error() {
+    use anodizer_core::config::SbomConfig;
+    let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+    config.sboms = vec![SbomConfig {
+        documents: Some(vec![
+            "{{ .Binary }}{{ targetVariant . }}.sbom.json".to_string(),
+            "{{ targetVariant .Env }}.json".to_string(),
+            "{{ targetVariant \"x\" }}.json".to_string(),
+            "{{ targetVariant .Abi }}.json".to_string(),
+            "{{ targetVariant(x=1) }}.json".to_string(),
+            "{{ with .Os }}{{ targetVariant . }}{{ end }}.json".to_string(),
+            "{{ with .Os }}{{ targetVariant $ }}{{ end }}.json".to_string(),
+        ]),
+        ..Default::default()
+    }];
+    let mut errors: Vec<String> = vec![];
+    check_target_variant_calls(&config, &mut errors);
+    assert_eq!(
+        errors,
+        vec![
+            "sboms[0].documents[1]: targetVariant: expected the template context, got `.Env`: \
+             use it as '{{ targetVariant . }}'",
+            "sboms[0].documents[2]: targetVariant: expected the template context, got `\"x\"`: \
+             use it as '{{ targetVariant . }}'",
+            "sboms[0].documents[3]: targetVariant: expected the template context, got `.Abi`: \
+             use it as '{{ targetVariant . }}'",
+            "sboms[0].documents[4]: targetVariant: expected the template context, got `(x=1)`: \
+             use it as '{{ targetVariant . }}'",
+            "sboms[0].documents[5]: targetVariant: expected the template context, got the `.` \
+             that `{{ with .Os }}` rebinds: use it as '{{ targetVariant $ }}'",
+        ]
+    );
+    assert!(
+        run_checks(&config, false, &test_logger(), std::path::Path::new(".")).is_err(),
+        "the check is part of the pass and fails it"
     );
 }

@@ -1685,6 +1685,115 @@ fn test_docker_sign_stdin_is_template_rendered() {
     );
 }
 
+/// The dry-run lines a stage logged, once the echo opening with `(dry-run)
+/// would run:` is known to carry `masked` and no line carries `secret`.
+fn assert_dry_run_echo_masked(
+    capture: &anodizer_core::log::LogCapture,
+    masked: &str,
+    secret: &str,
+) {
+    let logged: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+    assert!(
+        logged
+            .iter()
+            .any(|m| m.starts_with("(dry-run) would run:") && m.contains(masked)),
+        "the dry-run echo must be captured carrying {masked:?}: {logged:?}"
+    );
+    assert!(
+        !logged.iter().any(|m| m.contains(secret)),
+        "the config env value leaked into the log: {logged:?}"
+    );
+}
+
+/// A sign argument can repeat a value the config's `env:` carries, and the
+/// dry-run line prints the whole command it would run.
+#[test]
+fn the_sign_dry_run_echo_masks_an_env_value_repeated_in_the_argv() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+
+    let secret = "hunter2-sign-argv-secret";
+    let mut ctx = TestContextBuilder::new()
+        .dry_run(true)
+        .signs(vec![SignConfig {
+            id: Some("gpg".to_string()),
+            cmd: Some("/nonexistent/gpg".to_string()),
+            args: Some(vec![
+                format!("--passphrase={secret}"),
+                "--detach-sign".to_string(),
+                "{{ .Artifact }}".to_string(),
+            ]),
+            artifacts: Some("checksum".to_string()),
+            // The unrenderable entry is dropped by a dry run, which spawns
+            // nothing and renders the env only for the mask.
+            env: Some(vec![
+                "ABSENT={{ NeverSetSignVariable }}".to_string(),
+                format!("GPG_PASSPHRASE={secret}"),
+            ]),
+            ..Default::default()
+        }])
+        .build();
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Checksum,
+        name: String::new(),
+        path: std::path::PathBuf::from("/tmp/checksums.sha256"),
+        target: None,
+        crate_name: "test".to_string(),
+        metadata: Default::default(),
+        size: None,
+    });
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+
+    SignStage.run(&mut ctx).expect("a dry run signs nothing");
+
+    assert_dry_run_echo_masked(&capture, "--passphrase=$GPG_PASSPHRASE", secret);
+}
+
+/// The `docker_signs:` sibling: the dry-run line of an image sign is masked
+/// against that config's rendered `env:`.
+#[test]
+fn the_docker_sign_dry_run_echo_masks_an_env_value_repeated_in_the_argv() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::DockerSignConfig;
+
+    let secret = "hunter2-docker-sign-argv-secret";
+    let mut ctx = TestContextBuilder::new().dry_run(true).build();
+    ctx.config.docker_signs = Some(vec![DockerSignConfig {
+        cmd: Some("/nonexistent/cosign".to_string()),
+        args: Some(vec![
+            "sign".to_string(),
+            format!("--registry-password={secret}"),
+            "{{ .Artifact }}".to_string(),
+        ]),
+        artifacts: Some("all".to_string()),
+        env: Some(vec![
+            "ABSENT={{ NeverSetSignVariable }}".to_string(),
+            format!("COSIGN_PASSWORD={secret}"),
+        ]),
+        ..Default::default()
+    }]);
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::DockerImage,
+        name: String::new(),
+        path: std::path::PathBuf::from("ghcr.io/myorg/app:latest"),
+        target: None,
+        crate_name: "test".to_string(),
+        metadata: std::collections::HashMap::from([(
+            "digest".to_string(),
+            "sha256:abc123def456".to_string(),
+        )]),
+        size: None,
+    });
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+
+    DockerSignStage
+        .run(&mut ctx)
+        .expect("a dry run signs nothing");
+
+    assert_dry_run_echo_masked(&capture, "--registry-password=$COSIGN_PASSWORD", secret);
+}
+
 #[test]
 fn test_docker_sign_ids_filter() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
@@ -3362,7 +3471,7 @@ fn test_binary_signature_no_duplicate_suffix_has_dot_sig() {
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp_linux_amd64",
-        &ctx,
+        ctx.template_vars(),
         SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
     )
     .unwrap();
@@ -3426,7 +3535,7 @@ fn test_binary_signs_signature_default_adds_dot_sig() {
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp_linux_amd64",
-        &ctx,
+        ctx.template_vars(),
         SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
     )
     .unwrap();
@@ -3465,7 +3574,7 @@ fn test_binary_signs_signature_arm_artifact_gets_dot_sig() {
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp_linux_armv6",
-        &ctx,
+        ctx.template_vars(),
         SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
     )
     .unwrap();
@@ -3504,7 +3613,7 @@ fn test_binary_signs_signature_amd64v2_artifact_gets_dot_sig() {
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp_linux_amd64v2",
-        &ctx,
+        ctx.template_vars(),
         SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
     )
     .unwrap();
@@ -3536,7 +3645,7 @@ fn test_normal_signs_uses_simple_default() {
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp.tar.gz",
-        &ctx,
+        ctx.template_vars(),
         SignConfig::DEFAULT_SIGNATURE_TEMPLATE,
     )
     .unwrap();
@@ -3867,6 +3976,70 @@ fn test_binary_signs_amd64_variant_metadata_renders_in_signature_template() {
             "signature name must render the binary's amd64_variant \
              (expected suffix '{expected}'): got '{}'",
             sigs[0].name
+        );
+    }
+}
+
+/// A `signature:` template reads the binary's own `Target` and `Abi`: the
+/// sign scope seeds the triple beside `Os` and `Arch`, so a gnu and a musl
+/// build render two suffixes and a target naming no ABI renders none.
+#[test]
+fn test_binary_signs_abi_renders_in_signature_template() {
+    use anodizer_core::artifact::Artifact;
+
+    for (target, expected) in [
+        ("x86_64-unknown-linux-gnu", ".amd64_gnu.sig"),
+        ("x86_64-unknown-linux-musl", ".amd64_musl.sig"),
+        ("x86_64-pc-windows-msvc", ".amd64_msvc.sig"),
+        ("armv7-unknown-linux-gnueabihf", ".armv7_gnueabihf.sig"),
+        ("aarch64-apple-darwin", ".arm64.sig"),
+    ] {
+        let binary_sign_cfg = SignConfig {
+            artifacts: Some("binary".to_string()),
+            cmd: Some("true".to_string()),
+            args: Some(vec![]),
+            signature: Some(
+                "{{ .Artifact }}.{{ Arch }}{% if Abi %}_{{ .Abi }}{% endif %}.sig".to_string(),
+            ),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .binary_signs(vec![binary_sign_cfg])
+            .dry_run(true)
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "myapp".to_string(),
+            path: std::path::PathBuf::from("/dist/myapp"),
+            target: Some(target.to_string()),
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let log = ctx.logger("binary-sign");
+        let binary_sign_configs = ctx.config.binary_signs.clone();
+        process_sign_configs(
+            &binary_sign_configs,
+            &mut ctx,
+            &log,
+            ArtifactFilter::BinaryOnly,
+            "binary-sign",
+        )
+        .unwrap();
+
+        let sigs: Vec<_> = ctx.artifacts.by_kind(ArtifactKind::Signature);
+        assert_eq!(sigs.len(), 1);
+        assert!(
+            sigs[0].name.ends_with(expected),
+            "{target}: expected suffix '{expected}', got '{}'",
+            sigs[0].name
+        );
+        assert_eq!(
+            ctx.template_vars().get("Abi").map(String::as_str),
+            Some(""),
+            "the sign scope must not leak its last target's ABI"
         );
     }
 }
@@ -4335,6 +4508,7 @@ fn cosign_signature_byte_stable_for_same_sde() {
 }
 
 #[test]
+#[serial_test::serial(path_env)]
 fn gpg_signature_byte_stable_for_same_sde() {
     use std::process::Command;
 
@@ -4438,6 +4612,7 @@ fn gpg_checksum_config(gnupg_home: &str) -> SignConfig {
 }
 
 #[test]
+#[serial_test::serial(path_env)]
 fn resign_combined_checksums_refreshes_stale_signature() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use std::process::Command;
@@ -4508,6 +4683,7 @@ fn resign_combined_checksums_refreshes_stale_signature() {
 }
 
 #[test]
+#[serial_test::serial(path_env)]
 fn resign_combined_checksums_covers_every_crate() {
     // per-crate layout: each crate owns a `<crate>_checksums.txt`. A refresh
     // rewrites all of them, so the re-sign must refresh EVERY crate's
@@ -7033,6 +7209,68 @@ mod cosign_tuf_race {
         );
     }
 
+    /// The retry lines name the artifact being signed. Its path is rendered,
+    /// so it can repeat a value the job's `env:` carries, and those lines
+    /// print at default verbosity.
+    #[test]
+    fn the_sign_retry_lines_mask_an_env_value_repeated_in_the_artifact_path() {
+        let secret = "hunter2-sign-retry-secret";
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_script(
+            tmp.path(),
+            "cosign",
+            concat!(
+                "#!/bin/sh\n",
+                "n=$(cat \"$STUB_STATE/attempts\" 2>/dev/null || echo 0)\n",
+                "n=$((n+1))\n",
+                "echo \"$n\" > \"$STUB_STATE/attempts\"\n",
+                "if [ \"$n\" -lt 2 ]; then\n",
+                "  echo \"creating cached local store: resource temporarily unavailable\" >&2\n",
+                "  exit 1\n",
+                "fi\n",
+                "printf sig > \"$3\"\n",
+                "exit 0\n",
+            ),
+        );
+
+        let mut signs = stub_signs(&stub, &state);
+        signs[0]
+            .env
+            .as_mut()
+            .unwrap()
+            .push(format!("UPLOAD_TOKEN={secret}"));
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .signs(signs)
+            .sealed_env()
+            .build();
+        let dir = tmp.path().join(secret);
+        std::fs::create_dir(&dir).unwrap();
+        add_archives(&mut ctx, &dir, 1);
+        let capture = anodizer_core::log::LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+
+        SignStage
+            .run(&mut ctx)
+            .expect("a transient cosign failure must be retried to success");
+
+        let logged: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+        for needle in ["attempt 1/5 failed", "succeeded after 2 attempt(s)"] {
+            assert!(
+                logged
+                    .iter()
+                    .any(|m| m.contains(needle) && m.contains("$UPLOAD_TOKEN")),
+                "the `{needle}` line must be printed with the value masked: {logged:?}"
+            );
+        }
+        assert!(
+            !logged.iter().any(|m| m.contains(secret)),
+            "the env value leaked into the log: {logged:?}"
+        );
+    }
+
     /// Non-cosign signers don't talk to sigstore, so their failures are
     /// deterministic: exactly one attempt, no retry, fail fast.
     #[test]
@@ -8609,9 +8847,15 @@ fn an_absolute_artifact_signature_resolves_to_one_path_on_both_sides() {
     )
     .expect("an absolute artifact path signs");
 
-    let (gate_path, _) =
-        crate::expected::expected_output_paths(&cfgs[0], &binary_path, &metadata, &ctx)
-            .expect("the gate resolves the same output");
+    let binary = ctx
+        .artifacts
+        .by_kind(ArtifactKind::Binary)
+        .into_iter()
+        .next()
+        .expect("the binary is registered")
+        .clone();
+    let (gate_path, _) = crate::expected::expected_output_paths(&cfgs[0], &binary, &ctx, true)
+        .expect("the gate resolves the same output");
     let stage_paths: Vec<std::path::PathBuf> = ctx
         .artifacts
         .by_kind(ArtifactKind::Signature)
@@ -9186,5 +9430,125 @@ fn the_collision_errors_quoted_in_the_sign_docs_are_the_messages_the_stage_produ
     assert_eq!(quoted.len(), produced.len(), "the errors the page quotes");
     for (line, message) in quoted.iter().zip(produced.iter()) {
         assert_eq!(line, message);
+    }
+}
+
+/// A `signature:` / `certificate:` template may read the per-target scope.
+/// The gate renders it against the same scope the stage seeds, so the asset
+/// it expects for each binary is the asset the stage registered for it.
+#[test]
+fn per_target_output_templates_render_one_name_on_the_gate_and_the_stage() {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{BuildConfig, CrateConfig};
+
+    const GNU: &str = "x86_64-unknown-linux-gnu";
+    const MUSL: &str = "x86_64-unknown-linux-musl";
+
+    // (case, binaries as (kind, target, amd64 level), the variant each one's names carry)
+    type Build = (ArtifactKind, &'static str, Option<&'static str>);
+    let cases: [(&str, Vec<Build>, Vec<&str>); 3] = [
+        (
+            "a gnu and a musl build",
+            vec![
+                (ArtifactKind::Binary, GNU, None),
+                (ArtifactKind::Binary, MUSL, None),
+            ],
+            vec!["linux_amd64_gnu", "linux_amd64_musl"],
+        ),
+        (
+            "a v1 and a v3 build",
+            vec![
+                (ArtifactKind::Binary, GNU, Some("v1")),
+                (ArtifactKind::Binary, GNU, Some("v3")),
+            ],
+            vec!["linux_amd64_gnu", "linux_amd64v3_gnu"],
+        ),
+        (
+            "a universal darwin binary",
+            vec![(ArtifactKind::UniversalBinary, "darwin-universal", None)],
+            vec!["darwin_all"],
+        ),
+    ];
+
+    for (case, binaries, variants) in cases {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("app")
+            .crates(vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                builds: Some(vec![BuildConfig {
+                    binary: Some("app".to_string()),
+                    targets: Some(vec![GNU.to_string(), MUSL.to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }])
+            .binary_signs(vec![SignConfig {
+                artifacts: Some("binary".to_string()),
+                cmd: Some("true".to_string()),
+                args: Some(vec![]),
+                signature: Some("app_{{ Os }}_{{ Arch }}{{ targetVariant . }}.sig".to_string()),
+                certificate: Some("app_{{ Os }}_{{ Arch }}{{ targetVariant . }}.pem".to_string()),
+                ..Default::default()
+            }])
+            .dry_run(true)
+            .build();
+        ctx.template_vars_mut().set("ProjectName", "app");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        for (index, (kind, target, level)) in binaries.iter().enumerate() {
+            let mut metadata: std::collections::HashMap<String, String> =
+                [("binary".to_string(), "app".to_string())].into();
+            if let Some(level) = level {
+                metadata.insert("amd64_variant".to_string(), level.to_string());
+            }
+            ctx.artifacts.add(Artifact {
+                kind: *kind,
+                name: "app".to_string(),
+                path: std::path::PathBuf::from(format!("dist/build-{index}/app")),
+                target: Some(target.to_string()),
+                crate_name: "app".to_string(),
+                metadata,
+                size: None,
+            });
+        }
+
+        let expected = crate::expected::expected_signature_assets(&ctx, "app", None)
+            .unwrap_or_else(|e| panic!("{case}: derive expectations: {e:#}"));
+
+        let log = ctx.logger("binary-sign");
+        let cfgs = ctx.config.binary_signs.clone();
+        process_sign_configs(
+            &cfgs,
+            &mut ctx,
+            &log,
+            ArtifactFilter::BinaryOnly,
+            "binary-sign",
+        )
+        .unwrap_or_else(|e| panic!("{case}: binary-sign run: {e:#}"));
+        let mut registered: Vec<String> = ctx
+            .artifacts
+            .by_kind(ArtifactKind::Signature)
+            .into_iter()
+            .chain(ctx.artifacts.by_kind(ArtifactKind::Certificate))
+            .map(|a| a.name.clone())
+            .collect();
+        registered.sort();
+
+        assert_eq!(registered, expected, "{case}");
+        assert_eq!(
+            registered.len(),
+            variants.len() * 2,
+            "{case}: {registered:?}"
+        );
+        for variant in variants {
+            for ext in ["sig", "pem"] {
+                assert!(
+                    registered
+                        .iter()
+                        .any(|name| name.ends_with(&format!("_{variant}.{ext}"))),
+                    "{case}: no .{ext} named for {variant} in {registered:?}"
+                );
+            }
+        }
     }
 }

@@ -10,8 +10,8 @@ use anyhow::{Context as _, Result};
 
 use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::config::SignConfig;
-use anodizer_core::context::Context;
 use anodizer_core::env_expand::expand_with_preserve;
+use anodizer_core::template::TemplateVars;
 
 /// The complete set of recognized `signs[].artifacts` /
 /// `docker_signs[].artifacts` filter strings, in match-arm order.
@@ -369,14 +369,14 @@ pub(crate) fn sign_ids_match(
 pub(crate) fn resolve_signature_path(
     sign_cfg: &SignConfig,
     artifact_path: &str,
-    ctx: &Context,
+    vars: &TemplateVars,
     default_template: &str,
 ) -> Result<String> {
     let sig_template = sign_cfg.resolved_signature_template(default_template);
     let preprocessed = sig_template
         .replace("{{ .Artifact }}", artifact_path)
         .replace("{{ Artifact }}", artifact_path);
-    ctx.render_template(&preprocessed).with_context(|| {
+    anodizer_core::template::render(&preprocessed, vars).with_context(|| {
         format!(
             "sign: render signature template '{}' for artifact {}",
             sig_template, artifact_path
@@ -444,8 +444,29 @@ pub fn sign_outputs_are_one_file(dist: &std::path::Path, left: &str, right: &str
     crate::asset_names::same_file(&dist_joined(dist, left), &dist_joined(dist, right))
 }
 
+/// Seed the per-target scope a `binary_signs:` entry's `signature:`,
+/// `certificate:` and `args:` templates render under for one binary: `Os`,
+/// `Arch`, `Target` (with `Abi`) and every variant var, the amd64 level read
+/// from the binary's own `amd64_variant` metadata. A binary with no target
+/// clears the whole scope.
+///
+/// The sign stage seeds the run's variables with it and the release gate
+/// seeds a clone, so a per-target template names one file on both sides.
+pub(crate) fn seed_binary_sign_scope(
+    vars: &mut TemplateVars,
+    target: Option<&str>,
+    artifact_metadata: &HashMap<String, String>,
+) {
+    anodizer_core::archive_name::seed_artifact_target_vars(
+        vars,
+        target,
+        artifact_metadata.get("amd64_variant").map(String::as_str),
+    );
+}
+
 /// The (signature, optional certificate) output PATHS one sign config
-/// resolves for one artifact.
+/// resolves for one artifact, rendered against `vars` and placed under
+/// `dist`.
 ///
 /// Shell variables are expanded BEFORE the `dist` join: a `${artifact}` that
 /// resolves to a path already under `dist` is kept there, where joining first
@@ -456,7 +477,8 @@ pub(crate) fn resolve_output_paths(
     cfg: &SignConfig,
     artifact_path: &std::path::Path,
     artifact_metadata: &HashMap<String, String>,
-    ctx: &Context,
+    vars: &TemplateVars,
+    dist: &std::path::Path,
     default_template: &str,
 ) -> Result<(std::path::PathBuf, Option<std::path::PathBuf>)> {
     let artifact_str = artifact_path.to_string_lossy();
@@ -469,7 +491,7 @@ pub(crate) fn resolve_output_paths(
         .map(|s| s.as_str())
         .unwrap_or("");
 
-    let signature_str = resolve_signature_path(cfg, &artifact_str, ctx, default_template)?;
+    let signature_str = resolve_signature_path(cfg, &artifact_str, vars, default_template)?;
     let certificate_str = cfg
         .certificate
         .as_ref()
@@ -477,7 +499,7 @@ pub(crate) fn resolve_output_paths(
             let preprocessed = tmpl
                 .replace("{{ .Artifact }}", &artifact_str)
                 .replace("{{ Artifact }}", &artifact_str);
-            ctx.render_template(&preprocessed).with_context(|| {
+            anodizer_core::template::render(&preprocessed, vars).with_context(|| {
                 format!(
                     "sign: render certificate template '{}' for artifact {}",
                     tmpl, artifact_str
@@ -506,7 +528,6 @@ pub(crate) fn resolve_output_paths(
         .as_deref()
         .map(|c| expand_shell_vars(c, &shell_vars));
 
-    let dist = &ctx.config.dist;
     Ok((
         dist_joined(dist, &signature_str),
         certificate_str.as_deref().map(|c| dist_joined(dist, c)),

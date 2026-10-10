@@ -94,6 +94,8 @@ template variables and the `$ANODIZER_ARTIFACT` environment channel bound:
 | `{{ ArtifactKind }}` | — | Artifact kind (`archive`, `package`, `binary`, …) |
 | `{{ ArtifactID }}` | — | The artifact's configured `id` |
 | `{{ Os }}` / `{{ Arch }}` / `{{ Target }}` | — | The artifact's platform triple, split |
+| `{{ Abi }}` | — | ABI component of the triple (`gnu`, `musl`, `msvc`; empty when the triple names none), e.g. `cmd: "scan --libc {{ Abi }} {{ ArtifactPath }}"` |
+| `{{ targetVariant . }}` | — | The [target variant](@/docs/general/templates.md#target-variant) of the artifact the hook runs for: its micro-architecture level when that is not the baseline, then its ABI (`_gnu`, `_musl`, `v3_gnu`), e.g. `cmd: "scan --profile {{ Os }}_{{ Arch }}{{ targetVariant . }} {{ ArtifactPath }}"` runs `scan --profile linux_amd64v3_gnu …` for a v3 gnu build |
 
 ```yaml
 before_publish:

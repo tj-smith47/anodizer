@@ -19,6 +19,7 @@ mod hash;
 mod path;
 mod printf;
 mod text;
+pub(super) mod variant;
 mod version;
 
 pub(super) use datetime::translate_go_time_format;
@@ -50,6 +51,7 @@ fn register_all(tera: &mut tera::Tera) {
     path::register(tera);
     collection::register(tera);
     printf::register(tera);
+    variant::register(tera);
 }
 
 /// Base Tera instance with custom filters pre-registered.

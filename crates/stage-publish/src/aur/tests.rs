@@ -572,7 +572,7 @@ fn test_publish_to_aur_dry_run() {
     let log = StageLogger::new("publish", Verbosity::Normal);
 
     let pushed = publish_to_aur(&ctx, "mytool", &log).expect("dry-run ok");
-    assert!(!pushed, "dry-run must return false (not pushed)");
+    assert!(pushed.is_none(), "dry-run must return None (not pushed)");
 }
 
 /// Regression: an empty linux-archive set must hard-fail with an
@@ -1955,7 +1955,7 @@ fn publish_to_aur_skip_true_returns_false_before_archive_check() {
     };
     let ctx = render_ctx("mytool", aur, false);
     let pushed = publish_to_aur(&ctx, "mytool", &render_quiet_log()).expect("skip ok");
-    assert!(!pushed, "skip=true must short-circuit to Ok(false)");
+    assert!(pushed.is_none(), "skip=true must short-circuit to Ok(None)");
 }
 
 /// A falsy `if:` condition short-circuits `publish_to_aur` to `Ok(false)`
@@ -1972,7 +1972,7 @@ fn publish_to_aur_if_false_returns_false() {
     };
     let ctx = render_ctx("mytool", aur, false);
     let pushed = publish_to_aur(&ctx, "mytool", &render_quiet_log()).expect("if:false ok");
-    assert!(!pushed, "if:false must short-circuit to Ok(false)");
+    assert!(pushed.is_none(), "if:false must short-circuit to Ok(None)");
 }
 
 // -----------------------------------------------------------------------
@@ -2004,7 +2004,6 @@ fn make_bare_aur_repo() -> (String, tempfile::TempDir) {
     git_ok(seed.path(), &["init", "-b", "master"]);
     git_ok(seed.path(), &["config", "user.email", "t@example.invalid"]);
     git_ok(seed.path(), &["config", "user.name", "T"]);
-    git_ok(seed.path(), &["config", "commit.gpgsign", "false"]);
     std::fs::write(seed.path().join("README"), "aur\n").unwrap();
     git_ok(seed.path(), &["add", "README"]);
     git_ok(seed.path(), &["commit", "-m", "seed"]);
@@ -2075,7 +2074,7 @@ fn publish_to_aur_pushes_pkgbuild_and_srcinfo_to_master() {
     let log = render_quiet_log();
 
     let pushed = publish_to_aur(&ctx, "mytool", &log).expect("publish ok");
-    assert!(pushed, "a fresh PKGBUILD must report a push");
+    assert!(pushed.is_some(), "a fresh PKGBUILD must report a push");
 
     let pkgbuild = aur_show(std::path::Path::new(&bare_url), "PKGBUILD");
     assert!(pkgbuild.contains("pkgname='mytool-bin'"), "{pkgbuild}");
@@ -2224,11 +2223,15 @@ fn publish_to_aur_second_run_no_changes_returns_false() {
     let log = render_quiet_log();
 
     assert!(
-        publish_to_aur(&ctx, "mytool", &log).expect("first publish ok"),
+        publish_to_aur(&ctx, "mytool", &log)
+            .expect("first publish ok")
+            .is_some(),
         "first publish must push"
     );
     assert!(
-        !publish_to_aur(&ctx, "mytool", &log).expect("second publish ok"),
+        publish_to_aur(&ctx, "mytool", &log)
+            .expect("second publish ok")
+            .is_none(),
         "an unchanged repo must report no push (NoChanges)"
     );
     drop(bare);
@@ -2243,7 +2246,11 @@ fn publish_to_aur_writes_install_file() {
     let ctx = live_ctx(&bare_url, Some("post_install() { echo hi; }"));
     let log = render_quiet_log();
 
-    assert!(publish_to_aur(&ctx, "mytool", &log).expect("publish ok"));
+    assert!(
+        publish_to_aur(&ctx, "mytool", &log)
+            .expect("publish ok")
+            .is_some()
+    );
     let pkgbuild = aur_show(std::path::Path::new(&bare_url), "PKGBUILD");
     assert!(pkgbuild.contains("install=mytool.install"), "{pkgbuild}");
     let install = aur_show(std::path::Path::new(&bare_url), "mytool.install");
@@ -2265,7 +2272,11 @@ fn publish_to_aur_directory_nests_output() {
         a.directory = Some("packages/mytool".to_string());
     }
     let log = render_quiet_log();
-    assert!(publish_to_aur(&ctx, "mytool", &log).expect("publish ok"));
+    assert!(
+        publish_to_aur(&ctx, "mytool", &log)
+            .expect("publish ok")
+            .is_some()
+    );
     let pkgbuild = aur_show(std::path::Path::new(&bare_url), "packages/mytool/PKGBUILD");
     assert!(pkgbuild.contains("pkgname='mytool-bin'"), "{pkgbuild}");
     drop(bare);
@@ -2348,7 +2359,9 @@ fn publish_to_aur_ssh_command_routes_through_ssh_clone() {
     }
     let log = render_quiet_log();
     assert!(
-        publish_to_aur(&ctx, "mytool", &log).expect("ssh-branch publish ok"),
+        publish_to_aur(&ctx, "mytool", &log)
+            .expect("ssh-branch publish ok")
+            .is_some(),
         "SSH-branch clone of a local bare repo must still push"
     );
     let pkgbuild = aur_show(std::path::Path::new(&bare_url), "PKGBUILD");
@@ -2576,4 +2589,62 @@ fn aur_extra_install_lines_manpages_present_but_none_mode_skipped() {
         "GenMode::None blocks must emit only the LICENSE line: {lines:?}"
     );
     assert!(lines[0].contains("usr/share/licenses/$pkgname/"));
+}
+
+/// An AUR `url_template` renders the archive's own target variant in the
+/// `source_<arch>` URL: the ABI of its triple and the amd64 level its
+/// metadata records, beside pacman's architecture name.
+#[test]
+fn aur_url_template_renders_the_target_variant() {
+    let render = |target: &str, amd64_variant: Option<&str>| {
+        let aur = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            url_template: Some(
+                "https://example.com/{{ Os }}_{{ Arch }}{{ targetVariant . }}".to_string(),
+            ),
+            amd64_variant: amd64_variant.map(|_| anodizer_core::config::Amd64Variant::V3),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
+            publish: Some(PublishConfig {
+                aur: Some(aur),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "9.9.9");
+        let mut art =
+            linux_archive_for_target("mytool", target, "https://ignored/mytool.tar.gz", "abc123");
+        if let Some(v) = amd64_variant {
+            art.metadata
+                .insert("amd64_variant".to_string(), v.to_string());
+        }
+        ctx.artifacts.add(art);
+        render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+            .expect("render ok")
+            .expect("not skipped")
+            .pkgbuild
+    };
+    let gnu = render("x86_64-unknown-linux-gnu", None);
+    assert!(
+        gnu.contains("https://example.com/linux_x86_64_gnu\""),
+        "{gnu}"
+    );
+    let musl = render("x86_64-unknown-linux-musl", None);
+    assert!(
+        musl.contains("https://example.com/linux_x86_64_musl\""),
+        "{musl}"
+    );
+    let v3 = render("x86_64-unknown-linux-gnu", Some("v3"));
+    assert!(
+        v3.contains("https://example.com/linux_x86_64v3_gnu\""),
+        "{v3}"
+    );
 }

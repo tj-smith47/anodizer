@@ -50,16 +50,14 @@ impl SbomConfig {
 
     /// Default document-path template when `artifacts: binary`.
     ///
-    /// The stem is the binary's own default name — including the
-    /// micro-architecture variant suffix
-    /// ([`MICRO_ARCH_VARIANT_SUFFIX`](crate::archive_name::MICRO_ARCH_VARIANT_SUFFIX))
-    /// — so two `amd64_variant` builds of one binary catalog into two
-    /// documents instead of overwriting a single one. A single-variant build
-    /// renders the suffix empty and keeps its historical name.
-    pub const DEFAULT_DOCUMENT_BINARY: &'static str = concat!(
-        crate::archive_name::default_binary_name_template!(),
-        ".sbom.json"
-    );
+    /// The binary, version, OS and architecture followed by the whole target
+    /// variant (`targetVariant`): the micro-architecture level when it is not
+    /// the baseline, and the target's ABI. Two builds of one binary that
+    /// share an OS and architecture — a `v1` and a `v3` amd64 build, a gnu
+    /// and a musl build — therefore catalog into two documents instead of
+    /// overwriting a single one.
+    pub const DEFAULT_DOCUMENT_BINARY: &'static str =
+        "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ targetVariant . }}.sbom.json";
 
     /// Default document-path template for any non-binary, non-any
     /// `artifacts:` filter.

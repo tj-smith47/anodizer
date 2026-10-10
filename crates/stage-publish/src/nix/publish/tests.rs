@@ -14,7 +14,12 @@ fn quiet_log() -> StageLogger {
 
 #[test]
 fn commit_outcome_is_pushed() {
-    assert!(util::CommitOutcome::Pushed.is_pushed());
+    assert!(
+        util::CommitOutcome::Pushed {
+            commit: "abc".into()
+        }
+        .is_pushed()
+    );
     assert!(!util::CommitOutcome::NoChanges.is_pushed());
 }
 
@@ -1420,7 +1425,6 @@ mod subprocess {
         git_ok(seed.path(), &["init", "-b", branch]);
         git_ok(seed.path(), &["config", "user.email", "t@example.invalid"]);
         git_ok(seed.path(), &["config", "user.name", "T"]);
-        git_ok(seed.path(), &["config", "commit.gpgsign", "false"]);
         std::fs::write(seed.path().join("README"), "overlay\n").unwrap();
         git_ok(seed.path(), &["add", "README"]);
         git_ok(seed.path(), &["commit", "-m", "seed overlay"]);
@@ -1836,6 +1840,7 @@ mod subprocess {
     }
 
     #[test]
+    #[serial_test::serial(path_env)]
     fn publish_to_nix_pull_request_enabled_records_outcome() {
         // With `pull_request.enabled = true`, finalize_publish drives
         // maybe_submit_pr, which yields Some(outcome) and is recorded on
@@ -1984,4 +1989,46 @@ mod subprocess {
         assert!(!pushed, "dry-run must report no push");
         drop(bare);
     }
+}
+
+/// A nix `url_template` renders the archive's own target variant: the ABI of
+/// its triple and the amd64 level it records, and nothing for a darwin
+/// triple, which has no ABI component.
+#[test]
+fn nix_url_template_renders_the_target_variant() {
+    let cfg = NixConfig {
+        url_template: Some(
+            "https://example.com/{{ Os }}_{{ Arch }}{{ targetVariant . }}".to_string(),
+        ),
+        ..Default::default()
+    };
+    let render = |os: &str, arch: &str, target: &str, amd64_variant: Option<&str>| {
+        let mut art = os_artifact_with_target(
+            os,
+            arch,
+            target,
+            "https://original/url.tar.gz",
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        );
+        art.amd64_variant = amd64_variant.map(str::to_string);
+        let tuples =
+            build_archive_tuples(&[art], &cfg, "mytool", "1.2.3", &quiet_log()).expect("tuples");
+        tuples[0].1.clone()
+    };
+    assert_eq!(
+        render("linux", "amd64", "x86_64-unknown-linux-gnu", None),
+        "https://example.com/linux_amd64_gnu"
+    );
+    assert_eq!(
+        render("linux", "amd64", "x86_64-unknown-linux-musl", None),
+        "https://example.com/linux_amd64_musl"
+    );
+    assert_eq!(
+        render("linux", "amd64", "x86_64-unknown-linux-gnu", Some("v3")),
+        "https://example.com/linux_amd64v3_gnu"
+    );
+    assert_eq!(
+        render("darwin", "arm64", "aarch64-apple-darwin", None),
+        "https://example.com/darwin_arm64"
+    );
 }

@@ -1775,3 +1775,61 @@ fn a_skipped_crate_records_no_pull_request_target() {
          got: {logged:?}"
     );
 }
+
+/// A winget `url_template` renders the archive's own target variant in the
+/// installer URL: the ABI of its triple and the amd64 level its metadata
+/// records.
+#[test]
+fn winget_url_template_renders_the_target_variant() {
+    let render = |target: &str, amd64_variant: Option<&str>| {
+        let cfg = WingetConfig {
+            publisher: Some("AcmeCo".to_string()),
+            url_template: Some(
+                "https://example.com/{{ Os }}_{{ Arch }}{{ targetVariant . }}".to_string(),
+            ),
+            amd64_variant: amd64_variant.map(|_| anodizer_core::config::Amd64Variant::V3),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![winget_crate("widget")])
+            .build();
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("sha256".to_string(), "a".repeat(64));
+        meta.insert("format".to_string(), "zip".to_string());
+        if let Some(v) = amd64_variant {
+            meta.insert("amd64_variant".to_string(), v.to_string());
+        }
+        ctx.artifacts.add(anodizer_core::artifact::Artifact {
+            kind: anodizer_core::artifact::ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/dist/widget-windows-amd64.zip"),
+            name: "widget-windows-amd64.zip".to_string(),
+            target: Some(target.to_string()),
+            crate_name: "widget".to_string(),
+            metadata: meta,
+            size: None,
+        });
+        let installers = collect_winget_installers(
+            &ctx,
+            "widget",
+            &cfg,
+            "widget",
+            "1.0.0",
+            &ctx.logger("publish"),
+        )
+        .expect("collect installers");
+        assert_eq!(installers.len(), 1, "one installer for one archive");
+        installers[0].url.clone()
+    };
+    assert_eq!(
+        render("x86_64-pc-windows-msvc", None),
+        "https://example.com/windows_amd64_msvc"
+    );
+    assert_eq!(
+        render("x86_64-pc-windows-gnu", None),
+        "https://example.com/windows_amd64_gnu"
+    );
+    assert_eq!(
+        render("x86_64-pc-windows-msvc", Some("v3")),
+        "https://example.com/windows_amd64v3_msvc"
+    );
+}
