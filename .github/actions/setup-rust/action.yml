@@ -97,7 +97,7 @@ runs:
 
     - name: Install cargo tools
       if: ${{ inputs.tools != '' }}
-      uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.87.16
+      uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2.87.23
       with:
         tool: ${{ inputs.tools }}
 
