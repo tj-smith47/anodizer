@@ -25,6 +25,8 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+async-trait = "0.1"
+futures-core = "0.3"
 anodizer-core = { workspace = true, features = ["test-helpers"] }
 tempfile.workspace = true
 serde_yaml_ng.workspace = true

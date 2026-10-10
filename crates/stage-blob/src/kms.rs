@@ -17,7 +17,7 @@ use crate::provider::Provider;
 pub(crate) enum KmsProvider {
     /// `awskms://key-id` or `awskms:///arn:aws:kms:...` — client-side via AWS CLI
     Aws,
-    /// `gcpkms://projects/.../cryptKeys/...` — client-side via gcloud CLI
+    /// `gcpkms://projects/.../cryptoKeys/...` — client-side via gcloud CLI
     Gcp,
     /// `azurekeyvault://vault-name/keys/key-name[/version]` — client-side via az CLI
     Azure,
@@ -155,23 +155,54 @@ fn quiet_for_kms(log: &anodizer_core::log::StageLogger) -> anodizer_core::log::S
         .with_env(log.redaction_env())
 }
 
-/// The plaintext ceiling AWS KMS's direct `Encrypt` call accepts. Only AWS
-/// imposes one; GCP KMS and Azure Key Vault are bounded elsewhere.
+/// The plaintext ceiling AWS KMS's direct `Encrypt` call accepts.
 const AWS_KMS_MAX_PLAINTEXT: usize = 4096;
 
-/// Refuse a payload AWS KMS cannot encrypt in one call.
+/// The plaintext ceiling Cloud KMS's `Encrypt` call accepts under a software
+/// or external key: 64 KiB.
+const GCP_KMS_MAX_PLAINTEXT: usize = 64 * 1024;
+
+/// The plaintext ceiling Cloud KMS's `Encrypt` call accepts under an
+/// HSM-protected key: 8 KiB. A file no larger than this fits every key.
+const GCP_KMS_ANY_KEY_PLAINTEXT: usize = 8 * 1024;
+
+/// The most `RSA-OAEP-256` encrypts under the largest key Key Vault issues,
+/// 4096 bits: the modulus length less two SHA-256 digests and two bytes.
+const AZURE_KEY_VAULT_MAX_PLAINTEXT: usize = 446;
+
+/// The most `RSA-OAEP-256` encrypts under the smallest key Key Vault issues,
+/// 2048 bits. A file no larger than this fits every key.
+const AZURE_KEY_VAULT_ANY_KEY_PLAINTEXT: usize = 190;
+
+/// Refuse a payload the key's KMS provider cannot encrypt in one call.
 ///
-/// Only the `awskms` scheme carries the ceiling, and a key spelled some other
+/// Each client-side scheme carries its own ceiling. A key spelled some other
 /// way is left alone here — opening the keeper is what reports an unusable
 /// key, and reporting it as a size problem would send the user to the wrong
 /// place.
 pub(crate) fn validate_kms_plaintext_size(kms_key: &str, size: usize) -> Result<()> {
-    if kms_key.starts_with("awskms://") && size > AWS_KMS_MAX_PLAINTEXT {
+    let (scheme, limit, note) = if kms_key.starts_with("awskms://") {
+        ("awskms", AWS_KMS_MAX_PLAINTEXT, "")
+    } else if kms_key.starts_with("gcpkms://") {
+        (
+            "gcpkms",
+            GCP_KMS_MAX_PLAINTEXT,
+            " (8192 under an HSM-protected key)",
+        )
+    } else if kms_key.starts_with("azurekeyvault://") {
+        (
+            "azurekeyvault",
+            AZURE_KEY_VAULT_MAX_PLAINTEXT,
+            " (RSA-OAEP-256 under a 4096-bit key; 318 under a 3072-bit key, 190 under a \
+             2048-bit key)",
+        )
+    } else {
+        return Ok(());
+    };
+    if size > limit {
         anyhow::bail!(
-            "failed to encrypt with kms: awskms encryption supports files up to {} bytes, \
-             got {} bytes",
-            AWS_KMS_MAX_PLAINTEXT,
-            size,
+            "failed to encrypt with kms: {scheme} encryption supports files up to {limit} \
+             bytes{note}, got {size} bytes",
         );
     }
     Ok(())
@@ -182,6 +213,36 @@ pub(crate) fn validate_kms_plaintext_size(kms_key: &str, size: usize) -> Result<
 /// Returns the encrypted ciphertext bytes. For `ServerSide`, returns the data
 /// unchanged — the S3 builder handles SSE-KMS configuration at the transport
 /// level.
+/// The prefixes the `aws` CLI reads as "load this parameter from
+/// elsewhere" rather than as the value itself: `file://` and `fileb://` read
+/// a local file, `http://` and `https://` fetch a URL.
+const AWS_CLI_INDIRECT_PREFIXES: [&str; 4] = ["file://", "fileb://", "http://", "https://"];
+
+/// Refuse a `kms_key` component that the provider's CLI would read as
+/// something other than the value: a leading `-` is a flag to every CLI, and
+/// `indirect` names the prefixes this CLI dereferences.
+///
+/// Each of these components is passed on the command line as written, so a
+/// `kms_key` holding one would make `aws kms encrypt` read a file or fetch
+/// a URL on the runner, or make any of the three CLIs parse an option.
+fn reject_cli_indirection(value: &str, what: &str, indirect: &[&str]) -> Result<()> {
+    anyhow::ensure!(
+        !value.starts_with('-'),
+        "blobs: the {what} in kms_key starts with '-', which the CLI reads as an option: {value}"
+    );
+    if let Some(prefix) = indirect.iter().find(|p| {
+        value
+            .get(..p.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(p))
+    }) {
+        anyhow::bail!(
+            "blobs: the {what} in kms_key starts with '{prefix}', which the CLI reads as a \
+             file or URL to load the value from: {value}"
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn encrypt_with_kms(
     data: &[u8],
     kms_key: &str,
@@ -189,7 +250,8 @@ pub(crate) fn encrypt_with_kms(
     log: &anodizer_core::log::StageLogger,
 ) -> Result<Vec<u8>> {
     // Checked before the scheme dispatch so an oversized payload never leaves
-    // the machine: AWS would reject it only after being handed the plaintext.
+    // the machine: the provider would reject it only after being handed the
+    // plaintext.
     validate_kms_plaintext_size(kms_key, data.len())?;
     match provider {
         KmsProvider::Aws => {
@@ -198,6 +260,7 @@ pub(crate) fn encrypt_with_kms(
                 .strip_prefix("awskms://")
                 .ok_or_else(|| anyhow::anyhow!("expected awskms:// scheme, got {kms_key}"))?
                 .trim_start_matches('/');
+            reject_cli_indirection(key_id, "key id", &AWS_CLI_INDIRECT_PREFIXES)?;
             let stdout = run_kms_cli_with_stdin(
                 "aws",
                 &[
@@ -225,10 +288,11 @@ pub(crate) fn encrypt_with_kms(
         }
 
         KmsProvider::Gcp => {
-            // gcpkms://projects/PROJECT/locations/LOC/keyRings/KR/cryptKeys/KEY
+            // gcpkms://projects/PROJECT/locations/LOC/keyRings/KR/cryptoKeys/KEY
             let resource = kms_key
                 .strip_prefix("gcpkms://")
                 .ok_or_else(|| anyhow::anyhow!("expected gcpkms:// scheme, got {kms_key}"))?;
+            reject_cli_indirection(resource, "key resource", &[])?;
             // gcloud outputs raw ciphertext bytes to stdout.
             run_kms_cli_with_stdin(
                 "gcloud",
@@ -246,6 +310,20 @@ pub(crate) fn encrypt_with_kms(
                 "gcloud kms encrypt",
                 log,
             )
+            .map_err(|e| {
+                // The key's protection level is not known here, and a file
+                // past the HSM ceiling fails for that reason on an HSM key.
+                if data.len() > GCP_KMS_ANY_KEY_PLAINTEXT {
+                    e.context(format!(
+                        "blobs: Cloud KMS encrypts at most 8192 bytes under an HSM-protected \
+                         key; this file is {} bytes, so the key's protection level may be \
+                         what refused it",
+                        data.len()
+                    ))
+                } else {
+                    e
+                }
+            })
         }
 
         KmsProvider::Azure => {
@@ -256,15 +334,33 @@ pub(crate) fn encrypt_with_kms(
             let parts: Vec<&str> = path.splitn(3, '/').collect();
             let vault_name = parts
                 .first()
-                .context("missing vault name in azurekeyvault:// URL")?;
-            // parts[1] is "keys", parts[2] is "key-name[/version]"
-            let key_name = parts
+                .filter(|v| !v.is_empty())
+                .context("missing vault name in azurekeyvault:// URL (expected vault/keys/name)")?;
+            anyhow::ensure!(
+                parts.get(1) == Some(&"keys"),
+                "blobs: expected azurekeyvault://<vault>/keys/<name>[/<version>], got {kms_key}"
+            );
+            let (key_name, key_version) = parts
                 .get(2)
+                .map(|name| match name.split_once('/') {
+                    Some((name, version)) => (name, Some(version)),
+                    None => (*name, None),
+                })
+                .filter(|(name, _)| !name.is_empty())
                 .context("missing key name in azurekeyvault:// URL (expected vault/keys/name)")?;
-            let b64_data = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data);
-            // `az` reads --value, no stdin — route the no-stdin variant of the
-            // shared run helper. Like the stdin arms, ciphertext is captured
-            // silently (quiet logger) rather than teed at verbose.
+            reject_cli_indirection(vault_name, "vault name", &[])?;
+            reject_cli_indirection(key_name, "key name", &[])?;
+            if let Some(version) = key_version {
+                reject_cli_indirection(version, "key version", &[])?;
+            }
+            // `az` decodes --value and encodes its result with the standard
+            // alphabet and padding; the URL-safe one is refused or misread.
+            let b64_data = base64::engine::general_purpose::STANDARD.encode(data);
+            // `az keyvault key encrypt` takes its input only as `--value`
+            // (no file or stdin form, checked against the az reference), so
+            // the plaintext is on the command line for the call's duration;
+            // the docs page says so. Like the stdin arms, ciphertext is
+            // captured silently (quiet logger) rather than teed at verbose.
             let mut cmd = std::process::Command::new("az");
             cmd.args([
                 "keyvault",
@@ -281,18 +377,36 @@ pub(crate) fn encrypt_with_kms(
                 "--output",
                 "json",
             ]);
+            if let Some(version) = key_version.filter(|v| !v.is_empty()) {
+                cmd.args(["--version", version]);
+            }
             let quiet_log = quiet_for_kms(log);
             let output = anodizer_core::run::run_checked(
                 &mut cmd,
                 &quiet_log,
                 "blobs: az keyvault key encrypt",
-            )?;
+            )
+            .map_err(|e| {
+                // Which key size the vault holds is not known here, and a
+                // file past the smallest key's ceiling fails for that reason
+                // on a key that small.
+                if data.len() > AZURE_KEY_VAULT_ANY_KEY_PLAINTEXT {
+                    e.context(format!(
+                        "blobs: RSA-OAEP-256 encrypts at most 190 bytes under a 2048-bit key \
+                         and 318 under a 3072-bit key; this file is {} bytes, so the key may \
+                         be too small for it",
+                        data.len()
+                    ))
+                } else {
+                    e
+                }
+            })?;
             let resp: serde_json::Value = serde_json::from_slice(&output.stdout)
                 .context("blobs: failed to parse az keyvault encrypt JSON response")?;
             let result = resp["result"]
                 .as_str()
                 .context("missing 'result' field in az keyvault encrypt response")?;
-            base64::engine::general_purpose::URL_SAFE_NO_PAD
+            base64::engine::general_purpose::STANDARD
                 .decode(result)
                 .context("blobs: failed to decode az keyvault encryption result")
         }
@@ -604,7 +718,7 @@ mod tests {
         tools.tool("gcloud").stdout(raw).install();
         let _guard = tools.activate();
 
-        let resource = "projects/p/locations/global/keyRings/kr/cryptKeys/k";
+        let resource = "projects/p/locations/global/keyRings/kr/cryptoKeys/k";
         let out = encrypt_with_kms(
             b"plaintext",
             &format!("gcpkms://{resource}"),
@@ -647,23 +761,99 @@ mod tests {
         );
     }
 
+    /// Every component of a `kms_key` that reaches a CLI argument is refused
+    /// when the CLI would read it as an option, a file or a URL, before any
+    /// CLI is spawned.
+    #[test]
+    fn kms_key_components_the_cli_would_dereference_are_refused() {
+        let refused = |kms_key: &str, provider: KmsProvider| {
+            format!(
+                "{:#}",
+                encrypt_with_kms(b"x", kms_key, provider, &tlog()).unwrap_err()
+            )
+        };
+        for (kms_key, expected) in [
+            (
+                "awskms://file:///etc/passwd",
+                "the key id in kms_key starts with 'file://', which the CLI reads as a file or \
+                 URL to load the value from: file:///etc/passwd",
+            ),
+            (
+                "awskms://fileb:///dev/stdin",
+                "the key id in kms_key starts with 'fileb://'",
+            ),
+            (
+                "awskms://http://169.254.169.254/",
+                "the key id in kms_key starts with 'http://'",
+            ),
+            (
+                "awskms://HTTPS://example.com/key",
+                "the key id in kms_key starts with 'https://'",
+            ),
+            (
+                "awskms://--profile",
+                "the key id in kms_key starts with '-', which the CLI reads as an option: --profile",
+            ),
+        ] {
+            let msg = refused(kms_key, KmsProvider::Aws);
+            assert!(msg.contains(expected), "{kms_key}: {msg}");
+        }
+        let msg = refused("gcpkms://--key-ring=x", KmsProvider::Gcp);
+        assert!(
+            msg.contains("the key resource in kms_key starts with '-'"),
+            "{msg}"
+        );
+        for (kms_key, expected) in [
+            (
+                "azurekeyvault://-v/keys/k",
+                "the vault name in kms_key starts with '-'",
+            ),
+            (
+                "azurekeyvault://v/keys/-k",
+                "the key name in kms_key starts with '-'",
+            ),
+            (
+                "azurekeyvault://v/keys/k/--id",
+                "the key version in kms_key starts with '-'",
+            ),
+            (
+                "azurekeyvault:///keys/k",
+                "missing vault name in azurekeyvault:// URL",
+            ),
+            (
+                "azurekeyvault://v/keys/",
+                "missing key name in azurekeyvault:// URL",
+            ),
+            (
+                "azurekeyvault://v/secrets/k",
+                "expected azurekeyvault://<vault>/keys/<name>[/<version>], got \
+                 azurekeyvault://v/secrets/k",
+            ),
+        ] {
+            let msg = refused(kms_key, KmsProvider::Azure);
+            assert!(msg.contains(expected), "{kms_key}: {msg}");
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]
     fn encrypt_azure_parses_vault_and_key_builds_argv() {
         // azurekeyvault://VAULT/keys/NAME[/version] — the helper splits the
-        // path, base64url-encodes the plaintext into --value, and decodes
-        // the {"result":"<base64url>"} response. Asserts vault/name argv +
-        // the decoded ciphertext.
-        let secret = b"\xaa\xbbazure-ciphertext";
-        let result_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret);
+        // path, base64-encodes the plaintext into --value, and decodes the
+        // {"result":"<base64>"} response, both in the standard padded
+        // alphabet `az` itself uses. The bytes here encode to `+`, `/` and
+        // `=`, which the URL-safe alphabet spells differently.
+        let secret = b"\xfb\xff\xbeazure-ciphertext";
+        let result_b64 = base64::engine::general_purpose::STANDARD.encode(secret);
+        assert!(result_b64.contains('+') && result_b64.contains('/') && result_b64.ends_with('='));
         let json = format!("{{\"result\":\"{result_b64}\"}}");
 
         let tools = FakeToolDir::new();
         tools.tool("az").stdout(json).install();
         let _guard = tools.activate();
 
-        let plaintext = b"sensitive";
+        let plaintext = b"\xfb\xff\xbesensitive";
         let out = encrypt_with_kms(
             plaintext,
             "azurekeyvault://my-vault/keys/my-key/v2",
@@ -673,7 +863,7 @@ mod tests {
         .expect("azure encrypt happy path");
         assert_eq!(
             out, secret,
-            "decoded url-safe result must be the returned ciphertext"
+            "the decoded result must be the returned ciphertext"
         );
 
         let argv = &tools.calls("az")[0];
@@ -689,13 +879,18 @@ mod tests {
         );
         assert_eq!(
             argv_value(argv, "--name"),
-            "my-key/v2",
-            "key name is everything after vault/keys/ (incl. version)"
+            "my-key",
+            "key name is the segment after vault/keys/"
+        );
+        assert_eq!(
+            argv_value(argv, "--version"),
+            "v2",
+            "a trailing segment is the key version"
         );
         assert_eq!(
             argv_value(argv, "--value"),
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(plaintext),
-            "plaintext is base64url-encoded into --value (az has no stdin path)"
+            base64::engine::general_purpose::STANDARD.encode(plaintext),
+            "plaintext is base64-encoded into --value (az has no stdin path)"
         );
         assert_eq!(argv_value(argv, "--algorithm"), "RSA-OAEP-256");
     }

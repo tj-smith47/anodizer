@@ -5,6 +5,7 @@
 //!   prepared serially (template render, store build, KMS preflight) before the
 //!   parallel upload, so credential/KMS errors surface before any bytes leave.
 
+mod content_type;
 mod kms;
 mod preflight;
 mod provider;
@@ -15,6 +16,8 @@ mod upload;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod upload_tests;
 
 pub use provider::Provider;
 pub use publisher::{BlobPublisher, blob_object_exists};

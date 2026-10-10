@@ -227,7 +227,9 @@ version = "0.28.1"
 dependencies = [
  "anodizer-core",
  "anyhow",
+ "async-trait",
  "base64 0.23.1",
+ "futures-core",
  "glob",
  "object_store",
  "reqwest",
