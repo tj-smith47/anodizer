@@ -1,6 +1,6 @@
 use super::*;
 
-/// [`publish_to_cloudsmith`], writing each uploaded package into `uploaded`
+/// Uploads every selected package, writing each uploaded package into `uploaded`
 /// as it is uploaded so a failure on a later artifact still leaves the caller the
 /// packages uploaded before it.
 pub(crate) fn publish_to_cloudsmith_into(

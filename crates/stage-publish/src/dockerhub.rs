@@ -191,7 +191,7 @@ fn resolve_dockerhub_username(
 // publish_to_dockerhub
 // ---------------------------------------------------------------------------
 
-/// [`publish_to_dockerhub`], writing each mutated repository into `targets`
+/// Updates every configured repository description, writing each mutated repository into `targets`
 /// as it is changed so a failure on a later entry still leaves the caller the
 /// snapshots needed to restore the repositories changed before it.
 fn publish_to_dockerhub_into(
