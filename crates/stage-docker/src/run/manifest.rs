@@ -30,11 +30,14 @@ pub(crate) fn process_docker_manifest(
     // manifest; docker_manifests would try to re-create it from per-platform
     // tags (e.g. :0.3.3-amd64) that don't exist, causing "manifest unknown"
     // errors.
+    // Every line below that prints a rendered name, image or flag is masked
+    // against the env the manifest tool is spawned with.
+    let job_log = log.with_job_env(manifest_env_vars.clone());
     if v2_multiplatform_tags.contains(&manifest_name) {
-        log.status(&format!(
+        log.status(&job_log.redact(&format!(
             "skipped manifest '{}' — already pushed as multi-arch by dockers_v2",
             manifest_name
-        ));
+        )));
         return Ok(());
     }
 
@@ -106,7 +109,7 @@ pub(crate) fn process_docker_manifest(
         .collect::<Result<_>>()?;
 
     let create_cmd = build_manifest_create_cmd(
-        log,
+        &job_log,
         manifest_bin,
         &manifest_name,
         &rendered_images,
@@ -122,11 +125,11 @@ pub(crate) fn process_docker_manifest(
     let mut manifest_digest: Option<String> = None;
 
     if dry_run {
-        log.status(&format!(
+        log.status(&job_log.redact(&format!(
             "(dry-run) would run: {} manifest rm {}",
             manifest_bin, manifest_name
-        ));
-        log.status(&format!("(dry-run) would run: {}", create_cmd.join(" ")));
+        )));
+        log.status(&job_log.redact(&format!("(dry-run) would run: {}", create_cmd.join(" "))));
         if !manifest_skip_push {
             let mut push_cmd: Vec<String> = vec![
                 manifest_bin.to_string(),
@@ -137,7 +140,7 @@ pub(crate) fn process_docker_manifest(
             for flag in &rendered_push_flags {
                 push_cmd.push(flag.clone());
             }
-            log.status(&format!("(dry-run) would run: {}", push_cmd.join(" ")));
+            log.status(&job_log.redact(&format!("(dry-run) would run: {}", push_cmd.join(" "))));
         }
     } else {
         // Remove any existing manifest before recreating:
@@ -199,9 +202,9 @@ pub(crate) fn process_docker_manifest(
                 manifest_max_delay,
                 ctx.retry_deadline(),
             )?;
-            log.status(&format!("pushed manifest {}", manifest_name));
+            log.status(&job_log.redact(&format!("pushed manifest {}", manifest_name)));
         } else {
-            log.status(&format!("created manifest {}", manifest_name));
+            log.status(&job_log.redact(&format!("created manifest {}", manifest_name)));
         }
     }
 
@@ -258,7 +261,7 @@ pub(crate) fn build_manifest_create_cmd(
     for img in rendered_images {
         if let Some(digest) = find_image_digest(new_artifacts, img) {
             let pinned = format!("{}@{}", img, digest);
-            log.verbose(&format!("pinning manifest {} to digest {}", img, digest));
+            log.verbose(&log.redact(&format!("pinning manifest {} to digest {}", img, digest)));
             create_cmd.push(pinned);
         } else {
             // "Did you mean?" — find closest matching image by edit distance.
@@ -283,12 +286,12 @@ pub(crate) fn build_manifest_create_cmd(
                 .min_by_key(|&(_, d)| d)
                 .filter(|&(_, d)| d > 0 && d <= img.len() / 2)
             {
-                log.warn(&format!(
+                log.warn(&log.redact(&format!(
                     "could not find {:?}, did you mean {:?}? (edit distance: {})",
                     img, suggestion, dist
-                ));
+                )));
             } else {
-                log.warn(&format!("no digest found for {}, using tag reference", img));
+                log.warn(&log.redact(&format!("no digest found for {}, using tag reference", img)));
             }
             create_cmd.push(img.clone());
         }
@@ -324,13 +327,13 @@ fn run_manifest_create_with_retry(
         &policy,
         deadline,
         |attempt| {
-            log.verbose(&format!("running {}", create_cmd.join(" ")));
             let mut create_command = Command::new(&create_cmd[0]);
             create_command.args(&create_cmd[1..]);
             for (key, value) in manifest_env_vars {
                 create_command.env(key, value);
             }
             let log = &log.with_child_env(&create_command);
+            log.verbose(&log.redact(&format!("running {}", create_cmd.join(" "))));
             let output = match run_capture_timeout(
                 &mut create_command,
                 log,
@@ -402,13 +405,13 @@ fn run_manifest_push_with_retry(
         &policy,
         deadline,
         |attempt| {
-            log.verbose(&format!("running {}", push_cmd.join(" ")));
             let mut push_command = Command::new(&push_cmd[0]);
             push_command.args(&push_cmd[1..]);
             for (key, value) in manifest_env_vars {
                 push_command.env(key, value);
             }
             let log = &log.with_child_env(&push_command);
+            log.verbose(&log.redact(&format!("running {}", push_cmd.join(" "))));
             let output = match run_capture_timeout(
                 &mut push_command,
                 log,

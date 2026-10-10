@@ -551,6 +551,41 @@ fn match_authorization_prefix(bytes: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
 
+    /// The two examples `docs/site/content/docs/general/environment.md`
+    /// gives for matching on the variable's name.
+    #[test]
+    fn the_documented_redaction_examples_are_what_the_redactor_does() {
+        let env = vec![
+            ("COSIGN_KEY".to_string(), "cosign.key".to_string()),
+            ("REGISTRY_AUTH".to_string(), "hunter2hunter2".to_string()),
+        ];
+        assert_eq!(
+            string("--key=cosign.key --password=hunter2hunter2", &env),
+            "--key=$COSIGN_KEY --password=hunter2hunter2"
+        );
+        let page = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/site/content/docs/general/environment.md"
+        ))
+        .expect("read docs/site/content/docs/general/environment.md");
+        for row in [
+            "| `--key=cosign.key` | `--key=$COSIGN_KEY` |",
+            "| `--password=hunter2hunter2` | `--password=hunter2hunter2` |",
+        ] {
+            assert!(page.contains(row), "the page no longer carries: {row}");
+        }
+        for suffix in SECRET_KEY_SUFFIXES {
+            assert!(page.contains(&format!("`{suffix}`")), "{suffix}");
+        }
+        for name in SECRET_KEY_SUBSTRINGS {
+            assert!(page.contains(&format!("`{name}`")), "{name}");
+        }
+        for prefix in SECRET_VALUE_PREFIXES {
+            assert!(page.contains(&format!("`{prefix}`")), "{prefix}");
+        }
+        assert!(page.contains(&format!("{ALWAYS_MASK_LEN} characters or more")));
+    }
+
     /// A three-line PEM-shaped secret — the value class the stream redacter
     /// exists for, since no single line of it is a substring of the whole.
     const PEM: &str = "-----BEGIN KEY-----\nAAAABBBBCCCC\n-----END KEY-----";

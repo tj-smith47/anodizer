@@ -9,7 +9,6 @@ use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::config::SignConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::target::map_target;
 
 use crate::asset_names::{BinarySignAssetNames, binary_sign_asset_name, binary_sign_asset_naming};
 use crate::helpers::{
@@ -262,36 +261,19 @@ pub(crate) fn process_sign_configs(
                 .unwrap_or("");
 
             if matches!(filter_mode, ArtifactFilter::BinaryOnly) {
-                if let Some(target) = artifact_target {
-                    // The build-policy seeding: composite `Arch` from
-                    // map_target plus the shared variant-var policy, with the
-                    // amd64 micro-arch level read from the binary's real
-                    // `amd64_variant` metadata (the key every producing stage
-                    // writes) — a v3-tuned binary's signature/certificate
-                    // template renders the same `{{ Amd64 }}` its own name
-                    // was built from.
-                    let (os, arch) = map_target(target);
-                    let vars = ctx.template_vars_mut();
-                    vars.set("Os", &os);
-                    vars.set("Arch", &arch);
-                    anodizer_core::archive_name::seed_variant_vars(
-                        vars,
-                        target,
-                        artifact_metadata.get("amd64_variant").map(String::as_str),
-                    );
-                } else {
-                    let vars = ctx.template_vars_mut();
-                    vars.set("Os", "");
-                    vars.set("Arch", "");
-                    anodizer_core::archive_name::reset_variant_vars(vars);
-                }
+                crate::helpers::seed_binary_sign_scope(
+                    ctx.template_vars_mut(),
+                    artifact_target.as_deref(),
+                    artifact_metadata,
+                );
             }
 
             let (sig_output, cert_output) = crate::helpers::resolve_output_paths(
                 sign_cfg,
                 artifact_path,
                 artifact_metadata,
-                ctx,
+                ctx.template_vars(),
+                &ctx.config.dist,
                 default_sig_template,
             )?;
             let signature_str = sig_output.to_string_lossy().into_owned();
@@ -505,11 +487,17 @@ pub(crate) fn process_sign_configs(
             }
 
             if ctx.is_dry_run() {
-                log.status(&format!(
+                // An env entry that does not render has no value the argv
+                // could repeat, so a failed render leaves nothing to mask.
+                let dry_env = anodizer_core::config::render_env_entries_that_render(
+                    sign_cfg.env.as_deref().unwrap_or(&[]),
+                    |v| ctx.render_template(v),
+                );
+                log.status(&log.with_job_env(dry_env).redact(&format!(
                     "(dry-run) would run: {} {}",
                     cmd,
                     fully_resolved.join(" ")
-                ));
+                )));
                 for artifact in job_artifacts {
                     ctx.artifacts.add(artifact);
                 }
@@ -744,10 +732,13 @@ pub(crate) fn process_sign_configs(
         // deterministically and keep the single fast attempt.
         let run_job = |job: &SignJob| {
             let thread_log = log.with_stage(static_label);
+            // The retry lines name the artifact, whose path is rendered and
+            // can repeat a value the job's `env:` carries.
+            let retry_log = thread_log.with_job_env(job.env.clone().unwrap_or_default());
             if is_cosign_cmd(&job.cmd) {
                 retry_transient(
                     &COSIGN_TRANSIENT_RETRY,
-                    &thread_log,
+                    &retry_log,
                     &job.artifact_display,
                     &mut || execute_sign_job(job, &thread_log),
                 )?;
@@ -764,7 +755,7 @@ pub(crate) fn process_sign_configs(
                 if is_cosign_cmd(&v.cmd) {
                     retry_transient(
                         &COSIGN_TRANSIENT_RETRY,
-                        &thread_log,
+                        &retry_log,
                         &format!("verification of {}", v.what),
                         &mut || crate::verify::execute_verify_job(v, &thread_log),
                     )?;
@@ -778,6 +769,7 @@ pub(crate) fn process_sign_configs(
             &sign_jobs,
             effective_parallelism,
             stage_name,
+            "signature",
             log,
             run_job,
         )?;
@@ -801,11 +793,7 @@ pub(crate) fn process_sign_configs(
     }
 
     if matches!(filter_mode, ArtifactFilter::BinaryOnly) {
-        ctx.template_vars_mut().set("Os", "");
-        ctx.template_vars_mut().set("Arch", "");
-        ctx.template_vars_mut().set("Arm", "");
-        ctx.template_vars_mut().set("Amd64", "");
-        ctx.template_vars_mut().set("Mips", "");
+        anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
     }
 
     Ok(())

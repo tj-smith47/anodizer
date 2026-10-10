@@ -125,10 +125,14 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
     // Per-artifact detail — at default verbosity the `signing N artifacts`
     // summary (emitted once before this loop) is the status-level signal; the
     // per-artifact `sign X → Y` line would flood the log on wide fan-outs.
-    log.verbose(&format!(
+    // The artifact and signature paths are rendered and can repeat a value
+    // the job's `env:` carries; the command that env is set on does not
+    // exist yet.
+    let job_log = log.with_job_env(job.env.clone().unwrap_or_default());
+    log.verbose(&job_log.redact(&format!(
         "signing {} → {} ({}[{}])",
         job.artifact_display, job.signature_display, job.label, job.id_label
-    ));
+    )));
 
     let stdin_cfg = if job.stdin_data.is_some() {
         Stdio::piped()
@@ -147,12 +151,12 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
             && !parent.as_os_str().is_empty()
         {
             std::fs::create_dir_all(parent).with_context(|| {
-                format!(
+                job_log.redact(&format!(
                     "{}: create output directory {} for {}",
                     job.label,
                     parent.display(),
                     job.artifact_display
-                )
+                ))
             })?;
         }
     }
@@ -181,10 +185,10 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
         Err(e) => {
             cleanup_rename_temp(job);
             return Err(e).with_context(|| {
-                format!(
+                log.redact(&format!(
                     "{}: failed to spawn '{}' for {}",
                     job.label, job.cmd, job.artifact_display
-                )
+                ))
             });
         }
     };
@@ -192,22 +196,21 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
     if let Some(ref data) = job.stdin_data {
         if let Some(mut child_stdin) = child.stdin.take() {
             child_stdin.write_all(data).with_context(|| {
-                format!(
+                log.redact(&format!(
                     "{}: failed to write stdin for {}",
                     job.label, job.artifact_display
-                )
+                ))
             })?;
             drop(child_stdin); // Explicitly close stdin so child sees EOF
         } else {
             // Proceeding would run the signer WITHOUT its intended stdin,
             // producing a signature over missing input. Fail hard instead.
             cleanup_rename_temp(job);
-            anyhow::bail!(
+            anyhow::bail!(log.redact(&format!(
                 "{}: stdin data was provided but the child process stdin is \
                  unavailable for {} — refusing to sign without it",
-                job.label,
-                job.artifact_display
-            );
+                job.label, job.artifact_display
+            )));
         }
     }
 
@@ -216,10 +219,10 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
         Err(e) => {
             cleanup_rename_temp(job);
             return Err(e).with_context(|| {
-                format!(
+                log.redact(&format!(
                     "{}: failed to wait for '{}' for {}",
                     job.label, job.cmd, job.artifact_display
-                )
+                ))
             });
         }
     };

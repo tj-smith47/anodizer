@@ -120,8 +120,7 @@ pub(crate) fn aur_build_sources(
                 crate_name,
                 artifact_filename.as_deref(),
                 version,
-                pkgbuild_arch,
-                "linux",
+                util::UrlTarget::of_os_artifact(a, "linux", pkgbuild_arch),
             )
         } else {
             a.url.clone()
@@ -227,7 +226,7 @@ pub(crate) fn aur_write_package_files(
 }
 
 /// Commit the staged files in `repo_path` and push to AUR `master`.
-/// Returns `true` when the push delivered a new commit, `false` when
+/// Returns the sha of the pushed commit, or `None` when
 /// `commit_and_push_with_opts` reports `NoChanges` (nothing to ship,
 /// repo already up to date).
 pub(crate) fn aur_commit_and_push(
@@ -238,7 +237,7 @@ pub(crate) fn aur_commit_and_push(
     version: &str,
     git_url: &str,
     log: &StageLogger,
-) -> Result<bool> {
+) -> Result<Option<String>> {
     let commit_msg = crate::homebrew::render_commit_msg(
         aur_cfg.commit_msg_template.as_deref(),
         package_name,
@@ -260,21 +259,20 @@ pub(crate) fn aur_commit_and_push(
         &commit_opts,
         log,
     )?;
-    let pushed = match outcome {
-        util::CommitOutcome::Pushed => {
+    match outcome {
+        util::CommitOutcome::Pushed { commit } => {
             log.status(&format!(
                 "AUR package '{}' pushed to {}",
                 package_name, git_url
             ));
-            true
+            Ok(Some(commit))
         }
         util::CommitOutcome::NoChanges => {
             log.status(&format!(
                 "nothing to push, aur package '{}' already up to date",
                 package_name
             ));
-            false
+            Ok(None)
         }
-    };
-    Ok(pushed)
+    }
 }

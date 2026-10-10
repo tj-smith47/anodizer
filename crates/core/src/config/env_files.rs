@@ -278,7 +278,9 @@ pub fn load_env_files(
 // historical `anodizer_core::config::*` import paths used by stages and
 // publishers.
 
-pub use crate::env::{parse_env_entries, render_env_entries, split_env_entry};
+pub use crate::env::{
+    parse_env_entries, render_env_entries, render_env_entries_that_render, split_env_entry,
+};
 
 #[cfg(test)]
 mod tests {

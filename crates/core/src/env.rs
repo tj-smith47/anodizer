@@ -71,9 +71,51 @@ where
         .collect()
 }
 
+/// The entries of `entries` that parse and render, in declaration order.
+///
+/// For a dry run, which spawns nothing and renders a job's `env:` only to
+/// mask the values its echo line may repeat: an entry that does not render
+/// (an unset `{{ .Env.X }}`) has no value to repeat, so it is left out
+/// instead of failing a run that would never have used it.
+pub fn render_env_entries_that_render<F>(entries: &[String], render: F) -> Vec<(String, String)>
+where
+    F: Fn(&str) -> anyhow::Result<String>,
+{
+    entries
+        .iter()
+        .filter_map(|e| {
+            let (k, v) = split_env_entry(e).ok()?;
+            Some((k.to_string(), render(v).ok()?))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lenient_render_keeps_the_entries_that_render() {
+        let entries = vec![
+            "A=ok".to_string(),
+            "B=fails".to_string(),
+            "no-equals".to_string(),
+            "C=ok".to_string(),
+        ];
+        let rendered = render_env_entries_that_render(&entries, |v| {
+            if v == "fails" {
+                anyhow::bail!("undefined variable")
+            }
+            Ok(v.to_uppercase())
+        });
+        assert_eq!(
+            rendered,
+            vec![
+                ("A".to_string(), "OK".to_string()),
+                ("C".to_string(), "OK".to_string())
+            ]
+        );
+    }
 
     #[test]
     fn test_split_env_entry_basic() {

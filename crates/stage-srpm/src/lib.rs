@@ -251,10 +251,10 @@ impl Stage for SrpmStage {
         };
 
         if dry_run {
-            log.status(&format!(
+            log.status(&log.redact(&format!(
                 "(dry-run) would create source RPM {}",
                 package_filename
-            ));
+            )));
             return Ok(());
         }
 
@@ -265,7 +265,7 @@ impl Stage for SrpmStage {
         fs::write(&spec_path, &spec_contents)
             .with_context(|| format!("srpm: write spec file {}", spec_path.display()))?;
 
-        log.status(&format!("creating source RPM {}", package_filename));
+        log.status(&log.redact(&format!("creating source RPM {}", package_filename)));
 
         // Build the SRPM using rpmbuild -bs
         let srpm_path = dist.join(&package_filename);

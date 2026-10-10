@@ -550,16 +550,19 @@ impl Stage for DockerSignStage {
                     // template context.
                     set_image_template_vars(ctx, metadata);
 
+                    let job_log = log.with_job_env(docker_rendered_env.iter().cloned());
                     if ctx.is_dry_run() {
-                        log.status(&format!(
+                        log.status(&job_log.redact(&format!(
                             "(dry-run) would run: {} {}",
                             cmd,
                             fully_resolved.join(" ")
-                        ));
+                        )));
                         continue;
                     }
 
-                    log.verbose(&format!("docker-sign [{}] {}", sign_id, signed_ref));
+                    log.verbose(
+                        &job_log.redact(&format!("docker-sign [{}] {}", sign_id, signed_ref)),
+                    );
 
                     // Prepare stdin piping for docker signs. Render `stdin`
                     // through the template engine (mirroring the args path
@@ -593,34 +596,34 @@ impl Stage for DockerSignStage {
 
                     let log = &log.with_child_env(&command);
                     let mut child = command.spawn().with_context(|| {
-                        format!(
+                        log.redact(&format!(
                             "sign: failed to spawn '{}' for docker image {}",
                             cmd, image_str
-                        )
+                        ))
                     })?;
 
                     if let Some(data) = stdin_data {
                         if let Some(mut child_stdin) = child.stdin.take() {
                             child_stdin.write_all(&data).with_context(|| {
-                                format!(
+                                log.redact(&format!(
                                     "sign: failed to write stdin for docker image {}",
                                     image_str
-                                )
+                                ))
                             })?;
                             drop(child_stdin);
                         } else {
-                            log.warn(&format!(
+                            log.warn(&log.redact(&format!(
                                 "stdin data provided but child process stdin unavailable for docker image {}",
                                 image_str
-                            ));
+                            )));
                         }
                     }
 
                     let output = child.wait_with_output().with_context(|| {
-                        format!(
+                        log.redact(&format!(
                             "sign: failed to wait for '{}' for docker image {}",
                             cmd, image_str
-                        )
+                        ))
                     })?;
 
                     // Redact secrets from stdout/stderr before any output or logging.
@@ -669,7 +672,7 @@ impl Stage for DockerSignStage {
                     // Now check exit status (bails on non-zero).
                     log.check_output(redacted_output, &cmd)?;
 
-                    log.status(&format!("signed image {signed_ref}")); // status-ok: per-image sign result
+                    log.status(&log.redact(&format!("signed image {signed_ref}"))); // status-ok: per-image sign result
 
                     // Re-verify the signature just attached to the registry.
                     // A bad signature is a deterministic failure and
@@ -693,7 +696,7 @@ impl Stage for DockerSignStage {
                             &format!("verification of {signed_ref}"),
                             &mut || crate::verify::execute_verify_job(&vjob, log),
                         )?;
-                        log.status(&format!("verified image signature {signed_ref}")); // status-ok: per-image verification result
+                        log.status(&log.redact(&format!("verified image signature {signed_ref}"))); // status-ok: per-image verification result
                     }
                 }
             }

@@ -359,8 +359,12 @@ pub(crate) fn run_dry_run(
             )?;
         }
         if let Some(ref cmd) = job.cmd {
-            exec.log
-                .status(&format!("(dry-run) {} {}", cmd.program, cmd.args.join(" ")));
+            let job_log = exec.log.with_job_env(cmd.env.clone());
+            exec.log.status(&job_log.redact(&format!(
+                "(dry-run) {} {}",
+                cmd.program,
+                cmd.args.join(" ")
+            )));
         } else if let Some((ref src, ref dst)) = job.copy_from {
             exec.log.status(&format!(
                 "(dry-run) copy {} → {}",
@@ -533,7 +537,11 @@ pub(crate) fn run_sequential(
         let mut command = Command::new(&cmd.program);
         command.args(&cmd.args).envs(&cmd.env).current_dir(&cmd.cwd);
         let child_log = exec.log.with_child_env(&command);
-        child_log.verbose(&format!("running {} {}", cmd.program, cmd.args.join(" ")));
+        child_log.verbose(&child_log.redact(&format!(
+            "running {} {}",
+            cmd.program,
+            cmd.args.join(" ")
+        )));
         // Target-qualify the label so the liveness heartbeat attributes a slow
         // build to its target (`still running cargo (aarch64-…)`) instead of a
         // bare `cargo` that is ambiguous once builds run concurrently.
@@ -575,10 +583,10 @@ pub(crate) fn run_sequential(
                 .with_context(|| format!("build: render mod_timestamp template '{ts}'"))?;
             let mtime = anodizer_core::util::parse_mod_timestamp(&rendered_ts)?;
             anodizer_core::util::set_file_mtime(&resolved_bin, mtime)?;
-            exec.log.verbose(&format!(
+            exec.log.verbose(&child_log.redact(&format!(
                 "applied mod_timestamp={rendered_ts} to {}",
                 resolved_bin.display()
-            ));
+            )));
         }
 
         if !job.post_hooks.is_empty() {
@@ -719,7 +727,11 @@ pub(crate) fn run_parallel(
                         let mut command = Command::new(&program);
                         command.args(&args).envs(&env).current_dir(&cwd);
                         let child_log = thread_log.with_child_env(&command);
-                        child_log.verbose(&format!("running {} {}", program, args.join(" ")));
+                        child_log.verbose(&child_log.redact(&format!(
+                            "running {} {}",
+                            program,
+                            args.join(" ")
+                        )));
                         // Target-qualify the label so concurrent build heartbeats
                         // are distinguishable (`still running cargo (aarch64-…)`)
                         // rather than an ambiguous bare `cargo` shared by all jobs.
@@ -758,10 +770,10 @@ pub(crate) fn run_parallel(
                                 .with_context(|| format!("build: render mod_timestamp template '{ts}'"))?;
                             let mtime = anodizer_core::util::parse_mod_timestamp(&rendered_ts)?;
                             anodizer_core::util::set_file_mtime(&bin_path, mtime)?;
-                            thread_log.verbose(&format!(
+                            thread_log.verbose(&child_log.redact(&format!(
                                 "applied mod_timestamp={rendered_ts} to {}",
                                 bin_path.display()
-                            ));
+                            )));
                         }
 
                         if !post_hooks.is_empty() {
@@ -2562,6 +2574,13 @@ mod run_exec_tests {
                 "BUILD_API_TOKEN".to_string(),
                 "hunter2-build-secret".to_string(),
             );
+            // A rendered flag can carry the same value the env does, and the
+            // argv echo is the one line that prints it.
+            job.cmd
+                .as_mut()
+                .unwrap()
+                .args
+                .push("--token=hunter2-build-secret".to_string());
 
             let (log, capture) = StageLogger::with_capture("test", Verbosity::Verbose);
             let tvars = TemplateVars::default();
@@ -2583,7 +2602,9 @@ mod run_exec_tests {
             );
             let logged: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
             assert!(
-                logged.iter().any(|m| m.contains("running")),
+                logged
+                    .iter()
+                    .any(|m| m.contains("running") && m.contains("--token=")),
                 "parallel={parallel}: the verbose argv echo must be captured: {logged:?}"
             );
             assert!(

@@ -461,23 +461,28 @@ fn run_verify_command_with_timeout(
             command.env(k, v);
         }
     }
-    // The verbose live tee inside `run_capture_timeout` masks the job's own
-    // `env:` through this logger; the post-spawn scrub below stays as
-    // defense-in-depth for the captured buffers.
+    // The argv echo and the verbose live tee inside `run_capture_timeout`
+    // mask the job's own `env:` through this logger; the post-spawn scrub
+    // below stays as defense-in-depth for the captured buffers.
     let log = log.with_child_env(&command);
-    log.verbose(&format!(
+    log.verbose(&log.redact(&format!(
         "verifying {}: {} {}",
         job.what,
         job.cmd,
         job.args.join(" ")
-    ));
+    )));
     let output = anodizer_core::run::run_capture_timeout(
         &mut command,
         &log,
-        &format!("signature verification of {}", job.what),
+        &log.redact(&format!("signature verification of {}", job.what)),
         timeout,
     )
-    .with_context(|| format!("verify: failed to run '{}' for {}", job.cmd, job.what))?;
+    .with_context(|| {
+        log.redact(&format!(
+            "verify: failed to run '{}' for {}",
+            job.cmd, job.what
+        ))
+    })?;
 
     let env_pairs: Vec<(String, String)> = job
         .env
@@ -1327,6 +1332,48 @@ mod tests {
         assert!(
             !joined.contains(secret),
             "a literal sign-config env secret leaked into the log stream:\n{joined}"
+        );
+    }
+
+    /// A verify argument can repeat a value the job's `env:` carries, and
+    /// the `verifying …` echo prints the whole argv: the echo is masked
+    /// against the job env like the verifier's own output.
+    #[cfg(unix)]
+    #[test]
+    fn the_verify_echo_masks_a_job_env_value_repeated_in_the_argv() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let script = tmp.path().join("cosign");
+        anodizer_core::test_helpers::fake_tool::write_executable_script(
+            &script,
+            "#!/bin/sh\nexit 0\n",
+        );
+
+        let secret = "hunter2-verify-argv-secret";
+        let job = VerifyJob {
+            cmd: script.to_string_lossy().into_owned(),
+            args: vec![
+                "verify-blob".to_string(),
+                format!("--key-password={secret}"),
+            ],
+            env: Some(vec![("COSIGN_PASSWORD".to_string(), secret.to_string())]),
+            what: "argv echo redaction probe".to_string(),
+        };
+        let (log, capture) = anodizer_core::log::StageLogger::with_capture(
+            "sign-test",
+            anodizer_core::log::Verbosity::Verbose,
+        );
+        run_verify_command_with_timeout(&job, &log, VERIFY_TIMEOUT).expect("verifier runs");
+        let logged: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+        assert!(
+            logged
+                .iter()
+                .any(|m| m.starts_with("verifying ")
+                    && m.contains("--key-password=$COSIGN_PASSWORD")),
+            "the verify echo must be captured with the value masked: {logged:?}"
+        );
+        assert!(
+            !logged.iter().any(|m| m.contains(secret)),
+            "the job env value leaked into the log: {logged:?}"
         );
     }
 

@@ -443,12 +443,12 @@ impl anodizer_core::Publisher for CargoPublisher {
                 yanked += 1;
             } else {
                 failed += 1;
-                log.with_child_env(&command).warn(&format!(
+                let stderr = log
+                    .with_child_env(&command)
+                    .redact(&String::from_utf8_lossy(&output.stderr));
+                log.warn(&format!(
                     "cargo yank failed for {} {} on {}: {}",
-                    t.name,
-                    t.version,
-                    target,
-                    String::from_utf8_lossy(&output.stderr),
+                    t.name, t.version, target, stderr,
                 ));
             }
         }

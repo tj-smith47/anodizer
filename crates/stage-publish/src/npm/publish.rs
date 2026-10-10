@@ -770,7 +770,7 @@ pub(crate) fn build_npm_publish_command(
 /// from the threaded `ACTIONS_ID_TOKEN_REQUEST_*` env. Transient registry
 /// failures retry; others break.
 #[allow(clippy::too_many_arguments)]
-fn run_npm_publish(
+pub(crate) fn run_npm_publish(
     tarball: &Path,
     cfg_dir: &Path,
     registry: &str,
@@ -783,12 +783,15 @@ fn run_npm_publish(
 ) -> Result<()> {
     retry_npm_publish(policy, deadline, log, |_attempt| {
         let mut cmd = build_npm_publish_command(tarball, cfg_dir, registry, dist_tag, access, auth);
-        log.verbose(&format!(
+        // Under OIDC the command carries the token-exchange credentials in
+        // its own env; the echo and npm's stderr are masked against them.
+        let log = log.with_child_env(&cmd);
+        log.verbose(&log.redact(&format!(
             "running npm publish {} --registry {} --tag {}",
             tarball.display(),
             registry,
             dist_tag
-        ));
+        )));
         let out = match cmd.output() {
             Ok(o) => o,
             Err(e) => {
@@ -806,7 +809,7 @@ fn run_npm_publish(
         let err = anyhow::anyhow!(
             "npm: `npm publish` exited with status {}: {}",
             out.status,
-            anodizer_core::redact::redact_bearer_tokens(stderr_trimmed)
+            log.redact(&anodizer_core::redact::redact_bearer_tokens(stderr_trimmed))
         );
         if is_transient_npm_publish_stderr(stderr_trimmed) {
             Err(ControlFlow::Continue(err))

@@ -225,12 +225,9 @@ impl anodizer_core::Publisher for GemFuryPublisher {
         let log = ctx.logger("publish");
         // `pushed` accumulates published artifacts. On a mid-loop failure it
         // holds the partial set — the artifacts that DID upload before the
-        // error. The dispatch layer records NO evidence on an `Err` return
-        // (it can only carry evidence on `Ok`), so those partials would
-        // otherwise be orphaned: a required-publisher failure aborts the
-        // release without ever deleting what gemfury already pushed. Roll
-        // the partials back in-place here, before re-raising, so a failed
-        // push leaves no half-published packages on the Fury repo.
+        // error. Roll the partials back in-place here, before re-raising, so
+        // a failed push leaves no half-published packages on the Fury repo
+        // and its `Failed` row has nothing left to withdraw.
         let mut pushed: Vec<GemFuryTarget> = Vec::new();
         if let Err(err) = publish_to_gemfury(ctx, &log, &mut pushed) {
             if !pushed.is_empty() {

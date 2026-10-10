@@ -77,10 +77,19 @@ pub(crate) fn set_nfpm_per_target_template_vars(
     os: &str,
     arch: &str,
     target: Option<&str>,
+    amd64_variant: Option<&str>,
 ) {
     ctx.template_vars_mut().set("Os", os);
     ctx.template_vars_mut().set("Arch", arch);
     ctx.template_vars_mut().set("Target", target.unwrap_or(""));
+    // The conventional default filename omits the variant (deb/rpm/apk
+    // require a bare `amd64` arch field); seeding it here is what lets a
+    // config field or a `file_name_template` tell two amd64 builds apart.
+    anodizer_core::archive_name::seed_amd64_variant_var(
+        ctx.template_vars_mut(),
+        arch,
+        amd64_variant,
+    );
     ctx.template_vars_mut().set(
         "Libc",
         target
@@ -100,12 +109,13 @@ pub(crate) fn set_nfpm_per_pkg_template_vars(
     os: &str,
     arch: &str,
     target: Option<&str>,
+    amd64_variant: Option<&str>,
     format: &str,
     pkg_name: &str,
     ext: &str,
     version: &str,
 ) {
-    set_nfpm_per_target_template_vars(ctx, os, arch, target);
+    set_nfpm_per_target_template_vars(ctx, os, arch, target, amd64_variant);
     ctx.template_vars_mut().set("Format", format);
     ctx.template_vars_mut().set("PackageName", pkg_name);
     ctx.template_vars_mut().set("ConventionalExtension", ext);
@@ -261,19 +271,16 @@ pub(crate) fn clear_nfpm_template_vars(ctx: &mut Context) {
 pub(crate) fn execute_nfpm_jobs(
     jobs: &[NfpmJob],
     parallelism: usize,
-    verbosity: anodizer_core::log::Verbosity,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<Vec<Artifact>> {
-    let log = anodizer_core::log::StageLogger::new("nfpm", verbosity);
     let run_job = |job: &NfpmJob| -> Result<Artifact> {
-        let thread_log = anodizer_core::log::StageLogger::new("nfpm", verbosity);
-
-        thread_log.verbose(&format!("running {}", job.cmd_args.join(" ")));
-
         let mut cmd = Command::new(&job.cmd_args[0]);
         cmd.args(&job.cmd_args[1..]);
         for (k, v) in &job.extra_env {
             cmd.env(k, v);
         }
+        let thread_log = log.with_child_env(&cmd);
+        thread_log.verbose(&thread_log.redact(&format!("running {}", job.cmd_args.join(" "))));
         let output = cmd.output().with_context(|| {
             format!(
                 "execute nfpm for format {} (crate {} target {:?})",
@@ -289,7 +296,7 @@ pub(crate) fn execute_nfpm_jobs(
             && [&output.stdout, &output.stderr]
                 .iter()
                 .any(|s| String::from_utf8_lossy(s).contains("no packager registered"));
-        let checked = thread_log.with_child_env(&cmd).check_output(output, "nfpm");
+        let checked = thread_log.check_output(output, "nfpm");
         match checked {
             Err(e) if unregistered_packager => {
                 return Err(e.context("the 'msix' packager requires nfpm >= 2.46.0"));
@@ -302,7 +309,7 @@ pub(crate) fn execute_nfpm_jobs(
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| job.pkg_path.display().to_string());
-        thread_log.status(&format!("packed {pkg_name}"));
+        thread_log.status(&thread_log.redact(&format!("packed {pkg_name}")));
 
         if let Some(mt) = job.mtime {
             // A failure here would leave the package carrying a wall-clock
@@ -315,10 +322,10 @@ pub(crate) fn execute_nfpm_jobs(
                 )
             })?;
             if let Some(ref repr) = job.mtime_repr {
-                thread_log.verbose(&format!(
+                thread_log.verbose(&thread_log.redact(&format!(
                     "applied mtime={repr} to {}",
                     job.pkg_path.display()
-                ));
+                )));
             }
         }
 
@@ -333,7 +340,7 @@ pub(crate) fn execute_nfpm_jobs(
         })
     };
 
-    anodizer_core::parallel::run_parallel_chunks(jobs, parallelism, "nfpm", &log, run_job)
+    anodizer_core::parallel::run_parallel_chunks(jobs, parallelism, "nfpm", "package", log, run_job)
 }
 
 /// One nfpm YAML config a build would feed to `nfpm pkg` for a single

@@ -193,7 +193,8 @@ pub(crate) fn execute_docker_build(
     job: &DockerBuildJob,
     log: &StageLogger,
 ) -> Result<DockerBuildResult> {
-    log.verbose(&format!("running {}", job.cmd_args.join(" ")));
+    let job_log = log.with_job_env(job.env_vars.clone());
+    log.verbose(&job_log.redact(&format!("running {}", job.cmd_args.join(" "))));
 
     use anodizer_core::retry::{RetryLog, RetryPolicy, retry_sync_deadline};
     use std::ops::ControlFlow;
@@ -370,19 +371,10 @@ pub(crate) fn execute_docker_build(
         .cloned();
     match &digest {
         Some(digest) => {
-            // `images` and `digest` are separate structured fields rather than
-            // one embedded `image@digest`, so a log aggregator can query them
-            // independently.
-            tracing::info!(
-                images = %job.rendered_tags.join(","),
-                digest = %digest,
-                "created images",
-            );
-            log.status(&format_v2_created_images_log(&job.rendered_tags, digest));
+            log.status(&job_log.redact(&format_v2_created_images_log(&job.rendered_tags, digest)));
         }
         None => {
-            tracing::info!(images = %job.rendered_tags.join(","), "created images");
-            log.status(&format_created_images_log(&job.rendered_tags));
+            log.status(&job_log.redact(&format_created_images_log(&job.rendered_tags)));
         }
     }
 
@@ -396,13 +388,13 @@ pub(crate) fn execute_docker_build(
             let safe_name = tag.replace(['/', ':'], "_");
             let digest_file = job.dist.join(format!("{}.digest", safe_name));
             if let Err(e) = fs::write(&digest_file, digest) {
-                log.warn(&format!(
+                log.warn(&job_log.redact(&format!(
                     "failed to write digest file {}: {}",
                     digest_file.display(),
                     e
-                ));
+                )));
             } else {
-                log.status(&format!("saved digest to {}", digest_file.display()));
+                log.status(&job_log.redact(&format!("saved digest to {}", digest_file.display())));
                 digest_files.push(digest_file);
             }
         }
@@ -450,7 +442,8 @@ fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<BTreeMap<
 
     let mut tag_digests = BTreeMap::new();
     for (tag, push_args) in job.rendered_tags.iter().zip(&push_cmds) {
-        log.verbose(&format!("running {}", push_args.join(" ")));
+        let job_log = log.with_job_env(job.env_vars.clone());
+        log.verbose(&job_log.redact(&format!("running {}", push_args.join(" "))));
         retry_sync_deadline(
             RetryLog::new("podman push", log),
             &policy,
@@ -526,27 +519,27 @@ fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<BTreeMap<
             },
         )
         .with_context(|| {
-            format!(
+            job_log.redact(&format!(
                 "podman push: all {} attempts failed for crate {} index {} ({})",
                 job.max_attempts,
                 job.crate_name,
                 job.idx,
                 push_args.last().map(String::as_str).unwrap_or(""),
-            )
+            ))
         })?;
-        log.status(&format!(
+        log.status(&job_log.redact(&format!(
             "pushed image {}",
             push_args.last().map(String::as_str).unwrap_or("")
-        ));
+        )));
         let digest_file = crate::command::podman_push_digest_file(&job.staging_dir, tag);
         match fs::read_to_string(&digest_file) {
             Ok(digest) if !digest.trim().is_empty() => {
                 tag_digests.insert(tag.clone(), digest.trim().to_string());
             }
-            _ => log.verbose(&format!(
+            _ => log.verbose(&job_log.redact(&format!(
                 "podman wrote no digest for {tag} at {}",
                 digest_file.display()
-            )),
+            ))),
         }
     }
 

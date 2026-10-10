@@ -19,6 +19,11 @@ impl<'a> RetryLog<'a> {
     /// `desc` is a short human description of the operation being retried
     /// (e.g. `"chocolatey push"`, `"mastodon announce"`); it prefixes every
     /// per-attempt warn line.
+    ///
+    /// Every line is masked through `log`'s redaction table, so a
+    /// description built from a rendered value (an artifact path, an image
+    /// reference) is passed with the logger that holds the job's env:
+    /// [`StageLogger::with_child_env`] or [`StageLogger::with_job_env`].
     pub fn new(desc: &'a str, log: &'a StageLogger) -> Self {
         Self { desc, log }
     }
@@ -37,14 +42,14 @@ impl<'a> RetryLog<'a> {
     ) {
         // Spelled through the tool's one duration format (`45s`, `2m15s`) so a
         // retry line and an adjacent heartbeat line read the same way.
-        self.log.warn(&format!(
+        self.log.warn(&self.log.redact(&format!(
             "{} attempt {}/{} failed ({}); retrying in {}",
             self.desc,
             attempt,
             max,
             cause,
             crate::progress::format_elapsed(delay)
-        ));
+        )));
     }
 
     /// Warn that the ladder exhausted its attempts (or wall-clock budget) and is
@@ -52,10 +57,10 @@ impl<'a> RetryLog<'a> {
     /// returns: the error names *what* failed, this line records that the
     /// retries themselves are spent so a watcher does not wait for more.
     pub(super) fn warn_giving_up(&self, attempts: u32) {
-        self.log.warn(&format!(
+        self.log.warn(&self.log.redact(&format!(
             "{} failed after {} attempt(s), giving up",
             self.desc, attempts
-        ));
+        )));
     }
 
     /// Note (default-visible) that the operation recovered after `attempts`
@@ -65,10 +70,10 @@ impl<'a> RetryLog<'a> {
         // status, not warn: a recovered transient is a positive per-operation
         // result an operator wants at default verbosity, mirroring the
         // rollback/dry-run default events — not a command echo.
-        self.log.status(&format!(
+        self.log.status(&self.log.redact(&format!(
             "{} succeeded after {} attempt(s)",
             self.desc, attempts
-        )); // status-ok: recovered-after-retry is a per-operation result event
+        ))); // status-ok: recovered-after-retry is a per-operation result event
     }
 }
 

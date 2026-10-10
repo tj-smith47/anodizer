@@ -440,6 +440,31 @@ pub(crate) fn aur_default_git_url(package_name: &str) -> String {
     format!("ssh://aur@aur.archlinux.org/{}.git", package_name)
 }
 
+/// The remote an AUR entry pushes to: its `git_url:` when one is written
+/// (verbatim; an empty or blank value counts as unset), else
+/// [`aur_default_git_url`] for the resolved package name.
+pub(crate) fn aur_push_git_url(git_url: Option<&str>, package_name: &str) -> String {
+    match aur_push_git_url_or_else(git_url, || {
+        Ok::<_, std::convert::Infallible>(package_name.to_string())
+    }) {
+        Ok(url) => url,
+        Err(never) => match never {},
+    }
+}
+
+/// [`aur_push_git_url`] for a caller that resolves the package name only
+/// when no `git_url:` is written: `package_name` runs in that case alone, so
+/// a name template is rendered (and a broken one warned about) once.
+pub(crate) fn aur_push_git_url_or_else<E>(
+    git_url: Option<&str>,
+    package_name: impl FnOnce() -> Result<String, E>,
+) -> Result<String, E> {
+    match git_url.filter(|u| !u.trim().is_empty()) {
+        Some(url) => Ok(url.to_string()),
+        None => Ok(aur_default_git_url(&package_name()?)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,7 +526,6 @@ mod tests {
             vec!["init", "-b", "master"],
             vec!["config", "user.email", "t@example.invalid"],
             vec!["config", "user.name", "T"],
-            vec!["config", "commit.gpgsign", "false"],
         ] {
             anodizer_core::test_helpers::git_test_ok(work.path(), &args);
         }

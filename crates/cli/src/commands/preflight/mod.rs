@@ -488,11 +488,11 @@ fn verify_cosign_keys_load(requirements: &[SourcedRequirement], log: &StageLogge
 fn verify_cosign_keys_load_with(
     requirements: &[SourcedRequirement],
     log: &StageLogger,
-    load: impl Fn(&str) -> anodizer_stage_sign::CosignKeyLoad,
+    load: impl Fn(&str, &StageLogger) -> anodizer_stage_sign::CosignKeyLoad,
 ) -> bool {
     let mut all_loaded = true;
     for key_ref in cosign_key_refs(requirements) {
-        match load(&key_ref) {
+        match load(&key_ref, log) {
             anodizer_stage_sign::CosignKeyLoad::Loaded => {
                 log.status(&format!("cosign key {key_ref} loads (offline verify)"));
             }
@@ -508,15 +508,17 @@ fn verify_cosign_keys_load_with(
                 // tool-missing skip. Sign time still re-validates, so WARN (not
                 // a hard gate failure), mirroring the unavailable case.
                 log.warn(&format!(
-                    "{detail}; skipping offline {key_ref} load verification \
-                     — the key/password combo will be validated at sign time instead"
+                    "{}; skipping offline {key_ref} load verification \
+                     — the key/password combo will be validated at sign time instead",
+                    log.redact(&detail)
                 ));
             }
             anodizer_stage_sign::CosignKeyLoad::Failed(detail) => {
                 all_loaded = false;
                 log.error(&format!(
                     "cosign key {key_ref} failed to load (wrong or missing COSIGN_PASSWORD, \
-                     or malformed key): {detail}"
+                     or malformed key): {}",
+                    log.redact(&detail)
                 ));
             }
         }

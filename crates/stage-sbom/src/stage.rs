@@ -294,13 +294,6 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
             rendered_env.push((k.clone(), rendered_val));
         }
 
-        log.verbose(&format!(
-            "running {} {} (sbom[{}])",
-            cmd,
-            rendered_args.join(" "),
-            id
-        ));
-
         let mut command = Command::new(cmd);
         command.args(&rendered_args);
         command.current_dir(dist);
@@ -309,15 +302,20 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
         for (k, v) in &rendered_env {
             command.env(k, v);
         }
+        let child_log = log.with_child_env(&command);
+        child_log.verbose(&child_log.redact(&format!(
+            "running {} {} (sbom[{}])",
+            cmd,
+            rendered_args.join(" "),
+            id
+        )));
 
         let output = command
             .output()
             .with_context(|| format!("sbom[{}]: failed to run '{}'", id, cmd))?;
 
         if !output.status.success() {
-            let stderr = log
-                .with_child_env(&command)
-                .redact(&String::from_utf8_lossy(&output.stderr));
+            let stderr = child_log.redact(&String::from_utf8_lossy(&output.stderr));
             bail!("sbom[{}]: '{}' failed: {}", id, cmd, stderr.trim());
         }
 
@@ -333,18 +331,18 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
             let full_pattern = dist.join(doc_path);
             let pattern_str = full_pattern.to_string_lossy().into_owned();
             let entries = glob::glob(&pattern_str).with_context(|| {
-                format!(
+                child_log.redact(&format!(
                     "sbom[{}]: invalid glob pattern '{}' for document",
                     id, pattern_str
-                )
+                ))
             })?;
 
             for entry in entries {
                 let match_path = entry.with_context(|| {
-                    format!(
+                    child_log.redact(&format!(
                         "sbom[{}]: failed to read glob match for '{}'",
                         id, pattern_str
-                    )
+                    ))
                 })?;
                 if !match_path.exists() {
                     continue;
@@ -352,11 +350,11 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                 // Check the file is non-empty — a zero-byte SBOM is useless
                 let file_len = std::fs::metadata(&match_path).map(|m| m.len()).unwrap_or(0);
                 if file_len == 0 {
-                    bail!(
+                    bail!(child_log.redact(&format!(
                         "sbom[{}]: command succeeded but produced empty output file '{}'",
                         id,
                         match_path.display()
-                    );
+                    )));
                 }
                 any_doc_found = true;
 
@@ -395,12 +393,10 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
             }
         }
         if !any_doc_found {
-            bail!(
+            bail!(child_log.redact(&format!(
                 "sbom[{}]: command '{}' succeeded but produced no output files (expected: {:?})",
-                id,
-                cmd,
-                rendered_docs
-            );
+                id, cmd, rendered_docs
+            )));
         }
     }
 

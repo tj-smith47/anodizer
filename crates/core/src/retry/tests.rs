@@ -371,6 +371,48 @@ fn steps_sync_retry_then_done_emits_succeeded() {
     );
 }
 
+/// A retry description is often built from a rendered value (an artifact
+/// path, an image reference), and every retry line prints it.
+#[test]
+fn every_retry_line_is_masked_through_the_loggers_table() {
+    let secret = "hunter2-retry-label-secret";
+    let (log, cap) = captured();
+    let log = log.with_job_env([("UPLOAD_TOKEN".to_string(), secret.to_string())]);
+    let desc = format!("verification of registry/{secret}/app");
+
+    let recovered: Result<u32, &str> =
+        retry_steps_sync(RetryLog::new(&desc, &log), 3, None, |attempt| {
+            if attempt < 2 {
+                RetryStep::Retry {
+                    error: "transient",
+                    delay: TINY,
+                    cause: format!("401 for {secret}"),
+                }
+            } else {
+                RetryStep::Done(attempt)
+            }
+        });
+    assert_eq!(recovered, Ok(2));
+    let exhausted: Result<u32, &str> =
+        retry_steps_sync(RetryLog::new(&desc, &log), 2, None, |_| RetryStep::Retry {
+            error: "transient",
+            delay: TINY,
+            cause: "blip".into(),
+        });
+    assert_eq!(exhausted, Err("transient"));
+
+    let logged: Vec<String> = cap.all_messages().into_iter().map(|(_, m)| m).collect();
+    for needle in ["attempt 1/3 failed", "succeeded after 2", "giving up"] {
+        assert!(
+            logged
+                .iter()
+                .any(|m| m.contains(needle) && m.contains("registry/$UPLOAD_TOKEN/app")),
+            "the `{needle}` line must be printed with the value masked: {logged:?}"
+        );
+    }
+    assert!(!logged.iter().any(|m| m.contains(secret)), "{logged:?}");
+}
+
 #[test]
 fn steps_sync_done_quiet_recovers_without_succeeded_line() {
     // DoneQuiet returns the value like Done, but a recovery after retries

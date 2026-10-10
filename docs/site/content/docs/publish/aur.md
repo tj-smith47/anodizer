@@ -345,7 +345,7 @@ Each entry generates its own PKGBUILD and .SRCINFO, written to `dist/aur_source/
 
 ## One package name per entry
 
-The AUR keys a package on its name, so two entries that render the same `name:` would push one PKGBUILD over the other and the second config would ship silently. The pre-publish guard renders every `publish.aur`, `publish.aur_source` and `aur_sources[]` entry (each in its own crate's scope) and fails the release before any push when two of them name one package:
+The AUR keys a package on its name, so two entries that render the same `name:` would push one PKGBUILD over the other and the second config would ship silently. The pre-publish guard renders every `publish.aur`, `publish.aur_source` and `aur_sources[]` entry (each in its own crate's scope) and fails the release before any push when two or more of them name one package on one push remote. Every entry in the group is named in a single finding:
 
 ```bash
 $ anodizer release --snapshot
@@ -355,6 +355,8 @@ aur: field 'pkgname' — package name 'myapp' is rendered by both crate 'cli' (p
 ```
 
 An entry that is skipped (`skip`, `skip_upload`, a falsy `if:`) pushes nothing and claims no name.
+
+The remote is the entry's `git_url:`, or `ssh://aur@aur.archlinux.org/<name>.git` when none is written. Two entries that render one name and push it to two different remotes are two packages, and both are accepted.
 
 ## SSH key setup
 

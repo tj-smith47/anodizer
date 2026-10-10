@@ -50,10 +50,11 @@ impl PublisherSchemaValidator for AurSchemaValidator {
         // leaves a missing `bash` a warn+skip — but the signal is wired uniformly.
         let strict = ctx.render_is_strict();
         let mut findings = Vec::new();
-        // Every rendered entry claims its package name here; two claims on one
-        // name are reported after all three walks, so each entry is still
-        // rendered and validated on its own before the pair is named.
-        let mut claimed: Vec<(String, String)> = Vec::new();
+        // Every rendered entry claims its package name on its push remote
+        // here; several claims on one pair are reported after all three
+        // walks, so each entry is still rendered and validated on its own
+        // before the group is named.
+        let mut claimed: Vec<AurClaim> = Vec::new();
 
         // BINARY AUR (`publish.aur`). Walk exactly the crate set the live
         // binary-AUR publisher iterates (honoring `--crate` selection, else
@@ -116,8 +117,9 @@ impl PublisherSchemaValidator for AurSchemaValidator {
                             .with_context(|| format!("aur: '{crate_name}'"))?
                     {
                         validate_rendered(&mut out, &rendered, strict, &log)?;
-                        claimed.push((
+                        claimed.push(AurClaim::new(
                             format!("crate '{crate_name}' (publish.aur)"),
+                            aur_cfg.as_ref().and_then(|c| c.git_url.as_deref()),
                             rendered.package_name,
                         ));
                     }
@@ -146,8 +148,15 @@ impl PublisherSchemaValidator for AurSchemaValidator {
                         render_aur_source_pkgbuild_and_srcinfo_for_crate(ctx, crate_name, &log)?
                     {
                         validate_rendered(&mut out, &rendered, strict, &log)?;
-                        claimed.push((
+                        let git_url = ctx
+                            .config
+                            .find_crate(crate_name)
+                            .and_then(|c| c.publish.as_ref())
+                            .and_then(|p| p.aur_source.as_ref())
+                            .and_then(|s| s.git_url.clone());
+                        claimed.push(AurClaim::new(
                             format!("crate '{crate_name}' (publish.aur_source)"),
+                            git_url.as_deref(),
                             rendered.package_name,
                         ));
                     }
@@ -158,12 +167,19 @@ impl PublisherSchemaValidator for AurSchemaValidator {
 
         // Top-level `aur_sources:` array (not per-crate). Empty when unset or
         // every entry is skipped.
-        for (i, rendered) in render_top_level_aur_source(ctx, &log)?
-            .into_iter()
-            .enumerate()
-        {
+        for (i, rendered) in render_top_level_aur_source(ctx, &log)? {
             validate_rendered(&mut findings, &rendered, strict, &log)?;
-            claimed.push((format!("aur_sources[{i}]"), rendered.package_name));
+            let git_url = ctx
+                .config
+                .aur_sources
+                .as_ref()
+                .and_then(|entries| entries.get(i))
+                .and_then(|entry| entry.git_url.clone());
+            claimed.push(AurClaim::new(
+                format!("aur_sources[{i}]"),
+                git_url.as_deref(),
+                rendered.package_name,
+            ));
         }
 
         findings.extend(duplicate_name_findings(&claimed));
@@ -185,27 +201,63 @@ fn validate_rendered(
     Ok(())
 }
 
-/// One finding per pair of entries that rendered the same package name.
-///
-/// The AUR keys a package on its name, so two entries sharing one would push
-/// one PKGBUILD over the other and the second config would ship silently.
-/// Only rendered entries are in `claimed`:
-/// a skipped entry pushes nothing and so claims no name.
-fn duplicate_name_findings(claimed: &[(String, String)]) -> Vec<SchemaFinding> {
-    let mut out = Vec::new();
-    for (i, (first, name)) in claimed.iter().enumerate() {
-        for (second, other) in &claimed[i + 1..] {
-            if name == other {
-                out.push(finding(
-                    "pkgname",
-                    &format!(
-                        "package name '{name}' is rendered by both {first} and {second} — two \
-                         entries sharing one AUR package push one PKGBUILD over the other; \
-                         give each entry its own `name:`"
-                    ),
-                ));
-            }
+/// One rendered entry's claim on an AUR repository: the package name it
+/// rendered and the remote it pushes that package to, as the key
+/// [`anodizer_core::git::remote_identity`] gives it, so two spellings of one
+/// remote (`ssh://aur@aur.archlinux.org/x.git`, `aur@aur.archlinux.org:x.git`)
+/// claim one repository.
+struct AurClaim {
+    label: String,
+    remote: String,
+    name: String,
+}
+
+impl AurClaim {
+    fn new(label: String, git_url: Option<&str>, name: String) -> Self {
+        Self {
+            label,
+            remote: anodizer_core::git::remote_identity(&crate::util::aur_push_git_url(
+                git_url, &name,
+            )),
+            name,
         }
+    }
+}
+
+/// One finding per group of entries that rendered the same package name onto
+/// the same push remote.
+///
+/// An AUR host keys a package on its name, so entries sharing one would push
+/// one PKGBUILD over the other and all but the last config would ship
+/// silently. `git_url:` is a per-entry override, so one name on two remotes is
+/// two packages and is accepted. Only rendered entries are in `claimed`: a
+/// skipped entry pushes nothing and so claims no name.
+fn duplicate_name_findings(claimed: &[AurClaim]) -> Vec<SchemaFinding> {
+    let mut out = Vec::new();
+    for (i, first) in claimed.iter().enumerate() {
+        let same = |c: &&AurClaim| c.remote == first.remote && c.name == first.name;
+        if claimed[..i].iter().any(|c| same(&c)) {
+            continue;
+        }
+        let labels: Vec<&str> = claimed[i..]
+            .iter()
+            .filter(same)
+            .map(|c| c.label.as_str())
+            .collect();
+        let (by, count) = match labels.as_slice() {
+            [_] => continue,
+            [a, b] => (format!("both {a} and {b}"), "two"),
+            [rest @ .., last] => (format!("{} and {last}", rest.join(", ")), "several"),
+            [] => continue,
+        };
+        out.push(finding(
+            "pkgname",
+            &format!(
+                "package name '{}' is rendered by {by} — {count} entries sharing one AUR \
+                 package push one PKGBUILD over the other; give each entry its own `name:`",
+                first.name
+            ),
+        ));
     }
     out
 }
@@ -1409,6 +1461,110 @@ mod tests {
         );
     }
 
+    /// `git_url:` is a per-entry override: one name pushed to two remotes is two
+    /// packages, so neither entry overwrites the other and nothing is reported.
+    #[test]
+    fn one_name_on_two_remotes_is_accepted() {
+        let alpha = aur_crate("alpha", "v{{ .Version }}", every_option_aur_cfg());
+        let beta = aur_crate(
+            "beta",
+            "v{{ .Version }}",
+            AurConfig {
+                git_url: Some("ssh://aur@mirror.example/widget-bin.git".to_string()),
+                ..every_option_aur_cfg()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![alpha, beta])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        add_linux_archive(&mut ctx, "alpha", "1.0.0");
+        add_linux_archive(&mut ctx, "beta", "1.0.0");
+
+        let findings = AurSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
+        assert!(findings.is_empty(), "got: {findings:?}");
+    }
+
+    /// Two spellings of one remote name one repository: an scp-style
+    /// `git_url:` beside the default `ssh://` one, with a trailing slash and
+    /// an upper-case host, is still the same AUR package.
+    #[test]
+    fn two_spellings_of_one_remote_are_one_package() {
+        let alpha = aur_crate("alpha", "v{{ .Version }}", every_option_aur_cfg());
+        let beta = aur_crate(
+            "beta",
+            "v{{ .Version }}",
+            AurConfig {
+                git_url: Some("aur@AUR.archlinux.org:widget-bin.git/".to_string()),
+                ..every_option_aur_cfg()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![alpha, beta])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        add_linux_archive(&mut ctx, "alpha", "1.0.0");
+        add_linux_archive(&mut ctx, "beta", "1.0.0");
+
+        let findings = AurSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
+        assert_eq!(findings.len(), 1, "got: {findings:?}");
+        assert!(
+            findings[0]
+                .expected
+                .starts_with("package name 'widget-bin' is rendered by both"),
+            "got: {}",
+            findings[0].expected
+        );
+    }
+
+    /// Three entries on one name and one remote are one defect, reported once
+    /// with every entry named, and an unwritten `git_url:` is the remote the
+    /// name derives.
+    #[test]
+    fn three_entries_rendering_one_name_are_one_finding() {
+        let unset = AurConfig {
+            git_url: None,
+            ..every_option_aur_cfg()
+        };
+        let alpha = aur_crate("alpha", "v{{ .Version }}", every_option_aur_cfg());
+        let beta = aur_crate("beta", "v{{ .Version }}", unset.clone());
+        let gamma = aur_crate("gamma", "v{{ .Version }}", unset);
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![alpha, beta, gamma])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        for c in ["alpha", "beta", "gamma"] {
+            add_linux_archive(&mut ctx, c, "1.0.0");
+        }
+
+        let findings = AurSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
+        assert_eq!(findings.len(), 1, "one finding, got: {findings:?}");
+        assert_eq!(
+            findings[0].expected,
+            "package name 'widget-bin' is rendered by crate 'alpha' (publish.aur), crate 'beta' \
+             (publish.aur) and crate 'gamma' (publish.aur) — several entries sharing one AUR \
+             package push one PKGBUILD over the other; give each entry its own `name:`"
+        );
+    }
+
     /// Distinct names, and skipped entries that would otherwise collide, report
     /// nothing: a skipped entry pushes no PKGBUILD, so it claims no name —
     /// whichever of `skip:`, `skip_upload:` and a falsy `if:` skipped it.
@@ -1488,6 +1644,7 @@ mod tests {
             "v{{ .Version }}",
             AurConfig {
                 name: Some("myapp".to_string()),
+                git_url: None,
                 ..every_option_aur_cfg()
             },
         );
