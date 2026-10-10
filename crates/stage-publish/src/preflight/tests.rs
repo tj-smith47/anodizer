@@ -530,11 +530,7 @@ fn aur_rpc_absent_on_404() {
 
 #[test]
 fn crates_io_checker_unknown_on_network_error() {
-    // Bind a port to learn a free one, then drop the listener so the
-    // following GET attempt fails with connection refused.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    drop(listener);
+    let addr = anodizer_core::test_helpers::refusing_addr::refusing_addr();
 
     let url = format!("http://{}/", addr);
     let result = query_crates_io(

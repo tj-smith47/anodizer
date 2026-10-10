@@ -31,6 +31,7 @@ pub fn after_the_inline_module(m: &Meta) -> Option<&String> {
 }
 
 pub fn production_globals() {
+    let _ = Command::new("git").args(["-c", "commit.gpgsign=true", "commit"]).output();
     unsafe { std::env::set_var("PRODUCTION_ONLY", "1") };
     let _ = Command::new("git").arg("rev-parse").output();
     let _ = std::fs::set_permissions("staged", std::fs::Permissions::from_mode(0o755));

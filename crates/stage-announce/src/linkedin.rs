@@ -612,13 +612,10 @@ mod tests {
 
     #[test]
     fn share_transport_error_is_classified_and_surfaced() {
-        // Bind a listener to reserve a port, then drop it: the connect gets
-        // ECONNREFUSED, which the userinfo arm classifies as a (retriable)
-        // transport error and surfaces after attempts are exhausted.
-        let addr = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap()
-        };
+        // The connect gets ECONNREFUSED, which the userinfo arm classifies
+        // as a (retriable) transport error and surfaces after attempts are
+        // exhausted.
+        let addr = anodizer_core::test_helpers::refusing_addr::refusing_addr();
         let log = StageLogger::new("announce", Verbosity::Quiet);
         let err = send_linkedin_to(
             &format!("http://{addr}"),

@@ -978,6 +978,7 @@ mod tests {
     /// depends on whether gh is on PATH, so only assert it returns a bool
     /// without panicking.
     #[test]
+    #[serial_test::serial(path_env)]
     fn gh_is_available_returns_a_bool_without_panicking() {
         let log = StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
         let _: bool = gh_is_available(&log);
@@ -1492,7 +1493,6 @@ mod tests {
         git_ok(dir, &["init", "-b", "master"]);
         git_ok(dir, &["config", "user.email", "test@example.invalid"]);
         git_ok(dir, &["config", "user.name", "Test"]);
-        git_ok(dir, &["config", "commit.gpgsign", "false"]);
     }
 
     fn write_commit(dir: &Path, file: &str, contents: &str, msg: &str) {
@@ -1584,7 +1584,6 @@ mod tests {
             &["config", "user.email", "test@example.invalid"],
         );
         git_ok(work.path(), &["config", "user.name", "Test"]);
-        git_ok(work.path(), &["config", "commit.gpgsign", "false"]);
 
         // Advance upstream by one commit AFTER the work clone was taken,
         // so `sync_fork`'s rebase has something to fast-forward over.

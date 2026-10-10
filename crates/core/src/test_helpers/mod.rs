@@ -20,6 +20,7 @@
 //! - [`create_fake_binary`] — creates a dummy binary file for archive/checksum tests
 //! - [`test_sources`] — what counts as a whole test source file, shared with
 //!   the `.claude/scripts/**` scanners
+//! - [`refusing_addr`] — the one address a test uses for "nothing listens here"
 //! - [`responder`] — shared in-process HTTP responder for unit tests
 //!   (consolidates ~11 inline copies; fixes the v0.3.0 chocolatey /
 //!   v0.3.0 github-rate-limit CI flakes)
@@ -28,6 +29,7 @@ pub mod artifact_set;
 pub mod env;
 pub mod fake_tool;
 pub mod https_responder;
+pub mod refusing_addr;
 pub mod responder;
 pub mod scripted_responder;
 pub mod spawn;
@@ -800,8 +802,6 @@ pub fn create_fake_binary(dir: &Path, name: &str) -> std::path::PathBuf {
 /// Expects that the directory already has files to commit (e.g. from [`create_test_project`]).
 pub fn init_git_repo(dir: &Path) {
     git_test_ok(dir, &["init"]);
-    git_test_ok(dir, &["config", "user.email", "test@test.com"]);
-    git_test_ok(dir, &["config", "user.name", "Test"]);
     git_test_ok(dir, &["add", "-A"]);
     git_test_ok(dir, &["commit", "-m", "initial"]);
     git_test_ok(dir, &["tag", "v0.1.0"]);
@@ -814,8 +814,6 @@ pub fn init_git_repo(dir: &Path) {
 /// is placed on the first commit.
 pub fn init_git_repo_with_commits(dir: &Path, commits: &[&str]) {
     git_test_ok(dir, &["init"]);
-    git_test_ok(dir, &["config", "user.email", "test@test.com"]);
-    git_test_ok(dir, &["config", "user.name", "Test"]);
 
     for (i, message) in commits.iter().enumerate() {
         let filename = format!("commit_{}.txt", i);
@@ -1219,9 +1217,8 @@ mod git_fixture_identity {
 
     /// The repo fixtures spawn git through the shared pinned helper, so a host
     /// whose global config demands a signature or supplies no identity still
-    /// gets a committed fixture. The pinned identity is observable on the
-    /// commit itself: `-c user.name=` on the invocation outranks the repo-local
-    /// `user.name` the fixture also writes.
+    /// gets a committed fixture. The identity is the fixture config's, which
+    /// `git init` copied into the repository.
     #[test]
     fn the_fixture_commit_carries_the_pinned_test_identity() {
         let dir = tempfile::tempdir().expect("tempdir for git fixture");

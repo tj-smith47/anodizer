@@ -771,10 +771,77 @@ fn external_cmd_default_binary_documents_disambiguate_amd64_variants() {
     assert_eq!(
         sbom_names,
         vec![
-            "myproj_1.0.0_linux_amd64.sbom.json".to_string(),
-            "myproj_1.0.0_linux_amd64v3.sbom.json".to_string(),
+            "myproj_1.0.0_linux_amd64_gnu.sbom.json".to_string(),
+            "myproj_1.0.0_linux_amd64v3_gnu.sbom.json".to_string(),
         ],
-        "the v1 baseline keeps the historical name and v3 sits beside it"
+        "the v1 baseline renders no level and v3 sits beside it"
+    );
+}
+
+/// A gnu and a musl build of one binary share an OS and an architecture; the
+/// default `documents:` still catalogs them into two documents, and a target
+/// that names no ABI keeps the plain name.
+#[cfg(unix)]
+#[test]
+fn external_cmd_default_binary_documents_separate_gnu_from_musl() {
+    let tools = FakeToolDir::new();
+    tools
+        .tool("syft")
+        .script("for a in \"$@\"; do case \"$a\" in *=*) echo '{}' > \"${a#*=}\";; esac; done")
+        .install();
+
+    let (mut ctx, tmp) = external_ctx(
+        tools.tool_path("syft"),
+        SbomConfig {
+            id: Some("bin".into()),
+            artifacts: Some("binary".into()),
+            args: Some(vec![
+                "$artifact".into(),
+                "--output".into(),
+                "spdx-json=$document".into(),
+            ]),
+            env: Some(vec![]),
+            ..Default::default()
+        },
+    );
+    let dist = tmp.path().to_path_buf();
+    for target in [
+        "x86_64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "x86_64-apple-darwin",
+    ] {
+        let dir = dist.join(target);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("myproj");
+        std::fs::write(&path, b"\x7fELF fake").unwrap();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "myproj".into(),
+            path,
+            target: Some(target.into()),
+            crate_name: "myproj".into(),
+            metadata: HashMap::from([("binary".to_string(), "myproj".to_string())]),
+            size: None,
+        });
+    }
+
+    SbomStage.run(&mut ctx).expect("sbom stage");
+
+    let mut sbom_names: Vec<String> = ctx
+        .artifacts
+        .all()
+        .iter()
+        .filter(|a| a.kind == ArtifactKind::Sbom)
+        .map(|a| a.name.clone())
+        .collect();
+    sbom_names.sort();
+    assert_eq!(
+        sbom_names,
+        vec![
+            "myproj_1.0.0_darwin_amd64.sbom.json".to_string(),
+            "myproj_1.0.0_linux_amd64_gnu.sbom.json".to_string(),
+            "myproj_1.0.0_linux_amd64_musl.sbom.json".to_string(),
+        ]
     );
 }
 
@@ -1102,6 +1169,58 @@ fn external_cmd_skip_true_does_not_spawn() {
     assert!(!tools.was_called("syft"), "skip:true must not run the tool");
 }
 
+/// An argument can repeat a value the config's `env:` hands the tool, and the
+/// verbose `running …` echo prints the whole argv: the echo is masked against
+/// the tool's own env.
+#[cfg(unix)]
+#[test]
+fn the_sbom_echo_masks_an_env_value_repeated_in_the_argv() {
+    let secret = "hunter2-sbom-argv-secret";
+    let tools = FakeToolDir::new();
+    tools
+        .tool("syft")
+        .script("echo '{\"k\":1}' > bom.spdx.json")
+        .install();
+
+    let tmpdir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myproj")
+        .tag("v1.0.0")
+        .dist(tmpdir.path().to_path_buf())
+        .verbose(true)
+        .add_sbom(SbomConfig {
+            id: Some("syftcfg".into()),
+            cmd: Some(tools.tool_path("syft").to_string_lossy().into_owned()),
+            artifacts: Some("any".into()),
+            documents: Some(vec!["bom.spdx.json".into()]),
+            args: Some(vec!["scan".into(), format!("--api-token={secret}")]),
+            env: Some(vec![format!("SYFT_API_TOKEN={secret}")]),
+            ..Default::default()
+        })
+        .build();
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+
+    SbomStage.run(&mut ctx).expect("sbom stage");
+
+    assert_eq!(
+        tools.calls("syft")[0],
+        vec!["scan".to_string(), format!("--api-token={secret}")],
+        "the tool itself still receives the value"
+    );
+    let logged: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+    assert!(
+        logged
+            .iter()
+            .any(|m| m.starts_with("running ") && m.contains("--api-token=$SYFT_API_TOKEN")),
+        "the argv echo must be captured with the value masked: {logged:?}"
+    );
+    assert!(
+        !logged.iter().any(|m| m.contains(secret)),
+        "the env value leaked into the log: {logged:?}"
+    );
+}
+
 /// Two SBOM configs sharing the same resolved id is a config error caught
 /// before any subprocess runs.
 #[cfg(unix)]
@@ -1294,4 +1413,32 @@ fn deterministic_uuid_stable_and_shaped() {
         matches!(variant, '8' | '9' | 'a' | 'b'),
         "RFC4122 variant nibble, got {variant} in {a}"
     );
+}
+
+/// An artifact with no target renders an empty per-target scope, whatever
+/// target a stage that ran before left on the shared variables.
+#[test]
+fn an_untargeted_artifact_renders_no_stale_target_in_its_document_name() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myproj")
+        .tag("v1.0.0")
+        .build();
+    anodizer_core::archive_name::seed_artifact_target_vars(
+        ctx.template_vars_mut(),
+        Some("x86_64-unknown-linux-musl"),
+        Some("v3"),
+    );
+    let vars = artifact_template_vars(
+        &ctx,
+        Path::new("dist/checksums.txt"),
+        &HashMap::new(),
+        None,
+        Some(ArtifactKind::Checksum),
+    );
+    let rendered = anodizer_core::template::render(
+        "[{{ Os }}|{{ Arch }}|{{ Target }}|{{ Abi }}{{ targetVariant . }}]",
+        &vars,
+    )
+    .unwrap();
+    assert_eq!(rendered, "[|||]");
 }

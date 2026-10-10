@@ -50,7 +50,6 @@ fn git_init(dir: &Path) {
     run_git(dir, &["init", "-q", "-b", "master"]);
     run_git(dir, &["config", "user.email", "test@test.com"]);
     run_git(dir, &["config", "user.name", "Test"]);
-    run_git(dir, &["config", "commit.gpgsign", "false"]);
 }
 
 fn git_add_commit(dir: &Path, message: &str) {

@@ -1,5 +1,7 @@
 //! Tests for the NPM publisher (restored + realigned to optional-deps).
 
+// path-stubs: npm — the EnvGuard swaps below put a hand-built `npm` on PATH
+
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::{
     BuildConfig, Config, CrateConfig, MetadataConfig, NpmAuthMode, NpmConfig, NpmMode,
@@ -3555,14 +3557,9 @@ fn probe_existence_maps_5xx_to_unknown() {
 
 #[test]
 fn probe_existence_transport_error_is_unknown() {
-    // Bind an ephemeral port, capture its address, then drop the listener so
-    // the port is closed: the probe's GET hits connection-refused (a transport
-    // error, not an HTTP status) and must degrade to Unknown rather than panic.
-    let addr = {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        l.local_addr().expect("addr")
-        // listener dropped here → port closed
-    };
+    // The probe's GET hits connection-refused (a transport error, not an
+    // HTTP status) and must degrade to Unknown rather than panic.
+    let addr = anodizer_core::test_helpers::refusing_addr::refusing_addr();
     let registry = format!("http://{addr}");
     let ctx = TestContextBuilder::new().project_name("demo").build();
     let got = probe_package_existence(&registry, "demo", &ctx.logger("p"));
@@ -3733,10 +3730,7 @@ fn probe_dist_tag_is_none_on_absent_field() {
 
 #[test]
 fn probe_dist_tag_is_none_on_transport_error() {
-    let addr = {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        l.local_addr().expect("addr")
-    };
+    let addr = anodizer_core::test_helpers::refusing_addr::refusing_addr();
     let registry = format!("http://{addr}");
     let ctx = TestContextBuilder::new().project_name("demo").build();
     assert_eq!(
@@ -3776,13 +3770,10 @@ fn guarded_helper_demotes_against_a_live_newer_latest() {
 #[test]
 fn guarded_helper_skips_the_probe_for_an_explicit_tag() {
     // A non-default tag short-circuits: no network round-trip at all.
-    let addr = {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        l.local_addr().expect("addr")
-    };
+    let addr = anodizer_core::test_helpers::refusing_addr::refusing_addr();
     let registry = format!("http://{addr}");
     let ctx = TestContextBuilder::new().project_name("demo").build();
-    // The port is closed; if the helper probed, it would still return "next"
+    // Nothing listens there; if the helper probed, it would still return "next"
     // (fail-open), but the point is it must NOT probe for an explicit tag.
     let got =
         dist_tag_guarded_against_regression("next", "0.20.0", &registry, "demo", &ctx.logger("p"));
@@ -4453,7 +4444,7 @@ fn assemble_optional_deps_tarball_is_reproducible_and_binary_is_0o755() {
 /// evidence instead of dropping it to `None`).
 #[cfg(unix)]
 #[test]
-#[serial_test::serial(npm_counter)]
+#[serial_test::serial(npm_counter, path_env)]
 fn partial_publish_failure_preserves_rollback_evidence() {
     let tmp = tempfile::TempDir::new().expect("tmp");
     let bin_dir = tmp.path().join("bin");
@@ -4560,7 +4551,7 @@ esac
 /// must stay at zero.
 #[cfg(unix)]
 #[test]
-#[serial_test::serial(npm_counter)]
+#[serial_test::serial(npm_counter, path_env)]
 fn missing_platform_binary_publishes_nothing() {
     let tmp = tempfile::TempDir::new().expect("tmp");
     let bin_dir = tmp.path().join("bin");
@@ -5642,7 +5633,7 @@ fn rollback_skips_target_whose_token_env_is_unset() {
 /// `run_npm_unpublish` run against a fake `npm` on PATH that exits 0.
 #[cfg(unix)]
 #[test]
-#[serial_test::serial(npm_counter)]
+#[serial_test::serial(npm_counter, path_env)]
 fn rollback_unpublishes_recorded_target_with_valid_token() {
     let tmp = tempfile::TempDir::new().expect("tmp");
     let bin_dir = tmp.path().join("bin");
@@ -5692,7 +5683,7 @@ fn rollback_unpublishes_recorded_target_with_valid_token() {
 /// path, dist_tag_add success bookkeeping, and the promoted outcome.
 #[cfg(unix)]
 #[test]
-#[serial_test::serial(npm_counter)]
+#[serial_test::serial(npm_counter, path_env)]
 fn promote_postinstall_version_retags_metapackage() {
     use super::promote::NpmPromoter;
     use anodizer_core::promote::{Promotable, PromoteRequest, PromoteSelector, PromoteStatus};
@@ -5766,7 +5757,7 @@ exit 0
 /// and the optional-deps branch of retag_config.
 #[cfg(unix)]
 #[test]
-#[serial_test::serial(npm_counter)]
+#[serial_test::serial(npm_counter, path_env)]
 fn promote_optional_deps_newest_reads_dist_tag_and_family() {
     use super::promote::NpmPromoter;
     use anodizer_core::promote::{Promotable, PromoteRequest, PromoteSelector, PromoteStatus};
@@ -5847,5 +5838,187 @@ exit 0
     assert!(
         recorded.contains("view"),
         "the optional-deps family must be listed via npm view; got {recorded:?}"
+    );
+}
+
+/// Under OIDC the token-exchange credentials ride on the `npm publish` child
+/// alone. npm's stderr is embedded in the error, so it is masked against the
+/// env that child was given.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(path_env)]
+fn a_failed_npm_publish_redacts_the_oidc_env_it_was_given() {
+    let tools = anodizer_core::test_helpers::fake_tool::FakeToolDir::new();
+    tools
+        .tool("npm")
+        .script("echo \"npm error exchange with $ACTIONS_ID_TOKEN_REQUEST_TOKEN refused\" >&2\nexit 1\n")
+        .install();
+    let _path = tools.activate();
+    let tmp = tempfile::tempdir().unwrap();
+    let auth = super::auth::NpmAuth::Oidc(vec![(
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN".to_string(),
+        "hunter2-oidc-request-token".to_string(),
+    )]);
+    let policy = anodizer_core::retry::RetryPolicy {
+        max_attempts: 1,
+        base_delay: std::time::Duration::from_millis(1),
+        max_delay: std::time::Duration::from_millis(1),
+    };
+    let (log, capture) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Verbose,
+    );
+    let err = super::publish::run_npm_publish(
+        &tmp.path().join("app-1.0.0.tgz"),
+        tmp.path(),
+        "https://registry.npmjs.org/",
+        "latest",
+        None,
+        &auth,
+        &policy,
+        None,
+        &log,
+    )
+    .unwrap_err();
+    let text = format!("{err:#}");
+    assert!(
+        text.contains("exchange with") && text.contains("refused"),
+        "npm's diagnostic must still be embedded: {text}"
+    );
+    assert!(
+        !text.contains("hunter2-oidc-request-token"),
+        "the OIDC request token leaked into the error: {text}"
+    );
+    let logged = capture.all_messages();
+    assert!(
+        logged
+            .iter()
+            .any(|(_, m)| m.contains("running npm publish")),
+        "the verbose echo must be captured: {logged:?}"
+    );
+    assert!(
+        !logged
+            .iter()
+            .any(|(_, m)| m.contains("hunter2-oidc-request-token")),
+        "the OIDC request token leaked into the log: {logged:?}"
+    );
+}
+
+/// One `demo` artifact of `kind` on `target`, backed by a real file, with
+/// `amd64_variant` metadata when a level is given.
+fn variant_artifact(
+    dir: &std::path::Path,
+    kind: ArtifactKind,
+    target: &str,
+    amd64_variant: Option<&str>,
+) -> Artifact {
+    let path = dir.join(format!("demo-{target}"));
+    std::fs::write(&path, format!("ELF-{target}").as_bytes()).expect("write fake artifact");
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("sha256".to_string(), "11".repeat(32));
+    if let Some(v) = amd64_variant {
+        metadata.insert("amd64_variant".to_string(), v.to_string());
+    }
+    Artifact {
+        kind,
+        path,
+        name: "demo".to_string(),
+        target: Some(target.to_string()),
+        crate_name: "demo".to_string(),
+        metadata,
+        size: None,
+    }
+}
+
+/// An npm postinstall `url_template` renders the archive's own target
+/// variant: the ABI of its triple and the amd64 level its metadata records.
+#[test]
+fn npm_url_template_renders_the_target_variant() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let render = |target: &str, amd64_variant: Option<&str>| {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("demo")
+            .crates(vec![demo_crate()])
+            .build();
+        ctx.artifacts.add(variant_artifact(
+            tmp.path(),
+            ArtifactKind::Archive,
+            target,
+            amd64_variant,
+        ));
+        let cfg = NpmConfig {
+            url_template: Some(
+                "https://example.com/{{ Os }}_{{ Arch }}{{ targetVariant . }}".to_string(),
+            ),
+            amd64_variant: amd64_variant.map(|_| anodizer_core::config::Amd64Variant::V3),
+            ..npm_cfg()
+        };
+        let bins = collect_platform_binaries(&ctx, &cfg, "demo", "1.2.3", &ctx.logger("publish"))
+            .expect("collect");
+        assert_eq!(bins.len(), 1, "one platform binary for one archive");
+        bins[0].url.clone()
+    };
+    assert_eq!(
+        render("x86_64-unknown-linux-gnu", None),
+        "https://example.com/linux_amd64_gnu"
+    );
+    assert_eq!(
+        render("x86_64-unknown-linux-musl", None),
+        "https://example.com/linux_amd64_musl"
+    );
+    assert_eq!(
+        render("x86_64-unknown-linux-gnu", Some("v3")),
+        "https://example.com/linux_amd64v3_gnu"
+    );
+}
+
+/// A `platform_name_template` renders each binary's own target variant, so a
+/// musl and a glibc build, and a tuned amd64 build, get distinct package
+/// names.
+#[test]
+fn npm_platform_name_template_renders_the_target_variant() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let names = |binaries: &[(&str, Option<&str>)]| {
+        let mut ctx = TestContextBuilder::new()
+            .sealed_env()
+            .project_name("demo")
+            .tag("v1.2.3")
+            .crates(vec![demo_crate()])
+            .build();
+        for (target, amd64_variant) in binaries {
+            ctx.artifacts.add(variant_artifact(
+                tmp.path(),
+                ArtifactKind::UploadableBinary,
+                target,
+                *amd64_variant,
+            ));
+        }
+        let cfg = NpmConfig {
+            scope: None,
+            platform_name_template: Some(
+                "app-{{ Os }}-{{ Arch }}{{ targetVariant . }}".to_string(),
+            ),
+            amd64_variant: binaries
+                .iter()
+                .any(|(_, v)| v.is_some())
+                .then_some(anodizer_core::config::Amd64Variant::V3),
+            ..opt_cfg()
+        };
+        let layout = generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish"))
+            .expect("layout");
+        let mut names: Vec<String> = layout.platforms.iter().map(|p| p.name.clone()).collect();
+        names.sort();
+        names
+    };
+    assert_eq!(
+        names(&[
+            ("x86_64-unknown-linux-musl", None),
+            ("x86_64-unknown-linux-gnu", None),
+        ]),
+        ["app-linux-amd64_gnu", "app-linux-amd64_musl"]
+    );
+    assert_eq!(
+        names(&[("x86_64-unknown-linux-gnu", Some("v3"))]),
+        ["app-linux-amd64v3_gnu"]
     );
 }

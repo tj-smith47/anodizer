@@ -3641,7 +3641,6 @@ crates:
     git(&["init"]);
     git(&["config", "user.email", "test@test.com"]);
     git(&["config", "user.name", "Test"]);
-    git(&["config", "commit.gpgsign", "false"]);
     git(&["add", "-A"]);
     git(&["commit", "-m", "initial"]);
     git(&["tag", "v0.1.0"]);
@@ -3779,7 +3778,6 @@ crates:
     git(&["init"]);
     git(&["config", "user.email", "test@test.com"]);
     git(&["config", "user.name", "Test"]);
-    git(&["config", "commit.gpgsign", "false"]);
     git(&["add", "-A"]);
     git(&["commit", "-m", "initial"]);
 

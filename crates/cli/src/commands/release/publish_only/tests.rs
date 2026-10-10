@@ -2032,8 +2032,8 @@ fn crate_with_lifecycle(name: &str, before: Option<&str>, after: Option<&str>) -
 /// distinct line per phase so the test proves both ran scoped.
 #[test]
 fn per_crate_lifecycle_hooks_fire_scoped() {
-    let dir = std::env::temp_dir().join(format!("anodizer-pclc-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let out = dir.join("lifecycle.txt");
     let _ = std::fs::remove_file(&out);
     let out_s = out.display().to_string().replace('\\', "/");

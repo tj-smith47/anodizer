@@ -1,0 +1,181 @@
+// A sibling `tests.rs`: every fn here is test code.
+// path-stubs: rawtool — the EnvGuard swaps below put a hand-built `rawtool` on PATH
+use super::*;
+use std::env::set_var as sv;
+
+const PATH_VAR: &str = "PATH";
+const OTHER_VAR: &str = "HOME";
+
+#[test]
+#[serial_test::serial(path_env)]
+fn a_keyed_stub_test_is_not_reported() {
+    let tools = FakeToolDir::new();
+    tools.tool("faketool").install();
+    let _path = tools.activate();
+}
+
+#[test]
+fn an_unkeyed_stub_test_is_reported() {
+    let tools = FakeToolDir::new();
+    let _path = tools.activate();
+}
+
+#[test]
+#[serial(stub_counter)]
+fn a_stub_test_under_another_key_is_reported() {
+    let _path = EnvGuard::set("PATH", "/stub");
+}
+
+#[test]
+#[serial(stub_counter, path_env)]
+fn a_second_key_beside_path_env_is_not_reported() {
+    let _path = EnvGuard::set(
+        "PATH",
+        "/stub",
+    );
+}
+
+#[test]
+#[serial(
+    path_env,
+)]
+fn a_key_spelled_over_several_lines_is_not_reported() {
+    let _path = EnvGuard::set("PATH", "/stub");
+}
+
+// `file_serial` locks per file and never meets a `serial(path_env)` test in
+// another file of the binary.
+#[test]
+#[file_serial(path_env)]
+fn a_file_serial_key_is_reported() {
+    let _path = EnvGuard::set("PATH", "/stub");
+}
+
+#[test]
+#[cfg_attr(
+    windows,
+    ignore = "no stub on windows"
+)]
+fn a_test_behind_a_multi_line_attribute_is_reported() {
+    let _path = EnvGuard::set("PATH", "/stub");
+}
+
+#[test]
+/* the block comment between the attribute and the item is not the item */
+fn a_test_behind_a_block_comment_is_reported() {
+    let _path = EnvGuard::remove("PATH");
+}
+
+#[tokio::test]
+async fn an_async_test_is_reported() {
+    unsafe { set_var("PATH", "/stub") };
+}
+
+#[rstest]
+fn an_rstest_test_is_reported() {
+    unsafe { remove_var("PATH") };
+}
+
+#[test_case(1)]
+fn a_test_case_test_is_reported() {
+    unsafe {
+        set_var(
+            "PATH",
+            "/stub",
+        )
+    };
+}
+
+#[test]
+fn an_aliased_set_var_is_reported() {
+    unsafe { sv("PATH", "/stub") };
+}
+
+#[test]
+fn a_const_naming_path_is_reported() {
+    let _path = EnvGuard::set(PATH_VAR, "/stub");
+}
+
+#[test]
+fn a_let_naming_path_is_reported() {
+    let key = "PATH";
+    let _path = EnvGuard::set(key, "/stub");
+}
+
+#[test]
+fn a_const_naming_another_variable_is_not_reported() {
+    let _home = EnvGuard::set(OTHER_VAR, "/h");
+}
+
+#[test]
+fn an_unresolvable_name_is_reported_as_a_variable() {
+    let _guard = EnvGuard::set(key_from_elsewhere(), "/x");
+}
+
+#[test]
+fn an_unresolvable_name_with_a_reason_is_not_reported() {
+    // not-path: the key is the fixture's own counter variable
+    let _guard = EnvGuard::set(key_from_elsewhere(), "/x");
+}
+
+macro_rules! stub_test {
+    ($name:ident) => {
+        #[test]
+        fn $name() {
+            let _path = FakeToolDir::new().activate();
+        }
+    };
+}
+
+// A helper is derived from its body, and so is a helper that calls one.
+fn stub_absent() -> PathGuard {
+    FakeToolDir::new().activate()
+}
+
+fn stub_absent_twice() -> PathGuard {
+    stub_absent()
+}
+
+// No test calls this one.
+fn stub_nobody_calls() -> PathGuard {
+    FakeToolDir::new().activate()
+}
+
+#[test]
+fn a_test_swapping_through_a_helper_is_reported() {
+    let _path = stub_absent();
+}
+
+#[test]
+fn a_test_swapping_through_a_helper_of_a_helper_is_reported() {
+    let _path = stub_absent_twice();
+}
+
+#[test]
+fn a_test_swapping_through_a_core_helper_is_reported() {
+    let _path = core_stub();
+}
+
+// Neither of these swaps PATH: another variable, and the spelling quoted.
+#[test]
+fn another_variable_is_not_reported() {
+    let _home = EnvGuard::set("HOME", "/h");
+    let _text = "tools.activate() and EnvGuard::set(\"PATH\", x)";
+}
+
+#[test]
+fn reads_the_stubbed_tool() {}
+
+#[test]
+#[serial_test::serial(path_env)]
+fn reads_the_stubbed_tool_keyed() {}
+
+// path-ok: the verdict is the same whichever of the two it ran.
+#[test]
+fn reads_the_stubbed_tool_marked() {}
+
+#[test]
+fn reads_the_raw_tool() {}
+
+#[test]
+fn reads_nothing() {}

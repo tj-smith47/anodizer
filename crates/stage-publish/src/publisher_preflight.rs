@@ -763,10 +763,7 @@ mod tests {
 
     #[test]
     fn token_auth_indeterminate_on_network_error() {
-        // Bind then drop to obtain a closed port → connection refused.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        drop(listener);
+        let addr = anodizer_core::test_helpers::refusing_addr::refusing_addr();
         let url = format!("http://{addr}/-/whoami");
         assert!(matches!(
             probe_token_auth(
@@ -1067,9 +1064,7 @@ mod tests {
 
     #[test]
     fn github_repo_warns_on_network_error() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        drop(listener);
+        let addr = anodizer_core::test_helpers::refusing_addr::refusing_addr();
         let url = format!("http://{addr}/repos/o/r");
         assert!(matches!(
             github_repo_check_at(
@@ -1158,9 +1153,7 @@ mod tests {
 
     #[test]
     fn classify_unreachable_on_closed_port() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        drop(listener);
+        let addr = anodizer_core::test_helpers::refusing_addr::refusing_addr();
         let client = default_probe_client().expect("client");
         let url = format!("http://{addr}/health");
         assert!(matches!(

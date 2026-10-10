@@ -583,12 +583,8 @@ fn chocolatey_burn_probe_absent_version_is_clear() {
 
 #[test]
 fn chocolatey_burn_probe_unreachable_gallery_is_an_error() {
-    // Bind-then-drop yields a port with nothing listening: connection
-    // refused, which the retry classifier fast-fails.
-    let addr = {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        l.local_addr().unwrap()
-    };
+    // Connection refused, which the retry classifier fast-fails.
+    let addr = anodizer_core::test_helpers::refusing_addr::refusing_addr();
     let base = format!("http://{}", addr);
     let err = super::chocolatey::version_blocked_on_gallery(&base, "x", "1.0.0", &quiet_log())
         .expect_err("an unreachable gallery is indeterminate, never a clear/blocked verdict");
@@ -712,10 +708,7 @@ fn winget_burn_probe_no_match_is_clear() {
 
 #[test]
 fn winget_burn_probe_unreachable_api_is_an_error() {
-    let addr = {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        l.local_addr().unwrap()
-    };
+    let addr = anodizer_core::test_helpers::refusing_addr::refusing_addr();
     let base = format!("http://{}", addr);
     super::winget::version_pr_blocking(
         &base,

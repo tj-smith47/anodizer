@@ -130,7 +130,6 @@ path = "src/main.rs"
     run_git(dir, &["init", "-q", "-b", "master"]);
     run_git(dir, &["config", "user.email", "test@test.com"]);
     run_git(dir, &["config", "user.name", "Test"]);
-    run_git(dir, &["config", "commit.gpgsign", "false"]);
     run_git(dir, &["add", "-A"]);
     run_git(dir, &["commit", "-q", "-m", "init"]);
 }

@@ -13,6 +13,7 @@
 //! Both are validated by the same load — no static "password must be non-empty"
 //! rule (which would false-fail an unencrypted production key).
 
+use anodizer_core::log::StageLogger;
 use anodizer_core::{EnvSource, ProcessEnvSource};
 use std::process::Command;
 
@@ -53,8 +54,8 @@ pub enum CosignKeyLoad {
 /// [`ProcessEnvSource`], so the relevant secrets are resolved from the real
 /// process environment (the same secrets the preflight job already injects)
 /// and forwarded explicitly onto the spawned `cosign` command.
-pub fn verify_cosign_key_loads(key_ref: &str) -> CosignKeyLoad {
-    verify_cosign_key_loads_with_env(key_ref, &ProcessEnvSource)
+pub fn verify_cosign_key_loads(key_ref: &str, log: &StageLogger) -> CosignKeyLoad {
+    verify_cosign_key_loads_with_env(key_ref, &ProcessEnvSource, log)
 }
 
 /// [`EnvSource`]-injecting form of [`verify_cosign_key_loads`].
@@ -79,8 +80,14 @@ pub fn verify_cosign_key_loads(key_ref: &str) -> CosignKeyLoad {
 /// WARNs), [`CosignKeyLoad::CosignProbeFailed`] when the availability probe
 /// itself errored (caller WARNs, naming the probe error), [`CosignKeyLoad::Loaded`]
 /// on a successful load, and [`CosignKeyLoad::Failed`] with cosign's stderr when
-/// the key fails to load.
-pub fn verify_cosign_key_loads_with_env(key_ref: &str, env: &dyn EnvSource) -> CosignKeyLoad {
+/// the key fails to load. That stderr is redacted against `log`'s table plus
+/// the env the child was given, so a key or password resolved from `env`
+/// rather than the process environment is masked too.
+pub fn verify_cosign_key_loads_with_env(
+    key_ref: &str,
+    env: &dyn EnvSource,
+    log: &StageLogger,
+) -> CosignKeyLoad {
     match anodizer_core::tool_detect::runs("cosign") {
         anodizer_core::tool_detect::ToolProbe::Available => {}
         // Definitively absent: the load can't be attempted; sign time
@@ -132,7 +139,9 @@ pub fn verify_cosign_key_loads_with_env(key_ref: &str, env: &dyn EnvSource) -> C
     if output.status.success() {
         return CosignKeyLoad::Loaded;
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = log
+        .with_child_env(&command)
+        .redact(&String::from_utf8_lossy(&output.stderr));
     let detail = stderr.trim();
     let detail = if detail.is_empty() {
         format!("cosign exited {}", output.status)
@@ -145,7 +154,45 @@ pub fn verify_cosign_key_loads_with_env(key_ref: &str, env: &dyn EnvSource) -> C
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anodizer_core::log::Verbosity;
     use anodizer_core::{MapEnvSource, harness_signing};
+
+    /// A password and a key resolved from the injected env — never the
+    /// process env the logger's own table is built from — are masked in the
+    /// failure detail, because the detail is redacted against the env the
+    /// child was given.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn a_failed_load_redacts_the_password_and_key_the_child_was_given() {
+        let tools = anodizer_core::test_helpers::fake_tool::FakeToolDir::new();
+        tools
+            .tool("cosign")
+            .script(
+                "if [ \"$1\" = public-key ]; then\n\
+                 echo \"error: decrypt with $COSIGN_PASSWORD failed for $COSIGN_KEY\" >&2\n\
+                 exit 1\nfi\nexit 0\n",
+            )
+            .install();
+        let _path = tools.activate();
+        let env = MapEnvSource::new()
+            .with("COSIGN_KEY", "hunter2-key-material")
+            .with("COSIGN_PASSWORD", "hunter2-key-password");
+        let log = StageLogger::new("preflight", Verbosity::Quiet);
+        let CosignKeyLoad::Failed(detail) =
+            verify_cosign_key_loads_with_env("env://COSIGN_KEY", &env, &log)
+        else {
+            panic!("the stub fails the load");
+        };
+        assert!(
+            detail.contains("decrypt with") && detail.contains("failed for"),
+            "cosign's diagnostic must still be carried: {detail}"
+        );
+        assert!(
+            !detail.contains("hunter2-key-password") && !detail.contains("hunter2-key-material"),
+            "the child's secrets leaked into the detail: {detail}"
+        );
+    }
 
     /// Probe cosign for a gated test: `true` when present. A probe ERROR is
     /// surfaced through `reason` (never silently collapsed into a bare
@@ -165,6 +212,7 @@ mod tests {
     /// (`Failed`). Skips cleanly when cosign is absent so CI without cosign
     /// keeps passing.
     #[test]
+    #[serial_test::serial(path_env)]
     fn correct_password_loads_wrong_password_fails() {
         let (present, reason) = cosign_present();
         if !present {
@@ -179,10 +227,11 @@ mod tests {
         // env://COSIGN_KEY load with the CORRECT password must succeed. Secrets
         // are injected through the EnvSource injection point, not the process env, so the
         // test never races a parallel test over the global env.
+        let log = StageLogger::new("preflight", Verbosity::Quiet);
         let good_env = MapEnvSource::new()
             .with("COSIGN_KEY", &keys.cosign_key_contents)
             .with("COSIGN_PASSWORD", &keys.cosign_password);
-        let ok = verify_cosign_key_loads_with_env("env://COSIGN_KEY", &good_env);
+        let ok = verify_cosign_key_loads_with_env("env://COSIGN_KEY", &good_env, &log);
         assert!(
             matches!(ok, CosignKeyLoad::Loaded),
             "correct password must load the key, got {ok:?}"
@@ -192,7 +241,7 @@ mod tests {
         let bad_env = MapEnvSource::new()
             .with("COSIGN_KEY", &keys.cosign_key_contents)
             .with("COSIGN_PASSWORD", "definitely-not-the-password");
-        let bad = verify_cosign_key_loads_with_env("env://COSIGN_KEY", &bad_env);
+        let bad = verify_cosign_key_loads_with_env("env://COSIGN_KEY", &bad_env, &log);
         assert!(
             matches!(bad, CosignKeyLoad::Failed(_)),
             "wrong password must fail to load the encrypted key, got {bad:?}"
@@ -207,6 +256,7 @@ mod tests {
     /// no `--output-key-prefix` for older-cosign compatibility) and points
     /// `env://COSIGN_KEY` at its PEM. Skips cleanly when cosign is absent.
     #[test]
+    #[serial_test::serial(path_env)]
     fn unencrypted_key_loads_with_empty_password() {
         use std::process::Command;
         let (present, reason) = cosign_present();
@@ -237,7 +287,8 @@ mod tests {
         let env = MapEnvSource::new()
             .with("COSIGN_KEY", &pem)
             .with("COSIGN_PASSWORD", "");
-        let loaded = verify_cosign_key_loads_with_env("env://COSIGN_KEY", &env);
+        let log = StageLogger::new("preflight", Verbosity::Quiet);
+        let loaded = verify_cosign_key_loads_with_env("env://COSIGN_KEY", &env, &log);
         assert!(
             matches!(loaded, CosignKeyLoad::Loaded),
             "an unencrypted key must load with an empty password (no non-empty-password rule), got {loaded:?}"

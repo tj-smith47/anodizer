@@ -26,6 +26,8 @@
 //! is intentional: a panicking test that holds the guard pollutes the
 //! mutex state, but subsequent tests still want to serialise correctly.
 
+// path-stubs: none — the swap under test points PATH at a directory that does not exist
+
 use std::sync::{Mutex, OnceLock};
 
 /// Process-wide mutex shared by every test that mutates the env. Lazily
@@ -61,6 +63,7 @@ impl EnvGuard {
         // be UTF-8, and restoring it as absent would be a leak of its own.
         let prev = std::env::var_os(key);
         // SAFETY: serialized by the caller; restored on drop.
+        // not-path: the variable is the caller's `key`, read at the call site
         unsafe { std::env::set_var(key, val) };
         Self(key, prev)
     }
@@ -72,6 +75,7 @@ impl EnvGuard {
     pub fn remove(key: &'static str) -> Self {
         let prev = std::env::var_os(key);
         // SAFETY: serialized by the caller; restored on drop.
+        // not-path: the variable is the caller's `key`, read at the call site
         unsafe { std::env::remove_var(key) };
         Self(key, prev)
     }
@@ -82,8 +86,8 @@ impl Drop for EnvGuard {
         // SAFETY: serialized by the caller for the guard's life.
         unsafe {
             match &self.1 {
-                Some(v) => std::env::set_var(self.0, v),
-                None => std::env::remove_var(self.0),
+                Some(v) => std::env::set_var(self.0, v), // not-path: restores the caller's `key`
+                None => std::env::remove_var(self.0),    // not-path: restores the caller's `key`
             }
         }
     }
@@ -97,6 +101,7 @@ mod tests {
     /// replaces restores nothing when the body between the two halves unwinds,
     /// leaking the override into whatever test runs next in the process.
     #[test]
+    #[serial_test::serial(path_env)]
     fn a_panic_under_the_guard_still_restores_the_prior_value() {
         let _lock = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let before = std::env::var_os("PATH");

@@ -69,3 +69,21 @@ fn a_marked_spawn_is_not_reported() {
 fn a_forged_spawn_retry_marker_is_reported() {
     let _ = Command::new("git").arg("// spawn-retry-ok: fake").output();
 }
+
+// The fixture config every helper-made repository carries is not restated by
+// hand; a different value says why.
+#[test]
+fn a_hand_set_fixture_config_is_reported() {
+    git_ok(dir, &["config", "commit.gpgsign", "false"]);
+}
+
+#[test]
+fn a_justified_fixture_config_is_not_reported() {
+    // git-config-ok: the hook under test is installed elsewhere
+    git_ok(dir, &["config", "core.hooksPath", "hooks"]);
+}
+
+#[test]
+fn a_forged_fixture_config_marker_is_reported() {
+    git_ok(dir, &["config", "tag.gpgsign", "// git-config-ok: fake"]);
+}

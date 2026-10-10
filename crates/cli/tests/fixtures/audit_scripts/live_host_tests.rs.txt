@@ -36,6 +36,16 @@ fn a_body_naming_the_loopback_bounds_the_test() {
 }
 
 #[test]
+fn the_shared_refusing_address_bounds_the_test() {
+    let dead = anodizer_core::test_helpers::refusing_addr::refusing_addr();
+    let mut ctx = ctx_with(ChocolateyConfig {
+        source_repo: Some(format!("http://{dead}/api/v2/package")),
+        ..Default::default()
+    });
+    assert!(!publish_to_chocolatey(&mut ctx, "demo").unwrap());
+}
+
+#[test]
 fn a_marker_states_what_else_keeps_the_run_offline() {
     // live-host-ok: fake
     let mut ctx = ctx_with(ambient_cfg());

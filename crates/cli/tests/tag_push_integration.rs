@@ -67,7 +67,6 @@ fn git_init(dir: &Path) {
     run_git(dir, &["init", "-q", "-b", "master"]);
     run_git(dir, &["config", "user.email", "test@test.com"]);
     run_git(dir, &["config", "user.name", "Test"]);
-    run_git(dir, &["config", "commit.gpgsign", "false"]);
 }
 
 fn git_add_commit(dir: &Path, message: &str) {
@@ -357,7 +356,6 @@ fn git_api_tagging_push_dry_run_previews_without_calling_the_api() {
     run_git(root, &["init", "-q", "-b", "master"]);
     run_git(root, &["config", "user.email", "t@t.com"]);
     run_git(root, &["config", "user.name", "t"]);
-    run_git(root, &["config", "commit.gpgsign", "false"]);
     run_git(
         root,
         &["remote", "add", "origin", "https://github.com/fake/repo"],

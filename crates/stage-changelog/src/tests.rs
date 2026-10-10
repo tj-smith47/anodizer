@@ -5036,7 +5036,6 @@ mod refresh_unreleased_tests {
         git(root, &["init", "-q"]);
         git(root, &["config", "user.email", "test@example.com"]);
         git(root, &["config", "user.name", "Test User"]);
-        git(root, &["config", "commit.gpgsign", "false"]);
         tmp
     }
 

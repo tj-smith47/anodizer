@@ -429,6 +429,25 @@ tasks:
       - task: audit:repo-identity
       - task: audit:god-files
       - task: audit:serial-groups
+      - task: audit:path-stub-serial
+      - task: audit:test-dead-port
+
+  audit:test-dead-port:
+    desc: "Guard: no test binds a listener and releases it to get a 'nothing listens here' address (the freed port is reused by parallel tests)."
+    cmds:
+      - .claude/scripts/audit-test-dead-port.sh
+
+  audit:path-stub-serial:
+    desc: "Guard: every test that swaps the process PATH takes #[serial(path_env)] (one key, so readers serialise against every mutator)."
+    cmds:
+      - .claude/scripts/audit-path-stub-serial.sh
+
+  audit:path-stub-readers:
+    # Runs every test of every PATH-stubbing test binary alone, so it belongs
+    # beside the test run in `task gate` and not in the commit-time bundle.
+    desc: "Guard: a test that spawns a tool its own test binary stubs on PATH takes #[serial(path_env)]. Slow: builds and runs the tests."
+    cmds:
+      - .claude/scripts/audit-path-stub-readers.sh
 
   audit:serial-groups:
     desc: "Guard: every #[serial] names its group (an unkeyed #[serial] does not serialise against any keyed one)."
@@ -502,6 +521,7 @@ tasks:
       - task: snapshot                        # snapshot (dry-run)
       - task: audit:workflows                 # actionlint
       - task: audit:code                      # convention guards (no CI job)
+      - task: audit:path-stub-readers         # measured PATH readers (no CI job)
       - task: coverage:gate                   # coverage floor
 
   commit:

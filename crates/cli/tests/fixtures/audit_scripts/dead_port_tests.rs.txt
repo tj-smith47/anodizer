@@ -1,0 +1,136 @@
+// A sibling `tests.rs`: every fn here is test code.
+use super::*;
+
+#[test]
+fn a_dropped_listener_is_reported() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    drop(listener);
+    connect(addr);
+}
+
+#[test]
+fn a_block_scoped_listener_is_reported() {
+    let addr = {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    };
+    connect(addr);
+}
+
+// A helper that hands out a freed port is the same race for every caller.
+fn a_free_port_helper_is_reported() -> u16 {
+    let sock: TcpListener =
+        TcpListener::bind("127.0.0.1:0").unwrap();
+    sock
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+#[tokio::test]
+async fn a_temporary_listener_is_reported() {
+    let addr = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
+    connect(addr);
+}
+
+#[test]
+fn an_accepting_listener_is_not_reported() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let _ = listener.accept();
+    });
+    connect(addr);
+}
+
+#[test]
+fn a_listener_handed_to_a_responder_is_not_reported() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    spawn_responder_on(listener);
+    connect(addr);
+}
+
+#[test]
+fn a_listener_served_in_a_loop_is_not_reported() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    for stream in listener.incoming() {
+        drop(stream);
+    }
+}
+
+#[test]
+fn a_bind_quoted_in_a_string_is_not_reported() {
+    let text = "let l = TcpListener::bind(x); l.local_addr()";
+    assert!(!text.is_empty());
+}
+
+#[test]
+fn the_refusing_address_is_not_reported() {
+    connect(anodizer_core::test_helpers::refusing_addr::refusing_addr());
+}
+
+#[test]
+fn a_parenthesised_bind_argument_is_reported() {
+    let addr = TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap();
+    connect(addr);
+}
+
+#[test]
+fn an_address_read_inside_a_closure_is_reported() {
+    let addr = TcpListener::bind("127.0.0.1:0").and_then(|l| l.local_addr()).unwrap();
+    connect(addr);
+}
+
+#[test]
+fn a_setter_call_does_not_keep_the_listener() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    connect(addr);
+}
+
+#[test]
+fn a_let_underscore_does_not_keep_the_listener() {
+    let addr = {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _ = listener;
+        addr
+    };
+    connect(addr);
+}
+
+#[test]
+fn a_rebound_name_ends_the_first_listener() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    std::thread::spawn(move || {
+        let _ = listener.accept();
+    });
+    connect(addr);
+}
+
+#[test]
+fn a_server_that_never_answers_is_not_reported() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    connect_and_time_out(addr);
+}
+
+#[test]
+fn a_listener_kept_in_a_struct_is_not_reported() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = Server { listener };
+    connect(addr);
+    server.shutdown();
+}
+
+#[test]
+fn a_listener_served_as_a_temporary_is_not_reported() {
+    serve(TcpListener::bind("127.0.0.1:0").unwrap());
+}

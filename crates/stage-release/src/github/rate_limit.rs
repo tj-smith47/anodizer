@@ -272,22 +272,18 @@ mod sigterm_tests {
     /// fails at the transport layer (connection refused), the function
     /// must return promptly instead of propagating or panicking.
     ///
-    /// `api.github.com` is pointed at a TCP address that has just been
-    /// closed (bind + drop the listener) so the `client.get(...).send()`
+    /// `api.github.com` is pointed at a TCP address nothing listens on, so
+    /// the `client.get(...).send()`
     /// future resolves to `Err(_)`, exercising the first `Err(_) => return`
     /// arm at line 42. The 5 s timeout bounds a regression: if the
     /// silent-degrade arm is removed or replaced with a `.unwrap()`, the
     /// task panics and the timeout fires.
     #[tokio::test]
     async fn transport_failure_silently_degrades() {
-        // Acquire an ephemeral port then drop the listener — subsequent
-        // connects to this address yield `Connection refused`.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-        let addr = listener.local_addr().expect("local_addr");
-        drop(listener);
+        let addr = anodizer_core::test_helpers::refusing_addr::refusing_addr();
 
         // Build a reqwest client whose DNS resolution maps
-        // `api.github.com` to the now-closed loopback port. The default
+        // `api.github.com` to the refusing loopback port. The default
         // base URL (`https://api.github.com`) the function builds when
         // `ANODIZER_GITHUB_API_BASE` is unset then resolves to a TCP
         // connect that fails immediately.

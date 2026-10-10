@@ -157,6 +157,8 @@ fi
 run_scanner violations -v ENTRY_RE="$ENTRY_RE" \
     -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk" -f - "${FILES[@]}" <<'AWK'
     FNR == 1 {
+        report()
+        prev_file = FILENAME
         reset_lex()
         whole_file_is_test = is_test_file(FILENAME)
         fn_open = 0; fn_depth = 0; fn_body = ""; fn_name = ""; fn_line = 0
@@ -199,7 +201,11 @@ run_scanner violations -v ENTRY_RE="$ENTRY_RE" \
         }
     }
 
-    ENDFILE {
+    END { report() }
+
+    # The verdicts of the file just read, printed before the next one's state
+    # replaces them (bwk awk has no ENDFILE).
+    function report(   i, body) {
         for (i = 1; i <= n_tests; i++) {
             body = body_of[test_name[i]]
             if (body !~ ("[^A-Za-z0-9_](" ENTRY_RE ")[ \t]*\\(")) continue
@@ -209,8 +215,9 @@ run_scanner violations -v ENTRY_RE="$ENTRY_RE" \
             # offline instead.
             if (cmt_of[test_name[i]] ~ /live-host-ok:/) continue
             if (has_local_endpoint(with_helpers(body))) continue
-            printf("%s:%d: %s\n", FILENAME, test_line[i], test_name[i])
+            printf("%s:%d: %s\n", prev_file, test_line[i], test_name[i])
         }
+        n_tests = 0
     }
 
     # One hop: the body plus the body of every same-file function it calls. A
@@ -227,8 +234,9 @@ run_scanner violations -v ENTRY_RE="$ENTRY_RE" \
     }
 
     # A body proves it stays local by naming a loopback literal, by binding an
-    # ephemeral port, or by driving one of the shared local responders whose
-    # address it then formats into the config under test.
+    # ephemeral port, by taking the shared refusing address, or by driving one
+    # of the shared local responders whose address it then formats into the
+    # config under test.
     #
     # A reserved name proves it too: `.invalid` and `example.com`/`example.org`
     # are guaranteed never to resolve to a real service (RFC 2606).
@@ -243,6 +251,7 @@ run_scanner violations -v ENTRY_RE="$ENTRY_RE" \
                body ~ /0\.0\.0\.0/ ||
                body ~ /\{addr\}/ ||
                body ~ /local_addr\(/ ||
+               body ~ /refusing_addr\(/ ||
                body ~ /responder/ ||
                body ~ /\.invalid/ ||
                body ~ /example\.(com|org)/ ||

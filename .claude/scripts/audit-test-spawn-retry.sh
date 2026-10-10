@@ -16,6 +16,10 @@
 # which retries up to 5× on a transient spawn-init failure (and only those, so
 # it masks no genuine error). See crates/core/src/test_helpers/mod.rs.
 #
+# The same helper is where a fixture `git` is cut off from the host's global
+# and system config (`isolate_git_config`), so a spawn outside it also inherits
+# the developer's `commit.gpgsign`, `gpg.program` and `core.hooksPath`.
+#
 # This audit fails (exit 1) when a `Command::new("git")` /
 # `Command::new("node")` (incl. the `std::process::`-qualified form) appears in
 # TEST context WITHOUT
@@ -34,6 +38,15 @@
 # SCOPE.
 # The helper's own home (crates/core/src/test_helpers/) is exempt — it IS the
 # helper.
+#
+# The second rule follows from the first: because every fixture git goes
+# through the helper, every repository a fixture creates already carries the
+# fixture config (`commit.gpgsign`, `tag.gpgsign`, `core.hooksPath`, an
+# identity — crates/core/src/test_helpers/spawn.rs, `FIXTURE_REPO_CONFIG`).
+# A test that sets one of those keys by hand is restating part of that
+# config, and the part it leaves out is what the host still decides. So a
+# test-context mention of one of those keys is a finding, unless the line or
+# the line above it says why:  // git-config-ok: <why>
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
@@ -47,14 +60,10 @@ cd "$ROOT"
 # The retry helper's own home is exempt — it IS the helper. The exemption is
 # a DIRECTORY NAME, not one path: a `test_helpers/` under any crate is exempt,
 # on the reading that anything so named is scaffolding rather than a test.
-collect_files FILES -rlP --include='*.rs' \
+collect_files FILES -rlE --include='*.rs' \
     --exclude-dir=target --exclude-dir=test_helpers \
     -- 'Command::new\("(git|node)"\)' crates/
 
-if [[ ${#FILES[@]} -eq 0 ]]; then
-    echo "audit-test-spawn-retry: no git/node spawn call sites found."
-    exit 0
-fi
 
 # Per-file awk scan. State resets at FNR==1 (awk carries vars across files).
 #
@@ -72,7 +81,9 @@ fi
 #     opener, which precede the `Command::new` by a handful of lines; OR
 #   - a `// spawn-retry-ok: <non-space>` marker sits on its line or the line
 #     directly above it.
-run_scanner violations -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk" -f - "${FILES[@]}" <<'AWK'
+violations=""
+((${#FILES[@]})) && run_scanner violations -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk" -f - "${FILES[@]}" <<'AWK'
+    function ltrim(s) { sub(/^[[:space:]]+/, "", s); return s }
     FNR == 1 {
         whole_file_is_test = is_test_file(FILENAME)
         prev_ok = 0; this_ok = 0
@@ -103,7 +114,7 @@ run_scanner violations -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk"
         # A `Command::new(...)` mentioned inside a comment (`//` / `///`
         # appears before it on the line) is documentation, not a spawn.
         if (in_test && !is_comment && !retry_window && !marker_armed) {
-            printf("%s:%d: %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
+            printf("%s:%d: %s\n", FILENAME, FNR, ltrim(line))
         }
     }
 
@@ -118,6 +129,46 @@ run_scanner violations -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk"
     # itself is still covered.
     { if (retry_window > 0) retry_window-- }
 AWK
+
+FIXTURE_KEYS='commit\.gpgsign|tag\.gpgsign|core\.hooksPath|gpg\.program'
+collect_files KEY_FILES -rlE --include='*.rs' \
+    --exclude-dir=target --exclude-dir=test_helpers \
+    -- "$FIXTURE_KEYS" crates/
+config_violations=""
+if ((${#KEY_FILES[@]})); then
+    # awk reads escapes in a -v value, so the backslashes are doubled.
+    run_scanner config_violations -v keys="${FIXTURE_KEYS//\\/\\\\}" \
+        -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk" -f - "${KEY_FILES[@]}" <<'AWK'
+        function ltrim(s) { sub(/^[[:space:]]+/, "", s); return s }
+        FNR == 1 { whole_file_is_test = is_test_file(FILENAME); prev_ok = 0 }
+        {
+            # The key is read off the raw line: it sits inside a string literal,
+            # which the code half elides. A comment naming it is prose.
+            cmt = comment_part($0)
+            ok = (cmt ~ /git-config-ok:[[:space:]]*[^[:space:]]/)
+            in_test = (whole_file_is_test || in_test_region)
+            if (in_test && code !~ /^[[:space:]]*$/ && $0 ~ ("\"[^\"]*(" keys ")")) {
+                if (!ok && !prev_ok) printf("%s:%d: [fixture-config] %s\n", FILENAME, FNR, ltrim($0))
+            }
+            prev_ok = ok && (code ~ /^[[:space:]]*$/)
+        }
+AWK
+fi
+
+if [[ -n "$config_violations" ]]; then
+    echo "FIXTURE GIT CONFIG SET BY HAND — the fixture helper already sets it, whole."
+    echo
+    echo "$config_violations"
+    echo
+    echo "Every repository a fixture creates through output_with_spawn_retry carries"
+    echo "FIXTURE_REPO_CONFIG (crates/core/src/test_helpers/spawn.rs): signing off"
+    echo "for commits and tags, hooks pinned to the repository, a fixed identity."
+    echo "A line setting one of those keys restates part of it; delete the line."
+    echo
+    echo "A test that needs a different value says why on the line or the line above:"
+    echo "  // git-config-ok: <why>"
+    [[ -n "$violations" ]] && echo
+fi
 
 if [[ -n "$violations" ]]; then
     echo "UNRETRIED git/node SPAWN IN TESTS — Windows nextest process-creation flake."
@@ -139,7 +190,7 @@ if [[ -n "$violations" ]]; then
     echo "If the site is legitimately unconvertible (e.g. an availability probe"
     echo "whose Err means \"skip the test\", not \"retry\"), mark it with"
     echo "  // spawn-retry-ok: <why>  on the call's line or the line above it."
-    exit 1
 fi
+[[ -z "$violations$config_violations" ]] || exit 1
 
 echo "audit-test-spawn-retry: all ${#FILES[@]} git/node-spawning files route test fixtures through output_with_spawn_retry (or mark // spawn-retry-ok:)."

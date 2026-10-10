@@ -1704,7 +1704,6 @@ mod live_pr {
         git_ok(seed.path(), &["init", "-b", "main"]);
         git_ok(seed.path(), &["config", "user.email", "t@example.invalid"]);
         git_ok(seed.path(), &["config", "user.name", "Test"]);
-        git_ok(seed.path(), &["config", "commit.gpgsign", "false"]);
         std::fs::write(seed.path().join("README"), "winget-pkgs\n").unwrap();
         git_ok(seed.path(), &["add", "README"]);
         git_ok(seed.path(), &["commit", "-m", "seed"]);

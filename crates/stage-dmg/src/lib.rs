@@ -1504,7 +1504,10 @@ crates:
         );
     }
 
+    // Resolves and spawns the imaging tool from the process `PATH`, which the
+    // `path_env` tests swap for a stub directory that is deleted on drop.
     #[test]
+    #[serial_test::serial(path_env)]
     fn test_extra_files_copied_to_staging() {
         use anodizer_core::config::{Config, CrateConfig, DmgConfig};
         use anodizer_core::context::{Context, ContextOptions};

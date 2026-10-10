@@ -65,7 +65,7 @@ export EXEC_MODE_RE='(Permissions::from_mode|set_mode|\.mode)\(0o[1357]'
 # The helper's own home is exempt — it IS the helper. The exemption is a
 # DIRECTORY NAME, not one path: a `test_helpers/` under any crate is exempt,
 # on the reading that anything so named is scaffolding rather than a test.
-collect_files FILES -rlP --include='*.rs' \
+collect_files FILES -rlE --include='*.rs' \
     --exclude-dir=target --exclude-dir=test_helpers \
     -- "$EXEC_MODE_RE" crates/
 
@@ -93,6 +93,7 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
 fi
 
 run_scanner violations -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk" -f - "${FILES[@]}" <<'AWK'
+    function ltrim(s) { sub(/^[[:space:]]+/, "", s); return s }
     BEGIN { exec_mode_re = ENVIRON["EXEC_MODE_RE"] }
 
     FNR == 1 { whole_file_is_test = is_test_file(FILENAME); marker_armed = 0 }
@@ -111,7 +112,7 @@ run_scanner violations -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk"
 
     $0 ~ exec_mode_re {
         if (in_test && !is_comment && !marker_armed) {
-            printf("%s:%d: %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
+            printf("%s:%d: %s\n", FILENAME, FNR, ltrim(line))
         }
     }
 

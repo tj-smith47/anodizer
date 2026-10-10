@@ -366,6 +366,11 @@ fn test_isolation_audit_demands_a_guard_behind_every_marked_env_mutation() {
     );
 }
 
+/// The spawn rule reports a test-context `Command::new("git")` outside the
+/// retry helper, and the fixture-config rule reports a test-context line
+/// setting a key the helper's fixture config already carries. A production
+/// `-c commit.gpgsign=true` and a justified `core.hooksPath` are not
+/// findings; a marker spelled inside a string literal is.
 #[test]
 fn spawn_retry_audit_reports_test_context_only() {
     let dir = fixture_tree();
@@ -374,11 +379,18 @@ fn spawn_retry_audit_reports_test_context_only() {
     let (inline_line, inline_text) = at(LIB_RS, r#"arg("status")"#);
     let (file_line, file_text) = at(INTEGRATION_RS, r#"arg("init")"#);
     let (forged_line, forged_text) = at(TESTS_RS, "spawn-retry-ok: fake");
+    // git-config-ok: this names the fixture's own finding, it sets nothing
+    let (hand_line, hand_text) = at(TESTS_RS, r#""commit.gpgsign", "false""#);
+    let (forged_cfg_line, forged_cfg_text) = at(TESTS_RS, "git-config-ok: fake");
     assert_eq!(
         hits(&out),
         vec![
             format!("crates/demo/src/lib.rs:{inline_line}: {inline_text}"),
             format!("crates/demo/src/tests.rs:{forged_line}: {forged_text}"),
+            format!("crates/demo/src/tests.rs:{hand_line}: [fixture-config] {hand_text}"),
+            format!(
+                "crates/demo/src/tests.rs:{forged_cfg_line}: [fixture-config] {forged_cfg_text}"
+            ),
             format!("crates/demo/tests/spawn.rs:{file_line}: {file_text}"),
         ],
         "{out}"
@@ -665,6 +677,511 @@ fn a_tree_with_no_serial_attribute_reports_a_clean_scan() {
     assert!(
         out.contains("all 0 #[serial] attributes name a group (0 distinct groups)"),
         "{out}"
+    );
+}
+
+const DEAD_PORT_TESTS_RS: &str = include_str!("fixtures/audit_scripts/dead_port_tests.rs.txt");
+
+fn dead_port_tree(tests_rs: &str) -> TempDir {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join("crates/demo/src/tests.rs");
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("fixture dir");
+    std::fs::write(&path, tests_rs).expect("fixture file");
+    dir
+}
+
+/// A function that binds a listener only to learn its port is reported in
+/// every spelling: an explicit `drop`, a block that ends, a helper returning
+/// the port from a `let` broken across lines, and a temporary never bound to
+/// a name. A listener that is accepted on, handed to a responder or served in
+/// a loop is not, and neither is the spelling quoted in a string.
+/// Every spelling of a listener bound for its port alone is a finding: an
+/// explicit `drop`, a block that ends, a helper returning the port, the
+/// address read off the bind expression (through `.await`, a parenthesised
+/// bind argument, or a closure), a setter call or a `let _ =` standing in for
+/// a use, and a second `let` of the same name ending the first listener. Not
+/// a finding: a listener that accepts, one handed to a function or a struct,
+/// one served as a temporary, a bind quoted in a string, and the one shape
+/// that is not the race — a top-level listener that is never dropped, in a
+/// test returning nothing.
+#[test]
+fn dead_port_audit_reports_every_listener_released_for_its_port() {
+    let dir = dead_port_tree(DEAD_PORT_TESTS_RS);
+    let (code, out) = run_audit("audit-test-dead-port.sh", dir.path());
+
+    const NAMED: &str = "binds listener `listener` only to read its address";
+    const CHAINED: &str = "reads the address of a listener it never keeps";
+    let mut expected: Vec<String> = [
+        ("a_dropped_listener_is_reported", NAMED),
+        (
+            "a_block_scoped_listener_is_reported",
+            "binds listener `l` only to read its address",
+        ),
+        (
+            "a_free_port_helper_is_reported",
+            "binds listener `sock` only to read its address",
+        ),
+        ("a_temporary_listener_is_reported", CHAINED),
+        ("a_parenthesised_bind_argument_is_reported", CHAINED),
+        ("an_address_read_inside_a_closure_is_reported", CHAINED),
+        ("a_setter_call_does_not_keep_the_listener", NAMED),
+        ("a_let_underscore_does_not_keep_the_listener", NAMED),
+        ("a_rebound_name_ends_the_first_listener", NAMED),
+    ]
+    .into_iter()
+    .map(|(name, finding)| {
+        let (line, _) = at(DEAD_PORT_TESTS_RS, &format!("fn {name}("));
+        format!("crates/demo/src/tests.rs:{line}: fn {name} {finding}")
+    })
+    .collect();
+    expected.sort();
+    assert_eq!(hits(&out), expected, "{out}");
+    assert_eq!(code, 1, "{out}");
+}
+
+#[test]
+fn dead_port_audit_passes_once_the_tests_take_the_refusing_address() {
+    let fixed: String = DEAD_PORT_TESTS_RS
+        .split_inclusive("\n\n")
+        .filter(|item| {
+            !item.contains("_is_reported(")
+                && !item.contains("does_not_keep_the_listener(")
+                && !item.contains("ends_the_first_listener(")
+        })
+        .collect();
+    let dir = dead_port_tree(&fixed);
+    let (code, out) = run_audit("audit-test-dead-port.sh", dir.path());
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("none of the 6 listener binds in test code is released for its port"),
+        "{out}"
+    );
+}
+
+/// `--count` tells the three classes apart, so the fixture pins what the
+/// matcher matched and not only how much it read.
+#[test]
+fn the_dead_port_count_names_each_class_of_bind() {
+    let dir = dead_port_tree(DEAD_PORT_TESTS_RS);
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".claude/scripts/audit-test-dead-port.sh");
+    let out = bash()
+        .arg(&script)
+        .arg("--count")
+        .arg(dir.path())
+        .output()
+        .expect("running audit-test-dead-port.sh --count");
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "named=12 chained=3 other=1"
+    );
+}
+
+/// The audit reads the real tree's listener binds. The named count moves
+/// with every responder test added, so it is held to a floor: a spelling
+/// change that empties the walk fails here instead of printing a clean scan
+/// of nothing. The other two classes are pinned exactly: a chained read is a
+/// finding the clean scan above would have reported, and a bind the matcher
+/// could place in neither class is a bind it did not read.
+#[test]
+fn the_dead_port_audit_reads_the_listener_binds_of_the_real_tree() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let script = repo.join(".claude/scripts/audit-test-dead-port.sh");
+    let out = bash()
+        .arg(&script)
+        .arg("--count")
+        .arg(&repo)
+        .output()
+        .expect("running audit-test-dead-port.sh --count");
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let counts: std::collections::HashMap<&str, usize> = text
+        .split_whitespace()
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(k, v)| (k, v.parse().expect("a count")))
+        .collect();
+    assert!(counts["named"] >= 40, "the scan read {text}");
+    assert_eq!(counts["chained"], 0, "{text}");
+    assert_eq!(counts["other"], 0, "{text}");
+}
+
+const PATH_STUB_TESTS_RS: &str = include_str!("fixtures/audit_scripts/path_stub_tests.rs.txt");
+const PATH_STUB_BINARY_SH: &str = include_str!("fixtures/audit_scripts/path_stub_binary.sh.txt");
+
+fn path_stub_tree(tests_rs: &str) -> TempDir {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join("crates/demo/src/tests.rs");
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("fixture dir");
+    std::fs::write(&path, tests_rs).expect("fixture file");
+    // A PATH-swapping helper under core's test_helpers is called from every
+    // crate's tests, so the fixture carries one the demo crate calls.
+    let core = dir.path().join("crates/core/src/test_helpers/stubs.rs");
+    std::fs::create_dir_all(core.parent().expect("parent")).expect("fixture dir");
+    std::fs::write(&core, CORE_STUB_RS).expect("fixture file");
+    dir
+}
+
+const CORE_STUB_RS: &str = "// path-stubs: none — the directory it puts first on PATH holds no tool\n\
+    /// Puts a stub directory first on PATH, for every crate's tests.\n\
+    pub fn core_stub() -> PathGuard {\n    EnvGuard::set(\"PATH\", \"/core-stub\")\n}\n";
+
+/// The fixture with every finding answered: every fn gains `path_env` (a
+/// key on a non-test fn is ignored by the scan), the test under another key
+/// keeps it, the unresolvable key gets its reason and the orphan helper is
+/// deleted.
+fn path_stub_tests_all_keyed() -> String {
+    PATH_STUB_TESTS_RS
+        .replace("\nfn ", "\n#[serial_test::serial(path_env)]\nfn ")
+        .replace("\nasync fn ", "\n#[serial_test::serial(path_env)]\nasync fn ")
+        .replace("        fn $name()", "        #[serial_test::serial(path_env)]\n        fn $name()")
+        .replace("#[serial(stub_counter)]", "#[serial(stub_counter, path_env)]")
+        .replace(
+            "fn an_unresolvable_name_is_reported_as_a_variable() {\n",
+            "fn an_unresolvable_name_is_reported_as_a_variable() {\n    // not-path: the fixture's own counter\n",
+        )
+        .replace(
+            "fn stub_nobody_calls() -> PathGuard {\n    FakeToolDir::new().activate()\n}",
+            "fn stub_nobody_calls() -> PathGuard {\n    PathGuard::none()\n}",
+        )
+}
+
+/// A test that swaps the process `PATH` is reported unless its serial
+/// attribute names `path_env`. The mutators: no attribute, another key alone,
+/// `file_serial` (a per-file lock), a test behind a multi-line attribute or a
+/// block comment, `#[tokio::test]` / `#[rstest]` / `#[test_case]`, every
+/// spelling of the swap (`EnvGuard::remove`, `set_var`, `remove_var`, an
+/// aliased `set_var`, a multi-line `set_var`), the variable named through a
+/// const or a same-fn `let`, a `macro_rules!` body, and a swap reached through
+/// a helper, a helper's helper or a helper under core's `test_helpers/`. Not
+/// reported: a second key BESIDE `path_env`, the key spelled over several
+/// lines, another variable (literal or const) and the spelling quoted in a
+/// string. A name the scan cannot resolve is a `[variable]` finding unless the
+/// line above gives a reason, and a swapping helper no test calls is an
+/// `[orphan]`.
+#[test]
+fn path_stub_serial_audit_reports_every_mutator_outside_the_group() {
+    let dir = path_stub_tree(PATH_STUB_TESTS_RS);
+    let (code, out) = run_audit("audit-path-stub-serial.sh", dir.path());
+
+    let mut expected: Vec<String> = [
+        "an_unkeyed_stub_test_is_reported",
+        "a_stub_test_under_another_key_is_reported",
+        "a_file_serial_key_is_reported",
+        "a_test_behind_a_multi_line_attribute_is_reported",
+        "a_test_behind_a_block_comment_is_reported",
+        "an_async_test_is_reported",
+        "an_rstest_test_is_reported",
+        "a_test_case_test_is_reported",
+        "an_aliased_set_var_is_reported",
+        "a_const_naming_path_is_reported",
+        "a_let_naming_path_is_reported",
+        "$name",
+        "a_test_swapping_through_a_helper_is_reported",
+        "a_test_swapping_through_a_helper_of_a_helper_is_reported",
+        "a_test_swapping_through_a_core_helper_is_reported",
+    ]
+    .into_iter()
+    .map(|name| {
+        let (line, _) = at(PATH_STUB_TESTS_RS, &format!("fn {name}("));
+        format!(
+            "crates/demo/src/tests.rs:{line}: [mutator] fn {name} swaps PATH without \
+             #[serial(path_env)]"
+        )
+    })
+    .collect();
+    // A [variable] names the mutation's own line: that is where the marker goes.
+    let (line, _) = at(PATH_STUB_TESTS_RS, "EnvGuard::set(key_from_elsewhere()");
+    expected.push(format!(
+        "crates/demo/src/tests.rs:{line}: [variable] fn \
+         an_unresolvable_name_is_reported_as_a_variable names the variable it mutates \
+         through a value the scan cannot resolve"
+    ));
+    let (line, _) = at(PATH_STUB_TESTS_RS, "fn stub_nobody_calls(");
+    expected.push(format!(
+        "crates/demo/src/tests.rs:{line}: [orphan] fn stub_nobody_calls swaps PATH and no \
+         test calls it; if it is a test, its attribute was not read"
+    ));
+    expected.sort();
+    let mut got = hits(&out);
+    got.sort();
+    assert_eq!(got, expected, "{out}");
+    assert_eq!(code, 1, "{out}");
+}
+
+#[test]
+fn path_stub_serial_audit_passes_a_tree_whose_mutators_are_all_keyed() {
+    let dir = path_stub_tree(&path_stub_tests_all_keyed());
+    let (code, out) = run_audit("audit-path-stub-serial.sh", dir.path());
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains(
+            "all 18 PATH-swapping tests in 1 crate(s) take #[serial(path_env)] (3 helper(s) derived)"
+        ),
+        "{out}"
+    );
+}
+
+/// `--records` is what the reader audit takes as its one definition of a
+/// mutator: the tests, the derived helpers (a core `test_helpers/` one as `*`),
+/// the tools named in swapping fns and the file-level `path-stubs:` declaration.
+#[test]
+fn path_stub_serial_audit_records_name_every_mutator_and_stub() {
+    let dir = path_stub_tree(PATH_STUB_TESTS_RS);
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".claude/scripts/audit-path-stub-serial.sh");
+    let out = bash()
+        .arg(&script)
+        .arg("--records")
+        .arg(dir.path())
+        .output()
+        .expect("running audit-path-stub-serial.sh --records");
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut kinds: Vec<&str> = text.lines().filter(|l| !l.starts_with("C ")).collect();
+    kinds.sort();
+    let (keyed, _) = at(PATH_STUB_TESTS_RS, "fn a_keyed_stub_test_is_not_reported(");
+    assert!(
+        kinds.contains(
+            &format!("T demo crates/demo/src/tests.rs:{keyed} a_keyed_stub_test_is_not_reported 1")
+                .as_str()
+        ),
+        "{text}"
+    );
+    for record in [
+        "H * core_stub crates/core/src/test_helpers/stubs.rs:3",
+        "H demo stub_absent crates/demo/src/tests.rs:",
+        "H demo stub_absent_twice crates/demo/src/tests.rs:",
+        "H demo stub_nobody_calls crates/demo/src/tests.rs:",
+        "S demo faketool",
+        "D demo crates/demo/src/tests.rs rawtool",
+    ] {
+        assert!(
+            kinds.iter().any(|l| l.starts_with(record)),
+            "{record} missing from\n{text}"
+        );
+    }
+    assert_eq!(
+        kinds.iter().filter(|l| l.starts_with("T ")).count(),
+        18,
+        "{text}"
+    );
+}
+
+/// The population the mutator audit walks on the real tree, pinned by name so
+/// a spelling change that empties the walk fails here instead of printing a
+/// clean scan of nothing. A crate joins this list the day its tests first
+/// stub a tool on `PATH`.
+#[test]
+fn the_path_stub_audit_walks_every_crate_that_stubs_a_tool() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let script = repo.join(".claude/scripts/audit-path-stub-serial.sh");
+    let out = bash()
+        .arg(&script)
+        .arg("--crates")
+        .arg(&repo)
+        .output()
+        .expect("running audit-path-stub-serial.sh --crates");
+    assert!(out.status.success(), "{out:?}");
+    let crates: Vec<&str> = std::str::from_utf8(&out.stdout)
+        .expect("utf8")
+        .lines()
+        .collect();
+    assert_eq!(
+        crates,
+        [
+            "cli",
+            "core",
+            "stage-blob",
+            "stage-build",
+            "stage-changelog",
+            "stage-dmg",
+            "stage-docker",
+            "stage-makeself",
+            "stage-notarize",
+            "stage-publish",
+            "stage-sign",
+            "stage-snapcraft",
+            "stage-srpm",
+        ]
+    );
+}
+
+/// Drive `audit-path-stub-readers.sh` over a fixture tree whose "test binary"
+/// is a shell script answering libtest's `--list` and `--exact`.
+fn run_path_stub_readers(root: &Path) -> (i32, String) {
+    let binary = root.join("demo-tests");
+    anodizer_core::test_helpers::fake_tool::write_executable_script(&binary, PATH_STUB_BINARY_SH);
+    let binaries = root.join("binaries.txt");
+    std::fs::write(&binaries, format!("demo {}\n", binary.display())).expect("binaries list");
+    let out = path_stub_readers_with(root, &binaries);
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    (out.status.code().unwrap_or(-1), text)
+}
+
+/// A reader is a test that spawns a tool its own binary stubs. Of the five
+/// that do in the fixture, two are findings: the one spawning a `.tool()`
+/// stub and the one spawning, under a cleared environment, the hand-built
+/// stub the file's `path-stubs:` line declares. The keyed one and the one
+/// carrying a reasoned marker are answered for, and a spawn made by another
+/// tool is a note.
+#[test]
+fn path_stub_readers_audit_reports_the_unkeyed_readers_only() {
+    let dir = path_stub_tree(PATH_STUB_TESTS_RS);
+    let (code, out) = run_path_stub_readers(dir.path());
+
+    let (stubbed, _) = at(PATH_STUB_TESTS_RS, "fn reads_the_stubbed_tool()");
+    let (raw, _) = at(PATH_STUB_TESTS_RS, "fn reads_the_raw_tool()");
+    assert_eq!(
+        hits(&out),
+        vec![
+            format!(
+                "crates/demo/src/tests.rs:{stubbed}: [reader] fn reads_the_stubbed_tool spawns \
+                 faketool, which tests in this binary stub on PATH, without #[serial(path_env)]"
+            ),
+            format!(
+                "crates/demo/src/tests.rs:{raw}: [reader] fn reads_the_raw_tool spawns rawtool, \
+                 which tests in this binary stub on PATH, without #[serial(path_env)]"
+            ),
+        ],
+        "{out}"
+    );
+    assert_eq!(code, 1, "{out}");
+}
+
+#[test]
+fn path_stub_readers_audit_passes_once_the_readers_are_keyed() {
+    let dir = path_stub_tree(&path_stub_tests_all_keyed());
+    let (code, out) = run_path_stub_readers(dir.path());
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("6 tests in 1 binaries of 1 crate(s) run alone"),
+        "{out}"
+    );
+    assert!(
+        out.contains("note — 1 spawn(s) of a stubbed tool were made by another tool"),
+        "{out}"
+    );
+}
+
+fn path_stub_readers_with(root: &Path, binaries: &Path) -> std::process::Output {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".claude/scripts/audit-path-stub-readers.sh");
+    bash()
+        .arg(&script)
+        .arg(root)
+        .env("PATH_STUB_READERS_BINARIES", binaries)
+        // The script works under the target directory of the tree it is
+        // given; an inherited override would point it at the real one.
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("running audit-path-stub-readers.sh")
+}
+
+fn assert_not_run(out: &std::process::Output, reason: &str) {
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("the scan did not run"), "{out:?}");
+    assert!(err.contains(reason), "{out:?}");
+}
+
+/// A run that measured nothing is not a clean run: with no test binary to
+/// drive, the audit stops at the code reserved for "the scan did not run".
+#[test]
+fn path_stub_readers_audit_refuses_to_pass_on_no_measurement() {
+    let dir = path_stub_tree(PATH_STUB_TESTS_RS);
+    let binaries = dir.path().join("binaries.txt");
+    std::fs::write(&binaries, "").expect("empty binaries list");
+    assert_not_run(
+        &path_stub_readers_with(dir.path(), &binaries),
+        "no test was run (0 binaries, 0 tests)",
+    );
+}
+
+/// Every way the measurement can fail to happen is exit 2 with its reason,
+/// never a clean scan of nothing: a tree with no mutator, a mutator in an
+/// integration test (a binary the audit does not build), a hand-built stub
+/// its file does not declare, a test binary that is not executable, and a
+/// binary that cannot list its tests.
+#[test]
+fn path_stub_readers_audit_names_every_reason_it_could_not_measure() {
+    let binary_list = |dir: &Path, line: &str| {
+        let binaries = dir.join("binaries.txt");
+        std::fs::write(&binaries, line).expect("binaries list");
+        binaries
+    };
+
+    let dir = path_stub_tree("#[test]\nfn swaps_nothing() {}\n");
+    std::fs::remove_file(dir.path().join("crates/core/src/test_helpers/stubs.rs")).expect("rm");
+    let binaries = binary_list(dir.path(), "");
+    assert_not_run(
+        &path_stub_readers_with(dir.path(), &binaries),
+        "no test swaps PATH",
+    );
+
+    let dir = path_stub_tree(PATH_STUB_TESTS_RS);
+    let integration = dir.path().join("crates/demo/tests/stubbed.rs");
+    std::fs::create_dir_all(integration.parent().expect("parent")).expect("dir");
+    std::fs::write(
+        &integration,
+        "#[test]\nfn swaps_in_an_integration_test() {\n    let _p = FakeToolDir::new().activate();\n}\n",
+    )
+    .expect("fixture");
+    let binaries = binary_list(dir.path(), "");
+    let out = path_stub_readers_with(dir.path(), &binaries);
+    assert_not_run(&out, "a PATH swap under crates/*/tests is not measured");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("crates/demo/tests/stubbed.rs"),
+        "{out:?}"
+    );
+
+    let dir = path_stub_tree(&PATH_STUB_TESTS_RS.replacen("// path-stubs: rawtool", "//", 1));
+    let binaries = binary_list(dir.path(), "");
+    let out = path_stub_readers_with(dir.path(), &binaries);
+    assert_not_run(&out, "does not say what it puts there");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("  crates/demo/src/tests.rs"),
+        "{out:?}"
+    );
+
+    let dir = path_stub_tree(PATH_STUB_TESTS_RS);
+    let missing = dir.path().join("no-such-binary");
+    let binaries = binary_list(dir.path(), &format!("demo {}\n", missing.display()));
+    assert_not_run(
+        &path_stub_readers_with(dir.path(), &binaries),
+        "is not executable",
+    );
+
+    let dir = path_stub_tree(PATH_STUB_TESTS_RS);
+    let broken = dir.path().join("broken-tests");
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
+        &broken,
+        "#!/bin/sh\necho 'no listing' >&2\nexit 3\n",
+    );
+    let binaries = binary_list(dir.path(), &format!("demo {}\n", broken.display()));
+    let out = path_stub_readers_with(dir.path(), &binaries);
+    assert_not_run(&out, "could not list its tests");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no listing"),
+        "{out:?}"
+    );
+
+    let dir = path_stub_tree(PATH_STUB_TESTS_RS);
+    let absent = dir.path().join("absent-tests");
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
+        &absent,
+        "#!/bin/sh\nif [ \"$1\" = --list ]; then echo 'tests::gone: test'; exit 0; fi\nexit 127\n",
+    );
+    let binaries = binary_list(dir.path(), &format!("demo {}\n", absent.display()));
+    let out = path_stub_readers_with(dir.path(), &binaries);
+    assert_not_run(&out, "a test could not be run");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("tests::gone exited 127"),
+        "{out:?}"
     );
 }
 
@@ -1260,7 +1777,7 @@ fn rustdoc_gate_is_wired_into_gate_and_ci_never_commit() {
     }
     assert_eq!(
         commit_path.len(),
-        28,
+        30,
         "the set of tasks `task commit` reaches changed; re-check that none of them runs the rustdoc gate and update the count: {commit_path:?}"
     );
 
@@ -1995,4 +2512,108 @@ fn a_scanner_whose_inline_program_is_broken_fails_loudly() {
         stderr.contains("awk:"),
         "awk's own diagnostic must stay visible, got: {stderr}"
     );
+}
+
+/// Copy the files the lockstep audit reads into a fresh root, so a test can
+/// alter one of them without touching the repository.
+fn lockstep_root() -> TempDir {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = tempfile::tempdir().expect("lockstep root");
+    for rel in [
+        ".github/workflows/release.yml",
+        ".github/workflows/publish-oidc.yml",
+        ".github/workflows/determinism.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/nightly.yml",
+        ".github/actions/resolve-release-target/action.yml",
+        ".claude/scripts/test-os-suite.sh",
+        "Taskfile.yml",
+    ] {
+        let to = dir.path().join(rel);
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::copy(repo.join(rel), &to).unwrap_or_else(|e| panic!("copy {rel}: {e}"));
+    }
+    dir
+}
+
+/// A publish-oidc.yml job that declares no `timeout-minutes` runs under
+/// GitHub's 360-minute default, which no waiter covers; the audit names the
+/// job instead of reading the missing value as 0 and passing.
+#[test]
+fn lockstep_audit_fails_a_publish_oidc_job_without_a_timeout() {
+    if Command::new("yq").arg("--version").output().is_err() {
+        eprintln!("yq not on PATH; skipping");
+        return;
+    }
+    let root = lockstep_root();
+    let (code, output) = run_audit("audit-workflow-lockstep.sh", root.path());
+    assert_eq!(code, 0, "the unaltered copy must pass:\n{output}");
+
+    let oidc = root.path().join(".github/workflows/publish-oidc.yml");
+    let text = std::fs::read_to_string(&oidc).unwrap();
+    let stripped: String = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("timeout-minutes:"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_ne!(
+        stripped, text,
+        "publish-oidc.yml declares no timeout-minutes to strip"
+    );
+    std::fs::write(&oidc, stripped).unwrap();
+
+    let (code, output) = run_audit("audit-workflow-lockstep.sh", root.path());
+    assert_eq!(code, 1, "{output}");
+    assert!(
+        output.contains("job 'publish-oidc' declares no timeout-minutes"),
+        "the finding must name the job:\n{output}"
+    );
+}
+
+/// `.gitignore` ignores `.claude/scripts/*` and re-includes scripts one by
+/// one, so a script the Taskfile runs is absent from a fresh clone until
+/// somebody adds its line. Three audit scripts wired into `task lint` and
+/// `push-preflight.sh` under `task push` were in that state.
+#[test]
+fn every_script_the_taskfile_runs_is_neither_ignored_nor_missing() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let taskfile = std::fs::read_to_string(repo.join("Taskfile.yml")).expect("Taskfile.yml");
+    let mut scripts: Vec<&str> = taskfile
+        .match_indices(".claude/scripts/")
+        .map(|(start, _)| {
+            let rest = &taskfile[start..];
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || "_./-".contains(c)))
+                .unwrap_or(rest.len());
+            &rest[..end]
+        })
+        .collect();
+    scripts.sort_unstable();
+    scripts.dedup();
+    assert!(
+        scripts.len() >= 10,
+        "the Taskfile names {} scripts",
+        scripts.len()
+    );
+    let mut problems = Vec::new();
+    for script in scripts {
+        if !repo.join(script).exists() {
+            problems.push(format!("{script}: missing"));
+            continue;
+        }
+        let ignored = anodizer_core::test_helpers::spawn::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(["-C", repo.to_str().unwrap(), "check-ignore", "-q", script]);
+                cmd
+            },
+            "git check-ignore",
+        )
+        .status
+        .success();
+        if ignored {
+            problems.push(format!("{script}: ignored by .gitignore"));
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
 }

@@ -50,6 +50,8 @@
 //! // }
 //! ```
 
+// path-stubs: none — activate() puts on PATH the tools its caller named in .tool()
+
 use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;

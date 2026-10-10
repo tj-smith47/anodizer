@@ -1219,7 +1219,6 @@ fn publish_only_workspace_with_only_sibling_subdirs_fails_closed() {
     run_git(repo, &["init", "-q", "-b", "master"]);
     run_git(repo, &["config", "user.email", "test@test.com"]);
     run_git(repo, &["config", "user.name", "Test"]);
-    run_git(repo, &["config", "commit.gpgsign", "false"]);
 
     for name in ["a-one", "b-one"] {
         let dir = repo.join("crates").join(name);

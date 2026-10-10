@@ -520,6 +520,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(path_env)]
     fn preflight_ok_when_buildx_available() {
         // buildx is present in this env, so preflight passes the availability
         // gate. (The bail branch is exercised on hosts without buildx.)

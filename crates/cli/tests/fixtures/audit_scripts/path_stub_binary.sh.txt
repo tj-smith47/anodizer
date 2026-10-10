@@ -1,0 +1,17 @@
+#!/bin/sh
+# Stands in for a libtest binary: `--list --format terse`, and
+# `--exact <name>`, which spawns the tool the test of that name reaches.
+if [ "$1" = "--list" ]; then
+    for t in reads_the_stubbed_tool reads_the_stubbed_tool_keyed reads_the_stubbed_tool_marked \
+        reads_the_raw_tool reads_through_another_tool reads_nothing; do
+        echo "tests::$t: test"
+    done
+    exit 0
+fi
+case "$2" in
+    tests::reads_the_stubbed_tool*) faketool ;;
+    # The spawn is made with no environment at all, the way `env_clear()` does it.
+    tests::reads_the_raw_tool) env -i "$(command -v rawtool)" ;;
+    tests::reads_through_another_tool) sh -c 'faketool; :' ;;
+esac
+exit 0

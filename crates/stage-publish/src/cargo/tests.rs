@@ -1,5 +1,7 @@
 //! Unit and integration tests for the cargo publisher.
 
+// path-stubs: cargo — the EnvGuard swaps below put a hand-built `cargo` on PATH
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1869,6 +1871,7 @@ fn is_transient_network_failure_rejects_unrelated_errors() {
 /// wording survives in 1.99; it does not prove cargo emits it for an
 /// index-propagation failure, which would need a live crates.io publish race.
 #[test]
+#[serial_test::serial(path_env)]
 fn cargo_version_matches_pinned_discriminator_strings() {
     // Last-verified cargo minor. Update together with re-verification.
     const VERIFIED_CARGO_MINOR: u64 = 99;
@@ -3645,6 +3648,7 @@ fn cargo_publish_plan_reads_the_planned_version_before_the_manifest() {
 /// rewrite left behind dirties the tree the release's dirty-tree gate refuses
 /// moments later.
 #[test]
+#[serial_test::serial(path_env)]
 fn reconcile_packages_with_the_binstall_table_and_restores_the_manifest() {
     use anodizer_core::config::BinstallConfig;
     use anodizer_core::test_helpers::env::EnvGuard;
@@ -4011,6 +4015,7 @@ fn decode_cargo_yank_targets_empty_for_non_cargo_variant() {
 /// in this binary flaky). Gated unix: mutates PATH and uses unix paths.
 #[cfg(unix)]
 #[test]
+#[serial_test::serial(path_env)]
 fn rollback_dry_run_returns_ok_without_spawning_cargo() {
     use anodizer_core::Publisher;
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -4047,6 +4052,63 @@ fn rollback_dry_run_returns_ok_without_spawning_cargo() {
     assert!(
         super::partial_rollback_tests::read_argv_log(&argv_log).is_empty(),
         "dry-run rollback must never spawn cargo"
+    );
+}
+
+/// A failed `cargo yank` echoes whatever cargo printed, and cargo can print
+/// the token it was handed. The warning carries cargo's diagnostic with the
+/// token masked.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(path_env)]
+fn a_failed_yank_redacts_the_registry_token_from_its_warning() {
+    use anodizer_core::Publisher;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    anodizer_core::test_helpers::fake_tool::write_executable_script(
+        &tmp.path().join("cargo"),
+        "#!/bin/sh\necho \"error: token $CARGO_REGISTRY_TOKEN was rejected\" >&2\nexit 1\n",
+    );
+    let new_path = format!(
+        "{}:{}",
+        tmp.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new().with("CARGO_REGISTRY_TOKEN", "hunter2-yank-token"),
+    );
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+    let mut evidence = anodizer_core::PublishEvidence::new("cargo");
+    evidence.extra = encode_cargo_yank_targets(&[CargoYankTarget {
+        name: "a".into(),
+        version: "1.0.0".into(),
+        registry: None,
+        index: None,
+    }]);
+
+    let _g = anodizer_core::test_helpers::env::env_mutex()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let _path = anodizer_core::test_helpers::env::EnvGuard::set("PATH", &new_path);
+    CargoPublisher::new()
+        .rollback(&mut ctx, &evidence)
+        .expect("a failed yank is a warning, not an error");
+    let warnings: Vec<String> = capture
+        .all_messages()
+        .into_iter()
+        .filter(|(lvl, _)| *lvl == anodizer_core::log::LogLevel::Warn)
+        .map(|(_, m)| m)
+        .collect();
+    assert!(
+        warnings
+            .iter()
+            .any(|m| m.contains("cargo yank failed for a 1.0.0") && m.contains("was rejected")),
+        "the yank failure must be warned about with cargo's text: {warnings:?}"
+    );
+    assert!(
+        !warnings.iter().any(|m| m.contains("hunter2-yank-token")),
+        "the registry token leaked into the warning: {warnings:?}"
     );
 }
 

@@ -396,7 +396,9 @@ jobs:
     # `&& result == 'success'` keeps it gated on a real publish.
     if: ${{ always() && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # Outlasts publish-oidc.yml's own job timeout plus the dispatched run's
+    # queue time; audit-workflow-lockstep.sh holds the two numbers together.
+    timeout-minutes: 50
     permissions:
       contents: read
       actions: write # dispatch publish-oidc.yml via the Actions API

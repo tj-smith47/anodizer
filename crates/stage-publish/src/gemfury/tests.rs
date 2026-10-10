@@ -619,12 +619,8 @@ fn version_already_published_bails_on_non_404() {
 #[test]
 fn version_already_published_bails_on_transport_failure() {
     use super::publish::version_already_published;
-    use std::net::TcpListener;
 
-    // Bind then drop the listener to obtain a port that refuses connections.
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let dead_addr = listener.local_addr().expect("addr");
-    drop(listener);
+    let dead_addr = anodizer_core::test_helpers::refusing_addr::refusing_addr();
 
     let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(2))
         .expect("http client");

@@ -1368,8 +1368,8 @@ fn test_per_target_build_env_reaches_only_its_targets_hook() {
         ),
     ]);
 
-    let dir = std::env::temp_dir().join(format!("anodizer-mt-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
 
     let probe = |target: &str, out: &std::path::Path| {
         let resolved = resolve_target_env(Some(&env), target, &log, false)

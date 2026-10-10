@@ -85,7 +85,7 @@ source "$LIB_DIR/scan.sh"
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
 
-collect_files FILES -rlP --include='*.rs' --exclude-dir=target \
+collect_files FILES -rlE --include='*.rs' --exclude-dir=target \
     -- 'std::env::(set_var|remove_var|set_current_dir)\(' crates/*/src crates/*/tests
 
 # No global early-exit on an empty FILES: the cwd-helper pairing check below
@@ -189,6 +189,7 @@ all_helper_alt="${helper_alt}|${portable_alt}"
 violations=""
 if [[ ${#FILES[@]} -gt 0 ]]; then
     run_scanner violations -f "$LIB_DIR/rust-lex.awk" -f "$LIB_DIR/test-regions.awk" -f - "${FILES[@]}" <<'AWK'
+    function ltrim(s) { sub(/^[[:space:]]+/, "", s); return s }
         function flush_fn(   i) {
             if (!fn_guarded)
                 for (i = 1; i <= pending_n; i++) print pending[i]
@@ -230,16 +231,16 @@ if [[ ${#FILES[@]} -gt 0 ]]; then
                 # Justified against the RACE. The RESTORE still has to survive
                 # a failing assertion, and only the guard makes it.
                 pending[++pending_n] = sprintf("%s:%d: [env-guard] %s", \
-                    FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
+                    FILENAME, FNR, ltrim(line))
                 next
             }
-            printf("%s:%d: [env] %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
+            printf("%s:%d: [env] %s\n", FILENAME, FNR, ltrim(line))
         }
 
         code ~ /std::env::set_current_dir\(/ {
             if (!in_test) next                  # production / library code
             if (this_cwdok || prev_cwdok) next  # justified at the call site
-            printf("%s:%d: [cwd] %s\n", FILENAME, FNR, gensub(/^[[:space:]]+/, "", 1, line))
+            printf("%s:%d: [cwd] %s\n", FILENAME, FNR, ltrim(line))
         }
 
         END { flush_fn() }

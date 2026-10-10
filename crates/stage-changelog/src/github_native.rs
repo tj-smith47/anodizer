@@ -74,6 +74,7 @@ pub(crate) fn generate_release_notes(
     if let Some(tok) = token {
         cmd.env("GITHUB_TOKEN", tok);
     }
+    let log = &log.with_child_env(&cmd);
 
     let output = anodizer_core::run::run_checked_with_stdin(
         &mut cmd,
@@ -122,6 +123,36 @@ pub(crate) fn build_request_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The token is planted on the `gh` child only, so the logger the caller
+    /// passes does not know it; a failure that echoes it is still masked.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn a_failed_generate_notes_call_redacts_the_token_it_was_given() {
+        let tools = anodizer_core::test_helpers::fake_tool::FakeToolDir::new();
+        tools
+            .tool("gh")
+            .script(
+                "cat >/dev/null\necho \"HTTP 401: bad credentials $GITHUB_TOKEN\" >&2\nexit 1\n",
+            )
+            .install();
+        let _path = tools.activate();
+        let log =
+            anodizer_core::log::StageLogger::new("changelog", anodizer_core::log::Verbosity::Quiet);
+        let err =
+            generate_release_notes("o", "r", "v1.0.0", None, Some("hunter2-notes-token"), &log)
+                .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("bad credentials"),
+            "gh's diagnostic must still be embedded: {text}"
+        );
+        assert!(
+            !text.contains("hunter2-notes-token"),
+            "the token leaked into the error: {text}"
+        );
+    }
 
     #[test]
     fn request_body_includes_previous_tag_when_set() {

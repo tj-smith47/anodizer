@@ -66,6 +66,7 @@ fn test_platform_to_arch() {
 }
 
 #[test]
+#[serial_test::serial(path_env)]
 fn test_build_docker_command() {
     // With explicit buildx backend, multi-platform gets --push
     let cmd = build_docker_command(&DockerV1Spec {
@@ -138,6 +139,7 @@ fn parse_platform_no_arch_does_not_panic() {
 }
 
 #[test]
+#[serial_test::serial(path_env)]
 fn test_build_docker_command_structure() {
     let cmd = build_docker_command(&DockerV1Spec {
         staging_dir: "/tmp/ctx",
@@ -186,6 +188,7 @@ fn test_build_docker_command_multiple_tags() {
 // ------------------------------------------------------------------
 
 #[test]
+#[serial_test::serial(path_env)]
 fn test_build_docker_command_skip_push() {
     // When push=false (i.e. skip_push is true or dry_run), --push should not appear
     let cmd = build_docker_command(&DockerV1Spec {
@@ -233,6 +236,7 @@ fn test_build_docker_command_skip_push() {
 }
 
 #[test]
+#[serial_test::serial(path_env)]
 fn test_build_docker_command_push_flags() {
     let push_flags = vec![
         "--cache-to=type=registry,ref=ghcr.io/owner/app:cache".to_string(),
@@ -311,6 +315,7 @@ fn test_skip_push_prevents_push_flag_in_command() {
 }
 
 #[test]
+#[serial_test::serial(path_env)]
 fn test_push_flags_appended_to_command() {
     // push_flags only appear in build command for buildx backend
     let push_flags = vec!["--provenance=true".to_string(), "--sbom=true".to_string()];
@@ -832,6 +837,7 @@ fn test_build_docker_command_docker_backend() {
 }
 
 #[test]
+#[serial_test::serial(path_env)]
 fn test_build_docker_command_buildx_backend() {
     let cmd = build_docker_command(&DockerV1Spec {
         staging_dir: "/tmp/ctx",
@@ -2218,6 +2224,7 @@ fn test_docker_v2_disable_skips_build() {
 }
 
 #[test]
+#[serial_test::serial(path_env)]
 fn test_docker_v2_extra_files_staging_live() {
     use anodizer_core::config::{Config, CrateConfig, DockerRetryConfig, DockerV2Config};
     use anodizer_core::context::{Context, ContextOptions};
@@ -3675,6 +3682,7 @@ fn test_build_docker_command_podman_no_push_flag() {
 }
 
 #[test]
+#[serial_test::serial(path_env)]
 fn test_build_docker_command_buildx_gets_push_flag() {
     // buildx SHOULD get --push in the build command
     let cmd = build_docker_command(&DockerV1Spec {
@@ -3721,6 +3729,7 @@ fn test_build_docker_command_multi_platform_no_implicit_buildx() {
 }
 
 #[test]
+#[serial_test::serial(path_env)]
 fn test_build_docker_command_multi_platform_explicit_buildx_gets_push() {
     // Multi-platform with explicit buildx should get --push
     let cmd = build_docker_command(&DockerV1Spec {
@@ -3956,6 +3965,7 @@ fn test_buildx_version_check_increments_counter_on_v2_probe_outcome() {
 }
 
 #[test]
+#[serial_test::serial(path_env)]
 fn test_dockerstage_run_invokes_injected_buildx_probe_for_v2_crate() {
     // End-to-end check: when a `Context` has at least one crate with a
     // `docker_v2` config and `dry_run = true` (so no real `docker buildx
@@ -4619,6 +4629,7 @@ fn test_docker_v2_skip_template_evaluating_to_true_skips_pipe() {
 }
 
 #[test]
+#[serial_test::serial(path_env)]
 fn test_docker_v2_snapshot_multi_platform_splits_per_platform_tag_suffix() {
     // Snapshot mode with multi-platform splits into per-
     // platform builds and appends an arch suffix to each tag.
@@ -5609,6 +5620,7 @@ fn docker_v2_post_hook_receives_digest_in_dry_run() {
 /// without docker installed the assertion is that the failure path is the
 /// pre-hook one, not a docker spawn error.
 #[test]
+#[serial_test::serial(path_env)]
 fn docker_v2_pre_hook_failure_aborts_build_without_docker_spawn() {
     use anodizer_core::config::{BuildHooksConfig, Config, CrateConfig, DockerV2Config, HookEntry};
     use anodizer_core::context::{Context, ContextOptions};
@@ -6611,6 +6623,7 @@ fn prepare_v2_renders_image_cross_product_into_dry_run_artifacts() {
 }
 
 #[test]
+#[serial_test::serial(path_env)]
 fn prepare_v2_snapshot_multiplatform_appends_arch_suffix_per_platform() {
     use anodizer_core::config::DockerV2Config;
     let tmp = TempDir::new().unwrap();
@@ -7316,6 +7329,251 @@ fn a_snapshot_manifest_pushes_nothing_and_records_no_marker() {
             .any(|argv| argv.first().map(String::as_str) == Some("manifest")
                 && argv.get(1).map(String::as_str) == Some("push")),
         "a snapshot must not publish a manifest list: {calls:?}"
+    );
+}
+
+/// A value the manifest's env carries and its flags repeat.
+#[cfg(unix)]
+const ECHO_SECRET: &str = "hunter2-docker-argv-secret";
+
+/// Run one `docker_manifests[0]` entry whose `create_flags` and `push_flags`
+/// both repeat a value its env carries, against a stubbed `docker`, and return
+/// every line logged at verbose.
+#[cfg(unix)]
+fn manifest_echo_lines(dry_run: bool) -> Vec<String> {
+    use anodizer_core::config::{Config, CrateConfig, DockerManifestConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+    let tools = FakeToolDir::new();
+    tools.tool("docker").install();
+    let _path = tools.activate();
+
+    let manifest_cfg = DockerManifestConfig {
+        name_template: format!("ghcr.io/{ECHO_SECRET}/app:1.0.0"),
+        image_templates: vec![format!("ghcr.io/{ECHO_SECRET}/app:1.0.0-amd64")],
+        create_flags: Some(vec![format!("--create-password={ECHO_SECRET}")]),
+        push_flags: Some(vec![format!("--push-password={ECHO_SECRET}")]),
+        ..Default::default()
+    };
+    let krate = CrateConfig {
+        name: "app".to_string(),
+        path: ".".to_string(),
+        docker_manifests: Some(vec![manifest_cfg.clone()]),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "app".to_string();
+    config.crates = vec![krate.clone()];
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run,
+            ..Default::default()
+        },
+    );
+    let (log, capture) = anodizer_core::log::StageLogger::with_capture(
+        "docker",
+        anodizer_core::log::Verbosity::Verbose,
+    );
+    let env = HashMap::from([("REGISTRY_TOKEN".to_string(), ECHO_SECRET.to_string())]);
+    super::run::process_docker_manifest(
+        &mut ctx,
+        &log,
+        &krate,
+        0,
+        &manifest_cfg,
+        &std::collections::HashSet::new(),
+        &env,
+        dry_run,
+        &mut Vec::new(),
+    )
+    .expect("manifest run");
+    if !dry_run {
+        assert!(
+            tools
+                .calls("docker")
+                .iter()
+                .any(|argv| argv.contains(&format!("--push-password={ECHO_SECRET}"))),
+            "the tool itself still receives the value"
+        );
+    }
+    capture.all_messages().into_iter().map(|(_, m)| m).collect()
+}
+
+/// Assert `lines` holds an echo opening with `prefix` that carries `flag`
+/// masked, and that no line at all carries the value.
+#[cfg(unix)]
+fn assert_echo_masked(lines: &[String], prefix: &str, flag: &str) {
+    let masked = format!("{flag}=$REGISTRY_TOKEN");
+    assert!(
+        lines
+            .iter()
+            .any(|m| m.starts_with(prefix) && m.contains(&masked)),
+        "an echo opening with {prefix:?} must carry {masked:?}: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|m| m.contains(ECHO_SECRET)),
+        "the env value leaked into the log: {lines:?}"
+    );
+}
+
+/// A `create_flags` entry can repeat a value the manifest's env carries, and
+/// the verbose `running … manifest create` echo prints the whole argv.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(path_env)]
+fn the_manifest_create_echo_masks_an_env_value_repeated_in_the_argv() {
+    let lines = manifest_echo_lines(false);
+    assert_echo_masked(
+        &lines,
+        "running docker manifest create",
+        "--create-password",
+    );
+}
+
+/// The `push_flags` sibling: the verbose `running … manifest push` echo.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(path_env)]
+fn the_manifest_push_echo_masks_an_env_value_repeated_in_the_argv() {
+    let lines = manifest_echo_lines(false);
+    assert_echo_masked(&lines, "running docker manifest push", "--push-password");
+    assert!(
+        lines
+            .iter()
+            .any(|m| m == "pushed manifest ghcr.io/$REGISTRY_TOKEN/app:1.0.0"),
+        "the result line names the manifest with the value masked: {lines:?}"
+    );
+}
+
+/// A dry run prints the create and the push command it would run, and both
+/// lines are masked against the manifest's env the way the live echoes are.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(path_env)]
+fn the_manifest_dry_run_echoes_mask_an_env_value_repeated_in_the_argv() {
+    let lines = manifest_echo_lines(true);
+    assert_echo_masked(
+        &lines,
+        "(dry-run) would run: docker manifest create",
+        "--create-password",
+    );
+    assert_echo_masked(
+        &lines,
+        "(dry-run) would run: docker manifest push",
+        "--push-password",
+    );
+}
+
+/// A build job whose argv and pushed tag both repeat a value its env carries.
+/// `build_bin` is the program the build spawns.
+#[cfg(unix)]
+fn echo_probe_job(build_bin: &std::path::Path, staging: &std::path::Path) -> DockerBuildJob {
+    DockerBuildJob {
+        cmd_args: vec![
+            build_bin.to_string_lossy().into_owned(),
+            "build".to_string(),
+            format!("--build-arg=TOKEN={ECHO_SECRET}"),
+        ],
+        backend_label: "podman".to_string(),
+        crate_name: "app".to_string(),
+        idx: 0,
+        max_attempts: 1,
+        base_delay: Duration::from_millis(1),
+        max_delay: None,
+        rendered_tags: vec![format!("registry.example/{ECHO_SECRET}/app:1.0.0")],
+        platforms_list: vec!["linux/amd64".to_string()],
+        staging_dir: staging.to_path_buf(),
+        id: None,
+        use_backend: Some("podman".to_string()),
+        is_podman: true,
+        push: false,
+        dist: staging.to_path_buf(),
+        skip_digest: true,
+        digest_name_template: None,
+        env_vars: BTreeMap::from([("REGISTRY_TOKEN".to_string(), ECHO_SECRET.to_string())]),
+        deadline: None,
+    }
+}
+
+/// A rendered build flag can repeat a value the image's env carries, and the
+/// verbose `running …` echo of the build prints the whole argv.
+#[cfg(unix)]
+#[test]
+fn the_docker_build_echo_masks_an_env_value_repeated_in_the_argv() {
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+    let tools = FakeToolDir::new();
+    tools.tool("podman").install();
+    let tmp = TempDir::new().unwrap();
+    let job = echo_probe_job(&tools.tool_path("podman"), tmp.path());
+
+    let (log, capture) = anodizer_core::log::StageLogger::with_capture(
+        "docker",
+        anodizer_core::log::Verbosity::Verbose,
+    );
+    super::build::execute_docker_build(&job, &log).expect("build runs");
+    assert_eq!(
+        tools.calls("podman")[0],
+        vec![
+            "build".to_string(),
+            format!("--build-arg=TOKEN={ECHO_SECRET}")
+        ],
+        "the tool itself still receives the value"
+    );
+    let lines: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+    assert_echo_masked(&lines, "running ", "--build-arg=TOKEN");
+    assert!(
+        lines.iter().any(|m| m.starts_with("created images")
+            && m.contains("registry.example/$REGISTRY_TOKEN/app:1.0.0")),
+        "the result line names the image with the value masked: {lines:?}"
+    );
+}
+
+/// The podman push loop prints one `running podman push …` echo per tag, and
+/// a rendered tag can repeat a value the image's env carries.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(path_env)]
+fn the_podman_push_echo_masks_an_env_value_repeated_in_the_argv() {
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+    let tools = FakeToolDir::new();
+    tools.tool("podman").install();
+    let _path = tools.activate();
+    let tmp = TempDir::new().unwrap();
+    let mut job = echo_probe_job(&tools.tool_path("podman"), tmp.path());
+    job.push = true;
+
+    let (log, capture) = anodizer_core::log::StageLogger::with_capture(
+        "docker",
+        anodizer_core::log::Verbosity::Verbose,
+    );
+    super::build::execute_docker_build(&job, &log).expect("build and push run");
+    assert!(
+        tools
+            .calls("podman")
+            .iter()
+            .any(|argv| argv.first().map(String::as_str) == Some("push")),
+        "podman push must have been spawned: {:?}",
+        tools.calls("podman")
+    );
+    let lines: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+    assert!(
+        lines.iter().any(|m| m.starts_with("running podman push")
+            && m.contains("registry.example/$REGISTRY_TOKEN/app:1.0.0")),
+        "the push echo must be captured with the value masked: {lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|m| m == "pushed image registry.example/$REGISTRY_TOKEN/app:1.0.0"),
+        "the result line names the image with the value masked: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|m| m.contains(ECHO_SECRET)),
+        "the env value leaked into the log: {lines:?}"
     );
 }
 

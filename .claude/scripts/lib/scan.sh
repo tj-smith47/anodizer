@@ -117,8 +117,10 @@ collect_files() {
             "$(basename "$0" .sh)" "$__collect_status" >&2
         exit 2
     fi
+    # Directory order differs per filesystem; a sorted list prints the same
+    # findings in the same order on every host.
     if [[ -n "$__collect_text" ]]; then
-        mapfile -t __collect_out <<< "$__collect_text"
+        mapfile -t __collect_out < <(LC_ALL=C sort <<< "$__collect_text")
     fi
     return 0
 }

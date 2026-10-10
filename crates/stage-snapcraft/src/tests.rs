@@ -3569,6 +3569,7 @@ fn test_extra_files_copies_source_to_prime_dest() {
 }
 
 #[test]
+#[serial_test::serial(path_env)]
 fn test_apps_completer_existing_file_is_copied_to_prime() {
     // The completer-copy branch fires when the apps map contains an entry
     // with `completer:` set. `completer` is a relative path resolved

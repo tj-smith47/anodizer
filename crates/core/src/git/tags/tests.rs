@@ -120,7 +120,6 @@ mod create_tag_local_only_tests {
         run(&["init", "-b", "master"]);
         run(&["config", "user.email", "t@t.com"]);
         run(&["config", "user.name", "t"]);
-        run(&["config", "commit.gpgsign", "false"]);
         std::fs::write(dir.path().join("a"), "0").unwrap();
         run(&["add", "."]);
         run(&["commit", "-m", "initial"]);
