@@ -51,8 +51,8 @@ pub struct PreflightOpts {
 /// neither is a shallow checkout of a repository that has never been tagged:
 /// the tag is missing from the truncated history, so the push remote's tag
 /// listing decides ([`shallow_history_hides_a_tag`]) — a remote holding no
-/// tag of this family means there is no last release to reach, and the plan
-/// cuts the first version the way a full clone would.
+/// tag of any family the config declares means there is no last release to
+/// reach, and the plan cuts the first version the way a full clone would.
 fn seed_planned_version(
     ctx: &mut Context,
     config_override: Option<&std::path::Path>,
@@ -75,7 +75,7 @@ fn seed_planned_version(
     // A tag the truncated history still reaches plans correctly; only a tag
     // the history does not reach (or cannot be placed) is the wrong plan.
     if anodizer_core::git::is_shallow_clone_in(&root)
-        && shallow_history_hides_a_tag(&root, &tag, &position, log)
+        && shallow_history_hides_a_tag(&root, &ctx.config, &position, log)
     {
         anyhow::bail!(shallow_checkout_refusal());
     }
@@ -126,15 +126,18 @@ fn seed_planned_version(
 ///
 /// A tag at `HEAD` or behind it is reached and plans correctly. A tag that
 /// resolves elsewhere, or cannot be placed, is not. A tag that does not
-/// resolve at all is either cut off by the truncation or never cut: the
-/// push remote's listing tells the two apart, so a remote holding any tag of
-/// this tag's family hides one, a remote holding none has no last release to
-/// reach, and a listing that fails is treated as hiding one — the plan is
-/// refused rather than guessed. A checkout with no push remote plans from
-/// its local tags the way `anodizer tag` would.
+/// resolve at all is either cut off by the truncation or never cut: a
+/// remote's listing tells the two apart, so a remote holding a tag of a
+/// family the plan releases in ([`in_a_planned_tag_family`]) hides one, a
+/// remote holding none has no last release to reach, and a listing that
+/// fails is treated as hiding one — the plan is refused rather than guessed.
+/// The remote consulted is the push remote `anodizer tag` plans from
+/// ([`crate::commands::tag::DEFAULT_PUSH_REMOTE`]); a checkout without it is
+/// asked of every remote it has, and one with no remote at all cannot be
+/// asked, so it is refused the same way.
 fn shallow_history_hides_a_tag(
     root: &std::path::Path,
-    tag: &str,
+    config: &anodizer_core::config::Config,
     position: &std::result::Result<TagPosition, String>,
     log: &StageLogger,
 ) -> bool {
@@ -142,24 +145,70 @@ fn shallow_history_hides_a_tag(
         Ok(TagPosition::AtHead | TagPosition::AncestorOfHead) => false,
         Ok(TagPosition::UnrelatedToHead) | Err(_) => true,
         Ok(TagPosition::Missing) => {
-            let remote = "origin";
-            if !anodizer_core::git::has_remote_in(root, remote) {
-                return false;
+            let push_remote = crate::commands::tag::DEFAULT_PUSH_REMOTE;
+            let remotes = if anodizer_core::git::has_remote_in(root, push_remote) {
+                vec![push_remote.to_string()]
+            } else {
+                anodizer_core::git::remote_names_in(root)
+            };
+            if remotes.is_empty() {
+                log.verbose(&no_remote_note());
+                return true;
             }
-            let family = anodizer_core::git::split_tag_family(tag).map(|(prefix, _)| prefix);
-            match anodizer_core::git::list_remote_tag_names_in(root, remote) {
-                Ok(names) => names.iter().any(|name| {
-                    anodizer_core::git::split_tag_family(name).map(|(prefix, _)| prefix) == family
-                }),
-                Err(e) => {
-                    log.verbose(&format!(
-                        "could not list tags on remote '{remote}' ({e}); a shallow checkout                          cannot tell a never-tagged repository from a truncated one"
-                    ));
-                    true
+            let families = crate::commands::tag::planned_tag_family_templates(root, config);
+            for remote in &remotes {
+                match anodizer_core::git::list_remote_tag_names_in(root, remote) {
+                    Ok(names) => {
+                        if names
+                            .iter()
+                            .any(|name| in_a_planned_tag_family(config, &families, name))
+                        {
+                            return true;
+                        }
+                    }
+                    Err(e) => {
+                        log.verbose(&unlistable_remote_note(remote, &e));
+                        return true;
+                    }
                 }
             }
+            false
         }
     }
+}
+
+/// Whether `tag` is a release tag of one of `families`, the templates the
+/// plan cuts in, each with and without `monorepo.tag_prefix`.
+///
+/// The context's own tag cannot answer this on a checkout holding no tag: it
+/// is the synthetic `v0.0.0` there, whatever family the repository releases
+/// under.
+fn in_a_planned_tag_family(
+    config: &anodizer_core::config::Config,
+    families: &[String],
+    tag: &str,
+) -> bool {
+    let monorepo = config.monorepo_tag_prefix();
+    families.iter().any(|family| {
+        anodizer_core::git::tag_in_family(tag, family, monorepo)
+            || anodizer_core::git::tag_in_family(tag, family, None)
+    })
+}
+
+/// The verbose note for a shallow checkout whose remote could not be
+/// listed.
+pub(super) fn unlistable_remote_note(remote: &str, error: &dyn std::fmt::Display) -> String {
+    format!(
+        "could not list tags on remote '{remote}' ({error}); a shallow checkout \
+         cannot tell a never-tagged repository from a truncated one"
+    )
+}
+
+/// The verbose note for a shallow checkout that has no remote to ask.
+pub(super) fn no_remote_note() -> String {
+    "this checkout has no remote whose tags could be listed; a shallow checkout \
+     cannot tell a never-tagged repository from a truncated one"
+        .to_string()
 }
 
 /// The abort for a shallow checkout whose history does not reach the last

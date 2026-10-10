@@ -824,7 +824,7 @@ fn verify_cosign_keys_load_warns_when_cosign_absent() {
     )];
     let (log, capture) = StageLogger::with_capture("preflight", Verbosity::Normal);
     // Force the cosign-absent outcome deterministically, independent of PATH.
-    let all_loaded = verify_cosign_keys_load_with(&reqs, &log, |_| {
+    let all_loaded = verify_cosign_keys_load_with(&reqs, &log, |_, _| {
         anodizer_stage_sign::CosignKeyLoad::CosignUnavailable
     });
     // cosign-absent is NOT a failure.
@@ -855,7 +855,7 @@ fn verify_cosign_keys_load_fails_on_bad_key() {
         },
     )];
     let (log, capture) = StageLogger::with_capture("preflight", Verbosity::Normal);
-    let all_loaded = verify_cosign_keys_load_with(&reqs, &log, |_| {
+    let all_loaded = verify_cosign_keys_load_with(&reqs, &log, |_, _| {
         anodizer_stage_sign::CosignKeyLoad::Failed("wrong COSIGN_PASSWORD".to_string())
     });
     assert!(!all_loaded, "a failing key load must fail the gate");
@@ -1294,4 +1294,65 @@ fn every_preflight_half_runs_inside_the_one_engine() {
         ],
         "run_engine has exactly two callers, the standalone command and release"
     );
+}
+
+#[test]
+fn the_unlistable_remote_note_is_one_sentence_without_a_run_of_spaces() {
+    assert_eq!(
+        standalone::unlistable_remote_note("origin", &"exit status: 128"),
+        "could not list tags on remote 'origin' (exit status: 128); a shallow checkout \
+         cannot tell a never-tagged repository from a truncated one"
+    );
+}
+
+#[test]
+fn the_no_remote_note_is_one_sentence_without_a_run_of_spaces() {
+    assert_eq!(
+        standalone::no_remote_note(),
+        "this checkout has no remote whose tags could be listed; a shallow checkout \
+         cannot tell a never-tagged repository from a truncated one"
+    );
+}
+
+/// The detail a key load hands back is printed through the logger's own
+/// redaction table, on the failure arm and on the probe-failure arm alike.
+#[test]
+fn a_cosign_key_load_detail_is_redacted_before_it_is_printed() {
+    use anodizer_core::log::LogLevel;
+    let reqs = vec![SourcedRequirement::new(
+        "stage:sign",
+        EnvRequirement::KeyEnv {
+            kind: anodizer_core::KeyKind::Cosign,
+            var: "COSIGN_KEY".to_string(),
+        },
+    )];
+    let table = vec![(
+        "COSIGN_PASSWORD".to_string(),
+        "hunter2-key-password".to_string(),
+    )];
+    type Verdict = fn(String) -> anodizer_stage_sign::CosignKeyLoad;
+    let arms: [(Verdict, LogLevel); 2] = [
+        (anodizer_stage_sign::CosignKeyLoad::Failed, LogLevel::Error),
+        (
+            anodizer_stage_sign::CosignKeyLoad::CosignProbeFailed,
+            LogLevel::Warn,
+        ),
+    ];
+    for (verdict, level) in arms {
+        let (log, capture) = StageLogger::with_capture("preflight", Verbosity::Normal);
+        let log = log.with_env(table.clone());
+        verify_cosign_keys_load_with(&reqs, &log, |_, _| {
+            verdict("decrypt with hunter2-key-password failed".to_string())
+        });
+        let msgs = capture.all_messages();
+        assert!(
+            msgs.iter()
+                .any(|(lvl, m)| *lvl == level && m.contains("decrypt with")),
+            "the detail must be printed at {level:?}: {msgs:?}"
+        );
+        assert!(
+            !msgs.iter().any(|(_, m)| m.contains("hunter2-key-password")),
+            "the password leaked into the log: {msgs:?}"
+        );
+    }
 }

@@ -22,6 +22,14 @@ pub fn has_remote_in(cwd: &Path, remote: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The names of every remote configured in the repository at `cwd`, in
+/// `git remote` order; empty when there is none or git cannot be asked.
+pub fn remote_names_in(cwd: &Path) -> Vec<String> {
+    git_output_in(cwd, &["remote"])
+        .map(|out| out.lines().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
 /// Trim a remote URL down to the path a parser reads: surrounding
 /// whitespace, any trailing `/` (git accepts `…/repo.git/` verbatim), then
 /// the `.git` suffix. Returns `None` for an empty URL.
@@ -33,10 +41,61 @@ fn normalize_remote_url(url: &str) -> Option<&str> {
     Some(url.strip_suffix(".git").unwrap_or(url))
 }
 
+/// The repository a remote URL names, as a key on which two spellings of one
+/// remote compare equal: `host/path`, with the scheme, any userinfo, an SSH
+/// port, the `.git` suffix and a trailing `/` dropped and the host
+/// lower-cased. `ssh://aur@aur.archlinux.org/widget.git`,
+/// `aur@aur.archlinux.org:widget.git`, `AUR.archlinux.org:widget.git/` and
+/// `https://aur.archlinux.org/widget` are one key. A URL in no recognized
+/// shape is returned trimmed, so two unparseable spellings still compare by
+/// their text; an empty URL is the empty key.
+pub fn remote_identity(url: &str) -> String {
+    let Some(url) = normalize_remote_url(url) else {
+        return String::new();
+    };
+    if let Some((host, path)) = split_scheme_url(url) {
+        return format!("{}/{}", host.to_ascii_lowercase(), path.trim_matches('/'));
+    }
+    // scp-style `user@host:path` or `host:path`: a host is the segment before
+    // the first colon when it holds no path separator (which would make it
+    // a local path or a Windows drive) and names a host (`@` or `.`).
+    if let Some((before, path)) = url.split_once(':')
+        && !before.contains(['/', '\\'])
+        && (before.contains('@') || before.contains('.'))
+        && !path.is_empty()
+    {
+        let host = before.rsplit('@').next().unwrap_or(before);
+        return format!("{}/{}", host.to_ascii_lowercase(), path.trim_matches('/'));
+    }
+    url.to_string()
+}
+
+/// The web host behind an SSH host name. GitHub and GitLab each serve SSH on
+/// port 443 from a dedicated name (`ssh.github.com`, `altssh.gitlab.com`) for
+/// networks that block port 22; the repository's pages live on the plain
+/// host. Any other name is its own web host.
+fn ssh_web_host(host: &str) -> &str {
+    match host {
+        "ssh.github.com" => "github.com",
+        "altssh.gitlab.com" => "gitlab.com",
+        other => other,
+    }
+}
+
+/// Drop a trailing `:port` from an SSH authority's host. A bracketed IPv6
+/// literal (`[::1]:22`) keeps its brackets and the colons inside them.
+fn strip_ssh_port(host: &str) -> &str {
+    if host.starts_with('[') {
+        return host.find(']').map_or(host, |end| &host[..=end]);
+    }
+    host.split(':').next().unwrap_or(host)
+}
+
 /// Split a URL with a scheme (`https://`, `http://`, `ssh://`) into
 /// `(host, path)`, dropping any userinfo from the host segment. An `ssh://`
-/// port is the SSH port and is dropped too; an `http(s)://` port is the web
-/// port and stays. `None` when the URL has no such scheme, no host or no path.
+/// port is the SSH port and is dropped too, and the host is mapped through
+/// [`ssh_web_host`]; an `http(s)://` port is the web port and stays. `None`
+/// when the URL has no such scheme, no host or no path.
 fn split_scheme_url(url: &str) -> Option<(&str, &str)> {
     let (scheme, rest) = ["https://", "http://", "ssh://"]
         .iter()
@@ -46,7 +105,7 @@ fn split_scheme_url(url: &str) -> Option<(&str, &str)> {
     let path = &rest[slash + 1..];
     let host = host_seg.rsplit('@').next().unwrap_or(host_seg);
     let host = if scheme == "ssh://" {
-        host.split(':').next().unwrap_or(host)
+        ssh_web_host(strip_ssh_port(host))
     } else {
         host
     };
@@ -68,7 +127,9 @@ pub(crate) fn parse_github_remote(url: &str) -> Option<(String, String)> {
         Some(("github.com", path)) => Some(path),
         Some(_) => None,
         // scp-like SSH: git@github.com:owner/repo
-        None => url.strip_prefix("git@github.com:"),
+        None => url
+            .strip_prefix("git@github.com:")
+            .or_else(|| url.strip_prefix("git@ssh.github.com:")),
     };
     let parts: Vec<&str> = path?.splitn(3, '/').collect();
     if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
@@ -155,8 +216,9 @@ pub(crate) fn parse_remote_owner_repo(url: &str) -> Option<(String, String)> {
 pub fn parse_remote_web_base(url: &str) -> Option<String> {
     let url = normalize_remote_url(url)?;
 
-    // https://, http://, ssh://: the scheme becomes https, userinfo and the
-    // port are dropped.
+    // https://, http://, ssh://: the scheme becomes https and userinfo is
+    // dropped. An ssh:// port is dropped with it; an http(s):// port is the
+    // web port and stays in the base.
     if let Some((host, path)) = split_scheme_url(url) {
         return Some(format!("https://{}/{}", host, path));
     }
@@ -165,7 +227,7 @@ pub fn parse_remote_web_base(url: &str) -> Option<String> {
     if let Some(colon_pos) = url.find(':') {
         let before_colon = &url[..colon_pos];
         if before_colon.contains('@') && !before_colon.contains("//") {
-            let host = before_colon.rsplit('@').next().unwrap_or(before_colon);
+            let host = ssh_web_host(before_colon.rsplit('@').next().unwrap_or(before_colon));
             let path = &url[colon_pos + 1..];
             if !host.is_empty() && !path.is_empty() {
                 return Some(format!("https://{}/{}", host, path));

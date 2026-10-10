@@ -10,6 +10,10 @@ mod single_crate;
 mod version_plan;
 mod workspace_bump;
 
+/// The remote `anodizer tag` pushes to and plans from when `--push-remote`
+/// names none; the standalone preflight consults the same one.
+pub(crate) const DEFAULT_PUSH_REMOTE: &str = "origin";
+
 pub(crate) use bump_detect::*;
 pub(crate) use crate_info::*;
 pub(crate) use per_crate::*;
@@ -73,7 +77,7 @@ pub(crate) struct TagOpts {
     /// Create the version tag unsigned (`git tag -a`), overriding
     /// `tag.sign = true`. Wins over `--sign` and config, mirroring `--no-push`.
     pub no_sign: bool,
-    /// Remote to push to; defaults to `origin` when unset.
+    /// Remote to push to and plan from; [`DEFAULT_PUSH_REMOTE`] when unset.
     pub push_remote: Option<String>,
     /// Preview the `git push` commands `--push` would run, without executing.
     pub push_dry_run: bool,

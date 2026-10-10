@@ -76,7 +76,11 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
     // Push controls shared by every tagging path. `remote` defaults to origin;
     // `effective_push` per-path resolution is computed at each call site so the
     // per-crate path can carry its own (true) default.
-    let remote = opts.push_remote.as_deref().unwrap_or("origin").to_string();
+    let remote = opts
+        .push_remote
+        .as_deref()
+        .unwrap_or(super::DEFAULT_PUSH_REMOTE)
+        .to_string();
     let config_push = tag_config.push;
     // Signed-tag selection is workspace-global: resolved once here and threaded
     // to every tag-creation call site (single/lockstep closure, github-api

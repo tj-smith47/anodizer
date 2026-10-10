@@ -125,6 +125,33 @@ pub(crate) fn planned_version(
 /// the plan returned is the highest planned version, and
 /// [`TagPlan::crate_versions`] carries each changed crate's own.
 /// `None` means no unit carries a release signal.
+/// The tag family templates the plan above cuts in, resolved the way it
+/// resolves them: each crate's own family on a per-crate or flat-aggregate
+/// workspace and on a one-crate `crates:` list, the repo-level prefix
+/// everywhere else. A per-crate workspace whose remote still holds a
+/// repo-level `v1.0.0` from before its split does not release in that
+/// family, so the question "is this tag of a family this tree releases
+/// under" is answered from the plan's choice and not from both.
+pub(crate) fn planned_tag_family_templates(root: &Path, config: &Config) -> Vec<String> {
+    let workspace = load_workspace(root).ok().flatten();
+    let crates: Vec<CrateConfig> = match detect_repo_shape(root, Some(config), workspace.as_ref()) {
+        RepoShape::PerCrate(groups) => groups.into_iter().flatten().collect(),
+        RepoShape::FlatAggregate(crates) => crates,
+        RepoShape::Single => match config.crate_universe().as_slice() {
+            [only] => vec![(*only).clone()],
+            _ => Vec::new(),
+        },
+        RepoShape::Lockstep => Vec::new(),
+    };
+    if crates.is_empty() {
+        return vec![format!("{}{{{{ Version }}}}", config.repo_tag_prefix())];
+    }
+    crates
+        .iter()
+        .map(CrateConfig::tag_family_template)
+        .collect()
+}
+
 pub(crate) fn plan_next_version(
     config_override: Option<&Path>,
     log: &StageLogger,
@@ -142,7 +169,10 @@ pub(crate) fn plan_next_version(
     // The remote decides which previous tags count, as it does for
     // `anodizer tag`: a tag deleted there for a re-cut can survive in this
     // clone and would plan the version after the one the remote will cut.
-    let remote = opts.push_remote.as_deref().unwrap_or("origin");
+    let remote = opts
+        .push_remote
+        .as_deref()
+        .unwrap_or(super::DEFAULT_PUSH_REMOTE);
     let remote_tag_names: Option<std::collections::HashSet<String>> =
         if git::has_remote_in(&root, remote) {
             match git::list_remote_tag_names_in(&root, remote) {

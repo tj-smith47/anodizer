@@ -152,12 +152,23 @@ pub fn is_shallow_clone() -> bool {
 /// failure answers `false`.
 pub fn is_shallow_clone_in(cwd: &Path) -> bool {
     match git_output_in(cwd, &["rev-parse", "--is-shallow-repository"]) {
-        Ok(out) if out.trim() == "true" => true,
-        Ok(out) if out.trim() == "false" => false,
-        Ok(_) => git_output_in(cwd, &["rev-parse", "--git-common-dir"])
-            .map(|common| cwd.join(common.trim()).join("shallow").exists())
-            .unwrap_or(false),
+        Ok(answer) => shallow_from_answer(answer.trim(), || {
+            git_output_in(cwd, &["rev-parse", "--git-common-dir"])
+                .map(|common| cwd.join(common.trim()).join("shallow").exists())
+                .unwrap_or(false)
+        }),
         Err(_) => false,
+    }
+}
+
+/// What `git rev-parse --is-shallow-repository` printed, decided: `true` and
+/// `false` stand; anything else is a git that echoed the flag back, and the
+/// answer comes from `shallow_file_exists`.
+fn shallow_from_answer(answer: &str, shallow_file_exists: impl FnOnce() -> bool) -> bool {
+    match answer {
+        "true" => true,
+        "false" => false,
+        _ => shallow_file_exists(),
     }
 }
 
@@ -355,41 +366,18 @@ mod tests {
     }
 
     /// A git that does not know `--is-shallow-repository` echoes the flag;
-    /// the answer then comes from the `shallow` file in the common dir.
-    #[cfg(unix)]
+    /// the answer then comes from the `shallow` file in the common dir, which
+    /// is asked only on that echo.
     #[test]
-    #[serial_test::serial(path_env)]
-    fn is_shallow_clone_in_falls_back_to_the_shallow_file_when_git_echoes_the_flag() {
-        let tmp = tempfile::tempdir().unwrap();
-        init_repo(tmp.path());
-        let real_git = which_git();
-        let tools = anodizer_core::test_helpers::fake_tool::FakeToolDir::new();
-        tools
-            .tool("git")
-            .script(format!(
-                "case \"$*\" in *--is-shallow-repository*) printf '%s\\n' --is-shallow-repository ;; \
-                 *) exec \"{real_git}\" \"$@\" ;; esac\n"
-            ))
-            .install();
-        let _path = tools.activate();
-        assert!(
-            !is_shallow_clone_in(tmp.path()),
-            "no shallow file: a full clone"
-        );
-        std::fs::write(tmp.path().join(".git/shallow"), "").unwrap();
-        assert!(is_shallow_clone_in(tmp.path()), "the shallow file decides");
-    }
-
-    /// The real `git` on PATH, resolved before a stub shadows it.
-    #[cfg(unix)]
-    fn which_git() -> String {
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        std::env::split_paths(&path)
-            .map(|p| p.join("git"))
-            .find(|p| p.is_file())
-            .expect("git on PATH")
-            .to_string_lossy()
-            .into_owned()
+    fn a_git_that_echoes_the_flag_defers_to_the_shallow_file() {
+        assert!(shallow_from_answer("true", || panic!(
+            "a plain answer asks nothing"
+        )));
+        assert!(!shallow_from_answer("false", || panic!(
+            "a plain answer asks nothing"
+        )));
+        assert!(!shallow_from_answer("--is-shallow-repository", || false));
+        assert!(shallow_from_answer("--is-shallow-repository", || true));
     }
 
     #[test]

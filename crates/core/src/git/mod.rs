@@ -61,7 +61,10 @@ pub use mailmap::canonical_author_email_in;
 // `slug.rs`. `detect_remote_web_base_in` stays public — it is the dedicated
 // host-preserving web-base resolver (changelog compare footers) and has no
 // owner/name duplication to funnel.
-pub use remote::{detect_remote_web_base_in, has_remote_in, parse_remote_web_base};
+pub use remote::{
+    detect_remote_web_base_in, has_remote_in, parse_remote_web_base, remote_identity,
+    remote_names_in,
+};
 pub use semver::{SemVer, parse_semver, parse_semver_tag, split_tag_family, version_from_tag};
 pub use slug::{
     RepoSlug, resolve_github_slug, resolve_github_slug_in, resolve_repo_slug, resolve_repo_slug_in,

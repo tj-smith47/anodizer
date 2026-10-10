@@ -575,7 +575,6 @@ fn preflight_plans_from_the_tags_the_remote_still_has() {
     assert!(out.status.success(), "clone: {out:?}");
     run_git(clone.path(), &["config", "user.email", "test@test.com"]);
     run_git(clone.path(), &["config", "user.name", "Test"]);
-    run_git(clone.path(), &["config", "commit.gpgsign", "false"]);
     run_git(origin.path(), &["tag", "-d", "v0.2.0"]);
     run_git(
         clone.path(),
@@ -907,6 +906,286 @@ fn preflight_plans_from_a_shallow_checkout_that_reaches_the_last_tag() {
     );
 }
 
+/// Clone `origin_dir` at depth 1 into a fresh directory.
+fn depth_one_clone(origin_dir: &std::path::Path) -> TempDir {
+    let shallow = TempDir::new().unwrap();
+    let origin = format!("file://{}", origin_dir.display());
+    run_git(
+        shallow.path(),
+        &[
+            "clone", "-q", "--depth", "1", "--branch", "master", &origin, ".",
+        ],
+    );
+    shallow
+}
+
+/// Assert that `shallow` is refused before any probe, and that the same
+/// clone with its whole history plans `planned`.
+fn assert_refused_until_unshallowed(shallow: &std::path::Path, planned: &str) {
+    let (out, stderr) = run_verbose_preflight(shallow);
+    assert!(
+        stderr.contains("this checkout is shallow and HEAD's history does not reach the last tag"),
+        "the shallow clone must be refused; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("Reconcile state") && !stderr.contains("publisher probes use"),
+        "nothing may be probed from a shallow checkout; stderr:\n{stderr}"
+    );
+    assert!(
+        !out.status.success(),
+        "a shallow checkout must exit non-zero; stderr:\n{stderr}"
+    );
+
+    run_git(shallow, &["fetch", "-q", "--unshallow", "--tags"]);
+    let (out, stderr) = run_verbose_preflight(shallow);
+    assert!(
+        stderr.contains(&format!(
+            "publisher probes use the planned version {planned}"
+        )),
+        "the unshallowed clone must plan {planned}; stderr:\n{stderr}"
+    );
+    assert!(
+        out.status.success(),
+        "status {:?}; stderr:\n{stderr}",
+        out.status
+    );
+}
+
+/// A depth-1 clone holds no tag at all, so the context's tag is the synthetic
+/// `v0.0.0` whatever family the repository releases under. A crate tagging as
+/// `app-v…` is still refused: the remote's `app-v0.1.0` is a tag of a family
+/// the config declares.
+#[test]
+fn preflight_refuses_a_shallow_checkout_of_a_prefixed_tag_family() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    bootstrap_minimal_cargo_repo(tmp.path(), RECONCILE_CRATE_NAME);
+    let (addr, _requests) =
+        anodizer_core::test_helpers::scripted_responder::spawn_scripted_responder(vec![]);
+    std::fs::write(
+        tmp.path().join(".anodizer.yaml"),
+        format!(
+            r#"project_name: {RECONCILE_CRATE_NAME}
+crates:
+  - name: {RECONCILE_CRATE_NAME}
+    path: .
+    tag_template: "app-v{{{{ .Version }}}}"
+    publish:
+      chocolatey:
+        required: true
+        api_key: fixture-key
+        source_repo: "http://{addr}"
+"#
+        ),
+    )
+    .unwrap();
+    run_git(tmp.path(), &["add", "-A"]);
+    run_git(tmp.path(), &["commit", "-q", "-m", "init"]);
+    run_git(tmp.path(), &["tag", "app-v0.1.0"]);
+    run_git(
+        tmp.path(),
+        &["commit", "-q", "--allow-empty", "-m", "feat: one"],
+    );
+    let shallow = depth_one_clone(tmp.path());
+    assert_refused_until_unshallowed(shallow.path(), "0.2.0 (app-v0.1.0 → app-v0.2.0)");
+}
+
+/// A two-crate workspace with no `tag_template`, so each crate tags in its
+/// own `<name>-v` family: `tags` are cut on the first commit, then one
+/// `feat:` commit on `fx-core` follows.
+fn per_crate_workspace_fixture(tags: &[&str]) -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("Cargo.toml"),
+        "[workspace]\nmembers = [\"fx-core\", \"fx-cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for name in ["fx-core", "fx-cli"] {
+        let dir = tmp.path().join(name);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        )
+        .unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "").unwrap();
+    }
+    let (addr, _requests) =
+        anodizer_core::test_helpers::scripted_responder::spawn_scripted_responder(vec![]);
+    std::fs::write(
+        tmp.path().join(".anodizer.yaml"),
+        format!(
+            r#"project_name: fx
+crates:
+  - name: fx-core
+    path: fx-core
+    publish:
+      chocolatey:
+        required: true
+        api_key: fixture-key
+        source_repo: "http://{addr}"
+  - name: fx-cli
+    path: fx-cli
+"#
+        ),
+    )
+    .unwrap();
+    run_git(tmp.path(), &["init", "-q", "-b", "master"]);
+    run_git(tmp.path(), &["config", "user.email", "test@test.com"]);
+    run_git(tmp.path(), &["config", "user.name", "Test"]);
+    run_git(tmp.path(), &["add", "-A"]);
+    run_git(tmp.path(), &["commit", "-q", "-m", "workspace fixture"]);
+    for tag in tags {
+        run_git(tmp.path(), &["tag", tag]);
+    }
+    std::fs::write(tmp.path().join("fx-core/src/lib.rs"), "// one\n").unwrap();
+    run_git(tmp.path(), &["add", "-A"]);
+    run_git(tmp.path(), &["commit", "-q", "-m", "feat: one"]);
+    tmp
+}
+
+/// The per-crate shape of the same hole: no crate writes a `tag_template`,
+/// so each tags in its own `<name>-v` family and none of the remote's tags
+/// starts with the `v` of the synthetic `v0.0.0`.
+#[test]
+fn preflight_refuses_a_shallow_checkout_of_a_per_crate_workspace() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let tmp = per_crate_workspace_fixture(&["fx-core-v0.1.0", "fx-cli-v0.1.0"]);
+    let shallow = depth_one_clone(tmp.path());
+    assert_refused_until_unshallowed(shallow.path(), "0.2.0 (fx-core-v0.1.0 → fx-core-v0.2.0)");
+}
+
+/// A per-crate workspace releases in its crates' families only. A repo-level
+/// `v1.0.0` the remote still holds from before the split is not one the plan
+/// bumps from, so a shallow clone holding none of the per-crate tags plans
+/// each crate's first version instead of being refused for it.
+#[test]
+fn preflight_plans_a_shallow_per_crate_workspace_past_an_old_repo_level_tag() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let origin = per_crate_workspace_fixture(&["v1.0.0"]);
+
+    let shallow = depth_one_clone(origin.path());
+    let (out, stderr) = run_verbose_preflight(shallow.path());
+    assert!(
+        !stderr.contains("this checkout is shallow and HEAD's history does not reach the last tag"),
+        "a repo-level tag is not of a per-crate family; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("publisher probes use the planned version"),
+        "the shallow clone must plan; stderr:\n{stderr}"
+    );
+    assert!(
+        out.status.success(),
+        "status {:?}; stderr:\n{stderr}",
+        out.status
+    );
+}
+
+/// A shallow checkout with no `origin` is asked of the remotes it has:
+/// `upstream` holding the last tag refuses it, and the clone with no remote
+/// at all is refused because nothing can be asked.
+#[test]
+fn preflight_consults_every_remote_of_a_shallow_checkout_without_an_origin() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let (tmp, _addr) = quiet_choco_fixture();
+    run_git(tmp.path(), &["commit", "-q", "-m", "init"]);
+    run_git(tmp.path(), &["tag", RECONCILE_TAG]);
+    run_git(
+        tmp.path(),
+        &["commit", "-q", "--allow-empty", "-m", "feat: one"],
+    );
+    let shallow = depth_one_clone(tmp.path());
+    run_git(shallow.path(), &["remote", "rename", "origin", "upstream"]);
+    let (out, stderr) = run_verbose_preflight(shallow.path());
+    assert!(
+        stderr.contains("this checkout is shallow and HEAD's history does not reach the last tag")
+            && !out.status.success(),
+        "the tag on `upstream` hides the last release; stderr:\n{stderr}"
+    );
+
+    run_git(shallow.path(), &["remote", "remove", "upstream"]);
+    let (out, stderr) = run_verbose_preflight(shallow.path());
+    assert!(
+        stderr.contains("this checkout has no remote whose tags could be listed"),
+        "the note must say no remote could be asked; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("this checkout is shallow and HEAD's history does not reach the last tag")
+            && !out.status.success(),
+        "a shallow checkout with no remote is refused; stderr:\n{stderr}"
+    );
+}
+
+/// A shallow checkout whose push remote cannot be listed is refused, and the
+/// verbose note that says why is one sentence.
+#[test]
+fn preflight_refuses_a_shallow_checkout_whose_remote_cannot_be_listed() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !tool_on_path("xmllint") {
+        eprintln!("skipping: xmllint not on PATH (chocolatey's tool requirement)");
+        return;
+    }
+    let (tmp, _addr) = quiet_choco_fixture();
+    run_git(tmp.path(), &["commit", "-q", "-m", "feat: first"]);
+    let shallow = depth_one_clone(tmp.path());
+    let missing = shallow.path().join("no-such-remote.git");
+    run_git(
+        shallow.path(),
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            &missing.display().to_string(),
+        ],
+    );
+    let (out, stderr) = run_verbose_preflight(shallow.path());
+    // git's own error text spans several lines, so the note is read off the
+    // whole stream: its opening, and its tail joined to the error by `); `.
+    assert!(
+        stderr.contains("could not list tags on remote 'origin' (")
+            && stderr.contains(
+                "); a shallow checkout cannot tell a never-tagged repository from a truncated one"
+            ),
+        "the note must print as one sentence; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("this checkout is shallow and HEAD's history does not reach the last tag")
+            && !out.status.success(),
+        "an unlistable remote is refused; stderr:\n{stderr}"
+    );
+}
+
 /// An `origin` that cannot be listed falls back to local tags with a note,
 /// and the plan still bumps.
 #[test]
@@ -998,7 +1277,6 @@ crates:
     run_git(tmp.path(), &["init", "-q"]);
     run_git(tmp.path(), &["config", "user.email", "test@test.com"]);
     run_git(tmp.path(), &["config", "user.name", "Test"]);
-    run_git(tmp.path(), &["config", "commit.gpgsign", "false"]);
     run_git(tmp.path(), &["add", "-A"]);
     run_git(tmp.path(), &["commit", "-q", "-m", "workspace fixture"]);
     run_git(tmp.path(), &["tag", "v0.1.0"]);
@@ -1338,11 +1616,9 @@ fn preflight_reports_unreachable_github_reconciles_as_unknown_without_failing() 
     );
     run_git(tmp.path(), &["tag", RECONCILE_TAG]);
 
-    // A bound-then-released port: every request is refused at connect time,
-    // which is the failure shape a reconcile must absorb as `unknown`.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let dead = listener.local_addr().unwrap();
-    drop(listener);
+    // Every request is refused at connect time, which is the failure shape
+    // a reconcile must absorb as `unknown`.
+    let dead = anodizer_core::test_helpers::refusing_addr::refusing_addr();
 
     let out = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .current_dir(tmp.path())

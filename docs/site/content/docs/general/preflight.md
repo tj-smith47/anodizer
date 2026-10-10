@@ -179,9 +179,11 @@ registries about the version the LAST release published, which reads as
 `diverged` on every crate the tree has changed since. Such a checkout is
 refused before any probe runs. A shallow clone deep enough to still hold the
 last tag plans the same bump a full clone plans, and a shallow clone of a
-repository the push remote holds no tag for has no last release to reach and
-plans the first version; when the remote's tags cannot be listed the checkout
-is refused rather than guessed at:
+repository whose remote holds no tag of a family this tree releases in has no
+last release to reach and plans the first version. The remote asked is
+`origin`; a checkout without one is asked of every remote it has. When the
+remote's tags cannot be listed, or there is no remote to ask, the checkout is
+refused rather than guessed at:
 
 ```text
 $ anodizer preflight

@@ -1,4 +1,6 @@
-use super::remote::{parse_github_remote, parse_remote_owner_repo, parse_remote_web_base};
+use super::remote::{
+    parse_github_remote, parse_remote_owner_repo, parse_remote_web_base, remote_identity,
+};
 use super::semver::{compare_prerelease, parse_semver, parse_semver_tag};
 use super::tags::{
     create_tag_local_only, filter_ignored_tags, find_latest_tag_matching,
@@ -153,6 +155,35 @@ fn test_parse_github_remote_ssh_no_dotgit() {
 /// A remote URL can end in `/` (`git remote add origin https://host/o/r.git/`
 /// is accepted verbatim), and the trailing slash must not survive into the
 /// repository name.
+/// Every spelling of one remote is one identity, and an unrecognized spelling
+/// still compares by its trimmed text.
+#[test]
+fn every_spelling_of_one_remote_has_one_identity() {
+    for url in [
+        "ssh://aur@aur.archlinux.org/widget.git",
+        "ssh://aur@aur.archlinux.org:22/widget.git/",
+        "aur@aur.archlinux.org:widget.git",
+        "aur@AUR.archlinux.org:widget",
+        "AUR.archlinux.org:widget.git/",
+        "https://aur.archlinux.org/widget.git",
+        "  https://aur.archlinux.org/widget  ",
+    ] {
+        assert_eq!(remote_identity(url), "aur.archlinux.org/widget", "{url}");
+    }
+    assert_eq!(
+        remote_identity("ssh://git@gitlab.example.com/group/sub/repo.git"),
+        "gitlab.example.com/group/sub/repo"
+    );
+    assert_ne!(
+        remote_identity("https://host.example:8443/a/b"),
+        remote_identity("https://host.example/a/b"),
+        "a web port names a different host"
+    );
+    assert_eq!(remote_identity("/srv/git/widget.git"), "/srv/git/widget");
+    assert_eq!(remote_identity(r"C:\repos\widget.git"), r"C:\repos\widget");
+    assert_eq!(remote_identity("   "), "");
+}
+
 #[test]
 fn a_trailing_slash_on_a_remote_url_is_ignored_by_every_parser() {
     let want = Some(("owner".to_string(), "repo".to_string()));
@@ -225,6 +256,58 @@ fn an_ssh_scheme_remote_parses_like_the_scp_spelling() {
         None,
         "another host is not GitHub"
     );
+}
+
+/// GitHub and GitLab serve SSH over port 443 from a dedicated host name; a
+/// remote written against it is still a repository on the plain host.
+#[test]
+fn an_ssh_over_443_host_resolves_to_its_web_host() {
+    let want = Some(("owner".to_string(), "repo".to_string()));
+    for url in [
+        "ssh://git@ssh.github.com:443/owner/repo.git",
+        "ssh://git@ssh.github.com/owner/repo",
+        "git@ssh.github.com:owner/repo.git",
+    ] {
+        assert_eq!(parse_github_remote(url), want, "github: {url}");
+        assert_eq!(
+            parse_remote_web_base(url).as_deref(),
+            Some("https://github.com/owner/repo"),
+            "web base: {url}"
+        );
+    }
+    for url in [
+        "ssh://git@altssh.gitlab.com:443/group/sub/repo.git",
+        "git@altssh.gitlab.com:group/sub/repo.git",
+    ] {
+        assert_eq!(
+            parse_remote_web_base(url).as_deref(),
+            Some("https://gitlab.com/group/sub/repo"),
+            "web base: {url}"
+        );
+    }
+    assert_eq!(
+        parse_remote_web_base("https://ssh.github.com/owner/repo").as_deref(),
+        Some("https://ssh.github.com/owner/repo"),
+        "an http(s) URL names its web host already"
+    );
+}
+
+/// A bracketed IPv6 host keeps its brackets and loses only the port after
+/// them; the colons inside the literal are not a port separator.
+#[test]
+fn a_bracketed_ipv6_ssh_host_loses_only_its_port() {
+    for url in ["ssh://git@[::1]:22/o/r", "ssh://git@[::1]/o/r.git"] {
+        assert_eq!(
+            parse_remote_web_base(url).as_deref(),
+            Some("https://[::1]/o/r"),
+            "web base: {url}"
+        );
+        assert_eq!(
+            parse_remote_owner_repo(url),
+            Some(("o".to_string(), "r".to_string())),
+            "owner/repo: {url}"
+        );
+    }
 }
 
 #[test]
