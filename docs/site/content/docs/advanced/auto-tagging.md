@@ -202,11 +202,12 @@ the same; release it by putting `#minor` (or `#patch`) in the subject of a
 later commit, which outranks the veto. A `BREAKING CHANGE` footer in the body
 is read, the way `anodizer bump` reads it.
 
-A squash-merged pull request counts as every commit it squashed: each body
-bullet whose text is a conventional subject (`* fix: … (#41)`) is read as a
-subject of its own, for tokens and for the conventional layer alike, so a
-`fix:` or a `#minor` that only lived on the branch still releases. The
-changelog expands the same bullets into
+A squash-merged pull request is read by its title alone unless
+`changelog.expand_squash_merges: true` is set. With it, the PR counts as
+every commit it squashed: each body bullet whose text is a conventional
+subject (`* fix: … (#41)`) is read as a subject of its own, for tokens and for
+the conventional layer alike, so a `fix:` or a `#minor` that only lived on the
+branch still releases. The changelog expands the same bullets into
 [one entry each](../more/changelog#squash-merged-pull-requests).
 
 With `default_bump: none` (the default) a range of only chore/docs/ci commits

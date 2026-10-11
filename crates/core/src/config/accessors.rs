@@ -79,6 +79,14 @@ impl Config {
         (out, warnings)
     }
 
+    /// `changelog.expand_squash_merges`, false when unset.
+    pub fn expand_squash_merges(&self) -> bool {
+        self.changelog
+            .as_ref()
+            .and_then(|c| c.expand_squash_merges)
+            .unwrap_or(false)
+    }
+
     /// Whether the configured crate universe creates more than one tag family
     /// — the per-crate shape, as opposed to single-crate or lockstep, where
     /// every crate shares one `tag_template`.

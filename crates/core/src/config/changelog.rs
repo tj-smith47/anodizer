@@ -45,6 +45,15 @@ pub struct ChangelogConfig {
     /// `"github-native"` delegates entirely to GitHub's auto-generated notes.
     #[serde(rename = "use")]
     pub use_source: Option<String>,
+    /// Read a squash-merged pull request as the commits it squashed. GitHub's
+    /// squash merge lists each squashed commit's subject in the merge commit
+    /// body as `* <subject> (#N)`; with this set, every such bullet whose
+    /// subject is conventional (`type(scope): text`) becomes its own changelog
+    /// entry under the PR's entry, and `anodizer tag` / `anodizer bump` read
+    /// the bullets for `feat:` / `fix:` / `BREAKING CHANGE` when inferring the
+    /// bump. Default: `false`, the GoReleaser behaviour — one entry per merge
+    /// commit, its title only.
+    pub expand_squash_merges: Option<bool>,
     /// Hash abbreviation length. Default: 0 (no truncation, emit the full
     /// SHA). Set to -1 to omit the hash entirely; positive values truncate
     /// to N chars. Values below `-1` are clamped to `-1` (a `git log

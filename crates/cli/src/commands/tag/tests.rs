@@ -1954,7 +1954,7 @@ fn a_squashed_bullet_drives_the_bump_like_a_commit_of_its_own() {
     use anodizer_core::git::messages_with_squashed;
     let bump = |subject: &str, body: &str| {
         detect_bump_from_tokens(
-            &messages_with_squashed(subject, body),
+            &messages_with_squashed(subject, body, true),
             "#major",
             "#minor",
             "#patch",

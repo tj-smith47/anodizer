@@ -289,18 +289,18 @@ pub(crate) fn group_section_commits(
         return Ok(None);
     }
 
-    let mut infos: Vec<CommitInfo> = raw_commits
-        .iter()
-        .map(|c| {
-            let mut info = parse_commit_message(&c.message);
-            info.hash = c.short_hash.clone();
-            info.full_hash = c.hash.clone();
-            info.author_name = c.author_name.clone();
-            info.author_email = c.author_email.clone();
-            info.co_authors = extract_co_authors(&c.body);
-            info
-        })
-        .collect();
+    let expand_squash_merges = cfg.expand_squash_merges.unwrap_or(false);
+    let mut infos: Vec<CommitInfo> = Vec::with_capacity(raw_commits.len());
+    for c in &raw_commits {
+        let mut info = parse_commit_message(&c.message);
+        info.hash = c.short_hash.clone();
+        info.full_hash = c.hash.clone();
+        info.author_name = c.author_name.clone();
+        info.author_email = c.author_email.clone();
+        info.co_authors = extract_co_authors(&c.body);
+        let message = format!("{}\n{}", c.message, c.body);
+        crate::fetch::push_with_squashed(&mut infos, info, &message, expand_squash_merges);
+    }
 
     let include: Vec<String> = cfg
         .filters

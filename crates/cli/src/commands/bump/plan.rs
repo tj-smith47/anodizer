@@ -172,7 +172,12 @@ pub fn build_plan(
                     .map(|c| c.tag_family_template())
                     .unwrap_or_default();
                 let tag_prefix = anodizer_core::git::per_crate_tag_prefix(&m.name, &tag_template);
-                let inferred = inference::infer_for_crate(workspace_root, m, &tag_prefix)?;
+                let inferred = inference::infer_for_crate(
+                    workspace_root,
+                    m,
+                    &tag_prefix,
+                    anodizer_cfg.is_some_and(|c| c.expand_squash_merges()),
+                )?;
                 match inferred.level {
                     BumpLevel::Skip => (BumpLevel::Skip, current.clone(), inferred.reason),
                     other => (

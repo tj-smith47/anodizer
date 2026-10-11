@@ -145,6 +145,7 @@ pub(crate) struct ResolvedConfig {
     none_string_token: String,
     git_api_tagging: bool,
     skip_ci_on_bump: bool,
+    expand_squash_merges: bool,
 }
 
 impl ResolvedConfig {
@@ -199,6 +200,7 @@ impl ResolvedConfig {
                 .unwrap_or_else(|| "#none".to_string()),
             git_api_tagging: cfg.git_api_tagging.unwrap_or(false),
             skip_ci_on_bump: cfg.skip_ci_on_bump.unwrap_or(false),
+            expand_squash_merges: config.expand_squash_merges(),
         }
     }
 }

@@ -5085,6 +5085,47 @@ mod refresh_unreleased_tests {
     }
 
     #[test]
+    fn the_on_disk_changelog_expands_a_squash_merge_only_under_the_knob() {
+        let tmp = init_repo();
+        let root = tmp.path();
+        write_config(root);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        commit(
+            root,
+            "chore: squashed PR (#40)\n\n* fix: a bug (#41)\n* feat: a thing (#42)\n- prose",
+        );
+        std::fs::write(
+            root.join("CHANGELOG.md"),
+            "# Changelog\n\n## [Unreleased]\n",
+        )
+        .unwrap();
+
+        let off = refresh_crate_unreleased(root, "mylib", root, None, None).expect("ok");
+        assert!(
+            off.is_none(),
+            "a chore-titled squash merge yields no entry by default: {off:?}"
+        );
+
+        let mut cfg = std::fs::read_to_string(root.join(".anodizer.yaml")).unwrap();
+        cfg.insert_str("changelog:\n".len(), "  expand_squash_merges: true\n");
+        std::fs::write(root.join(".anodizer.yaml"), cfg).unwrap();
+        let on = refresh_crate_unreleased(root, "mylib", root, None, None)
+            .expect("ok")
+            .expect("the bullets are entries");
+        assert!(
+            on.rendered_text.contains("a bug (#41)"),
+            "{}",
+            on.rendered_text
+        );
+        assert!(
+            on.rendered_text.contains("a thing (#42)"),
+            "{}",
+            on.rendered_text
+        );
+        assert!(!on.rendered_text.contains("prose"), "{}", on.rendered_text);
+    }
+
+    #[test]
     fn refresh_fills_empty_unreleased_from_commits() {
         let tmp = init_repo();
         let root = tmp.path();
@@ -6132,5 +6173,43 @@ fn a_dry_run_leaves_no_changelog_in_dist() {
     assert_eq!(
         std::fs::read_to_string(dist.join("CHANGELOG.md")).expect("real run writes the file"),
         "# notes\n"
+    );
+}
+
+/// Every place this crate turns a commit into `CommitInfo` entries goes
+/// through `fetch::push_with_squashed`, which is where
+/// `changelog.expand_squash_merges` is read. A source that pushes the parsed
+/// info itself reads the merge commit alone whatever the knob says.
+#[test]
+fn every_commit_source_pushes_through_the_squash_gate() {
+    use anodizer_core::test_helpers::test_sources::{
+        function_bodies, production_half, rust_sources,
+    };
+    let src = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+    let mut sources = 0;
+    for path in rust_sources(std::path::Path::new(src)) {
+        let text = std::fs::read_to_string(&path).unwrap();
+        for body in function_bodies(production_half(&text)) {
+            if !body.contains("parse_commit_message(") || body.contains("fn push_with_squashed") {
+                continue;
+            }
+            // A body that builds an entry from a commit's message and hands
+            // it to a list is a commit source.
+            let builds_entry = body.contains("info.full_hash =") || body.contains("info.hash =");
+            if !builds_entry {
+                continue;
+            }
+            sources += 1;
+            assert!(
+                body.contains("push_with_squashed("),
+                "{} builds CommitInfo entries without the squash gate:\n{}",
+                path.display(),
+                body
+            );
+        }
+    }
+    assert_eq!(
+        sources, 6,
+        "git plain, git narrowed, github, gitlab, gitea, on-disk render"
     );
 }

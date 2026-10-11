@@ -10,7 +10,6 @@
 //! merge. Prose bullets, trailers and plain body lines are not subjects and
 //! are left alone.
 
-use super::Commit;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -56,34 +55,22 @@ pub fn squashed_subjects(subject: &str, body: &str) -> Vec<String> {
 }
 
 /// The messages a commit stands for when it is read for a release signal:
-/// the commit's own message (subject, then body when there is one), followed
-/// by one message per squashed subject.
-pub fn messages_with_squashed(subject: &str, body: &str) -> Vec<String> {
+/// the commit's own message (subject, then body when there is one), followed,
+/// when `expand_squash_merges` is set, by one message per squashed subject.
+pub fn messages_with_squashed(
+    subject: &str,
+    body: &str,
+    expand_squash_merges: bool,
+) -> Vec<String> {
     let own = if body.trim().is_empty() {
         subject.to_string()
     } else {
         format!("{subject}\n\n{body}")
     };
-    std::iter::once(own)
-        .chain(squashed_subjects(subject, body))
-        .collect()
-}
-
-/// Every commit followed by one synthetic [`Commit`] per squashed subject, in
-/// the body's order: same hash and author, the bullet as its message, no body.
-pub fn expand_squashed(commits: Vec<Commit>) -> Vec<Commit> {
-    let mut out = Vec::with_capacity(commits.len());
-    for commit in commits {
-        let bullets = squashed_subjects(&commit.message, &commit.body);
-        let template = Commit {
-            body: String::new(),
-            ..commit.clone()
-        };
-        out.push(commit);
-        out.extend(bullets.into_iter().map(|bullet| Commit {
-            message: bullet,
-            ..template.clone()
-        }));
-    }
-    out
+    let bullets = if expand_squash_merges {
+        squashed_subjects(subject, body)
+    } else {
+        Vec::new()
+    };
+    std::iter::once(own).chain(bullets).collect()
 }

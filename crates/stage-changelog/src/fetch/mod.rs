@@ -161,14 +161,23 @@ fn is_bad_revision(stderr: &str) -> bool {
 /// delegating to the single core record decoder
 /// (`anodizer_core::git::parse_commit_output`), so the body / author handling
 /// can never drift from the rest of the changelog pipeline.
-/// Push `info` and then one entry per subject its squash-merge body lists
-/// (`anodizer_core::git::squashed_subjects`), each carrying the commit's
-/// hash, author and login and no co-authors. The SCM API fetchers decode a
-/// commit's full message themselves, so they expand here; the git fetchers
-/// are expanded by the core decoder.
-pub(crate) fn push_with_squashed(out: &mut Vec<CommitInfo>, info: CommitInfo, message: &str) {
+/// Push `info` and, under `changelog.expand_squash_merges`, one entry per
+/// subject its squash-merge body lists (`anodizer_core::git::squashed_subjects`),
+/// each carrying the commit's hash, author and login and no co-authors. Every
+/// commit source — the git log and the three SCM compare APIs — goes through
+/// here, so the knob reads the same on all of them.
+pub(crate) fn push_with_squashed(
+    out: &mut Vec<CommitInfo>,
+    info: CommitInfo,
+    message: &str,
+    expand_squash_merges: bool,
+) {
     let (subject, body) = message.split_once('\n').unwrap_or((message, ""));
-    let bullets = anodizer_core::git::squashed_subjects(subject.trim(), body.trim());
+    let bullets = if expand_squash_merges {
+        anodizer_core::git::squashed_subjects(subject.trim(), body.trim())
+    } else {
+        Vec::new()
+    };
     let template = CommitInfo {
         co_authors: Vec::new(),
         ..info.clone()
@@ -232,6 +241,7 @@ pub(crate) fn fetch_git_commits_narrowed(
     scope: &anodizer_core::changelog_scope::ChangelogScope,
     crate_name: &str,
     log: &StageLogger,
+    expand_squash_merges: bool,
 ) -> Result<Vec<CommitInfo>> {
     let paths = scope.pathspecs();
     let upper = to.unwrap_or("HEAD");
@@ -277,7 +287,8 @@ pub(crate) fn fetch_git_commits_narrowed(
         info.author_name = pair.commit.author_name.clone();
         info.author_email = pair.commit.author_email.clone();
         info.co_authors = extract_co_authors(&pair.commit.body);
-        all_commit_infos.push(info);
+        let message = format!("{}\n{}", pair.commit.message, pair.commit.body);
+        push_with_squashed(&mut all_commit_infos, info, &message, expand_squash_merges);
     }
     Ok(all_commit_infos)
 }
@@ -289,6 +300,7 @@ pub(crate) fn fetch_git_commits(
     paths: &[String],
     crate_name: &str,
     log: &StageLogger,
+    expand_squash_merges: bool,
 ) -> Result<Vec<CommitInfo>> {
     let upper = to.unwrap_or("HEAD");
     let raw_commits = match prev_tag {
@@ -332,7 +344,8 @@ pub(crate) fn fetch_git_commits(
         info.author_email = commit.author_email.clone();
         // Extract co-authors from the commit body (trailers).
         info.co_authors = extract_co_authors(&commit.body);
-        all_commit_infos.push(info);
+        let message = format!("{}\n{}", commit.message, commit.body);
+        push_with_squashed(&mut all_commit_infos, info, &message, expand_squash_merges);
     }
     Ok(all_commit_infos)
 }
@@ -378,7 +391,7 @@ mod tests {
         let _cwd = CwdGuard::new(elsewhere.path()).expect("cwd guard");
 
         let log = StageLogger::new("changelog", Verbosity::Quiet);
-        let commits = fetch_git_commits(repo_path, &None, None, &[], "demo", &log)
+        let commits = fetch_git_commits(repo_path, &None, None, &[], "demo", &log, false)
             .expect("fetch reads the workspace_root repo despite a foreign cwd");
         assert!(
             commits
@@ -389,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn a_squash_merged_pull_request_yields_one_entry_per_squashed_commit() {
+    fn a_squash_merged_pull_request_yields_one_entry_per_squashed_commit_under_the_knob() {
         let repo = tempfile::tempdir().expect("repo tempdir");
         let repo_path = repo.path();
         git(repo_path, &["init", "-q"]);
@@ -409,7 +422,16 @@ mod tests {
         );
 
         let log = StageLogger::new("changelog", Verbosity::Quiet);
-        let plain = fetch_git_commits(repo_path, &None, None, &[], "demo", &log).unwrap();
+        let off = fetch_git_commits(repo_path, &None, None, &[], "demo", &log, false).unwrap();
+        assert_eq!(
+            off.iter()
+                .map(|c| c.description.as_str())
+                .collect::<Vec<_>>(),
+            vec!["squashed PR (#40)"],
+            "without the knob the merge commit is one entry, as GoReleaser reads it"
+        );
+
+        let plain = fetch_git_commits(repo_path, &None, None, &[], "demo", &log, true).unwrap();
         let kinds: Vec<(&str, &str)> = plain
             .iter()
             .map(|c| (c.kind.as_str(), c.description.as_str()))
@@ -435,7 +457,7 @@ mod tests {
             narrow: Some(vec!["crates/a/**".to_string()]),
         };
         let narrowed =
-            fetch_git_commits_narrowed(repo_path, &None, None, &scope, "a", &log).unwrap();
+            fetch_git_commits_narrowed(repo_path, &None, None, &scope, "a", &log, true).unwrap();
         assert_eq!(
             narrowed.len(),
             3,

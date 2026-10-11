@@ -1251,7 +1251,7 @@ fn get_last_commit_messages_in_returns_n_subjects_newest_first() {
     commit_file(dir, "a", "1", "two");
     commit_file(dir, "a", "2", "three");
 
-    let msgs = get_last_commit_messages_in(dir, 2).unwrap();
+    let msgs = get_last_commit_messages_in(dir, 2, false).unwrap();
     assert_eq!(msgs, vec!["three".to_string(), "two".to_string()]);
 }
 
@@ -1265,7 +1265,7 @@ fn get_commit_messages_between_in_lists_post_base_subjects() {
     commit_file(dir, "a", "1", "feat: x");
     commit_file(dir, "a", "2", "fix: y");
 
-    let msgs = get_commit_messages_between_in(dir, &base, "HEAD").unwrap();
+    let msgs = get_commit_messages_between_in(dir, &base, "HEAD", false).unwrap();
     assert_eq!(msgs, vec!["fix: y".to_string(), "feat: x".to_string()]);
 }
 
@@ -1277,7 +1277,7 @@ fn get_last_commit_messages_path_in_filters_to_path() {
     commit_file(dir, "keep/a", "0", "feat: keep");
     commit_file(dir, "other/b", "1", "feat: other");
 
-    let msgs = get_last_commit_messages_path_in(dir, 10, "keep").unwrap();
+    let msgs = get_last_commit_messages_path_in(dir, 10, "keep", false).unwrap();
     assert_eq!(msgs, vec!["feat: keep".to_string()]);
 }
 
@@ -1291,7 +1291,7 @@ fn get_commit_messages_between_path_in_filters_range_and_path() {
     commit_file(dir, "src/x", "1", "feat: src");
     commit_file(dir, "doc/y", "2", "docs: doc");
 
-    let msgs = get_commit_messages_between_path_in(dir, &base, "HEAD", "src").unwrap();
+    let msgs = get_commit_messages_between_path_in(dir, &base, "HEAD", "src", false).unwrap();
     assert_eq!(msgs, vec!["feat: src".to_string()]);
 }
 
@@ -1430,7 +1430,7 @@ fn log_subjects_for_range_returns_full_bodies_for_path() {
     commit_file(dir, "watched", "0", "feat: A\n\nbody of A");
     commit_file(dir, "watched", "1", "fix: B");
 
-    let bodies = log_subjects_for_range(dir, "HEAD", "watched").unwrap();
+    let bodies = log_subjects_for_range(dir, "HEAD", "watched", false).unwrap();
     assert_eq!(bodies.len(), 2);
     // %B is subject+body; newest-first.
     assert!(bodies[0].starts_with("fix: B"));
@@ -1445,7 +1445,7 @@ fn log_subjects_for_range_returns_empty_when_range_invalid() {
     commit_file(dir, "a", "0", "initial");
     // A range referencing a non-existent ref makes git fail; the helper
     // maps that to an empty Vec, not an error.
-    let bodies = log_subjects_for_range(dir, "no-such-ref..HEAD", "a").unwrap();
+    let bodies = log_subjects_for_range(dir, "no-such-ref..HEAD", "a", false).unwrap();
     assert!(bodies.is_empty());
 }
 
@@ -1458,7 +1458,7 @@ fn log_subjects_for_range_propagates_pathspec_fatal() {
     let dir = tmp.path();
     init_bare_repo(dir);
     commit_file(dir, "a", "0", "initial");
-    let err = log_subjects_for_range(dir, "HEAD", "")
+    let err = log_subjects_for_range(dir, "HEAD", "", false)
         .expect_err("empty pathspec must be an error, not empty success")
         .to_string();
     assert!(err.contains("git log HEAD failed"), "{err}");
@@ -1668,65 +1668,36 @@ fn squashed_subjects_reads_conventional_bullets_only() {
 
 #[test]
 fn messages_with_squashed_keeps_the_commits_own_message_first() {
-    let msgs = messages_with_squashed("feat: squashed changes (#40)", SQUASH_BODY);
+    let msgs = messages_with_squashed("feat: squashed changes (#40)", SQUASH_BODY, true);
     assert_eq!(msgs.len(), 4);
     assert!(msgs[0].starts_with("feat: squashed changes (#40)\n\nCloses"));
     assert_eq!(msgs[1], "fix(dmg): size the image explicitly (#41)");
     assert_eq!(
-        messages_with_squashed("fix: one", "  "),
+        messages_with_squashed("fix: one", "  ", true),
         vec!["fix: one".to_string()],
         "an empty body leaves the subject alone"
     );
+    let off = messages_with_squashed("feat: squashed changes (#40)", SQUASH_BODY, false);
+    assert_eq!(
+        off.len(),
+        1,
+        "the knob off reads the merge commit alone: {off:?}"
+    );
+    assert_eq!(off[0], msgs[0]);
 }
 
 #[test]
-fn expand_squashed_adds_one_commit_per_bullet_with_the_parents_identity() {
-    let parent = Commit {
-        hash: "abc".into(),
-        short_hash: "abc".into(),
-        message: "feat: squashed changes (#40)".into(),
-        author_name: "t".into(),
-        author_email: "t@t.com".into(),
-        body: SQUASH_BODY.into(),
-    };
-    let expanded = expand_squashed(vec![parent.clone()]);
-    assert_eq!(expanded.len(), 4);
-    assert_eq!(
-        expanded[0].message, parent.message,
-        "the parent comes first"
-    );
-    assert_eq!(
-        expanded[0].body, parent.body,
-        "the parent keeps its body and trailers"
-    );
-    assert_eq!(
-        expanded[1].message,
-        "fix(dmg): size the image explicitly (#41)"
-    );
-    assert_eq!(expanded[1].hash, "abc");
-    assert_eq!(expanded[1].author_email, "t@t.com");
-    assert!(expanded[1].body.is_empty());
-}
-
-#[test]
-fn parse_commit_output_expands_a_squash_merge_and_with_files_shares_its_files() {
+fn the_record_decoder_never_expands_a_squash_merge() {
     let raw =
         format!("h1\x1fh1\x1ffeat: squashed changes (#40)\x1ft\x1ft@t.com\x1f{SQUASH_BODY}\x1e");
     let commits = parse_commit_output(&raw);
-    assert_eq!(commits.len(), 4);
-    assert_eq!(commits[0].message, "feat: squashed changes (#40)");
-
-    let raw = format!(
-        "h1\x1fh1\x1ffeat: squashed changes (#40)\x1ft\x1ft@t.com\x1f{SQUASH_BODY}\x1e\n\ncrates/a/src/lib.rs\ncrates/b/src/lib.rs\n"
+    assert_eq!(
+        commits.len(),
+        1,
+        "expansion is the changelog stage's, behind its knob"
     );
-    let pairs = parse_commit_output_with_files(&raw);
-    assert_eq!(pairs.len(), 4);
-    for pair in &pairs {
-        assert_eq!(
-            pair.files,
-            vec!["crates/a/src/lib.rs", "crates/b/src/lib.rs"]
-        );
-    }
+    assert_eq!(commits[0].message, "feat: squashed changes (#40)");
+    assert_eq!(commits[0].body, SQUASH_BODY.trim());
 }
 
 #[test]
@@ -1752,15 +1723,29 @@ fn release_message_queries_expand_a_squash_merge_in_every_shape() {
         assert_eq!(msgs[2], "feat: add --json to preflight (#42)");
         assert_eq!(msgs[3], "chore: bump deps");
     };
-    expect(get_commit_messages_between_in(dir, "v0.1.0", "HEAD").unwrap());
-    expect(get_last_commit_messages_in(dir, 1).unwrap());
-    expect(get_commit_messages_between_path_in(dir, "v0.1.0", "HEAD", "crates").unwrap());
-    expect(get_last_commit_messages_path_in(dir, 1, "crates").unwrap());
-    expect(log_subjects_for_range(dir, "v0.1.0..HEAD", "crates").unwrap());
+    expect(get_commit_messages_between_in(dir, "v0.1.0", "HEAD", true).unwrap());
+    expect(get_last_commit_messages_in(dir, 1, true).unwrap());
+    expect(get_commit_messages_between_path_in(dir, "v0.1.0", "HEAD", "crates", true).unwrap());
+    expect(get_last_commit_messages_path_in(dir, 1, "crates", true).unwrap());
+    expect(log_subjects_for_range(dir, "v0.1.0..HEAD", "crates", true).unwrap());
     assert!(
-        get_commit_messages_between_path_in(dir, "v0.1.0", "HEAD", "base")
+        get_commit_messages_between_path_in(dir, "v0.1.0", "HEAD", "base", true)
             .unwrap()
             .is_empty(),
         "a path the squash did not touch sees none of its bullets"
     );
+
+    let one = |msgs: Vec<String>| {
+        assert_eq!(
+            msgs.len(),
+            1,
+            "the knob off reads the merge commit alone: {msgs:?}"
+        );
+        assert!(msgs[0].starts_with("feat: squashed changes (#40)\n\nCloses"));
+    };
+    one(get_commit_messages_between_in(dir, "v0.1.0", "HEAD", false).unwrap());
+    one(get_last_commit_messages_in(dir, 1, false).unwrap());
+    one(get_commit_messages_between_path_in(dir, "v0.1.0", "HEAD", "crates", false).unwrap());
+    one(get_last_commit_messages_path_in(dir, 1, "crates", false).unwrap());
+    one(log_subjects_for_range(dir, "v0.1.0..HEAD", "crates", false).unwrap());
 }

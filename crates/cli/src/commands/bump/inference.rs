@@ -31,6 +31,7 @@ pub fn infer_for_crate(
     workspace_root: &std::path::Path,
     m: &MemberInfo,
     tag_prefix: &str,
+    expand_squash_merges: bool,
 ) -> Result<InferenceResult> {
     let last_tag = find_last_tag_for_prefix(workspace_root, tag_prefix)?;
 
@@ -47,7 +48,12 @@ pub fn infer_for_crate(
     };
 
     let range_from = last_tag.clone().unwrap_or_default();
-    let messages = git_log_subjects(workspace_root, &range_from, &rel_crate_dir)?;
+    let messages = git_log_subjects(
+        workspace_root,
+        &range_from,
+        &rel_crate_dir,
+        expand_squash_merges,
+    )?;
 
     if messages.is_empty() {
         let reason = if last_tag.is_some() {
@@ -159,13 +165,19 @@ fn git_log_subjects(
     workspace_root: &std::path::Path,
     from: &str,
     rel_path: &str,
+    expand_squash_merges: bool,
 ) -> Result<Vec<String>> {
     let range = if from.is_empty() {
         "HEAD".to_string()
     } else {
         format!("{}..HEAD", from)
     };
-    anodizer_core::git::log_subjects_for_range(workspace_root, &range, rel_path)
+    anodizer_core::git::log_subjects_for_range(
+        workspace_root,
+        &range,
+        rel_path,
+        expand_squash_merges,
+    )
 }
 
 #[cfg(test)]

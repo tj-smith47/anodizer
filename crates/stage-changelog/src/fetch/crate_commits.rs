@@ -63,6 +63,7 @@ pub(crate) fn fetch_crate_commits(
     workspace_root: &std::path::Path,
 ) -> Result<(Vec<CommitInfo>, String)> {
     let paths = scope.pathspecs();
+    let expand = ctx.config.expand_squash_merges();
     let use_github = use_source == "github";
     let use_gitlab = use_source == "gitlab";
     let use_gitea = use_source == "gitea";
@@ -87,7 +88,7 @@ pub(crate) fn fetch_crate_commits(
 
     if scm_no_prev_tag {
         return Ok((
-            fetch_git_commits_scoped(workspace_root, prev_tag, to, scope, crate_name, log)?,
+            fetch_git_commits_scoped(workspace_root, prev_tag, to, scope, crate_name, log, expand)?,
             String::new(),
         ));
     }
@@ -103,7 +104,15 @@ pub(crate) fn fetch_crate_commits(
                     ),
                 )?;
                 return Ok((
-                    fetch_git_commits_scoped(workspace_root, prev_tag, to, scope, crate_name, log)?,
+                    fetch_git_commits_scoped(
+                        workspace_root,
+                        prev_tag,
+                        to,
+                        scope,
+                        crate_name,
+                        log,
+                        expand,
+                    )?,
                     String::new(),
                 ));
             }
@@ -121,7 +130,15 @@ pub(crate) fn fetch_crate_commits(
                     ),
                 )?;
                 return Ok((
-                    fetch_git_commits_scoped(workspace_root, prev_tag, to, scope, crate_name, log)?,
+                    fetch_git_commits_scoped(
+                        workspace_root,
+                        prev_tag,
+                        to,
+                        scope,
+                        crate_name,
+                        log,
+                        expand,
+                    )?,
                     String::new(),
                 ));
             }
@@ -139,14 +156,22 @@ pub(crate) fn fetch_crate_commits(
                     ),
                 )?;
                 return Ok((
-                    fetch_git_commits_scoped(workspace_root, prev_tag, to, scope, crate_name, log)?,
+                    fetch_git_commits_scoped(
+                        workspace_root,
+                        prev_tag,
+                        to,
+                        scope,
+                        crate_name,
+                        log,
+                        expand,
+                    )?,
                     String::new(),
                 ));
             }
         }
     }
     Ok((
-        fetch_git_commits_scoped(workspace_root, prev_tag, to, scope, crate_name, log)?,
+        fetch_git_commits_scoped(workspace_root, prev_tag, to, scope, crate_name, log, expand)?,
         String::new(),
     ))
 }
@@ -166,12 +191,29 @@ fn fetch_git_commits_scoped(
     scope: &anodizer_core::changelog_scope::ChangelogScope,
     crate_name: &str,
     log: &StageLogger,
+    expand_squash_merges: bool,
 ) -> Result<Vec<CommitInfo>> {
     let paths = scope.pathspecs();
     if scope.narrow.is_none() {
-        return fetch_git_commits(workspace_root, prev_tag, to, paths, crate_name, log);
+        return fetch_git_commits(
+            workspace_root,
+            prev_tag,
+            to,
+            paths,
+            crate_name,
+            log,
+            expand_squash_merges,
+        );
     }
-    crate::fetch::fetch_git_commits_narrowed(workspace_root, prev_tag, to, scope, crate_name, log)
+    crate::fetch::fetch_git_commits_narrowed(
+        workspace_root,
+        prev_tag,
+        to,
+        scope,
+        crate_name,
+        log,
+        expand_squash_merges,
+    )
 }
 
 #[cfg(test)]

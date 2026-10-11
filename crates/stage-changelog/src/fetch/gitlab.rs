@@ -151,7 +151,12 @@ pub(crate) fn fetch_gitlab_commits(
         // GitLab's compare API does not include login information,
         // but co-authors are still recoverable from commit message trailers.
         info.co_authors = extract_co_authors(message);
-        push_with_squashed(&mut all_commit_infos, info, message);
+        push_with_squashed(
+            &mut all_commit_infos,
+            info,
+            message,
+            ctx.config.expand_squash_merges(),
+        );
     }
 
     log.status(&format!(

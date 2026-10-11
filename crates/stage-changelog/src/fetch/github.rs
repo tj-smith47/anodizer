@@ -188,7 +188,12 @@ pub(crate) fn fetch_github_commits_with_binary(
         info.author_email = author_email.to_string();
         info.login = login.to_string();
         info.co_authors = co_authors;
-        push_with_squashed(&mut all_commit_infos, info, message);
+        push_with_squashed(
+            &mut all_commit_infos,
+            info,
+            message,
+            ctx.config.expand_squash_merges(),
+        );
     }
 
     let logins_str = logins.into_iter().collect::<Vec<_>>().join(",");
@@ -254,6 +259,19 @@ mod tests {
             &format!("#!/bin/sh\ncat <<'__GH_EOF__'\n{body}\n__GH_EOF__\n"),
         );
         script
+    }
+
+    /// `test_ctx` with `changelog.expand_squash_merges: true`.
+    fn test_ctx_expanding_squash_merges() -> Context {
+        let config = Config {
+            project_name: "myapp".to_string(),
+            changelog: Some(anodizer_core::config::ChangelogConfig {
+                expand_squash_merges: Some(true),
+                ..Default::default()
+            }),
+            ..Config::default()
+        };
+        Context::new(config, ContextOptions::default())
     }
 
     /// Build a Context with no token (default).
@@ -354,7 +372,7 @@ mod tests {
 
         let repo = temp_github_repo();
         let _cwd = CwdGuard::new(repo.path()).expect("cwd");
-        let ctx = test_ctx();
+        let ctx = test_ctx_expanding_squash_merges();
         let log = test_logger();
         let (commits, _) =
             fetch_github_commits_with_binary(&gh, &ctx, &Some("v1.0.0".to_string()), &[], &log)

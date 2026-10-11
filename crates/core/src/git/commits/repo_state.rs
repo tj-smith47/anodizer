@@ -267,8 +267,12 @@ pub fn has_changes_since_in(cwd: &Path, tag: &str, path: &str) -> Result<bool> {
 
 /// Get the last N commit messages that touched a path, as release signals
 /// (see [`get_last_commit_messages`]).
-pub fn get_last_commit_messages_path(count: usize, path: &str) -> Result<Vec<String>> {
-    get_last_commit_messages_path_in(&cwd_or_dot(), count, path)
+pub fn get_last_commit_messages_path(
+    count: usize,
+    path: &str,
+    expand_squash_merges: bool,
+) -> Result<Vec<String>> {
+    get_last_commit_messages_path_in(&cwd_or_dot(), count, path, expand_squash_merges)
 }
 
 /// Path-taking sibling of [`get_last_commit_messages_path`].
@@ -276,6 +280,7 @@ pub fn get_last_commit_messages_path_in(
     cwd: &Path,
     count: usize,
     path: &str,
+    expand_squash_merges: bool,
 ) -> Result<Vec<String>> {
     let output = git_output_in(
         cwd,
@@ -289,13 +294,18 @@ pub fn get_last_commit_messages_path_in(
             path,
         ],
     )?;
-    Ok(release_messages(&output))
+    Ok(release_messages(&output, expand_squash_merges))
 }
 
 /// Get the commit messages between two refs that touched a path, as release
 /// signals (see [`get_last_commit_messages`]).
-pub fn get_commit_messages_between_path(from: &str, to: &str, path: &str) -> Result<Vec<String>> {
-    get_commit_messages_between_path_in(&cwd_or_dot(), from, to, path)
+pub fn get_commit_messages_between_path(
+    from: &str,
+    to: &str,
+    path: &str,
+    expand_squash_merges: bool,
+) -> Result<Vec<String>> {
+    get_commit_messages_between_path_in(&cwd_or_dot(), from, to, path, expand_squash_merges)
 }
 
 /// Path-taking sibling of [`get_commit_messages_between_path`].
@@ -304,6 +314,7 @@ pub fn get_commit_messages_between_path_in(
     from: &str,
     to: &str,
     path: &str,
+    expand_squash_merges: bool,
 ) -> Result<Vec<String>> {
     let output = git_output_in(
         cwd,
@@ -317,7 +328,7 @@ pub fn get_commit_messages_between_path_in(
             path,
         ],
     )?;
-    Ok(release_messages(&output))
+    Ok(release_messages(&output, expand_squash_merges))
 }
 
 /// Stage specific files and create a commit.
@@ -359,8 +370,9 @@ pub fn stage_and_commit_in(cwd: &Path, files: &[&str], message: &str) -> Result<
 /// --pretty=format:%B%x1e <range> -- <rel_path>` — list commit message
 /// bodies (subject+body) for commits in `range` touching `rel_path`,
 /// using the `\x1e` (RS) byte as a between-commits separator so multi-line
-/// bodies survive parsing. A squash-merged commit is followed by the
-/// subjects its body lists ([`messages_with_squashed`]).
+/// bodies survive parsing. Under `expand_squash_merges` a squash-merged
+/// commit is followed by the subjects its body lists
+/// ([`messages_with_squashed`]).
 ///
 /// `range` is the git revision range as a string (e.g. `"HEAD"`,
 /// `"v0.3.0..HEAD"`); the empty string is invalid (caller must pre-filter).
@@ -372,6 +384,7 @@ pub fn log_subjects_for_range(
     workspace_root: &std::path::Path,
     range: &str,
     rel_path: &str,
+    expand_squash_merges: bool,
 ) -> Result<Vec<String>> {
     let out = Command::new("git")
         .arg("-C")
@@ -410,7 +423,7 @@ pub fn log_subjects_for_range(
         .filter(|s| !s.is_empty())
         .flat_map(|message| {
             let (subject, body) = message.split_once('\n').unwrap_or((message, ""));
-            messages_with_squashed(subject.trim(), body.trim())
+            messages_with_squashed(subject.trim(), body.trim(), expand_squash_merges)
         })
         .collect())
 }

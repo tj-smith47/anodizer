@@ -6,18 +6,23 @@ pub(crate) fn get_messages_for_bump(
     prev_tag: Option<&str>,
     path: Option<&str>,
 ) -> Result<Vec<String>> {
+    let expand = cfg.expand_squash_merges;
     match cfg.branch_history.as_str() {
         "last" => match path {
-            Some(p) => git::get_last_commit_messages_path_in(workspace_root, 1, p),
-            None => git::get_last_commit_messages_in(workspace_root, 1),
+            Some(p) => git::get_last_commit_messages_path_in(workspace_root, 1, p, expand),
+            None => git::get_last_commit_messages_in(workspace_root, 1, expand),
         },
         "full" | "compare" => match (prev_tag, path) {
             (Some(tag), Some(p)) => {
-                git::get_commit_messages_between_path_in(workspace_root, tag, "HEAD", p)
+                git::get_commit_messages_between_path_in(workspace_root, tag, "HEAD", p, expand)
             }
-            (Some(tag), None) => git::get_commit_messages_between_in(workspace_root, tag, "HEAD"),
-            (None, Some(p)) => git::get_last_commit_messages_path_in(workspace_root, 500, p),
-            (None, None) => git::get_last_commit_messages_in(workspace_root, 500),
+            (Some(tag), None) => {
+                git::get_commit_messages_between_in(workspace_root, tag, "HEAD", expand)
+            }
+            (None, Some(p)) => {
+                git::get_last_commit_messages_path_in(workspace_root, 500, p, expand)
+            }
+            (None, None) => git::get_last_commit_messages_in(workspace_root, 500, expand),
         },
         other => {
             bail!("unknown branch_history mode: {}", other);
@@ -81,8 +86,8 @@ pub(crate) fn detect_bump_demoted(
 /// same tokens).
 pub(crate) fn message_has_token(msg: &str, token: &str) -> bool {
     // Only the subject carries a token: a body that quotes `#none` in prose
-    // must not hold the release, and a squashed PR's bullets arrive as
-    // messages of their own.
+    // must not hold the release, and under `expand_squash_merges` a squashed
+    // PR's bullets arrive as messages of their own.
     msg.lines()
         .next()
         .unwrap_or("")

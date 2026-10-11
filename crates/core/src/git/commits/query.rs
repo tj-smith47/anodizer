@@ -28,7 +28,7 @@ pub fn parse_commit_output(output: &str) -> Vec<Commit> {
     if output.is_empty() {
         return vec![];
     }
-    let commits = output
+    output
         .split('\x1e')
         .filter(|record| !record.trim().is_empty())
         .filter_map(|record| {
@@ -46,8 +46,7 @@ pub fn parse_commit_output(output: &str) -> Vec<Commit> {
                 None
             }
         })
-        .collect();
-    expand_squashed(commits)
+        .collect()
 }
 
 pub(super) fn cwd_or_dot() -> PathBuf {
@@ -343,14 +342,19 @@ pub fn get_commits_reachable_paths_with_files_in(
     Ok(parse_commit_output_with_files(&output))
 }
 
-/// Get the last N commit messages as release signals: each commit, then the
-/// subjects a squash merge listed in its body.
-pub fn get_last_commit_messages(count: usize) -> Result<Vec<String>> {
-    get_last_commit_messages_in(&cwd_or_dot(), count)
+/// Get the last N commit messages as release signals: each commit, then,
+/// under `expand_squash_merges`, the subjects a squash merge listed in its
+/// body.
+pub fn get_last_commit_messages(count: usize, expand_squash_merges: bool) -> Result<Vec<String>> {
+    get_last_commit_messages_in(&cwd_or_dot(), count, expand_squash_merges)
 }
 
 /// Path-taking sibling of [`get_last_commit_messages`].
-pub fn get_last_commit_messages_in(cwd: &Path, count: usize) -> Result<Vec<String>> {
+pub fn get_last_commit_messages_in(
+    cwd: &Path,
+    count: usize,
+    expand_squash_merges: bool,
+) -> Result<Vec<String>> {
     let output = git_output_in(
         cwd,
         &[
@@ -361,34 +365,44 @@ pub fn get_last_commit_messages_in(cwd: &Path, count: usize) -> Result<Vec<Strin
             RELEASE_MESSAGE_FORMAT,
         ],
     )?;
-    Ok(release_messages(&output))
+    Ok(release_messages(&output, expand_squash_merges))
 }
 
 /// `git log` format for a release-signal read: subject, body, record end.
 pub(crate) const RELEASE_MESSAGE_FORMAT: &str = "--pretty=format:%s%x1f%b%x1e";
 
 /// Decode [`RELEASE_MESSAGE_FORMAT`] output into the messages the auto-bump
-/// reads: each commit's own message followed by its squashed subjects.
-pub(crate) fn release_messages(output: &str) -> Vec<String> {
+/// reads: each commit's own message followed, under `expand_squash_merges`,
+/// by its squashed subjects.
+pub(crate) fn release_messages(output: &str, expand_squash_merges: bool) -> Vec<String> {
     output
         .split('\x1e')
         .map(str::trim)
         .filter(|record| !record.is_empty())
         .flat_map(|record| {
             let (subject, body) = record.split_once('\x1f').unwrap_or((record, ""));
-            messages_with_squashed(subject.trim(), body.trim())
+            messages_with_squashed(subject.trim(), body.trim(), expand_squash_merges)
         })
         .collect()
 }
 
 /// Get the commit messages between two refs as release signals (see
 /// [`get_last_commit_messages`]).
-pub fn get_commit_messages_between(from: &str, to: &str) -> Result<Vec<String>> {
-    get_commit_messages_between_in(&cwd_or_dot(), from, to)
+pub fn get_commit_messages_between(
+    from: &str,
+    to: &str,
+    expand_squash_merges: bool,
+) -> Result<Vec<String>> {
+    get_commit_messages_between_in(&cwd_or_dot(), from, to, expand_squash_merges)
 }
 
 /// Path-taking sibling of [`get_commit_messages_between`].
-pub fn get_commit_messages_between_in(cwd: &Path, from: &str, to: &str) -> Result<Vec<String>> {
+pub fn get_commit_messages_between_in(
+    cwd: &Path,
+    from: &str,
+    to: &str,
+    expand_squash_merges: bool,
+) -> Result<Vec<String>> {
     let output = git_output_in(
         cwd,
         &[
@@ -399,5 +413,5 @@ pub fn get_commit_messages_between_in(cwd: &Path, from: &str, to: &str) -> Resul
             &format!("{from}..{to}"),
         ],
     )?;
-    Ok(release_messages(&output))
+    Ok(release_messages(&output, expand_squash_merges))
 }

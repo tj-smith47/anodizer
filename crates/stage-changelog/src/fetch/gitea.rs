@@ -155,7 +155,12 @@ pub(crate) fn fetch_gitea_commits(
             logins.insert(co_author.clone());
         }
         info.co_authors = co_authors;
-        push_with_squashed(&mut all_commit_infos, info, message);
+        push_with_squashed(
+            &mut all_commit_infos,
+            info,
+            message,
+            ctx.config.expand_squash_merges(),
+        );
     }
 
     log.status(&format!(

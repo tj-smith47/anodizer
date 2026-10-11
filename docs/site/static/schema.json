@@ -3473,6 +3473,14 @@
             "null"
           ]
         },
+        "expand_squash_merges": {
+          "description": "Read a squash-merged pull request as the commits it squashed. GitHub's squash merge lists each squashed commit's subject in the merge commit body as `* <subject> (#N)`; with this set, every such bullet whose subject is conventional (`type(scope): text`) becomes its own changelog entry under the PR's entry, and `anodizer tag` / `anodizer bump` read the bullets for `feat:` / `fix:` / `BREAKING CHANGE` when inferring the bump. Default: `false`, the GoReleaser behaviour — one entry per merge commit, its title only.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "files": {
           "description": "Changelog file-layout controls: which `CHANGELOG.md` files a release writes (per-crate vs the aggregate root). Separate from the content-generation keys above (`use`, `format`, `groups`, `filters`, `paths`, `sort`, ...) so file management and content concerns stay orthogonal. See [`ChangelogFilesConfig`].",
           "default": null,
