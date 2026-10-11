@@ -23,7 +23,7 @@ use super::manifest::{
 };
 use super::optional_deps::{MetapackageFiles, OptionalDepsLayout, generate_layout};
 use super::publish::{
-    AuthDecision, NpmAuth, PackageExistence, assemble_optional_deps_tarball,
+    AuthDecision, NpmAuth, NpmPublishOutcome, PackageExistence, assemble_optional_deps_tarball,
     assemble_postinstall_tarball, build_npm_publish_command, decide_auth,
     dist_tag_guarded_against_regression, encode_package_path, guard_latest_regression,
     is_npm_config_credential_var, is_transient_npm_publish_stderr, probe_dist_tag_latest,
@@ -4063,7 +4063,7 @@ fn oidc_failure_falls_back_to_token_with_loud_warning_in_auto() {
                     body.contains("_authToken=npm_secretvalue"),
                     "token retry must rewrite .npmrc with _authToken: {body:?}"
                 );
-                Ok(())
+                Ok(NpmPublishOutcome::Published)
             }
         },
     );
@@ -4179,6 +4179,89 @@ fn npm_publish_stderr_classifier_names_every_transient_shape() {
     }
 }
 
+/// npm's `E409 … previously staged version` is the registry saying the
+/// version was already accepted on an earlier run and is still being staged.
+/// It is neither retried nor a failure: the attempt ends as `Staged`, the
+/// `auto`-mode token fallback never fires (its warning would claim Trusted
+/// Publishing failed), and the status line says what npm is doing.
+#[test]
+#[serial_test::serial(path_env)]
+fn a_staged_version_conflict_is_accepted_without_retry_or_token_fallback() {
+    const STDERR: &str = "npm notice Publishing to https://registry.npmjs.org/ with tag latest and public access\n\
+npm error code E409\n\
+npm error 409 Conflict - PUT https://registry.npmjs.org/@tj-smith47%2fanodizer-linux-arm64-glibc - Cannot publish over previously staged version \"0.29.0\".";
+    assert!(super::publish::is_staged_version_conflict(STDERR));
+    assert!(
+        !is_transient_npm_publish_stderr(STDERR),
+        "a staged conflict is not a transient failure"
+    );
+    assert!(
+        !super::publish::is_staged_version_conflict(
+            "npm error code EPUBLISHCONFLICT\nnpm error cannot publish over the previously published versions"
+        ),
+        "a plain publish conflict is not the staged one"
+    );
+
+    let tools = anodizer_core::test_helpers::fake_tool::FakeToolDir::new();
+    tools
+        .tool("npm")
+        .stderr("npm error code E409\nnpm error 409 Conflict - PUT https://registry.npmjs.org/@x%2fy - Cannot publish over previously staged version \"1.0.0\".\n")
+        .exit(1)
+        .install();
+    let _path = tools.activate();
+    let tmp = tempfile::tempdir().unwrap();
+    let policy = anodizer_core::retry::RetryPolicy {
+        max_attempts: 5,
+        base_delay: std::time::Duration::from_millis(1),
+        max_delay: std::time::Duration::from_millis(1),
+    };
+    let (log, capture) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+    let oidc = NpmAuth::Oidc(vec![(
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN".to_string(),
+        "req-token".to_string(),
+    )]);
+    let outcome = publish_with_oidc_fallback(
+        "@x/y",
+        NpmAuthMode::Auto,
+        &oidc,
+        Some("npm_secretvalue".to_string()),
+        tmp.path(),
+        "https://registry.npmjs.org",
+        Some("public"),
+        &log,
+        &mut |npmrc_dir, auth| {
+            super::publish::run_npm_publish(
+                &tmp.path().join("y-1.0.0.tgz"),
+                npmrc_dir,
+                "https://registry.npmjs.org",
+                "latest",
+                Some("public"),
+                auth,
+                &policy,
+                None,
+                &log,
+            )
+        },
+    )
+    .expect("a staged conflict is not an error");
+    assert_eq!(outcome, NpmPublishOutcome::Staged);
+    assert_eq!(
+        tools.call_count("npm"),
+        1,
+        "one attempt: no retry, no token fallback"
+    );
+    let logged = capture.all_messages();
+    assert!(
+        !logged
+            .iter()
+            .any(|(_, m)| m.contains("falling back to NPM_TOKEN")),
+        "the OIDC fallback warning must not fire: {logged:?}"
+    );
+}
+
 #[test]
 fn npm_publish_retry_honors_already_elapsed_deadline() {
     // A large base_delay proves the pre-attempt sleep is SKIPPED: with the
@@ -4201,7 +4284,7 @@ fn npm_publish_retry_honors_already_elapsed_deadline() {
 
     let attempts = AtomicU32::new(0);
     let start = std::time::Instant::now();
-    let res = retry_npm_publish(&policy, deadline, &log, |_attempt| {
+    let res: anyhow::Result<()> = retry_npm_publish(&policy, deadline, &log, |_attempt| {
         attempts.fetch_add(1, Ordering::SeqCst);
         Err(ControlFlow::Continue(anyhow::anyhow!(
             "npm publish failed: 503 registry unavailable"
@@ -4242,7 +4325,7 @@ fn npm_publish_retry_runs_full_ladder_without_deadline() {
     );
 
     let attempts = AtomicU32::new(0);
-    let res = retry_npm_publish(&policy, None, &log, |_attempt| {
+    let res: anyhow::Result<()> = retry_npm_publish(&policy, None, &log, |_attempt| {
         attempts.fetch_add(1, Ordering::SeqCst);
         Err(ControlFlow::Continue(anyhow::anyhow!(
             "npm publish failed: 503 registry unavailable"
@@ -4280,7 +4363,7 @@ fn token_publish_success_does_not_trigger_fallback() {
         &log,
         &mut |_dir, _auth| {
             attempts += 1;
-            Ok(())
+            Ok(NpmPublishOutcome::Published)
         },
     );
     assert!(res.is_ok());

@@ -528,11 +528,17 @@ fn check_npm_landing(
         waited += usize::from(outcome.waited);
         match outcome.landed {
             Landed::Yes => visible.push(format!("{}@{}", t.package, t.version)),
+            // npm holds an accepted version in a staged state while it scans
+            // it, for minutes and sometimes hours; `npm view` answers 404 the
+            // whole time, so the operator is told what to look for.
             Landed::No => issues.push(format!(
-                "npm: {}@{} reported published but is not visible on {}",
+                "npm: {}@{} reported published but is not visible on {} (npm may still be \
+                 staging it; a re-run converges once `npm view {}@{}` shows it)",
                 t.package,
                 t.version,
-                registry_host(&t.registry)
+                registry_host(&t.registry),
+                t.package,
+                t.version
             )),
             // Indeterminate: the registry could not be consulted. An npm
             // version is immutable once published, so a transient outage must

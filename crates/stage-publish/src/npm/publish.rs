@@ -148,6 +148,29 @@ pub(crate) fn is_transient_npm_publish_stderr(stderr: &str) -> bool {
         || s.contains("IDENTITY_TOKEN_READ_ERROR")
 }
 
+/// npm answers a second `npm publish` of a version it has ACCEPTED but not yet
+/// made visible with `E409 … Cannot publish over previously staged version`.
+/// A new version sits in that staged state while npm scans it, for minutes
+/// and sometimes hours (`@tj-smith47/anodizer-linux-arm64-glibc@0.29.0`),
+/// and `npm view` answers 404 the whole time, so the idempotency probe
+/// cannot see it. The conflict is the registry saying the publish already
+/// happened: re-asking cannot change it, and a token retry under the `auto`
+/// fallback would only print the same answer under a louder warning.
+pub(crate) fn is_staged_version_conflict(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    s.contains("409") && s.contains("previously staged version")
+}
+
+/// What one `npm publish` ended as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NpmPublishOutcome {
+    /// npm accepted the tarball on this attempt.
+    Published,
+    /// npm had already accepted this version on an earlier run and is still
+    /// staging it; nothing was uploaded now.
+    Staged,
+}
+
 /// Write a per-run `.npmrc` under `cfg_dir` (0600). For [`NpmAuth::Token`] the
 /// `_authToken` line carries the credential; for [`NpmAuth::Oidc`] no token line
 /// is written (npm creates a short-lived credential via the OIDC exchange). The
@@ -548,7 +571,7 @@ fn publish_one_tarball(
         }));
     }
 
-    publish_with_oidc_fallback(
+    let outcome = publish_with_oidc_fallback(
         &staged.package,
         cfg.auth,
         &auth,
@@ -572,10 +595,17 @@ fn publish_one_tarball(
         },
     )?;
 
-    log.status(&format!(
-        "published '{}@{}' to {} (tag={})",
-        staged.package, version, registry, dist_tag
-    ));
+    match outcome {
+        NpmPublishOutcome::Published => log.status(&format!(
+            "published '{}@{}' to {} (tag={})",
+            staged.package, version, registry, dist_tag
+        )),
+        NpmPublishOutcome::Staged => log.status(&format!(
+            "accepted '{}@{}' — {} is still staging the version an earlier run published; \
+             it becomes visible when npm's publish-time scan finishes (idempotent re-run)",
+            staged.package, version, registry
+        )),
+    }
 
     Ok(Some(NpmTarget {
         package: staged.package.clone(),
@@ -608,11 +638,11 @@ pub(crate) fn publish_with_oidc_fallback(
     registry: &str,
     access: Option<&str>,
     log: &StageLogger,
-    do_publish: &mut dyn FnMut(&Path, &NpmAuth) -> Result<()>,
-) -> Result<()> {
+    do_publish: &mut dyn FnMut(&Path, &NpmAuth) -> Result<NpmPublishOutcome>,
+) -> Result<NpmPublishOutcome> {
     let first = do_publish(cfg_dir, auth);
     if first.is_ok() {
-        return Ok(());
+        return first;
     }
 
     // Fallback applies ONLY when: the chosen credential was OIDC, the mode is
@@ -780,7 +810,7 @@ pub(crate) fn run_npm_publish(
     policy: &RetryPolicy,
     deadline: Option<std::time::Instant>,
     log: &StageLogger,
-) -> Result<()> {
+) -> Result<NpmPublishOutcome> {
     retry_npm_publish(policy, deadline, log, |_attempt| {
         let mut cmd = build_npm_publish_command(tarball, cfg_dir, registry, dist_tag, access, auth);
         // Under OIDC the command carries the token-exchange credentials in
@@ -802,10 +832,13 @@ pub(crate) fn run_npm_publish(
             }
         };
         if out.status.success() {
-            return Ok(());
+            return Ok(NpmPublishOutcome::Published);
         }
         let stderr_raw = String::from_utf8_lossy(&out.stderr);
         let stderr_trimmed = stderr_raw.trim();
+        if is_staged_version_conflict(stderr_trimmed) {
+            return Ok(NpmPublishOutcome::Staged);
+        }
         let err = anyhow::anyhow!(
             "npm: `npm publish` exited with status {}: {}",
             out.status,
@@ -826,14 +859,14 @@ pub(crate) fn run_npm_publish(
 /// failure (retry), `ControlFlow::Break` for a fatal one (stop now). Splitting
 /// the ladder from the subprocess build keeps the deadline wiring testable
 /// without spawning `npm`.
-pub(crate) fn retry_npm_publish<F>(
+pub(crate) fn retry_npm_publish<T, F>(
     policy: &RetryPolicy,
     deadline: Option<std::time::Instant>,
     log: &StageLogger,
     mut attempt_op: F,
-) -> Result<()>
+) -> Result<T>
 where
-    F: FnMut(u32) -> Result<(), ControlFlow<anyhow::Error, anyhow::Error>>,
+    F: FnMut(u32) -> Result<T, ControlFlow<anyhow::Error, anyhow::Error>>,
 {
     let max_attempts = policy.max_attempts.max(1);
     let mut last_attempt = 0u32;

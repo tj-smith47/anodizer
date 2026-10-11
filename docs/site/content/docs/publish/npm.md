@@ -404,6 +404,7 @@ resilience — Recovering a poisoned tag](../advanced/release-resilience.md#reco
 - **`access: public` required for scoped packages.** Without it, the first publish to a free npm account fails with `403`.
 - **`scope:` required in `optional-deps` mode.** The per-platform packages need a scope; anodizer hard-errors when it is unset.
 - **72-hour unpublish window.** After that, the version is permanent. The `required: true` default exists to give you a chance to spot a bad release before that window closes.
+- **A new version is staged before it is visible.** npm accepts the publish, then scans the version before serving it; `npm view` answers 404 meanwhile, for minutes and sometimes hours. The verify-release gate reports such a version as not visible, and a re-run that reaches `npm publish` again gets `E409 … Cannot publish over previously staged version`. anodizer reads that answer as accepted (`accepted '<name>@<version>' — … is still staging the version an earlier run published`), so the re-run neither retries nor falls back to a token; once the version is visible, the idempotency probe skips it like any published one.
 
 ## Conditional publishing
 
