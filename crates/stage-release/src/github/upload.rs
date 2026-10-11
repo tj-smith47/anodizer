@@ -1001,6 +1001,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_307_with_a_location_is_not_followed_and_names_the_moved_repository() {
+        // The upload body is streamed, so the client cannot replay it to a
+        // Location; a 307 that carries one reaches the same arm as one that
+        // does not, and is not retried either.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_artifact(tmp.path(), "app.tar.gz", b"bytes");
+        let (addr, calls) = spawn_oneshot_http_responder_with(|addr| {
+            vec![
+                release_json(addr),
+                format!(
+                    "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{addr}/elsewhere\r\nContent-Length: 0\r\n\r\n"
+                ),
+            ]
+        });
+
+        let result = run_upload(addr, &path, false).await;
+
+        let err = result.expect_err("a redirected upload must fail fast");
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("GitHub redirected the upload (307)"),
+            "307 context must name the redirect: {rendered}"
+        );
+        assert!(
+            rendered.contains("the repository o/r may have been renamed or transferred"),
+            "307 context must name the repository: {rendered}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "a redirect with a Location must be neither followed nor retried (1 GET + 1 POST)"
+        );
+    }
+
+    #[tokio::test]
     async fn published_asset_422_still_bails_when_replace_forbidden() {
         // A fully-uploaded asset with different bytes and
         // `replace_existing_artifacts: false` must keep failing fast —

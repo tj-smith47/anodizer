@@ -9555,3 +9555,108 @@ fn per_target_output_templates_render_one_name_on_the_gate_and_the_stage() {
         }
     }
 }
+
+/// `artifacts: none` skips its own config and nothing else: a failing config
+/// configured after it still fails the stage, on `signs:`, `binary_signs:`
+/// and `docker_signs:` alike.
+#[test]
+fn a_none_config_does_not_mask_a_failing_sibling_on_any_sign_slice() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::DockerSignConfig;
+
+    let sign = |id: &str, artifacts: &str| SignConfig {
+        asset_name_template: None,
+        id: Some(id.to_string()),
+        cmd: Some("false".to_string()),
+        args: Some(vec![]),
+        artifacts: Some(artifacts.to_string()),
+        ids: None,
+        signature: None,
+        stdin: None,
+        stdin_file: None,
+        env: None,
+        certificate: None,
+        output: None,
+        authenticode: None,
+        verify: None,
+        if_condition: None,
+    };
+    let artifact = |kind: ArtifactKind, path: &str| Artifact {
+        kind,
+        name: String::new(),
+        path: std::path::PathBuf::from(path),
+        target: None,
+        crate_name: "test".to_string(),
+        metadata: combined_meta(),
+        size: None,
+    };
+
+    let mut ctx = TestContextBuilder::new()
+        .dry_run(false)
+        .signs(vec![sign("skipped", "none"), sign("failing", "checksum")])
+        .build();
+    ctx.artifacts
+        .add(artifact(ArtifactKind::Checksum, "/tmp/test.sha256"));
+    let err = SignStage
+        .run(&mut ctx)
+        .expect_err("signs: the config after a `none` one must still run and fail");
+    assert!(
+        format!("{err:#}").contains("false"),
+        "signs: error must come from the failing command: {err:#}"
+    );
+
+    // The binary slice skips a binary that is not on disk, so the file exists.
+    let tmp = tempfile::tempdir().unwrap();
+    let binary = tmp.path().join("test-binary");
+    std::fs::write(&binary, b"bytes").unwrap();
+    let mut ctx = TestContextBuilder::new()
+        .dry_run(false)
+        .binary_signs(vec![sign("skipped", "none"), sign("failing", "binary")])
+        .build();
+    ctx.artifacts
+        .add(artifact(ArtifactKind::Binary, binary.to_str().unwrap()));
+    let err = BinarySignStage
+        .run(&mut ctx)
+        .expect_err("binary_signs: the config after a `none` one must still run and fail");
+    assert!(
+        format!("{err:#}").contains("false"),
+        "binary_signs: error must come from the failing command: {err:#}"
+    );
+
+    let docker = |id: &str, artifacts: &str| DockerSignConfig {
+        verify: None,
+        id: Some(id.to_string()),
+        cmd: Some("false".to_string()),
+        args: Some(vec![]),
+        artifacts: Some(artifacts.to_string()),
+        ids: None,
+        stdin: None,
+        stdin_file: None,
+        env: None,
+        output: None,
+        if_condition: None,
+        signature: None,
+        certificate: None,
+    };
+    let mut ctx = TestContextBuilder::new().dry_run(false).build();
+    ctx.config.docker_signs = Some(vec![docker("skipped", "none"), docker("failing", "all")]);
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("digest".to_string(), "sha256:abc123def456".to_string());
+    metadata.insert("id".to_string(), "my-docker-image".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::DockerImage,
+        name: String::new(),
+        path: std::path::PathBuf::from("ghcr.io/myorg/app:latest"),
+        target: None,
+        crate_name: "test".to_string(),
+        metadata,
+        size: None,
+    });
+    let err = DockerSignStage
+        .run(&mut ctx)
+        .expect_err("docker_signs: the config after a `none` one must still run and fail");
+    assert!(
+        format!("{err:#}").contains("false"),
+        "docker_signs: error must come from the failing command: {err:#}"
+    );
+}

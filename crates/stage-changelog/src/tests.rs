@@ -615,6 +615,8 @@ fn test_changelog_snapshot_skipped_when_opt_in_false() {
 }
 
 #[test]
+// The stage spawns git in the process cwd, so a test running it contends with every cwd swapper.
+#[serial_test::serial(cwd)]
 fn test_changelog_non_snapshot_runs_regardless_of_opt_in() {
     // The opt-in is snapshot-mode-only; in normal release mode the gate is
     // bypassed entirely so changelog generation continues as before.
