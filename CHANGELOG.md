@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-10-11
+
+### Features
+
+* b8e2ab43954b add the targetVariant function and the Abi variable to every per-target scope ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* 8851f0a10557 a webhook header named in headers replaces the default of the same name ([@tj-smith47](https://github.com/tj-smith47))
+* 08b91f182693 refuse two entries that render one package name ([@tj-smith47](https://github.com/tj-smith47))
+* 87eff73d0b43 ignore a trailing slash on a remote URL and parse ssh:// remotes ([@tj-smith47](https://github.com/tj-smith47))
+* 31cf2d6c3dbc escape newlines, carriage returns and tabs in the package description ([@tj-smith47](https://github.com/tj-smith47))
+* ec094af3a81d refuse a shallow checkout that hides a tag of a planned family and consult every remote ([@tj-smith47](https://github.com/tj-smith47))
+* c8f8703cb1b3 refuse a shallow checkout whose history does not reach the last tag ([@tj-smith47](https://github.com/tj-smith47))
+* ead9d6bcdf16 keep a failed publisher's committed work on record so tag rollback withdraws it ([@tj-smith47](https://github.com/tj-smith47))
+* d2118773d8af a #none marker vetoes the bump a conventional commit would infer ([@tj-smith47](https://github.com/tj-smith47))
+* 063fdfd6e7a1 wait up to 12 minutes for a registry to serve a published artifact ([@tj-smith47](https://github.com/tj-smith47))
+* 91d7b5510176 mask a job's env in every result line, retry line and dry-run echo, and drop a dry-run env entry that does not render ([@tj-smith47](https://github.com/tj-smith47))
+* 01e160e23ee7 redact a job's own env from every subprocess's logged output and error text ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Performance
+
+* a903263429a3 stream uploads to the object store instead of reading each artifact into memory ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.28.1] - 2026-09-15
 
 ### Bug Fixes
@@ -1153,7 +1179,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.28.1...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/tj-smith47/anodizer/compare/v0.28.1...v0.29.0
 [0.28.1]: https://github.com/tj-smith47/anodizer/compare/v0.28.0...v0.28.1
 [0.28.0]: https://github.com/tj-smith47/anodizer/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/tj-smith47/anodizer/compare/v0.26.0...v0.27.0
