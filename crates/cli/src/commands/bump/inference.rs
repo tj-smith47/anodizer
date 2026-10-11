@@ -129,7 +129,7 @@ fn format_reason(level: BumpLevel, c: &LevelCounts, last_tag: Option<&str>) -> S
             if total == 0 {
                 format!("no commits{}", scope)
             } else {
-                format!("{} non-bumping commit(s){}", total, scope)
+                format!("{} non-bumping message(s){}", total, scope)
             }
         }
         _ => String::new(),

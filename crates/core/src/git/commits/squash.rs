@@ -15,21 +15,43 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 /// A body line that is a squashed commit subject: a `* ` / `- ` bullet whose
-/// text has the `type(scope)!: description` shape.
+/// text has the `type(scope)!: description` shape. The space after the colon
+/// is required, as Conventional Commits requires it, so a `scheme://` URL
+/// bullet is not a subject.
 static SQUASHED_SUBJECT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*[*-]\s+([a-zA-Z]+(?:\([^)]*\))?!?:\s*\S.*)$")
+    Regex::new(r"^\s*[*-]\s+([a-zA-Z]+(?:\([^)]*\))?!?:\s+\S.*)$")
         .unwrap_or_else(|e| panic!("static SQUASHED_SUBJECT_RE must compile: {e}"))
 });
 
+/// The ` (#N)` GitHub appends to a squash-merge title and to each bullet
+/// it writes from a branch commit.
+static PR_NUMBER_SUFFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\s*\(#\d+\)$")
+        .unwrap_or_else(|e| panic!("static PR_NUMBER_SUFFIX_RE must compile: {e}"))
+});
+
+/// A subject with its trailing ` (#N)` removed, for comparing the title with
+/// a bullet: GitHub appends the number to the title and not to a bullet it
+/// copies from a branch commit, so `feat: x (#40)` and `feat: x` are one
+/// change.
+fn without_pr_number(subject: &str) -> &str {
+    let subject = subject.trim();
+    PR_NUMBER_SUFFIX_RE
+        .find(subject)
+        .map_or(subject, |m| subject[..m.start()].trim_end())
+}
+
 /// The conventional subjects a squash-merge body lists as bullets, in order,
 /// trimmed. Lines that are not bullets, or whose text is not a conventional
-/// subject, are skipped; a bullet repeating `subject` is skipped too, so a
-/// PR whose title is also its one commit is not counted twice.
+/// subject, are skipped; a bullet repeating `subject` (with or without its
+/// ` (#N)`) is skipped too, so a PR whose title is also its one commit is not
+/// counted twice.
 pub fn squashed_subjects(subject: &str, body: &str) -> Vec<String> {
+    let title = without_pr_number(subject);
     body.lines()
         .filter_map(|line| SQUASHED_SUBJECT_RE.captures(line))
         .map(|caps| caps[1].trim_end().to_string())
-        .filter(|bullet| bullet != subject.trim())
+        .filter(|bullet| without_pr_number(bullet) != title)
         .collect()
 }
 
@@ -47,20 +69,21 @@ pub fn messages_with_squashed(subject: &str, body: &str) -> Vec<String> {
         .collect()
 }
 
-/// Every commit followed by one synthetic [`Commit`] per squashed subject:
-/// same hash and author, the bullet as its message, no body.
+/// Every commit followed by one synthetic [`Commit`] per squashed subject, in
+/// the body's order: same hash and author, the bullet as its message, no body.
 pub fn expand_squashed(commits: Vec<Commit>) -> Vec<Commit> {
     let mut out = Vec::with_capacity(commits.len());
     for commit in commits {
         let bullets = squashed_subjects(&commit.message, &commit.body);
-        for bullet in bullets {
-            out.push(Commit {
-                message: bullet,
-                body: String::new(),
-                ..commit.clone()
-            });
-        }
+        let template = Commit {
+            body: String::new(),
+            ..commit.clone()
+        };
         out.push(commit);
+        out.extend(bullets.into_iter().map(|bullet| Commit {
+            message: bullet,
+            ..template.clone()
+        }));
     }
     out
 }

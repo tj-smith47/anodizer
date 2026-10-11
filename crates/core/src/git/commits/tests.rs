@@ -1635,6 +1635,22 @@ Not a bullet: fix: ignored
 Co-Authored-By: Someone <s@example.com>";
 
 #[test]
+fn squashed_subjects_rejects_urls_and_dedups_the_numbered_title() {
+    let body = "\
+* feat: x
+- https://example.com/x
+- note: see docs
+- fix:no space after the colon
+* perf: y (#43)";
+    assert_eq!(
+        squashed_subjects("feat: x (#40)", body),
+        vec!["note: see docs", "perf: y (#43)"],
+        "a URL and a missing space are not subjects; the title's bullet is dropped whichever side carries the (#N)"
+    );
+    assert!(squashed_subjects("feat: x", "* feat: x (#40)").is_empty());
+}
+
+#[test]
 fn squashed_subjects_reads_conventional_bullets_only() {
     let subjects = squashed_subjects("feat: squashed changes (#40)", SQUASH_BODY);
     assert_eq!(
@@ -1676,17 +1692,20 @@ fn expand_squashed_adds_one_commit_per_bullet_with_the_parents_identity() {
     let expanded = expand_squashed(vec![parent.clone()]);
     assert_eq!(expanded.len(), 4);
     assert_eq!(
-        expanded[0].message,
-        "fix(dmg): size the image explicitly (#41)"
+        expanded[0].message, parent.message,
+        "the parent comes first"
     );
-    assert_eq!(expanded[0].hash, "abc");
-    assert_eq!(expanded[0].author_email, "t@t.com");
-    assert!(expanded[0].body.is_empty());
-    assert_eq!(expanded[3].message, parent.message);
     assert_eq!(
-        expanded[3].body, parent.body,
+        expanded[0].body, parent.body,
         "the parent keeps its body and trailers"
     );
+    assert_eq!(
+        expanded[1].message,
+        "fix(dmg): size the image explicitly (#41)"
+    );
+    assert_eq!(expanded[1].hash, "abc");
+    assert_eq!(expanded[1].author_email, "t@t.com");
+    assert!(expanded[1].body.is_empty());
 }
 
 #[test]
@@ -1695,7 +1714,7 @@ fn parse_commit_output_expands_a_squash_merge_and_with_files_shares_its_files() 
         format!("h1\x1fh1\x1ffeat: squashed changes (#40)\x1ft\x1ft@t.com\x1f{SQUASH_BODY}\x1e");
     let commits = parse_commit_output(&raw);
     assert_eq!(commits.len(), 4);
-    assert_eq!(commits[3].message, "feat: squashed changes (#40)");
+    assert_eq!(commits[0].message, "feat: squashed changes (#40)");
 
     let raw = format!(
         "h1\x1fh1\x1ffeat: squashed changes (#40)\x1ft\x1ft@t.com\x1f{SQUASH_BODY}\x1e\n\ncrates/a/src/lib.rs\ncrates/b/src/lib.rs\n"

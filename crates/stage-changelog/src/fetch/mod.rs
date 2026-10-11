@@ -161,6 +161,30 @@ fn is_bad_revision(stderr: &str) -> bool {
 /// delegating to the single core record decoder
 /// (`anodizer_core::git::parse_commit_output`), so the body / author handling
 /// can never drift from the rest of the changelog pipeline.
+/// Push `info` and then one entry per subject its squash-merge body lists
+/// (`anodizer_core::git::squashed_subjects`), each carrying the commit's
+/// hash, author and login and no co-authors. The SCM API fetchers decode a
+/// commit's full message themselves, so they expand here; the git fetchers
+/// are expanded by the core decoder.
+pub(crate) fn push_with_squashed(out: &mut Vec<CommitInfo>, info: CommitInfo, message: &str) {
+    let (subject, body) = message.split_once('\n').unwrap_or((message, ""));
+    let bullets = anodizer_core::git::squashed_subjects(subject.trim(), body.trim());
+    let template = CommitInfo {
+        co_authors: Vec::new(),
+        ..info.clone()
+    };
+    out.push(info);
+    out.extend(bullets.iter().map(|bullet| {
+        let parsed = parse_commit_message(bullet);
+        CommitInfo {
+            kind: parsed.kind,
+            description: parsed.description,
+            raw_message: parsed.raw_message,
+            ..template.clone()
+        }
+    }));
+}
+
 pub(crate) fn parse_git_log_records(text: &str) -> Vec<anodizer_core::git::Commit> {
     anodizer_core::git::parse_commit_output(text)
 }
@@ -393,18 +417,18 @@ mod tests {
         assert_eq!(
             kinds,
             vec![
+                ("feat", "squashed PR (#40)"),
                 ("fix", "size the image (#41)"),
                 ("feat", "add --json (#42)"),
-                ("feat", "squashed PR (#40)"),
             ]
         );
         assert!(plain.iter().all(|c| c.hash == plain[0].hash));
         assert_eq!(
-            plain[2].co_authors.len(),
+            plain[0].co_authors.len(),
             1,
             "the parent keeps its trailers"
         );
-        assert!(plain[0].co_authors.is_empty());
+        assert!(plain[1].co_authors.is_empty());
 
         let scope = anodizer_core::changelog_scope::ChangelogScope {
             dirs: vec!["crates".to_string()],

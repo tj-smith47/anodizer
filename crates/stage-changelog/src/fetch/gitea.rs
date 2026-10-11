@@ -9,6 +9,7 @@ use anodizer_core::git::resolve_repo_slug;
 use anodizer_core::log::StageLogger;
 use anodizer_core::retry::{RetryLog, SuccessClass, retry_http_blocking_deadline};
 
+use super::push_with_squashed;
 use crate::group::{CommitInfo, extract_co_authors, parse_commit_message};
 
 // ---------------------------------------------------------------------------
@@ -154,8 +155,7 @@ pub(crate) fn fetch_gitea_commits(
             logins.insert(co_author.clone());
         }
         info.co_authors = co_authors;
-
-        all_commit_infos.push(info);
+        push_with_squashed(&mut all_commit_infos, info, message);
     }
 
     log.status(&format!(

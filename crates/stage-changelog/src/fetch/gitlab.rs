@@ -7,6 +7,7 @@ use anodizer_core::git::resolve_repo_slug;
 use anodizer_core::log::StageLogger;
 use anodizer_core::retry::{RetryLog, SuccessClass, retry_http_blocking_deadline};
 
+use super::push_with_squashed;
 use crate::group::{CommitInfo, extract_co_authors, parse_commit_message};
 
 // ---------------------------------------------------------------------------
@@ -150,7 +151,7 @@ pub(crate) fn fetch_gitlab_commits(
         // GitLab's compare API does not include login information,
         // but co-authors are still recoverable from commit message trailers.
         info.co_authors = extract_co_authors(message);
-        all_commit_infos.push(info);
+        push_with_squashed(&mut all_commit_infos, info, message);
     }
 
     log.status(&format!(

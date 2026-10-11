@@ -16,6 +16,7 @@ use anodizer_core::git::{
 };
 use anodizer_core::log::StageLogger;
 
+use super::push_with_squashed;
 use crate::group::{CommitInfo, extract_co_authors, parse_commit_message};
 
 // ---------------------------------------------------------------------------
@@ -187,7 +188,7 @@ pub(crate) fn fetch_github_commits_with_binary(
         info.author_email = author_email.to_string();
         info.login = login.to_string();
         info.co_authors = co_authors;
-        all_commit_infos.push(info);
+        push_with_squashed(&mut all_commit_infos, info, message);
     }
 
     let logins_str = logins.into_iter().collect::<Vec<_>>().join(",");
@@ -330,6 +331,48 @@ mod tests {
         assert_eq!(commits[1].login, "linus");
         // BTreeSet ordering: ada, linus.
         assert_eq!(logins, "ada,linus");
+    }
+
+    #[test]
+    #[serial_test::serial(cwd)]
+    fn compare_api_expands_a_squash_merge_into_its_commits() {
+        let dir = tempfile::tempdir().expect("script dir");
+        let json = r#"{
+            "commits": [
+                {
+                    "sha": "abc123def456abc123def456abc123def456abc1",
+                    "commit": {
+                        "message": "feat: squashed PR (#40)\n\n* fix: a bug (#41)\n* feat: squashed PR\n- a prose bullet\n\nCo-Authored-By: Pair <pair@example.com>",
+                        "author": {"name": "Ada", "email": "ada@example.com"}
+                    },
+                    "author": {"login": "ada"}
+                }
+            ],
+            "files": []
+        }"#;
+        let gh = write_gh_stub_stdout(dir.path(), json);
+
+        let repo = temp_github_repo();
+        let _cwd = CwdGuard::new(repo.path()).expect("cwd");
+        let ctx = test_ctx();
+        let log = test_logger();
+        let (commits, _) =
+            fetch_github_commits_with_binary(&gh, &ctx, &Some("v1.0.0".to_string()), &[], &log)
+                .expect("compare API parses");
+
+        let kinds: Vec<(&str, &str)> = commits
+            .iter()
+            .map(|c| (c.kind.as_str(), c.description.as_str()))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![("feat", "squashed PR (#40)"), ("fix", "a bug (#41)")],
+            "the bullet repeating the title is not a second entry"
+        );
+        assert_eq!(commits[1].hash, "abc123d");
+        assert_eq!(commits[1].login, "ada");
+        assert_eq!(commits[0].co_authors.len(), 1);
+        assert!(commits[1].co_authors.is_empty());
     }
 
     #[test]

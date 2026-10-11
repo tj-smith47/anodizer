@@ -225,13 +225,18 @@ feat: preflight improvements (#40)
 * chore: bump deps (#43)
 ```
 
-anodizer reads that commit as four: the commit itself and one entry per bullet
-whose text is a conventional subject (`type(scope)!: description`). Each entry
-is grouped and filtered on its own, carries the squash commit's hash and
-author, and is scoped by the files the squash commit touched. A prose bullet,
-a trailer or a plain body line is not a subject and adds no entry. The same
-expansion feeds the auto-bump, so a `fix:` that only lived on the branch still
-cuts a patch release (see
+anodizer reads that commit as four: the commit itself, then one entry per
+bullet whose text is a conventional subject (`type(scope)!: description`, with
+the space after the colon). Each entry is grouped and filtered on its own,
+carries the squash commit's hash and author, and is scoped by the files the
+squash commit touched. A bullet repeating the title, with or without the
+` (#N)`, adds no second entry. A prose bullet, a URL, a trailer or a plain
+body line is not a subject and adds no entry; any `word: text` bullet is one,
+so `- note: see the docs` is placed in the catch-all group like any
+unrecognised type. Every commit source (`git`, `github`, `gitlab`, `gitea`)
+expands the same way. The same expansion feeds the auto-bump, so a `fix:`
+that only lived on the branch still cuts a patch release, and a `#none` on a
+bullet holds the release the way it would on a commit (see
 [auto-tagging](../advanced/auto-tagging#commit-message-directives)).
 
 ## Filtering commits
