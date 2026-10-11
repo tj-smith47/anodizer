@@ -6965,7 +6965,7 @@
           ]
         },
         "dependencies": {
-          "description": "Cask dependencies (other casks or formulae).",
+          "description": "Cask dependencies (other casks or formulae). Rendered casks first, then formulae, each group sorted by name without regard to case with the names written as given, the order `brew style` requires.",
           "default": null,
           "type": [
             "array",
@@ -7994,7 +7994,7 @@
       "type": "object",
       "properties": {
         "name": {
-          "description": "Homebrew formula name of the dependency.",
+          "description": "Homebrew formula name of the dependency. The formula lists its dependencies by type (`build`, `test`, runtime, `recommended`, `optional`) and within a type by name without regard to case, the order `brew style` requires; the names are written as given.",
           "default": "",
           "type": "string"
         },
@@ -8006,7 +8006,7 @@
           ]
         },
         "type": {
-          "description": "Dependency type, e.g. `\"optional\"`.",
+          "description": "Dependency type, rendered as `depends_on \"name\" => :type`: `\"build\"`, `\"test\"`, `\"recommended\"` or `\"optional\"`. Takes precedence over `version`.",
           "type": [
             "string",
             "null"

@@ -500,7 +500,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `completions` | HomebrewCaskCompletions | — | Shell completion definitions. |
 | `conflicts` | list of HomebrewCaskConflictEntry | — | Conflicting casks or formulae. |
 | `custom_block` | string | — | Arbitrary Ruby code inserted into the cask block. |
-| `dependencies` | list of HomebrewCaskDependencyEntry | — | Cask dependencies (other casks or formulae). |
+| `dependencies` | list of HomebrewCaskDependencyEntry | — | Cask dependencies (other casks or formulae). Rendered casks first, then formulae, each group sorted by name without regard to case with the names written as given, the order `brew style` requires. |
 | `description` | string | — | Cask description. |
 | `directory` | string | — | Subdirectory in the tap repo for cask placement (default: "Casks"). |
 | `generate_completions_from_executable` | HomebrewCaskGeneratedCompletions | — | Auto-generate shell completions from an executable. |
@@ -1240,7 +1240,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `completions` | HomebrewCaskCompletions | — | Shell completion definitions. |
 | `conflicts` | list of HomebrewCaskConflictEntry | — | Conflicting casks or formulae. |
 | `custom_block` | string | — | Arbitrary Ruby code inserted into the cask block. |
-| `dependencies` | list of HomebrewCaskDependencyEntry | — | Cask dependencies (other casks or formulae). |
+| `dependencies` | list of HomebrewCaskDependencyEntry | — | Cask dependencies (other casks or formulae). Rendered casks first, then formulae, each group sorted by name without regard to case with the names written as given, the order `brew style` requires. |
 | `description` | string | — | Cask description. |
 | `directory` | string | — | Subdirectory in the tap repo for cask placement (default: "Casks"). |
 | `generate_completions_from_executable` | HomebrewCaskGeneratedCompletions | — | Auto-generate shell completions from an executable. |

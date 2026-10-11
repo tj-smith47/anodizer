@@ -109,14 +109,14 @@ class {{ class_name }} < Formula
 {% endfor %}    end
 {% endfor %}{% endif %}  end
 {% endif %}{% for dep in global_deps %}
-  depends_on "{{ dep.name | ruby_escape }}"{% if dep.version %} => "{{ dep.version | ruby_escape }}"{% elif dep.optional %} => :optional{% endif %}
+  depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
 {% endfor %}{% for dep in macos_deps %}
   on_macos do
-    depends_on "{{ dep.name | ruby_escape }}"{% if dep.version %} => "{{ dep.version | ruby_escape }}"{% elif dep.optional %} => :optional{% endif %}
+    depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
   end
 {% endfor %}{% for dep in linux_deps %}
   on_linux do
-    depends_on "{{ dep.name | ruby_escape }}"{% if dep.version %} => "{{ dep.version | ruby_escape }}"{% elif dep.optional %} => :optional{% endif %}
+    depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
   end
 {% endfor %}{% for c in conflicts %}
   conflicts_with "{{ c.name | ruby_escape }}"{% if c.because %}, because: "{{ c.because | ruby_escape }}"{% endif %}
@@ -472,7 +472,7 @@ pub fn generate_formula_with_opts(
     #[derive(serde::Serialize)]
     struct DepEntry {
         name: String,
-        optional: bool,
+        dep_type: Option<String>,
         version: Option<String>,
     }
 
@@ -483,7 +483,7 @@ pub fn generate_formula_with_opts(
         for d in deps {
             let entry = DepEntry {
                 name: d.name.clone(),
-                optional: d.dep_type.as_deref() == Some("optional"),
+                dep_type: d.dep_type.clone(),
                 version: d.version.clone(),
             };
             match d.os.as_deref() {
@@ -492,10 +492,14 @@ pub fn generate_formula_with_opts(
                 _ => global.push(entry),
             }
         }
-        // Dependencies are sorted alphabetically in the formula output.
-        global.sort_by(|a, b| a.name.cmp(&b.name));
-        mac.sort_by(|a, b| a.name.cmp(&b.name));
-        linux.sort_by(|a, b| a.name.cmp(&b.name));
+        let order = |a: &DepEntry, b: &DepEntry| {
+            dependency_type_priority(a.dep_type.as_deref())
+                .cmp(&dependency_type_priority(b.dep_type.as_deref()))
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        };
+        global.sort_by(order);
+        mac.sort_by(order);
+        linux.sort_by(order);
         (global, mac, linux)
     } else {
         (Vec::new(), Vec::new(), Vec::new())
@@ -610,16 +614,36 @@ pub(super) fn build_depends_directives(
         Some(d) if !d.is_empty() => d,
         _ => return Vec::new(),
     };
-    let mut directives = Vec::new();
-    for dep in d {
-        if let Some(ref cask) = dep.cask {
-            directives.push(format!("cask: \"{}\"", ruby_escape_str(cask)));
-        }
-        if let Some(ref formula) = dep.formula {
-            directives.push(format!("formula: \"{}\"", ruby_escape_str(formula)));
-        }
+    // Homebrew orders a `depends_on` group by the lower-cased name and
+    // `brew style` reports a case-sensitive order as an offense, so the
+    // casks are listed first and each group is sorted without regard to
+    // case, keeping the names as written.
+    let mut casks: Vec<&str> = d.iter().filter_map(|dep| dep.cask.as_deref()).collect();
+    let mut formulas: Vec<&str> = d.iter().filter_map(|dep| dep.formula.as_deref()).collect();
+    casks.sort_by_key(|name| name.to_lowercase());
+    formulas.sort_by_key(|name| name.to_lowercase());
+    casks
+        .into_iter()
+        .map(|cask| format!("cask: \"{}\"", ruby_escape_str(cask)))
+        .chain(
+            formulas
+                .into_iter()
+                .map(|formula| format!("formula: \"{}\"", ruby_escape_str(formula))),
+        )
+        .collect()
+}
+
+/// Homebrew's `depends_on` order: build, test, runtime, recommended,
+/// optional. `brew style` reports a formula whose dependencies are listed
+/// in another order.
+fn dependency_type_priority(dep_type: Option<&str>) -> u8 {
+    match dep_type {
+        Some("build") => 0,
+        Some("test") => 1,
+        Some("recommended") => 3,
+        Some("optional") => 4,
+        _ => 2,
     }
-    directives
 }
 
 /// Build conflicts_with directives from structured cask conflict config.

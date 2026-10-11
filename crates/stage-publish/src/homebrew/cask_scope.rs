@@ -334,22 +334,7 @@ pub(super) fn generate_cask_from_context(
     }
 
     // Build dependency and conflict directive strings for the template
-    let cask_depends: Vec<String> = cask_cfg
-        .dependencies
-        .as_deref()
-        .unwrap_or(&[])
-        .iter()
-        .map(|d| {
-            if let Some(ref c) = d.cask {
-                format!("cask: \"{}\"", ruby_escape_str(c))
-            } else if let Some(ref f) = d.formula {
-                format!("formula: \"{}\"", ruby_escape_str(f))
-            } else {
-                String::new()
-            }
-        })
-        .filter(|s| !s.is_empty())
-        .collect();
+    let cask_depends = super::formula::build_depends_directives(cask_cfg.dependencies.as_deref());
     let cask_conflicts: Vec<String> = cask_cfg
         .conflicts
         .as_deref()

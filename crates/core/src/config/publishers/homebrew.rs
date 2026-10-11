@@ -123,12 +123,17 @@ pub struct HomebrewConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct HomebrewDependency {
-    /// Homebrew formula name of the dependency.
+    /// Homebrew formula name of the dependency. The formula lists its
+    /// dependencies by type (`build`, `test`, runtime, `recommended`,
+    /// `optional`) and within a type by name without regard to case, the
+    /// order `brew style` requires; the names are written as given.
     pub name: String,
     /// Restrict to a specific OS: `"mac"` or `"linux"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub os: Option<String>,
-    /// Dependency type, e.g. `"optional"`.
+    /// Dependency type, rendered as `depends_on "name" => :type`:
+    /// `"build"`, `"test"`, `"recommended"` or `"optional"`. Takes
+    /// precedence over `version`.
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub dep_type: Option<String>,
     /// Version constraint for the dependency (e.g. `">= 1.1"`).
@@ -325,7 +330,9 @@ pub struct HomebrewCaskConfig {
     pub generate_completions_from_executable: Option<HomebrewCaskGeneratedCompletions>,
 
     // ----- Dependencies / conflicts -----
-    /// Cask dependencies (other casks or formulae).
+    /// Cask dependencies (other casks or formulae). Rendered casks first,
+    /// then formulae, each group sorted by name without regard to case
+    /// with the names written as given, the order `brew style` requires.
     pub dependencies: Option<Vec<HomebrewCaskDependencyEntry>>,
     /// Conflicting casks or formulae.
     pub conflicts: Option<Vec<HomebrewCaskConflictEntry>>,

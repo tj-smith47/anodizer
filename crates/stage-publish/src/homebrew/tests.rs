@@ -714,6 +714,132 @@ fn test_formula_dependencies_sorted_alphabetically() {
     );
 }
 
+/// Homebrew compares lower-cased names and orders dependencies by type, so
+/// `Azure/kubelogin/kubelogin` sorts after `aws-iam-authenticator`, a
+/// `build` dependency leads and an `optional` one trails whatever its name.
+#[test]
+fn formula_dependencies_sort_by_type_then_name_without_regard_to_case() {
+    use anodizer_core::config::HomebrewDependency;
+    let dep = |name: &str, dep_type: Option<&str>| HomebrewDependency {
+        name: name.to_string(),
+        os: None,
+        dep_type: dep_type.map(str::to_string),
+        version: None,
+    };
+    let deps = vec![
+        dep("kubernetes-cli", None),
+        dep("Azure/kubelogin/kubelogin", None),
+        dep("aaa-optional", Some("optional")),
+        dep("aws-iam-authenticator", None),
+        dep("zzz-build", Some("build")),
+        dep("mmm-test", Some("test")),
+        dep("bbb-recommended", Some("recommended")),
+    ];
+    let opts = FormulaOptions {
+        dependencies: Some(&deps),
+        ..Default::default()
+    };
+    let formula = generate_formula_with_opts(
+        &super::formula::FormulaCore {
+            name: "mytool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
+        &[],
+        &super::formula::FormulaCode {
+            install: "bin.install \"mytool\"",
+            test: "system \"#{bin}/mytool\"",
+        },
+        &opts,
+    )
+    .unwrap();
+    let rendered: Vec<&str> = formula
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("depends_on \""))
+        .collect();
+    assert_eq!(
+        rendered,
+        vec![
+            "depends_on \"zzz-build\" => :build",
+            "depends_on \"mmm-test\" => :test",
+            "depends_on \"aws-iam-authenticator\"",
+            "depends_on \"Azure/kubelogin/kubelogin\"",
+            "depends_on \"kubernetes-cli\"",
+            "depends_on \"bbb-recommended\" => :recommended",
+            "depends_on \"aaa-optional\" => :optional",
+        ],
+        "formula:\n{formula}"
+    );
+}
+
+/// `type` renders as the Ruby symbol and wins over `version` on one entry.
+#[test]
+fn formula_dependency_type_takes_precedence_over_version() {
+    use anodizer_core::config::HomebrewDependency;
+    let deps = vec![HomebrewDependency {
+        name: "pkg-config".to_string(),
+        os: None,
+        dep_type: Some("build".to_string()),
+        version: Some(">= 0.29".to_string()),
+    }];
+    let opts = FormulaOptions {
+        dependencies: Some(&deps),
+        ..Default::default()
+    };
+    let formula = generate_formula_with_opts(
+        &super::formula::FormulaCore {
+            name: "mytool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
+        &[],
+        &super::formula::FormulaCode {
+            install: "bin.install \"mytool\"",
+            test: "system \"#{bin}/mytool\"",
+        },
+        &opts,
+    )
+    .unwrap();
+    assert!(
+        formula.contains("depends_on \"pkg-config\" => :build\n"),
+        "{formula}"
+    );
+    assert!(!formula.contains(">= 0.29"), "{formula}");
+}
+
+/// A cask lists its cask dependencies before its formula dependencies,
+/// each group sorted by the lower-cased name with the names kept as written.
+#[test]
+fn cask_dependencies_sort_casks_then_formulas_without_regard_to_case() {
+    use anodizer_core::config::HomebrewCaskDependencyEntry;
+    let entry = |cask: Option<&str>, formula: Option<&str>| HomebrewCaskDependencyEntry {
+        cask: cask.map(str::to_string),
+        formula: formula.map(str::to_string),
+    };
+    let deps = vec![
+        entry(None, Some("kubernetes-cli")),
+        entry(Some("zotero"), None),
+        entry(None, Some("Azure/kubelogin/kubelogin")),
+        entry(Some("Example/tap/app"), None),
+        entry(None, Some("aws-iam-authenticator")),
+        entry(Some("alacritty"), None),
+    ];
+    assert_eq!(
+        super::formula::build_depends_directives(Some(&deps)),
+        vec![
+            "cask: \"alacritty\"",
+            "cask: \"Example/tap/app\"",
+            "cask: \"zotero\"",
+            "formula: \"aws-iam-authenticator\"",
+            "formula: \"Azure/kubelogin/kubelogin\"",
+            "formula: \"kubernetes-cli\"",
+        ]
+    );
+}
+
 #[test]
 fn test_formula_conflicts() {
     use anodizer_core::config::HomebrewConflict;

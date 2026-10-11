@@ -78,6 +78,8 @@ crates:
 | `license` | string | Cargo `[package].license` | License identifier. Derived from `Cargo.toml`; set to override. |
 | `install` | string | auto | Custom install block (Ruby) |
 | `test` | string | none | Custom test block (Ruby) |
+| `dependencies` | list | none | Formula dependencies (`name`, `type`, `version`, `os`). See [Dependencies](#dependencies). |
+| `conflicts` | list | none | `conflicts_with` entries (`name`, `because`). |
 | `livecheck` | object | skip | `livecheck do … end` stanza — version polling. See [Livecheck](#livecheck). |
 | `manpages` | list | none | Man-page file paths to install via `manN.install`. See [Auto completions and man pages](#auto-completions-and-man-pages). |
 | `completions` | object | none | Pre-built completion file paths (`bash`/`zsh`/`fish`). |
@@ -107,6 +109,13 @@ crates:
         license: ""
         install: ""             # custom Ruby install block
         test: ""                # custom Ruby test block
+        dependencies:           # see Dependencies
+          - name: openssl@3
+          - name: pkg-config
+            type: build         # build, test, recommended or optional
+          - name: git
+            version: ">= 2.40"  # ignored when type is set
+            os: mac             # mac or linux
         livecheck:              # version polling; default skips (see Livecheck)
           strategy: github_latest
           url: stable
@@ -240,6 +249,31 @@ homebrew:
     shells: [bash, zsh, fish]
   manpages:
     - myapp.1
+```
+
+## Dependencies
+
+Each `dependencies` entry renders one `depends_on` line. `type` renders as a
+Ruby symbol and takes precedence over `version`; `os` moves the line into an
+`on_macos do` or `on_linux do` block. The formula lists them in the order
+`brew style` requires: by type (`build`, `test`, runtime, `recommended`,
+`optional`), then by name without regard to case, the names written as given.
+
+```yaml
+dependencies:
+  - name: Azure/kubelogin/kubelogin
+  - name: aws-iam-authenticator
+  - name: pkg-config
+    type: build
+  - name: fzf
+    type: optional
+```
+
+```ruby
+  depends_on "pkg-config" => :build
+  depends_on "aws-iam-authenticator"
+  depends_on "Azure/kubelogin/kubelogin"
+  depends_on "fzf" => :optional
 ```
 
 ## The `test do` block

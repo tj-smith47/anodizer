@@ -199,12 +199,21 @@ hooks:
 
 ### Dependencies (`dependencies`)
 
-Each entry can specify either `cask` or `formula`:
+Each entry can specify either `cask` or `formula`. The cask lists casks
+first, then formulae, each group sorted by name without regard to case
+with the names written as given, the order `brew style` requires:
 
 ```yaml
 dependencies:
   - formula: cmake
   - cask: xquartz
+  - cask: Example/tap/app
+```
+
+```ruby
+  depends_on cask: "Example/tap/app"
+  depends_on cask: "xquartz"
+  depends_on formula: "cmake"
 ```
 
 ### Conflicts (`conflicts`)
