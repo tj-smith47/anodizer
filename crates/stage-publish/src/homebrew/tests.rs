@@ -720,12 +720,13 @@ fn test_formula_dependencies_sorted_alphabetically() {
 #[test]
 fn formula_dependencies_sort_by_type_then_name_without_regard_to_case() {
     use anodizer_core::config::HomebrewDependency;
-    let dep = |name: &str, dep_type: Option<&str>| HomebrewDependency {
+    let dep_on = |name: &str, dep_type: Option<&str>, os: Option<&str>| HomebrewDependency {
         name: name.to_string(),
-        os: None,
+        os: os.map(str::to_string),
         dep_type: dep_type.map(str::to_string),
         version: None,
     };
+    let dep = |name: &str, dep_type: Option<&str>| dep_on(name, dep_type, None);
     let deps = vec![
         dep("kubernetes-cli", None),
         dep("Azure/kubelogin/kubelogin", None),
@@ -734,6 +735,11 @@ fn formula_dependencies_sort_by_type_then_name_without_regard_to_case() {
         dep("zzz-build", Some("build")),
         dep("mmm-test", Some("test")),
         dep("bbb-recommended", Some("recommended")),
+        dep_on("Zed-mac", None, Some("mac")),
+        dep_on("yyy-mac-build", Some("build"), Some("mac")),
+        dep_on("apple-mac", None, Some("mac")),
+        dep_on("Lin-runtime", None, Some("linux")),
+        dep_on("aaa-linux-optional", Some("optional"), Some("linux")),
     ];
     let opts = FormulaOptions {
         dependencies: Some(&deps),
@@ -757,7 +763,11 @@ fn formula_dependencies_sort_by_type_then_name_without_regard_to_case() {
     let rendered: Vec<&str> = formula
         .lines()
         .map(str::trim)
-        .filter(|line| line.starts_with("depends_on \""))
+        .filter(|line| {
+            line.starts_with("depends_on \"")
+                || line.starts_with("on_macos")
+                || line.starts_with("on_linux")
+        })
         .collect();
     assert_eq!(
         rendered,
@@ -769,6 +779,13 @@ fn formula_dependencies_sort_by_type_then_name_without_regard_to_case() {
             "depends_on \"kubernetes-cli\"",
             "depends_on \"bbb-recommended\" => :recommended",
             "depends_on \"aaa-optional\" => :optional",
+            "on_macos do",
+            "depends_on \"yyy-mac-build\" => :build",
+            "depends_on \"apple-mac\"",
+            "depends_on \"Zed-mac\"",
+            "on_linux do",
+            "depends_on \"Lin-runtime\"",
+            "depends_on \"aaa-linux-optional\" => :optional",
         ],
         "formula:\n{formula}"
     );

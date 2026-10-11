@@ -254,8 +254,8 @@ homebrew:
 ## Dependencies
 
 Each `dependencies` entry renders one `depends_on` line. `type` renders as a
-Ruby symbol and takes precedence over `version`; `os` moves the line into an
-`on_macos do` or `on_linux do` block. The formula lists them in the order
+Ruby symbol and takes precedence over `version`; `os` moves the line into the
+formula's one `on_macos do` or `on_linux do` block. The formula lists them in the order
 `brew style` requires: by type (`build`, `test`, runtime, `recommended`,
 `optional`), then by name without regard to case, the names written as given.
 
