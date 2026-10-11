@@ -395,11 +395,18 @@ pub fn write_executable_script(path: &Path, script: &str) {
     std::fs::write(path, script)
         .unwrap_or_else(|e| panic!("fake_tool: write {}: {e}", path.display()));
     make_executable(path);
+    // The probe runs in the stub's own directory: a `serial(cwd)` test in the
+    // same binary may have the process cwd inside a tempdir it is about to
+    // delete, and `sh` started there prints `getcwd() failed` on stderr,
+    // which this probe would read as the body having run.
+    let probe_cwd = path.parent().filter(|p| !p.as_os_str().is_empty());
     for _ in 0..500 {
-        match std::process::Command::new(path)
-            .env(EXEC_PROBE_VAR, "1")
-            .output()
-        {
+        let mut probe = std::process::Command::new(path);
+        probe.env(EXEC_PROBE_VAR, "1");
+        if let Some(dir) = probe_cwd {
+            probe.current_dir(dir);
+        }
+        match probe.output() {
             Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }

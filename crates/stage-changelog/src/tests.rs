@@ -417,6 +417,8 @@ fn test_apply_filters_empty_exclude() {
 }
 
 #[test]
+// cwd-ok: the stage spawns git in the process cwd, so a test running it contends with every cwd swapper
+#[serial_test::serial(cwd)]
 fn test_render_changelog_with_header_and_footer() {
     let grouped = vec![GroupedCommits {
         title: "Features".into(),
@@ -484,6 +486,8 @@ fn test_render_changelog_with_footer_only() {
 }
 
 #[test]
+// cwd-ok: the stage spawns git in the process cwd, so a test running it contends with every cwd swapper
+#[serial_test::serial(cwd)]
 fn test_changelog_stage_disabled_skips() {
     use anodizer_core::config::{ChangelogConfig, CrateConfig};
 
@@ -530,6 +534,8 @@ fn changelog_snapshot_test_config(snapshot_opt_in: Option<bool>) -> anodizer_cor
 }
 
 #[test]
+// cwd-ok: the stage spawns git in the process cwd, so a test running it contends with every cwd swapper
+#[serial_test::serial(cwd)]
 fn test_changelog_snapshot_skipped_when_opt_in_unset() {
     let config = changelog_snapshot_test_config(None);
     let mut ctx = TestContextBuilder::new()
@@ -554,6 +560,8 @@ fn test_changelog_snapshot_skipped_when_opt_in_unset() {
 }
 
 #[test]
+// cwd-ok: the stage spawns git in the process cwd, so a test running it contends with every cwd swapper
+#[serial_test::serial(cwd)]
 fn test_changelog_preview_bypasses_snapshot_skip_gate() {
     // The standalone `changelog` command marks the context `changelog_preview`,
     // which must bypass the `changelog.snapshot` opt-in gate that the release
@@ -587,6 +595,8 @@ fn test_changelog_preview_bypasses_snapshot_skip_gate() {
 }
 
 #[test]
+// cwd-ok: the stage spawns git in the process cwd, so a test running it contends with every cwd swapper
+#[serial_test::serial(cwd)]
 fn test_changelog_snapshot_skipped_when_opt_in_false() {
     let config = changelog_snapshot_test_config(Some(false));
     let mut ctx = TestContextBuilder::new()
@@ -631,6 +641,8 @@ fn test_changelog_non_snapshot_runs_regardless_of_opt_in() {
 }
 
 #[test]
+// cwd-ok: the stage spawns git in the process cwd, so a test running it contends with every cwd swapper
+#[serial_test::serial(cwd)]
 fn test_changelog_snapshot_runs_when_opt_in_true() {
     // Third matrix cell: snapshot mode + `changelog.snapshot: true` →
     // changelog generation proceeds. --release-notes gives the
@@ -874,6 +886,8 @@ abbrev: 10
 // -----------------------------------------------------------------------
 
 #[test]
+// cwd-ok: the stage spawns git in the process cwd, so a test running it contends with every cwd swapper
+#[serial_test::serial(cwd)]
 fn test_changelog_stage_github_native_dry_run_skips_api() {
     use anodizer_core::config::{ChangelogConfig, CrateConfig, ReleaseConfig, ScmRepoConfig};
 
@@ -931,6 +945,8 @@ fn test_changelog_stage_github_native_dry_run_skips_api() {
 }
 
 #[test]
+// cwd-ok: the stage spawns git in the process cwd, so a test running it contends with every cwd swapper
+#[serial_test::serial(cwd)]
 fn test_changelog_stage_github_native_requires_token() {
     use anodizer_core::config::{ChangelogConfig, CrateConfig, ReleaseConfig, ScmRepoConfig};
 
@@ -961,6 +977,8 @@ fn test_changelog_stage_github_native_requires_token() {
 }
 
 #[test]
+// cwd-ok: the stage spawns git in the process cwd, so a test running it contends with every cwd swapper
+#[serial_test::serial(cwd)]
 fn test_changelog_stage_github_native_skips_when_no_repo_configured() {
     // No crate in scope has release.github (e.g. a library-only workspace
     // in publish-only's per-crate iteration). The stage skips cleanly
@@ -990,6 +1008,8 @@ fn test_changelog_stage_github_native_skips_when_no_repo_configured() {
 }
 
 #[test]
+// cwd-ok: the stage spawns git in the process cwd, so a test running it contends with every cwd swapper
+#[serial_test::serial(cwd)]
 fn test_changelog_github_native_aggregates_missing_release_github_warnings() {
     // A mixed workspace where one crate HAS release.github (so the stage
     // does not take the all-library early return) and several others lack it
@@ -1341,6 +1361,8 @@ fn test_integration_changelog_with_include_filters() {
 }
 
 #[test]
+// cwd-ok: the stage spawns git in the process cwd, so a test running it contends with every cwd swapper
+#[serial_test::serial(cwd)]
 fn test_integration_changelog_header_footer_assembly() {
     // Test the full assembly with header/footer like the stage does
     let messages = [
@@ -1937,6 +1959,8 @@ fn test_abbrev_zero_shows_full_sha() {
 }
 
 #[test]
+// cwd-ok: the stage spawns git in the process cwd, so a test running it contends with every cwd swapper
+#[serial_test::serial(cwd)]
 fn test_disable_skips_stage_entirely() {
     use anodizer_core::config::{ChangelogConfig, CrateConfig};
 
@@ -2554,6 +2578,8 @@ fn test_sort_desc_still_works() {
 // ---------------------------------------------------------------------------
 
 #[test]
+// cwd-ok: the stage spawns git in the process cwd, so a test running it contends with every cwd swapper
+#[serial_test::serial(cwd)]
 fn test_header_footer_template_rendering() {
     // Simulate what ChangelogStage::run does: render header/footer through
     // ctx.render_template() before inserting them.
@@ -3415,6 +3441,8 @@ use: gitea
 }
 
 #[test]
+// cwd-ok: the stage spawns git in the process cwd, so a test running it contends with every cwd swapper
+#[serial_test::serial(cwd)]
 fn test_validation_rejects_unsupported_source() {
     // Exercise the actual production validation path — "bitbucket" should
     // cause the stage to bail with "unsupported use source".
@@ -3989,6 +4017,8 @@ fn test_multitrack_changelog_body_is_not_empty() {
 }
 
 #[test]
+// cwd-ok: the stage spawns git in the process cwd, so a test running it contends with every cwd swapper
+#[serial_test::serial(cwd)]
 fn test_changelog_stage_unsupported_source_bails() {
     use anodizer_core::config::{ChangelogConfig, CrateConfig};
 
