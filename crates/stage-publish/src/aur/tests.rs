@@ -23,10 +23,10 @@ fn test_generate_pkgbuild_basic() {
         provides: &[],
         replaces: &[],
         backup: &[],
-        sources: &[(
-            "x86_64".to_string(),
-            "https://example.com/mytool-1.0.0-linux-amd64.tar.gz".to_string(),
-            "deadbeef1234".to_string(),
+        sources: &[AurSource::new(
+            "x86_64",
+            "https://example.com/mytool-1.0.0-linux-amd64.tar.gz",
+            "deadbeef1234",
         )],
         binary_name: "mytool",
         install_template: None,
@@ -70,15 +70,15 @@ fn test_generate_pkgbuild_multi_arch() {
         replaces: &[],
         backup: &[],
         sources: &[
-            (
-                "x86_64".to_string(),
-                "https://example.com/mytool-2.0.0-linux-amd64.tar.gz".to_string(),
-                "hash_amd64".to_string(),
+            AurSource::new(
+                "x86_64",
+                "https://example.com/mytool-2.0.0-linux-amd64.tar.gz",
+                "hash_amd64",
             ),
-            (
-                "aarch64".to_string(),
-                "https://example.com/mytool-2.0.0-linux-arm64.tar.gz".to_string(),
-                "hash_arm64".to_string(),
+            AurSource::new(
+                "aarch64",
+                "https://example.com/mytool-2.0.0-linux-arm64.tar.gz",
+                "hash_arm64",
             ),
         ],
         binary_name: "mytool",
@@ -112,10 +112,10 @@ fn test_generate_pkgbuild_with_depends() {
         provides: &["mytool".to_string()],
         replaces: &["old-mytool".to_string()],
         backup: &["etc/mytool/config.toml".to_string()],
-        sources: &[(
-            "x86_64".to_string(),
-            "https://example.com/mytool.tar.gz".to_string(),
-            "hash".to_string(),
+        sources: &[AurSource::new(
+            "x86_64",
+            "https://example.com/mytool.tar.gz",
+            "hash",
         )],
         binary_name: "mytool",
         install_template: None,
@@ -149,10 +149,10 @@ fn test_generate_pkgbuild_no_maintainers() {
         provides: &[],
         replaces: &[],
         backup: &[],
-        sources: &[(
-            "x86_64".to_string(),
-            "https://example.com/tool.tar.gz".to_string(),
-            "hash".to_string(),
+        sources: &[AurSource::new(
+            "x86_64",
+            "https://example.com/tool.tar.gz",
+            "hash",
         )],
         binary_name: "tool",
         install_template: None,
@@ -183,16 +183,8 @@ fn test_generate_pkgbuild_complete_structure() {
             replaces: &[],
             backup: &[],
             sources: &[
-                (
-                    "x86_64".to_string(),
-                    "https://github.com/tj-smith47/anodizer/releases/download/v3.2.1/anodizer-3.2.1-linux-amd64.tar.gz".to_string(),
-                    "aabbccdd".to_string(),
-                ),
-                (
-                    "aarch64".to_string(),
-                    "https://github.com/tj-smith47/anodizer/releases/download/v3.2.1/anodizer-3.2.1-linux-arm64.tar.gz".to_string(),
-                    "eeff0011".to_string(),
-                ),
+                AurSource::new("x86_64", "https://github.com/tj-smith47/anodizer/releases/download/v3.2.1/anodizer-3.2.1-linux-amd64.tar.gz", "aabbccdd"),
+                AurSource::new("aarch64", "https://github.com/tj-smith47/anodizer/releases/download/v3.2.1/anodizer-3.2.1-linux-arm64.tar.gz", "eeff0011"),
             ],
             binary_name: "anodizer",
             install_template: None,
@@ -233,10 +225,10 @@ fn test_generate_pkgbuild_custom_install_template() {
         provides: &[],
         replaces: &[],
         backup: &[],
-        sources: &[(
-            "x86_64".to_string(),
-            "https://example.com/mytool.tar.gz".to_string(),
-            "hash".to_string(),
+        sources: &[AurSource::new(
+            "x86_64",
+            "https://example.com/mytool.tar.gz",
+            "hash",
         )],
         binary_name: "mytool",
         install_template: Some(
@@ -391,16 +383,8 @@ fn test_generate_srcinfo() {
             replaces: &[],
             backup: &[],
             sources: &[
-                (
-                    "x86_64".to_string(),
-                    "https://github.com/org/mytool/releases/download/v2.5.0/mytool-2.5.0-linux-amd64.tar.gz".to_string(),
-                    "aabbccdd11223344".to_string(),
-                ),
-                (
-                    "aarch64".to_string(),
-                    "https://github.com/org/mytool/releases/download/v2.5.0/mytool-2.5.0-linux-arm64.tar.gz".to_string(),
-                    "eeff005566778899".to_string(),
-                ),
+                AurSource::new("x86_64", "https://github.com/org/mytool/releases/download/v2.5.0/mytool-2.5.0-linux-amd64.tar.gz", "aabbccdd11223344"),
+                AurSource::new("aarch64", "https://github.com/org/mytool/releases/download/v2.5.0/mytool-2.5.0-linux-arm64.tar.gz", "eeff005566778899"),
             ],
             binary_name: "mytool",
             install_template: None,
@@ -463,7 +447,7 @@ fn test_generate_srcinfo() {
     // arch + source + sha256sums (x86_64)
     assert!(srcinfo.contains("\tarch = x86_64"), "missing arch x86_64");
     assert!(
-            srcinfo.contains("\tsource_x86_64 = https://github.com/org/mytool/releases/download/v2.5.0/mytool-2.5.0-linux-amd64.tar.gz"),
+            srcinfo.contains("\tsource_x86_64 = mytool-bin_2.5.0_x86_64.tar.gz::https://github.com/org/mytool/releases/download/v2.5.0/mytool-2.5.0-linux-amd64.tar.gz"),
             "missing source_x86_64"
         );
     assert!(
@@ -474,7 +458,7 @@ fn test_generate_srcinfo() {
     // arch + source + sha256sums (aarch64)
     assert!(srcinfo.contains("\tarch = aarch64"), "missing arch aarch64");
     assert!(
-            srcinfo.contains("\tsource_aarch64 = https://github.com/org/mytool/releases/download/v2.5.0/mytool-2.5.0-linux-arm64.tar.gz"),
+            srcinfo.contains("\tsource_aarch64 = mytool-bin_2.5.0_aarch64.tar.gz::https://github.com/org/mytool/releases/download/v2.5.0/mytool-2.5.0-linux-arm64.tar.gz"),
             "missing source_aarch64"
         );
     assert!(
@@ -514,10 +498,10 @@ fn test_generate_srcinfo_no_optdepends() {
         provides: &[],
         replaces: &[],
         backup: &[],
-        sources: &[(
-            "x86_64".to_string(),
-            "https://example.com/simple.tar.gz".to_string(),
-            "deadbeef".to_string(),
+        sources: &[AurSource::new(
+            "x86_64",
+            "https://example.com/simple.tar.gz",
+            "deadbeef",
         )],
         binary_name: "simple",
         install_template: None,
@@ -1000,10 +984,10 @@ fn aur_skip_upload_template_expands_to_true_on_snapshot() {
 fn pkgbuild_single_quotes_every_field() {
     let license = vec!["MIT'X".to_string()];
     let depends = vec!["a'b".to_string()];
-    let sources = vec![(
-        "x86_64".to_string(),
-        "https://example.com/mytool-2.5.0-x86_64.tar.gz".to_string(),
-        "abc".to_string(),
+    let sources = vec![AurSource::new(
+        "x86_64",
+        "https://example.com/mytool-2.5.0-x86_64.tar.gz",
+        "abc",
     )];
     let pkgbuild = generate_pkgbuild(&PkgbuildParams {
         name: "mytool-bin",
@@ -1043,10 +1027,10 @@ fn pkgbuild_single_quotes_every_field() {
 fn pkgbuild_quoting_defuses_shell_expansion() {
     let license = vec!["MIT'X".to_string()];
     let depends = vec!["a'b".to_string()];
-    let sources = vec![(
-        "x86_64".to_string(),
-        "https://example.com/mytool-2.5.0-x86_64.tar.gz".to_string(),
-        "abc".to_string(),
+    let sources = vec![AurSource::new(
+        "x86_64",
+        "https://example.com/mytool-2.5.0-x86_64.tar.gz",
+        "abc",
     )];
     let pkgbuild = generate_pkgbuild(&PkgbuildParams {
         name: "mytool-bin",
@@ -1169,10 +1153,10 @@ fn test_generate_pkgbuild_extensionless_source_has_no_rename_suffix() {
         replaces: &[],
         backup: &[],
         // Bare binary path — `extract_archive_extension` returns "".
-        sources: &[(
-            "x86_64".to_string(),
-            "https://example.com/download/mytool".to_string(),
-            "hash".to_string(),
+        sources: &[AurSource::new(
+            "x86_64",
+            "https://example.com/download/mytool",
+            "hash",
         )],
         binary_name: "mytool",
         install_template: None,
@@ -1212,10 +1196,10 @@ fn test_generate_srcinfo_extensionless_source_renders() {
         provides: &[],
         replaces: &[],
         backup: &[],
-        sources: &[(
-            "x86_64".to_string(),
-            "https://example.com/download/mytool".to_string(),
-            "deadbeef".to_string(),
+        sources: &[AurSource::new(
+            "x86_64",
+            "https://example.com/download/mytool",
+            "deadbeef",
         )],
         binary_name: "mytool",
         install_template: None,
@@ -1226,7 +1210,9 @@ fn test_generate_srcinfo_extensionless_source_renders() {
 
     assert!(srcinfo.contains("\tarch = x86_64"), "{srcinfo}");
     assert!(
-        srcinfo.contains("\tsource_x86_64 = https://example.com/download/mytool"),
+        srcinfo.contains(
+            "\tsource_x86_64 = mytool-bin_1.0.0_x86_64::https://example.com/download/mytool"
+        ),
         "{srcinfo}"
     );
     assert!(
@@ -2646,5 +2632,253 @@ fn aur_url_template_renders_the_target_variant() {
     assert!(
         v3.contains("https://example.com/linux_x86_64v3_gnu\""),
         "{v3}"
+    );
+}
+
+// -----------------------------------------------------------------------
+// PKGBUILD/.SRCINFO shape: source aliases, install file, per-arch package()
+// -----------------------------------------------------------------------
+
+/// Build a linux archive for a target with extra metadata beside the url
+/// and sha256 (`wrap_in_directory`, `extra_binaries`, …).
+fn linux_archive_with_metadata(
+    target: &str,
+    url: &str,
+    sha: &str,
+    extra: &[(&str, &str)],
+) -> Artifact {
+    let mut artifact = linux_archive_for_target("mytool", target, url, sha);
+    for (k, v) in extra {
+        artifact.metadata.insert((*k).to_string(), (*v).to_string());
+    }
+    artifact
+}
+
+fn render_mytool(ctx: &Context) -> super::publish::AurRendered {
+    render_aur_pkgbuild_and_srcinfo_for_crate(ctx, "mytool", &render_quiet_log())
+        .expect("render ok")
+        .expect("not skipped")
+}
+
+/// Every source is downloaded under a per-architecture alias
+/// (`<name>_<version>_<arch>.<ext>::<url>`) so two archives with one file
+/// name on the release do not overwrite each other in `$srcdir`, and the
+/// `install:` script is named in `.SRCINFO` beside the PKGBUILD.
+#[test]
+fn srcinfo_aliases_every_source_and_names_the_install_file() {
+    let mut ctx = aur_ctx_with_archives(&[
+        (
+            "x86_64-unknown-linux-gnu",
+            "https://example.com/v1.0.0/mytool-linux-amd64.tar.gz",
+            "aaaa",
+        ),
+        (
+            "aarch64-unknown-linux-gnu",
+            "https://example.com/v1.0.0/mytool-linux-arm64.tar.gz",
+            "bbbb",
+        ),
+    ]);
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.config.crates[0]
+        .publish
+        .as_mut()
+        .unwrap()
+        .aur
+        .as_mut()
+        .unwrap()
+        .install = Some("post_install() { :; }".to_string());
+    let rendered = render_mytool(&ctx);
+    assert!(
+        rendered.pkgbuild.contains(
+            "source_x86_64=(\"mytool-bin_${pkgver}_x86_64.tar.gz::https://example.com/v${pkgver}/mytool-linux-amd64.tar.gz\")"
+        ),
+        "PKGBUILD must alias the x86_64 source:\n{}",
+        rendered.pkgbuild
+    );
+    assert!(
+        rendered.pkgbuild.contains(
+            "source_aarch64=(\"mytool-bin_${pkgver}_aarch64.tar.gz::https://example.com/v${pkgver}/mytool-linux-arm64.tar.gz\")"
+        ),
+        "PKGBUILD must alias the aarch64 source:\n{}",
+        rendered.pkgbuild
+    );
+    for line in [
+        "\tsource_x86_64 = mytool-bin_1.0.0_x86_64.tar.gz::https://example.com/v1.0.0/mytool-linux-amd64.tar.gz",
+        "\tsource_aarch64 = mytool-bin_1.0.0_aarch64.tar.gz::https://example.com/v1.0.0/mytool-linux-arm64.tar.gz",
+        "\tsha256sums_x86_64 = aaaa",
+        "\tsha256sums_aarch64 = bbbb",
+        "\tinstall = mytool.install",
+    ] {
+        assert!(
+            rendered.srcinfo.lines().any(|l| l == line),
+            "missing .SRCINFO line {line:?}:\n{}",
+            rendered.srcinfo
+        );
+    }
+}
+
+/// Archives that wrap their contents in a directory install the binary from
+/// under that directory, and when every architecture uses one layout the
+/// `package()` body is a single run of install lines with no `case`.
+#[test]
+fn package_installs_from_the_wrapping_directory_when_every_arch_shares_it() {
+    let mut ctx = render_ctx(
+        "mytool",
+        AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        },
+        false,
+    );
+    ctx.artifacts = Default::default();
+    ctx.artifacts.add(linux_archive_with_metadata(
+        "x86_64-unknown-linux-gnu",
+        "https://example.com/mytool-linux-amd64.tar.gz",
+        "aaaa",
+        &[("wrap_in_directory", "mytool-linux-amd64")],
+    ));
+    ctx.artifacts.add(linux_archive_with_metadata(
+        "aarch64-unknown-linux-gnu",
+        "https://example.com/mytool-linux-arm64.tar.gz",
+        "bbbb",
+        &[("wrap_in_directory", "mytool-linux-amd64")],
+    ));
+    let rendered = render_mytool(&ctx);
+    assert!(
+        rendered.pkgbuild.contains(
+            "install -Dm755 \"$srcdir/mytool-linux-amd64/mytool\" \"$pkgdir/usr/bin/mytool\""
+        ),
+        "binary must be installed from under the wrapping directory:\n{}",
+        rendered.pkgbuild
+    );
+    assert!(
+        !rendered.pkgbuild.contains("case \"${CARCH}\""),
+        "one shared layout needs no per-arch case:\n{}",
+        rendered.pkgbuild
+    );
+}
+
+/// Two architectures whose archives differ in layout get one `case
+/// "${CARCH}"` arm each, so the install path matches whichever source
+/// makepkg extracted for the building machine.
+#[test]
+fn package_switches_on_carch_when_arches_install_differently() {
+    let mut ctx = render_ctx(
+        "mytool",
+        AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        },
+        false,
+    );
+    ctx.artifacts = Default::default();
+    ctx.artifacts.add(linux_archive_with_metadata(
+        "x86_64-unknown-linux-gnu",
+        "https://example.com/mytool-linux-amd64.tar.gz",
+        "aaaa",
+        &[("wrap_in_directory", "mytool-linux-amd64")],
+    ));
+    ctx.artifacts.add(linux_archive_with_metadata(
+        "aarch64-unknown-linux-gnu",
+        "https://example.com/mytool-linux-arm64.tar.gz",
+        "bbbb",
+        &[("wrap_in_directory", "mytool-linux-arm64")],
+    ));
+    let rendered = render_mytool(&ctx);
+    let expected = r#"package() {
+    case "${CARCH}" in
+    aarch64)
+        install -Dm755 "$srcdir/mytool-linux-arm64/mytool" "$pkgdir/usr/bin/mytool"
+        for _l in "$srcdir/mytool-linux-arm64"/LICENSE*; do [ -e "$_l" ] && install -Dm644 "$_l" "$pkgdir/usr/share/licenses/$pkgname/$(basename "$_l")"; done
+        ;;
+    x86_64)
+        install -Dm755 "$srcdir/mytool-linux-amd64/mytool" "$pkgdir/usr/bin/mytool"
+        for _l in "$srcdir/mytool-linux-amd64"/LICENSE*; do [ -e "$_l" ] && install -Dm644 "$_l" "$pkgdir/usr/share/licenses/$pkgname/$(basename "$_l")"; done
+        ;;
+    esac
+}"#;
+    assert!(
+        rendered.pkgbuild.contains(expected),
+        "package() must switch on CARCH:\n{}",
+        rendered.pkgbuild
+    );
+}
+
+/// A release that uploads raw binaries (an `archives:` entry with
+/// `format: binary`) is installed from the aliased download itself, since
+/// there is nothing to extract.
+#[test]
+fn package_installs_an_uploaded_binary_from_its_alias() {
+    let mut ctx = render_ctx(
+        "mytool",
+        AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        },
+        false,
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts = Default::default();
+    let mut artifact = linux_archive_with_metadata(
+        "x86_64-unknown-linux-gnu",
+        "https://example.com/mytool-1.0.0-linux-amd64",
+        "aaaa",
+        &[("binary", "mytool")],
+    );
+    artifact.kind = ArtifactKind::UploadableBinary;
+    artifact.name = "mytool-1.0.0-linux-amd64".to_string();
+    artifact.path = std::path::PathBuf::from("/tmp/mytool-1.0.0-linux-amd64");
+    ctx.artifacts.add(artifact);
+    let rendered = render_mytool(&ctx);
+    assert!(
+        rendered.pkgbuild.contains(
+            "source_x86_64=(\"mytool-bin_${pkgver}_x86_64::https://example.com/mytool-${pkgver}-linux-amd64\")"
+        ),
+        "a raw binary source has no extension on its alias:\n{}",
+        rendered.pkgbuild
+    );
+    assert!(
+        rendered.pkgbuild.contains(
+            "install -Dm755 \"$srcdir/mytool-bin_${pkgver}_x86_64\" \"$pkgdir/usr/bin/mytool\""
+        ),
+        "the binary must be installed from its alias:\n{}",
+        rendered.pkgbuild
+    );
+}
+
+/// A templated `description:` is expanded first and quoted second, so a
+/// rendered apostrophe is escaped for the shell instead of the template
+/// text being quoted and left unexpanded.
+#[test]
+fn description_template_is_expanded_before_it_is_quoted() {
+    let mut ctx = aur_ctx_with_description(
+        Some("{{ .ProjectName }}'s command line"),
+        &[(
+            "x86_64-unknown-linux-gnu",
+            "https://example.com/mytool-linux-amd64.tar.gz",
+            "aaaa",
+        )],
+    );
+    ctx.template_vars_mut().set("ProjectName", "mytool");
+    let rendered = render_mytool(&ctx);
+    assert!(
+        rendered
+            .pkgbuild
+            .contains("pkgdesc='mytool'\\''s command line'"),
+        "description must be rendered, then shell-quoted:\n{}",
+        rendered.pkgbuild
+    );
+    assert!(
+        rendered
+            .srcinfo
+            .contains("\tpkgdesc = mytool's command line\n"),
+        ".SRCINFO carries the rendered description unquoted:\n{}",
+        rendered.srcinfo
     );
 }

@@ -23,14 +23,18 @@ pub(crate) struct PkgbuildParams<'a> {
     pub(crate) provides: &'a [String],
     pub(crate) replaces: &'a [String],
     pub(crate) backup: &'a [String],
-    /// `(arch, url, sha256)` tuples — e.g. `("x86_64", url, hash)`.
-    pub(crate) sources: &'a [(String, String, String)],
+    /// One download per pacman architecture.
+    pub(crate) sources: &'a [AurSource],
+    /// The name the binary is installed under (`/usr/bin/<binary_name>`), and
+    /// the in-archive file name of a source that does not name its own.
     pub(crate) binary_name: &'a str,
     /// Custom install template for the `package()` function body.
-    /// When `None`, defaults to `install -Dm755 "$srcdir/<binary>" "$pkgdir/usr/bin/<binary>"`
-    /// followed by any [`Self::extra_install_lines`].
-    /// Use this when the archive places binaries in a subdirectory. A custom
-    /// template fully replaces the body (including the extra-install lines).
+    /// When `None`, the body is derived per source: the binary is installed
+    /// from where its download puts it (the archive's `wrap_in_directory`, or
+    /// the renamed download itself for a raw binary), followed by any
+    /// [`Self::extra_install_lines`]. Sources whose derived bodies differ
+    /// are dispatched on `${CARCH}`. A custom template fully replaces the
+    /// body (including the extra-install lines).
     pub(crate) install_template: Option<&'a str>,
     /// Additional `package()` install lines (LICENSE, man pages, shell
     /// completions the archive bundles) appended after the default binary
@@ -41,6 +45,115 @@ pub(crate) struct PkgbuildParams<'a> {
     /// Filename for a `.install` file (post-install hooks). When `Some`, the
     /// PKGBUILD will include an `install=<filename>` line.
     pub(crate) install_file: Option<&'a str>,
+}
+
+/// One `source_<arch>=` entry of a binary AUR package: the download and
+/// the layout the `package()` body needs to find the binary in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AurSource {
+    /// pacman architecture name (`x86_64`, `aarch64`, `armv7h`, `i686`).
+    pub(crate) arch: String,
+    /// Download URL of the archive or raw binary.
+    pub(crate) url: String,
+    /// Hex sha256 of the download.
+    pub(crate) sha256: String,
+    /// Top-level directory the archive wraps its contents in, when it has
+    /// one.
+    pub(crate) wrap_in_directory: Option<String>,
+    /// The binary's file name inside the archive, when the artifact records
+    /// one that differs from the crate name.
+    pub(crate) binary: Option<String>,
+    /// `true` when the download is the executable itself rather than an
+    /// archive: makepkg then leaves it under the renamed download alias.
+    pub(crate) is_binary: bool,
+}
+
+impl AurSource {
+    /// A flat archive download with no layout detail.
+    #[cfg(test)]
+    pub(crate) fn new(arch: &str, url: &str, sha256: &str) -> Self {
+        Self {
+            arch: arch.to_string(),
+            url: url.to_string(),
+            sha256: sha256.to_string(),
+            wrap_in_directory: None,
+            binary: None,
+            is_binary: false,
+        }
+    }
+
+    /// The makepkg download alias, `<name>_<version>_<arch>[.<format>]`;
+    /// `version` is `${pkgver}` in the PKGBUILD and the literal version in
+    /// the `.SRCINFO`.
+    fn alias(&self, name: &str, version: &str) -> String {
+        // A raw binary carries no archive format, whatever dots its file name
+        // holds (`mytool-1.0.0-linux-amd64`).
+        let format = if self.is_binary {
+            ""
+        } else {
+            extract_archive_extension(&self.url)
+        };
+        if format.is_empty() {
+            format!("{name}_{version}_{}", self.arch)
+        } else {
+            format!("{name}_{version}_{}.{format}", self.arch)
+        }
+    }
+
+    /// The `package()` lines that install this source's binary and the
+    /// extra files beside it, relative to `$srcdir`.
+    fn package_lines(&self, name: &str, binary_name: &str, extra: &[String]) -> Vec<String> {
+        let binary = self.binary.as_deref().unwrap_or(binary_name);
+        if self.is_binary {
+            return vec![format!(
+                "install -Dm755 \"$srcdir/{}\" \"$pkgdir/usr/bin/{binary}\"",
+                self.alias(name, "${pkgver}")
+            )];
+        }
+        let root = match self.wrap_in_directory.as_deref() {
+            Some(dir) => format!("$srcdir/{dir}"),
+            None => "$srcdir".to_string(),
+        };
+        let mut lines = vec![format!(
+            "install -Dm755 \"{root}/{binary}\" \"$pkgdir/usr/bin/{binary}\""
+        )];
+        lines.extend(extra.iter().map(|l| l.replace("$srcdir", &root)));
+        lines
+    }
+}
+
+/// The default `package()` body over every source: one body when every
+/// architecture installs the same way, otherwise a `case "${CARCH}"` with
+/// one arm per architecture.
+fn default_package_body(params: &PkgbuildParams<'_>) -> Vec<String> {
+    let mut per_arch: Vec<(&str, Vec<String>)> = params
+        .sources
+        .iter()
+        .map(|s| {
+            (
+                s.arch.as_str(),
+                s.package_lines(params.name, params.binary_name, params.extra_install_lines),
+            )
+        })
+        .collect();
+    per_arch.sort_by(|a, b| a.0.cmp(b.0));
+    match per_arch.first() {
+        None => vec![format!(
+            "install -Dm755 \"$srcdir/{0}\" \"$pkgdir/usr/bin/{0}\"",
+            params.binary_name
+        )],
+        Some((_, first)) if per_arch.iter().all(|(_, lines)| lines == first) => first.clone(),
+        Some(_) => {
+            let mut body = vec!["case \"${CARCH}\" in".to_string()];
+            for (arch, lines) in &per_arch {
+                body.push(format!("{arch})"));
+                body.extend(lines.iter().map(|l| format!("    {l}")));
+                body.push("    ;;".to_string());
+            }
+            body.push("esac".to_string());
+            body
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -130,65 +243,41 @@ pub(crate) fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> Result<String> {
     ctx.insert("install_file", &params.install_file);
 
     // Deduplicate architectures.
-    let mut arches: Vec<&str> = params
-        .sources
-        .iter()
-        .map(|(arch, _, _)| arch.as_str())
-        .collect();
+    let mut arches: Vec<&str> = params.sources.iter().map(|s| s.arch.as_str()).collect();
     arches.sort();
     arches.dedup();
     let quoted_arches: Vec<String> = arches.iter().map(|a| q(a)).collect();
     ctx.insert("arches", &quoted_arches);
 
-    // Sources as objects for template iteration.
-    // Replace the version string in URLs with ${pkgver} so the PKGBUILD
-    // automatically uses the pkgver variable.
-    let substituted_sources: Vec<(String, String, String, String)> = params
+    // The version inside a URL becomes `${pkgver}` so a pkgver bump moves the
+    // download with it. An empty version matches between every character, so
+    // it is left alone.
+    let pkgver_url = |url: &str| {
+        if params.version.is_empty() {
+            url.to_string()
+        } else {
+            url.replace(params.version, "${pkgver}")
+        }
+    };
+    let sources: Vec<std::collections::HashMap<&str, String>> = params
         .sources
         .iter()
-        .map(|(arch, url, hash)| {
-            let substituted_url = url.replace(params.version, "${pkgver}");
-            let format = extract_archive_extension(url);
-            let rename = format!(
-                "{}_{}_{}{}",
-                params.name,
-                "${pkgver}",
-                arch,
-                if format.is_empty() {
-                    String::new()
-                } else {
-                    format!(".{}", format)
-                }
-            );
-            (arch.clone(), substituted_url, hash.clone(), rename)
-        })
-        .collect();
-    let sources: Vec<std::collections::HashMap<&str, &str>> = substituted_sources
-        .iter()
-        .map(|(arch, url, hash, rename)| {
-            let mut m = std::collections::HashMap::new();
-            m.insert("arch", arch.as_str());
-            m.insert("url", url.as_str());
-            m.insert("hash", hash.as_str());
-            m.insert("rename", rename.as_str());
-            m
+        .map(|s| {
+            std::collections::HashMap::from([
+                ("arch", s.arch.clone()),
+                ("url", pkgver_url(&s.url)),
+                ("hash", s.sha256.clone()),
+                ("rename", s.alias(params.name, "${pkgver}")),
+            ])
         })
         .collect();
     ctx.insert("sources", &sources);
 
-    let install_line = if let Some(tmpl) = params.install_template {
-        tmpl.to_string()
-    } else {
-        // Default body: install the binary, then any LICENSE/man/completion
-        // lines the archive bundles (each already `$srcdir`-existence-gated by
-        // the caller). Joined with the template's 4-space `package()` indent so
-        // `bash -n` and namcap see a well-formed function body.
-        let mut body = vec![format!(
-            "install -Dm755 \"$srcdir/{}\" \"$pkgdir/usr/bin/{}\"",
-            params.binary_name, params.binary_name
-        )];
-        body.extend(params.extra_install_lines.iter().cloned());
-        body.join("\n    ")
+    // The body lines are joined with the template's 4-space `package()`
+    // indent so `bash -n` and namcap see a well-formed function body.
+    let install_line = match params.install_template {
+        Some(tmpl) => tmpl.to_string(),
+        None => default_package_body(params).join("\n    "),
     };
     ctx.insert("install_line", &install_line);
 
@@ -210,9 +299,11 @@ pub(crate) const SRCINFO_TEMPLATE: &str = r#"pkgbase = {{ name }}
 {% endfor %}{% for o in optdepends %}	optdepends = {{ o }}
 {% endfor %}{% for c in conflicts %}	conflicts = {{ c }}
 {% endfor %}{% for p in provides %}	provides = {{ p }}
+{% endfor %}{% for r in replaces %}	replaces = {{ r }}
 {% endfor %}{% for b in backup %}	backup = {{ b }}
-{% endfor %}{% for s in sources %}	arch = {{ s.arch }}
-	source_{{ s.arch }} = {{ s.url }}
+{% endfor %}{% if install_file %}	install = {{ install_file }}
+{% endif %}{% for s in sources %}	arch = {{ s.arch }}
+	source_{{ s.arch }} = {{ s.rename }}::{{ s.url }}
 	sha256sums_{{ s.arch }} = {{ s.hash }}
 {% endfor %}
 pkgname = {{ name }}
@@ -235,35 +326,19 @@ pub(crate) fn generate_srcinfo(params: &PkgbuildParams<'_>) -> Result<String> {
     ctx.insert("conflicts", params.conflicts);
     ctx.insert("provides", params.provides);
     ctx.insert("backup", params.backup);
+    ctx.insert("replaces", params.replaces);
+    ctx.insert("install_file", &params.install_file);
 
-    let source_data: Vec<(String, String, String, String)> = params
+    let sources: Vec<std::collections::HashMap<&str, String>> = params
         .sources
         .iter()
-        .map(|(arch, url, hash)| {
-            let format = extract_archive_extension(url);
-            let rename = format!(
-                "{}_{}_{}{}",
-                params.name,
-                params.version,
-                arch,
-                if format.is_empty() {
-                    String::new()
-                } else {
-                    format!(".{}", format)
-                }
-            );
-            (arch.clone(), url.clone(), hash.clone(), rename)
-        })
-        .collect();
-    let sources: Vec<std::collections::HashMap<&str, &str>> = source_data
-        .iter()
-        .map(|(arch, url, hash, rename)| {
-            let mut m = std::collections::HashMap::new();
-            m.insert("arch", arch.as_str());
-            m.insert("url", url.as_str());
-            m.insert("hash", hash.as_str());
-            m.insert("rename", rename.as_str());
-            m
+        .map(|s| {
+            std::collections::HashMap::from([
+                ("arch", s.arch.clone()),
+                ("url", s.url.clone()),
+                ("hash", s.sha256.clone()),
+                ("rename", s.alias(params.name, params.version)),
+            ])
         })
         .collect();
     ctx.insert("sources", &sources);

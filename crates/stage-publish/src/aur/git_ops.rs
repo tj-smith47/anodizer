@@ -1,7 +1,7 @@
 use super::*;
 
-/// Build the `(arch, download_url, sha256)` source tuples for the
-/// PKGBUILD `source_<arch>=` / `sha256sums_<arch>=` arrays. Filters
+/// Build one [`AurSource`] per linux download for the PKGBUILD
+/// `source_<arch>=` / `sha256sums_<arch>=` arrays and its `package()` body. Filters
 /// `ctx.artifacts` to Linux archives matching `aur.ids` + the
 /// hardcoded `amd64_variant`/`arm_variant=7` rules, validates that at
 /// least one archive matched and that every match carries a non-empty
@@ -12,7 +12,7 @@ pub(crate) fn aur_build_sources(
     aur_cfg: &anodizer_core::config::AurConfig,
     crate_name: &str,
     version: &str,
-) -> Result<Vec<(String, String, String)>> {
+) -> Result<Vec<AurSource>> {
     // Find Linux artifacts for the AUR package, applying IDs + amd64_variant filter.
     // arm_variant is hardcoded to "7" for AUR (no config option).
     let ids_filter = aur_cfg.ids.as_deref();
@@ -75,7 +75,7 @@ pub(crate) fn aur_build_sources(
     // publishes whichever the artifact order happened to put first, which is
     // how a `.zip` can ship where the `.tar.gz` was meant.
     let mut seen_arches = std::collections::HashSet::new();
-    let mut sources: Vec<(String, String, String)> = Vec::new();
+    let mut sources: Vec<AurSource> = Vec::new();
     for a in &linux_artifacts {
         // Map the artifact GOARCH to its pacman name. An unknown architecture
         // must never be relabeled (the historical `_ => "x86_64"`
@@ -125,7 +125,14 @@ pub(crate) fn aur_build_sources(
         } else {
             a.url.clone()
         };
-        sources.push((pkgbuild_arch.to_string(), download_url, a.sha256.clone()));
+        sources.push(AurSource {
+            arch: pkgbuild_arch.to_string(),
+            url: download_url,
+            sha256: a.sha256.clone(),
+            wrap_in_directory: a.wrap_in_directory.clone(),
+            binary: a.binary.clone(),
+            is_binary: a.is_binary,
+        });
     }
 
     Ok(sources)

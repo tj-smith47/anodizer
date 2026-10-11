@@ -82,6 +82,10 @@ pub(crate) struct OsArtifact {
     /// files. The krew publisher selects LICENSE/README entries from this so
     /// its `files:` list is gated on actual presence rather than guessed.
     pub archive_files: Vec<String>,
+    /// `true` for an `UploadableBinary`: the download is the executable
+    /// itself, so there is no archive to extract and the file keeps the name
+    /// the package manager downloaded it under.
+    pub is_binary: bool,
 }
 
 /// Convert a single `Artifact` reference into an `OsArtifact`, using the
@@ -174,6 +178,7 @@ fn artifact_to_os_artifact(
         binary,
         wrap_in_directory,
         archive_files,
+        is_binary: a.kind == ArtifactKind::UploadableBinary,
     })
 }
 

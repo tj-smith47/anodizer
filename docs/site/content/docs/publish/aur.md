@@ -213,19 +213,36 @@ crates:
 ### Generated PKGBUILD
 
 Anodizer generates a PKGBUILD with:
-- Per-architecture source arrays (`source_x86_64`, `source_aarch64`, etc.) with SHA-256 checksums
+- Per-architecture source arrays (`source_x86_64`, `source_aarch64`, etc.) with SHA-256 checksums. Each download is saved under a per-architecture alias, `<pkgname>_${pkgver}_<arch>.<format>::<url>`, so two archives that share a file name on the release never overwrite each other in `$srcdir`
 - Automatic architecture detection from your Linux build artifacts (`x86_64`, `aarch64`, `i686`, `armv7h`)
 - Version strings with hyphens replaced by underscores (AUR `pkgver` requirement)
 - Download URLs with the version substituted as `${pkgver}` for AUR compatibility
-- A `.SRCINFO` file generated alongside the PKGBUILD (no `makepkg --printsrcinfo` dependency)
+- A `.SRCINFO` file generated alongside the PKGBUILD (no `makepkg --printsrcinfo` dependency), carrying the same aliased sources, the `install` script name when `install:` is set, and every `backup` entry
 
-The default `package()` function installs the binary to `/usr/bin`:
+The default `package()` function installs the binary to `/usr/bin`, from the directory the archive wraps its files in when `archives[].wrap_in_directory` is set:
 
 ```bash
 package() {
     install -Dm755 "$srcdir/myapp" "$pkgdir/usr/bin/myapp"
 }
 ```
+
+When the Linux archives differ in layout between architectures, the body switches on the architecture makepkg is building for:
+
+```bash
+package() {
+    case "${CARCH}" in
+    aarch64)
+        install -Dm755 "$srcdir/myapp-linux-arm64/myapp" "$pkgdir/usr/bin/myapp"
+        ;;
+    x86_64)
+        install -Dm755 "$srcdir/myapp-linux-amd64/myapp" "$pkgdir/usr/bin/myapp"
+        ;;
+    esac
+}
+```
+
+A release that uploads raw binaries (`archives[].format: binary`) has nothing to extract, so the binary is installed from its aliased download: `install -Dm755 "$srcdir/myapp-bin_${pkgver}_x86_64" "$pkgdir/usr/bin/myapp"`.
 
 Override this with the `package` field when your archive has a different structure.
 
