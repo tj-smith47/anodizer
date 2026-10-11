@@ -80,7 +80,14 @@ pub(crate) fn detect_bump_demoted(
 /// correctness invariant (the explicit-token layer and the gate must see the
 /// same tokens).
 pub(crate) fn message_has_token(msg: &str, token: &str) -> bool {
-    msg.split(|c: char| c.is_whitespace()).any(|w| w == token)
+    // Only the subject carries a token: a body that quotes `#none` in prose
+    // must not hold the release, and a squashed PR's bullets arrive as
+    // messages of their own.
+    msg.lines()
+        .next()
+        .unwrap_or("")
+        .split(|c: char| c.is_whitespace())
+        .any(|w| w == token)
 }
 
 /// Whether a message carries a standalone `#major`/`#minor`/`#patch` token that

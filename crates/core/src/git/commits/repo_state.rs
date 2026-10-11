@@ -265,7 +265,8 @@ pub fn has_changes_since_in(cwd: &Path, tag: &str, path: &str) -> Result<bool> {
     Ok(!output.is_empty())
 }
 
-/// Get last N commit subjects that touched a specific path.
+/// Get the last N commit messages that touched a path, as release signals
+/// (see [`get_last_commit_messages`]).
 pub fn get_last_commit_messages_path(count: usize, path: &str) -> Result<Vec<String>> {
     get_last_commit_messages_path_in(&cwd_or_dot(), count, path)
 }
@@ -283,15 +284,16 @@ pub fn get_last_commit_messages_path_in(
             "log.showSignature=false",
             "log",
             &format!("-{count}"),
-            "--pretty=format:%s",
+            RELEASE_MESSAGE_FORMAT,
             "--",
             path,
         ],
     )?;
-    Ok(output.lines().map(str::to_string).collect())
+    Ok(release_messages(&output))
 }
 
-/// Get commit subjects between two refs that touched a specific path.
+/// Get the commit messages between two refs that touched a path, as release
+/// signals (see [`get_last_commit_messages`]).
 pub fn get_commit_messages_between_path(from: &str, to: &str, path: &str) -> Result<Vec<String>> {
     get_commit_messages_between_path_in(&cwd_or_dot(), from, to, path)
 }
@@ -309,13 +311,13 @@ pub fn get_commit_messages_between_path_in(
             "-c",
             "log.showSignature=false",
             "log",
-            "--pretty=format:%s",
+            RELEASE_MESSAGE_FORMAT,
             &format!("{from}..{to}"),
             "--",
             path,
         ],
     )?;
-    Ok(output.lines().map(str::to_string).collect())
+    Ok(release_messages(&output))
 }
 
 /// Stage specific files and create a commit.
@@ -357,7 +359,8 @@ pub fn stage_and_commit_in(cwd: &Path, files: &[&str], message: &str) -> Result<
 /// --pretty=format:%B%x1e <range> -- <rel_path>` — list commit message
 /// bodies (subject+body) for commits in `range` touching `rel_path`,
 /// using the `\x1e` (RS) byte as a between-commits separator so multi-line
-/// bodies survive parsing.
+/// bodies survive parsing. A squash-merged commit is followed by the
+/// subjects its body lists ([`messages_with_squashed`]).
 ///
 /// `range` is the git revision range as a string (e.g. `"HEAD"`,
 /// `"v0.3.0..HEAD"`); the empty string is invalid (caller must pre-filter).
@@ -403,8 +406,12 @@ pub fn log_subjects_for_range(
     let text = String::from_utf8_lossy(&out.stdout);
     Ok(text
         .split('\x1e')
-        .map(|s| s.trim().to_string())
+        .map(str::trim)
         .filter(|s| !s.is_empty())
+        .flat_map(|message| {
+            let (subject, body) = message.split_once('\n').unwrap_or((message, ""));
+            messages_with_squashed(subject.trim(), body.trim())
+        })
         .collect())
 }
 

@@ -252,7 +252,7 @@ fn test_conventional_chore_only_range_noops_with_none_default() {
 fn test_conventional_ignored_when_explicit_token_present() {
     // `#major` wins over `feat:` — explicit intent overrides the
     // conventional-commit layer.
-    let messages = vec!["feat: add thing\n\n#major".to_string()];
+    let messages = vec!["feat: add thing #major\n\nbody".to_string()];
     let result = detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "none");
     assert_eq!(result, BumpKind::Major);
 }
@@ -1941,14 +1941,64 @@ fn message_has_token_matches_standalone_word() {
 }
 
 #[test]
+fn message_has_token_reads_the_subject_line_only() {
+    assert!(!message_has_token(
+        "fix: a bug\n\nmentions #none in prose",
+        "#none"
+    ));
+    assert!(message_has_token("fix: a bug #minor\n\nbody", "#minor"));
+}
+
+#[test]
+fn a_squashed_bullet_drives_the_bump_like_a_commit_of_its_own() {
+    use anodizer_core::git::messages_with_squashed;
+    let bump = |subject: &str, body: &str| {
+        detect_bump_from_tokens(
+            &messages_with_squashed(subject, body),
+            "#major",
+            "#minor",
+            "#patch",
+            "#none",
+            "none",
+        )
+    };
+    assert_eq!(
+        bump("chore: squashed PR (#40)", "* fix: a bug (#41)"),
+        BumpKind::Patch
+    );
+    assert_eq!(
+        bump("chore: squashed PR (#40)", "* chore: x #minor (#41)"),
+        BumpKind::Minor
+    );
+    assert_eq!(
+        bump("fix: squashed PR (#40)", "* ci: hold this one #none (#41)"),
+        BumpKind::None,
+        "a #none on a squashed bullet vetoes the inferred bump the same way"
+    );
+    assert_eq!(
+        bump(
+            "fix: squashed PR (#40)",
+            "* fix: x (#41)\n\nBREAKING CHANGE: api removed"
+        ),
+        BumpKind::Major,
+        "a footer in the squash body is read the way `anodizer bump` reads it"
+    );
+    assert_eq!(
+        bump("chore: squashed PR (#40)", "- not a commit subject"),
+        BumpKind::None
+    );
+}
+
+#[test]
 fn message_has_token_rejects_substring_within_word() {
     assert!(!message_has_token("this is #handsome", "#hand"));
     assert!(!message_has_token("#patches galore", "#patch"));
 }
 
 #[test]
-fn message_has_token_matches_token_anywhere_in_whitespace_split() {
-    assert!(message_has_token(
+fn message_has_token_matches_token_anywhere_in_the_subject_and_never_in_the_body() {
+    assert!(message_has_token("fix: a #major thing", "#major"));
+    assert!(!message_has_token(
         "subject\nbody line #major footer",
         "#major"
     ));

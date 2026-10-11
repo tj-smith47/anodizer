@@ -195,10 +195,19 @@ in this order (highest precedence first):
 | 3 | Conventional marker — `feat!`/`BREAKING CHANGE` → major, `feat` → minor, `fix`/`perf`/`revert` → patch | `default_bump` | `chore`/`docs`/`style`/`refactor`/`test`/`build`/`ci` are not release-worthy and contribute nothing. |
 | 4 | `default_bump` | — | Used when nothing above matched. Default `none`. |
 
-Tokens are read from commit subjects only, as whole words. A subject that
-merely mentions `#none` — a commit that changes how the marker is handled, say —
-vetoes the range all the same; release it by putting `#minor` (or `#patch`) in
-the subject of a later commit, which outranks the veto.
+Tokens are read from commit subjects only, as whole words; a body that
+mentions one in prose carries no token. A subject that merely mentions `#none`
+— a commit that changes how the marker is handled, say — vetoes the range all
+the same; release it by putting `#minor` (or `#patch`) in the subject of a
+later commit, which outranks the veto. A `BREAKING CHANGE` footer in the body
+is read, the way `anodizer bump` reads it.
+
+A squash-merged pull request counts as every commit it squashed: each body
+bullet whose text is a conventional subject (`* fix: … (#41)`) is read as a
+subject of its own, for tokens and for the conventional layer alike, so a
+`fix:` or a `#minor` that only lived on the branch still releases. The
+changelog expands the same bullets into
+[one entry each](../more/changelog#squash-merged-pull-requests).
 
 With `default_bump: none` (the default) a range of only chore/docs/ci commits
 produces **no** release — the conventional-commit contract. Set

@@ -28,7 +28,7 @@ pub fn parse_commit_output(output: &str) -> Vec<Commit> {
     if output.is_empty() {
         return vec![];
     }
-    output
+    let commits = output
         .split('\x1e')
         .filter(|record| !record.trim().is_empty())
         .filter_map(|record| {
@@ -46,7 +46,8 @@ pub fn parse_commit_output(output: &str) -> Vec<Commit> {
                 None
             }
         })
-        .collect()
+        .collect();
+    expand_squashed(commits)
 }
 
 pub(super) fn cwd_or_dot() -> PathBuf {
@@ -210,9 +211,9 @@ pub fn parse_commit_output_with_files(output: &str) -> Vec<CommitWithFiles> {
             continue;
         }
         let commits = parse_commit_output(&metadata);
-        let Some(commit) = commits.into_iter().next() else {
+        if commits.is_empty() {
             continue;
-        };
+        }
         // Files for THIS commit are the leading lines of the NEXT segment,
         // before that segment's own metadata line.
         let files = match segments.get(idx + 1) {
@@ -225,7 +226,14 @@ pub fn parse_commit_output_with_files(output: &str) -> Vec<CommitWithFiles> {
                 .collect(),
             None => Vec::new(),
         };
-        out.push(CommitWithFiles { commit, files });
+        // A squash-merged commit decodes to several records; the files are the
+        // one commit's, so every record carries them.
+        for commit in commits {
+            out.push(CommitWithFiles {
+                commit,
+                files: files.clone(),
+            });
+        }
     }
     out
 }
@@ -335,7 +343,8 @@ pub fn get_commits_reachable_paths_with_files_in(
     Ok(parse_commit_output_with_files(&output))
 }
 
-/// Get last N commit subjects.
+/// Get the last N commit messages as release signals: each commit, then the
+/// subjects a squash merge listed in its body.
 pub fn get_last_commit_messages(count: usize) -> Result<Vec<String>> {
     get_last_commit_messages_in(&cwd_or_dot(), count)
 }
@@ -349,13 +358,31 @@ pub fn get_last_commit_messages_in(cwd: &Path, count: usize) -> Result<Vec<Strin
             "log.showSignature=false",
             "log",
             &format!("-{count}"),
-            "--pretty=format:%s",
+            RELEASE_MESSAGE_FORMAT,
         ],
     )?;
-    Ok(output.lines().map(str::to_string).collect())
+    Ok(release_messages(&output))
 }
 
-/// Get commit subjects between two refs.
+/// `git log` format for a release-signal read: subject, body, record end.
+pub(crate) const RELEASE_MESSAGE_FORMAT: &str = "--pretty=format:%s%x1f%b%x1e";
+
+/// Decode [`RELEASE_MESSAGE_FORMAT`] output into the messages the auto-bump
+/// reads: each commit's own message followed by its squashed subjects.
+pub(crate) fn release_messages(output: &str) -> Vec<String> {
+    output
+        .split('\x1e')
+        .map(str::trim)
+        .filter(|record| !record.is_empty())
+        .flat_map(|record| {
+            let (subject, body) = record.split_once('\x1f').unwrap_or((record, ""));
+            messages_with_squashed(subject.trim(), body.trim())
+        })
+        .collect()
+}
+
+/// Get the commit messages between two refs as release signals (see
+/// [`get_last_commit_messages`]).
 pub fn get_commit_messages_between(from: &str, to: &str) -> Result<Vec<String>> {
     get_commit_messages_between_in(&cwd_or_dot(), from, to)
 }
@@ -368,9 +395,9 @@ pub fn get_commit_messages_between_in(cwd: &Path, from: &str, to: &str) -> Resul
             "-c",
             "log.showSignature=false",
             "log",
-            "--pretty=format:%s",
+            RELEASE_MESSAGE_FORMAT,
             &format!("{from}..{to}"),
         ],
     )?;
-    Ok(output.lines().map(str::to_string).collect())
+    Ok(release_messages(&output))
 }

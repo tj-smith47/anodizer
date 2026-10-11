@@ -363,4 +363,59 @@ mod tests {
             "the workspace_root repo's commit is returned: {commits:?}"
         );
     }
+
+    #[test]
+    fn a_squash_merged_pull_request_yields_one_entry_per_squashed_commit() {
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let repo_path = repo.path();
+        git(repo_path, &["init", "-q"]);
+        git(repo_path, &["config", "user.email", "test@example.com"]);
+        git(repo_path, &["config", "user.name", "Test"]);
+        std::fs::create_dir_all(repo_path.join("crates/a")).unwrap();
+        std::fs::write(repo_path.join("crates/a/lib.rs"), "seed").unwrap();
+        git(repo_path, &["add", "."]);
+        git(
+            repo_path,
+            &[
+                "commit",
+                "-q",
+                "-m",
+                "feat: squashed PR (#40)\n\n* fix(dmg): size the image (#41)\n* feat: add --json (#42)\n- a prose bullet\n\nCo-Authored-By: Pair <pair@example.com>",
+            ],
+        );
+
+        let log = StageLogger::new("changelog", Verbosity::Quiet);
+        let plain = fetch_git_commits(repo_path, &None, None, &[], "demo", &log).unwrap();
+        let kinds: Vec<(&str, &str)> = plain
+            .iter()
+            .map(|c| (c.kind.as_str(), c.description.as_str()))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ("fix", "size the image (#41)"),
+                ("feat", "add --json (#42)"),
+                ("feat", "squashed PR (#40)"),
+            ]
+        );
+        assert!(plain.iter().all(|c| c.hash == plain[0].hash));
+        assert_eq!(
+            plain[2].co_authors.len(),
+            1,
+            "the parent keeps its trailers"
+        );
+        assert!(plain[0].co_authors.is_empty());
+
+        let scope = anodizer_core::changelog_scope::ChangelogScope {
+            dirs: vec!["crates".to_string()],
+            narrow: Some(vec!["crates/a/**".to_string()]),
+        };
+        let narrowed =
+            fetch_git_commits_narrowed(repo_path, &None, None, &scope, "a", &log).unwrap();
+        assert_eq!(
+            narrowed.len(),
+            3,
+            "every squashed entry carries the commit's files: {narrowed:?}"
+        );
+    }
 }

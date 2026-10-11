@@ -212,6 +212,28 @@ changelog:
       order: 99
 ```
 
+## Squash-merged pull requests
+
+A pull request merged with GitHub's "Squash and merge" is one commit whose
+subject is the PR title and whose body lists the squashed commits as bullets:
+
+```text
+feat: preflight improvements (#40)
+
+* fix(dmg): size the image explicitly (#41)
+* feat: add --json to preflight (#42)
+* chore: bump deps (#43)
+```
+
+anodizer reads that commit as four: the commit itself and one entry per bullet
+whose text is a conventional subject (`type(scope)!: description`). Each entry
+is grouped and filtered on its own, carries the squash commit's hash and
+author, and is scoped by the files the squash commit touched. A prose bullet,
+a trailer or a plain body line is not a subject and adds no entry. The same
+expansion feeds the auto-bump, so a `fix:` that only lived on the branch still
+cuts a patch release (see
+[auto-tagging](../advanced/auto-tagging#commit-message-directives)).
+
 ## Filtering commits
 
 ```yaml

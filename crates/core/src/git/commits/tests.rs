@@ -1617,3 +1617,131 @@ fn read_git_identity_reads_configured_values() {
     assert_eq!(name.as_deref(), Some("Configured Name"));
     assert_eq!(email.as_deref(), Some("configured@x.com"));
 }
+
+// ---------------------------------------------------------------------------
+// Squash-merged pull requests expand into their commits
+// ---------------------------------------------------------------------------
+
+const SQUASH_BODY: &str = "\
+Closes the long-standing dmg bug.
+
+* fix(dmg): size the image explicitly (#41)
+* feat: add --json to preflight (#42)
+- chore: bump deps
+- a prose bullet that is not a commit
+* feat: squashed changes (#40)
+Not a bullet: fix: ignored
+
+Co-Authored-By: Someone <s@example.com>";
+
+#[test]
+fn squashed_subjects_reads_conventional_bullets_only() {
+    let subjects = squashed_subjects("feat: squashed changes (#40)", SQUASH_BODY);
+    assert_eq!(
+        subjects,
+        vec![
+            "fix(dmg): size the image explicitly (#41)",
+            "feat: add --json to preflight (#42)",
+            "chore: bump deps",
+        ],
+        "prose bullets, plain lines, trailers and the bullet repeating the subject are not subjects"
+    );
+    assert!(squashed_subjects("fix: plain", "").is_empty());
+    assert!(squashed_subjects("fix: plain", "Signed-off-by: x\n\n- not conventional").is_empty());
+}
+
+#[test]
+fn messages_with_squashed_keeps_the_commits_own_message_first() {
+    let msgs = messages_with_squashed("feat: squashed changes (#40)", SQUASH_BODY);
+    assert_eq!(msgs.len(), 4);
+    assert!(msgs[0].starts_with("feat: squashed changes (#40)\n\nCloses"));
+    assert_eq!(msgs[1], "fix(dmg): size the image explicitly (#41)");
+    assert_eq!(
+        messages_with_squashed("fix: one", "  "),
+        vec!["fix: one".to_string()],
+        "an empty body leaves the subject alone"
+    );
+}
+
+#[test]
+fn expand_squashed_adds_one_commit_per_bullet_with_the_parents_identity() {
+    let parent = Commit {
+        hash: "abc".into(),
+        short_hash: "abc".into(),
+        message: "feat: squashed changes (#40)".into(),
+        author_name: "t".into(),
+        author_email: "t@t.com".into(),
+        body: SQUASH_BODY.into(),
+    };
+    let expanded = expand_squashed(vec![parent.clone()]);
+    assert_eq!(expanded.len(), 4);
+    assert_eq!(
+        expanded[0].message,
+        "fix(dmg): size the image explicitly (#41)"
+    );
+    assert_eq!(expanded[0].hash, "abc");
+    assert_eq!(expanded[0].author_email, "t@t.com");
+    assert!(expanded[0].body.is_empty());
+    assert_eq!(expanded[3].message, parent.message);
+    assert_eq!(
+        expanded[3].body, parent.body,
+        "the parent keeps its body and trailers"
+    );
+}
+
+#[test]
+fn parse_commit_output_expands_a_squash_merge_and_with_files_shares_its_files() {
+    let raw =
+        format!("h1\x1fh1\x1ffeat: squashed changes (#40)\x1ft\x1ft@t.com\x1f{SQUASH_BODY}\x1e");
+    let commits = parse_commit_output(&raw);
+    assert_eq!(commits.len(), 4);
+    assert_eq!(commits[3].message, "feat: squashed changes (#40)");
+
+    let raw = format!(
+        "h1\x1fh1\x1ffeat: squashed changes (#40)\x1ft\x1ft@t.com\x1f{SQUASH_BODY}\x1e\n\ncrates/a/src/lib.rs\ncrates/b/src/lib.rs\n"
+    );
+    let pairs = parse_commit_output_with_files(&raw);
+    assert_eq!(pairs.len(), 4);
+    for pair in &pairs {
+        assert_eq!(
+            pair.files,
+            vec!["crates/a/src/lib.rs", "crates/b/src/lib.rs"]
+        );
+    }
+}
+
+#[test]
+fn release_message_queries_expand_a_squash_merge_in_every_shape() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo_with_commits(dir, &["base"]);
+    git_in(dir, &["tag", "v0.1.0"]);
+    std::fs::create_dir_all(dir.join("crates")).unwrap();
+    std::fs::write(dir.join("crates/x"), "1").unwrap();
+    git_in(dir, &["add", "."]);
+    let message = format!("feat: squashed changes (#40)\n\n{SQUASH_BODY}");
+    git_in(dir, &["commit", "-m", &message]);
+
+    let expect = |msgs: Vec<String>| {
+        assert_eq!(msgs.len(), 4, "{msgs:?}");
+        assert!(
+            msgs[0].starts_with("feat: squashed changes (#40)\n\nCloses"),
+            "{:?}",
+            msgs[0]
+        );
+        assert_eq!(msgs[1], "fix(dmg): size the image explicitly (#41)");
+        assert_eq!(msgs[2], "feat: add --json to preflight (#42)");
+        assert_eq!(msgs[3], "chore: bump deps");
+    };
+    expect(get_commit_messages_between_in(dir, "v0.1.0", "HEAD").unwrap());
+    expect(get_last_commit_messages_in(dir, 1).unwrap());
+    expect(get_commit_messages_between_path_in(dir, "v0.1.0", "HEAD", "crates").unwrap());
+    expect(get_last_commit_messages_path_in(dir, 1, "crates").unwrap());
+    expect(log_subjects_for_range(dir, "v0.1.0..HEAD", "crates").unwrap());
+    assert!(
+        get_commit_messages_between_path_in(dir, "v0.1.0", "HEAD", "base")
+            .unwrap()
+            .is_empty(),
+        "a path the squash did not touch sees none of its bullets"
+    );
+}
