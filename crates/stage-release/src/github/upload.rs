@@ -582,6 +582,18 @@ pub(crate) async fn upload_release_asset(
                                      the upload (403); verify the token has contents:write on {}/{}",
                                     file_name, tag, owner, repo
                                 )
+                            } else if (300..400).contains(&status) {
+                                // GitHub answers an upload for a renamed or
+                                // transferred repository with a redirect
+                                // carrying no Location, which reads as a bare
+                                // "307 Temporary Redirect" otherwise.
+                                format!(
+                                    "release: upload artifact '{}' to release '{}' — GitHub \
+                                     redirected the upload ({}); the repository {}/{} may have been \
+                                     renamed or transferred, update the git remote or \
+                                     release.github to its current location",
+                                    file_name, tag, status, owner, repo
+                                )
                             } else {
                                 format!(
                                     "release: upload artifact '{}' to release '{}'",
@@ -952,6 +964,39 @@ mod tests {
             calls.load(Ordering::SeqCst),
             2,
             "fatal 403 must not retry (1 GET + 1 POST)"
+        );
+    }
+
+    #[tokio::test]
+    async fn fatal_307_names_the_moved_repository_and_does_not_retry() {
+        // A renamed or transferred repository answers the upload POST with a
+        // 307 carrying no Location and no body. The error must name the
+        // repository and the remedy, and the redirect must not be retried.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_artifact(tmp.path(), "app.tar.gz", b"bytes");
+        let (addr, calls) = spawn_oneshot_http_responder_with(|addr| {
+            vec![release_json(addr), http("307 Temporary Redirect", "")]
+        });
+
+        let result = run_upload(addr, &path, false).await;
+
+        let err = result.expect_err("a redirected upload must fail fast");
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("GitHub redirected the upload (307)"),
+            "307 context must name the redirect: {rendered}"
+        );
+        assert!(
+            rendered.contains(
+                "the repository o/r may have been renamed or transferred, update the git \
+                 remote or release.github to its current location"
+            ),
+            "307 context must name the repository and the remedy: {rendered}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "a redirect must not retry (1 GET + 1 POST)"
         );
     }
 
