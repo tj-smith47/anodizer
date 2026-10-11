@@ -70,7 +70,7 @@ fn git_log_args(
     if name_only {
         args.push("--name-only".into());
     }
-    args.push("--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e".into());
+    args.push(anodizer_core::git::COMMIT_RECORD_FORMAT.into());
     args.push(range.clone());
     if !paths.is_empty() {
         args.push("--".into());
@@ -157,7 +157,7 @@ fn is_bad_revision(stderr: &str) -> bool {
         || lower.contains("fatal: ambiguous")
 }
 
-/// Decode the `%H%x1f...%b%x1e` git-log wire format into `Commit`s by
+/// Decode `anodizer_core::git::COMMIT_RECORD_FORMAT` git-log output into `Commit`s by
 /// delegating to the single core record decoder
 /// (`anodizer_core::git::parse_commit_output`), so the body / author handling
 /// can never drift from the rest of the changelog pipeline.

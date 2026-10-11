@@ -821,9 +821,9 @@ fn commits_with_subjects_in_returns_all_pairs_in_one_call() {
 
 #[test]
 fn parse_commit_output_with_files_pairs_each_commit_with_its_files() {
-    // Two commits: newest first (git log order). Each metadata record is
-    // `%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e`, then `--name-only` files.
-    let raw = "h1\x1fs1\x1ffix: B\x1ft\x1ft@t\x1f\x1e\ncrates/cli/main.rs\n\nh0\x1fs0\x1ffeat: A\x1ft\x1ft@t\x1f\x1e\ncrates/core/lib.rs\nCargo.toml\n";
+    // Two commits: newest first (git log order). Each record is six
+    // NUL-terminated fields, then `--name-only` files.
+    let raw = "h1\0s1\0fix: B\0t\0t@t\0\0\ncrates/cli/main.rs\n\nh0\0s0\0feat: A\0t\0t@t\0\0\ncrates/core/lib.rs\nCargo.toml\n";
     let parsed = parse_commit_output_with_files(raw);
     assert_eq!(parsed.len(), 2);
     assert_eq!(parsed[0].commit.message, "fix: B");
@@ -843,8 +843,8 @@ fn parse_commit_output_with_files_preserves_multiline_body_at_idx_gt_0() {
     // survive, matching the metadata-only `parse_git_log_records` path.
     let body0 = "detail line one\ndetail line two\n\nCo-Authored-By: Bob <bob@b.com>";
     let raw = format!(
-        "h1\x1fs1\x1ffix: B\x1ft\x1ft@t\x1f\x1e\ncrates/cli/main.rs\n\n\
-             h0\x1fs0\x1ffeat: A\x1ft\x1ft@t\x1f{body0}\x1e\ncrates/core/lib.rs\n"
+        "h1\0s1\0fix: B\0t\0t@t\0\0\ncrates/cli/main.rs\n\n\
+             h0\0s0\0feat: A\0t\0t@t\0{body0}\0\ncrates/core/lib.rs\n"
     );
     let parsed = parse_commit_output_with_files(&raw);
     assert_eq!(parsed.len(), 2);
@@ -976,8 +976,8 @@ fn parse_commit_output_empty_input_yields_no_commits() {
 
 #[test]
 fn parse_commit_output_decodes_all_six_fields() {
-    // %H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e for a single commit.
-    let raw = "abc123def\x1fabc123d\x1ffeat: add thing\x1fAlice\x1falice@x.com\x1fbody text\x1e";
+    // COMMIT_RECORD_FORMAT for a single commit.
+    let raw = "abc123def\0abc123d\0feat: add thing\0Alice\0alice@x.com\0body text\0";
     let commits = parse_commit_output(raw);
     assert_eq!(commits.len(), 1);
     let c = &commits[0];
@@ -993,7 +993,7 @@ fn parse_commit_output_decodes_all_six_fields() {
 fn parse_commit_output_trims_hash_and_body_but_keeps_inner_subject() {
     // Per the decoder: hash and body are trimmed; the subject (field 2)
     // is taken verbatim. A leading-newline body must come back trimmed.
-    let raw = "  abc  \x1fabc\x1ffix: keep  spaces\x1ft\x1ft@t\x1f\n\nbody\n\x1e";
+    let raw = "  abc  \0abc\0fix: keep  spaces\0t\0t@t\0\n\nbody\n\0";
     let commits = parse_commit_output(raw);
     assert_eq!(commits.len(), 1);
     assert_eq!(commits[0].hash, "abc", "hash is trimmed");
@@ -1002,9 +1002,9 @@ fn parse_commit_output_trims_hash_and_body_but_keeps_inner_subject() {
 }
 
 #[test]
-fn parse_commit_output_absent_body_field_defaults_to_empty() {
-    // Exactly 5 fields (no %b segment) is still a valid record; body == "".
-    let raw = "h\x1fh\x1fsubject\x1fname\x1fmail\x1e";
+fn parse_commit_output_empty_body_field_decodes_to_empty() {
+    // `%b` of a one-line message is empty; the record still has six fields.
+    let raw = "h\0h\0subject\0name\0mail\0\0";
     let commits = parse_commit_output(raw);
     assert_eq!(commits.len(), 1);
     assert_eq!(commits[0].body, "");
@@ -1012,11 +1012,10 @@ fn parse_commit_output_absent_body_field_defaults_to_empty() {
 }
 
 #[test]
-fn parse_commit_output_skips_records_with_too_few_fields() {
-    // A record with <5 unit-separated fields is malformed and dropped,
-    // while a well-formed sibling record in the same stream survives.
-    let raw = "only\x1ftwo\x1e\
-                   h\x1fh\x1fgood: subject\x1fn\x1fe\x1fbody\x1e";
+fn parse_commit_output_drops_an_incomplete_trailing_record() {
+    // A stream cut off inside a record keeps every complete record before it.
+    let raw = "h\0h\0good: subject\0n\0e\0body\0\
+                   only\0two";
     let commits = parse_commit_output(raw);
     assert_eq!(commits.len(), 1, "malformed record dropped, good one kept");
     assert_eq!(commits[0].message, "good: subject");
@@ -1024,10 +1023,10 @@ fn parse_commit_output_skips_records_with_too_few_fields() {
 
 #[test]
 fn parse_commit_output_multiline_body_survives_record_separator_split() {
-    // Two commits separated by \x1e; the first body spans newlines and
-    // carries a trailer — the \x1e (not \n) split keeps it intact.
-    let raw = "h1\x1fh1\x1ffeat: A\x1fA\x1fa@x\x1fline one\nline two\n\nCo-Authored-By: B <b@x>\x1e\
-                   h0\x1fh0\x1ffix: B\x1fB\x1fb@x\x1f\x1e";
+    // Two commits; the first body spans newlines and carries a trailer — the
+    // NUL (not \n) split keeps it intact.
+    let raw = "h1\0h1\0feat: A\0A\0a@x\0line one\nline two\n\nCo-Authored-By: B <b@x>\0\
+                   h0\0h0\0fix: B\0B\0b@x\0\0";
     let commits = parse_commit_output(raw);
     assert_eq!(commits.len(), 2);
     assert_eq!(commits[0].message, "feat: A");
@@ -1688,8 +1687,7 @@ fn messages_with_squashed_keeps_the_commits_own_message_first() {
 
 #[test]
 fn the_record_decoder_never_expands_a_squash_merge() {
-    let raw =
-        format!("h1\x1fh1\x1ffeat: squashed changes (#40)\x1ft\x1ft@t.com\x1f{SQUASH_BODY}\x1e");
+    let raw = format!("h1\0h1\0feat: squashed changes (#40)\0t\0t@t.com\0{SQUASH_BODY}\0");
     let commits = parse_commit_output(&raw);
     assert_eq!(
         commits.len(),
@@ -1748,4 +1746,75 @@ fn release_message_queries_expand_a_squash_merge_in_every_shape() {
     one(get_commit_messages_between_path_in(dir, "v0.1.0", "HEAD", "crates", false).unwrap());
     one(get_last_commit_messages_path_in(dir, 1, "crates", false).unwrap());
     one(log_subjects_for_range(dir, "v0.1.0..HEAD", "crates", false).unwrap());
+}
+
+#[test]
+fn a_message_holding_the_old_record_markers_decodes_beside_its_neighbours() {
+    // `\x1e` and `\x1f` were the record and field separators of every commit
+    // read; a message holding one dropped the commit or shifted its
+    // neighbours' fields. Every reader must now return all three commits with
+    // the bytes intact.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let run = |args: &[&str]| {
+        assert!(
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
+        );
+    };
+    let commit = |name: &str, message: &str| {
+        std::fs::write(dir.join(name), name).unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", message]);
+    };
+    run(&["init"]);
+    commit("base", "initial");
+    let base = get_head_commit_in(dir).unwrap();
+    commit("a", "feat: before");
+    let marked_subject = "fix: subject with \x1e record and \x1f unit markers";
+    let marked_body = "body line \x1e one\n\nCo-Authored-By: B <b@x> \x1f";
+    commit("b", &format!("{marked_subject}\n\n{marked_body}"));
+    commit("c", "feat: after");
+
+    let commits = get_commits_between_in(dir, &base, "HEAD", None).unwrap();
+    let subjects: Vec<&str> = commits.iter().map(|c| c.message.as_str()).collect();
+    assert_eq!(subjects, ["feat: after", marked_subject, "feat: before"]);
+    assert_eq!(commits[1].body, marked_body);
+    assert_eq!(commits[1].author_email, "t@t.com");
+
+    let with_files = get_commits_between_paths_with_files_in(dir, &base, "HEAD", &[]).unwrap();
+    let files: Vec<&[String]> = with_files.iter().map(|c| c.files.as_slice()).collect();
+    assert_eq!(
+        files,
+        [
+            &["c".to_string()][..],
+            &["b".to_string()],
+            &["a".to_string()]
+        ]
+    );
+    assert_eq!(with_files[1].commit.body, marked_body);
+
+    let messages = get_commit_messages_between_in(dir, &base, "HEAD", false).unwrap();
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[1], format!("{marked_subject}\n\n{marked_body}"));
+
+    let logged = log_subjects_for_range(dir, &format!("{base}..HEAD"), ".", false).unwrap();
+    assert_eq!(logged, messages);
+
+    let pairs = commits_with_subjects_in(dir, &base).unwrap();
+    let pair_subjects: Vec<&str> = pairs.iter().map(|(_, s)| s.as_str()).collect();
+    assert_eq!(pair_subjects, subjects);
 }

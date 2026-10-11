@@ -14,38 +14,70 @@ pub struct Commit {
     pub body: String,
 }
 
-/// Parse git log output (formatted as `%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e`)
-/// into a vec of [`Commit`]s.
+/// `git log` format for a commit record: six NUL-terminated fields (hash,
+/// short hash, subject, author name, author email, body).
 ///
-/// Uses ASCII record separator (0x1e) between commits and unit separator (0x1f)
-/// between fields, so multi-line body text doesn't break parsing.
+/// NUL is the one byte git refuses in a commit message and in a path, so no
+/// field can contain the separator. The record and unit separators this format
+/// used to carry are ordinary bytes a message may hold, and a commit whose
+/// message held one was silently dropped or shifted its neighbours' fields.
+pub const COMMIT_RECORD_FORMAT: &str = "--pretty=format:%H%x00%h%x00%s%x00%an%x00%ae%x00%b%x00";
+const COMMIT_RECORD_FIELDS: usize = 6;
+
+/// Split [`COMMIT_RECORD_FORMAT`] output into records. Each record carries the
+/// text git printed before its hash (the newline between commits, or a
+/// `--name-only` file block) and its six fields; the text after the last
+/// record (the last commit's file block) is returned beside them. An
+/// incomplete trailing record is dropped.
+fn split_commit_records(output: &str) -> (Vec<(&str, [&str; COMMIT_RECORD_FIELDS])>, &str) {
+    let tokens: Vec<&str> = output.split('\0').collect();
+    let (chunks, rest) = tokens.as_chunks::<COMMIT_RECORD_FIELDS>();
+    let trailing = rest.first().copied().unwrap_or("");
+    let records = chunks
+        .iter()
+        .map(|fields| {
+            let (leading, hash) = fields[0].rsplit_once('\n').unwrap_or(("", fields[0]));
+            (
+                leading,
+                [
+                    hash.trim(),
+                    fields[1],
+                    fields[2],
+                    fields[3],
+                    fields[4],
+                    fields[5],
+                ],
+            )
+        })
+        .collect();
+    (records, trailing)
+}
+
+fn commit_from_fields(fields: &[&str; COMMIT_RECORD_FIELDS]) -> Option<Commit> {
+    if fields[0].is_empty() {
+        return None;
+    }
+    Some(Commit {
+        hash: fields[0].to_string(),
+        short_hash: fields[1].to_string(),
+        message: fields[2].to_string(),
+        author_name: fields[3].to_string(),
+        author_email: fields[4].to_string(),
+        body: fields[5].trim().to_string(),
+    })
+}
+
+/// Parse [`COMMIT_RECORD_FORMAT`] git log output into a vec of [`Commit`]s.
 ///
 /// The single record decoder for this wire format: every changelog path
 /// (`parse_commit_output_with_files` here, and the changelog stage's git
 /// fetch) decodes through this function so the body / author fields can never
 /// drift between call sites.
 pub fn parse_commit_output(output: &str) -> Vec<Commit> {
-    if output.is_empty() {
-        return vec![];
-    }
-    output
-        .split('\x1e')
-        .filter(|record| !record.trim().is_empty())
-        .filter_map(|record| {
-            let fields: Vec<&str> = record.split('\x1f').collect();
-            if fields.len() >= 5 {
-                Some(Commit {
-                    hash: fields[0].trim().to_string(),
-                    short_hash: fields[1].to_string(),
-                    message: fields[2].to_string(),
-                    author_name: fields[3].to_string(),
-                    author_email: fields[4].to_string(),
-                    body: fields.get(5).unwrap_or(&"").trim().to_string(),
-                })
-            } else {
-                None
-            }
-        })
+    split_commit_records(output)
+        .0
+        .iter()
+        .filter_map(|(_, fields)| commit_from_fields(fields))
         .collect()
 }
 
@@ -93,7 +125,7 @@ pub fn get_commits_between_paths_in(
         "-c".to_string(),
         "log.showSignature=false".to_string(),
         "log".to_string(),
-        "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e".to_string(),
+        COMMIT_RECORD_FORMAT.to_string(),
         range,
     ];
     if !paths.is_empty() {
@@ -135,7 +167,7 @@ pub fn get_all_commits_paths_in(cwd: &Path, paths: &[String]) -> Result<Vec<Comm
         "-c".to_string(),
         "log.showSignature=false".to_string(),
         "log".to_string(),
-        "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e".to_string(),
+        COMMIT_RECORD_FORMAT.to_string(),
         "HEAD".to_string(),
     ];
     if !paths.is_empty() {
@@ -162,77 +194,30 @@ pub struct CommitWithFiles {
     pub files: Vec<String>,
 }
 
-/// Parse `git log --name-only` output (metadata formatted as
-/// `%H%x1f...%b%x1e`, followed by one touched-file path per line) into
+/// Parse `git log --name-only` output in [`COMMIT_RECORD_FORMAT`] into
 /// [`CommitWithFiles`].
 ///
-/// git emits each commit as `<metadata>\x1e\n<file>\n<file>\n\n` (the touched
-/// files follow the `%x1e`-terminated metadata, then a blank line). Splitting
-/// on `\x1e` yields `[metadata_0, "\n<files_0>\n\n<metadata_1>", ...]`: the
-/// file block trailing each record up to the next metadata belongs to THAT
-/// record's commit.
-///
-/// The metadata record is multi-line because `%b` (the commit body) carries
-/// newlines, so the record runs from the first `\x1f`-bearing line through the
-/// end of the segment — NOT just the first matching line. Truncating to one
-/// line would drop body trailers (e.g. `Co-Authored-By:`) for every commit
-/// after the first, diverging from the full-body parse the changelog stage's
-/// `parse_git_log_records` performs.
+/// git prints each commit's touched files after its record, one path per
+/// line, so a commit's files are the text between its last field and the next
+/// commit's hash, and the last commit's files are the text after the stream's
+/// last record.
 pub fn parse_commit_output_with_files(output: &str) -> Vec<CommitWithFiles> {
-    if output.is_empty() {
-        return vec![];
-    }
-    let segments: Vec<&str> = output.split('\x1e').collect();
-    let mut out: Vec<CommitWithFiles> = Vec::new();
-    // segments[i] for i>0 begins with the file block of commit i-1 followed by
-    // the metadata of commit i. The first segment is pure metadata (commit 0);
-    // the last segment is the file block of the final commit (no trailing
-    // metadata). Walk pairwise: metadata from this segment, files from the
-    // NEXT segment's leading lines (before its own metadata's first field).
-    for (idx, seg) in segments.iter().enumerate() {
-        // The metadata of commit `idx` is the part of `seg` AFTER the leading
-        // file block (file block present only for idx>0). For idx==0 the whole
-        // segment is metadata. For idx>0 the metadata record begins at the
-        // first `\x1f`-bearing line and continues to the segment end (a
-        // multi-line `%b` body keeps emitting newline-separated lines after the
-        // unit-separator fields), so the remainder is kept verbatim — joined
-        // from that line onward — rather than just the first matching line.
-        let metadata = if idx == 0 {
-            seg.trim_start_matches(['\n', '\r']).to_string()
-        } else {
-            let lines: Vec<&str> = seg.split('\n').collect();
-            match lines.iter().position(|line| line.contains('\x1f')) {
-                Some(start) => lines[start..].join("\n"),
-                None => String::new(),
-            }
-        };
-        if metadata.trim().is_empty() {
+    let (records, trailing) = split_commit_records(output);
+    let mut out = Vec::with_capacity(records.len());
+    for (idx, (_, fields)) in records.iter().enumerate() {
+        let Some(commit) = commit_from_fields(fields) else {
             continue;
-        }
-        let commits = parse_commit_output(&metadata);
-        if commits.is_empty() {
-            continue;
-        }
-        // Files for THIS commit are the leading lines of the NEXT segment,
-        // before that segment's own metadata line.
-        let files = match segments.get(idx + 1) {
-            Some(next) => next
-                .split('\n')
-                .map(str::trim)
-                .take_while(|line| !line.contains('\x1f'))
-                .filter(|line| !line.is_empty())
-                .map(str::to_string)
-                .collect(),
-            None => Vec::new(),
         };
-        // A squash-merged commit decodes to several records; the files are the
-        // one commit's, so every record carries them.
-        for commit in commits {
-            out.push(CommitWithFiles {
-                commit,
-                files: files.clone(),
-            });
-        }
+        let files_text = records
+            .get(idx + 1)
+            .map_or(trailing, |(leading, _)| *leading);
+        let files = files_text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect();
+        out.push(CommitWithFiles { commit, files });
     }
     out
 }
@@ -252,7 +237,7 @@ pub fn get_commits_between_paths_with_files_in(
         "log.showSignature=false".to_string(),
         "log".to_string(),
         "--name-only".to_string(),
-        "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e".to_string(),
+        COMMIT_RECORD_FORMAT.to_string(),
         range,
     ];
     if !paths.is_empty() {
@@ -276,7 +261,7 @@ pub fn get_all_commits_paths_with_files_in(
         "log.showSignature=false".to_string(),
         "log".to_string(),
         "--name-only".to_string(),
-        "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e".to_string(),
+        COMMIT_RECORD_FORMAT.to_string(),
         "HEAD".to_string(),
     ];
     if !paths.is_empty() {
@@ -303,7 +288,7 @@ pub fn get_commits_reachable_paths_in(
         "-c".to_string(),
         "log.showSignature=false".to_string(),
         "log".to_string(),
-        "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e".to_string(),
+        COMMIT_RECORD_FORMAT.to_string(),
         rev.to_string(),
     ];
     if !paths.is_empty() {
@@ -328,7 +313,7 @@ pub fn get_commits_reachable_paths_with_files_in(
         "log.showSignature=false".to_string(),
         "log".to_string(),
         "--name-only".to_string(),
-        "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e".to_string(),
+        COMMIT_RECORD_FORMAT.to_string(),
         rev.to_string(),
     ];
     if !paths.is_empty() {
@@ -368,21 +353,22 @@ pub fn get_last_commit_messages_in(
     Ok(release_messages(&output, expand_squash_merges))
 }
 
-/// `git log` format for a release-signal read: subject, body, record end.
-pub(crate) const RELEASE_MESSAGE_FORMAT: &str = "--pretty=format:%s%x1f%b%x1e";
+/// `git log` format for a release-signal read: subject and body, each
+/// NUL-terminated (see [`COMMIT_RECORD_FORMAT`] for why NUL).
+pub(crate) const RELEASE_MESSAGE_FORMAT: &str = "--pretty=format:%s%x00%b%x00";
 
 /// Decode [`RELEASE_MESSAGE_FORMAT`] output into the messages the auto-bump
 /// reads: each commit's own message followed, under `expand_squash_merges`,
 /// by its squashed subjects.
 pub(crate) fn release_messages(output: &str, expand_squash_merges: bool) -> Vec<String> {
-    output
-        .split('\x1e')
-        .map(str::trim)
-        .filter(|record| !record.is_empty())
-        .flat_map(|record| {
-            let (subject, body) = record.split_once('\x1f').unwrap_or((record, ""));
-            messages_with_squashed(subject.trim(), body.trim(), expand_squash_merges)
-        })
+    let tokens: Vec<&str> = output.split('\0').collect();
+    tokens
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|[subject, body]| (subject.trim(), body.trim()))
+        .filter(|(subject, body)| !(subject.is_empty() && body.is_empty()))
+        .flat_map(|(subject, body)| messages_with_squashed(subject, body, expand_squash_merges))
         .collect()
 }
 

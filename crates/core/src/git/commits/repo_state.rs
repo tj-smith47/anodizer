@@ -367,10 +367,10 @@ pub fn stage_and_commit_in(cwd: &Path, files: &[&str], message: &str) -> Result<
 }
 
 /// `git -C <workspace_root> -c log.showSignature=false log
-/// --pretty=format:%B%x1e <range> -- <rel_path>` — list commit message
+/// --pretty=format:%B%x00 <range> -- <rel_path>` — list commit message
 /// bodies (subject+body) for commits in `range` touching `rel_path`,
-/// using the `\x1e` (RS) byte as a between-commits separator so multi-line
-/// bodies survive parsing. Under `expand_squash_merges` a squash-merged
+/// NUL-terminated so multi-line bodies survive parsing and no message can
+/// hold the separator. Under `expand_squash_merges` a squash-merged
 /// commit is followed by the subjects its body lists
 /// ([`messages_with_squashed`]).
 ///
@@ -393,7 +393,7 @@ pub fn log_subjects_for_range(
             "-c",
             "log.showSignature=false",
             "log",
-            "--pretty=format:%B%x1e",
+            "--pretty=format:%B%x00",
             range,
             "--",
             rel_path,
@@ -418,7 +418,7 @@ pub fn log_subjects_for_range(
     }
     let text = String::from_utf8_lossy(&out.stdout);
     Ok(text
-        .split('\x1e')
+        .split('\0')
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .flat_map(|message| {
@@ -560,7 +560,7 @@ pub fn commit_subject_in(cwd: &Path, sha: &str) -> Result<String> {
     )
 }
 
-/// `git log --format=%H%x1f%s <sha>..HEAD` — return every `(full_sha, subject)`
+/// `git log --format=%H%x00%s <sha>..HEAD` — return every `(full_sha, subject)`
 /// pair in the range in one subprocess. Used by the rollback safety check so
 /// classifying N intervening commits is a single `git` spawn rather than
 /// `1 + N` (one `rev-list` plus one `log -1` per commit).
@@ -574,7 +574,7 @@ pub fn commits_with_subjects_in(cwd: &Path, sha: &str) -> Result<Vec<(String, St
             "-c",
             "log.showSignature=false",
             "log",
-            "--format=%H%x1f%s",
+            "--format=%H%x00%s",
             &range,
         ],
     )?;
@@ -584,7 +584,7 @@ pub fn commits_with_subjects_in(cwd: &Path, sha: &str) -> Result<Vec<(String, St
     Ok(out
         .lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(2, '\x1f');
+            let mut parts = line.splitn(2, '\0');
             let sha = parts.next()?.trim().to_string();
             let subj = parts.next().unwrap_or("").to_string();
             if sha.is_empty() {
