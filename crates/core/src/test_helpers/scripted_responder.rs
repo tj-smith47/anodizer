@@ -137,6 +137,7 @@ impl RequestLog {
 struct RouteEntry {
     route: ScriptedRoute,
     hits: AtomicUsize,
+    delay: Duration,
 }
 
 /// Bind an ephemeral-port TCP listener and serve routed responses
@@ -182,15 +183,38 @@ where
     F: FnOnce(SocketAddr) -> Vec<ScriptedRoute>,
 {
     let addr = listener.local_addr().expect("local_addr");
+    let routes = routes_fn(addr)
+        .into_iter()
+        .map(|r| (r, Duration::ZERO))
+        .collect();
+    serve_routes(listener, routes)
+}
+
+/// Variant whose routes each wait the paired duration before answering, so
+/// a test can hold a request in flight while a concurrent caller reaches
+/// the same route.
+pub fn spawn_scripted_responder_with_delays(
+    routes: Vec<(ScriptedRoute, Duration)>,
+) -> (SocketAddr, Arc<Mutex<Vec<RequestLog>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    serve_routes(listener, routes)
+}
+
+fn serve_routes(
+    listener: TcpListener,
+    routes: Vec<(ScriptedRoute, Duration)>,
+) -> (SocketAddr, Arc<Mutex<Vec<RequestLog>>>) {
+    let addr = listener.local_addr().expect("local_addr");
     let log = Arc::new(Mutex::new(Vec::<RequestLog>::new()));
     let log_inner = log.clone();
 
     let entries: Arc<Vec<RouteEntry>> = Arc::new(
-        routes_fn(addr)
+        routes
             .into_iter()
-            .map(|r| RouteEntry {
-                route: r,
+            .map(|(route, delay)| RouteEntry {
+                route,
                 hits: AtomicUsize::new(0),
+                delay,
             })
             .collect(),
     );
@@ -230,7 +254,7 @@ fn serve_one(mut stream: TcpStream, entries: &[RouteEntry], log: &Mutex<Vec<Requ
         g.push(request);
     }
 
-    let response: &str = entries
+    let matched = entries
         .iter()
         .find(|e| {
             e.route.method == method
@@ -242,9 +266,15 @@ fn serve_one(mut stream: TcpStream, entries: &[RouteEntry], log: &Mutex<Vec<Requ
         })
         .map(|e| {
             e.hits.fetch_add(1, Ordering::SeqCst);
-            e.route.response
-        })
-        .unwrap_or(NOT_FOUND_RESPONSE);
+            (e.route.response, e.delay)
+        });
+    let response: &str = match matched {
+        Some((response, delay)) => {
+            std::thread::sleep(delay);
+            response
+        }
+        None => NOT_FOUND_RESPONSE,
+    };
 
     // Force `Connection: close`: the responder serves exactly one response
     // per connection and then `shutdown`s the socket, so a client (hyper's

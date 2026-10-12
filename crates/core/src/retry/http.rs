@@ -101,10 +101,10 @@ where
                             )
                             .with_retry_after(retry_after),
                         );
-                        // `as_ref()` is the head of the chain; `is_retriable` walks
-                        // `.source()` to reach `HttpError`. `root_cause()` would
-                        // unwrap past `HttpError` to the io::Error leaf and miss
-                        // the status. Pinned by
+                        // `as_ref()` reaches `HttpError` for every inner shape.
+                        // `root_cause()` reaches it only while the inner error has
+                        // no cause of its own, as here; an inner with a cause
+                        // makes it the leaf, which carries no status. Held by
                         // `classifier_5xx_via_anyhow_chain_uses_as_ref`.
                         if is_retriable(wrapped.as_ref()) {
                             Err(ControlFlow::Continue(wrapped))
@@ -135,11 +135,16 @@ where
 /// A fast fail (a 4xx) ran one attempt and is returned as it came; an error
 /// still in the retriable class on the way out is one the attempts or the
 /// deadline ran out on.
+///
+/// A transport failure already opens with `desc: `, so its context leaves
+/// `desc` out and the message names the call once.
 fn exhausted_context(desc: &str, err: anyhow::Error) -> anyhow::Error {
-    if is_retriable(err.as_ref()) {
-        err.context(format!("{desc}: exhausted retry attempts"))
-    } else {
+    if !is_retriable(err.as_ref()) {
         err
+    } else if err.to_string().starts_with(&format!("{desc}: ")) {
+        err.context("exhausted retry attempts")
+    } else {
+        err.context(format!("{desc}: exhausted retry attempts"))
     }
 }
 
@@ -326,11 +331,11 @@ where
                                 )
                                 .with_retry_after(retry_after),
                             );
-                            // `as_ref()` is the head of the chain; `is_retriable`
-                            // walks `.source()` to reach `HttpError`. `root_cause()`
-                            // would unwrap past `HttpError` to the io::Error leaf
-                            // and miss the status. Pinned by
-                            // `classifier_5xx_via_anyhow_chain_uses_as_ref`.
+                            // `as_ref()` reaches `HttpError` for every inner shape.
+                            // `root_cause()` reaches it only while the inner error
+                            // has no cause of its own, as here; an inner with a
+                            // cause makes it the leaf, which carries no status.
+                            // Held by `classifier_5xx_via_anyhow_chain_uses_as_ref`.
                             if is_retriable(wrapped.as_ref()) {
                                 Err(ControlFlow::Continue(wrapped))
                             } else {

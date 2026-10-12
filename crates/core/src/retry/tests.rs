@@ -1090,6 +1090,72 @@ fn the_retry_helpers_error_names_the_failure_once() {
     );
 }
 
+/// A transport failure that spends the ladder names the call once on every
+/// helper: the transport context opens with the description, so the
+/// exhausted-attempts context does not repeat it.
+#[tokio::test]
+async fn a_spent_transport_ladder_names_the_call_once() {
+    let addr = crate::test_helpers::refusing_addr::refusing_addr();
+    let url = format!("http://{addr}/");
+    let policy = RetryPolicy {
+        max_attempts: 2,
+        base_delay: Duration::from_millis(1),
+        max_delay: Duration::from_millis(2),
+    };
+    let msg = |status: reqwest::StatusCode, body: &str| format!("probe failed ({status}): {body}");
+
+    let blocking_url = url.clone();
+    let (blocking, bytes) = tokio::task::spawn_blocking(move || {
+        let client = reqwest::blocking::Client::new();
+        let blocking = retry_http_blocking(
+            RetryLog::new("probe", test_logger()),
+            &policy,
+            SuccessClass::Strict,
+            |_| client.get(&blocking_url).send(),
+            msg,
+        )
+        .expect_err("nothing listens");
+        let bytes = retry_http_blocking_bytes(
+            RetryLog::new("probe", test_logger()),
+            &policy,
+            SuccessClass::Strict,
+            |_| client.get(&blocking_url).send(),
+            msg,
+        )
+        .expect_err("nothing listens");
+        (blocking, bytes)
+    })
+    .await
+    .expect("blocking helpers ran");
+    let client = reqwest::Client::new();
+    let not_blocking = retry_http_async(
+        RetryLog::new("probe", test_logger()),
+        &policy,
+        SuccessClass::Strict,
+        |_| client.get(&url).send(),
+        msg,
+    )
+    .await
+    .expect_err("nothing listens");
+
+    for err in [blocking, bytes, not_blocking] {
+        let chain = format!("{err:#}");
+        let expected_head = format!(
+            "exhausted retry attempts: probe: HTTP transport error: error sending request \
+             for url ({url})"
+        );
+        // What follows the request line is the operating system's connect
+        // error, whose wording differs per platform.
+        assert_eq!(
+            chain.get(..expected_head.len()),
+            Some(expected_head.as_str()),
+            "{chain}"
+        );
+        assert_eq!(chain.matches("probe").count(), 1, "{chain}");
+        assert_eq!(http_status(&err), 0);
+    }
+}
+
 #[test]
 fn plain_error_not_retriable() {
     let e = StrErr("something");
@@ -1117,15 +1183,14 @@ fn is_retriable_chain_walks_to_http_error() {
     assert!(is_retriable(wrapped.as_ref()));
 }
 
-// ----- as_ref vs root_cause drift guard ---------------------------------
+// ----- as_ref vs root_cause --------------------------------------------
 //
-// Every consumer of `retry_http_blocking` (artifactory, cloudsmith, the
-// future stage-blob upload paths) classifies via `is_retriable(err.as_ref())`.
-// A subtle but catastrophic regression is to "simplify" that to
-// `is_retriable(err.root_cause())`, which walks past the HttpError wrapper
-// to the leaf io::Error — at which point 5xx misclassifies as fast-fail
-// (the leaf has no status code), and the entire retry policy becomes a
-// no-op. These tests pin the distinction once at the helper's home.
+// Every consumer of the HTTP retry helpers classifies via
+// `is_retriable(err.as_ref())`, which reaches `HttpError` whatever the inner
+// error is. `root_cause()` reaches it only while the inner error has no cause
+// of its own, which is the production shape (`io::Error::other(String)`); an
+// inner with a cause of its own makes `root_cause()` the leaf below the
+// wrapper, which carries no status, so a 5xx would read as a fast fail.
 
 #[test]
 fn classifier_5xx_via_anyhow_chain_uses_as_ref() {
@@ -1135,27 +1200,26 @@ fn classifier_5xx_via_anyhow_chain_uses_as_ref() {
         is_retriable(wrapped.as_ref()),
         "5xx HttpError reached via as_ref() must classify retriable"
     );
-}
-
-#[test]
-fn classifier_root_cause_walks_past_http_error_drift_guard() {
-    // Drift guard: root_cause() unwraps to the leaf below the wrapped
-    // error, which has no status. If a future caller ever swaps as_ref → root_cause
-    // they'll regress 5xx retry handling. This assertion locks the
-    // distinction.
-    let wrapped: anyhow::Error =
-        anyhow::Error::new(HttpError::new(caused("503", "upstream said no"), 503))
-            .context("publish");
     assert!(
-        !is_retriable(wrapped.root_cause()),
-        "root_cause() walks past HttpError; 5xx must NOT be detected via the leaf"
+        is_retriable(wrapped.root_cause()),
+        "an inner with no cause of its own leaves HttpError as the root cause"
     );
 }
 
 #[test]
-fn classifier_429_via_anyhow_chain_uses_as_ref() {
-    // Symmetry with the 5xx case: 429 is the other retriable status
-    // class and must also stay reachable via as_ref().
+fn classifier_root_cause_misses_a_5xx_whose_inner_has_its_own_cause() {
+    let wrapped: anyhow::Error =
+        anyhow::Error::new(HttpError::new(caused("503", "upstream said no"), 503))
+            .context("publish");
+    assert!(is_retriable(wrapped.as_ref()));
+    assert!(
+        !is_retriable(wrapped.root_cause()),
+        "root_cause() reaches the inner error's own cause, which carries no status"
+    );
+}
+
+#[test]
+fn classifier_root_cause_misses_a_429_whose_inner_has_its_own_cause() {
     let wrapped: anyhow::Error =
         anyhow::Error::new(HttpError::new(caused("429", "slow down"), 429)).context("publish");
     assert!(is_retriable(wrapped.as_ref()));
@@ -2183,20 +2247,177 @@ fn retry_sync_sleeps_the_wait_an_anyhow_http_error_carries() {
     );
 }
 
-/// Every production site that classifies a response it holds — building an
-/// [`HttpError`] from it, or asking `status_is_retriable` of its status —
-/// reads the 429 wait headers off that response (`rate_limit_retry_after(`)
-/// and hands them to EVERY `HttpError` it builds (`with_retry_after(` at least
-/// as often as `HttpError::new(`), so the retry adapters sleep the wait the
-/// server asked for there too. A body that retries a 429 through a plain
-/// `anyhow!` sleeps the policy's step instead, which is what three publishers
-/// did while the announce clients honored the header.
+/// What one function body does with the [`HttpError`]s it builds, as the
+/// wait-header pin reads it.
+#[derive(Debug, PartialEq, Eq)]
+enum WaitHeaderShape {
+    /// Builds no `HttpError` that could carry a wait, or classifies nothing.
+    Outside,
+    /// Every `HttpError` it builds carries the wait it read.
+    Carries,
+    /// Builds an `HttpError` that cannot carry the server's wait.
+    Drops { built: usize, carried: usize },
+}
+
+/// The argument text of every `call` occurrence in `body`, `call` ending in
+/// its opening parenthesis.
+fn call_arguments<'a>(body: &'a str, call: &str) -> Vec<&'a str> {
+    let mut found = Vec::new();
+    let mut rest = body;
+    while let Some(at) = rest.find(call) {
+        let args = &rest[at + call.len()..];
+        let end = argument_list_end(args);
+        found.push(&args[..end]);
+        rest = &args[end..];
+    }
+    found
+}
+
+/// The byte offset of the parenthesis closing an argument list that starts
+/// right after its opening parenthesis; string literals are skipped.
+fn argument_list_end(args: &str) -> usize {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, c) in args.char_indices() {
+        if in_string {
+            match (escaped, c) {
+                (true, _) => escaped = false,
+                (false, '\\') => escaped = true,
+                (false, '"') => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' if depth == 0 => return i,
+            ')' | ']' | '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    args.len()
+}
+
+/// The last top-level argument of an argument list.
+fn last_argument(args: &str) -> &str {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut start = 0;
+    for (i, c) in args.char_indices() {
+        if in_string {
+            match (escaped, c) {
+                (true, _) => escaped = false,
+                (false, '\\') => escaped = true,
+                (false, '"') => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 && !args[i + 1..].trim().is_empty() => start = i + 1,
+            _ => {}
+        }
+    }
+    args[start..].trim().trim_end_matches(',').trim()
+}
+
+/// Reads one function body for the wait-header pin.
+///
+/// A body that holds a response and classifies it (builds an `HttpError`
+/// from it, or asks `status_is_retriable`) must read the wait headers
+/// (`rate_limit_retry_after(`) and hand them to every `HttpError` it builds:
+/// each `HttpError::new(` and each `HttpError::from_response(` given
+/// `Some(` response. Any other body that builds an `HttpError::new(` with a
+/// status that is not the literal `0` must call `.with_retry_after(` too: a
+/// helper taking the status as a parameter builds a 429 that would sleep
+/// the policy's step instead of the server's wait.
+fn wait_header_shape(body: &str) -> WaitHeaderShape {
+    let new_args = call_arguments(body, "HttpError::new(");
+    let from_response_some = call_arguments(body, "HttpError::from_response(")
+        .into_iter()
+        .filter(|args| last_argument(args).starts_with("Some("))
+        .count();
+    let built = new_args.len() + from_response_some;
+    let with_status = new_args
+        .iter()
+        .filter(|args| last_argument(args) != "0")
+        .count()
+        + from_response_some;
+    let carried = body.matches(".with_retry_after(").count();
+    let classifies = built > 0 || body.contains("status_is_retriable(");
+    let holds_a_response = body.contains(".status()") || body.contains(".headers()");
+    if classifies && holds_a_response {
+        if body.contains("rate_limit_retry_after(") && carried >= built && built > 0 {
+            WaitHeaderShape::Carries
+        } else {
+            WaitHeaderShape::Drops { built, carried }
+        }
+    } else if with_status == 0 {
+        WaitHeaderShape::Outside
+    } else if carried >= with_status {
+        WaitHeaderShape::Carries
+    } else {
+        WaitHeaderShape::Drops {
+            built: with_status,
+            carried,
+        }
+    }
+}
+
+#[test]
+fn a_helper_taking_the_status_as_a_parameter_must_carry_the_wait() {
+    let helper = r#"fn fail(msg: String, status: u16) -> anyhow::Error {
+        anyhow::Error::new(HttpError::new(std::io::Error::other(msg), status))
+    }"#;
+    assert_eq!(
+        wait_header_shape(helper),
+        WaitHeaderShape::Drops {
+            built: 1,
+            carried: 0
+        }
+    );
+    let carrying = r#"fn fail(msg: String, status: u16, wait: Option<Duration>) -> anyhow::Error {
+        anyhow::Error::new(HttpError::new(std::io::Error::other(format!("{msg}, {status}")), status).with_retry_after(wait))
+    }"#;
+    assert_eq!(wait_header_shape(carrying), WaitHeaderShape::Carries);
+    let transport = r#"fn fail(e: reqwest::Error) -> anyhow::Error {
+        anyhow::Error::new(HttpError::new(e, 0))
+    }"#;
+    assert_eq!(wait_header_shape(transport), WaitHeaderShape::Outside);
+    let from_response = r#"fn fail(e: reqwest::Error, resp: &reqwest::Response) -> anyhow::Error {
+        anyhow::Error::new(HttpError::from_response(e, Some(resp)))
+    }"#;
+    assert_eq!(
+        wait_header_shape(from_response),
+        WaitHeaderShape::Drops {
+            built: 1,
+            carried: 0
+        }
+    );
+    let no_response = r#"fn fail(e: reqwest::Error) -> anyhow::Error {
+        anyhow::Error::new(HttpError::from_response(e, None))
+    }"#;
+    assert_eq!(wait_header_shape(no_response), WaitHeaderShape::Outside);
+}
+
+/// Every production site that builds an [`HttpError`] able to carry a 429
+/// hands it the wait the server asked for, so the retry adapters sleep that
+/// wait there too ([`wait_header_shape`] states the rule per body). A body
+/// that retries a 429 through a plain `anyhow!` sleeps the policy's step
+/// instead, which is what three publishers did while the announce clients
+/// honored the header.
 #[test]
 fn every_http_error_built_from_a_response_carries_its_wait_headers() {
     use crate::test_helpers::test_sources::{
         function_bodies, production_half, workspace_production_sources,
     };
-    let mut converted = 0usize;
+    let mut converted: Vec<String> = Vec::new();
     let mut unconverted: Vec<String> = Vec::new();
     for source in workspace_production_sources() {
         let path = source.to_string_lossy().replace('\\', "/");
@@ -2205,27 +2426,28 @@ fn every_http_error_built_from_a_response_carries_its_wait_headers() {
         }
         let text = std::fs::read_to_string(&source).expect("read source");
         for body in function_bodies(production_half(&text)) {
-            let classifies =
-                body.contains("HttpError::new(") || body.contains("status_is_retriable(");
-            let holds_a_response = body.contains(".status()") || body.contains(".headers()");
-            if !(classifies && holds_a_response) {
-                continue;
-            }
-            let built = body.matches("HttpError::new(").count();
-            let carried = body.matches(".with_retry_after(").count();
-            if body.contains("rate_limit_retry_after(") && carried >= built && built > 0 {
-                converted += 1;
-            } else {
-                unconverted.push(format!("{path} (built {built}, carried {carried})"));
+            let name = body
+                .split_once("fn ")
+                .map(|(_, rest)| rest.split(['(', '<']).next().unwrap_or("").trim())
+                .unwrap_or("");
+            match wait_header_shape(&body) {
+                WaitHeaderShape::Outside => {}
+                WaitHeaderShape::Carries => converted.push(format!("{path}::{name}")),
+                WaitHeaderShape::Drops { built, carried } => {
+                    unconverted.push(format!("{path}::{name} (built {built}, carried {carried})"))
+                }
             }
         }
     }
     assert!(
         unconverted.is_empty(),
-        "these bodies classify a response without reading its wait headers into every HttpError: {unconverted:#?}"
+        "these bodies build an HttpError that cannot carry the server's wait: {unconverted:#?}"
     );
     assert_eq!(
-        converted, 11,
-        "the population of converted bodies (reddit builds its two errors in one function)"
+        converted.len(),
+        12,
+        "the population of converted bodies (reddit builds its two errors in one function, \
+         gitlab's link upload carries the create failure's wait onto its cleanup error): \
+         {converted:#?}"
     );
 }

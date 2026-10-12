@@ -100,14 +100,11 @@ mod tests {
 
     /// Reproduce the exact error shape `post_json` constructs for an HTTP
     /// failure response and confirm the retry classifier sees the wrapped
-    /// `HttpError` via the anyhow chain. This is the regression test for
-    /// the original `root_cause()`-mis-classification bug: 5xx must
-    /// retry, 4xx must fast-fail.
+    /// `HttpError` via the anyhow chain: 5xx must retry, 4xx must fast-fail.
     ///
-    /// Replaces an earlier no-op test that exercised only `fast_policy()`
-    /// without asserting any behaviour. `wiremock` / `mockito` are kept out
-    /// of the dev-deps by exercising the classifier directly with
-    /// the same wrapping shape `post_json` produces on the wire.
+    /// The classifier is exercised directly with the same wrapping shape
+    /// `post_json` produces on the wire, which keeps `wiremock` / `mockito`
+    /// out of the dev-deps.
     fn wrap_status_like_post_json(status: u16) -> anyhow::Error {
         let inner = anyhow::anyhow!("provider: HTTP {status} — body");
         anyhow::Error::new(HttpError::new(
@@ -146,17 +143,19 @@ mod tests {
     }
 
     #[test]
-    fn post_json_classifier_drift_guard_root_cause_misses_http_error() {
-        // Drift-guard pin: `root_cause()` walks past `HttpError` to the
-        // leaf of an inner error that has a cause of its own, and the leaf
-        // carries no status; this is the bug that motivated the `as_ref()`
-        // fix. If a future refactor restores `root_cause()` here, this test
-        // fails.
+    fn post_json_classifier_root_cause_misses_an_inner_with_its_own_cause() {
+        // The production shape has no cause below its inner error, so
+        // `root_cause()` is the `HttpError` there; an inner that has a cause
+        // of its own makes `root_cause()` that cause, which carries no
+        // status. `as_ref()` is right for both.
+        let production = wrap_status_like_post_json(503);
+        assert!(is_retriable(production.root_cause()));
         let inner = anyhow::anyhow!("connection detail").context("provider: HTTP 503 — body");
         let wrapped = anyhow::Error::new(HttpError::new(
             std::io::Error::other(Box::<dyn std::error::Error + Send + Sync>::from(inner)),
             503,
         ));
+        assert!(is_retriable(wrapped.as_ref()));
         assert!(
             !is_retriable(wrapped.root_cause()),
             "root_cause() reaches the leaf — wrong API for chain-walk classification"

@@ -2557,17 +2557,13 @@ fn test_resolve_webhook_headers_basic_auth_priority_over_bearer() {
     );
 }
 
-/// Cross-announcer regression pin for the `is_retriable(...root_cause())`
-/// bug: the announce stage wraps `HttpError(status=503)` in an
-/// `anyhow::Error` via `.context(...)`. A leaf-walking classifier
-/// (`root_cause()`) misses the `HttpError` and would (incorrectly)
-/// classify the failure as non-retriable. The correct API is
-/// `as_ref()` (returns the top of the chain).
-///
-/// Failing this test on every change in announce/* retry-classifier sites
-/// is what would have caught the bug at PR-time. Drift here is the canary.
+/// The announce classifiers read `is_retriable(err.as_ref())`, which reaches
+/// `HttpError(status=503)` whatever its inner error is. `root_cause()`
+/// reaches it only while the inner error has no cause of its own; this
+/// fixture's inner has one, so `root_cause()` is the leaf below the wrapper
+/// and would read the 503 as non-retriable.
 #[test]
-fn announce_retry_classifier_matches_5xx_via_anyhow_chain() {
+fn announce_retry_classifier_matches_a_5xx_whose_inner_has_its_own_cause() {
     use anodizer_core::retry::{HttpError, is_retriable};
     // The wrapped error carries a cause of its own, the way a transport
     // error does, so `root_cause()` stops below the HttpError.
@@ -2579,8 +2575,6 @@ fn announce_retry_classifier_matches_5xx_via_anyhow_chain() {
         is_retriable(wrapped.as_ref()),
         "5xx must classify retriable via as_ref()"
     );
-    // Drift-guard: prove root_cause() walks past HttpError to the leaf
-    // — that's the exact API mistake the announce sites had.
     assert!(
         !is_retriable(wrapped.root_cause()),
         "root_cause() reaches the leaf — wrong API for chain-walk classification"
