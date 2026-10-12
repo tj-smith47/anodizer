@@ -1,4 +1,4 @@
-//! Thin wrapper around the shared step-retry engine + `classify_octocrab_error`
+//! Thin wrapper around the shared step-retry engine + `classify_retriability`
 //! for the GitHub backend's octocrab call sites.
 //!
 //! Each retriable octocrab call (find-draft list, replace-draft delete,
@@ -28,7 +28,7 @@
 
 use std::future::Future;
 
-use anodizer_core::retry::{RetryPolicy, is_retriable, jitter_duration};
+use anodizer_core::retry::{RetryPolicy, jitter_duration, status_is_retriable};
 
 use super::secondary_rate_limit::{RetryAfterCapture, is_secondary_rate_limit, secondary_rl_delay};
 use crate::release_log;
@@ -136,28 +136,19 @@ pub(crate) fn octocrab_retry_cause(status: u16) -> String {
 
 /// Borrow-based retriability probe for [`octocrab::Error`].
 ///
-/// Mirrors the sibling `retry_classify::classify_octocrab_error`'s rules
-/// but consumes only a reference
-/// so the original error can be returned to the caller unchanged. Returns
-/// `(status_code, retriable)` where `status_code` is `0` for transport-layer
-/// failures with no HTTP response attached.
+/// Applies the shared rule (5xx and 429 retry, transport failures retry,
+/// anything else fast-fails) to a reference, so the original error can be
+/// returned to the caller unchanged. Returns `(status_code, retriable)`
+/// where `status_code` is `0` for transport-layer failures with no HTTP
+/// response attached.
 fn classify_retriability(err: &octocrab::Error) -> (u16, bool) {
-    // Build a throwaway wrapper from a synthetic inner to reuse the
-    // existing `is_retriable` predicate without taking ownership of `err`.
-    // The wrapper's job is just to set the right "retriable / not" bit for
-    // the shared classifier; the actual error returned to the caller is the
-    // borrowed original.
-    use anodizer_core::retry::{HttpError, Retriable};
     if let octocrab::Error::GitHub { source, .. } = err {
         let status = source.status_code.as_u16();
-        let probe = HttpError::new(std::io::Error::other("status probe"), status);
-        (status, is_retriable(&probe))
+        (status, status_is_retriable(status))
     } else if is_octocrab_transport_error(err) {
-        let probe = Retriable::new(std::io::Error::other("transport probe"));
-        (0, is_retriable(&probe))
+        (0, true)
     } else {
-        // Conservative default: unfamiliar future variants fast-fail
-        // rather than spin. Matches `classify_octocrab_error`'s fallback.
+        // Unfamiliar future variants fast-fail rather than spin.
         (0, false)
     }
 }

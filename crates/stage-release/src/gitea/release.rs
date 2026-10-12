@@ -216,8 +216,10 @@ pub(crate) async fn find_release_by_tag(
     // A server or proxy that ignores `page` serves the same full page for
     // every number; the sweep ends on the first repeat rather than looping
     // for ever, and a repeat is an answer the caller cannot act on.
-    let mut previous_page: Option<String> = None;
-    for page in 1.. {
+    let mut previous_ids: Option<Vec<u64>> = None;
+    // The range ends at `u32::MAX` so the overflow bail after the loop is
+    // reachable in principle; no real listing has that many pages.
+    for page in 1u32..=u32::MAX {
         if page > 1 && deadline.is_some_and(|d| std::time::Instant::now() >= d) {
             bail!(
                 "gitea: could not enumerate releases for tag '{tag}': the retry deadline \
@@ -258,7 +260,10 @@ pub(crate) async fn find_release_by_tag(
             return Ok(Some(release_id_and_body(release)?));
         }
 
-        if !releases.is_empty() && previous_page.as_deref() == Some(page_text.as_str()) {
+        // Ids, not the page text: a field such as an asset's download count
+        // can change between two reads of the same page.
+        let ids: Vec<u64> = releases.iter().filter_map(|r| r["id"].as_u64()).collect();
+        if !releases.is_empty() && previous_ids.as_ref() == Some(&ids) {
             bail!(
                 "gitea: could not enumerate releases for tag '{tag}': the listing served \
                  the same page twice (page {page} repeats page {}), so the server is not \
@@ -266,15 +271,14 @@ pub(crate) async fn find_release_by_tag(
                 page - 1
             );
         }
-        previous_page = Some(page_text);
+        previous_ids = Some(ids);
 
         // Fewer results than the page size means there are no more pages.
         if releases.len() < PAGE_SIZE as usize {
-            break;
+            return Ok(None);
         }
     }
-
-    Ok(None)
+    bail!("gitea: could not enumerate releases for tag '{tag}': the page counter overflowed")
 }
 
 fn release_id_and_body(release: &serde_json::Value) -> Result<(u64, Option<String>)> {

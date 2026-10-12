@@ -31,45 +31,6 @@
 //! so genuine 4xx (auth, validation) still fast-fail.
 
 #[cfg(test)]
-use anodizer_core::retry::{HttpError, Retriable};
-
-/// Wrap an `octocrab::Error` so `anodizer_core::retry::is_retriable` reports
-/// the correct retriability for both REST-status and transport failures.
-///
-/// Returns `(boxed_error, status_code)` where `status_code` is `0` for
-/// transport-layer failures with no HTTP response attached.
-///
-/// This function consumes the octocrab error. The retry path in
-/// [`super::retry_call`] uses a borrow-based variant
-/// (`classify_retriability`) so the original typed error can flow back to
-/// callers for status-code routing (e.g. mapping 404 to "no existing
-/// release"). The two stay in lock-step via the unit tests in this file:
-/// the consumption-based classifier here is the test oracle that pins the
-/// rule the borrow-based probe must replicate.
-#[cfg(test)]
-fn classify_octocrab_error(
-    err: octocrab::Error,
-) -> (Box<dyn std::error::Error + Send + Sync + 'static>, u16) {
-    match &err {
-        // Status-bearing failures: defer to HttpError + is_retriable's
-        // standard 5xx / 429 rule.
-        octocrab::Error::GitHub { source, .. } => {
-            let status = source.status_code.as_u16();
-            (Box::new(HttpError::new(err, status)), status)
-        }
-        // Transport / decode / proxy failures: no HTTP status, but always
-        // safe to retry. Force-wrap in Retriable so is_retriable -> true
-        // regardless of the (often opaque) Display message.
-        other if super::is_octocrab_transport_error(other) => (Box::new(Retriable::new(err)), 0),
-        // Anything else (future octocrab variants, URI parse errors, etc.)
-        // falls through as a plain HttpError with status 0 — non-retriable
-        // unless the Display matches a network-error needle. Conservative
-        // default; better to fast-fail an unfamiliar error than spin on it.
-        _ => (Box::new(HttpError::new(err, 0)), 0),
-    }
-}
-
-#[cfg(test)]
 mod tests {
     //! Drive real `octocrab::Error` values through the classifier. Because
     //! octocrab's `error` module is private and the `*Snafu` builder
@@ -95,8 +56,44 @@ mod tests {
     //! the `is_retriable` rule for status-bearing errors is already covered
     //! by `anodizer_core::retry`'s own test suite, and the helper's GitHub
     //! arm is just `HttpError::new(err, status)`.
-    use super::*;
-    use anodizer_core::retry::is_retriable;
+    use anodizer_core::retry::{HttpError, Retriable, is_retriable};
+
+    /// Wrap an `octocrab::Error` so `anodizer_core::retry::is_retriable` reports
+    /// the correct retriability for both REST-status and transport failures.
+    ///
+    /// Returns `(boxed_error, status_code)` where `status_code` is `0` for
+    /// transport-layer failures with no HTTP response attached.
+    ///
+    /// This function consumes the octocrab error. The retry path in
+    /// `retry_call` uses a borrow-based variant
+    /// (`classify_retriability`) so the original typed error can flow back to
+    /// callers for status-code routing (e.g. mapping 404 to "no existing
+    /// release"). The two stay in lock-step via the unit tests in this file:
+    /// the consumption-based classifier here is the test oracle that pins the
+    /// rule the borrow-based probe must replicate.
+    fn classify_octocrab_error(
+        err: octocrab::Error,
+    ) -> (Box<dyn std::error::Error + Send + Sync + 'static>, u16) {
+        match &err {
+            // Status-bearing failures: defer to HttpError + is_retriable's
+            // standard 5xx / 429 rule.
+            octocrab::Error::GitHub { source, .. } => {
+                let status = source.status_code.as_u16();
+                (Box::new(HttpError::new(err, status)), status)
+            }
+            // Transport / decode / proxy failures: no HTTP status, but always
+            // safe to retry. Force-wrap in Retriable so is_retriable -> true
+            // regardless of the (often opaque) Display message.
+            other if crate::github::is_octocrab_transport_error(other) => {
+                (Box::new(Retriable::new(err)), 0)
+            }
+            // Anything else (future octocrab variants, URI parse errors, etc.)
+            // falls through as a plain HttpError with status 0 — non-retriable
+            // unless the Display matches a network-error needle. Conservative
+            // default; better to fast-fail an unfamiliar error than spin on it.
+            _ => (Box::new(HttpError::new(err, 0)), 0),
+        }
+    }
 
     async fn make_transport_error() -> octocrab::Error {
         // RFC 2606 reserves `.invalid` as a guaranteed-unresolvable TLD.

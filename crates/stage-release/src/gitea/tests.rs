@@ -1158,6 +1158,66 @@ async fn find_release_stops_on_a_listing_that_repeats_a_page() {
     assert_eq!(entries.len(), 3, "the by-tag probe and two listing pages");
 }
 
+/// A server that ignores `page` but changes a field between reads (an
+/// asset's download count bumped per request) still repeats the same
+/// releases: the sweep compares the ids, so page two ends it with the
+/// repeat error.
+#[tokio::test]
+async fn find_release_stops_on_a_repeat_whose_download_count_changed() {
+    let page_body = |count: u64| {
+        let page: Vec<serde_json::Value> = (0..50u64)
+            .map(|i| {
+                serde_json::json!({
+                    "id": 100 + i,
+                    "tag_name": format!("p-{i}"),
+                    "assets": [{"id": 9000 + i, "download_count": count}],
+                })
+            })
+            .collect();
+        serde_json::Value::Array(page).to_string()
+    };
+    let (addr, log) = spawn_scripted_responder(vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+            response: http_json("200 OK", page_body(1)),
+            times: Some(1),
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/api/v1/repos/o/r/releases?page=2&limit=50",
+            response: http_json("200 OK", page_body(2)),
+            times: Some(1),
+        },
+    ]);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let err = find_release_by_tag(
+        &GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+            deadline: None,
+            log: tlog(),
+        },
+        "v9.9.9",
+    )
+    .await
+    .expect_err("a repeating listing is an error, not an absence");
+    assert_eq!(
+        format!("{err:#}"),
+        "gitea: could not enumerate releases for tag 'v9.9.9': the listing served the \
+         same page twice (page 2 repeats page 1), so the server is not honoring the \
+         page parameter"
+    );
+    let entries = log.lock().unwrap();
+    assert_eq!(entries.len(), 3, "the by-tag probe and two listing pages");
+}
+
 /// The listing sweep stops at the run's retry deadline: a full first page
 /// without the tag is read, and the second page is never requested once the
 /// deadline has passed.

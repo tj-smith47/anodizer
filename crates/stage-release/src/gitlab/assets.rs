@@ -74,19 +74,19 @@ pub(crate) async fn gitlab_upload_asset(
     let direct_asset_path = format!("/{}", file_name);
 
     // GitLab v17+ names the field `direct_asset_path`, older servers
-    // `filepath`. One probe answers for every asset of the run; a probe that
-    // failed is not an answer and is asked again on the next asset, so a
-    // transient failure costs one legacy-field attempt rather than all of them.
-    let use_legacy_file_path = match legacy_path_probe.get() {
-        Some(answer) => *answer,
-        None => match detect_pre_v17_gitlab(client, api_url, deadline, log).await {
-            Some(answer) => {
-                let _ = legacy_path_probe.set(answer);
-                answer
-            }
-            None => true,
-        },
-    };
+    // `filepath`. One probe answers for every asset of the run, and parallel
+    // uploads wait on the one probe in flight. A probe that failed is not an
+    // answer: the cell stays empty, that asset uses the legacy field, and the
+    // next asset probes again.
+    let use_legacy_file_path = legacy_path_probe
+        .get_or_try_init(|| async {
+            detect_pre_v17_gitlab(client, api_url, deadline, log)
+                .await
+                .ok_or(())
+        })
+        .await
+        .copied()
+        .unwrap_or(true);
     let path_field = if use_legacy_file_path {
         "filepath"
     } else {
@@ -134,10 +134,16 @@ pub(crate) async fn gitlab_upload_asset(
         Ok(true) => {}
         Ok(false) => return Err(create_err),
         Err(cleanup_err) => {
-            let headline = create_err.to_string();
-            return Err(create_err.context(format!(
-                "{headline}; cleaning up the existing link failed: {cleanup_err:#}"
-            )));
+            // One error carrying both messages: a context over the create
+            // failure would print the create message twice under `{:#}`.
+            let combined = anodizer_core::retry::HttpError::new(
+                std::io::Error::other(format!(
+                    "{create_err:#}; cleaning up the existing link failed: {cleanup_err:#}"
+                )),
+                status_code,
+            )
+            .with_retry_after(anodizer_core::retry::http_retry_after(&create_err));
+            return Err(anyhow::Error::new(combined));
         }
     }
 
@@ -190,8 +196,10 @@ pub(crate) async fn gitlab_find_asset_link(
     let links_api = gitlab_links_api(api_url, project_id, tag);
     // The listing is paged (20 per page by default); a release with more
     // links than one page holds keeps its duplicate on a later page.
-    let mut previous_page: Option<String> = None;
-    for page in 1u32.. {
+    let mut previous_ids: Option<Vec<u64>> = None;
+    // The range ends at `u32::MAX` so the overflow bail after the loop is
+    // reachable in principle; no real listing has that many pages.
+    for page in 1u32..=u32::MAX {
         if page > 1 && deadline.is_some_and(|d| std::time::Instant::now() >= d) {
             bail!(
                 "gitlab: could not enumerate the release links of '{tag}': the retry \
@@ -233,7 +241,10 @@ pub(crate) async fn gitlab_find_asset_link(
         if links.len() < LINKS_PAGE_SIZE as usize {
             return Ok(None);
         }
-        if previous_page.as_deref() == Some(page_text.as_str()) {
+        // Ids, not the page text: a field such as a download count can change
+        // between two reads of the same page.
+        let ids: Vec<u64> = links.iter().filter_map(|l| l["id"].as_u64()).collect();
+        if previous_ids.as_ref() == Some(&ids) {
             bail!(
                 "gitlab: could not enumerate the release links of '{tag}': the listing \
                  served the same page twice (page {page} repeats page {}), so the server \
@@ -241,7 +252,7 @@ pub(crate) async fn gitlab_find_asset_link(
                 page - 1
             );
         }
-        previous_page = Some(page_text);
+        previous_ids = Some(ids);
     }
     bail!("gitlab: could not enumerate the release links of '{tag}': the page counter overflowed")
 }
@@ -534,7 +545,8 @@ pub(crate) struct GitlabAssetClient {
     pub pkg: Option<(String, String)>,
     pub replace_existing_artifacts: bool,
     pub log: anodizer_core::log::StageLogger,
-    /// The server-version probe's answer, taken once for every asset.
+    /// The server-version probe's answer, taken once for every asset; empty
+    /// until a probe answers, so a failed probe is asked again.
     pub legacy_path_probe: tokio::sync::OnceCell<bool>,
 }
 

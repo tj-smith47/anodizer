@@ -707,6 +707,7 @@ async fn gitlab_upload_asset_replace_existing_422_deletes_and_retries() {
 
 use anodizer_core::test_helpers::scripted_responder::{
     ScriptedRoute, spawn_scripted_responder, spawn_scripted_responder_on,
+    spawn_scripted_responder_with_delays,
 };
 
 /// Build a fast retry policy for the HTTP-flow tests (millisecond
@@ -2019,6 +2020,62 @@ async fn find_asset_link_stops_on_a_listing_that_repeats_a_page() {
     assert_eq!(log.lock().unwrap().len(), 2, "two listing pages, no third");
 }
 
+/// A server that ignores `page` but changes a field between reads (a
+/// counter bumped per request) still repeats the same links: the sweep
+/// compares the ids, so the second page ends it with the repeat error.
+#[tokio::test]
+async fn find_asset_link_stops_on_a_repeat_whose_counter_field_changed() {
+    let page_body = |count: u64| {
+        let page: Vec<serde_json::Value> = (0..100u64)
+            .map(|i| {
+                serde_json::json!({
+                    "id": 1000 + i,
+                    "name": format!("other-{i}"),
+                    "url": "https://x/o",
+                    "download_count": count,
+                })
+            })
+            .collect();
+        serde_json::Value::Array(page).to_string()
+    };
+    let (addr, log) = spawn_scripted_responder(vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=1&per_page=100",
+            response: http_json("200 OK", page_body(1)),
+            times: Some(1),
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=2&per_page=100",
+            response: http_json("200 OK", page_body(2)),
+            times: Some(1),
+        },
+    ]);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let ctx = GitlabCtx {
+        client: &client,
+        api_url: &api_url,
+        project_id: "o/r",
+        policy: &policy,
+        deadline: None,
+        log: tlog(),
+    };
+    let err = gitlab_find_asset_link(&ctx, "v1.0.0", "a.bin")
+        .await
+        .expect_err("a repeating listing is an error, not an absence");
+    assert_eq!(
+        format!("{err:#}"),
+        "gitlab: could not enumerate the release links of 'v1.0.0': the listing served \
+         the same page twice (page 2 repeats page 1), so the server is not honoring the \
+         page parameter"
+    );
+    assert_eq!(log.lock().unwrap().len(), 2, "two listing pages, no third");
+}
+
 /// The link sweep stops at the run's retry deadline: page one is read, and
 /// page two is never requested once the deadline has passed.
 #[tokio::test]
@@ -2066,8 +2123,8 @@ async fn find_asset_link_stops_when_the_deadline_passes() {
 }
 
 /// When the duplicate's cleanup fails (the DELETE answers 500 on every
-/// attempt), the error the upload returns is the create failure, with the
-/// cleanup failure attached to it.
+/// attempt), the error the upload returns names the create failure once,
+/// followed by the cleanup failure, and keeps the create failure's status.
 #[tokio::test]
 async fn a_failed_cleanup_reports_the_create_failure_with_the_cleanup_as_context() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -2150,19 +2207,19 @@ async fn a_failed_cleanup_reports_the_create_failure_with_the_cleanup_as_context
     .await
     .expect_err("a failed cleanup fails the upload");
     let chain = format!("{err:#}");
-    assert!(
-        chain.starts_with(
-            "gitlab: create release link for 'a.bin' failed (HTTP 400 Bad Request): \
-             {\"message\":{\"name\":[\"has already been taken\"]}}; cleaning up the \
-             existing link failed: "
-        ),
-        "the create failure leads, the cleanup follows: {chain}"
+    assert_eq!(
+        chain,
+        "gitlab: create release link for 'a.bin' failed (HTTP 400 Bad Request): \
+         {\"message\":{\"name\":[\"has already been taken\"]}}; cleaning up the \
+         existing link failed: gitlab: DELETE existing release link: exhausted retry \
+         attempts: gitlab: delete existing link 'a.bin' (id=4242) failed (HTTP 500 Internal \
+         Server Error): {}",
+        "the create failure leads, the cleanup follows"
     );
-    assert!(
-        chain.contains(
-            "delete existing link 'a.bin' (id=4242) failed (HTTP 500 Internal Server Error)"
-        ),
-        "{chain}"
+    assert_eq!(
+        chain.matches("has already been taken").count(),
+        1,
+        "the create failure is printed once: {chain}"
     );
     assert_eq!(
         anodizer_core::retry::http_status(&err),
@@ -2172,6 +2229,117 @@ async fn a_failed_cleanup_reports_the_create_failure_with_the_cleanup_as_context
     let entries = log.lock().unwrap();
     assert_eq!(entries.iter().filter(|e| e.method == "POST").count(), 1);
     assert_eq!(entries.iter().filter(|e| e.method == "DELETE").count(), 2);
+}
+
+/// Two uploads running at once share one version probe: the second waits on
+/// the probe the first started instead of asking the server again.
+#[tokio::test]
+async fn concurrent_uploads_share_one_version_probe() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for name in ["a.bin", "b.bin"] {
+        tokio::fs::write(dir.path().join(name), b"xyz")
+            .await
+            .expect("write fixture");
+    }
+    let no_delay = std::time::Duration::ZERO;
+    let (addr, log) = spawn_scripted_responder_with_delays(vec![
+        (
+            ScriptedRoute {
+                method: "PUT",
+                path_pattern: "/projects/o%2Fr/packages/generic/p/1.0.0/a.bin",
+                response: http_json("201 Created", "{}".to_string()),
+                times: None,
+            },
+            no_delay,
+        ),
+        (
+            ScriptedRoute {
+                method: "PUT",
+                path_pattern: "/projects/o%2Fr/packages/generic/p/1.0.0/b.bin",
+                response: http_json("201 Created", "{}".to_string()),
+                times: None,
+            },
+            no_delay,
+        ),
+        (
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/version",
+                response: http_json(
+                    "200 OK",
+                    serde_json::json!({"version": "17.0.0"}).to_string(),
+                ),
+                times: None,
+            },
+            std::time::Duration::from_millis(200),
+        ),
+        (
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+                response: http_json("201 Created", "{}".to_string()),
+                times: None,
+            },
+            no_delay,
+        ),
+    ]);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let ctx = GitlabCtx {
+        client: &client,
+        api_url: &api_url,
+        project_id: "o/r",
+        policy: &policy,
+        deadline: None,
+        log: tlog(),
+    };
+    let pkg = GitlabPackageRegistrySpec {
+        project_name: "p",
+        version: "1.0.0",
+    };
+    let probe = tokio::sync::OnceCell::new();
+    let path_a = dir.path().join("a.bin");
+    let path_b = dir.path().join("b.bin");
+    let asset_a = GitlabAssetSpec {
+        file_path: &path_a,
+        file_name: "a.bin",
+    };
+    let asset_b = GitlabAssetSpec {
+        file_path: &path_b,
+        file_name: "b.bin",
+    };
+    let (a, b) = tokio::join!(
+        gitlab_upload_asset(
+            &ctx,
+            "v1.0.0",
+            &asset_a,
+            Some(&pkg),
+            "https://x",
+            false,
+            &probe
+        ),
+        gitlab_upload_asset(
+            &ctx,
+            "v1.0.0",
+            &asset_b,
+            Some(&pkg),
+            "https://x",
+            false,
+            &probe
+        ),
+    );
+    a.expect("upload a");
+    b.expect("upload b");
+    assert_eq!(probe.get(), Some(&false));
+    let entries = log.lock().unwrap();
+    assert_eq!(
+        entries.iter().filter(|e| e.path == "/version").count(),
+        1,
+        "one probe for two concurrent uploads: {entries:?}"
+    );
+    assert_eq!(entries.iter().filter(|e| e.method == "POST").count(), 2);
 }
 
 /// A version probe that fails is not an answer: that asset's link uses the

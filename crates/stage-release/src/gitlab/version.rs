@@ -12,6 +12,9 @@ pub(crate) const VERSION_PROBE_RETRY: RetryPolicy = RetryPolicy {
 
 /// Detect whether the GitLab server is pre-v17.
 ///
+/// `Some(true)` is a pre-v17 server, whose release links take the `filepath`
+/// field; `Some(false)` is v17 or later, which takes `direct_asset_path`.
+///
 /// Strategy:
 /// 1. Check `CI_SERVER_VERSION` environment variable (set in GitLab CI runners)
 /// 2. Fall back to `GET /api/v4/version` API call, retried on
