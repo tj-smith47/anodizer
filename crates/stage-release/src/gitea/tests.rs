@@ -1069,6 +1069,95 @@ async fn find_release_sweeps_past_ten_pages_on_an_old_server() {
     assert_eq!(entries.len(), 13, "the by-tag probe and twelve pages");
 }
 
+/// A by-tag probe that fails on anything but a 404 ends the lookup with that
+/// error; the listing is never asked.
+#[tokio::test]
+async fn find_release_surfaces_a_non_404_probe_failure() {
+    let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/api/v1/repos/o/r/releases/tags/v2.0.0",
+        response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+        times: None,
+    }]);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let err = find_release_by_tag(
+        &GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+            deadline: None,
+            log: tlog(),
+        },
+        "v2.0.0",
+    )
+    .await
+    .expect_err("a 500 on the probe is the lookup's error");
+    assert!(format!("{err:#}").contains("HTTP 500"), "{err:#}");
+
+    let entries = log.lock().unwrap();
+    assert_eq!(
+        entries.len(),
+        2,
+        "two probe attempts on the policy, no listing page"
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|e| e.path.starts_with("/api/v1/repos/o/r/releases/tags/"))
+    );
+}
+
+/// A server that ignores `page` serves one full page for every number; the
+/// sweep ends on the first repeat with an error instead of looping, and
+/// never answers "no release" for a tag it could not look for.
+#[tokio::test]
+async fn find_release_stops_on_a_listing_that_repeats_a_page() {
+    let page: Vec<serde_json::Value> = (0..50u64)
+        .map(|i| serde_json::json!({"id": 100 + i, "tag_name": format!("p-{i}")}))
+        .collect();
+    let body = serde_json::Value::Array(page).to_string();
+    let routes: Vec<ScriptedRoute> = (1..=3u64)
+        .map(|page| ScriptedRoute {
+            method: "GET",
+            path_pattern: Box::leak(
+                format!("/api/v1/repos/o/r/releases?page={page}&limit=50").into_boxed_str(),
+            ),
+            response: http_json("200 OK", body.clone()),
+            times: None,
+        })
+        .collect();
+    let (addr, log) = spawn_scripted_responder(routes);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let err = find_release_by_tag(
+        &GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+            deadline: None,
+            log: tlog(),
+        },
+        "v9.9.9",
+    )
+    .await
+    .expect_err("a repeating listing is an error, not an absence");
+    assert!(
+        format!("{err:#}").contains("the same page twice (page 2 repeats page 1)"),
+        "{err:#}"
+    );
+    let entries = log.lock().unwrap();
+    assert_eq!(entries.len(), 3, "the by-tag probe and two listing pages");
+}
+
 /// A matched release object missing its `id` field surfaces an explicit
 /// error from the listing parse rather than a silent skip.
 #[tokio::test]

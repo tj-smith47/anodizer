@@ -213,7 +213,17 @@ pub(crate) async fn find_release_by_tag(
 
     const PAGE_SIZE: u32 = 50;
 
+    // A server or proxy that ignores `page` serves the same full page for
+    // every number; the sweep ends on the first repeat rather than looping
+    // for ever, and a repeat is an answer the caller cannot act on.
+    let mut previous_first_id: Option<u64> = None;
     for page in 1.. {
+        if page > 1 && deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            bail!(
+                "gitea: could not enumerate releases for tag '{tag}': the retry deadline \
+                 passed while reading the listing (page {page})"
+            );
+        }
         let url = format!(
             "{}/api/v1/repos/{}/{}/releases?page={}&limit={}",
             api, enc_owner, enc_repo, page, PAGE_SIZE
@@ -245,6 +255,17 @@ pub(crate) async fn find_release_by_tag(
         {
             return Ok(Some(release_id_and_body(release)?));
         }
+
+        let first_id = releases.first().and_then(|r| r["id"].as_u64());
+        if first_id.is_some() && first_id == previous_first_id {
+            bail!(
+                "gitea: could not enumerate releases for tag '{tag}': the listing served \
+                 the same page twice (page {page} repeats page {}), so the server is not \
+                 honoring the page parameter",
+                page - 1
+            );
+        }
+        previous_first_id = first_id;
 
         // Fewer results than the page size means there are no more pages.
         if releases.len() < PAGE_SIZE as usize {

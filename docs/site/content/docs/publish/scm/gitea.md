@@ -58,7 +58,7 @@ Control how release notes are handled when a release already exists:
 ## Behavior
 
 - Supports draft and prerelease flags (unlike GitLab)
-- Existing release detection uses paginated listing (up to 10 pages, 50 per page)
+- Existing release detection asks `GET /releases/tags/{tag}` first; on a 404 (no release, or a server older than 1.13 without that endpoint) it reads every listing page, 50 per page, and stops on a page that repeats
 - `replace_existing_artifacts`: lists attachments, finds by name, deletes, then re-uploads
 - Asset upload via multipart POST with the file as the `attachment` form field
 - URL segments are percent-encoded for special characters
