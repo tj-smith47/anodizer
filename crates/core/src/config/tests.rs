@@ -937,6 +937,32 @@ fn test_release_on_failure_parses_both_values() {
     }
 }
 
+/// `release.github.token` can only be written beside `owner` and `name`:
+/// a block naming the token alone is refused at load. Owner/name inference
+/// therefore only ever fills a block that does not exist, so it can never
+/// meet a configured token and drop it.
+#[test]
+fn a_release_repo_block_with_only_a_token_does_not_load() {
+    for (provider, yaml) in [
+        ("github", "github:\n  token: \"{{ .Env.RELEASE_TOKEN }}\""),
+        ("gitlab", "gitlab:\n  token: \"{{ .Env.RELEASE_TOKEN }}\""),
+        ("gitea", "gitea:\n  token: \"{{ .Env.RELEASE_TOKEN }}\""),
+    ] {
+        let err = serde_yaml_ng::from_str::<ReleaseConfig>(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing field") && msg.contains("owner"),
+            "{provider}: a token-only block must be refused naming the missing owner, got: {msg}"
+        );
+    }
+    let yaml = "github:\n  owner: acme\n  name: widget\n  token: \"{{ .Env.RELEASE_TOKEN }}\"";
+    let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+    assert_eq!(
+        cfg.github.unwrap().token.as_deref(),
+        Some("{{ .Env.RELEASE_TOKEN }}")
+    );
+}
+
 #[test]
 fn test_release_on_failure_rejects_unknown_value() {
     let err = serde_yaml_ng::from_str::<ReleaseConfig>("on_failure: explode").unwrap_err();

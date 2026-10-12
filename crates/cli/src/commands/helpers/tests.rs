@@ -2372,6 +2372,79 @@ fn auto_detect_github_fills_workspace_crates_from_remote() {
     });
 }
 
+/// A crate that wrote its own `github:` block keeps it whole through the
+/// inference pass — owner, name and the token override — even when the
+/// remote names a different repository. Inference fills only an absent block.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(cwd)]
+fn auto_detect_github_keeps_an_explicit_block_and_its_token() {
+    with_empty_git_repo_cwd(|| {
+        assert!(
+            std::process::Command::new("git")
+                .args([
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://github.com/acme/widget.git"
+                ])
+                .status()
+                .unwrap()
+                .success(),
+            "git remote add must succeed"
+        );
+        let explicit = || anodizer_core::config::GitHubConfig {
+            owner: "other-org".to_string(),
+            name: "mirror".to_string(),
+            token: Some("{{ .Env.RELEASE_TOKEN }}".to_string()),
+        };
+        let release = || anodizer_core::config::ReleaseConfig {
+            github: Some(explicit()),
+            ..Default::default()
+        };
+        let mut config = Config {
+            project_name: "x".to_string(),
+            crates: vec![CrateConfig {
+                name: "top".to_string(),
+                release: Some(release()),
+                ..Default::default()
+            }],
+            workspaces: Some(vec![WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![CrateConfig {
+                    name: "member".to_string(),
+                    release: Some(release()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        auto_detect_github(&mut config, &quiet_log());
+        let top = config.crates[0]
+            .release
+            .as_ref()
+            .unwrap()
+            .github
+            .as_ref()
+            .unwrap();
+        let member = config.workspaces.as_ref().unwrap()[0].crates[0]
+            .release
+            .as_ref()
+            .unwrap()
+            .github
+            .as_ref()
+            .unwrap();
+        for gh in [top, member] {
+            assert_eq!(
+                (gh.owner.as_str(), gh.name.as_str(), gh.token.as_deref()),
+                ("other-org", "mirror", Some("{{ .Env.RELEASE_TOKEN }}")),
+                "an explicit block must survive inference untouched"
+            );
+        }
+    });
+}
+
 // ---- discover_workspace_root — override ancestor walk --------------
 
 /// With a `--config` override pointing at a file inside a dir that has a

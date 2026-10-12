@@ -891,6 +891,90 @@ fn use_existing_draft_patches_instead_of_posting() {
 }
 
 // ---------------------------------------------------------------------
+// 3a. use_existing_draft matches the draft by its rendered TITLE, not by
+//     the tag: a draft named after the tag is passed over, the one named
+//     as the release will be named is PATCHed.
+// ---------------------------------------------------------------------
+#[test]
+fn use_existing_draft_matches_the_rendered_title_not_the_tag() {
+    let tmp = TempDir::new().expect("tempdir");
+    let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", b"data");
+    let artifact_len = std::fs::metadata(&artifact_path).expect("meta").len();
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+
+    let tag_named = release_json(addr, 54, true, "v1.2.3");
+    let titled = release_json(addr, 55, true, "Release v1.2.3");
+    let list_body = format!("[{tag_named},{titled}]");
+
+    let routes = vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/o/r/releases?per_page=100&page=1",
+            response: http_ok(list_body),
+            times: Some(1),
+        },
+        ScriptedRoute {
+            method: "PATCH",
+            path_pattern: "/repos/o/r/releases/55",
+            response: http_ok(titled.clone()),
+            times: Some(1),
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/o/r/releases/55",
+            response: http_ok(titled),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "POST",
+            path_pattern: "/upload/55?name=demo.tar.gz",
+            response: http_201(asset_json(7, "demo.tar.gz", artifact_len)),
+            times: Some(1),
+        },
+    ];
+    let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+    let ctx = build_ctx(addr);
+    let crate_cfg = build_crate_cfg();
+    let rt = tokio::runtime::Runtime::new().expect("rt");
+    let token = Some("test-token".to_string());
+    let artifacts = vec![(artifact_path, Some("demo.tar.gz".to_string()))];
+
+    let mut opts = base_opts();
+    opts.use_existing_draft = true;
+    let anc = spec_ancillary_default();
+    let spec = GithubReleaseSpec {
+        name: "Release v1.2.3",
+        ..make_spec(&anc)
+    };
+    run_backend(&rt, &ctx, &token, &crate_cfg, &spec, &opts, &artifacts)
+        .expect("backend succeeds")
+        .expect("returns Some");
+
+    let entries = log.lock().expect("log mutex");
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.method == "PATCH" && e.path == "/repos/o/r/releases/55"),
+        "the draft carrying the rendered title must be PATCHed; calls: {entries:?}",
+    );
+    assert!(
+        !entries
+            .iter()
+            .any(|e| e.method == "PATCH" && e.path == "/repos/o/r/releases/54"),
+        "the draft named after the tag must not be touched; calls: {entries:?}",
+    );
+    assert!(
+        !entries
+            .iter()
+            .any(|e| e.method == "POST" && e.path == "/repos/o/r/releases"),
+        "no new release may be created while a titled draft exists; calls: {entries:?}",
+    );
+}
+
+// ---------------------------------------------------------------------
 // 3b. keep-existing re-touch of an already-live release — the publish
 //     pipeline pass that runs after the release stage already created and
 //     published the release. The PATCH stays idempotent, but the

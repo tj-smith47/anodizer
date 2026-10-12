@@ -14,7 +14,7 @@
 //!   and retry, bounded by `max(policy.max_attempts,`
 //!   [`MIN_UPLOAD_TRANSIENT_ATTEMPTS`]`)`.
 //! - `AlreadyExists` (422) probes the remote asset's size + state and
-//!   dispatches skip / bail / delete-and-retry via
+//!   dispatches skip / bail / delete-and-re-upload (inside the same attempt) via
 //!   [`classify_already_exists`]. A PARTIAL asset (GitHub state not
 //!   `"uploaded"` — debris from an interrupted prior attempt, e.g. one of
 //!   the transient failures above) is always deleted and re-uploaded,
@@ -308,12 +308,18 @@ pub(crate) async fn upload_release_asset(
                 };
                 let local_size = data.len() as u64;
 
-                let result = octo
-                    .repos(owner, repo)
-                    .releases()
-                    .upload_asset(release_id, file_name, data.into())
-                    .send()
-                    .await;
+                // The file is re-read per POST rather than cloned: the second
+                // POST (after a delete) is rare, and holding two copies of a
+                // large artifact doubles the peak memory of every upload task.
+                let post = |data: Vec<u8>| async move {
+                    octo.repos(owner, repo)
+                        .releases()
+                        .upload_asset(release_id, file_name, data.into())
+                        .send()
+                        .await
+                };
+
+                let result = post(data).await;
                 match classify_upload_attempt(&result) {
                     UploadAttemptOutcome::Success => {
                         Step::Done(crate::forge::UploadOutcome::Uploaded(file_name.to_string()))
@@ -456,10 +462,33 @@ pub(crate) async fn upload_release_asset(
                                 if !partial {
                                     overwrite_attempted.store(true, Ordering::Relaxed);
                                 }
-                                Step::Retry {
-                                    error: UploadFailure::Transient(anyhow::anyhow!(err)),
-                                    delay: exp_backoff(),
-                                    cause: "asset already exists; deleted and retrying".to_string(),
+                                // Re-upload inside this attempt: the delete is
+                                // not a failed upload, so it must not spend one
+                                // of the attempts and must still replace the
+                                // asset when this attempt is the last one.
+                                let reupload = match std::fs::read(path) {
+                                    Ok(d) => post(d).await,
+                                    Err(e) => {
+                                        return Step::Fail(UploadFailure::Fatal(
+                                            anyhow::Error::new(e).context(format!(
+                                                "release: read artifact {}",
+                                                path.display()
+                                            )),
+                                        ));
+                                    }
+                                };
+                                match reupload {
+                                    Ok(_) => Step::Done(crate::forge::UploadOutcome::Uploaded(
+                                        file_name.to_string(),
+                                    )),
+                                    Err(reupload_err) => Step::Retry {
+                                        error: UploadFailure::Transient(anyhow::anyhow!(
+                                            reupload_err
+                                        )),
+                                        delay: exp_backoff(),
+                                        cause: "asset already exists; deleted and re-uploaded"
+                                            .to_string(),
+                                    },
                                 }
                             }
                             Err(del_err) if partial => Step::Fail(UploadFailure::Fatal(
@@ -738,8 +767,24 @@ mod tests {
         replace_existing_artifacts: bool,
         env_source: &dyn anodizer_core::EnvSource,
     ) -> Result<crate::forge::UploadOutcome> {
+        run_upload_with_policy(
+            addr,
+            path,
+            replace_existing_artifacts,
+            env_source,
+            test_retry_policy(),
+        )
+        .await
+    }
+
+    async fn run_upload_with_policy(
+        addr: SocketAddr,
+        path: &std::path::Path,
+        replace_existing_artifacts: bool,
+        env_source: &dyn anodizer_core::EnvSource,
+        policy: anodizer_core::retry::RetryPolicy,
+    ) -> Result<crate::forge::UploadOutcome> {
         let octo = build_test_octocrab(addr);
-        let policy = test_retry_policy();
         upload_release_asset(UploadAssetRequest {
             octo: &octo,
             owner: "o",
@@ -861,7 +906,7 @@ mod tests {
         // Attempt 1 leaves a partial server-side (401 flake mid-upload);
         // attempt 2's POST is rejected 422 already_exists by the partial.
         // Recovery must: probe (list -> state "starter"), delete (list +
-        // DELETE), then attempt 3 re-uploads to success — all WITHOUT
+        // DELETE), then re-upload to success inside attempt 2 — all WITHOUT
         // `replace_existing_artifacts`, because a partial is never
         // published content.
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -885,7 +930,7 @@ mod tests {
                 // delete: list + DELETE
                 partial_list(addr),
                 http("204 No Content", ""),
-                // attempt 3
+                // re-upload, still attempt 2
                 release_json(addr),
                 uploaded_asset_response(addr, "app.tar.gz", 12),
             ]
@@ -901,7 +946,92 @@ mod tests {
         assert_eq!(
             calls.load(Ordering::SeqCst),
             9,
-            "expected 3 attempts (2 GET+POST pairs + 1 GET+POST) + probe list + delete list + DELETE"
+            "expected 2 attempts (2 GET+POST pairs) + probe list + delete list + DELETE + re-upload GET+POST"
+        );
+    }
+
+    /// A differing published asset met on the LAST attempt is still replaced:
+    /// the delete and the re-upload happen inside that attempt, so the
+    /// replacement does not depend on an attempt being left to spend. Two
+    /// transient 500s burn attempts 1 and 2 of the 3-attempt floor; attempt 3
+    /// meets the 422, deletes the stale asset and re-uploads to 201.
+    #[tokio::test]
+    async fn a_differing_asset_is_replaced_inside_the_attempt_that_met_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_artifact(tmp.path(), "app.tar.gz", b"new-content");
+        let stale_list = |addr| {
+            http(
+                "200 OK",
+                &format!("[{}]", asset_json(addr, "app.tar.gz", 4, "uploaded")),
+            )
+        };
+        let (addr, calls) = spawn_oneshot_http_responder_with(|addr| {
+            vec![
+                // attempt 1
+                release_json(addr),
+                http("500 Internal Server Error", r#"{"message":"try again"}"#),
+                // attempt 2
+                release_json(addr),
+                http("500 Internal Server Error", r#"{"message":"try again"}"#),
+                // attempt 3: the last one the floor allows
+                release_json(addr),
+                http("422 Unprocessable Entity", BODY_422_ALREADY_EXISTS),
+                // probe list (find_release_asset_probe)
+                stale_list(addr),
+                // delete: list + DELETE
+                stale_list(addr),
+                http("204 No Content", ""),
+                // re-upload, still attempt 3
+                release_json(addr),
+                uploaded_asset_response(addr, "app.tar.gz", 11),
+            ]
+        });
+        let policy = anodizer_core::retry::RetryPolicy {
+            max_attempts: MIN_UPLOAD_TRANSIENT_ATTEMPTS,
+            ..test_retry_policy()
+        };
+
+        let result = run_upload_with_policy(addr, &path, true, &EmptyEnv, policy).await;
+
+        assert_eq!(
+            result.expect("the replacement on the last attempt must succeed"),
+            crate::forge::UploadOutcome::Uploaded("app.tar.gz".to_string()),
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            11,
+            "3 GET+POST pairs + probe list + delete list + DELETE + re-upload GET+POST"
+        );
+    }
+
+    /// `replace_existing_artifacts: false` deletes nothing: the first 422 on a
+    /// differing published asset is the end of the upload, with one POST made.
+    #[tokio::test]
+    async fn no_replace_makes_one_post_and_deletes_nothing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_artifact(tmp.path(), "app.tar.gz", b"different-content");
+        let (addr, calls) = spawn_oneshot_http_responder_with(|addr| {
+            vec![
+                release_json(addr),
+                http("422 Unprocessable Entity", BODY_422_ALREADY_EXISTS),
+                http(
+                    "200 OK",
+                    &format!("[{}]", asset_json(addr, "app.tar.gz", 4, "uploaded")),
+                ),
+            ]
+        });
+        let policy = anodizer_core::retry::RetryPolicy {
+            max_attempts: MIN_UPLOAD_TRANSIENT_ATTEMPTS,
+            ..test_retry_policy()
+        };
+
+        let result = run_upload_with_policy(addr, &path, false, &EmptyEnv, policy).await;
+
+        result.expect_err("a differing asset with replace=false must fail");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "one GET + one POST + the probe list; no DELETE and no second POST"
         );
     }
 
