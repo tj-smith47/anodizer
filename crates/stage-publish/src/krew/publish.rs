@@ -80,6 +80,16 @@ pub fn publish_to_krew(
     };
     let repo_owner = util::render_or_warn(ctx, log, "krew.repository.owner", &repo_owner_raw)?;
     let repo_name = util::render_or_warn(ctx, log, "krew.repository.name", &repo_name_raw)?;
+    let Some(pr_token) = crate::publisher_helpers::absorb_entry_skip(
+        ctx,
+        log,
+        "krew",
+        crate_name,
+        crate::publisher_helpers::pr_token_before_push(ctx, krew_cfg.repository.as_ref()),
+    )?
+    else {
+        return Ok(KrewPublishOutcome::skipped());
+    };
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -224,32 +234,6 @@ pub fn publish_to_krew(
             .context("krew: render update_existing_pr condition")?,
         None => false,
     };
-    let push_outcome = util::commit_and_push_with_opts(
-        repo_path,
-        &["."],
-        &commit_msg,
-        branch,
-        "krew",
-        &commit_opts,
-        log,
-    )?;
-    let pushed = match push_outcome {
-        util::CommitOutcome::Pushed { .. } => {
-            log.status(&format!(
-                "Krew manifest pushed to {}/{} branch '{}'",
-                repo_owner, repo_name, branch_name
-            ));
-            true
-        }
-        util::CommitOutcome::NoChanges => {
-            log.status(&format!(
-                "nothing to push, krew manifest for '{}' already up to date",
-                plugin_name
-            ));
-            false
-        }
-    };
-
     // Submit a PR. When `repository.pull_request` is configured, use the
     // unified PR helper (which respects `base`, `draft`, `body`); otherwise
     // submit a PR via `gh` CLI against the canonical kubernetes-sigs/krew-index
@@ -266,6 +250,40 @@ pub fn publish_to_krew(
     // drops the immutable borrow, making the subsequent `&mut ctx`
     // call legal.
     let repo_for_pr = krew_cfg.repository.clone();
+    // Resolved before the push so a render error cannot leave a pushed
+    // branch unrecorded.
+    let target = super::publisher::collect_krew_target(ctx, crate_name, log)?;
+    let push_outcome = util::commit_and_push_with_opts(
+        repo_path,
+        &["."],
+        &commit_msg,
+        branch,
+        "krew",
+        &commit_opts,
+        log,
+    )?;
+    let pushed = match push_outcome {
+        util::CommitOutcome::Pushed { .. } => {
+            // Recorded the moment the push went through, so the row names
+            // this branch whatever happens after it.
+            if let Some(t) = target {
+                ctx.record_committed_work(super::publisher::krew_evidence(vec![t]));
+            }
+            log.status(&format!(
+                "Krew manifest pushed to {}/{} branch '{}'",
+                repo_owner, repo_name, branch_name
+            ));
+            true
+        }
+        util::CommitOutcome::NoChanges => {
+            log.status(&format!(
+                "nothing to push, krew manifest for '{}' already up to date",
+                plugin_name
+            ));
+            false
+        }
+    };
+
     let render = |s: &str| ctx.render_template(s);
 
     let pr_outcome = if has_pr_config {
@@ -287,6 +305,7 @@ pub fn publish_to_krew(
             ),
             "krew",
             log,
+            pr_token.as_deref(),
             &render,
             ctx.env_source(),
         )?
@@ -321,7 +340,7 @@ pub fn publish_to_krew(
             log,
             util::SubmitPrOpts {
                 update_existing_pr,
-                token: util::configured_pr_token(repo_for_pr.as_ref(), &render)?,
+                token: pr_token,
             },
             ctx.env_source(),
         )

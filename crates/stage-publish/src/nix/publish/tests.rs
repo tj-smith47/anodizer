@@ -1989,6 +1989,84 @@ mod subprocess {
         assert!(!pushed, "dry-run must report no push");
         drop(bare);
     }
+
+    /// A `pull_request.token` that does not render disqualifies its crate
+    /// before the overlay is cloned: that overlay keeps only its seed commit,
+    /// the skip is recorded, and the crate after it still pushes its derivation.
+    #[test]
+    fn an_unrenderable_pull_request_token_skips_the_entry_before_any_push() {
+        use anodizer_core::Publisher;
+        let (broken_url, broken_bare) = make_bare_repo("main");
+        let (good_url, good_bare) = make_bare_repo("main");
+        let nix_crate = |name: &str, nix: NixConfig| anodizer_core::config::CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
+            release: Some(ReleaseConfig {
+                github: Some(anodizer_core::config::ScmRepoConfig {
+                    owner: "myorg".to_string(),
+                    name: name.to_string(),
+                    token: None,
+                }),
+                ..Default::default()
+            }),
+            publish: Some(PublishConfig {
+                nix: Some(nix),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut broken_nix = nix_cfg_local(&broken_url, "main");
+        broken_nix.repository.as_mut().unwrap().pull_request =
+            Some(anodizer_core::config::PullRequestConfig {
+                enabled: None,
+                base: None,
+                draft: None,
+                body: None,
+                token: Some("{{ PrToken }}".to_string()),
+            });
+        let project = crate::testing::hermetic_tagged_repo();
+        let mut ctx = TestContextBuilder::new()
+            .tag("v0.1.0")
+            .project_root(project.path().to_path_buf())
+            .crates(vec![
+                nix_crate("alpha", broken_nix),
+                nix_crate("beta", nix_cfg_local(&good_url, "main")),
+            ])
+            .build();
+        for name in ["alpha", "beta"] {
+            for mut a in two_archives() {
+                a.crate_name = name.to_string();
+                ctx.artifacts.add(a);
+            }
+        }
+
+        crate::nix::publisher::NixPublisher::new()
+            .run(&mut ctx)
+            .expect("a token that does not render must not fail the publisher");
+
+        assert_eq!(
+            git_stdout(broken_bare.path(), &["rev-list", "--count", "--all"]),
+            "1",
+            "the skipped crate's overlay must keep only its seed commit"
+        );
+        let events = ctx.skip_memento.snapshot();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].stage, "nix");
+        assert_eq!(events[0].label, "alpha");
+        assert!(
+            events[0]
+                .reason
+                .starts_with("pull_request.token does not render: "),
+            "{}",
+            events[0].reason
+        );
+        assert!(!events[0].reason.contains("{{"), "{}", events[0].reason);
+        let drv = show(Path::new(&good_url), "main", "pkgs/beta/default.nix");
+        assert!(drv.contains("pname = \"beta\";"), "{drv}");
+        drop(broken_bare);
+        drop(good_bare);
+    }
 }
 
 /// A nix `url_template` renders the archive's own target variant: the ABI of

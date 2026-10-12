@@ -192,12 +192,14 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
         // the evidence and orphan the opened PRs from the run report.
         let mut targets: Vec<HomebrewCoreTargetSnapshot> = Vec::new();
         let publish_err = publish_to_homebrew_core(ctx, &log, &mut targets).err();
+        let total = ctx.config.homebrew_cores.as_ref().map_or(0, Vec::len);
+        let landed = !targets.is_empty();
 
         let mut evidence = anodizer_core::PublishEvidence::new("homebrew-core");
         if let Some(first) = targets.iter().find(|t| t.pr_url.is_some()) {
             evidence.primary_ref = first.pr_url.clone();
         }
-        if !targets.is_empty() {
+        if landed {
             evidence.extra = anodizer_core::PublishEvidenceExtra::HomebrewCore(
                 anodizer_core::publish_evidence::HomebrewCoreExtra {
                     homebrew_core_targets: targets,
@@ -208,6 +210,14 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
             log.error(&format!("homebrew-core: publish failed: {e:#}"));
             ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Failed(format!("{e:#}")));
         }
+        // After the failure is recorded, so a skip never pre-empts it.
+        crate::publisher_helpers::evaluate_entry_skips(
+            ctx,
+            &log,
+            "homebrew-core",
+            crate::publisher_helpers::RunLanding::from_landed(landed),
+            total,
+        );
         Ok(evidence)
     }
 

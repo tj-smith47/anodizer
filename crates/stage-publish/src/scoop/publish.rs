@@ -57,6 +57,16 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
     else {
         return Ok(false);
     };
+    let Some(pr_token) = crate::publisher_helpers::absorb_entry_skip(
+        ctx,
+        log,
+        "scoop",
+        crate_name,
+        crate::publisher_helpers::pr_token_before_push(ctx, scoop_cfg.repository.as_ref()),
+    )?
+    else {
+        return Ok(false);
+    };
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -234,6 +244,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         ),
         "scoop",
         log,
+        pr_token.as_deref(),
         &|s| ctx.render_template(s),
         ctx.env_source(),
     )?;

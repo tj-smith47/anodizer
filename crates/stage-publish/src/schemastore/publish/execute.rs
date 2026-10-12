@@ -380,6 +380,11 @@ pub(super) fn run_real(
         .with_context(|| format!("schemastore: write {}", catalog_abs.display()))?;
 
     let branch = schemastore_branch(&ctx.version());
+    // Resolved before the push: a template that does not render is this
+    // block's one fork, so it stays a hard error, and the fork keeps no
+    // branch for a pull request that cannot open.
+    let pr_token =
+        crate::util::configured_pr_token(cfg.repository.as_ref(), &|s| ctx.render_template(s))?;
 
     // Pending-PR idempotency: if a fork→upstream PR on this branch is already
     // open and unmerged, treat the work as in-flight rather than pushing a
@@ -433,9 +438,7 @@ pub(super) fn run_real(
         log,
         crate::util::SubmitPrOpts {
             update_existing_pr: false,
-            token: crate::util::configured_pr_token(cfg.repository.as_ref(), &|s| {
-                ctx.render_template(s)
-            })?,
+            token: pr_token,
         },
     );
     if let Some(outcome) = pr_outcome {

@@ -231,6 +231,7 @@ pub(crate) fn submit_winget_pr(
     version: &str,
     update_existing_pr: bool,
     log: &StageLogger,
+    token: Option<&str>,
     render: &dyn Fn(&str) -> Result<String>,
     env: &dyn anodizer_core::EnvSource,
 ) -> Result<Option<anodizer_core::PublisherOutcome>> {
@@ -261,6 +262,7 @@ pub(crate) fn submit_winget_pr(
             &body,
             "winget",
             log,
+            token,
             render,
             env,
         )
@@ -290,7 +292,7 @@ pub(crate) fn submit_winget_pr(
             log,
             util::SubmitPrOpts {
                 update_existing_pr,
-                token: util::configured_pr_token(repo_for_pr, render)?,
+                token: token.map(str::to_string),
             },
             env,
         ))

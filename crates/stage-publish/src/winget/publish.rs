@@ -39,6 +39,9 @@ pub(crate) fn publish_to_winget_with_config(
     let Some(identity) = resolve_winget_identity(ctx, crate_name, derived, log)? else {
         return Ok(false);
     };
+    // An entry skip like the identity's own, absorbed by the publisher's run.
+    let pr_token =
+        crate::publisher_helpers::pr_token_before_push(ctx, derived.repository.as_ref())?;
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -53,7 +56,7 @@ pub(crate) fn publish_to_winget_with_config(
     // fallback-to-repo-owner warning a second time per publish).
     let rendered = render_winget_manifests_with_identity(ctx, crate_name, derived, &identity, log)?;
 
-    submit_winget_manifests(ctx, log, derived, &rendered)?;
+    submit_winget_manifests(ctx, log, derived, &rendered, pr_token.as_deref())?;
     Ok(true)
 }
 
@@ -66,6 +69,7 @@ pub(crate) fn submit_winget_manifests(
     log: &StageLogger,
     winget_cfg: &anodizer_core::config::WingetConfig,
     rendered: &RenderedWingetManifests,
+    pr_token: Option<&str>,
 ) -> Result<()> {
     let version = ctx.version();
     let repo_owner = rendered.repo_owner.as_str();
@@ -175,6 +179,7 @@ pub(crate) fn submit_winget_manifests(
         &version,
         update_existing_pr,
         log,
+        pr_token,
         &|s| ctx.render_template(s),
         ctx.env_source(),
     )?;

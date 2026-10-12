@@ -123,6 +123,16 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
     else {
         return Ok(());
     };
+    let Some(pr_token) = crate::publisher_helpers::absorb_entry_skip(
+        ctx,
+        log,
+        "homebrew-cask",
+        crate_name,
+        crate::publisher_helpers::pr_token_before_push(ctx, hb_cfg.repository.as_ref()),
+    )?
+    else {
+        return Ok(());
+    };
 
     let version = ctx.version();
     let cask_name = super::cask::cask_name_for(cask_cfg.name.as_deref().unwrap_or(crate_name));
@@ -279,6 +289,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         ),
         "homebrew cask",
         log,
+        pr_token.as_deref(),
         &|s| ctx.render_template(s),
     )?;
 

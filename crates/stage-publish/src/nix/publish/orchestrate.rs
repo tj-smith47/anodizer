@@ -49,6 +49,16 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
         Some(coords) => coords,
         None => return Ok(false),
     };
+    let Some(pr_token) = crate::publisher_helpers::absorb_entry_skip(
+        ctx,
+        log,
+        "nix",
+        crate_name,
+        crate::publisher_helpers::pr_token_before_push(ctx, nix_cfg.repository.as_ref()),
+    )?
+    else {
+        return Ok(false);
+    };
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -131,6 +141,7 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
         &repo_owner,
         &repo_name,
         crate_name,
+        pr_token.as_deref(),
         log,
     )
 }

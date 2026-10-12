@@ -591,6 +591,16 @@ pub fn publish_top_level_homebrew_casks(
         else {
             continue;
         };
+        let Some(pr_token) = crate::publisher_helpers::absorb_entry_skip(
+            ctx,
+            log,
+            "homebrew-cask",
+            &cask_name,
+            crate::publisher_helpers::pr_token_before_push(ctx, repo_cfg),
+        )?
+        else {
+            continue;
+        };
 
         // Directory defaults to "Casks". A warning is emitted
         // when the resolved value is not "Casks" since a non-default cask
@@ -751,6 +761,7 @@ pub fn publish_top_level_homebrew_casks(
             ),
             "homebrew_casks",
             log,
+            pr_token.as_deref(),
             &|s| ctx.render_template(s),
         )?;
 

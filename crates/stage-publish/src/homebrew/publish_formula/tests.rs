@@ -1373,3 +1373,84 @@ fn homebrew_formula_url_template_renders_the_target_variant() {
         "https://example.com/darwin_arm64"
     );
 }
+
+/// A `pull_request.token` that does not render disqualifies its crate
+/// before the tap is cloned: that tap keeps only its seed commit, the skip
+/// is recorded, and the crate after it still pushes its formula.
+#[test]
+fn an_unrenderable_pull_request_token_skips_the_entry_before_any_push() {
+    use anodizer_core::Publisher;
+    let (broken_url, broken_bare) = make_bare_tap("main");
+    let (good_url, good_bare) = make_bare_tap("main");
+    let tap_crate = |name: &str, hb: HomebrewConfig| CrateConfig {
+        name: name.to_string(),
+        path: ".".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
+        release: Some(ReleaseConfig {
+            github: Some(anodizer_core::config::ScmRepoConfig {
+                owner: "myorg".to_string(),
+                name: name.to_string(),
+                token: None,
+            }),
+            ..Default::default()
+        }),
+        publish: Some(PublishConfig {
+            homebrew: Some(hb),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut broken_hb = hb_cfg_local(&broken_url, "main");
+    broken_hb.repository.as_mut().unwrap().pull_request =
+        Some(anodizer_core::config::PullRequestConfig {
+            enabled: None,
+            base: None,
+            draft: None,
+            body: None,
+            token: Some("{{ PrToken }}".to_string()),
+        });
+    let project = crate::testing::hermetic_tagged_repo();
+    let mut ctx = TestContextBuilder::new()
+        .tag("v0.1.0")
+        .project_root(project.path().to_path_buf())
+        .crates(vec![
+            tap_crate("alpha", broken_hb),
+            tap_crate("beta", hb_cfg_local(&good_url, "main")),
+        ])
+        .build();
+    for name in ["alpha", "beta"] {
+        let mut a = archive(
+            "x86_64-unknown-linux-gnu",
+            "https://e/linux.tar.gz",
+            "shalin",
+        );
+        a.crate_name = name.to_string();
+        ctx.artifacts.add(a);
+    }
+
+    crate::homebrew::publisher::HomebrewPublisher::new()
+        .run(&mut ctx)
+        .expect("a token that does not render must not fail the publisher");
+
+    assert_eq!(
+        git_stdout(Path::new(&broken_url), &["rev-list", "--count", "--all"]),
+        "1",
+        "the skipped crate's tap must keep only its seed commit"
+    );
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].stage, "homebrew");
+    assert_eq!(events[0].label, "alpha");
+    assert!(
+        events[0]
+            .reason
+            .starts_with("pull_request.token does not render: "),
+        "{}",
+        events[0].reason
+    );
+    assert!(!events[0].reason.contains("{{"), "{}", events[0].reason);
+    let formula = tap_show(Path::new(&good_url), "main", "beta.rb");
+    assert!(formula.contains("class Beta < Formula"), "{formula}");
+    drop(broken_bare);
+    drop(good_bare);
+}

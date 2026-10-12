@@ -59,6 +59,18 @@ pub(crate) fn publish_to_homebrew_core(
             log.status("skipped homebrew-core entry — `if` condition evaluated falsy");
             continue;
         }
+        // Resolved before any request is made, so a template that does not
+        // render leaves no branch and no fork behind it.
+        let Some(pr_token) = crate::publisher_helpers::absorb_entry_skip(
+            ctx,
+            log,
+            "homebrew-core",
+            &label,
+            crate::publisher_helpers::pr_token_before_push(ctx, cfg.repository.as_ref()),
+        )?
+        else {
+            continue;
+        };
 
         let formula = resolve_formula_name(ctx, cfg)?;
         let version = ctx.version();
@@ -363,17 +375,10 @@ pub(crate) fn publish_to_homebrew_core(
         };
         // The pull request may open with a token of its own: the fork token
         // commonly cannot open pull requests against the upstream repository.
-        let pr_api = match pr_cfg.and_then(|p| p.token.as_deref()) {
-            Some(raw) => {
-                let rendered = ctx
-                    .render_template(raw)
-                    .context("homebrew-core: render pull_request.token template")?;
-                (!rendered.is_empty())
-                    .then(|| GithubApi::new(ctx.env_source(), &rendered))
-                    .transpose()?
-            }
-            None => None,
-        };
+        let pr_api = pr_token
+            .as_deref()
+            .map(|t| GithubApi::new(ctx.env_source(), t))
+            .transpose()?;
         let pr_url = match pr_api.as_ref().unwrap_or(&api).create_pr(
             &up_owner,
             &up_repo,

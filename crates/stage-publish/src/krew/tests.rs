@@ -2668,3 +2668,168 @@ fn publish_residual_description_template_dry_run_stays_lenient() {
         "dry-run must report no push, regardless of the residual template"
     );
 }
+
+/// Build a release-shaped context for `KrewPublisher::run`: the per-crate
+/// scope resolves each crate's tag against a real repository, so the
+/// project root is a repository tagged `v0.1.0`. Returns the holder too.
+fn run_ctx(crates: Vec<CrateConfig>) -> (Context, tempfile::TempDir) {
+    let project = crate::testing::hermetic_tagged_repo();
+    let config = Config {
+        crates,
+        ..Default::default()
+    };
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            project_root: Some(project.path().to_path_buf()),
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "0.1.0");
+    ctx.template_vars_mut().set("RawVersion", "0.1.0");
+    ctx.template_vars_mut().set("Tag", "v0.1.0");
+    (ctx, project)
+}
+
+/// A `pull_request.token` that does not render disqualifies its crate before
+/// the fork is cloned: that fork keeps only its seed commit and no versioned
+/// branch, the skip is recorded, and the crate after it still pushes.
+#[test]
+#[serial(path_env)]
+fn an_unrenderable_pull_request_token_skips_the_entry_before_any_push() {
+    use anodizer_core::Publisher;
+    let (_tools, _guard) = gh_absent();
+    let (broken_url, broken_bare) = init_bare_fork();
+    let (good_url, good_bare) = init_bare_fork();
+    let (addr, _req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "POST",
+        path_pattern: "/repos/fork-owner/krew-index/pulls",
+        response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+        times: None,
+    }]);
+    let mut broken = pr_direct_crate("alpha", "kubectl-alpha", &broken_url);
+    broken
+        .publish
+        .as_mut()
+        .unwrap()
+        .krew
+        .as_mut()
+        .unwrap()
+        .repository
+        .as_mut()
+        .unwrap()
+        .pull_request
+        .as_mut()
+        .unwrap()
+        .token = Some("{{ PrToken }}".to_string());
+    let (mut ctx, _project) = run_ctx(vec![
+        broken,
+        pr_direct_crate("beta", "kubectl-beta", &good_url),
+    ]);
+    inject_api_base(&mut ctx, &addr);
+    for (name, plugin) in [("alpha", "kubectl-alpha"), ("beta", "kubectl-beta")] {
+        add_archive(
+            &mut ctx,
+            name,
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            plugin,
+            &"c".repeat(64),
+        );
+    }
+
+    KrewPublisher::new()
+        .run(&mut ctx)
+        .expect("a token that does not render must not fail the publisher");
+
+    assert_eq!(
+        git_stdout(broken_bare.path(), &["rev-list", "--count", "--all"]),
+        "1",
+        "the skipped crate's fork must keep only its seed commit"
+    );
+    let branches = git_stdout(broken_bare.path(), &["branch", "--list"]);
+    assert!(
+        !branches.contains("kubectl-alpha-v0.1.0"),
+        "no versioned branch may reach the skipped crate's fork:\n{branches}"
+    );
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].stage, "krew");
+    assert_eq!(events[0].label, "alpha");
+    assert!(
+        events[0]
+            .reason
+            .starts_with("pull_request.token does not render: "),
+        "{}",
+        events[0].reason
+    );
+    assert!(!events[0].reason.contains("{{"), "{}", events[0].reason);
+    let branches = git_stdout(good_bare.path(), &["branch", "--list"]);
+    assert!(
+        branches.contains("kubectl-beta-v0.1.0"),
+        "the crate after the skipped one must push its branch:\n{branches}"
+    );
+    drop(broken_bare);
+    drop(good_bare);
+}
+
+/// A krew run whose pull request fails AFTER the branch was pushed still
+/// names that branch on its row: the pending outcome is `Failed` and the
+/// evidence the run returns carries the pushed target, so `tag rollback`
+/// can find the branch.
+#[test]
+#[serial(path_env)]
+fn a_pull_request_failure_after_the_push_keeps_the_branch_on_the_failed_row() {
+    use anodizer_core::{Publisher, PublisherOutcome};
+    // No `gh` and no token anywhere: the PR step classifies as
+    // `NoneAvailable` once the branch is already on the fork.
+    let (_tools, _guard) = gh_absent();
+    let (bare_url, bare) = init_bare_fork();
+    let mut c = pr_direct_crate("widget", "kubectl-widget", &bare_url);
+    c.publish
+        .as_mut()
+        .unwrap()
+        .krew
+        .as_mut()
+        .unwrap()
+        .repository
+        .as_mut()
+        .unwrap()
+        .token = None;
+    let (mut ctx, _project) = run_ctx(vec![c]);
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new().with("ANODIZER_GITHUB_API_BASE", "http://127.0.0.1:1"),
+    );
+    add_archive(
+        &mut ctx,
+        "widget",
+        "x86_64-unknown-linux-gnu",
+        "linux",
+        "amd64",
+        "kubectl-widget",
+        &"c".repeat(64),
+    );
+
+    let evidence = KrewPublisher::new()
+        .run(&mut ctx)
+        .expect("the publisher reports the PR failure as its outcome");
+
+    let branches = git_stdout(bare.path(), &["branch", "--list"]);
+    assert!(
+        branches.contains("kubectl-widget-v0.1.0"),
+        "the branch reached the fork before the PR step:\n{branches}"
+    );
+    match ctx.take_pending_outcome() {
+        Some(PublisherOutcome::Failed(msg)) => assert!(
+            msg.contains("neither `gh` CLI nor a token is available"),
+            "{msg}"
+        ),
+        other => panic!("the PR failure must be the recorded outcome, got {other:?}"),
+    }
+    let targets = super::publisher::decode_krew_targets(&evidence.extra);
+    assert_eq!(targets.len(), 1, "{targets:?}");
+    assert_eq!(targets[0].branch, "kubectl-widget-v0.1.0");
+    assert_eq!(targets[0].fork_owner, "fork-owner");
+    drop(bare);
+}

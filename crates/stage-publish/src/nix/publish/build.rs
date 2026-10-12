@@ -515,6 +515,7 @@ pub(super) fn finalize_publish(
     repo_owner: &str,
     repo_name: &str,
     crate_name: &str,
+    pr_token: Option<&str>,
     log: &StageLogger,
 ) -> Result<bool> {
     let previous_tag = ctx
@@ -584,6 +585,7 @@ pub(super) fn finalize_publish(
         ),
         "nix",
         log,
+        pr_token,
         &|s| ctx.render_template(s),
     )?;
 

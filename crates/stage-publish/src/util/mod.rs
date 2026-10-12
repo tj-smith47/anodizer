@@ -9,6 +9,7 @@
 //! - [`commit`] — `CommitOptions` + `commit_and_push_with_opts`.
 //! - [`branch`] — branch resolution + GitHub default-branch lookup.
 //! - [`pr`] — PR submission flows (gh CLI + REST API).
+//! - [`pr_token`] — the configured pull request token, rendered before the push.
 //! - [`attribution`] — published-content attribution strings (PR footers,
 //!   generated-file headers).
 //! - [`artifacts`] — OS/arch inference + `OsArtifact` + filtering helpers.
@@ -32,6 +33,7 @@ mod git_revert;
 mod github_pr;
 mod parallelism;
 mod pr;
+mod pr_token;
 mod template;
 
 #[cfg(test)]
@@ -86,10 +88,11 @@ pub(crate) use parallelism::{
     run_revert_targets_parallel, run_token_revert_rollback,
 };
 pub(crate) use pr::{
-    PrOrigin, PrReconcileTarget, SubmitPrOpts, configured_pr_token, maybe_submit_pr,
-    maybe_submit_pr_with_env, reconcile_open_prs, resolve_upstream_coords,
-    submit_pr_via_gh_with_opts, submit_pr_via_gh_with_opts_with_env,
+    PrOrigin, PrReconcileTarget, SubmitPrOpts, maybe_submit_pr, maybe_submit_pr_with_env,
+    reconcile_open_prs, resolve_upstream_coords, submit_pr_via_gh_with_opts,
+    submit_pr_via_gh_with_opts_with_env,
 };
+pub(crate) use pr_token::configured_pr_token;
 pub(crate) use template::{
     UrlTarget, guard_no_unrendered, render_or_warn, render_or_warn_with_vars, render_url_template,
     render_url_template_with_ctx, render_url_template_with_ctx_and_artifact,

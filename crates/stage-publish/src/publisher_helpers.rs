@@ -201,6 +201,22 @@ pub(crate) fn absorb_entry_skip<T>(
     }
 }
 
+/// The pull-request token the config names for `repo`, rendered before the
+/// entry's clone and push ([`crate::util::configured_pr_token`]).
+///
+/// A link that does not render is an entry skip: the failure is this entry's
+/// alone, and resolving it here is what keeps a misconfigured template from
+/// leaving a pushed branch with no pull request behind it on every run. The
+/// result goes through [`absorb_entry_skip`] like every other entry
+/// disqualification.
+pub(crate) fn pr_token_before_push(
+    ctx: &anodizer_core::context::Context,
+    repo: Option<&anodizer_core::config::RepositoryConfig>,
+) -> anyhow::Result<Option<String>> {
+    crate::util::configured_pr_token(repo, &|s| ctx.render_template(s))
+        .map_err(|e| anodizer_core::pipe_skip::entry_skip(format!("{e:#}")))
+}
+
 /// Record one disqualified entry in the run's intentional-skip summary and
 /// log the operator-facing line for it.
 pub(crate) fn record_entry_skip(

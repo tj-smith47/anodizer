@@ -611,42 +611,6 @@ pub(crate) fn reconcile_open_prs(
     }
 }
 
-/// The token the config names for opening a pull request:
-/// `pull_request.token`, else `repository.token`, each rendered. A link that
-/// renders blank falls through to the next one, and `None` leaves the choice
-/// to the environment chain (`anodizer_core::git::resolve_github_token_with_env`).
-///
-/// A link that fails to render is an error naming its field: a template the
-/// run cannot render is a misconfiguration, and sending the literal template
-/// as a bearer would fail the PR with an authentication error that names
-/// nothing.
-pub(crate) fn configured_pr_token(
-    repo: Option<&RepositoryConfig>,
-    render: &dyn Fn(&str) -> anyhow::Result<String>,
-) -> anyhow::Result<Option<String>> {
-    let Some(repo) = repo else {
-        return Ok(None);
-    };
-    let links = [
-        (
-            "pull_request.token",
-            repo.pull_request
-                .as_ref()
-                .and_then(|pr| pr.token.as_deref()),
-        ),
-        ("repository.token", repo.token.as_deref()),
-    ];
-    for (field, raw) in links {
-        let Some(raw) = raw else { continue };
-        let rendered =
-            anyhow::Context::with_context(render(raw), || format!("render {field} template"))?;
-        if !rendered.is_empty() {
-            return Ok(Some(rendered));
-        }
-    }
-    Ok(None)
-}
-
 /// Submit a pull request if `repo.pull_request.enabled` is true.
 ///
 /// Uses `pull_request.base` for the upstream target when available,
@@ -668,10 +632,10 @@ pub(crate) fn configured_pr_token(
 /// `Context::record_publisher_outcome` or the dispatch summary table
 /// will misreport the silent failure as `succeeded`.
 ///
-/// `render` is fallible so a `pull_request.token` / `repository.token`
-/// template that cannot render is an `Err` naming the field
-/// ([`configured_pr_token`]); the body and base-branch templates keep
-/// their text when they fail to render, as they always have.
+/// `token` is the one the config names, already rendered by
+/// [`super::pr_token::configured_pr_token`] before the caller's push; `None` resolves from the
+/// environment chain. The body and base-branch templates keep their text
+/// when they fail to render, as they always have.
 #[must_use = "the returned outcome override must be forwarded to \
               Context::record_publisher_outcome — dropping it silently \
               misreports a PR-already-exists skip or a PR-creation failure \
@@ -685,6 +649,7 @@ pub(crate) fn maybe_submit_pr(
     body: &str,
     label: &str,
     log: &StageLogger,
+    token: Option<&str>,
     render: &dyn Fn(&str) -> anyhow::Result<String>,
 ) -> anyhow::Result<Option<PublisherOutcome>> {
     maybe_submit_pr_with_env(
@@ -695,6 +660,7 @@ pub(crate) fn maybe_submit_pr(
         body,
         label,
         log,
+        token,
         render,
         &ProcessEnvSource,
     )
@@ -717,6 +683,7 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
     body: &str,
     label: &str,
     log: &StageLogger,
+    token: Option<&str>,
     render: &dyn Fn(&str) -> anyhow::Result<String>,
     env: &E,
 ) -> anyhow::Result<Option<PublisherOutcome>> {
@@ -730,9 +697,6 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
         Some(pr) if pr.enabled == Some(true) => pr,
         _ => return Ok(None),
     };
-    // The token is the one template whose failure is an error: the body and
-    // the base branch fall back to their text, which is what every caller did.
-    let explicit = configured_pr_token(repo, render)?;
     let render = |s: &str| render(s).unwrap_or_else(|_| s.to_string());
     let render = &render;
     let (upstream_owner, upstream_name) =
@@ -755,8 +719,7 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
         .unwrap_or_else(|| "main".to_string());
     // A blank rendering falls through to ANODIZER_GITHUB_TOKEN -> GITHUB_TOKEN
     // inside the resolver.
-    let token =
-        anodizer_core::git::resolve_github_token_with_env(explicit.as_deref(), &|key| env.var(key));
+    let token = anodizer_core::git::resolve_github_token_with_env(token, &|key| env.var(key));
 
     // Fork sync: when the PR targets a different upstream repository, sync first.
     let is_cross_repo = upstream_owner != repo_owner || upstream_name != repo_name;
@@ -865,7 +828,7 @@ pub(crate) struct SubmitPrOpts {
     /// When true, force-push to an existing PR branch rather than skipping.
     pub update_existing_pr: bool,
     /// The token the config names for the pull request, already rendered
-    /// ([`configured_pr_token`]). `None` resolves from the environment chain.
+    /// ([`super::pr_token::configured_pr_token`]). `None` resolves from the environment chain.
     pub token: Option<String>,
 }
 
@@ -994,11 +957,12 @@ pub(crate) fn submit_pr_via_gh_with_opts_with_env<E: EnvSource + ?Sized>(
 
 #[cfg(test)]
 mod tests {
+    use super::super::pr_token::configured_pr_token;
     #[cfg(unix)]
     use super::maybe_submit_pr_with_env;
     use super::{
-        PrOrigin, PrSpec, PrTransport, Upstream, classify_pr_transport, configured_pr_token,
-        create_pr_via_api_with_env, gh_is_available, maybe_submit_pr, sync_fork,
+        PrOrigin, PrSpec, PrTransport, Upstream, classify_pr_transport, create_pr_via_api_with_env,
+        gh_is_available, maybe_submit_pr, sync_fork,
     };
     use anodizer_core::MapEnvSource;
     use anodizer_core::PublisherOutcome;
@@ -1171,6 +1135,9 @@ mod tests {
             "body",
             "label",
             &log,
+            configured_pr_token(None, &no_render)
+                .expect("the token renders")
+                .as_deref(),
             &no_render,
         )
         .expect("the PR token templates render");
@@ -1200,6 +1167,9 @@ mod tests {
             "body",
             "label",
             &log,
+            configured_pr_token(Some(&repo), &no_render)
+                .expect("the token renders")
+                .as_deref(),
             &no_render,
         )
         .expect("the PR token templates render");
@@ -1232,6 +1202,9 @@ mod tests {
             "body",
             "label",
             &log,
+            configured_pr_token(Some(&repo), &no_render)
+                .expect("the token renders")
+                .as_deref(),
             &no_render,
         )
         .expect("the PR token templates render");
@@ -1265,6 +1238,9 @@ mod tests {
             "body",
             "label",
             &log,
+            configured_pr_token(Some(&repo), &no_render)
+                .expect("the token renders")
+                .as_deref(),
             &no_render,
         )
         .expect("the PR token templates render");
@@ -1542,6 +1518,9 @@ mod tests {
             "body",
             "label",
             &log,
+            configured_pr_token(None, &no_render)
+                .expect("the token renders")
+                .as_deref(),
             &no_render,
         )
         .expect("the PR token templates render");
@@ -1842,6 +1821,9 @@ mod tests {
             "body",
             "homebrew",
             &log,
+            configured_pr_token(Some(&repo), &no_render)
+                .expect("the token renders")
+                .as_deref(),
             &no_render,
             &env,
         )
@@ -1930,6 +1912,9 @@ mod tests {
             "body",
             "homebrew",
             &log,
+            configured_pr_token(Some(&repo), &no_render)
+                .expect("the token renders")
+                .as_deref(),
             &no_render,
             &env,
         )
@@ -2004,6 +1989,9 @@ mod tests {
             "caller-supplied body that must be overridden",
             "homebrew",
             &log,
+            configured_pr_token(Some(&repo), &no_render)
+                .expect("the token renders")
+                .as_deref(),
             &no_render,
             &env,
         )
@@ -2073,6 +2061,9 @@ mod tests {
             "body",
             "homebrew",
             &log,
+            configured_pr_token(Some(&repo), &no_render)
+                .expect("the token renders")
+                .as_deref(),
             &no_render,
             &env,
         )
@@ -2132,6 +2123,9 @@ mod tests {
             "body",
             "homebrew",
             &log,
+            configured_pr_token(Some(&repo), &no_render)
+                .expect("the token renders")
+                .as_deref(),
             &no_render,
             &env,
         )
@@ -2154,127 +2148,6 @@ mod tests {
     // pin the actual request the API transport emits (method, path, and
     // JSON payload fields) via the scripted responder's request log.
     // -----------------------------------------------------------------
-
-    /// `pull_request.token` is the first link of the configured chain and
-    /// `repository.token` the second; each is rendered, and a link that
-    /// renders blank falls through to the next one.
-    #[test]
-    fn configured_pr_token_prefers_the_pull_request_token_and_skips_a_blank_one() {
-        let render = |s: &str| Ok(s.replace("{{ .Env.T }}", "rendered-token"));
-        let repo = RepositoryConfig {
-            token: Some("repo-token".into()),
-            pull_request: Some(PullRequestConfig {
-                token: Some("{{ .Env.T }}".into()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        assert_eq!(
-            configured_pr_token(Some(&repo), &render)
-                .expect("renders")
-                .as_deref(),
-            Some("rendered-token")
-        );
-
-        let blank_pr_token = RepositoryConfig {
-            pull_request: Some(PullRequestConfig {
-                token: Some("".into()),
-                ..Default::default()
-            }),
-            ..repo.clone()
-        };
-        assert_eq!(
-            configured_pr_token(Some(&blank_pr_token), &render)
-                .expect("renders")
-                .as_deref(),
-            Some("repo-token"),
-            "a blank pull_request.token falls through to repository.token"
-        );
-
-        let nothing = RepositoryConfig {
-            token: None,
-            pull_request: Some(PullRequestConfig::default()),
-            ..Default::default()
-        };
-        assert_eq!(
-            configured_pr_token(Some(&nothing), &render).expect("renders"),
-            None
-        );
-        assert_eq!(configured_pr_token(None, &render).expect("renders"), None);
-    }
-
-    /// A `pull_request.token` template the run cannot render is an error
-    /// naming the field, and no PR is attempted on either transport: with gh
-    /// absent and the API responder scripted, the request log stays empty.
-    #[cfg(unix)]
-    #[test]
-    #[serial(path_env)]
-    fn an_unrenderable_pull_request_token_is_an_error_before_any_transport() {
-        let (_tools, _guard) = gh_absent_path();
-        let (_origin_url, _bare, work) = init_origin_with_work();
-        git_ok(work.path(), &["checkout", "-b", "release/v7.7.7"]);
-        write_commit(work.path(), "manifest.rb", "formula\n", "add manifest");
-
-        let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
-            method: "POST",
-            path_pattern: "/repos/fork-owner/fork-repo/pulls",
-            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
-            times: None,
-        }]);
-
-        let log = quiet_log();
-        let repo = RepositoryConfig {
-            owner: Some("fork-owner".into()),
-            name: Some("fork-repo".into()),
-            token: Some("repo-token".into()),
-            pull_request: Some(PullRequestConfig {
-                enabled: Some(true),
-                token: Some("{{ PrToken }}".into()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let origin = PrOrigin {
-            repo_owner: "fork-owner",
-            repo_name: "fork-repo",
-            branch_name: "release/v7.7.7",
-            update_existing_pr: false,
-        };
-        let env = MapEnvSource::new()
-            .with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"))
-            .with("ANODIZER_GITHUB_TOKEN", "env-token");
-        // The real template layer over an empty variable set: a variable
-        // nothing defined is an error there, never the literal. (An unset
-        // `.Env.X` renders empty by design and falls through to the next link.)
-        let vars = anodizer_core::template::TemplateVars::new();
-        let render = |s: &str| anodizer_core::template::render(s, &vars);
-        assert!(
-            render("{{ PrToken }}").is_err(),
-            "the fixture template must fail to render for the test to mean anything"
-        );
-        let err = maybe_submit_pr_with_env(
-            work.path(),
-            Some(&repo),
-            &origin,
-            "title",
-            "body",
-            "homebrew",
-            &log,
-            &render,
-            &env,
-        )
-        .expect_err("an unrenderable pull_request.token is an error");
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("render pull_request.token template"),
-            "the error names the field; got: {msg}"
-        );
-        assert!(
-            req_log.lock().unwrap().is_empty(),
-            "no PR-create request may be sent with an unrendered token"
-        );
-        drop(work);
-    }
 
     /// `pull_request.token` wins over `repository.token` and over the
     /// environment chain: with gh absent, the API transport sends it as the
@@ -2325,6 +2198,9 @@ mod tests {
             "body",
             "homebrew",
             &log,
+            configured_pr_token(Some(&repo), &render)
+                .expect("the token renders")
+                .as_deref(),
             &render,
             &env,
         )
@@ -2389,6 +2265,9 @@ mod tests {
             "body",
             "homebrew",
             &log,
+            configured_pr_token(Some(&repo), &no_render)
+                .expect("the token renders")
+                .as_deref(),
             &no_render,
             &env,
         )
@@ -2543,6 +2422,9 @@ mod tests {
             "caller body — must be overridden",
             "homebrew",
             &log,
+            configured_pr_token(Some(&repo), &render)
+                .expect("the token renders")
+                .as_deref(),
             &render,
             &env,
         )

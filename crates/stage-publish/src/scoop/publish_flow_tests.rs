@@ -1507,6 +1507,87 @@ mod e2e {
         assert_eq!(targets[0].branch.as_deref(), Some("main"));
         drop(bare);
     }
+
+    /// A `pull_request.token` that does not render disqualifies its crate
+    /// before the bucket is cloned: that bucket keeps only its seed commit,
+    /// the skip is recorded, and the crate after it still pushes its manifest.
+    #[test]
+    fn an_unrenderable_pull_request_token_skips_the_entry_before_any_push() {
+        use anodizer_core::Publisher;
+        let (broken_url, broken_bare) = init_bare_bucket();
+        let (good_url, good_bare) = init_bare_bucket();
+        let mut broken = scoop_crate_for_bucket("alpha", &broken_url);
+        broken
+            .publish
+            .as_mut()
+            .unwrap()
+            .scoop
+            .as_mut()
+            .unwrap()
+            .repository
+            .as_mut()
+            .unwrap()
+            .pull_request = Some(anodizer_core::config::PullRequestConfig {
+            enabled: None,
+            base: None,
+            draft: None,
+            body: None,
+            token: Some("{{ PrToken }}".to_string()),
+        });
+        let project = crate::testing::hermetic_tagged_repo();
+        let config = Config {
+            crates: vec![broken, scoop_crate_for_bucket("beta", &good_url)],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                project_root: Some(project.path().to_path_buf()),
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "0.1.0");
+        ctx.template_vars_mut().set("Tag", "v0.1.0");
+        ctx.template_vars_mut().set("ProjectName", "widget");
+        for name in ["alpha", "beta"] {
+            add_windows_archive(
+                &mut ctx,
+                name,
+                "x86_64-pc-windows-msvc",
+                "amd64",
+                name,
+                &"a".repeat(64),
+            );
+        }
+
+        ScoopPublisher::new()
+            .run(&mut ctx)
+            .expect("a token that does not render must not fail the publisher");
+
+        assert_eq!(
+            git_stdout(broken_bare.path(), &["rev-list", "--count", "--all"]),
+            "1",
+            "the skipped crate's bucket must keep only its seed commit"
+        );
+        let events = ctx.skip_memento.snapshot();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].stage, "scoop");
+        assert_eq!(events[0].label, "alpha");
+        assert!(
+            events[0]
+                .reason
+                .starts_with("pull_request.token does not render: "),
+            "{}",
+            events[0].reason
+        );
+        assert!(!events[0].reason.contains("{{"), "{}", events[0].reason);
+        let manifest = git_stdout(good_bare.path(), &["show", "main:bucket/beta.json"]);
+        let json: serde_json::Value =
+            serde_json::from_str(&manifest).expect("pushed manifest is JSON");
+        assert_eq!(json["version"], "0.1.0");
+        drop(broken_bare);
+        drop(good_bare);
+    }
 }
 
 // -----------------------------------------------------------------------

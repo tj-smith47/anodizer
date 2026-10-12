@@ -5587,3 +5587,158 @@ fn homebrew_cask_url_template_renders_the_target_variant() {
         "{arm}"
     );
 }
+
+/// A `pull_request.token` that does not render disqualifies a crate's cask
+/// before the tap is cloned: that tap keeps only its seed commit, the skip is
+/// recorded, and the crate after it still pushes its cask.
+#[test]
+fn publish_cask_with_an_unrenderable_pull_request_token_skips_before_any_push() {
+    let (broken_url, broken_bare) = make_bare_cask_tap("main");
+    let (good_url, good_bare) = make_bare_cask_tap("main");
+    let hb_for = |bare_url: &str| HomebrewConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("homebrew-tap".to_string()),
+            branch: Some("main".to_string()),
+            git: Some(anodizer_core::config::GitRepoConfig {
+                url: Some(bare_url.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        cask: Some(HomebrewCaskConfig::default()),
+        ..Default::default()
+    };
+    let mut broken_hb = hb_for(&broken_url);
+    broken_hb.repository.as_mut().unwrap().pull_request =
+        Some(anodizer_core::config::PullRequestConfig {
+            enabled: None,
+            base: None,
+            draft: None,
+            body: None,
+            token: Some("{{ PrToken }}".to_string()),
+        });
+    let cask_crate = |name: &str, hb: HomebrewConfig| CrateConfig {
+        name: name.to_string(),
+        path: ".".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
+        publish: Some(PublishConfig {
+            homebrew: Some(hb),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let config = Config {
+        crates: vec![
+            cask_crate("alpha", broken_hb),
+            cask_crate("beta", hb_for(&good_url)),
+        ],
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Version", "1.2.3");
+    ctx.template_vars_mut().set("RawVersion", "1.2.3");
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    for name in ["alpha", "beta"] {
+        let mut a = art_with_url_sha(
+            ArtifactKind::Archive,
+            &format!("{name}-darwin.tar.gz"),
+            "aarch64-apple-darwin",
+            "https://e.com/x-darwin.tar.gz",
+            "d".repeat(64).as_str(),
+        );
+        a.crate_name = name.to_string();
+        ctx.artifacts.add(a);
+    }
+
+    super::publish_cask(&mut ctx, "alpha", &quiet_log())
+        .expect("a token that does not render must skip, not fail");
+    super::publish_cask(&mut ctx, "beta", &quiet_log()).expect("the next crate publishes");
+
+    assert_eq!(
+        anodizer_core::test_helpers::git_test_stdout(
+            broken_bare.path(),
+            &["rev-list", "--count", "--all"]
+        ),
+        "1",
+        "the skipped crate's tap must keep only its seed commit"
+    );
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].stage, "homebrew-cask");
+    assert_eq!(events[0].label, "alpha");
+    assert!(
+        events[0]
+            .reason
+            .starts_with("pull_request.token does not render: "),
+        "{}",
+        events[0].reason
+    );
+    assert!(!events[0].reason.contains("{{"), "{}", events[0].reason);
+    let landed = anodizer_core::test_helpers::git_test_stdout(
+        good_bare.path(),
+        &["show", "main:Casks/beta.rb"],
+    );
+    assert!(landed.contains("cask \"beta\""), "{landed}");
+    drop(broken_bare);
+    drop(good_bare);
+}
+
+/// A top-level cask whose `pull_request.token` does not render disqualifies
+/// itself before its tap is cloned: that tap keeps only its seed commit, the
+/// skip is recorded, and the entry after it still pushes.
+#[test]
+fn publish_top_level_casks_with_an_unrenderable_pull_request_token_skip_before_any_push() {
+    let (broken_url, broken_bare) = make_bare_cask_tap("main");
+    let (good_url, good_bare) = make_bare_cask_tap("main");
+    let mut broken = local_cask_cfg(&broken_url, "main");
+    broken.name = Some("broken".to_string());
+    broken.repository.as_mut().unwrap().pull_request =
+        Some(anodizer_core::config::PullRequestConfig {
+            enabled: None,
+            base: None,
+            draft: None,
+            body: None,
+            token: Some("{{ PrToken }}".to_string()),
+        });
+    let mut healthy = local_cask_cfg(&good_url, "main");
+    healthy.name = Some("healthy".to_string());
+    let mut ctx = cask_publish_ctx(broken);
+    ctx.config.homebrew_casks.as_mut().unwrap().push(healthy);
+
+    let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log())
+        .expect("a token that does not render must not fail the publisher");
+    assert_eq!(got.total, 2);
+    assert!(
+        got.pushed_any,
+        "the entry after the skipped one must push: {got:?}"
+    );
+
+    assert_eq!(
+        anodizer_core::test_helpers::git_test_stdout(
+            broken_bare.path(),
+            &["rev-list", "--count", "--all"]
+        ),
+        "1",
+        "the skipped entry's tap must keep only its seed commit"
+    );
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].stage, "homebrew-cask");
+    assert_eq!(events[0].label, "broken");
+    assert!(
+        events[0]
+            .reason
+            .starts_with("pull_request.token does not render: "),
+        "{}",
+        events[0].reason
+    );
+    assert!(!events[0].reason.contains("{{"), "{}", events[0].reason);
+    let landed = anodizer_core::test_helpers::git_test_stdout(
+        good_bare.path(),
+        &["show", "main:Casks/healthy.rb"],
+    );
+    assert!(landed.contains("cask \"healthy\""), "{landed}");
+    drop(broken_bare);
+    drop(good_bare);
+}

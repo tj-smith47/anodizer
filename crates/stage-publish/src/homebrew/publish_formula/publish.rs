@@ -279,6 +279,7 @@ fn commit_files_to_tap(
 /// Submit (or record) the optional PR for the tap update. The PR title
 /// and body switch between formula-only and formula+cask phrasings to
 /// match the kind of file(s) that were committed.
+#[allow(clippy::too_many_arguments)]
 fn submit_homebrew_pr(
     ctx: &mut Context,
     repo_for_pr: Option<anodizer_core::config::RepositoryConfig>,
@@ -286,6 +287,7 @@ fn submit_homebrew_pr(
     tap: &TapLocation<'_>,
     cask_name: Option<&str>,
     pr_branch: &str,
+    pr_token: Option<&str>,
     log: &StageLogger,
 ) -> Result<()> {
     let formula_name = ident.formula_name;
@@ -331,6 +333,7 @@ fn submit_homebrew_pr(
         &pr_body,
         "homebrew",
         log,
+        pr_token,
         &|s| ctx.render_template(s),
     )?;
 
@@ -594,6 +597,16 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
     else {
         return Ok(false);
     };
+    let Some(pr_token) = crate::publisher_helpers::absorb_entry_skip(
+        ctx,
+        log,
+        "homebrew",
+        crate_name,
+        crate::publisher_helpers::pr_token_before_push(ctx, hb_cfg.repository.as_ref()),
+    )?
+    else {
+        return Ok(false);
+    };
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -665,6 +678,7 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         &tap,
         cask.cask_name.as_deref(),
         pr_branch,
+        pr_token.as_deref(),
         log,
     )?;
 

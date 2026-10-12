@@ -2963,6 +2963,93 @@ mod live_pr {
         publish_to_winget(&mut ctx, "widget", &quiet())
             .expect("dry-run must stay lenient on a residual template");
     }
+
+    /// A `pull_request.token` that does not render disqualifies its crate
+    /// before the fork is cloned: that fork keeps only its seed commit and no
+    /// versioned branch, the skip is recorded, and the crate after it still
+    /// pushes its manifests.
+    #[cfg(unix)]
+    #[test]
+    #[serial(path_env)]
+    fn an_unrenderable_pull_request_token_skips_the_entry_before_any_push() {
+        use anodizer_core::Publisher;
+        let (_tools, _guard) = gh_absent();
+        let (broken_url, broken_bare) = init_bare_fork();
+        let (good_url, good_bare) = init_bare_fork();
+        let (addr, _req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/fork-owner/winget-pkgs/pulls",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            times: None,
+        }]);
+        let mut broken = live_winget_crate("alpha", &broken_url);
+        broken
+            .publish
+            .as_mut()
+            .unwrap()
+            .winget
+            .as_mut()
+            .unwrap()
+            .repository
+            .as_mut()
+            .unwrap()
+            .pull_request
+            .as_mut()
+            .unwrap()
+            .token = Some("{{ PrToken }}".to_string());
+        let project = crate::testing::hermetic_tagged_repo();
+        let config = Config {
+            crates: vec![broken, live_winget_crate("beta", &good_url)],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                project_root: Some(project.path().to_path_buf()),
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "0.1.0");
+        ctx.template_vars_mut().set("RawVersion", "0.1.0");
+        ctx.template_vars_mut().set("Tag", "v0.1.0");
+        inject_api_base(&mut ctx, &addr);
+        add_windows_zip(&mut ctx, "alpha", &"c".repeat(64));
+        add_windows_zip(&mut ctx, "beta", &"c".repeat(64));
+
+        WingetPublisher::new()
+            .run(&mut ctx)
+            .expect("a token that does not render must not fail the publisher");
+
+        assert_eq!(
+            git_stdout(broken_bare.path(), &["rev-list", "--count", "--all"]),
+            "1",
+            "the skipped crate's fork must keep only its seed commit"
+        );
+        let branches = git_stdout(broken_bare.path(), &["branch", "--list"]);
+        assert!(
+            !branches.contains("AcmeCo.alpha-0.1.0"),
+            "no versioned branch may reach the skipped crate's fork:\n{branches}"
+        );
+        let events = ctx.skip_memento.snapshot();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].stage, "winget");
+        assert_eq!(events[0].label, "alpha");
+        assert!(
+            events[0]
+                .reason
+                .starts_with("pull_request.token does not render: "),
+            "{}",
+            events[0].reason
+        );
+        assert!(!events[0].reason.contains("{{"), "{}", events[0].reason);
+        let branches = git_stdout(good_bare.path(), &["branch", "--list"]);
+        assert!(
+            branches.contains("AcmeCo.beta-0.1.0"),
+            "the crate after the skipped one must push its branch:\n{branches}"
+        );
+        drop(broken_bare);
+        drop(good_bare);
+    }
 }
 
 // -----------------------------------------------------------------------

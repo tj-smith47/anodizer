@@ -2415,3 +2415,71 @@ fn reconcile_absent_under_dry_run() {
     .expect("probe must not error");
     assert!(matches!(state, anodizer_core::ReconcileState::Absent));
 }
+
+/// A `pull_request.token` that does not render disqualifies its entry before
+/// any request is made: no fork, no branch and no pull request for it, the
+/// skip is recorded, and the entry after it still bumps its formula.
+#[test]
+fn an_unrenderable_pull_request_token_skips_the_entry_before_any_push() {
+    let (addr, log) = spawn_scripted_responder(core_fork_pr_routes());
+    let mut broken = pinned_cfg();
+    broken.id = Some("alpha".into());
+    broken.repository = Some(RepositoryConfig {
+        pull_request: Some(anodizer_core::config::PullRequestConfig {
+            enabled: None,
+            base: None,
+            draft: None,
+            body: None,
+            token: Some("{{ PrToken }}".to_string()),
+        }),
+        ..Default::default()
+    });
+    let mut healthy = pinned_cfg();
+    healthy.id = Some("beta".into());
+    let mut ctx = run_ctx(&addr, vec![demo_crate("my-tool", ".")], broken);
+    ctx.config.homebrew_cores.as_mut().unwrap().push(healthy);
+
+    let evidence = HomebrewCorePublisher::new()
+        .run(&mut ctx)
+        .expect("a token that does not render must not fail the publisher");
+
+    let reqs = logged(&log);
+    let refs: Vec<_> = reqs
+        .iter()
+        .filter(|r| r.method == "POST" && r.path == "/repos/forkuser/homebrew-core/git/refs")
+        .collect();
+    assert_eq!(
+        refs.len(),
+        1,
+        "only the healthy entry creates a branch: {reqs:#?}"
+    );
+    let prs: Vec<_> = reqs
+        .iter()
+        .filter(|r| r.method == "POST" && r.path == "/repos/Homebrew/homebrew-core/pulls")
+        .collect();
+    assert_eq!(
+        prs.len(),
+        1,
+        "only the healthy entry opens a pull request: {reqs:#?}"
+    );
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].stage, "homebrew-core");
+    assert_eq!(events[0].label, "alpha");
+    assert!(
+        events[0]
+            .reason
+            .starts_with("pull_request.token does not render: "),
+        "{}",
+        events[0].reason
+    );
+    assert!(!events[0].reason.contains("{{"), "{}", events[0].reason);
+    assert!(
+        ctx.take_pending_outcome().is_none(),
+        "a skipped entry is not a failure"
+    );
+    assert_eq!(
+        evidence.primary_ref.as_deref(),
+        Some("https://github.com/Homebrew/homebrew-core/pull/42")
+    );
+}

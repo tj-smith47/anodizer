@@ -222,7 +222,7 @@ pub(crate) fn build_krew_reconcile_target(
 }
 
 /// The evidence for the pull requests `targets` names.
-fn krew_evidence(targets: Vec<KrewPrTarget>) -> anodizer_core::PublishEvidence {
+pub(super) fn krew_evidence(targets: Vec<KrewPrTarget>) -> anodizer_core::PublishEvidence {
     let mut evidence = anodizer_core::PublishEvidence::new("krew");
     evidence.extra =
         anodizer_core::PublishEvidenceExtra::Krew(anodizer_core::publish_evidence::KrewExtra {
@@ -358,16 +358,7 @@ impl anodizer_core::Publisher for KrewPublisher {
                 ctx,
                 crate_name,
                 &anodizer_core::crate_scope::resolve_crate_tag,
-                |ctx| {
-                    // Resolved before the push so a render error cannot
-                    // leave a pushed branch unrecorded.
-                    let target = collect_krew_target(ctx, crate_name, &log)?;
-                    let outcome = publish_to_krew(ctx, crate_name, &log)?;
-                    if let Some(t) = target.filter(|_| outcome.pushed) {
-                        ctx.record_committed_work(krew_evidence(vec![t]));
-                    }
-                    Ok(outcome.pushed)
-                },
+                |ctx| Ok(publish_to_krew(ctx, crate_name, &log)?.pushed),
             );
             // Each push was recorded as it went through, so an error here
             // leaves the pushed branches in the pending evidence for the
