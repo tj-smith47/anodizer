@@ -5753,6 +5753,210 @@ fn test_setup_lintian_overrides_emits_file_and_content() {
     assert!(cfg.deb.unwrap().lintian_overrides.is_none());
 }
 
+fn deb_lintian_override(list: &[&str]) -> HashMap<String, serde_json::Value> {
+    HashMap::from([(
+        "deb".to_string(),
+        serde_json::json!({ "deb": { "lintian_overrides": list, "compression": "xz" } }),
+    )])
+}
+
+fn lintian_body(dist: &std::path::Path) -> String {
+    std::fs::read_to_string(dist.join("deb").join("myapp_amd64").join("lintian")).unwrap()
+}
+
+/// A list declared only under `overrides.deb.deb.lintian_overrides` writes
+/// the lintian file and the content entry the top-level list would, and is
+/// removed from the emitted `overrides:` map (nfpm has no such key) while
+/// the sibling override field beside it stays.
+#[test]
+fn per_format_lintian_overrides_land_in_the_deb() {
+    use super::setup_lintian_overrides;
+
+    let tmp = TempDir::new().unwrap();
+    let mut cfg = NfpmConfig {
+        package_name: Some("myapp".to_string()),
+        formats: vec!["deb".to_string()],
+        overrides: Some(deb_lintian_override(&["binary-without-manpage"])),
+        ..Default::default()
+    };
+    setup_lintian_overrides(&mut cfg, "deb", "myapp", "amd64", tmp.path(), false).unwrap();
+
+    assert_eq!(lintian_body(tmp.path()), "myapp: binary-without-manpage");
+    let contents = cfg.contents.as_ref().expect("contents injected");
+    assert!(
+        contents
+            .iter()
+            .any(|c| c.dst == "/usr/share/lintian/overrides/myapp"),
+        "{contents:?}"
+    );
+    assert_eq!(
+        cfg.overrides.unwrap()["deb"],
+        serde_json::json!({ "deb": { "compression": "xz" } })
+    );
+}
+
+/// A non-empty per-format list replaces the top-level one outright; the
+/// two are not merged.
+#[test]
+fn per_format_lintian_overrides_replace_the_top_level_list() {
+    use super::setup_lintian_overrides;
+
+    let tmp = TempDir::new().unwrap();
+    let mut cfg = NfpmConfig {
+        package_name: Some("myapp".to_string()),
+        formats: vec!["deb".to_string()],
+        deb: Some(NfpmDebConfig {
+            lintian_overrides: Some(vec!["statically-linked-binary".to_string()]),
+            ..Default::default()
+        }),
+        overrides: Some(deb_lintian_override(&["binary-without-manpage"])),
+        ..Default::default()
+    };
+    setup_lintian_overrides(&mut cfg, "deb", "myapp", "amd64", tmp.path(), false).unwrap();
+
+    assert_eq!(lintian_body(tmp.path()), "myapp: binary-without-manpage");
+    assert!(cfg.deb.unwrap().lintian_overrides.is_none());
+}
+
+/// An empty per-format list is no override: the top-level list stands, and
+/// the override's `deb` map, emptied by the removal, is dropped.
+#[test]
+fn an_empty_per_format_lintian_list_keeps_the_top_level_one() {
+    use super::setup_lintian_overrides;
+
+    let tmp = TempDir::new().unwrap();
+    let mut cfg = NfpmConfig {
+        package_name: Some("myapp".to_string()),
+        formats: vec!["deb".to_string()],
+        deb: Some(NfpmDebConfig {
+            lintian_overrides: Some(vec!["statically-linked-binary".to_string()]),
+            ..Default::default()
+        }),
+        overrides: Some(HashMap::from([(
+            "deb".to_string(),
+            serde_json::json!({ "deb": { "lintian_overrides": [] } }),
+        )])),
+        ..Default::default()
+    };
+    setup_lintian_overrides(&mut cfg, "deb", "myapp", "amd64", tmp.path(), false).unwrap();
+
+    assert_eq!(lintian_body(tmp.path()), "myapp: statically-linked-binary");
+    assert_eq!(cfg.overrides.unwrap()["deb"], serde_json::json!({}));
+}
+
+/// A per-format list that is not a list of strings is a config error that
+/// names the key, not a silently dropped override.
+#[test]
+fn a_malformed_per_format_lintian_list_is_refused() {
+    use super::setup_lintian_overrides;
+
+    let tmp = TempDir::new().unwrap();
+    let mut cfg = NfpmConfig {
+        package_name: Some("myapp".to_string()),
+        formats: vec!["deb".to_string()],
+        overrides: Some(HashMap::from([(
+            "deb".to_string(),
+            serde_json::json!({ "deb": { "lintian_overrides": "not-a-list" } }),
+        )])),
+        ..Default::default()
+    };
+    let err = setup_lintian_overrides(&mut cfg, "deb", "myapp", "amd64", tmp.path(), false)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("`overrides.deb.deb.lintian_overrides` must be a list of strings"),
+        "{err}"
+    );
+}
+
+/// Two crates whose nfpm configs render one package file name are refused
+/// while the jobs are planned, naming both jobs and the file, and nothing
+/// is written; the same two crates with distinct names both plan.
+#[test]
+fn two_crates_rendering_one_package_path_are_refused_before_packaging() {
+    use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let run = |file_name_templates: [&str; 2]| {
+        let tmp = TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = ["alpha", "beta"]
+            .iter()
+            .zip(file_name_templates)
+            .map(|(name, tmpl)| CrateConfig {
+                name: name.to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                nfpms: Some(vec![NfpmConfig {
+                    id: Some(format!("{name}-pkg")),
+                    formats: vec!["deb".to_string()],
+                    maintainer: Some("test@example.com".to_string()),
+                    file_name_template: Some(tmpl.to_string()),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            })
+            .collect();
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                // The refusal is planning-time: a dry run plans the same jobs
+                // and spawns nothing, so a live `nfpm` is not needed.
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        for name in ["alpha", "beta"] {
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: std::path::PathBuf::from(format!("dist/{name}")),
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: name.to_string(),
+                metadata: HashMap::new(),
+                size: None,
+            });
+        }
+        let result = NfpmStage.run(&mut ctx);
+        let planned = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage).len();
+        (result, planned, tmp)
+    };
+
+    let (result, planned, tmp) = run(["shared-{{ .Version }}", "shared-{{ .Version }}"]);
+    let err = result.unwrap_err().to_string();
+    let path = tmp
+        .path()
+        .join("dist")
+        .join("linux")
+        .join("shared-1.0.0.deb");
+    assert!(
+        err.contains("nfpm config 'alpha-pkg' (crate 'alpha', format 'deb', target 'x86_64-unknown-linux-gnu')"),
+        "{err}"
+    );
+    assert!(
+        err.contains(
+            "nfpm config 'beta-pkg' (crate 'beta', format 'deb', target 'x86_64-unknown-linux-gnu')"
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!("both writing '{}'", path.display())),
+        "{err}"
+    );
+    assert_eq!(planned, 0, "a refused run registers no package");
+    assert!(
+        !tmp.path().join("dist").join("linux").exists(),
+        "nothing is written"
+    );
+
+    let (result, planned, _tmp) = run(["alpha-{{ .Version }}", "beta-{{ .Version }}"]);
+    result.unwrap();
+    assert_eq!(planned, 2);
+}
+
 /// termux.deb shares the lintian-setup code path, but the dist
 /// subdirectory is the literal format string ("termux.deb"), not just "deb".
 #[test]

@@ -60,15 +60,21 @@ pub(crate) fn setup_lintian_overrides(
     if format != "deb" && format != "termux.deb" {
         return Ok(());
     }
-    let Some(deb_cfg) = rendered_cfg.deb.as_mut() else {
+    // A non-empty list under `overrides.<format>.deb.lintian_overrides` replaces
+    // the top-level one; an absent or empty one leaves the top-level in force.
+    // Both are taken out of the rendered config: nfpm has no such key.
+    let top_level = rendered_cfg
+        .deb
+        .as_mut()
+        .and_then(|deb_cfg| deb_cfg.lintian_overrides.take());
+    let per_format = take_per_format_lintian_overrides(rendered_cfg, format)?;
+    let Some(overrides) = per_format
+        .filter(|list| !list.is_empty())
+        .or(top_level)
+        .filter(|list| !list.is_empty())
+    else {
         return Ok(());
     };
-    let Some(overrides) = deb_cfg.lintian_overrides.take() else {
-        return Ok(());
-    };
-    if overrides.is_empty() {
-        return Ok(());
-    }
 
     let pkg_dir = dist.join(format).join(format!("{pkg_name}_{arch}"));
     let lintian_path = pkg_dir.join("lintian");
@@ -102,6 +108,41 @@ pub(crate) fn setup_lintian_overrides(
         .get_or_insert_with(Vec::new)
         .push(entry);
     Ok(())
+}
+
+/// Remove `overrides.<format>.deb.lintian_overrides` from the rendered config
+/// and return it. A `deb` map left empty by the removal is dropped too, so
+/// the emitted `overrides:` stays as the user would have written it.
+fn take_per_format_lintian_overrides(
+    rendered_cfg: &mut anodizer_core::config::NfpmConfig,
+    format: &str,
+) -> Result<Option<Vec<String>>> {
+    let Some(deb) = rendered_cfg
+        .overrides
+        .as_mut()
+        .and_then(|m| m.get_mut(format))
+        .and_then(|v| v.get_mut("deb"))
+        .and_then(|v| v.as_object_mut())
+    else {
+        return Ok(None);
+    };
+    let Some(value) = deb.remove("lintian_overrides") else {
+        return Ok(None);
+    };
+    let drop_deb = deb.is_empty();
+    if drop_deb
+        && let Some(fmt) = rendered_cfg
+            .overrides
+            .as_mut()
+            .and_then(|m| m.get_mut(format))
+            .and_then(|v| v.as_object_mut())
+    {
+        fmt.remove("deb");
+    }
+    let list: Vec<String> = serde_json::from_value(value).with_context(|| {
+        format!("nfpm: `overrides.{format}.deb.lintian_overrides` must be a list of strings")
+    })?;
+    Ok(Some(list))
 }
 
 // ---------------------------------------------------------------------------

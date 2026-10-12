@@ -70,6 +70,42 @@ pub(crate) struct NfpmJob {
     pkg_metadata: std::collections::HashMap<String, String>,
 }
 
+/// Every package path this run plans to write, with the job that claimed it.
+///
+/// One per stage run: the output directory is shared by every crate, config,
+/// format and target, so two jobs anywhere in the run that render one file
+/// name would have the second overwrite the first. The claim is checked while
+/// jobs are collected, before any `nfpm pkg` runs, so a collision fails the
+/// run with nothing written.
+#[derive(Default)]
+pub(crate) struct PlannedOutputs {
+    guard: anodizer_core::arch_path_guard::ArchPathGuard,
+    owners: HashMap<std::path::PathBuf, String>,
+}
+
+impl PlannedOutputs {
+    fn claim(
+        &mut self,
+        claim: anodizer_core::arch_path_guard::Claim<'_>,
+        owner: String,
+    ) -> Result<()> {
+        let path = claim.path.to_path_buf();
+        if let Err(e) = self.guard.check(claim) {
+            let prior = self
+                .owners
+                .get(&path)
+                .map(String::as_str)
+                .unwrap_or("an earlier job");
+            bail!(
+                "{e} The two jobs are {prior} and {owner}, both writing '{}'.",
+                path.display()
+            );
+        }
+        self.owners.insert(path, owner);
+        Ok(())
+    }
+}
+
 impl Stage for NfpmStage {
     fn name(&self) -> &str {
         "nfpm"
@@ -111,6 +147,7 @@ impl Stage for NfpmStage {
 
         validate_unique_config_ids(&crates)?;
 
+        let mut planned = PlannedOutputs::default();
         for krate in &crates {
             collect_nfpm_jobs_for_crate(
                 ctx,
@@ -122,6 +159,7 @@ impl Stage for NfpmStage {
                 dry_run,
                 &mut new_artifacts,
                 &mut jobs,
+                &mut planned,
             )?;
         }
 
@@ -154,18 +192,13 @@ fn collect_nfpm_jobs_for_crate(
     dry_run: bool,
     new_artifacts: &mut Vec<Artifact>,
     jobs: &mut Vec<NfpmJob>,
+    planned: &mut PlannedOutputs,
 ) -> Result<()> {
     let Some(nfpm_configs) = krate.nfpms.as_ref() else {
         return Ok(());
     };
 
     let linux_binaries = nfpm_eligible_artifacts(ctx, &krate.name);
-
-    // One guard per crate spans every `nfpms:` config of that crate: two configs
-    // with the same format + arch and the default (or identical) filename render
-    // the same package path — error loudly across configs instead of letting the
-    // second silently clobber the first.
-    let mut name_guard = anodizer_core::arch_path_guard::ArchPathGuard::new();
 
     for (entry, nfpm_cfg) in nfpm_configs.iter().enumerate() {
         let nfpm_id_for_log = nfpm_cfg.id.as_deref().unwrap_or("default").to_string();
@@ -208,7 +241,7 @@ fn collect_nfpm_jobs_for_crate(
                     dry_run,
                     new_artifacts,
                     jobs,
-                    &mut name_guard,
+                    planned,
                 )?;
             }
         }
@@ -240,7 +273,7 @@ fn process_nfpm_format(
     dry_run: bool,
     new_artifacts: &mut Vec<Artifact>,
     jobs: &mut Vec<NfpmJob>,
-    name_guard: &mut anodizer_core::arch_path_guard::ArchPathGuard,
+    planned: &mut PlannedOutputs,
 ) -> Result<()> {
     validate_format(format).with_context(|| format!("nfpm config for crate {}", crate_name))?;
 
@@ -344,20 +377,28 @@ fn process_nfpm_format(
     // the user sees the template at fault; the conventional default has no real
     // template, so its dedicated path names "the conventional default filename"
     // and advises `{{ .Amd64 }}` (the default already carries `{{ .Arch }}`).
-    name_guard.check(anodizer_core::arch_path_guard::Claim {
-        path: &pkg_path,
-        stage: "nfpms",
-        artifact: "package",
-        template_key: "file_name_template",
-        name_template: nfpm_cfg.file_name_template.as_deref(),
-        rendered: &pkg_filename,
-        crate_name,
-        target: target.as_deref(),
-        amd64_variant,
-        entry,
-        binary: anodizer_core::arch_path_guard::binary_var(ctx.template_vars()),
-        exposed: &ctx.template_vars().defined_names(),
-    })?;
+    let owner = format!(
+        "nfpm config '{}' (crate '{crate_name}', format '{format}', target '{}')",
+        nfpm_cfg.id.as_deref().unwrap_or("default"),
+        target.as_deref().unwrap_or("host"),
+    );
+    planned.claim(
+        anodizer_core::arch_path_guard::Claim {
+            path: &pkg_path,
+            stage: "nfpms",
+            artifact: "package",
+            template_key: "file_name_template",
+            name_template: nfpm_cfg.file_name_template.as_deref(),
+            rendered: &pkg_filename,
+            crate_name,
+            target: target.as_deref(),
+            amd64_variant,
+            entry,
+            binary: anodizer_core::arch_path_guard::binary_var(ctx.template_vars()),
+            exposed: &ctx.template_vars().defined_names(),
+        },
+        owner,
+    )?;
 
     let mut pkg_metadata = HashMap::from([("format".to_string(), format.to_string())]);
     // The generic extension parser reads `.pkg.tar.zst` as `.tar.zst`, so the

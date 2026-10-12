@@ -10431,7 +10431,7 @@
           }
         },
         "lintian_overrides": {
-          "description": "Lintian overrides to embed in the package.",
+          "description": "Lintian overrides to embed in the package, one `<tag>` per entry.\n\nA non-empty list under `overrides.deb.deb.lintian_overrides` (or `overrides.termux.deb.deb.lintian_overrides`) replaces this one for that format; an empty or absent per-format list leaves this one in force.",
           "default": null,
           "type": [
             "array",

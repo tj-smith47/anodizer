@@ -73,6 +73,7 @@ Not applicable — nFPM generates package files locally. Uploading them to a pac
 - **`formats`**: the list must match the package types your downstream publishers expect. A mismatch (e.g., configuring cloudsmith for `deb` but nFPM only producing `rpm`) silently skips upload.
 - **`dependencies`**: per-format dependency maps allow different deps for deb vs rpm — use the `overrides` map for format-specific fields.
 - **Platform routing**: Linux (plus Android/iOS/AIX where supported) binaries feed the Linux formats; Windows binaries feed **only** `msix`. Darwin targets are ignored. A `[deb, msix]` config packages each target with its matching format and silently skips the rest.
+- **One file name per package**: every job of the run (each crate, config, format and target) must render a distinct package file name. Two that render the same one fail the stage before any package is written, with an error naming both jobs and the file; give them distinct `file_name_template`s.
 - **`msix` needs nfpm >= 2.46.0**: older nfpm binaries don't know the msix packager; anodizer names the version requirement in the error when packaging fails.
 
 ## Republish / update behavior
@@ -251,6 +252,23 @@ nfpm:
       signature:
         pfx_file: cert.pfx              # optional; PFX certificate for signing
 ```
+
+`deb.lintian_overrides` can also be set per format under `overrides`, which
+is how a `termux.deb` gets a different list from the `deb`:
+
+```yaml
+nfpm:
+  - formats: [deb, termux.deb]
+    deb:
+      lintian_overrides: ["binary-without-manpage"]
+    overrides:
+      termux.deb:
+        deb:
+          lintian_overrides: ["binary-without-manpage", "statically-linked-binary"]
+```
+
+A non-empty per-format list replaces the top-level one for that format; an
+empty or absent one leaves the top-level list in force.
 
 ## Termux packages
 

@@ -275,7 +275,12 @@ pub struct NfpmDebConfig {
     pub triggers: Option<NfpmDebTriggers>,
     /// Packages this package breaks (Breaks relationship).
     pub breaks: Option<Vec<String>>,
-    /// Lintian overrides to embed in the package.
+    /// Lintian overrides to embed in the package, one `<tag>` per entry.
+    ///
+    /// A non-empty list under `overrides.deb.deb.lintian_overrides` (or
+    /// `overrides.termux.deb.deb.lintian_overrides`) replaces this one for
+    /// that format; an empty or absent per-format list leaves this one in
+    /// force.
     pub lintian_overrides: Option<Vec<String>>,
     /// Deb signing configuration.
     pub signature: Option<NfpmSignatureConfig>,
