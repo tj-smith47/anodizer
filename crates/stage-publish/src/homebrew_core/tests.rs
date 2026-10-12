@@ -2228,7 +2228,10 @@ fn run_opens_the_pull_request_with_the_pull_request_token() {
 fn run_update_existing_pr_refreshes_branch_in_place() {
     let mut routes = core_fork_pr_routes();
     // An open bump PR from an earlier run.
-    routes[3].response = leak_resp("200 OK", "[{\"number\":9}]");
+    routes[3].response = leak_resp(
+        "200 OK",
+        "[{\"number\":9,\"html_url\":\"https://github.com/Homebrew/homebrew-core/pull/9\"}]",
+    );
     let (addr, log) = spawn_scripted_responder(routes);
     let mut cfg = pinned_cfg();
     cfg.update_existing_pr = Some(StringOrBool::Bool(true));

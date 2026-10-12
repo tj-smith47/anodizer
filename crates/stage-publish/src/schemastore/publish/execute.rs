@@ -388,27 +388,25 @@ pub(super) fn run_real(
     // Pending-PR idempotency: if a fork→upstream PR on this branch is already
     // open and unmerged, treat the work as in-flight rather than pushing a
     // duplicate. Best-effort — a query failure must not abort the publish.
-    match crate::util::find_open_pr_numbers_for_head(
+    match crate::util::find_open_prs_for_head_with_env(
         UPSTREAM_OWNER,
         UPSTREAM_REPO,
         &fork_owner,
         &branch,
         token.as_deref(),
         TOKEN_ENV_VAR,
+        ctx.env_source(),
     ) {
-        Ok(nums) if !nums.is_empty() => {
+        Ok(prs) if !prs.is_empty() => {
             log.status(&format!(
                 "a schemastore PR for {fork_owner}:{branch} → {UPSTREAM_OWNER}/{UPSTREAM_REPO} \
                  is already open (#{}) — treating as in-flight, not re-pushing",
-                nums[0]
+                prs[0].number
             ));
             return Ok(schemastore_evidence(
                 &fork_owner,
                 &branch,
-                Some(format!(
-                    "https://github.com/{UPSTREAM_OWNER}/{UPSTREAM_REPO}/pull/{}",
-                    nums[0]
-                )),
+                prs[0].html_url.clone(),
             ));
         }
         Ok(_) => {}

@@ -3329,6 +3329,17 @@ fn test_docker_sign_signs_by_digest_not_tag() {
 /// then reports as signed.
 #[cfg(unix)]
 fn docker_sign_signed_images(dry_run: bool, verify_exit: i32) -> Vec<String> {
+    docker_sign_signed_images_with(dry_run, 0, verify_exit, true)
+}
+
+/// `sign_exit` is the stub's exit code for `cosign sign`, `verify_exit` for
+/// `cosign verify`; `verify_on` is the config's `verify.enabled`.
+fn docker_sign_signed_images_with(
+    dry_run: bool,
+    sign_exit: i32,
+    verify_exit: i32,
+    verify_on: bool,
+) -> Vec<String> {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::config::DockerSignConfig;
 
@@ -3339,11 +3350,15 @@ fn docker_sign_signed_images(dry_run: bool, verify_exit: i32) -> Vec<String> {
         &format!(
             "#!/bin/sh\ncase \"$1\" in\n  public-key) shift; while [ $# -gt 0 ]; do \
              [ \"$1\" = --outfile ] && echo key > \"$2\"; shift; done; exit 0;;\n  \
-             verify) [ {verify_exit} -ne 0 ] && echo \"unknown flag: --fail\" >&2; exit {verify_exit};;\n  *) exit 0;;\nesac\n"
+             verify) [ {verify_exit} -ne 0 ] && echo \"unknown flag: --fail\" >&2; exit {verify_exit};;\n  \
+             sign) exit {sign_exit};;\n  *) exit 0;;\nesac\n"
         ),
     );
     let docker_signs = vec![DockerSignConfig {
-        verify: None,
+        verify: (!verify_on).then(|| anodizer_core::config::SignVerifyConfig {
+            enabled: Some(false),
+            ..Default::default()
+        }),
         id: Some("image-cosign".to_string()),
         cmd: Some(stub.to_string_lossy().into_owned()),
         args: Some(vec![
@@ -3381,17 +3396,18 @@ fn docker_sign_signed_images(dry_run: bool, verify_exit: i32) -> Vec<String> {
         size: None,
     });
     let result = DockerSignStage.run(&mut ctx);
-    if verify_exit == 0 {
+    if sign_exit == 0 && (verify_exit == 0 || !verify_on) {
         result.expect("sign and verify succeed");
     } else {
-        result.expect_err("a failed verification fails the stage");
+        result.expect_err("a failed sign or verification fails the stage");
     }
     ctx.artifacts.signed_images()
 }
 
 /// The signed marker the job summary reads is written only once the image's
-/// signature was attached AND verified: a dry run spawns nothing and a failed
-/// verification leaves the image unmarked.
+/// signature was attached and, where the config verifies, verified: a dry run
+/// spawns nothing, a failed sign and a failed verification leave the image
+/// unmarked, and a config with verification off marks it after the sign.
 #[cfg(unix)]
 #[test]
 fn a_docker_image_is_marked_signed_only_after_its_signature_verified() {
@@ -3406,6 +3422,15 @@ fn a_docker_image_is_marked_signed_only_after_its_signature_verified() {
     assert!(
         docker_sign_signed_images(false, 1).is_empty(),
         "a failed verification marks nothing"
+    );
+    assert!(
+        docker_sign_signed_images_with(false, 1, 0, true).is_empty(),
+        "a failed sign marks nothing"
+    );
+    assert_eq!(
+        docker_sign_signed_images_with(false, 0, 1, false),
+        vec!["ghcr.io/acme/app:1.0.0"],
+        "with verification off the sign alone marks the image"
     );
 }
 

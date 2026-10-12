@@ -128,14 +128,7 @@ fn evidence_lines(evidence: &PublishEvidence, ctx: &Context) -> Vec<String> {
         E::Homebrew(x) => x
             .homebrew_targets
             .iter()
-            .map(|t| {
-                tap_line(
-                    "homebrew formula",
-                    &t.target,
-                    &t.repo_url,
-                    t.pr_url.as_deref(),
-                )
-            })
+            .map(|t| tap_line("homebrew", &t.target, &t.repo_url, t.pr_url.as_deref()))
             .collect(),
         E::Scoop(x) => x
             .scoop_targets
@@ -362,7 +355,10 @@ fn tap_line(kind: &str, target: &str, repo_url: &str, pr_url: Option<&str>) -> S
     }
 }
 
-/// `owner/repo` of a `https://<host>/owner/repo/pull/N` URL.
+/// `owner/repo` of a `https://<host>/owner/repo/pull/N` URL. A URL whose
+/// repository sits under a path prefix (a GitHub Enterprise Server under
+/// `/github/`) names no slug and the caller falls back to the configured
+/// repository.
 fn pull_request_repo(url: &str) -> Option<&str> {
     let (repo, _) = url.rsplit_once("/pull/")?;
     let (_, slug) = repo.strip_prefix("https://")?.split_once('/')?;
@@ -853,11 +849,36 @@ mod tests {
         assert_eq!(
             summary_lines(Some(&r), &ctx),
             vec![
-                format!("Opened pull request to `acme/homebrew-tap` (homebrew formula `app`): {url}"),
+                format!("Opened pull request to `acme/homebrew-tap` (homebrew `app`): {url}"),
                 "Updated scoop manifest `app` in `https://github.com/acme/scoop-bucket.git`".to_string(),
                 "Opened pull request to `acme/nur` (nix package `app`): https://github.com/acme/nur/pull/3"
                     .to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn the_pull_request_repository_is_read_off_a_two_segment_url_only() {
+        assert_eq!(
+            pull_request_repo("https://github.com/acme/homebrew-tap/pull/7"),
+            Some("acme/homebrew-tap")
+        );
+        assert_eq!(
+            pull_request_repo("https://ghe.example.com/github/acme/tap/pull/7"),
+            None,
+            "a path prefix leaves the slug unreadable"
+        );
+        assert_eq!(pull_request_repo("http://github.com/acme/tap/pull/7"), None);
+        assert_eq!(
+            tap_line(
+                "homebrew",
+                "app",
+                "https://ghe.example.com/github/acme/tap.git",
+                Some("https://ghe.example.com/github/acme/tap/pull/7"),
+            ),
+            "Opened pull request to `https://ghe.example.com/github/acme/tap.git` (homebrew `app`): \
+             https://ghe.example.com/github/acme/tap/pull/7",
+            "the configured repository is the fallback"
         );
     }
 

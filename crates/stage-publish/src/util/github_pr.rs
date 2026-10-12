@@ -297,6 +297,40 @@ pub(crate) fn find_open_pr_numbers_for_head_with_env<E: EnvSource + ?Sized>(
     env_hint: &str,
     env: &E,
 ) -> Result<Vec<u64>, FindPrError> {
+    Ok(find_open_prs_for_head_with_env(
+        upstream_owner,
+        upstream_repo,
+        fork_owner,
+        branch,
+        token,
+        env_hint,
+        env,
+    )?
+    .into_iter()
+    .map(|pr| pr.number)
+    .collect())
+}
+
+/// One open pull request the listing returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OpenPullRequest {
+    pub number: u64,
+    /// The `html_url` the API returned, absent when the body carried none.
+    pub html_url: Option<String>,
+}
+
+/// [`find_open_pr_numbers_for_head_with_env`] keeping each pull request's
+/// `html_url`, for a caller that reports the pull request it found rather
+/// than composing its address from the number.
+pub(crate) fn find_open_prs_for_head_with_env<E: EnvSource + ?Sized>(
+    upstream_owner: &str,
+    upstream_repo: &str,
+    fork_owner: &str,
+    branch: &str,
+    token: Option<&str>,
+    env_hint: &str,
+    env: &E,
+) -> Result<Vec<OpenPullRequest>, FindPrError> {
     const PAGE_CAP: usize = 10;
     let base = github_api_base(env);
     let head = format!("{}:{}", fork_owner, branch);
@@ -313,7 +347,7 @@ pub(crate) fn find_open_pr_numbers_for_head_with_env<E: EnvSource + ?Sized>(
     })?;
 
     let mut next_url: Option<String> = Some(first_url);
-    let mut out: Vec<u64> = Vec::new();
+    let mut out: Vec<OpenPullRequest> = Vec::new();
     for _page in 0..PAGE_CAP {
         let Some(url) = next_url.take() else {
             break;
@@ -354,10 +388,15 @@ pub(crate) fn find_open_pr_numbers_for_head_with_env<E: EnvSource + ?Sized>(
             source: anyhow::Error::new(e),
         })?;
         if let Some(arr) = body.as_array() {
-            out.extend(
-                arr.iter()
-                    .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64())),
-            );
+            out.extend(arr.iter().filter_map(|pr| {
+                Some(OpenPullRequest {
+                    number: pr.get("number")?.as_u64()?,
+                    html_url: pr
+                        .get("html_url")
+                        .and_then(|u| u.as_str())
+                        .map(str::to_string),
+                })
+            }));
         }
         next_url = link_header.as_deref().and_then(parse_link_header_next);
         if next_url.is_none() {

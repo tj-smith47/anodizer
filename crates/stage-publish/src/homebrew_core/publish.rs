@@ -279,7 +279,7 @@ pub(crate) fn publish_to_homebrew_core(
             api.ensure_fork(&up_owner, &up_repo)?
         };
         // Idempotency: an open PR from this head already bumps this version.
-        let existing = crate::util::find_open_pr_numbers_for_head_with_env(
+        let existing = crate::util::find_open_prs_for_head_with_env(
             &up_owner,
             &up_repo,
             &head_owner,
@@ -294,7 +294,7 @@ pub(crate) fn publish_to_homebrew_core(
                 log.warn(&format!(
                     "open PR already bumps {} to {} in {}/{} (#{}) — skipping (set \
                      `update_existing_pr: true` to force-refresh the PR branch in place)",
-                    formula, version, up_owner, up_repo, existing[0]
+                    formula, version, up_owner, up_repo, existing[0].number
                 ));
                 continue;
             }
@@ -316,7 +316,7 @@ pub(crate) fn publish_to_homebrew_core(
             )?;
             log.status(&format!(
                 "refreshed existing PR bumping {} to {} in {}/{} (#{}) — branch {} updated in place",
-                formula, version, up_owner, up_repo, existing[0], branch
+                formula, version, up_owner, up_repo, existing[0].number, branch
             ));
             push_target(
                 targets,
@@ -327,10 +327,7 @@ pub(crate) fn publish_to_homebrew_core(
                 &head_owner,
                 &branch,
                 false,
-                Some(format!(
-                    "https://github.com/{}/{}/pull/{}",
-                    up_owner, up_repo, existing[0]
-                )),
+                existing[0].html_url.clone(),
                 token_env_var.clone(),
             );
             continue;

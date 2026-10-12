@@ -82,7 +82,7 @@ pub(crate) use git_revert::RevertTarget;
 // in the module rustdoc above.
 pub(crate) use github_pr::{
     CloseOutcome, close_pr_via_api, close_pr_via_api_with_env, find_open_pr_numbers_for_head,
-    find_open_pr_numbers_for_head_with_env,
+    find_open_pr_numbers_for_head_with_env, find_open_prs_for_head_with_env,
 };
 pub(crate) use parallelism::{
     ROLLBACK_PARALLELISM, RevertCounts, join_or_warn, lock_recover, revert_summary_line,

@@ -54,11 +54,7 @@ pub(crate) fn configured_pr_token(
 /// layers quote the template in their context as well.
 fn token_render_cause(raw: &str, err: &anyhow::Error) -> String {
     let cause = err.root_cause().to_string();
-    let mut cause = cause
-        .split(" --> ")
-        .next()
-        .unwrap_or(cause.as_str())
-        .to_string();
+    let mut cause = cause.split(" --> ").next().unwrap_or_default().to_string();
     for part in std::iter::once(raw)
         .chain(raw.lines())
         .map(str::trim)
