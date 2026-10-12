@@ -33,7 +33,9 @@ pub(crate) fn publish_to_winget_with_config(
 ) -> Result<bool> {
     // Resolve identity first so dry-run short-circuits BEFORE the full manifest
     // render (which requires short_description/license/installers): a dry-run
-    // only reports the coordinates it would push, exactly as before.
+    // only reports the coordinates it would push. The identity carries the
+    // locales, so a bad `additional_locales` entry skips the crate on a dry
+    // run too.
     let Some(identity) = resolve_winget_identity(ctx, crate_name, derived, log)? else {
         return Ok(false);
     };

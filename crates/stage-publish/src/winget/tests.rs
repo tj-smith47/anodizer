@@ -2964,3 +2964,138 @@ mod live_pr {
             .expect("dry-run must stay lenient on a residual template");
     }
 }
+
+// -----------------------------------------------------------------------
+// The skip lines quoted on docs/site/content/docs/publish/winget.md
+// -----------------------------------------------------------------------
+
+/// The lines the "Additional locales" section of the winget page quotes as
+/// what a run prints for a disqualified entry, held to the bytes the
+/// publisher's skip recording and evaluation print on the documented
+/// config. The first ```text block is the default run, the second the same
+/// run under `--show-skipped`.
+mod docs_quoted_skip_lines {
+    use super::*;
+    use anodizer_core::Publisher;
+    use anodizer_core::config::{
+        CrateConfig, PublishConfig, RepositoryConfig, WingetConfig, WingetLocaleConfig,
+    };
+    use anodizer_core::log::LogLevel;
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    const PAGE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/publish/winget.md"
+    ));
+
+    /// Every ```text block under the "## Additional locales" heading, each as
+    /// its lines, in page order.
+    fn quoted_text_blocks() -> Vec<Vec<String>> {
+        let section = PAGE
+            .split("\n## Additional locales\n")
+            .nth(1)
+            .expect("the winget page has an Additional locales section");
+        let section = section.split("\n## ").next().unwrap_or(section);
+        let mut blocks = Vec::new();
+        let mut current: Option<Vec<String>> = None;
+        for line in section.lines() {
+            match (&mut current, line.trim_end()) {
+                (None, "```text") => current = Some(Vec::new()),
+                (Some(block), "```") => blocks.push(std::mem::take(block)),
+                (Some(block), text) => block.push(text.to_string()),
+                (None, _) => {}
+            }
+            if current.as_ref().is_some_and(Vec::is_empty) && line.trim_end() == "```" {
+                current = None;
+            }
+        }
+        blocks
+    }
+
+    /// The documented config: `myapp` whose second additional locale repeats
+    /// `default_locale`.
+    fn documented_crate() -> CrateConfig {
+        let locale = |locale: &str, short: &str| WingetLocaleConfig {
+            locale: locale.to_string(),
+            short_description: Some(short.to_string()),
+            ..Default::default()
+        };
+        CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
+            publish: Some(PublishConfig {
+                winget: Some(WingetConfig {
+                    publisher: Some("AcmeCo".to_string()),
+                    default_locale: Some("en-US".to_string()),
+                    short_description: Some("Manage widgets".to_string()),
+                    additional_locales: Some(vec![
+                        locale("pt-BR", "Gerencia widgets"),
+                        locale("en-US", "Manage widgets"),
+                    ]),
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("winget-pkgs-fork".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// The default-visible lines a run of the publisher prints about the
+    /// skipped entry.
+    fn skip_lines_printed(show_skipped: bool) -> Vec<String> {
+        let scope_repo = crate::testing::hermetic_tagged_repo();
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![documented_crate()])
+            .dry_run(true)
+            .show_skipped(show_skipped)
+            .project_root(scope_repo.path().to_path_buf())
+            .build();
+        let (_log, capture) = anodizer_core::log::StageLogger::with_capture(
+            "publish",
+            anodizer_core::log::Verbosity::Normal,
+        );
+        ctx.with_log_capture(capture.clone());
+        WingetPublisher::new()
+            .run(&mut ctx)
+            .expect("a disqualified entry must not fail the publisher");
+        capture
+            .all_messages()
+            .into_iter()
+            .filter(|(level, _)| {
+                matches!(level, LogLevel::Status | LogLevel::Warn | LogLevel::Error)
+            })
+            .map(|(_, m)| m)
+            .filter(|m| {
+                m.starts_with("skipped winget ")
+                    || m.starts_with("skipping winget ")
+                    || m.starts_with("winget skipped ")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_skip_lines_quoted_in_the_winget_docs_are_what_the_publisher_prints() {
+        let blocks = quoted_text_blocks();
+        assert_eq!(
+            blocks.len(),
+            2,
+            "the Additional locales section quotes one default block and one --show-skipped block; got {blocks:?}"
+        );
+        assert_eq!(
+            skip_lines_printed(false),
+            blocks[0],
+            "the default run prints the first quoted block"
+        );
+        assert_eq!(
+            skip_lines_printed(true),
+            blocks[1],
+            "the --show-skipped run prints the second quoted block"
+        );
+    }
+}

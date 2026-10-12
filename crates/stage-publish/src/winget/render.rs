@@ -340,12 +340,22 @@ pub(crate) struct WingetIdentity {
     pub(crate) name: String,
     pub(crate) publisher_name: String,
     pub(crate) package_id: String,
+    /// The rendered `default_locale` (`en-US` when unset).
+    pub(crate) default_locale: String,
+    /// The rendered `additional_locales` entries, each checked against the
+    /// default locale and its siblings.
+    pub(crate) additional_locales: Vec<(String, WingetLocaleOverrides)>,
 }
 
 /// Resolve a crate's WinGet identity (repo, name, publisher, validated
-/// `PackageIdentifier`) from its DERIVED `publish.winget` block (see
-/// [`super::identifier::derive_winget_config`]), or `Ok(None)` when the
+/// `PackageIdentifier`, the locales) from its DERIVED `publish.winget` block
+/// (see [`super::identifier::derive_winget_config`]), or `Ok(None)` when the
 /// publisher would skip the crate (`skip_upload` / a falsy `if`).
+///
+/// The locales are resolved here rather than in the manifest render so an
+/// entry that disqualifies the crate (an empty, duplicate or default-equal
+/// `locale`) is reported before the dry-run return, which never renders a
+/// manifest.
 pub(crate) fn resolve_winget_identity(
     ctx: &Context,
     crate_name: &str,
@@ -384,12 +394,24 @@ pub(crate) fn resolve_winget_identity(
     validate_package_identifier(&package_id)
         .map_err(|e| anodizer_core::pipe_skip::entry_skip(e.to_string()))?;
 
+    // Manifest locale: templated, defaults to en-US.
+    let default_locale_raw = winget_cfg
+        .default_locale
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("en-US");
+    let default_locale =
+        crate::util::render_or_warn(ctx, log, "winget.default_locale", default_locale_raw)?;
+    let additional_locales = resolve_additional_locales(ctx, winget_cfg, &default_locale, log)?;
+
     Ok(Some(WingetIdentity {
         repo_owner,
         repo_name,
         name,
         publisher_name,
         package_id,
+        default_locale,
+        additional_locales,
     }))
 }
 
@@ -459,14 +481,8 @@ pub(crate) fn render_winget_manifests_with_identity(
         .filter(|s| !s.is_empty())
         .unwrap_or("install");
     let documentations = winget_cfg.documentations.as_deref().unwrap_or(&[]);
-    // Manifest locale: templated, defaults to en-US.
-    let default_locale_raw = winget_cfg
-        .default_locale
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .unwrap_or("en-US");
-    let default_locale =
-        crate::util::render_or_warn(ctx, log, "winget.default_locale", default_locale_raw)?;
+    let default_locale = identity.default_locale.clone();
+    let additional_locales = &identity.additional_locales;
 
     let rendered = render_winget_fields(
         ctx,
@@ -478,10 +494,6 @@ pub(crate) fn render_winget_manifests_with_identity(
         &short_desc,
         log,
     )?;
-
-    // Checked before any manifest is generated so a bad entry skips the crate
-    // with nothing written.
-    let additional_locales = resolve_additional_locales(ctx, winget_cfg, &default_locale, log)?;
 
     let params = WingetManifestParams {
         package_id,

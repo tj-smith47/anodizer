@@ -1833,3 +1833,82 @@ fn winget_url_template_renders_the_target_variant() {
         "https://example.com/windows_amd64v3_msvc"
     );
 }
+
+/// A crate whose `additional_locales` entry repeats `default_locale`
+/// disqualifies itself only: the crate after it in the same run still
+/// reaches its publish path.
+#[test]
+fn a_bad_additional_locale_skips_the_entry_and_keeps_the_next_one() {
+    let mut broken = winget_crate("alpha");
+    let cfg = broken.publish.as_mut().unwrap().winget.as_mut().unwrap();
+    cfg.default_locale = Some("en-US".to_string());
+    cfg.additional_locales = Some(vec![anodizer_core::config::WingetLocaleConfig {
+        locale: "en-US".to_string(),
+        ..Default::default()
+    }]);
+    let scope_repo = crate::testing::hermetic_tagged_repo();
+    let mut ctx = TestContextBuilder::new()
+        .crates(vec![broken, winget_crate("beta")])
+        .dry_run(true)
+        .project_root(scope_repo.path().to_path_buf())
+        .build();
+    let (_log, capture) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+    ctx.with_log_capture(capture.clone());
+
+    WingetPublisher::new()
+        .run(&mut ctx)
+        .expect("a disqualified entry must not fail the publisher");
+
+    let events = ctx.skip_memento.snapshot();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].stage, "winget");
+    assert_eq!(events[0].label, "alpha");
+    assert_eq!(
+        events[0].reason,
+        "additional_locales[0].locale 'en-US' equals default_locale"
+    );
+    let logged: String = capture
+        .all_messages()
+        .into_iter()
+        .map(|(_, m)| m)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        logged.contains("would submit WinGet manifest for 'beta'"),
+        "the entry after the skipped one must still run; got: {logged}"
+    );
+}
+
+/// A dry run renders no manifest, so the locale check has to happen before
+/// its early return: `release --dry-run` reports a bad `additional_locales`
+/// entry as the entry skip the live run would record.
+#[test]
+fn a_dry_run_reports_a_bad_additional_locale_as_an_entry_skip() {
+    let mut crate_cfg = winget_crate("alpha");
+    let cfg = crate_cfg.publish.as_mut().unwrap().winget.as_mut().unwrap();
+    cfg.additional_locales = Some(vec![
+        anodizer_core::config::WingetLocaleConfig {
+            locale: "pt-BR".to_string(),
+            ..Default::default()
+        },
+        anodizer_core::config::WingetLocaleConfig {
+            locale: "pt-BR".to_string(),
+            ..Default::default()
+        },
+    ]);
+    let mut ctx = TestContextBuilder::new()
+        .crates(vec![crate_cfg])
+        .dry_run(true)
+        .build();
+    let log = ctx.logger("publish");
+    let err = publish_to_winget(&mut ctx, "alpha", &log)
+        .expect_err("a duplicate locale must disqualify the entry on a dry run");
+    assert_eq!(
+        anodizer_core::pipe_skip::entry_skip_reason(&err),
+        Some("additional_locales[1].locale 'pt-BR' is already listed"),
+        "{err:#}"
+    );
+}

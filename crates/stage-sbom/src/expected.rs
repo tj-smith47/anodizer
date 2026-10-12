@@ -116,10 +116,14 @@ pub fn expected_sbom_assets(
                 .collect()
         } else {
             let kind = typed_artifact_kind(artifacts_type, id)?;
+            // The stage skips a directory bundle (a macOS `.app`, registered
+            // as an Installer that is never uploaded raw), so the gate must
+            // not expect a document for it.
             ctx.artifacts
                 .all()
                 .iter()
                 .filter(|a| a.kind == kind)
+                .filter(|a| !anodizer_core::artifact::is_directory_bundle_artifact(a))
                 .filter(|a| matches_id_filter(a, cfg.ids.as_deref()))
                 .filter(|a| matches_id_filter(a, release_ids))
                 .filter(|a| use_builtin || a.crate_name == crate_name)
@@ -708,5 +712,181 @@ mod tests {
             vec!["app-1.0.0.cdx.json".to_string()],
             "built-in generator emits one workspace SBOM, not one per archive"
         );
+    }
+
+    fn installer(name: &str, crate_name: &str, format: &str) -> Artifact {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            anodizer_core::artifact::FORMAT_META.to_string(),
+            format.to_string(),
+        );
+        Artifact {
+            kind: ArtifactKind::Installer,
+            name: name.to_string(),
+            path: std::path::PathBuf::from(name),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: crate_name.to_string(),
+            metadata,
+            size: None,
+        }
+    }
+
+    #[test]
+    fn a_directory_bundle_installer_yields_no_expectation_while_a_pkg_does() {
+        // The stage skips a `.app` bundle (a directory never uploaded raw) on
+        // both generator paths, so the gate must not demand a document for it.
+        let cfg = SbomConfig {
+            id: Some("inst".to_string()),
+            cmd: Some("syft".to_string()),
+            documents: Some(vec!["{{ .ArtifactName }}.cdx.json".to_string()]),
+            artifacts: Some("installer".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .project_name("app")
+            .add_sbom(cfg)
+            .build();
+        ctx.artifacts.add(installer(
+            "app.app",
+            "app",
+            anodizer_core::artifact::FORMAT_APPBUNDLE,
+        ));
+        ctx.artifacts.add(installer("app-1.0.0.pkg", "app", "pkg"));
+        assert_eq!(
+            expected_sbom_assets(&ctx, "app", None).expect("derivation"),
+            vec!["app-1.0.0.pkg.cdx.json".to_string()]
+        );
+    }
+
+    /// A two-crate lockstep workspace whose release owner (`ws-cli`, the
+    /// first crate with a `release:` block) is not `project_name`
+    /// (`ws-core`), with one archive per crate in `dist`.
+    fn lockstep_ctx(dist: &Path, cfg: SbomConfig) -> Context {
+        use anodizer_core::config::{CrateConfig, ReleaseConfig};
+        let release = || {
+            Some(ReleaseConfig {
+                github: Some(anodizer_core::config::ScmRepoConfig {
+                    owner: "o".to_string(),
+                    name: "r".to_string(),
+                    token: None,
+                }),
+                ..Default::default()
+            })
+        };
+        let mut ctx = TestContextBuilder::new()
+            .project_name("ws-core")
+            .tag("v1.0.0")
+            .dist(dist.to_path_buf())
+            .add_sbom(cfg)
+            .crates(vec![
+                CrateConfig {
+                    name: "ws-cli".to_string(),
+                    path: "crates/cli".to_string(),
+                    release: release(),
+                    ..Default::default()
+                },
+                CrateConfig {
+                    name: "ws-core".to_string(),
+                    path: "crates/core".to_string(),
+                    release: release(),
+                    ..Default::default()
+                },
+            ])
+            .build();
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(archive(
+            "ws-cli-1.0.0.tar.gz",
+            "ws-cli",
+            Some("x86_64-unknown-linux-gnu"),
+        ));
+        ctx.artifacts.add(archive(
+            "ws-core-1.0.0.tar.gz",
+            "ws-core",
+            Some("x86_64-unknown-linux-gnu"),
+        ));
+        assert_eq!(ctx.config.release_owner_crate_name(), "ws-cli");
+        ctx
+    }
+
+    /// The Sbom artifacts the stage registered under `crate_name`, sorted.
+    fn registered_sboms_of(ctx: &Context, crate_name: &str) -> Vec<String> {
+        let mut names: Vec<String> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::Sbom && a.crate_name == crate_name)
+            .map(|a| a.name.clone())
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// Run the real stage on the lockstep context and hold, per crate, the
+    /// derivation to the registrations under that crate.
+    fn assert_lockstep_gate_matches_stage(cfg: SbomConfig, expect_owner_nonempty: bool) {
+        let dist = tempfile::tempdir().expect("tempdir");
+        let mut ctx = lockstep_ctx(dist.path(), cfg);
+        let predicted_cli = expected_sbom_assets(&ctx, "ws-cli", None).expect("derivation");
+        let predicted_core = expected_sbom_assets(&ctx, "ws-core", None).expect("derivation");
+
+        crate::SbomStage.run(&mut ctx).expect("sbom stage run");
+
+        assert_eq!(
+            predicted_cli,
+            registered_sboms_of(&ctx, "ws-cli"),
+            "the release owner's derivation must equal the stage's registrations under it"
+        );
+        assert_eq!(
+            predicted_core,
+            registered_sboms_of(&ctx, "ws-core"),
+            "the project crate's derivation must equal the stage's registrations under it"
+        );
+        if expect_owner_nonempty {
+            assert!(
+                !predicted_cli.is_empty(),
+                "the owner's release expects the document"
+            );
+        }
+    }
+
+    #[test]
+    fn lockstep_external_typed_expectations_match_the_stage_per_crate() {
+        // One document per archive, each registered under its archive's crate.
+        assert_lockstep_gate_matches_stage(
+            SbomConfig {
+                id: Some("ext".to_string()),
+                cmd: Some("sh".to_string()),
+                args: Some(vec!["-c".to_string(), "echo x > \"$document\"".to_string()]),
+                documents: Some(vec!["{{ .ArtifactName }}.spdx.json".to_string()]),
+                artifacts: Some("archive".to_string()),
+                ..Default::default()
+            },
+            true,
+        );
+    }
+
+    #[test]
+    fn lockstep_external_any_expectations_match_the_stage_per_crate() {
+        // The whole-project document is registered under the release owner,
+        // never under the project crate.
+        assert_lockstep_gate_matches_stage(
+            SbomConfig {
+                id: Some("ext-any".to_string()),
+                cmd: Some("sh".to_string()),
+                args: Some(vec!["-c".to_string(), "echo x > \"$document\"".to_string()]),
+                documents: Some(vec!["{{ .ArtifactName }}.spdx.json".to_string()]),
+                artifacts: Some("any".to_string()),
+                ..Default::default()
+            },
+            true,
+        );
+    }
+
+    #[test]
+    fn lockstep_builtin_expectations_match_the_stage_per_crate() {
+        // The built-in generator's single workspace document carries the
+        // project name and is registered under the release owner.
+        assert_lockstep_gate_matches_stage(per_archive_cfg(), true);
     }
 }

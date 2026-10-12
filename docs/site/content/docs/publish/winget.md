@@ -388,10 +388,18 @@ default locale manifest only, where WinGet reads it.
 
 An entry whose `locale` renders empty, equals `default_locale`, or repeats an
 earlier entry's locale skips the crate before any manifest is written or
-pushed, and the run summary names the entry:
+pushed, on a dry run as on a live one. The publish log reports the reason once
+for the publisher:
+
+```text
+skipping winget — additional_locales[1].locale 'en-US' equals default_locale
+```
+
+Under `--show-skipped` the per-entry line that names the crate prints as well:
 
 ```text
 skipped winget for 'myapp' — additional_locales[1].locale 'en-US' equals default_locale
+skipping winget — additional_locales[1].locale 'en-US' equals default_locale
 ```
 
 ## Upgrade behavior, moniker, and silent switch
