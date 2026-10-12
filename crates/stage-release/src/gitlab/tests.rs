@@ -1750,8 +1750,7 @@ async fn upload_asset_replace_with_no_matching_link_reports_the_create_failure()
 }
 
 /// A transient 503 on the version probe is retried on the probe's own small
-/// budget, so the answer is the server's version and not the conservative
-/// default.
+/// budget, so the answer is the server's version and not `None`.
 #[tokio::test]
 async fn detect_pre_v17_retries_a_transient_probe_failure() {
     let (addr, log) = spawn_scripted_responder(vec![
@@ -1775,7 +1774,7 @@ async fn detect_pre_v17_retries_a_transient_probe_failure() {
     let api_url = format!("http://{addr}");
     let env = anodizer_core::MapEnvSource::default();
     assert!(
-        !detect_pre_v17_gitlab_with_env(&client, &api_url, &env, None, tlog()).await,
+        detect_pre_v17_gitlab_with_env(&client, &api_url, &env, None, tlog()).await == Some(false),
         "the retried probe reads 17.2.0 as not pre-v17"
     );
     let entries = log.lock().unwrap();
@@ -1975,6 +1974,318 @@ async fn the_version_probe_is_asked_once_for_every_asset() {
     assert_eq!(entries.iter().filter(|e| e.method == "POST").count(), 2);
 }
 
+/// A full page of 100 links that does not hold the name, served again for
+/// page two, is a server ignoring `page`: the sweep ends with an error on the
+/// first repeat instead of reading the same page for ever.
+#[tokio::test]
+async fn find_asset_link_stops_on_a_listing_that_repeats_a_page() {
+    let page: Vec<serde_json::Value> = (0..100u64)
+        .map(|i| serde_json::json!({"id": 1000 + i, "name": format!("other-{i}"), "url": "https://x/o"}))
+        .collect();
+    let body = serde_json::Value::Array(page).to_string();
+    let routes: Vec<ScriptedRoute> = (1..=3u32)
+        .map(|page| ScriptedRoute {
+            method: "GET",
+            path_pattern: Box::leak(
+                format!("/projects/o%2Fr/releases/v1.0.0/assets/links?page={page}&per_page=100")
+                    .into_boxed_str(),
+            ),
+            response: http_json("200 OK", body.clone()),
+            times: None,
+        })
+        .collect();
+    let (addr, log) = spawn_scripted_responder(routes);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let ctx = GitlabCtx {
+        client: &client,
+        api_url: &api_url,
+        project_id: "o/r",
+        policy: &policy,
+        deadline: None,
+        log: tlog(),
+    };
+    let err = gitlab_find_asset_link(&ctx, "v1.0.0", "a.bin")
+        .await
+        .expect_err("a repeating listing is an error, not an absence");
+    assert_eq!(
+        format!("{err:#}"),
+        "gitlab: could not enumerate the release links of 'v1.0.0': the listing served \
+         the same page twice (page 2 repeats page 1), so the server is not honoring the \
+         page parameter"
+    );
+    assert_eq!(log.lock().unwrap().len(), 2, "two listing pages, no third");
+}
+
+/// The link sweep stops at the run's retry deadline: page one is read, and
+/// page two is never requested once the deadline has passed.
+#[tokio::test]
+async fn find_asset_link_stops_when_the_deadline_passes() {
+    let page: Vec<serde_json::Value> = (0..100u64)
+        .map(|i| serde_json::json!({"id": 1000 + i, "name": format!("other-{i}"), "url": "https://x/o"}))
+        .collect();
+    let (addr, log) = spawn_scripted_responder(vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=1&per_page=100",
+            response: http_json("200 OK", serde_json::Value::Array(page).to_string()),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=2&per_page=100",
+            response: http_json("200 OK", "[]".to_string()),
+            times: None,
+        },
+    ]);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let ctx = GitlabCtx {
+        client: &client,
+        api_url: &api_url,
+        project_id: "o/r",
+        policy: &policy,
+        deadline: Some(std::time::Instant::now()),
+        log: tlog(),
+    };
+    let err = gitlab_find_asset_link(&ctx, "v1.0.0", "a.bin")
+        .await
+        .expect_err("a sweep cut short by the deadline is an error, not an absence");
+    assert_eq!(
+        format!("{err:#}"),
+        "gitlab: could not enumerate the release links of 'v1.0.0': the retry deadline \
+         passed while reading the listing (page 2)"
+    );
+    let entries = log.lock().unwrap();
+    assert_eq!(entries.len(), 1, "page 1 only: {entries:?}");
+    assert!(entries[0].path.ends_with("page=1&per_page=100"));
+}
+
+/// When the duplicate's cleanup fails (the DELETE answers 500 on every
+/// attempt), the error the upload returns is the create failure, with the
+/// cleanup failure attached to it.
+#[tokio::test]
+async fn a_failed_cleanup_reports_the_create_failure_with_the_cleanup_as_context() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("a.bin");
+    tokio::fs::write(&file, b"xyz")
+        .await
+        .expect("write fixture");
+
+    let (addr, log) = spawn_scripted_responder(vec![
+        ScriptedRoute {
+            method: "PUT",
+            path_pattern: "/projects/o%2Fr/packages/generic/p/1.0.0/a.bin",
+            response: http_json("201 Created", "{}".to_string()),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/version",
+            response: http_json(
+                "200 OK",
+                serde_json::json!({"version": "17.0.0"}).to_string(),
+            ),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "POST",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+            response: http_json(
+                "400 Bad Request",
+                serde_json::json!({"message": {"name": ["has already been taken"]}}).to_string(),
+            ),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=1&per_page=100",
+            response: http_json(
+                "200 OK",
+                serde_json::json!([{"id": 4242, "name": "a.bin", "url": "https://x/a.bin"}])
+                    .to_string(),
+            ),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "DELETE",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links/4242",
+            response: http_json("500 Internal Server Error", "{}".to_string()),
+            times: None,
+        },
+    ]);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let ctx = GitlabCtx {
+        client: &client,
+        api_url: &api_url,
+        project_id: "o/r",
+        policy: &policy,
+        deadline: None,
+        log: tlog(),
+    };
+    let asset = GitlabAssetSpec {
+        file_path: &file,
+        file_name: "a.bin",
+    };
+    let pkg = GitlabPackageRegistrySpec {
+        project_name: "p",
+        version: "1.0.0",
+    };
+    let err = gitlab_upload_asset(
+        &ctx,
+        "v1.0.0",
+        &asset,
+        Some(&pkg),
+        "https://x",
+        true,
+        &tokio::sync::OnceCell::new(),
+    )
+    .await
+    .expect_err("a failed cleanup fails the upload");
+    let chain = format!("{err:#}");
+    assert!(
+        chain.starts_with(
+            "gitlab: create release link for 'a.bin' failed (HTTP 400 Bad Request): \
+             {\"message\":{\"name\":[\"has already been taken\"]}}; cleaning up the \
+             existing link failed: "
+        ),
+        "the create failure leads, the cleanup follows: {chain}"
+    );
+    assert!(
+        chain.contains(
+            "delete existing link 'a.bin' (id=4242) failed (HTTP 500 Internal Server Error)"
+        ),
+        "{chain}"
+    );
+    assert_eq!(
+        anodizer_core::retry::http_status(&err),
+        400,
+        "the create failure is the error the upload is classified by"
+    );
+    let entries = log.lock().unwrap();
+    assert_eq!(entries.iter().filter(|e| e.method == "POST").count(), 1);
+    assert_eq!(entries.iter().filter(|e| e.method == "DELETE").count(), 2);
+}
+
+/// A version probe that fails is not an answer: that asset's link uses the
+/// legacy `filepath` field, the next asset asks again, and the first answer
+/// the server gives is the one every later asset reuses.
+#[tokio::test]
+async fn a_failed_version_probe_is_not_cached() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let names = ["a.bin", "b.bin", "c.bin"];
+    for name in names {
+        tokio::fs::write(dir.path().join(name), b"xyz")
+            .await
+            .expect("write fixture");
+    }
+
+    let mut routes: Vec<ScriptedRoute> = names
+        .iter()
+        .map(|name| ScriptedRoute {
+            method: "PUT",
+            path_pattern: Box::leak(
+                format!("/projects/o%2Fr/packages/generic/p/1.0.0/{name}").into_boxed_str(),
+            ),
+            response: http_json("201 Created", "{}".to_string()),
+            times: None,
+        })
+        .collect();
+    routes.extend([
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/version",
+            response: "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+            times: Some(VERSION_PROBE_RETRY.max_attempts as usize),
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/version",
+            response: http_json(
+                "200 OK",
+                serde_json::json!({"version": "17.0.0"}).to_string(),
+            ),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "POST",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+            response: http_json("201 Created", "{}".to_string()),
+            times: None,
+        },
+    ]);
+    let (addr, log) = spawn_scripted_responder(routes);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let ctx = GitlabCtx {
+        client: &client,
+        api_url: &api_url,
+        project_id: "o/r",
+        policy: &policy,
+        deadline: None,
+        log: tlog(),
+    };
+    let pkg = GitlabPackageRegistrySpec {
+        project_name: "p",
+        version: "1.0.0",
+    };
+    let probe = tokio::sync::OnceCell::new();
+    for name in names {
+        let path = dir.path().join(name);
+        let asset = GitlabAssetSpec {
+            file_path: &path,
+            file_name: name,
+        };
+        gitlab_upload_asset(
+            &ctx,
+            "v1.0.0",
+            &asset,
+            Some(&pkg),
+            "https://x",
+            false,
+            &probe,
+        )
+        .await
+        .expect("upload ok");
+    }
+    assert_eq!(probe.get(), Some(&false), "the 17.0.0 answer is cached");
+    let entries = log.lock().unwrap();
+    assert_eq!(
+        entries.iter().filter(|e| e.path == "/version").count(),
+        VERSION_PROBE_RETRY.max_attempts as usize + 1,
+        "every attempt of the failed probe, then one probe that answered"
+    );
+    let fields: Vec<&str> = entries
+        .iter()
+        .filter(|e| e.method == "POST")
+        .map(|e| {
+            let payload: serde_json::Value =
+                serde_json::from_str(&e.body).expect("link body is JSON");
+            if payload.get("filepath").is_some() {
+                "filepath"
+            } else if payload.get("direct_asset_path").is_some() {
+                "direct_asset_path"
+            } else {
+                "neither"
+            }
+        })
+        .collect();
+    assert_eq!(
+        fields,
+        ["filepath", "direct_asset_path", "direct_asset_path"],
+        "the unanswered asset falls back to the legacy field"
+    );
+}
+
 // -- detect_pre_v17_gitlab_with_env -------------------------------------
 
 /// The `CI_SERVER_VERSION` env var short-circuits the version detection:
@@ -1982,7 +2293,7 @@ async fn the_version_probe_is_asked_once_for_every_asset() {
 #[tokio::test]
 async fn detect_pre_v17_env_short_circuits_without_http() {
     // Responder serves nothing useful; if a /version call escaped it would
-    // 404 and (conservatively) report pre-v17 — so the assertions below
+    // 404 and report no answer (`None`), so the assertions below
     // distinguish the env path from the HTTP path.
     let (addr, log) = spawn_scripted_responder(vec![]);
     let client = test_client();
@@ -1990,13 +2301,14 @@ async fn detect_pre_v17_env_short_circuits_without_http() {
 
     let env16 = MapEnvSource::new().with("CI_SERVER_VERSION", "16.5.0");
     assert!(
-        detect_pre_v17_gitlab_with_env(&client, &api_url, &env16, None, tlog()).await,
+        detect_pre_v17_gitlab_with_env(&client, &api_url, &env16, None, tlog()).await == Some(true),
         "16.x via env => pre-v17"
     );
 
     let env17 = MapEnvSource::new().with("CI_SERVER_VERSION", "17.1.0");
     assert!(
-        !detect_pre_v17_gitlab_with_env(&client, &api_url, &env17, None, tlog()).await,
+        detect_pre_v17_gitlab_with_env(&client, &api_url, &env17, None, tlog()).await
+            == Some(false),
         "17.x via env => not pre-v17"
     );
 
@@ -2024,7 +2336,7 @@ async fn detect_pre_v17_falls_back_to_version_api() {
     let env = MapEnvSource::new();
 
     assert!(
-        detect_pre_v17_gitlab_with_env(&client, &api_url, &env, None, tlog()).await,
+        detect_pre_v17_gitlab_with_env(&client, &api_url, &env, None, tlog()).await == Some(true),
         "16.x from /version API => pre-v17"
     );
     let entries = log.lock().unwrap();
@@ -2033,30 +2345,32 @@ async fn detect_pre_v17_falls_back_to_version_api() {
 }
 
 /// When the `/version` API call fails (no matching route => 404), the
-/// detector conservatively defaults to pre-v17 (`true`).
+/// detector has no answer (`None`), so the caller does not cache one.
 #[tokio::test]
-async fn detect_pre_v17_defaults_true_on_api_failure() {
+async fn detect_pre_v17_has_no_answer_on_api_failure() {
     let (addr, _log) = spawn_scripted_responder(vec![]);
     let client = test_client();
     let api_url = format!("http://{addr}");
     let env = MapEnvSource::new();
 
     assert!(
-        detect_pre_v17_gitlab_with_env(&client, &api_url, &env, None, tlog()).await,
-        "an unreachable/failed /version probe defaults to pre-v17"
+        detect_pre_v17_gitlab_with_env(&client, &api_url, &env, None, tlog())
+            .await
+            .is_none(),
+        "an unreachable/failed /version probe is no answer"
     );
 }
 
 /// A `/version` 200 whose JSON lacks a string `version` field cannot be
-/// parsed into a major number, so the detector falls through to the
-/// conservative pre-v17 default (`true`) rather than panicking.
+/// parsed into a major number, so the detector has no answer (`None`)
+/// rather than panicking.
 #[tokio::test]
-async fn detect_pre_v17_unparseable_version_field_defaults_true() {
+async fn detect_pre_v17_unparseable_version_field_has_no_answer() {
     let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
         method: "GET",
         path_pattern: "/version",
-        // `version` is a number, not the expected string — `as_str()`
-        // yields None, so the body-parse branch defaults to pre-v17.
+        // `version` is a number, not the expected string, so `as_str()`
+        // yields None and the detector returns None.
         response: http_json("200 OK", serde_json::json!({"version": 17}).to_string()),
         times: None,
     }]);
@@ -2065,8 +2379,10 @@ async fn detect_pre_v17_unparseable_version_field_defaults_true() {
     let env = MapEnvSource::new();
 
     assert!(
-        detect_pre_v17_gitlab_with_env(&client, &api_url, &env, None, tlog()).await,
-        "a 200 /version with a non-string version field defaults to pre-v17"
+        detect_pre_v17_gitlab_with_env(&client, &api_url, &env, None, tlog())
+            .await
+            .is_none(),
+        "a 200 /version with a non-string version field is no answer"
     );
     let entries = log.lock().unwrap();
     assert_eq!(entries.len(), 1, "exactly one /version GET was issued");

@@ -122,13 +122,7 @@ pub(crate) async fn gitlab_create_release(
             // Inspect the chain for HttpError(403|404) — those are the
             // "release does not exist, create it" signal. Anything else
             // (5xx exhaustion, transport failure, other 4xx) propagates.
-            let status_code = err
-                .chain()
-                .find_map(|e| {
-                    e.downcast_ref::<anodizer_core::retry::HttpError>()
-                        .map(|h| h.status)
-                })
-                .unwrap_or(0);
+            let status_code = anodizer_core::retry::http_status(&err);
             if status_code == 403 || status_code == 404 {
                 true
             } else {

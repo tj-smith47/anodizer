@@ -16,14 +16,14 @@ pub(crate) const VERSION_PROBE_RETRY: RetryPolicy = RetryPolicy {
 /// 1. Check `CI_SERVER_VERSION` environment variable (set in GitLab CI runners)
 /// 2. Fall back to `GET /api/v4/version` API call, retried on
 ///    [`VERSION_PROBE_RETRY`] within the run's `deadline`
-/// 3. If both fail, default to pre-v17 behavior (`filepath`) — conservative
-///    approach: treat the API as pre-v17 on failure.
+/// 3. `None` when neither answers: the caller treats that asset as pre-v17
+///    (`filepath`) without remembering the answer.
 pub(crate) async fn detect_pre_v17_gitlab(
     client: &Client,
     api_url: &str,
     deadline: Option<std::time::Instant>,
     log: &anodizer_core::log::StageLogger,
-) -> bool {
+) -> Option<bool> {
     detect_pre_v17_gitlab_with_env(client, api_url, &ProcessEnvSource, deadline, log).await
 }
 
@@ -37,10 +37,10 @@ pub(crate) async fn detect_pre_v17_gitlab_with_env<E: EnvSource + ?Sized>(
     env: &E,
     deadline: Option<std::time::Instant>,
     log: &anodizer_core::log::StageLogger,
-) -> bool {
+) -> Option<bool> {
     // 1. Check environment variable first.
     if let Some(version_str) = env.var("CI_SERVER_VERSION") {
-        return is_pre_v17(&version_str);
+        return Some(is_pre_v17(&version_str));
     }
 
     // 2. Fall back to API call.
@@ -60,19 +60,9 @@ pub(crate) async fn detect_pre_v17_gitlab_with_env<E: EnvSource + ?Sized>(
         },
     )
     .await;
-    match probe {
-        Ok(resp) => {
-            if let Ok(body) = resp.json::<serde_json::Value>().await
-                && let Some(version_str) = body["version"].as_str()
-            {
-                return is_pre_v17(version_str);
-            }
-            // Could not parse version — default to pre-v17 (conservative).
-            true
-        }
-        // API call failed — default to pre-v17 (conservative).
-        Err(_) => true,
-    }
+    let resp = probe.ok()?;
+    let body = resp.json::<serde_json::Value>().await.ok()?;
+    body["version"].as_str().map(is_pre_v17)
 }
 
 /// Parse a GitLab version string and return true if the major version is < 17.

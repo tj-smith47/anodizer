@@ -73,12 +73,20 @@ pub(crate) async fn gitlab_upload_asset(
     );
     let direct_asset_path = format!("/{}", file_name);
 
-    // Detect GitLab server version for the asset path field name.
-    // GitLab v17+ uses `direct_asset_path`; older versions use `file_path`.
-    // One probe per release run: every asset's link uses the same field.
-    let use_legacy_file_path = *legacy_path_probe
-        .get_or_init(|| detect_pre_v17_gitlab(client, api_url, deadline, log))
-        .await;
+    // GitLab v17+ names the field `direct_asset_path`, older servers
+    // `filepath`. One probe answers for every asset of the run; a probe that
+    // failed is not an answer and is asked again on the next asset, so a
+    // transient failure costs one legacy-field attempt rather than all of them.
+    let use_legacy_file_path = match legacy_path_probe.get() {
+        Some(answer) => *answer,
+        None => match detect_pre_v17_gitlab(client, api_url, deadline, log).await {
+            Some(answer) => {
+                let _ = legacy_path_probe.set(answer);
+                answer
+            }
+            None => true,
+        },
+    };
     let path_field = if use_legacy_file_path {
         "filepath"
     } else {
@@ -120,13 +128,15 @@ pub(crate) async fn gitlab_upload_asset(
 
     // A failed cleanup (list or delete) and a listing holding no link of
     // this name both report the ORIGINAL create failure, which is the
-    // actionable error, with the cleanup failure chained underneath.
+    // actionable error: its text leads the message, the cleanup failure
+    // follows it, and its status is the one the upload retry classifies.
     match gitlab_delete_asset_link(ctx, tag, file_name).await {
         Ok(true) => {}
         Ok(false) => return Err(create_err),
         Err(cleanup_err) => {
+            let headline = create_err.to_string();
             return Err(create_err.context(format!(
-                "cleaning up the existing link failed: {cleanup_err:#}"
+                "{headline}; cleaning up the existing link failed: {cleanup_err:#}"
             )));
         }
     }
@@ -180,7 +190,7 @@ pub(crate) async fn gitlab_find_asset_link(
     let links_api = gitlab_links_api(api_url, project_id, tag);
     // The listing is paged (20 per page by default); a release with more
     // links than one page holds keeps its duplicate on a later page.
-    let mut previous_first_id: Option<u64> = None;
+    let mut previous_page: Option<String> = None;
     for page in 1u32.. {
         if page > 1 && deadline.is_some_and(|d| std::time::Instant::now() >= d) {
             bail!(
@@ -206,10 +216,12 @@ pub(crate) async fn gitlab_find_asset_link(
             },
         )
         .await?;
-        let links: Vec<serde_json::Value> = resp
-            .json()
+        let page_text = resp
+            .text()
             .await
-            .context("gitlab: parse release links JSON")?;
+            .context("gitlab: read release links page")?;
+        let links: Vec<serde_json::Value> =
+            serde_json::from_str(&page_text).context("gitlab: parse release links JSON")?;
         for link in &links {
             if link["name"].as_str() == Some(file_name)
                 && let Some(link_id) = link["id"].as_u64()
@@ -221,8 +233,7 @@ pub(crate) async fn gitlab_find_asset_link(
         if links.len() < LINKS_PAGE_SIZE as usize {
             return Ok(None);
         }
-        let first_id = links.first().and_then(|l| l["id"].as_u64());
-        if first_id.is_some() && first_id == previous_first_id {
+        if previous_page.as_deref() == Some(page_text.as_str()) {
             bail!(
                 "gitlab: could not enumerate the release links of '{tag}': the listing \
                  served the same page twice (page {page} repeats page {}), so the server \
@@ -230,9 +241,9 @@ pub(crate) async fn gitlab_find_asset_link(
                 page - 1
             );
         }
-        previous_first_id = first_id;
+        previous_page = Some(page_text);
     }
-    unreachable!("the page loop returns or bails")
+    bail!("gitlab: could not enumerate the release links of '{tag}': the page counter overflowed")
 }
 
 /// Links per listing page; GitLab's maximum.
