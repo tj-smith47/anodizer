@@ -22,10 +22,10 @@ Create an incoming webhook in **Main Menu > Integrations > Incoming Webhooks**. 
 
 ### Optional overrides
 
-The `channel`, `username`, and `icon_url` fields are all optional. When omitted, Mattermost uses the defaults configured on the webhook itself.
+The `channel`, `username`, and `icon_url` fields are all optional. An omitted `username` posts as `anodizer`; an omitted `channel` or `icon_url` leaves the default configured on the webhook itself.
 
 - **`channel`** -- Override the default channel (e.g. `town-square` or `releases`).
-- **`username`** -- Override the display name of the bot post.
+- **`username`** -- Display name of the bot post. Default: `anodizer`.
 - **`icon_url`** -- Override the bot's avatar with a custom image URL.
 
 ### Environment variables
@@ -41,6 +41,6 @@ webhook_url: "{{ Env.MATTERMOST_WEBHOOK }}"
 | `enabled` | bool or template | Enable Mattermost notifications |
 | `webhook_url` | string | Mattermost incoming webhook URL (falls back to `MATTERMOST_WEBHOOK`) |
 | `channel` | string | Optional channel override |
-| `username` | string | Optional display name override |
+| `username` | string | Display name of the bot post. Default: `anodizer` |
 | `icon_url` | string | Optional bot avatar URL |
-| `message_template` | string | Message body (templates supported) |
+| `message_template` | string | Message body (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |

@@ -41,4 +41,4 @@ bot_token: "{{ Env.TELEGRAM_TOKEN }}"
 | `bot_token` | string | Telegram Bot API token (falls back to `TELEGRAM_TOKEN`) |
 | `chat_id` | string | Target chat, group, or channel ID |
 | `parse_mode` | string | Optional: `MarkdownV2` or `HTML` |
-| `message_template` | string | Message body (templates supported) |
+| `message_template` | string | Message body (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |

@@ -33,4 +33,7 @@ webhook_url: "{{ Env.TEAMS_WEBHOOK }}"
 |-------|------|-------------|
 | `enabled` | bool or template | Enable Teams notifications |
 | `webhook_url` | string | Teams incoming webhook URL (falls back to `TEAMS_WEBHOOK`) |
-| `message_template` | string | Message body (templates supported) |
+| `message_template` | string | Message body (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |
+| `title_template` | string | Card header (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out!` |
+| `color` | string | Card theme color as a hex string (`0076D7`). Default: `#2D313E` |
+| `icon_url` | string | Icon shown in the card header |

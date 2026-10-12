@@ -43,4 +43,4 @@ The `to` field accepts a list. Each address becomes a comma-separated entry in t
 | `from` | string | Sender address |
 | `to` | list of strings | Recipient addresses |
 | `subject_template` | string | Subject line (templates supported) |
-| `message_template` | string | Message body (templates supported) |
+| `message_template` | string | Message body (templates supported). Default: `You can view details from: {{ ReleaseURL }}` |
