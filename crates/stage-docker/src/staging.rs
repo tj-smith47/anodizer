@@ -6,9 +6,8 @@ use anyhow::{Context as _, Result};
 use anodizer_core::artifact::{ArtifactKind, matches_id_filter};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::target::map_target;
 
-use super::platform::platform_to_arch;
+use super::platform::artifact_matches_platform;
 
 /// Stage artifacts into docker build context using the V2 layout.
 ///
@@ -32,7 +31,6 @@ pub(crate) fn stage_artifacts_v2(
     ];
 
     for platform in platforms {
-        let parts: Vec<&str> = platform.split('/').collect();
         // Use full platform path (e.g., "linux/amd64") as directory structure
         let platform_dir = staging_dir.join(platform.replace('/', std::path::MAIN_SEPARATOR_STR));
         if !dry_run {
@@ -41,25 +39,13 @@ pub(crate) fn stage_artifacts_v2(
             })?;
         }
 
-        let arch = platform_to_arch(platform);
-        let os = parts.first().copied().unwrap_or("linux");
-
         let mut platform_artifact_count = 0usize;
         for kind in &stageable_kinds {
             let artifacts: Vec<_> = ctx
                 .artifacts
                 .by_kind_and_crate(*kind, crate_name)
                 .into_iter()
-                .filter(|a| {
-                    // Match by architecture, or goos == "all" (cross-platform artifacts)
-                    if let Some(target) = a.target.as_deref() {
-                        let (a_os, a_arch) = map_target(target);
-                        (a_os == os && a_arch == arch) || a_os == "all"
-                    } else {
-                        // No target = universal artifact, include everywhere
-                        true
-                    }
-                })
+                .filter(|a| artifact_matches_platform(a, platform))
                 .filter(|a| matches_id_filter(a, ids_filter.map(Vec::as_slice)))
                 .collect();
 

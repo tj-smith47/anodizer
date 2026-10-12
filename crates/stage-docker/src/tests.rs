@@ -62,7 +62,51 @@ fn docker_collect_crates_sees_workspace_only_crate() {
 #[test]
 fn test_platform_to_arch() {
     assert_eq!(platform_to_arch("linux/amd64"), "amd64");
+    assert_eq!(platform_to_arch("linux/amd64/v3"), "amd64");
     assert_eq!(platform_to_arch("linux/arm64"), "arm64");
+    assert_eq!(platform_to_arch("linux/arm64/v8"), "arm64");
+    assert_eq!(platform_to_arch("linux/arm/v7"), "armv7");
+}
+
+#[test]
+fn a_platform_level_is_read_for_amd64_only_and_defaults_to_v1() {
+    use crate::platform::platform_amd64_level;
+    assert_eq!(platform_amd64_level("linux/amd64"), Some("v1"));
+    assert_eq!(platform_amd64_level("linux/amd64/v3"), Some("v3"));
+    assert_eq!(platform_amd64_level("linux/arm64/v8"), None);
+    assert_eq!(platform_amd64_level("linux/arm/v7"), None);
+    assert_eq!(tag_suffix("linux/amd64"), "amd64");
+    assert_eq!(tag_suffix("linux/amd64/v3"), "amd64v3");
+    assert_eq!(tag_suffix("linux/arm64/v8"), "arm64");
+}
+
+#[test]
+fn a_platform_selects_the_binary_of_its_amd64_level_and_arm64_v8_is_arm64() {
+    use crate::platform::artifact_matches_platform;
+    let binary = |target: &str, level: Option<&str>| anodizer_core::artifact::Artifact {
+        kind: anodizer_core::artifact::ArtifactKind::Binary,
+        name: "app".to_string(),
+        path: std::path::PathBuf::from(format!("dist/{target}-{}/app", level.unwrap_or("none"))),
+        target: Some(target.to_string()),
+        crate_name: "app".to_string(),
+        metadata: level
+            .map(|l| HashMap::from([("amd64_variant".to_string(), l.to_string())]))
+            .unwrap_or_default(),
+        size: None,
+    };
+    let v1 = binary("x86_64-unknown-linux-musl", None);
+    let v1_explicit = binary("x86_64-unknown-linux-musl", Some("v1"));
+    let v3 = binary("x86_64-unknown-linux-musl", Some("v3"));
+    let arm64 = binary("aarch64-unknown-linux-musl", None);
+
+    assert!(artifact_matches_platform(&v1, "linux/amd64"));
+    assert!(artifact_matches_platform(&v1_explicit, "linux/amd64"));
+    assert!(!artifact_matches_platform(&v3, "linux/amd64"));
+    assert!(artifact_matches_platform(&v3, "linux/amd64/v3"));
+    assert!(!artifact_matches_platform(&v1, "linux/amd64/v3"));
+    assert!(artifact_matches_platform(&arm64, "linux/arm64"));
+    assert!(artifact_matches_platform(&arm64, "linux/arm64/v8"));
+    assert!(!artifact_matches_platform(&v1, "linux/arm64"));
 }
 
 #[test]
