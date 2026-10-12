@@ -89,10 +89,12 @@ pub fn run(opts: BuildOpts) -> Result<()> {
 }
 
 /// `--output` copies ONE binary, so it is refused before anything compiles
-/// when the selection would build more than one: every producing build entry
-/// of every selected crate (`planned_builds` + `build_produces`, the build
-/// stage's own enumeration) is counted, and more than one names each crate so
-/// the operator can narrow with `--crate`. A single crate whose one build
+/// when the selection would build more than one: the build entries the stage
+/// itself would compile (`crate_build_target_entries`: producing, not
+/// `skip:`ped, with at least one target) are counted over every selected
+/// crate, and more than one names each crate so the operator can narrow with
+/// `--crate`. A `skip:` template is read without a context here, so only a
+/// literal truthy value counts as skipped. A single crate whose one build
 /// yields several binaries is only known after the build and is refused there.
 fn refuse_ambiguous_output(
     config: &anodizer_core::config::Config,
@@ -102,13 +104,17 @@ fn refuse_ambiguous_output(
     if !has_single_target {
         anyhow::bail!("--output requires --single-target (only one binary can be copied)");
     }
+    let default_targets = config.effective_default_targets();
     let per_crate: Vec<(&str, usize)> = config
         .selected_crates(selected)
         .into_iter()
         .filter_map(|c| {
-            let producing = anodizer_core::build_plan::planned_builds(c)?
-                .iter()
-                .filter(|b| anodizer_core::build_plan::build_produces(c, b))
+            let producing =
+                anodizer_core::build_plan::crate_build_target_entries(c, &default_targets, |b| {
+                    anodizer_core::build_plan::build_is_skipped(b, |t| Ok(t.to_string()))
+                })
+                .into_iter()
+                .filter(|entry| !entry.targets.is_empty())
                 .count();
             (producing > 0).then_some((c.name.as_str(), producing))
         })
@@ -295,6 +301,51 @@ mod tests {
             msg,
             "--output requires --single-target (only one binary can be copied)"
         );
+    }
+
+    #[test]
+    fn output_counts_only_the_builds_the_stage_would_compile() {
+        use anodizer_core::config::{BuildConfig, StringOrBool};
+        let mut krate = crate_with_builds("a", 3);
+        let builds = krate.builds.as_mut().unwrap();
+        builds[1].skip = Some(StringOrBool::Bool(true));
+        builds[2].targets = Some(vec![]);
+        builds.push(BuildConfig {
+            binary: None,
+            ..Default::default()
+        });
+        let config = anodizer_core::config::Config {
+            crates: vec![krate],
+            ..Default::default()
+        };
+
+        refuse_ambiguous_output(&config, &[], true).expect(
+            "a skipped entry, an entry with no targets and a non-producing entry build nothing",
+        );
+    }
+
+    /// The refusal quoted on the single-target docs page is the message the
+    /// command produces (`.claude/rules/docs-quoted-output-pins.md`).
+    #[test]
+    fn the_refusal_quoted_in_the_single_target_docs_is_what_the_command_produces() {
+        let config = anodizer_core::config::Config {
+            crates: vec![crate_with_builds("myapp", 2)],
+            ..Default::default()
+        };
+        let produced = refuse_ambiguous_output(&config, &[], true)
+            .unwrap_err()
+            .to_string();
+        let page = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/site/content/docs/builds/single-target.md"
+        ))
+        .unwrap();
+        let quoted: Vec<&str> = page
+            .lines()
+            .filter_map(|line| line.trim_start().strip_prefix("Error "))
+            .filter(|line| !line.contains('\u{2026}'))
+            .collect();
+        assert_eq!(quoted, vec![produced.as_str()]);
     }
 
     #[test]
