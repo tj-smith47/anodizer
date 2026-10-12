@@ -295,7 +295,7 @@ pub struct TelegramAnnounce {
     pub bot_token: Option<String>,
     /// Telegram chat ID to send the message to (supports template variables).
     pub chat_id: Option<String>,
-    /// Message template. Default: "{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}"
+    /// Message template. Default: "{{ ProjectName | mdv2escape }} {{ Tag | mdv2escape }} is out\\! Check it out at {{ ReleaseURL | mdv2escape }}"
     pub message_template: Option<String>,
     /// Parse mode: "MarkdownV2" or "HTML" (defaults to "MarkdownV2").
     pub parse_mode: Option<String>,
@@ -532,6 +532,56 @@ mod tests {
     use super::*;
     use crate::config::HumanDuration;
     use std::time::Duration;
+
+    /// Every announcer's config field has a row in that announcer's docs page.
+    /// The page tables are hand-written, so a field added to a struct without
+    /// a row went undocumented until a reader asked where it was.
+    #[test]
+    fn every_announcer_field_has_a_row_in_its_docs_page() {
+        let schema = serde_json::to_value(schemars::schema_for!(AnnounceConfig)).unwrap();
+        let defs = &schema["$defs"];
+        let docs_dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/site/content/docs/announce/"
+        );
+        // The `webhook:` block is documented on `webhooks.md`.
+        let page_of = |announcer: &str| match announcer {
+            "webhook" => "webhooks".to_string(),
+            other => other.to_string(),
+        };
+        let mut missing = Vec::new();
+        let mut checked = 0usize;
+        for (announcer, prop) in schema["properties"].as_object().unwrap() {
+            let Some(def) = prop["anyOf"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .chain(std::iter::once(prop))
+                .find_map(|v| v["$ref"].as_str())
+                .and_then(|r| r.strip_prefix("#/$defs/"))
+                .filter(|d| d.ends_with("Announce") || *d == "WebhookConfig")
+            else {
+                continue;
+            };
+            let page = std::fs::read_to_string(format!("{docs_dir}{}.md", page_of(announcer)))
+                .unwrap_or_else(|e| panic!("{announcer}: no docs page: {e}"));
+            for field in defs[def]["properties"].as_object().unwrap().keys() {
+                checked += 1;
+                if !page.contains(&format!("| `{field}` |")) {
+                    missing.push(format!("{}.md: `{field}`", page_of(announcer)));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "undocumented announcer fields:\n{}",
+            missing.join("\n")
+        );
+        assert_eq!(
+            checked, 80,
+            "the schema walk found a different number of fields"
+        );
+    }
 
     #[test]
     fn slack_blocks_and_attachments_survive_the_effective_config_round_trip() {

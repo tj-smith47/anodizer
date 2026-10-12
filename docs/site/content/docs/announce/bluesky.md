@@ -20,6 +20,7 @@ announce:
 | `enabled` | bool or template | Enable Bluesky announcements |
 | `username` | string | Bluesky handle (e.g. `yourhandle.bsky.social`) |
 | `message_template` | string | Post text (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |
+| `pds_url` | string | Personal Data Server to post through. Default: `https://bsky.social` |
 
 ## Environment variables
 

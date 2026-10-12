@@ -19,11 +19,21 @@ announce:
     message_template: "{{ ProjectName }} {{ Tag }} has been released! {{ ReleaseURL }}"
 ```
 
-### SMTP delivery
+### Delivery
 
-Email is sent by piping an RFC 2822 message to a local mail transfer agent. Anodizer tries `sendmail -t` first and falls back to `msmtp -t` if sendmail is not found. Both read recipients from the message headers.
+With `host` set (or `SMTP_HOST` in the environment), anodizer connects to that SMTP server itself and authenticates with `username` (or `SMTP_USERNAME`) and `SMTP_PASSWORD`:
 
-Make sure one of these programs is installed and configured on the machine that runs anodizer (your CI runner, for example). For lightweight setups, [msmtp](https://marlam.de/msmtp/) works well with a simple `~/.msmtprc` pointing at your SMTP relay.
+```yaml
+announce:
+  email:
+    enabled: true
+    host: smtp.example.com
+    username: "{{ Env.SMTP_USERNAME }}"
+    from: releases@example.com
+    to: [team@example.com]
+```
+
+Without a host, the RFC 2822 message is piped to a local mail transfer agent: `sendmail -t` first, then `msmtp -t` if sendmail is not found. Both read recipients from the message headers. Make sure one of these programs is installed and configured on the machine that runs anodizer (your CI runner, for example). For lightweight setups, [msmtp](https://marlam.de/msmtp/) works well with a simple `~/.msmtprc` pointing at your SMTP relay.
 
 ### Templates
 
@@ -40,6 +50,11 @@ The `to` field accepts a list. Each address becomes a comma-separated entry in t
 | Field | Type | Description |
 |-------|------|-------------|
 | `enabled` | bool or template | Enable email notifications |
+| `host` | string | SMTP server. When set (or `SMTP_HOST` is), the message is sent over SMTP; otherwise it is piped to sendmail/msmtp |
+| `port` | int | SMTP port (or `SMTP_PORT`). Default: `587` |
+| `username` | string | SMTP username (or `SMTP_USERNAME`). Required for SMTP delivery; the password is always `SMTP_PASSWORD` |
+| `insecure_skip_verify` | bool | Skip TLS certificate verification on the SMTP connection. Default: `false` |
+| `encryption` | string | `auto`, `tls`, `starttls` or `none`. Default: `auto`: SMTPS on port 465, plain SMTP on 25, STARTTLS on every other port |
 | `from` | string | Sender address |
 | `to` | list of strings | Recipient addresses |
 | `subject_template` | string | Subject line (templates supported) |

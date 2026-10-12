@@ -26,3 +26,5 @@ Use webhooks to integrate with any service that accepts HTTP POST requests. The 
 | `headers` | map | Custom HTTP headers. A header named here replaces the default of the same name, including `Content-Type`, `User-Agent` and the `Authorization` header derived from `BASIC_AUTH_HEADER_VALUE` / `BEARER_TOKEN_HEADER_VALUE` |
 | `content_type` | string | Content-Type header (e.g., `application/json`) |
 | `message_template` | string | POST body (templates supported). Default: `{"message":"{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}"}` |
+| `skip_tls_verify` | bool | Skip TLS certificate verification for the endpoint. Default: `false` |
+| `expected_status_codes` | list of ints | Response status codes accepted as success. Default: `[200, 201, 202, 204]` |

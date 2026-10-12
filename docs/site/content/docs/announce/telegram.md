@@ -23,9 +23,8 @@ Create a Telegram bot via [@BotFather](https://t.me/botfather) and add it to the
 
 The optional `parse_mode` field controls how Telegram renders the message text. Supported values:
 
-- **`MarkdownV2`** -- Telegram-flavored Markdown (requires escaping special characters).
+- **`MarkdownV2`** (the default) -- Telegram-flavored Markdown. Pass every dynamic value through the `mdv2escape` filter and backslash-escape literal `!`, `.`, `-` and the other reserved characters, as the default template does.
 - **`HTML`** -- a subset of HTML tags (`<b>`, `<i>`, `<a>`, `<code>`, `<pre>`).
-- Omit the field to send plain text with no formatting.
 
 ### Environment variables
 
@@ -40,5 +39,6 @@ bot_token: "{{ Env.TELEGRAM_TOKEN }}"
 | `enabled` | bool or template | Enable Telegram notifications |
 | `bot_token` | string | Telegram Bot API token (falls back to `TELEGRAM_TOKEN`) |
 | `chat_id` | string | Target chat, group, or channel ID |
-| `parse_mode` | string | Optional: `MarkdownV2` or `HTML` |
-| `message_template` | string | Message body (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |
+| `parse_mode` | string | `MarkdownV2` or `HTML`. Default: `MarkdownV2` |
+| `message_template` | string | Message body (templates supported). Default: `{{ ProjectName | mdv2escape }} {{ Tag | mdv2escape }} is out\! Check it out at {{ ReleaseURL | mdv2escape }}` |
+| `message_thread_id` | string | Topic (thread) to post in inside a forum group (templates supported; must render an integer) |

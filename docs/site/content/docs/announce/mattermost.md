@@ -42,5 +42,8 @@ webhook_url: "{{ Env.MATTERMOST_WEBHOOK }}"
 | `webhook_url` | string | Mattermost incoming webhook URL (falls back to `MATTERMOST_WEBHOOK`) |
 | `channel` | string | Optional channel override |
 | `username` | string | Display name of the bot post. Default: `anodizer` |
-| `icon_url` | string | Optional bot avatar URL |
+| `icon_url` | string | Optional bot avatar URL (templates supported) |
+| `icon_emoji` | string | Emoji used as the bot avatar instead of `icon_url` (e.g. `:rocket:`; templates supported) |
+| `color` | string | Attachment color as a hex string. Default: `#2D313E` |
+| `title_template` | string | Attachment title (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out!` |
 | `message_template` | string | Message body (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |

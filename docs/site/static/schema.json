@@ -16063,7 +16063,7 @@
           ]
         },
         "message_template": {
-          "description": "Message template. Default: \"{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}\"",
+          "description": "Message template. Default: \"{{ ProjectName | mdv2escape }} {{ Tag | mdv2escape }} is out\\\\! Check it out at {{ ReleaseURL | mdv2escape }}\"",
           "default": null,
           "type": [
             "string",

@@ -24,4 +24,4 @@ When `webhook_url` is unset, anodizer assembles the webhook URL from the `DISCOR
 | `message_template` | string | Message body (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |
 | `author` | string | Author name shown in the embed (templates supported). Default: `anodizer` |
 | `color` | string | Embed color as a decimal integer (templates supported). Default: `3888754` |
-| `icon_url` | string | Icon shown in the embed footer (templates supported) |
+| `icon_url` | string | Icon beside the author name (templates supported); sent only when `author` resolves to a name |
