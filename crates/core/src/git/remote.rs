@@ -53,18 +53,7 @@ pub fn remote_identity(url: &str) -> String {
     let Some(url) = normalize_remote_url(url) else {
         return String::new();
     };
-    if let Some((host, path)) = split_scheme_url(url) {
-        return format!("{}/{}", host.to_ascii_lowercase(), path.trim_matches('/'));
-    }
-    // scp-style `user@host:path` or `host:path`: a host is the segment before
-    // the first colon when it holds no path separator (which would make it
-    // a local path or a Windows drive) and names a host (`@` or `.`).
-    if let Some((before, path)) = url.split_once(':')
-        && !before.contains(['/', '\\'])
-        && (before.contains('@') || before.contains('.'))
-        && !path.is_empty()
-    {
-        let host = before.rsplit('@').next().unwrap_or(before);
+    if let Some((host, path)) = split_scheme_url(url).or_else(|| split_scp_url(url)) {
         return format!("{}/{}", host.to_ascii_lowercase(), path.trim_matches('/'));
     }
     url.to_string()
@@ -82,69 +71,82 @@ fn ssh_web_host(host: &str) -> &str {
     }
 }
 
-/// Drop a trailing `:port` from an SSH authority's host. A bracketed IPv6
+/// Drop a trailing `:port` from a URL authority's host. A bracketed IPv6
 /// literal (`[::1]:22`) keeps its brackets and the colons inside them.
-fn strip_ssh_port(host: &str) -> &str {
+fn strip_port(host: &str) -> &str {
     if host.starts_with('[') {
         return host.find(']').map_or(host, |end| &host[..=end]);
     }
     host.split(':').next().unwrap_or(host)
 }
 
-/// Split a URL with a scheme (`https://`, `http://`, `ssh://`) into
-/// `(host, path)`, dropping any userinfo from the host segment. An `ssh://`
-/// port is the SSH port and is dropped too, and the host is mapped through
-/// [`ssh_web_host`]; an `http(s)://` port is the web port and stays. `None`
-/// when the URL has no such scheme, no host or no path.
-fn split_scheme_url(url: &str) -> Option<(&str, &str)> {
-    let (scheme, rest) = ["https://", "http://", "ssh://"]
+/// Split a URL into its scheme (`https://`, `http://`, `ssh://`) and the
+/// text after it; `None` for a URL with no such scheme.
+fn split_scheme(url: &str) -> Option<(&str, &str)> {
+    ["https://", "http://", "ssh://"]
         .iter()
-        .find_map(|scheme| url.strip_prefix(scheme).map(|rest| (*scheme, rest)))?;
-    let slash = rest.find('/')?;
-    let host_seg = &rest[..slash];
-    let path = &rest[slash + 1..];
-    let host = host_seg.rsplit('@').next().unwrap_or(host_seg);
-    let host = if scheme == "ssh://" {
-        ssh_web_host(strip_ssh_port(host))
+        .find_map(|scheme| url.strip_prefix(scheme).map(|rest| (*scheme, rest)))
+}
+
+/// The host of a URL's authority segment under `scheme`, any userinfo
+/// dropped. An `ssh://` port is the SSH port and is dropped, and the host is
+/// mapped through [`ssh_web_host`]; an `http(s)://` port is the web port and
+/// stays.
+fn authority_host<'a>(scheme: &str, authority: &'a str) -> &'a str {
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    if scheme == "ssh://" {
+        ssh_web_host(strip_port(host))
     } else {
         host
-    };
+    }
+}
+
+/// Split a URL with a scheme (`https://`, `http://`, `ssh://`) into
+/// `(host, path)`, the host read by [`authority_host`]. `None` when the URL
+/// has no such scheme, no host or no path.
+fn split_scheme_url(url: &str) -> Option<(&str, &str)> {
+    let (scheme, rest) = split_scheme(url)?;
+    let slash = rest.find('/')?;
+    let host = authority_host(scheme, &rest[..slash]);
+    let path = &rest[slash + 1..];
     if host.is_empty() || path.is_empty() {
         return None;
     }
     Some((host, path))
 }
 
-/// The host a remote or API URL names, lower-cased, with any userinfo
-/// dropped. An `ssh://` port is dropped and the host mapped through
-/// [`ssh_web_host`], the way [`split_scheme_url`] reads it; an `http(s)://`
-/// port is the web port and stays. A scp-style `user@host:path` host is
-/// read the way [`remote_identity`] reads it. The path is not required, so
+/// Split a scp-style `user@host:path` or `host:path` URL into `(host, path)`,
+/// any userinfo dropped and the host mapped through [`ssh_web_host`]. The
+/// host is the segment before the first colon when it holds no path
+/// separator (which would make it a local path or a Windows drive) and names
+/// a host (`@` or `.`); `None` otherwise, or with an empty path.
+fn split_scp_url(url: &str) -> Option<(&str, &str)> {
+    let (before, path) = url.split_once(':')?;
+    if before.contains(['/', '\\'])
+        || !(before.contains('@') || before.contains('.'))
+        || path.is_empty()
+    {
+        return None;
+    }
+    Some((
+        ssh_web_host(before.rsplit('@').next().unwrap_or(before)),
+        path,
+    ))
+}
+
+/// The host a remote or API URL names, lower-cased, with any userinfo and
+/// any port dropped and the port-443 SSH names mapped through
+/// [`ssh_web_host`], so a remote and an API base on one machine compare
+/// equal whatever port each uses. The path is not required, so
 /// `https://api.github.com/` names `api.github.com`. `None` for a URL with
 /// no host: a local path, a Windows drive, an empty string.
 pub fn remote_host(url: &str) -> Option<String> {
     let url = url.trim();
-    let host = if let Some((scheme, rest)) = ["https://", "http://", "ssh://"]
-        .iter()
-        .find_map(|scheme| url.strip_prefix(scheme).map(|rest| (*scheme, rest)))
-    {
-        let host_seg = rest.split('/').next().unwrap_or(rest);
-        let host = host_seg.rsplit('@').next().unwrap_or(host_seg);
-        if scheme == "ssh://" {
-            ssh_web_host(strip_ssh_port(host))
-        } else {
-            host
-        }
-    } else {
-        let (before, path) = url.split_once(':')?;
-        if before.contains(['/', '\\'])
-            || !(before.contains('@') || before.contains('.'))
-            || path.is_empty()
-        {
-            return None;
-        }
-        ssh_web_host(before.rsplit('@').next().unwrap_or(before))
+    let host = match split_scheme(url) {
+        Some((scheme, rest)) => authority_host(scheme, rest.split('/').next().unwrap_or(rest)),
+        None => split_scp_url(url)?.0,
     };
+    let host = strip_port(host);
     (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 

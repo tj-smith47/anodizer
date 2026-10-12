@@ -24,7 +24,7 @@ release:
     token: "{{ .Env.RELEASE_GITLAB_TOKEN }}"   # owner/name come from the origin remote
 ```
 
-The remote has to be on GitLab's host: gitlab.com (`altssh.gitlab.com` counts), or the host `gitlab_urls.api` names for a self-hosted instance. A remote on another host fills nothing and the block is refused naming that host. A block with an empty `owner` and a set `name` is a project named by id or full path with no namespace to infer (`owner: ""`, `name: "12345"`), and is left as written.
+The remote has to be on GitLab's host: gitlab.com (`altssh.gitlab.com` counts), or the host `gitlab_urls.api` names for a self-hosted instance. A remote on another host fills nothing and the block is refused naming that host. A block with an empty `owner` whose `name` is a numeric project id (`name: "12345"`) or a full path (`name: "group/sub/widget"`) has no namespace to infer and is left as written; a bare `name` (`name: "widget"`) has its `owner` filled from the remote.
 
 ## GitLab-specific config
 

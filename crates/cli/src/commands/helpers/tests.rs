@@ -1962,10 +1962,9 @@ fn rehydrate_then_attest_emit_has_no_duplicate_artifacts() {
 //
 // resolve_git_context shells to `git` in the process cwd. Driving its
 // crate-selection + snapshot-default branches hermetically needs the cwd
-// swapped to an empty git repo with no tags. Gated (cwd swap is global)
-// + serial.
+// swapped to an empty git repo with no tags. Callers are serial(cwd): the
+// cwd swap is process-global.
 
-#[cfg(unix)]
 fn with_empty_git_repo_cwd(body: impl FnOnce()) {
     let tmp = tempfile::tempdir().unwrap();
     assert!(
@@ -2501,22 +2500,18 @@ fn auto_detect_github_refuses_an_unfilled_block_without_a_remote() {
                 ..Default::default()
             }
         };
+        auto_detect_github(&mut build("gitlab", "", "12345"), &quiet_log(), false)
+            .expect("a gitlab project id with no namespace is not refused");
         for forge in ["github", "gitlab", "gitea"] {
-            // On gitlab an empty owner beside a name is a namespace-less
-            // project id, so that arm is accepted there.
-            let owner_only =
-                auto_detect_github(&mut build(forge, "", "widget"), &quiet_log(), false);
-            if forge == "gitlab" {
-                owner_only.expect("a gitlab project id with no namespace is not refused");
-            } else {
-                assert_eq!(
-                    owner_only.unwrap_err().to_string(),
-                    format!(
-                        "crate 'app': release.{forge} leaves owner empty and the `origin` remote \
-                         could not supply it: set release.{forge}.owner or add an `origin` remote"
-                    ),
-                );
-            }
+            let err = auto_detect_github(&mut build(forge, "", "widget"), &quiet_log(), false)
+                .unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "crate 'app': release.{forge} leaves owner empty and the `origin` remote \
+                     could not supply it: set release.{forge}.owner or add an `origin` remote"
+                ),
+            );
             let err =
                 auto_detect_github(&mut build(forge, "acme", ""), &quiet_log(), false).unwrap_err();
             assert_eq!(
@@ -2626,11 +2621,21 @@ fn forge_block(config: &Config, forge: &str) -> (String, String) {
 /// remote once `github_urls.api` names the Enterprise host, in the scp, the
 /// https and the ssh-with-port spellings; without the API override the
 /// github.com-only parse reads no remote and the block is refused, and so is
-/// a github.com API host.
-#[cfg(unix)]
+/// a github.com API host. An API base with a port of its own still names the
+/// remote's host.
 #[test]
 #[serial_test::serial(cwd)]
 fn auto_detect_github_fills_a_token_only_block_from_an_enterprise_remote() {
+    with_empty_git_repo_cwd(|| {
+        add_origin("ssh://git@ghe.corp:2222/o/r.git");
+        let mut config = token_only_config("github", Some("https://ghe.corp:8443/api/v3"));
+        auto_detect_github(&mut config, &quiet_log(), false).unwrap();
+        assert_eq!(
+            forge_block(&config, "github"),
+            ("o".to_string(), "r".to_string()),
+            "the ports differ and the hosts are one"
+        );
+    });
     for remote in [
         "git@github.mycorp.com:acme/widget.git",
         "https://github.mycorp.com/acme/widget.git",
@@ -2670,7 +2675,6 @@ fn auto_detect_github_fills_a_token_only_block_from_an_enterprise_remote() {
 /// origin fills no `github:` block, a self-hosted origin fills the block
 /// whose `*_urls.api` names its host and no other; the refusal names the
 /// host and the override, and a snapshot warns instead.
-#[cfg(unix)]
 #[test]
 #[serial_test::serial(cwd)]
 fn auto_detect_github_fills_a_block_only_from_its_own_forges_host() {
@@ -2740,35 +2744,79 @@ fn auto_detect_github_fills_a_block_only_from_its_own_forges_host() {
     });
 }
 
-/// A `gitlab:` block naming a project id with no namespace (`owner: ""`,
-/// `name: "12345"`) is left as written even with an origin that could fill
-/// the owner, and is not refused.
-#[cfg(unix)]
+/// The refusal names the remote's host only when it is not the forge's. A
+/// remote on the forge's own host whose path names no repository
+/// (`https://github.com/acme`) could not supply the fields, so the sentence is
+/// the one a missing remote gets; the same holds for a gitlab.com remote and
+/// a `gitlab:` block. A github.com remote beside a `github_urls.api` naming an
+/// Enterprise host is on another host and is told so.
+#[test]
+#[serial_test::serial(cwd)]
+fn the_refusal_names_the_remote_host_only_when_it_is_another_forges() {
+    let could_not_supply = |forge: &str| {
+        format!(
+            "crate 'app': release.{forge} leaves owner and name empty and the `origin` remote \
+             could not supply them: set release.{forge}.owner and release.{forge}.name or add \
+             an `origin` remote"
+        )
+    };
+    with_empty_git_repo_cwd(|| {
+        add_origin("https://github.com/acme");
+        let err = auto_detect_github(&mut token_only_config("github", None), &quiet_log(), false)
+            .unwrap_err();
+        assert_eq!(err.to_string(), could_not_supply("github"));
+        let err = auto_detect_github(
+            &mut token_only_config("github", Some("https://ghe.corp/api/v3")),
+            &quiet_log(),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "crate 'app': release.github leaves owner and name empty and the `origin` remote's \
+             host 'github.com' is not the github host: set release.github.owner and \
+             release.github.name, or set github_urls.api to the remote's host"
+        );
+    });
+    with_empty_git_repo_cwd(|| {
+        add_origin("https://gitlab.com/acme");
+        let err = auto_detect_github(&mut token_only_config("gitlab", None), &quiet_log(), false)
+            .unwrap_err();
+        assert_eq!(err.to_string(), could_not_supply("gitlab"));
+    });
+}
+
+/// A `gitlab:` block with an empty owner is left as written when its name is
+/// a numeric project id (`"12345"`) or a full path (`"group/sub/widget"`),
+/// even with an origin that could fill the owner; a bare name (`"widget"`)
+/// has its owner filled from the remote.
 #[test]
 #[serial_test::serial(cwd)]
 fn auto_detect_github_leaves_a_gitlab_project_id_alone() {
     with_empty_git_repo_cwd(|| {
         add_origin("https://gitlab.com/acme/widget.git");
-        let mut config = token_only_config("gitlab", None);
-        let block = config.crates[0]
-            .release
-            .as_mut()
-            .unwrap()
-            .gitlab
-            .as_mut()
-            .unwrap();
-        block.name = "12345".to_string();
-        auto_detect_github(&mut config, &quiet_log(), false).unwrap();
-        assert_eq!(
-            forge_block(&config, "gitlab"),
-            (String::new(), "12345".to_string())
-        );
+        for (name, want_owner) in [("12345", ""), ("group/sub/widget", ""), ("widget", "acme")] {
+            let mut config = token_only_config("gitlab", None);
+            let block = config.crates[0]
+                .release
+                .as_mut()
+                .unwrap()
+                .gitlab
+                .as_mut()
+                .unwrap();
+            block.name = name.to_string();
+            auto_detect_github(&mut config, &quiet_log(), false).unwrap();
+            assert_eq!(
+                forge_block(&config, "gitlab"),
+                (want_owner.to_string(), name.to_string()),
+                "{name}"
+            );
+        }
     });
 }
 
 /// The fill reaches a crate declared under `workspaces:` in a YAML config
 /// loaded the way the pipeline loads it.
-#[cfg(unix)]
 #[test]
 #[serial_test::serial(cwd)]
 fn auto_detect_github_fills_a_workspace_crate_loaded_from_yaml() {

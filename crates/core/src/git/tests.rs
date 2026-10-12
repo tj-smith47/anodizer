@@ -186,8 +186,10 @@ fn every_spelling_of_one_remote_has_one_identity() {
 }
 
 /// `remote_host` reads the host of every remote spelling and of an API URL
-/// with no path, lower-cased, an SSH port and userinfo dropped, the port-443
+/// with no path, lower-cased, every port and userinfo dropped, the port-443
 /// SSH names mapped to their web host, and names no host for a local path.
+/// A port is dropped on an API base too, so an ssh remote and an https API
+/// base on one machine name one host.
 #[test]
 fn remote_host_reads_every_spelling_and_an_api_url_without_a_path() {
     for (url, want) in [
@@ -204,7 +206,10 @@ fn remote_host_reads_every_spelling_and_an_api_url_without_a_path() {
         ("https://gitlab.mycorp.com/api/v4", "gitlab.mycorp.com"),
         ("https://api.github.com/", "api.github.com"),
         ("https://api.github.com", "api.github.com"),
-        ("https://host.example:8443/a/b", "host.example:8443"),
+        ("https://host.example:8443/a/b", "host.example"),
+        ("https://ghe.corp:8443/api/v3", "ghe.corp"),
+        ("ssh://git@ghe.corp:2222/o/r.git", "ghe.corp"),
+        ("https://[::1]:8443/api/v3", "[::1]"),
     ] {
         assert_eq!(remote_host(url).as_deref(), Some(want), "{url}");
     }

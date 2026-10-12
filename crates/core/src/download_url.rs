@@ -215,11 +215,17 @@ pub fn default_download_base(ctx: &Context) -> String {
     }
 }
 
-/// Whether a `release.gitlab` block with an empty owner and a name is the
-/// namespace-less project-id shape (`name: "12345"`), which the GitLab API
-/// accepts and which no inference fills. Every other forge needs both fields.
+/// Whether a `release.gitlab` block with an empty owner names the project
+/// without a namespace to infer: a numeric project id (`name: "12345"`) or a
+/// full path (`name: "group/sub/widget"`), both of which the GitLab API
+/// accepts as the project id and neither of which the inference fills. Every
+/// other forge, and a bare gitlab project name, needs both fields.
 pub fn is_gitlab_project_id(forge: &str, owner: &str, name: &str) -> bool {
-    forge == "gitlab" && owner.trim().is_empty() && !name.trim().is_empty()
+    let name = name.trim();
+    forge == "gitlab"
+        && owner.trim().is_empty()
+        && !name.is_empty()
+        && (name.bytes().all(|b| b.is_ascii_digit()) || name.contains('/'))
 }
 
 /// Pick the `ScmRepoConfig` for the active publish target and template-render
@@ -562,26 +568,38 @@ mod tests {
         );
     }
 
-    /// A `gitlab:` block naming a project id with no namespace (`owner: ""`,
-    /// `name: "12345"`) is the shape `gitlab_project_id` and the download URL
-    /// prefix already read; it resolves on a live run, owner left empty.
+    /// A `gitlab:` block naming a numeric project id or a full path with no
+    /// namespace (`owner: ""`, `name: "12345"` / `"group/sub/widget"`) is the
+    /// shape `gitlab_project_id` and the download URL prefix already read; it
+    /// resolves on a live run, owner left empty. A bare name is not that
+    /// shape and is refused.
     #[test]
     fn a_gitlab_project_id_with_no_namespace_resolves_live() {
         let live = Context::new(Config::default(), ContextOptions::default());
-        let block = ReleaseConfig {
+        let block = |name: &str| ReleaseConfig {
             gitlab: Some(ScmRepoConfig {
                 owner: String::new(),
-                name: "12345".to_string(),
+                name: name.to_string(),
                 token: None,
             }),
             ..Default::default()
         };
-        let repo = resolve_release_repo(&block, ScmTokenType::GitLab, &live)
-            .unwrap()
-            .expect("a project id names a repository");
-        assert_eq!((repo.owner.as_str(), repo.name.as_str()), ("", "12345"));
+        for name in ["12345", "group/sub/widget"] {
+            let repo = resolve_release_repo(&block(name), ScmTokenType::GitLab, &live)
+                .unwrap()
+                .expect("a project id names a repository");
+            assert_eq!((repo.owner.as_str(), repo.name.as_str()), ("", name));
+        }
+        let err = resolve_release_repo(&block("widget"), ScmTokenType::GitLab, &live).unwrap_err();
+        assert!(
+            err.to_string().starts_with("release.gitlab.owner is empty"),
+            "a bare name needs an owner: {err}"
+        );
         assert!(!is_gitlab_project_id("github", "", "12345"));
         assert!(!is_gitlab_project_id("gitlab", "", " "));
+        assert!(!is_gitlab_project_id("gitlab", "", "widget"));
+        assert!(!is_gitlab_project_id("gitlab", "", "v12345"));
+        assert!(!is_gitlab_project_id("gitlab", "acme", "12345"));
     }
 
     /// GitLab with an empty owner omits the namespace segment — same shape the

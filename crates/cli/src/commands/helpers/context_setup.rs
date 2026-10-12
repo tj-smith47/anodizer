@@ -39,8 +39,9 @@ pub fn infer_project_name(config: &mut Config, log: &StageLogger) {
 /// has the empty fields filled from the remote and keeps its token, but only
 /// from a remote whose host belongs to that forge: github.com (or the
 /// `github_urls.api` host), gitlab.com (or the `gitlab_urls.api` host), the
-/// `gitea_urls.api` host. A `gitlab:` block with an empty owner and a name is
-/// a namespace-less project id and is left as written. A block that still has
+/// `gitea_urls.api` host. A `gitlab:` block with an empty owner and a numeric
+/// project id or a full path as its name has no namespace to infer and is
+/// left as written. A block that still has
 /// an empty field is refused; under `snapshot` nothing publishes, so the
 /// block is tolerated with a warning and an offline snapshot build still
 /// runs.
@@ -110,12 +111,18 @@ pub fn auto_detect_github(config: &mut Config, log: &StageLogger, snapshot: bool
                 slug_for(forge)
             };
             fill_empty_repo_fields(block, slug);
+            // A remote on the forge's own host that the slug parser could not
+            // read is a remote that could not supply the fields, so the
+            // refusal names the host only when it is another forge's.
+            let foreign_host = origin_host
+                .as_deref()
+                .filter(|host| Some(*host) != forge_hosts.host(forge));
             let Some(message) = unfilled_block_refusal(
                 &crate_cfg.name,
                 forge,
                 &block.owner,
                 &block.name,
-                origin_host.as_deref(),
+                foreign_host,
             ) else {
                 continue;
             };
@@ -162,9 +169,10 @@ impl ForgeHosts {
 }
 
 /// The refusal for a block whose `owner` / `name` the remote could not fill,
-/// naming the field(s) that are empty; `None` when both are set. With an
-/// `origin` remote on another forge's host the sentence names that host and
-/// the `<forge>_urls.api` override that would make it this forge's.
+/// naming the field(s) that are empty; `None` when both are set. Given the
+/// host of an `origin` remote that is not this forge's, the sentence names
+/// that host and the `<forge>_urls.api` override that would make it this
+/// forge's.
 fn unfilled_block_refusal(
     crate_name: &str,
     forge: &str,

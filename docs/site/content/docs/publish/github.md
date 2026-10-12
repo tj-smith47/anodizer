@@ -52,7 +52,7 @@ release:
     token: "{{ .Env.RELEASE_GITHUB_TOKEN }}"   # owner/name come from the origin remote
 ```
 
-A field written empty (`owner: ""`) counts as omitted and is inferred the same way. The block is filled only from a remote on GitHub's own host: github.com (`ssh.github.com` counts), or the host the top-level `github_urls.api` names, so a GitHub Enterprise remote (`git@github.mycorp.com:acme/widget.git`) is read once `github_urls.api` is `https://github.mycorp.com/api/v3`. A remote on any other host fills nothing, and the refusal names that host and the `github_urls.api` override. The same host rule holds for [`gitlab:`](scm/gitlab.md) and [`gitea:`](scm/gitea.md) blocks.
+A field written empty (`owner: ""`) counts as omitted and is inferred the same way. The block is filled only from a remote on GitHub's own host: github.com (`ssh.github.com` counts), or the host the top-level `github_urls.api` names, so a GitHub Enterprise remote (`git@github.mycorp.com:acme/widget.git`) is read once `github_urls.api` is `https://github.mycorp.com/api/v3`; a port on the remote or on the API base is ignored when the hosts are compared. A remote on any other host fills nothing, and the refusal names that host and the `github_urls.api` override. The same host rule holds for [`gitlab:`](scm/gitlab.md) and [`gitea:`](scm/gitea.md) blocks; a `gitlab:` block whose `name` is a numeric project id or a full path with an empty `owner` is left as written.
 
 With no `origin` remote to read, a block whose owner or name is still empty is refused:
 

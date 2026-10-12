@@ -60,11 +60,10 @@
 # The raw-call-site cwd class above is blind to a cwd swap performed through a
 # helper fn rather than a direct `set_current_dir` — exactly how the cwd class
 # 2 fix (CwdGuard) is meant to be consumed, so most swaps route through a
-# helper and never hit the raw-call scan at all. `auto_detect_github_fills_
-# workspace_crates_from_remote` landed calling `with_empty_git_repo_cwd`
-# without `#[cfg(unix)]` (helper is unix-only: it shells to `git`) or
-# `#[serial_test::serial(cwd)]` (the shared restore-race group) and neither
-# class above caught it. This class enforces, per allow-listed helper, that
+# helper and never hit the raw-call scan at all. A test calling a cwd-swap
+# helper without the `#[cfg(unix)]` a unix-only helper demands, or without
+# `#[serial_test::serial(cwd)]` (the shared restore-race group), is caught by
+# neither class above. This class enforces, per allow-listed helper, that
 # every `#[test]` fn calling it carries `#[serial_test::serial(cwd)]`, plus
 # `#[cfg(unix)]` for the helpers that are unix-only. The state machine is the
 # cwd-helper pairing scanner below — the awk program handed to `run_scanner`,
@@ -126,7 +125,6 @@ collect_files FILES -rlE --include='*.rs' --exclude-dir=target \
 # contract), so adding one here is the one-line acknowledgment of that, not
 # silent pattern-matching.
 CWD_SWAP_HELPERS=(
-    with_empty_git_repo_cwd
     with_tagged_dirty_repo_cwd
 )
 
@@ -136,11 +134,13 @@ CWD_SWAP_HELPERS=(
 #
 # `with_hermetic_git_cwd` wraps `HermeticRepoCwd::empty` in a closure-taking
 # fn, so its callers never name the constructor and are invisible to a
-# constructor-only allow-list.
+# constructor-only allow-list. `with_empty_git_repo_cwd` is `git init` plus a
+# CwdGuard; a caller may still carry #[cfg(unix)] for a reason of its own.
 CWD_SWAP_HELPERS_PORTABLE=(
     HermeticRepoCwd::empty
     HermeticRepoCwd::committed
     with_hermetic_git_cwd
+    with_empty_git_repo_cwd
 )
 
 helper_alt="$(IFS='|'; echo "${CWD_SWAP_HELPERS[*]}")"
