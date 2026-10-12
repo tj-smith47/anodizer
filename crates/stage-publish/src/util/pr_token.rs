@@ -46,12 +46,19 @@ pub(crate) fn configured_pr_token(
     Ok(None)
 }
 
-/// The root cause of a failed token render, flattened to one line, with every
-/// line of the template's text replaced by `<template>`. The render layers
-/// quote the template in their context and a parse error quotes the offending
-/// line, so the root cause alone is not enough to keep a literal out.
+/// The root cause of a failed token render, flattened to one line, without
+/// the source excerpt the template engine appends after ` --> ` and with every
+/// line of the template's text replaced by `<template>`. The excerpt quotes
+/// the PREPROCESSED source (`{{ .X }}` already rewritten to `{{ X }}`), so a
+/// text match against the raw template alone misses it, and the render
+/// layers quote the template in their context as well.
 fn token_render_cause(raw: &str, err: &anyhow::Error) -> String {
-    let mut cause = err.root_cause().to_string();
+    let cause = err.root_cause().to_string();
+    let mut cause = cause
+        .split(" --> ")
+        .next()
+        .unwrap_or(cause.as_str())
+        .to_string();
     for part in std::iter::once(raw)
         .chain(raw.lines())
         .map(str::trim)
@@ -128,18 +135,30 @@ mod tests {
         let vars = anodizer_core::template::TemplateVars::new();
         let render = |s: &str| anodizer_core::template::render(s, &vars);
         let literal = "ghp_SecretLiteralThatMustNotLeak";
+        // Both spellings of a placeholder: the Go-style `{{ .X }}` is rewritten
+        // to `{{ X }}` before the engine sees it, and the engine's source
+        // excerpt quotes that rewritten line.
+        let pr_token_repo = |template: String| RepositoryConfig {
+            token: Some("repo-token".into()),
+            pull_request: Some(PullRequestConfig {
+                enabled: Some(true),
+                token: Some(template),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
         for (field, repo) in [
             (
                 "pull_request.token",
-                RepositoryConfig {
-                    token: Some("repo-token".into()),
-                    pull_request: Some(PullRequestConfig {
-                        enabled: Some(true),
-                        token: Some(format!("{literal}{{{{ PrToken }}}}")),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
+                pr_token_repo(format!("{literal}{{{{ PrToken }}}}")),
+            ),
+            (
+                "pull_request.token",
+                pr_token_repo(format!("{literal}{{{{ .PrToken }}}}")),
+            ),
+            (
+                "pull_request.token",
+                pr_token_repo(format!("{literal}{{{{ .Env.X | nope }}}}")),
             ),
             (
                 "pull_request.token",
@@ -182,6 +201,10 @@ mod tests {
             assert!(
                 !msg.contains(&raw),
                 "the template text must not reach the error; got: {msg}"
+            );
+            assert!(
+                !msg.contains("{{"),
+                "no placeholder of the template reaches the error; got: {msg}"
             );
             assert!(!msg.contains('\n'), "the cause is one line; got: {msg}");
         }

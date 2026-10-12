@@ -62,6 +62,10 @@ pub fn publish_to_krew(
         return Ok(KrewPublishOutcome::skipped());
     }
 
+    // Resolved before the clone so a render error cannot leave a pushed
+    // branch unrecorded.
+    let target = super::publisher::collect_krew_target(ctx, crate_name, log)?;
+
     // Resolve repository owner/name from `repository:` (RepositoryConfig).
     // Repository fields are template-rendered.
     let Some((repo_owner_raw, repo_name_raw)) = crate::publisher_helpers::absorb_entry_skip(
@@ -250,9 +254,6 @@ pub fn publish_to_krew(
     // drops the immutable borrow, making the subsequent `&mut ctx`
     // call legal.
     let repo_for_pr = krew_cfg.repository.clone();
-    // Resolved before the push so a render error cannot leave a pushed
-    // branch unrecorded.
-    let target = super::publisher::collect_krew_target(ctx, crate_name, log)?;
     let push_outcome = util::commit_and_push_with_opts(
         repo_path,
         &["."],

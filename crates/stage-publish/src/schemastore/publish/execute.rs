@@ -293,6 +293,11 @@ pub(super) fn run_real(
         crate::util::render_or_warn(ctx, log, "schemastore.repository.name", &fork_name_raw)?;
 
     let token = crate::util::resolve_repo_token(ctx, Some(repo), Some(TOKEN_ENV_VAR));
+    // Resolved before the clone: a template that does not render is this
+    // block's one fork, so it stays a hard error, and nothing is cloned or
+    // pushed for a pull request that cannot open.
+    let pr_token =
+        crate::util::configured_pr_token(cfg.repository.as_ref(), &|s| ctx.render_template(s))?;
 
     let tmp_dir = tempfile::tempdir().context("schemastore: create temp dir")?;
     let repo_path = tmp_dir.path();
@@ -380,12 +385,6 @@ pub(super) fn run_real(
         .with_context(|| format!("schemastore: write {}", catalog_abs.display()))?;
 
     let branch = schemastore_branch(&ctx.version());
-    // Resolved before the push: a template that does not render is this
-    // block's one fork, so it stays a hard error, and the fork keeps no
-    // branch for a pull request that cannot open.
-    let pr_token =
-        crate::util::configured_pr_token(cfg.repository.as_ref(), &|s| ctx.render_template(s))?;
-
     // Pending-PR idempotency: if a fork→upstream PR on this branch is already
     // open and unmerged, treat the work as in-flight rather than pushing a
     // duplicate. Best-effort — a query failure must not abort the publish.
