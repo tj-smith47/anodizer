@@ -21,14 +21,13 @@ announce:
 
 ### Delivery
 
-With `host` set (or `SMTP_HOST` in the environment), anodizer connects to that SMTP server itself and authenticates with `username` (or `SMTP_USERNAME`) and `SMTP_PASSWORD`:
+With `host` set (or `SMTP_HOST` in the environment), anodizer connects to that SMTP server itself and logs in as `username` (or `SMTP_USERNAME`) with `SMTP_PASSWORD`. `host` and `username` are plain strings, not templates; leave `username` out to take it from the environment. The password is required unless the connection is plain SMTP (`encryption: none`, or port 25 under `auto`):
 
 ```yaml
 announce:
   email:
     enabled: true
     host: smtp.example.com
-    username: "{{ Env.SMTP_USERNAME }}"
     from: releases@example.com
     to: [team@example.com]
 ```
@@ -52,7 +51,7 @@ The `to` field accepts a list. Each address becomes a comma-separated entry in t
 | `enabled` | bool or template | Enable email notifications |
 | `host` | string | SMTP server. When set (or `SMTP_HOST` is), the message is sent over SMTP; otherwise it is piped to sendmail/msmtp |
 | `port` | int | SMTP port (or `SMTP_PORT`). Default: `587` |
-| `username` | string | SMTP username (or `SMTP_USERNAME`). Required for SMTP delivery; the password is always `SMTP_PASSWORD` |
+| `username` | string | SMTP username (or `SMTP_USERNAME`). Required for SMTP delivery; the password comes from `SMTP_PASSWORD`, required unless the connection is plain SMTP |
 | `insecure_skip_verify` | bool | Skip TLS certificate verification on the SMTP connection. Default: `false` |
 | `encryption` | string | `auto`, `tls`, `starttls` or `none`. Default: `auto`: SMTPS on port 465, plain SMTP on 25, STARTTLS on every other port |
 | `from` | string | Sender address |

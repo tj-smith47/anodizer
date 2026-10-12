@@ -551,6 +551,7 @@ mod tests {
         };
         let mut missing = Vec::new();
         let mut checked = 0usize;
+        let mut announcers = 0usize;
         for (announcer, prop) in schema["properties"].as_object().unwrap() {
             let Some(def) = prop["anyOf"]
                 .as_array()
@@ -563,6 +564,7 @@ mod tests {
             else {
                 continue;
             };
+            announcers += 1;
             let page = std::fs::read_to_string(format!("{docs_dir}{}.md", page_of(announcer)))
                 .unwrap_or_else(|e| panic!("{announcer}: no docs page: {e}"));
             for field in defs[def]["properties"].as_object().unwrap().keys() {
@@ -576,6 +578,15 @@ mod tests {
             missing.is_empty(),
             "undocumented announcer fields:\n{}",
             missing.join("\n")
+        );
+        // Every property of AnnounceConfig but `skip`, `if`, `gate_on` and
+        // `deadline` is an announcer; a new one whose type name ends in
+        // neither `Announce` nor `Config` would be skipped silently otherwise.
+        let properties = schema["properties"].as_object().unwrap().len();
+        assert_eq!(
+            announcers,
+            properties - 4,
+            "an announcer was skipped by the walk"
         );
         assert_eq!(
             checked, 80,
