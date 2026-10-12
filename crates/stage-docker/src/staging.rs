@@ -7,12 +7,12 @@ use anodizer_core::artifact::{ArtifactKind, matches_id_filter};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 
-use super::platform::artifact_matches_platform;
+use super::platform::{artifact_matches_platform, platform_amd64_level, staging_platform_dir};
 
 /// Stage artifacts into docker build context using the V2 layout.
 ///
-/// V2 uses `<os>/<arch>/<name>` directory structure (matching `$TARGETPLATFORM`)
-/// and stages Binary, LinuxPackage, CArchive, and CShared artifacts.
+/// V2 uses `<os>/<arch>/<name>` directory structure (matching `$TARGETPLATFORM`,
+/// see [`staging_platform_dir`]) and stages Binary, LinuxPackage, CArchive, and CShared artifacts.
 /// Artifacts with `goos == "all"` are copied into every platform directory.
 pub(crate) fn stage_artifacts_v2(
     platforms: &[String],
@@ -31,8 +31,8 @@ pub(crate) fn stage_artifacts_v2(
     ];
 
     for platform in platforms {
-        // Use full platform path (e.g., "linux/amd64") as directory structure
-        let platform_dir = staging_dir.join(platform.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let platform_dir = staging_dir
+            .join(staging_platform_dir(platform).replace('/', std::path::MAIN_SEPARATOR_STR));
         if !dry_run {
             fs::create_dir_all(&platform_dir).with_context(|| {
                 format!("dockers_v2: create platform dir {}", platform_dir.display())
@@ -96,13 +96,17 @@ pub(crate) fn stage_artifacts_v2(
         }
 
         if platform_artifact_count == 0 {
-            log.skip_line(
-                ctx.options.show_skipped,
-                &format!(
-                    "skipped docker image for platform {} — no binaries (check ids/binary filters)",
-                    platform
-                ),
-            );
+            // An empty context dir fails later inside docker's COPY with no
+            // hint of why, so this is a warning and names the level a build
+            // would have to carry.
+            let level_note = platform_amd64_level(platform)
+                .map(|level| format!(" with amd64_variant {level}"))
+                .unwrap_or_default();
+            log.warn(&format!(
+                "docker image for platform {platform}: no artifact to stage — \
+                 no build{level_note} matches this platform (check builds[].targets, \
+                 builds[].amd64_variant and the ids filter)"
+            ));
         }
     }
     Ok(())

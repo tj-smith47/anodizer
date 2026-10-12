@@ -2872,7 +2872,7 @@ fn message_literals(src: &str) -> Vec<String> {
 /// How many function bodies under `check/config/` build a message. Pinned
 /// so a rename or a move that empties the walk fails instead of passing
 /// with nothing to ask.
-const MESSAGE_BUILDING_BODIES: usize = 33;
+const MESSAGE_BUILDING_BODIES: usize = 35;
 
 #[test]
 fn no_check_config_message_carries_a_run_of_spaces() {
@@ -3856,6 +3856,31 @@ fn the_membership_errors_quoted_in_the_docs_are_what_the_guard_produces() {
 
 /// A `targetVariant` call with the wrong argument is reported at check time,
 /// under the path of the field that holds it, with the spelling that works.
+#[test]
+fn an_amd64_platform_level_outside_the_variant_vocabulary_is_an_error() {
+    use anodizer_core::config::DockerV2Config;
+    let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+    config.crates[0].dockers_v2 = Some(vec![DockerV2Config {
+        platforms: Some(vec![
+            "linux/amd64".to_string(),
+            "linux/amd64/v3".to_string(),
+            "linux/arm64/v8".to_string(),
+            "linux/arm/v7".to_string(),
+            "linux/amd64/foo".to_string(),
+        ]),
+        ..Default::default()
+    }]);
+    let mut errors: Vec<String> = vec![];
+    check_docker_platforms(&config, &mut errors);
+    assert_eq!(
+        errors,
+        vec![
+            "crate 'a': dockers_v2[0].platforms[4] 'linux/amd64/foo': unknown amd64 level 'foo': \
+             use one of v1, v2, v3, v4 (the builds[].amd64_variant vocabulary)"
+        ]
+    );
+}
+
 #[test]
 fn a_target_variant_call_with_the_wrong_argument_is_an_error() {
     use anodizer_core::config::SbomConfig;

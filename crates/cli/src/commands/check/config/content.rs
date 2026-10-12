@@ -50,6 +50,37 @@ pub(super) fn check_target_triples(config: &Config, warnings: &mut Vec<String>) 
     }
 }
 
+/// Refuse a `dockers_v2[].platforms` amd64 level outside the `v1`..`v4`
+/// vocabulary of `builds[].amd64_variant`: `linux/amd64/foo` would match no
+/// build and stage nothing.
+pub(super) fn check_docker_platforms(config: &Config, errors: &mut Vec<String>) {
+    use anodizer_core::config::Amd64Variant;
+    let levels = [
+        Amd64Variant::V1,
+        Amd64Variant::V2,
+        Amd64Variant::V3,
+        Amd64Variant::V4,
+    ];
+    for c in config.crate_universe() {
+        for (i, d) in c.dockers_v2.iter().flatten().enumerate() {
+            for (j, platform) in d.platforms.iter().flatten().enumerate() {
+                let mut parts = platform.split('/');
+                if let (Some(_), Some("amd64"), Some(level), None) =
+                    (parts.next(), parts.next(), parts.next(), parts.next())
+                    && !levels.iter().any(|l| l.as_str() == level)
+                {
+                    errors.push(format!(
+                        "crate '{}': dockers_v2[{i}].platforms[{j}] '{platform}': unknown amd64 \
+                         level '{level}': use one of v1, v2, v3, v4 (the builds[].amd64_variant \
+                         vocabulary)",
+                        c.name
+                    ));
+                }
+            }
+        }
+    }
+}
+
 /// Warn when changelog `skip:true` coexists with other configured fields,
 /// and when `use:` has an unrecognized value.
 pub(super) fn check_changelog(config: &Config, warnings: &mut Vec<String>) {
@@ -225,7 +256,7 @@ pub(super) fn check_announce_secret_exposure(config: &Config, warnings: &mut Vec
         );
         // The announcer renders every string of a block or attachment, the
         // flattened block-specific fields included, so the lint reads the
-        // same tree it renders rather than a list of typed fields.
+        // tree the announcer renders.
         for (field, entries) in [
             (
                 "announce.slack.blocks",
@@ -236,8 +267,12 @@ pub(super) fn check_announce_secret_exposure(config: &Config, warnings: &mut Vec
                 s.attachments.as_deref().map(serde_json::to_value),
             ),
         ] {
-            if let Some(Ok(tree)) = entries {
-                scan_json_strings(field, &tree, warnings);
+            match entries {
+                Some(Ok(tree)) => scan_json_strings(field, &tree, warnings),
+                Some(Err(e)) => warnings.push(format!(
+                    "{field}: could not be read for the secret-exposure lint: {e}"
+                )),
+                None => {}
             }
         }
     }

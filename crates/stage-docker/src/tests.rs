@@ -107,6 +107,21 @@ fn a_platform_selects_the_binary_of_its_amd64_level_and_arm64_v8_is_arm64() {
     assert!(artifact_matches_platform(&arm64, "linux/arm64"));
     assert!(artifact_matches_platform(&arm64, "linux/arm64/v8"));
     assert!(!artifact_matches_platform(&v1, "linux/arm64"));
+
+    let armv7 = binary("armv7-unknown-linux-gnueabihf", None);
+    assert!(artifact_matches_platform(&armv7, "linux/arm/v7"));
+    assert!(!artifact_matches_platform(&armv7, "linux/arm64"));
+    assert!(!artifact_matches_platform(&arm64, "linux/arm/v7"));
+}
+
+#[test]
+fn the_staging_dir_is_the_platform_as_target_platform_spells_it() {
+    use crate::platform::staging_platform_dir;
+    assert_eq!(staging_platform_dir("linux/arm64/v8"), "linux/arm64");
+    assert_eq!(staging_platform_dir("linux/amd64/v1"), "linux/amd64");
+    assert_eq!(staging_platform_dir("linux/amd64/v3"), "linux/amd64/v3");
+    assert_eq!(staging_platform_dir("linux/arm/v7"), "linux/arm/v7");
+    assert_eq!(staging_platform_dir("linux/amd64"), "linux/amd64");
 }
 
 #[test]
