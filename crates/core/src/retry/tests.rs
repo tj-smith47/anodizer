@@ -1914,3 +1914,222 @@ fn a_429_with_retry_after_sleeps_the_asked_wait_then_retries() {
         "slept the header's one second, not the policy's thirty: {elapsed:?}"
     );
 }
+
+/// A 429 whose response carries no wait header falls back to the policy's
+/// backoff and is retried like any other retriable status.
+#[test]
+fn a_429_without_a_wait_header_falls_back_to_the_policy_backoff() {
+    use crate::test_helpers::responder::spawn_oneshot_http_responder;
+    let (addr, calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+    ]);
+    let client = reqwest::blocking::Client::new();
+    let (status, body) = retry_http_blocking(
+        RetryLog::new("probe", crate::test_helpers::test_logger()),
+        &fast_policy(),
+        SuccessClass::Strict,
+        |_| client.get(format!("http://{addr}/")).send(),
+        |status, body| format!("probe failed (HTTP {status}): {body}"),
+    )
+    .expect("the policy retry succeeds");
+    assert_eq!(status.as_u16(), 200);
+    assert_eq!(body, "ok");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+/// The bytes variant reads the same headers: a `RateLimit-Reset` one second
+/// ahead is the wait, and the binary success body comes back untouched.
+#[test]
+fn a_rate_limit_reset_is_the_wait_on_the_bytes_variant() {
+    use crate::test_helpers::responder::spawn_oneshot_http_responder_bytes;
+    let reset = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after the epoch")
+        .as_secs()
+        + 1;
+    let mut ok = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n".to_vec();
+    ok.extend_from_slice(&[0xff, 0xfe]);
+    let (addr, calls) = spawn_oneshot_http_responder_bytes(vec![
+        format!("HTTP/1.1 429 Too Many Requests\r\nRateLimit-Reset: {reset}\r\nContent-Length: 0\r\n\r\n")
+            .into_bytes(),
+        ok,
+    ]);
+    let client = reqwest::blocking::Client::new();
+    let policy = RetryPolicy {
+        max_attempts: 2,
+        base_delay: Duration::from_secs(30),
+        max_delay: Duration::from_secs(30),
+    };
+    let started = std::time::Instant::now();
+    let (status, bytes) = retry_http_blocking_bytes(
+        RetryLog::new("probe", crate::test_helpers::test_logger()),
+        &policy,
+        SuccessClass::Strict,
+        |_| client.get(format!("http://{addr}/")).send(),
+        |status, body| format!("probe failed (HTTP {status}): {body}"),
+    )
+    .expect("the retry after the reset succeeds");
+    assert_eq!(status.as_u16(), 200);
+    assert_eq!(bytes, vec![0xff, 0xfe], "the binary body is not re-encoded");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "slept until the reset, not the policy's thirty seconds: {:?}",
+        started.elapsed()
+    );
+}
+
+/// The async variant honors the same header.
+#[tokio::test]
+async fn a_429_with_retry_after_is_honored_on_the_async_variant() {
+    use crate::test_helpers::responder::spawn_oneshot_http_responder;
+    let (addr, calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: 0\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+    ]);
+    let client = reqwest::Client::new();
+    let policy = RetryPolicy {
+        max_attempts: 2,
+        base_delay: Duration::from_secs(30),
+        max_delay: Duration::from_secs(30),
+    };
+    let started = std::time::Instant::now();
+    let resp = retry_http_async(
+        RetryLog::new("probe", crate::test_helpers::test_logger()),
+        &policy,
+        SuccessClass::Strict,
+        |_| client.get(format!("http://{addr}/")).send(),
+        |status, body| format!("probe failed (HTTP {status}): {body}"),
+    )
+    .await
+    .expect("the retry after the asked wait succeeds");
+    let elapsed = started.elapsed();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(resp.text().await.expect("body"), "ok");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(
+        elapsed >= Duration::from_secs(1) && elapsed < Duration::from_secs(10),
+        "slept the header's one second, not the policy's thirty: {elapsed:?}"
+    );
+}
+
+/// A wait the deadline cannot hold ends the ladder at once: one attempt, no
+/// sleep, the exhausted context on the error.
+#[test]
+fn a_retry_after_past_the_deadline_gives_up_without_sleeping() {
+    use crate::test_helpers::responder::spawn_oneshot_http_responder;
+    let (addr, calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 60\r\nContent-Length: 0\r\n\r\n",
+    ]);
+    let client = reqwest::blocking::Client::new();
+    let policy = RetryPolicy {
+        max_attempts: 3,
+        base_delay: Duration::from_millis(1),
+        max_delay: Duration::from_millis(1),
+    };
+    let started = std::time::Instant::now();
+    let err = retry_http_blocking_deadline(
+        RetryLog::new("probe", crate::test_helpers::test_logger()),
+        &policy,
+        Some(std::time::Instant::now() + Duration::from_secs(2)),
+        SuccessClass::Strict,
+        |_| client.get(format!("http://{addr}/")).send(),
+        |status, body| format!("probe failed (HTTP {status}): {body}"),
+    )
+    .expect_err("a sixty-second wait does not fit a two-second deadline");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "gave up without sleeping: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(http_status(&err), 429);
+    assert!(
+        format!("{err:#}").contains("probe: exhausted retry attempts"),
+        "a ladder the deadline ended carries the exhausted context: {err:#}"
+    );
+}
+
+/// A fast fail ran one attempt; it is returned as it came, without the
+/// exhausted-attempts context a spent ladder carries.
+#[test]
+fn a_fast_fail_is_returned_without_the_exhausted_context() {
+    use crate::test_helpers::responder::spawn_oneshot_http_responder;
+    let (addr, calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 404 Not Found\r\nContent-Length: 4\r\n\r\ngone",
+    ]);
+    let client = reqwest::blocking::Client::new();
+    let err = retry_http_blocking(
+        RetryLog::new("probe", crate::test_helpers::test_logger()),
+        &fast_policy(),
+        SuccessClass::Strict,
+        |_| client.get(format!("http://{addr}/")).send(),
+        |status, body| format!("probe failed (HTTP {status}): {body}"),
+    )
+    .expect_err("a 404 fast-fails");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(http_status(&err), 404);
+    let chain = format!("{err:#}");
+    assert!(
+        !chain.contains("exhausted retry attempts"),
+        "one attempt is not an exhausted ladder: {chain}"
+    );
+    assert!(
+        chain.contains("probe failed (HTTP 404 Not Found): gone"),
+        "{chain}"
+    );
+}
+
+/// Every production site that builds an [`HttpError`] off a response it
+/// holds reads the 429 wait headers into it, so the retry adapters sleep the
+/// wait the server asked for there too. A site outside the HTTP wrappers
+/// that classifies a response without `with_retry_after(` fails here unless
+/// it is named in `EXEMPT` with its reason.
+#[test]
+fn every_http_error_built_from_a_response_carries_its_wait_headers() {
+    use crate::test_helpers::test_sources::{
+        function_bodies, production_half, workspace_production_sources,
+    };
+    const EXEMPT: &[(&str, &str)] = &[(
+        "crates/stage-publish/src/chocolatey/package.rs",
+        "its HttpError is built for a 502-504 gateway page only; a 429 never reaches that arm, so there is no wait header to read",
+    )];
+    let mut converted = 0usize;
+    let mut unconverted: Vec<String> = Vec::new();
+    let mut exempt_seen: Vec<&str> = Vec::new();
+    for source in workspace_production_sources() {
+        let path = source.to_string_lossy().replace('\\', "/");
+        if path.contains("/crates/core/src/retry/") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&source).expect("read source");
+        for body in function_bodies(production_half(&text)) {
+            let holds_a_response = body.contains("resp.status()") || body.contains(".headers()");
+            if !(body.contains("HttpError::new(") && holds_a_response) {
+                continue;
+            }
+            if body.contains("with_retry_after(") {
+                converted += 1;
+            } else if let Some((file, _)) = EXEMPT.iter().find(|(f, _)| path.ends_with(f)) {
+                exempt_seen.push(file);
+            } else {
+                unconverted.push(path.clone());
+            }
+        }
+    }
+    assert!(
+        unconverted.is_empty(),
+        "these bodies build an HttpError off a response without reading its wait headers: {unconverted:#?}"
+    );
+    for (file, _) in EXEMPT {
+        assert!(
+            exempt_seen.contains(file),
+            "EXEMPT entry no longer matches a site: {file}"
+        );
+    }
+    assert_eq!(
+        converted, 8,
+        "the population of converted bodies (reddit builds its two errors in one function)"
+    );
+}

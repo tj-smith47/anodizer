@@ -135,6 +135,8 @@ fn send_linkedin_to(
             }
             Ok(resp) => {
                 let status = resp.status();
+                let retry_after =
+                    anodizer_core::retry::rate_limit_retry_after(status.as_u16(), resp.headers());
                 let body = anodizer_core::http::body_of_blocking(resp);
                 if status.is_success() {
                     Ok(body)
@@ -143,10 +145,10 @@ fn send_linkedin_to(
                     // see LinkedIn's structured error response.
                     let inner =
                         anyhow::anyhow!("{}", format_linkedin_http_error("share", status, &body));
-                    let wrapped = anyhow::Error::new(HttpError::new(
-                        std::io::Error::other(inner.to_string()),
-                        status.as_u16(),
-                    ))
+                    let wrapped = anyhow::Error::new(
+                        HttpError::new(std::io::Error::other(inner.to_string()), status.as_u16())
+                            .with_retry_after(retry_after),
+                    )
                     .context(inner);
                     if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))
@@ -202,6 +204,10 @@ fn get_profile_urn(
                 }
                 Ok(resp) => {
                     let status = resp.status();
+                    let retry_after = anodizer_core::retry::rate_limit_retry_after(
+                        status.as_u16(),
+                        resp.headers(),
+                    );
                     if status == reqwest::StatusCode::FORBIDDEN {
                         // Typed sentinel: 403 means "fall back to legacy
                         // endpoint" rather than retry. The downcast at the
@@ -216,10 +222,13 @@ fn get_profile_urn(
                             "{}",
                             format_linkedin_http_error("GET /v2/userinfo", status, &body)
                         );
-                        let wrapped = anyhow::Error::new(HttpError::new(
-                            std::io::Error::other(inner.to_string()),
-                            status.as_u16(),
-                        ))
+                        let wrapped = anyhow::Error::new(
+                            HttpError::new(
+                                std::io::Error::other(inner.to_string()),
+                                status.as_u16(),
+                            )
+                            .with_retry_after(retry_after),
+                        )
                         .context(inner);
                         if is_retriable(wrapped.as_ref()) {
                             Err(ControlFlow::Continue(wrapped))
@@ -274,6 +283,8 @@ fn get_profile_urn_legacy(
             }
             Ok(resp) => {
                 let status = resp.status();
+                let retry_after =
+                    anodizer_core::retry::rate_limit_retry_after(status.as_u16(), resp.headers());
                 if status == reqwest::StatusCode::FORBIDDEN {
                     return Err(ControlFlow::Break(anyhow::anyhow!(
                         "linkedin: forbidden, please check your permissions"
@@ -287,10 +298,10 @@ fn get_profile_urn_legacy(
                         "{}",
                         format_linkedin_http_error("GET /v2/me", status, &body)
                     );
-                    let wrapped = anyhow::Error::new(HttpError::new(
-                        std::io::Error::other(inner.to_string()),
-                        status.as_u16(),
-                    ))
+                    let wrapped = anyhow::Error::new(
+                        HttpError::new(std::io::Error::other(inner.to_string()), status.as_u16())
+                            .with_retry_after(retry_after),
+                    )
                     .context(inner);
                     if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))

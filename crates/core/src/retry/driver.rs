@@ -22,7 +22,7 @@ use std::time::Duration;
 /// before the backoff sleep, so a multi-minute ladder is never silent.
 pub fn retry_sync<T, E, F>(rlog: RetryLog<'_>, policy: &RetryPolicy, op: F) -> Result<T, E>
 where
-    E: fmt::Display,
+    E: RetryHint,
     F: FnMut(u32) -> Result<T, ControlFlow<E, E>>,
 {
     retry_sync_deadline(rlog, policy, None, op)
@@ -41,7 +41,7 @@ pub fn retry_sync_deadline<T, E, F>(
     mut op: F,
 ) -> Result<T, E>
 where
-    E: fmt::Display,
+    E: RetryHint,
     F: FnMut(u32) -> Result<T, ControlFlow<E, E>>,
 {
     retry_steps_sync(rlog, policy.max_attempts, deadline, |attempt| {
@@ -54,7 +54,7 @@ where
 /// `Continue(e)` → `Retry` sleeping `policy.delay_for(attempt + 1)` with `e`'s
 /// `Display` as the per-attempt cause. Single-sources the mapping the sync and
 /// async [`ControlFlow`] adapters share.
-fn controlflow_to_step<T, E: fmt::Display>(
+pub(super) fn controlflow_to_step<T, E: RetryHint>(
     policy: &RetryPolicy,
     attempt: u32,
     result: Result<T, ControlFlow<E, E>>,
@@ -65,13 +65,41 @@ fn controlflow_to_step<T, E: fmt::Display>(
         Err(ControlFlow::Continue(e)) => {
             let cause = e.to_string();
             RetryStep::Retry {
+                delay: e
+                    .server_wait()
+                    .unwrap_or_else(|| policy.delay_for(attempt + 1)),
                 error: e,
-                delay: policy.delay_for(attempt + 1),
                 cause,
             }
         }
     }
 }
+
+/// What a failed attempt knows about the wait before the next one.
+///
+/// The [`ControlFlow`] adapters sleep the wait the error carries when it has
+/// one and the policy's backoff otherwise. An `anyhow::Error` whose chain
+/// holds an [`HttpError`] built from a 429 with a `Retry-After` or
+/// `RateLimit-Reset` header carries the server's wait
+/// ([`http_retry_after`]); every other error carries none. The wait is
+/// honored in full and printed on the retry line; a deadline bounds it the
+/// way it bounds the policy's backoff, so a wait the deadline cannot hold
+/// ends the ladder without sleeping.
+pub trait RetryHint: fmt::Display {
+    /// The wait the server asked for, when the failure carries one.
+    fn server_wait(&self) -> Option<Duration> {
+        None
+    }
+}
+
+impl RetryHint for anyhow::Error {
+    fn server_wait(&self) -> Option<Duration> {
+        http_retry_after(self)
+    }
+}
+
+impl RetryHint for &str {}
+impl RetryHint for String {}
 
 /// Retry an asynchronous operation according to `policy`.
 ///
@@ -82,7 +110,7 @@ pub async fn retry_async<T, E, F, Fut>(
     op: F,
 ) -> Result<T, E>
 where
-    E: fmt::Display,
+    E: RetryHint,
     F: FnMut(u32) -> Fut,
     Fut: std::future::Future<Output = Result<T, ControlFlow<E, E>>>,
 {
@@ -101,7 +129,7 @@ pub async fn retry_async_deadline<T, E, F, Fut>(
     mut op: F,
 ) -> Result<T, E>
 where
-    E: fmt::Display,
+    E: RetryHint,
     F: FnMut(u32) -> Fut,
     Fut: std::future::Future<Output = Result<T, ControlFlow<E, E>>>,
 {

@@ -196,6 +196,9 @@ enum ProbeMiss {
     Failed(anyhow::Error),
 }
 
+// The probe's miss is an absence or a transport failure, never a response holding a wait header.
+impl anodizer_core::retry::RetryHint for ProbeMiss {}
+
 impl std::fmt::Display for ProbeMiss {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

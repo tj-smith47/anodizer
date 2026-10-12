@@ -113,6 +113,8 @@ pub fn send_webhook(
             }
             Ok(resp) => {
                 let status = resp.status().as_u16();
+                let retry_after =
+                    anodizer_core::retry::rate_limit_retry_after(status, resp.headers());
                 if is_expected_status(status, expected_status_codes) {
                     Ok(())
                 } else {
@@ -123,10 +125,10 @@ pub fn send_webhook(
                         "{}",
                         format_unexpected_status_message(status, expected_status_codes, &body)
                     );
-                    let wrapped = anyhow::Error::new(HttpError::new(
-                        std::io::Error::other(inner.to_string()),
-                        status,
-                    ))
+                    let wrapped = anyhow::Error::new(
+                        HttpError::new(std::io::Error::other(inner.to_string()), status)
+                            .with_retry_after(retry_after),
+                    )
                     .context(inner);
                     if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))

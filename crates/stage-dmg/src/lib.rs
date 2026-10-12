@@ -134,6 +134,9 @@ enum CreateFailure {
     Spawn(std::io::Error),
 }
 
+// A local process failure (no HTTP response) carries no server-asked wait.
+impl anodizer_core::retry::RetryHint for CreateFailure {}
+
 impl std::fmt::Display for CreateFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

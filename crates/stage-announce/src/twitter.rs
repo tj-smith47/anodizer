@@ -75,15 +75,17 @@ pub fn send_twitter(
             }
             Ok(resp) => {
                 let status = resp.status();
+                let retry_after =
+                    anodizer_core::retry::rate_limit_retry_after(status.as_u16(), resp.headers());
                 if status.is_success() {
                     Ok(())
                 } else {
                     let body = anodizer_core::http::body_of_blocking(resp);
                     let inner = anyhow::anyhow!("twitter: API request failed ({status}): {body}");
-                    let wrapped = anyhow::Error::new(HttpError::new(
-                        std::io::Error::other(inner.to_string()),
-                        status.as_u16(),
-                    ))
+                    let wrapped = anyhow::Error::new(
+                        HttpError::new(std::io::Error::other(inner.to_string()), status.as_u16())
+                            .with_retry_after(retry_after),
+                    )
                     .context(inner);
                     if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))

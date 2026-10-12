@@ -105,6 +105,8 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger, policy: &RetryPolic
             }
             Ok(resp) => {
                 let status = resp.status();
+                let retry_after =
+                    anodizer_core::retry::rate_limit_retry_after(status.as_u16(), resp.headers());
                 let body = resp
                     .text()
                     .unwrap_or_else(|e| format!("<body read failed: {e}>"));
@@ -113,10 +115,10 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger, policy: &RetryPolic
                 } else {
                     let inner =
                         anyhow::anyhow!("reddit: OAuth token request failed ({status}): {body}");
-                    let wrapped = anyhow::Error::new(HttpError::new(
-                        std::io::Error::other(inner.to_string()),
-                        status.as_u16(),
-                    ))
+                    let wrapped = anyhow::Error::new(
+                        HttpError::new(std::io::Error::other(inner.to_string()), status.as_u16())
+                            .with_retry_after(retry_after),
+                    )
                     .context(inner);
                     if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))
@@ -164,6 +166,10 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger, policy: &RetryPolic
                 Ok(resp) => {
                     log_rate_limit(resp.headers(), log);
                     let status = resp.status();
+                    let retry_after = anodizer_core::retry::rate_limit_retry_after(
+                        status.as_u16(),
+                        resp.headers(),
+                    );
                     let body = resp
                         .text()
                         .unwrap_or_else(|e| format!("<body read failed: {e}>"));
@@ -171,10 +177,13 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger, policy: &RetryPolic
                         Ok(body)
                     } else {
                         let inner = anyhow::anyhow!("reddit: submit failed ({status}): {body}");
-                        let wrapped = anyhow::Error::new(HttpError::new(
-                            std::io::Error::other(inner.to_string()),
-                            status.as_u16(),
-                        ))
+                        let wrapped = anyhow::Error::new(
+                            HttpError::new(
+                                std::io::Error::other(inner.to_string()),
+                                status.as_u16(),
+                            )
+                            .with_retry_after(retry_after),
+                        )
                         .context(inner);
                         if is_retriable(wrapped.as_ref()) {
                             Err(ControlFlow::Continue(wrapped))

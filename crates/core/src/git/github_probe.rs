@@ -39,6 +39,10 @@ pub enum RepoProbe {
     Inconclusive(String),
 }
 
+// A probe outcome is a verdict, not an HTTP response: it carries no wait a
+// server asked for, so a retried probe sleeps the policy's backoff.
+impl crate::retry::RetryHint for RepoProbe {}
+
 impl std::fmt::Display for RepoProbe {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

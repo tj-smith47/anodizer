@@ -189,6 +189,8 @@ fn do_mutation(
             }
             Ok(resp) => {
                 let status = resp.status();
+                let retry_after =
+                    anodizer_core::retry::rate_limit_retry_after(status.as_u16(), resp.headers());
                 let body = resp
                     .text()
                     .unwrap_or_else(|e| format!("<body read failed: {e}>"));
@@ -196,10 +198,10 @@ fn do_mutation(
                     Ok(body)
                 } else {
                     let msg = classify_opencollective_status(stage, status, &body);
-                    let wrapped = anyhow::Error::new(HttpError::new(
-                        std::io::Error::other(msg.clone()),
-                        status.as_u16(),
-                    ))
+                    let wrapped = anyhow::Error::new(
+                        HttpError::new(std::io::Error::other(msg.clone()), status.as_u16())
+                            .with_retry_after(retry_after),
+                    )
                     .context(msg);
                     if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))

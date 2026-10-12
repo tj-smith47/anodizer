@@ -71,9 +71,9 @@ where
     F: FnMut(u32) -> Result<reqwest::blocking::Response, reqwest::Error>,
     M: Fn(reqwest::StatusCode, &str) -> String,
 {
-    use anyhow::Context as _;
+    let desc = rlog.desc().to_owned();
     retry_steps_sync(rlog, policy.max_attempts, deadline, |attempt| {
-        http_step(
+        super::driver::controlflow_to_step(
             policy,
             attempt,
             match send(attempt) {
@@ -129,24 +129,18 @@ where
             },
         )
     })
-    .with_context(|| format!("{}: exhausted retry attempts", rlog.desc()))
+    .map_err(|e| exhausted_context(&desc, e))
 }
 
-/// The HTTP wrappers' step: a retriable failure sleeps the wait the server
-/// asked for when the response carried one, else the policy's backoff.
-fn http_step<T>(
-    policy: &RetryPolicy,
-    attempt: u32,
-    result: Result<T, ControlFlow<anyhow::Error, anyhow::Error>>,
-) -> RetryStep<T, anyhow::Error> {
-    match result {
-        Ok(v) => RetryStep::Done(v),
-        Err(ControlFlow::Break(e)) => RetryStep::Fail(e),
-        Err(ControlFlow::Continue(e)) => RetryStep::Retry {
-            cause: e.to_string(),
-            delay: http_retry_after(&e).unwrap_or_else(|| policy.delay_for(attempt + 1)),
-            error: e,
-        },
+/// The exhausted-attempts context belongs on an error the ladder gave up on.
+/// A fast fail (a 4xx) ran one attempt and is returned as it came; an error
+/// still in the retriable class on the way out is one the attempts or the
+/// deadline ran out on.
+fn exhausted_context(desc: &str, err: anyhow::Error) -> anyhow::Error {
+    if is_retriable(err.as_ref()) {
+        err.context(format!("{desc}: exhausted retry attempts"))
+    } else {
+        err
     }
 }
 
@@ -192,9 +186,9 @@ where
     F: FnMut(u32) -> Result<reqwest::blocking::Response, reqwest::Error>,
     M: Fn(reqwest::StatusCode, &str) -> String,
 {
-    use anyhow::Context as _;
+    let desc = rlog.desc().to_owned();
     retry_steps_sync(rlog, policy.max_attempts, deadline, |attempt| {
-        http_step(
+        super::driver::controlflow_to_step(
             policy,
             attempt,
             match send(attempt) {
@@ -244,7 +238,7 @@ where
             },
         )
     })
-    .with_context(|| format!("{}: exhausted retry attempts", rlog.desc()))
+    .map_err(|e| exhausted_context(&desc, e))
 }
 
 /// Async sibling of [`retry_http_blocking`] for `reqwest::Client` (non-blocking)
@@ -299,12 +293,12 @@ where
     Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
     M: Fn(reqwest::StatusCode, &str) -> String,
 {
-    use anyhow::Context as _;
+    let desc = rlog.desc().to_owned();
     retry_steps_async(rlog, policy.max_attempts, deadline, |attempt| {
         let fut = send(attempt);
         let error_msg = &error_msg;
         async move {
-            http_step(
+            super::driver::controlflow_to_step(
                 policy,
                 attempt,
                 match fut.await {
@@ -364,7 +358,7 @@ where
         }
     })
     .await
-    .with_context(|| format!("{}: exhausted retry attempts", rlog.desc()))
+    .map_err(|e| exhausted_context(&desc, e))
 }
 
 /// Classify a `reqwest::Result<reqwest::blocking::Response>` into the
