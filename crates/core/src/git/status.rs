@@ -15,9 +15,12 @@ pub fn is_git_dirty() -> bool {
 /// Path-taking sibling of [`is_git_dirty`] so callers (notably tests against a
 /// fixture repo under `tempfile::tempdir()`) don't have to mutate the process cwd.
 pub fn is_git_dirty_in(cwd: &Path) -> bool {
+    // A status that could not be read (a corrupt index, a safe.directory
+    // refusal) is not evidence of a clean tree; reading it as clean would let
+    // a release pass the dirty-tree gate on a tree nobody inspected.
     git_output_in(cwd, &["status", "--porcelain"])
         .map(|s| !s.is_empty())
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 /// Read `git config user.name`, or `None` if unset / git is unavailable.
@@ -177,6 +180,19 @@ mod tests {
     use super::*;
     use std::process::Command;
 
+    fn anodizer_core_git_checkout(dir: &Path, branch: &str) -> bool {
+        anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(["checkout", "-q", "-b", branch]).current_dir(dir);
+                cmd
+            },
+            "git",
+        )
+        .status
+        .success()
+    }
+
     fn init_repo(dir: &Path) {
         let run = |args: &[&str]| {
             let out = anodizer_core::test_helpers::output_with_spawn_retry(
@@ -264,6 +280,26 @@ mod tests {
         init_repo(tmp.path());
         std::fs::write(tmp.path().join("new.txt"), "hello").unwrap();
         assert!(is_git_dirty_in(tmp.path()));
+    }
+
+    #[test]
+    fn a_status_that_cannot_be_read_counts_as_dirty() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(
+            is_git_dirty_in(tmp.path()),
+            "a directory git cannot report on is not a clean tree"
+        );
+    }
+
+    /// A branch name holding an apostrophe reaches the caller byte for byte.
+    #[test]
+    fn a_branch_with_an_apostrophe_is_read_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let out = anodizer_core_git_checkout(tmp.path(), "feature/o'brien");
+        assert!(out, "checkout -b must succeed");
+        let info = super::super::detect_git_info_in(tmp.path(), "v0.0.0", true).unwrap();
+        assert_eq!(info.branch, "feature/o'brien");
     }
 
     #[test]

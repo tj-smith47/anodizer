@@ -1995,6 +1995,11 @@ fn with_empty_git_repo_cwd(body: impl FnOnce()) {
 /// global `git config`.
 #[cfg(unix)]
 fn with_tagged_dirty_repo_cwd(tag: &str, body: impl FnOnce()) {
+    with_dirty_repo_cwd(Some(tag), body)
+}
+
+/// One committed file, optionally tagged, then an unstaged edit on top.
+fn with_dirty_repo_cwd(tag: Option<&str>, body: impl FnOnce()) {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     let git = |args: &[&str]| {
@@ -2017,8 +2022,10 @@ fn with_tagged_dirty_repo_cwd(tag: &str, body: impl FnOnce()) {
     std::fs::write(dir.join("f.txt"), "v1\n").unwrap();
     git(&["add", "f.txt"]);
     git(&["commit", "-q", "-m", "init"]);
-    git(&["tag", tag]);
-    // Leave the tree dirty: an unstaged edit on the tagged commit.
+    if let Some(tag) = tag {
+        git(&["tag", tag]);
+    }
+    // Leave the tree dirty: an unstaged edit on the committed file.
     std::fs::write(dir.join("f.txt"), "v2\n").unwrap();
 
     // Swap into the tagged-dirty repo; CwdGuard restores on Drop. `dir`
@@ -2244,6 +2251,41 @@ fn resolve_git_context_notify_no_tag_defaults_v0() {
 /// notify hook runs in after a failed release (partial `dist/`, in-flight
 /// writeback). Without `notify` it is a hard bail; with `notify: true` it
 /// must resolve cleanly so the alert is never lost.
+#[cfg(unix)]
+/// A snapshot of an untagged repository still reads the tree's dirty
+/// state: the synthetic tag does not make the tree clean.
+#[test]
+#[serial_test::serial(cwd)]
+fn resolve_git_context_snapshot_of_an_untagged_repo_keeps_the_dirty_state() {
+    with_dirty_repo_cwd(None, || {
+        let config = Config {
+            project_name: "x".to_string(),
+            crates: vec![CrateConfig {
+                name: "x".to_string(),
+                path: ".".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let opts = ContextOptions {
+            snapshot: true,
+            ..Default::default()
+        };
+        let mut ctx = empty_env_ctx(&config, opts);
+        resolve_git_context(&mut ctx, &config, &quiet_log())
+            .expect("a snapshot resolves on an untagged dirty tree");
+        let info = ctx.git_info.as_ref().expect("git info");
+        assert!(
+            info.dirty,
+            "the dirty state is carried into the untagged run"
+        );
+        assert_eq!(
+            ctx.template_vars().get("GitTreeState"),
+            Some(&"dirty".to_string())
+        );
+    });
+}
+
 #[cfg(unix)]
 #[test]
 #[serial_test::serial(cwd)]

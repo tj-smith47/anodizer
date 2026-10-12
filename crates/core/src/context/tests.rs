@@ -552,6 +552,20 @@ fn test_git_tree_state_dirty() {
     assert_eq!(v.get("GitTreeState"), Some(&"dirty".to_string()));
 }
 
+/// An apostrophe in the branch is rendered as written, never HTML-escaped
+/// or stripped.
+#[test]
+fn a_branch_apostrophe_renders_unchanged() {
+    let config = Config::default();
+    let mut ctx = Context::new(config, ContextOptions::default());
+    let mut info = make_git_info(false, None);
+    info.branch = "feature/o'brien".to_string();
+    ctx.git_info = Some(info);
+    ctx.populate_git_vars();
+    let rendered = ctx.render_template("{{ Branch }}").unwrap();
+    assert_eq!(rendered, "feature/o'brien");
+}
+
 #[test]
 fn test_is_snapshot_reflects_context_options() {
     let config = Config::default();
