@@ -65,6 +65,10 @@ pub fn run(opts: BuildOpts) -> Result<()> {
         skip_stages,
         ..Default::default()
     };
+    if output_path.is_some() {
+        refuse_ambiguous_output(&config, &ctx_opts.selected_crates, has_single_target)?;
+    }
+
     let mut ctx = Context::new(config.clone(), ctx_opts);
     helpers::setup_context(&mut ctx, &config, &log)?;
 
@@ -77,7 +81,6 @@ pub fn run(opts: BuildOpts) -> Result<()> {
         &mut ctx,
         &config,
         BuildBody {
-            has_single_target,
             output_path: output_path.as_deref(),
         },
         &log,
@@ -85,12 +88,49 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     helpers::finish_with_always_hooks(&ctx, outcome, &log)
 }
 
-/// The `--output` copy's two inputs, bundled so the bracket body keeps a
-/// named-field signature instead of a positional `bool` + `Option` pair.
-struct BuildBody<'a> {
-    /// `--single-target` was given; `--output` requires it because only one
-    /// binary can be copied.
+/// `--output` copies ONE binary, so it is refused before anything compiles
+/// when the selection would build more than one: every producing build entry
+/// of every selected crate (`planned_builds` + `build_produces`, the build
+/// stage's own enumeration) is counted, and more than one names each crate so
+/// the operator can narrow with `--crate`. A single crate whose one build
+/// yields several binaries is only known after the build and is refused there.
+fn refuse_ambiguous_output(
+    config: &anodizer_core::config::Config,
+    selected: &[String],
     has_single_target: bool,
+) -> Result<()> {
+    if !has_single_target {
+        anyhow::bail!("--output requires --single-target (only one binary can be copied)");
+    }
+    let per_crate: Vec<(&str, usize)> = config
+        .selected_crates(selected)
+        .into_iter()
+        .filter_map(|c| {
+            let producing = anodizer_core::build_plan::planned_builds(c)?
+                .iter()
+                .filter(|b| anodizer_core::build_plan::build_produces(c, b))
+                .count();
+            (producing > 0).then_some((c.name.as_str(), producing))
+        })
+        .collect();
+    let builds: usize = per_crate.iter().map(|(_, n)| n).sum();
+    if builds > 1 {
+        anyhow::bail!(
+            "--output requires a single build: {builds} builds across {} crate(s) ({}) would \
+             produce a binary; narrow the selection with --crate, or keep one builds[] entry",
+            per_crate.len(),
+            per_crate
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// What the bracket body needs from the command line.
+struct BuildBody<'a> {
     /// `--output <path>`: where to copy the single built binary.
     output_path: Option<&'a Path>,
 }
@@ -151,10 +191,6 @@ fn run_inside_always_bracket(
 
     // --output: copy the built binary to the specified path
     if let Some(output_path) = body.output_path {
-        if !body.has_single_target {
-            anyhow::bail!("--output requires --single-target (only one binary can be copied)");
-        }
-
         // Find the single binary artifact
         let binaries: Vec<_> = ctx
             .artifacts
@@ -208,6 +244,58 @@ fn run_inside_always_bracket(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn crate_with_builds(name: &str, builds: usize) -> anodizer_core::config::CrateConfig {
+        use anodizer_core::config::{BuildConfig, CrateConfig};
+        CrateConfig {
+            name: name.to_string(),
+            builds: Some(
+                (0..builds)
+                    .map(|i| BuildConfig {
+                        binary: Some(format!("{name}{i}")),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn output_is_refused_before_the_build_when_more_than_one_binary_would_be_built() {
+        let config = anodizer_core::config::Config {
+            crates: vec![crate_with_builds("a", 1), crate_with_builds("b", 2)],
+            ..Default::default()
+        };
+
+        let msg = refuse_ambiguous_output(&config, &[], true)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            msg,
+            "--output requires a single build: 3 builds across 2 crate(s) (a, b) would produce \
+             a binary; narrow the selection with --crate, or keep one builds[] entry"
+        );
+
+        let msg = refuse_ambiguous_output(&config, &["b".to_string()], true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.starts_with("--output requires a single build: 2 builds across 1 crate(s) (b)"),
+            "{msg}"
+        );
+
+        refuse_ambiguous_output(&config, &["a".to_string()], true)
+            .expect("one selected crate with one build is unambiguous");
+
+        let msg = refuse_ambiguous_output(&config, &["a".to_string()], false)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            msg,
+            "--output requires --single-target (only one binary can be copied)"
+        );
+    }
 
     #[test]
     fn test_build_opts_defaults() {

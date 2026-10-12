@@ -107,15 +107,24 @@ Copy the resulting binary to a specific path after the build step. Handy when
 you want the binary in a well-known location without parsing `dist/`.
 
 ```bash
-anodizer build -o ./bin/anodizer
+anodizer build --single-target -o ./bin/anodizer
 ```
 
 ```yaml
 # No config equivalent — --output is a runtime-only flag.
 ```
 
-The flag copies the binary for the host target (or the sole target when only
-one is built); it is not defined when building multiple targets simultaneously.
+The flag copies ONE binary, so it requires `--single-target` and a selection
+that builds exactly one. Both are checked before cargo is spawned: a workspace
+whose selected crates carry two producing `builds[]` entries is refused
+naming them, so nothing is compiled only to be left in `dist/`:
+
+```text
+Error --output requires a single build: 2 builds across 1 crate(s) (myapp) would produce a binary; narrow the selection with --crate, or keep one builds[] entry
+```
+
+A crate whose single build entry yields several binaries is only known after
+the build, and is refused there the same way.
 
 ## Related
 

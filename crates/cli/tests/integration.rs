@@ -1425,6 +1425,47 @@ fn test_e2e_init_generates_parseable_yaml() {
     );
 }
 
+/// `build --output` copies one binary, so a selection that would build two
+/// is refused before cargo is spawned: the error names each crate and the
+/// workspace `target/` directory is never created.
+#[test]
+fn test_build_output_is_refused_before_compiling_when_two_builds_would_run() {
+    let tmp = TempDir::new().unwrap();
+    let host = detect_host_target();
+
+    create_workspace_project(tmp.path());
+    init_git_repo(tmp.path());
+    let config = create_workspace_snapshot_config(&host).replace(
+        "    builds:\n      - binary: myapp\n",
+        "    builds:\n      - id: baseline\n        binary: myapp\n      - id: fast\n        binary: myapp\n",
+    );
+    assert!(
+        config.contains("id: fast"),
+        "the fixture gained a second build entry"
+    );
+    create_config(tmp.path(), &config);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["build", "--single-target", "--output", "picked"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "stdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        stderr.contains(
+            "--output requires a single build: 2 builds across 1 crate(s) (myapp) would produce a binary; narrow the selection with --crate, or keep one builds[] entry"
+        ),
+        "{stderr}"
+    );
+    assert!(!tmp.path().join("target").exists(), "nothing was compiled");
+    assert!(!tmp.path().join("picked").exists(), "nothing was copied");
+}
+
 /// E2E: Multi-crate workspace with `--all --force` detects correct crates.
 ///
 /// Creates a workspace with 3 crates: core-lib, helper-lib (depends on core-lib),
