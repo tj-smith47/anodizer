@@ -434,8 +434,8 @@ pub(super) fn run_real(
         crate::util::SubmitPrOpts {
             update_existing_pr: false,
             token: crate::util::configured_pr_token(cfg.repository.as_ref(), &|s| {
-                ctx.render_template(s).unwrap_or_else(|_| s.to_string())
-            }),
+                ctx.render_template(s)
+            })?,
         },
     );
     if let Some(outcome) = pr_outcome {

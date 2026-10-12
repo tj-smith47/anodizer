@@ -173,9 +173,9 @@ pub(crate) fn submit_winget_manifests(
         &version,
         update_existing_pr,
         log,
-        &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
+        &|s| ctx.render_template(s),
         ctx.env_source(),
-    );
+    )?;
 
     if let Some(outcome) = pr_outcome {
         ctx.record_publisher_outcome(outcome);

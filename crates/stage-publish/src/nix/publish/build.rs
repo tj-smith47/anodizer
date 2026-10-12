@@ -584,8 +584,8 @@ pub(super) fn finalize_publish(
         ),
         "nix",
         log,
-        &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
-    );
+        &|s| ctx.render_template(s),
+    )?;
 
     match outcome {
         util::CommitOutcome::Pushed { .. } => {

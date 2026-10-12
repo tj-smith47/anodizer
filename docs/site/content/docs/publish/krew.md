@@ -93,6 +93,7 @@ krew:
     pull_request:
       enabled: true
       draft: false
+      token: ""                      # token used to open the PR (default: repository.token, then GITHUB_TOKEN)
       base:
         owner: kubernetes-sigs
         name: krew-index
@@ -125,6 +126,7 @@ crates:
           pull_request:
             enabled: true
             draft: false
+            token: ""                    # token used to open the PR (default: repository.token, then GITHUB_TOKEN)
             base:
               owner: kubernetes-sigs
               name: krew-index
@@ -140,7 +142,7 @@ crates:
 
 ## Authentication
 
-Anodizer resolves a GitHub token from the first source that is set, in this order: `repository.token` in the config, then the `ANODIZER_GITHUB_TOKEN` env var, then the `GITHUB_TOKEN` env var. The token must have push access to your krew-index fork.
+Anodizer resolves a GitHub token from the first source that is set, in this order: `repository.token` in the config, then the `ANODIZER_GITHUB_TOKEN` env var, then the `GITHUB_TOKEN` env var. The token must have push access to your krew-index fork. The pull request itself is opened with `repository.pull_request.token` when that is set, falling back to the same chain; set it when the fork token cannot open PRs against the upstream index.
 
 ## How plugin manifests are generated
 

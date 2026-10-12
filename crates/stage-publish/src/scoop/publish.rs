@@ -234,9 +234,9 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         ),
         "scoop",
         log,
-        &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
+        &|s| ctx.render_template(s),
         ctx.env_source(),
-    );
+    )?;
 
     // Surface PR-already-exists skips to the dispatch summary table.
     if let Some(pr_outcome) = pr_outcome {

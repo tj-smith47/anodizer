@@ -54,6 +54,7 @@ homebrew_casks:
       branch: main                   # optional; push branch (default: repo default branch, or versioned <cask>-<version> when pull_request.enabled)
       pull_request:
         enabled: false               # optional; open PR instead of direct push
+        token: ""                    # token used to open the PR (default: repository.token, then GITHUB_TOKEN)
         base: main
     directory: Casks                 # optional; directory in the tap repo
     description: ""                  # optional

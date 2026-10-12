@@ -615,18 +615,36 @@ pub(crate) fn reconcile_open_prs(
 /// `pull_request.token`, else `repository.token`, each rendered. A link that
 /// renders blank falls through to the next one, and `None` leaves the choice
 /// to the environment chain (`anodizer_core::git::resolve_github_token_with_env`).
+///
+/// A link that fails to render is an error naming its field: a template the
+/// run cannot render is a misconfiguration, and sending the literal template
+/// as a bearer would fail the PR with an authentication error that names
+/// nothing.
 pub(crate) fn configured_pr_token(
     repo: Option<&RepositoryConfig>,
-    render: &dyn Fn(&str) -> String,
-) -> Option<String> {
-    let repo = repo?;
-    repo.pull_request
-        .as_ref()
-        .and_then(|pr| pr.token.as_deref())
-        .into_iter()
-        .chain(repo.token.as_deref())
-        .map(render)
-        .find(|rendered| !rendered.is_empty())
+    render: &dyn Fn(&str) -> anyhow::Result<String>,
+) -> anyhow::Result<Option<String>> {
+    let Some(repo) = repo else {
+        return Ok(None);
+    };
+    let links = [
+        (
+            "pull_request.token",
+            repo.pull_request
+                .as_ref()
+                .and_then(|pr| pr.token.as_deref()),
+        ),
+        ("repository.token", repo.token.as_deref()),
+    ];
+    for (field, raw) in links {
+        let Some(raw) = raw else { continue };
+        let rendered =
+            anyhow::Context::with_context(render(raw), || format!("render {field} template"))?;
+        if !rendered.is_empty() {
+            return Ok(Some(rendered));
+        }
+    }
+    Ok(None)
 }
 
 /// Submit a pull request if `repo.pull_request.enabled` is true.
@@ -649,6 +667,11 @@ pub(crate) fn configured_pr_token(
 /// retries, non-success HTTP status). Callers MUST forward the value to
 /// `Context::record_publisher_outcome` or the dispatch summary table
 /// will misreport the silent failure as `succeeded`.
+///
+/// `render` is fallible so a `pull_request.token` / `repository.token`
+/// template that cannot render is an `Err` naming the field
+/// ([`configured_pr_token`]); the body and base-branch templates keep
+/// their text when they fail to render, as they always have.
 #[must_use = "the returned outcome override must be forwarded to \
               Context::record_publisher_outcome — dropping it silently \
               misreports a PR-already-exists skip or a PR-creation failure \
@@ -662,8 +685,8 @@ pub(crate) fn maybe_submit_pr(
     body: &str,
     label: &str,
     log: &StageLogger,
-    render: &dyn Fn(&str) -> String,
-) -> Option<PublisherOutcome> {
+    render: &dyn Fn(&str) -> anyhow::Result<String>,
+) -> anyhow::Result<Option<PublisherOutcome>> {
     maybe_submit_pr_with_env(
         repo_path,
         repo,
@@ -694,9 +717,9 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
     body: &str,
     label: &str,
     log: &StageLogger,
-    render: &dyn Fn(&str) -> String,
+    render: &dyn Fn(&str) -> anyhow::Result<String>,
     env: &E,
-) -> Option<PublisherOutcome> {
+) -> anyhow::Result<Option<PublisherOutcome>> {
     let PrOrigin {
         repo_owner,
         repo_name,
@@ -705,8 +728,13 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
     } = *origin;
     let pr_cfg = match repo.and_then(|r| r.pull_request.as_ref()) {
         Some(pr) if pr.enabled == Some(true) => pr,
-        _ => return None,
+        _ => return Ok(None),
     };
+    // The token is the one template whose failure is an error: the body and
+    // the base branch fall back to their text, which is what every caller did.
+    let explicit = configured_pr_token(repo, render)?;
+    let render = |s: &str| render(s).unwrap_or_else(|_| s.to_string());
+    let render = &render;
     let (upstream_owner, upstream_name) =
         resolve_upstream_coords(repo, repo_owner, repo_name, render);
     let upstream_owner = upstream_owner.as_str();
@@ -725,10 +753,8 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
         .and_then(|b| b.branch.as_deref())
         .map(render)
         .unwrap_or_else(|| "main".to_string());
-    // The configured token is rendered before it becomes a credential, or the
-    // literal template would be sent; a blank rendering falls through to
-    // ANODIZER_GITHUB_TOKEN -> GITHUB_TOKEN inside the resolver.
-    let explicit = configured_pr_token(repo, render);
+    // A blank rendering falls through to ANODIZER_GITHUB_TOKEN -> GITHUB_TOKEN
+    // inside the resolver.
     let token =
         anodizer_core::git::resolve_github_token_with_env(explicit.as_deref(), &|key| env.var(key));
 
@@ -772,31 +798,33 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
     };
 
     // PR creation: try gh CLI first, fall back to GitHub API.
-    match classify_pr_transport(gh_is_available(log), token.is_some()) {
-        PrTransport::GhCli => create_pr_via_gh_cli(
-            repo_path,
-            &upstream_slug,
-            &spec,
-            token.as_deref(),
-            label,
-            log,
-        ),
-        PrTransport::Api => {
-            let tok = token
-                .as_deref()
-                .expect("classified Api implies token present");
-            create_pr_via_api_with_env(&upstream, &spec, tok, label, log, env)
-        }
-        PrTransport::NoneAvailable => {
-            let msg = format!(
-                "cannot create the {label} PR automatically -- neither `gh` CLI nor a token is available"
-            );
-            log.warn(&msg);
-            // Silent-fail (returning None here) would let dispatch
-            // record Succeeded for a publisher that did no work.
-            Some(PublisherOutcome::Failed(msg))
-        }
-    }
+    Ok(
+        match classify_pr_transport(gh_is_available(log), token.is_some()) {
+            PrTransport::GhCli => create_pr_via_gh_cli(
+                repo_path,
+                &upstream_slug,
+                &spec,
+                token.as_deref(),
+                label,
+                log,
+            ),
+            PrTransport::Api => {
+                let tok = token
+                    .as_deref()
+                    .expect("classified Api implies token present");
+                create_pr_via_api_with_env(&upstream, &spec, tok, label, log, env)
+            }
+            PrTransport::NoneAvailable => {
+                let msg = format!(
+                    "cannot create the {label} PR automatically -- neither `gh` CLI nor a token is available"
+                );
+                log.warn(&msg);
+                // Silent-fail (returning None here) would let dispatch
+                // record Succeeded for a publisher that did no work.
+                Some(PublisherOutcome::Failed(msg))
+            }
+        },
+    )
 }
 
 /// Which transport `maybe_submit_pr` / `submit_pr_via_gh_with_opts`
@@ -1003,8 +1031,8 @@ mod tests {
 
     /// Identity renderer for the PR helpers' template pass — these tests
     /// feed plain (non-templated) PR fields, so rendering is a no-op.
-    fn no_render(s: &str) -> String {
-        s.to_string()
+    fn no_render(s: &str) -> anyhow::Result<String> {
+        Ok(s.to_string())
     }
 
     fn origin() -> PrOrigin<'static> {
@@ -1144,7 +1172,8 @@ mod tests {
             "label",
             &log,
             &no_render,
-        );
+        )
+        .expect("the PR token templates render");
         assert!(
             outcome.is_none(),
             "repo=None must short-circuit before any git/gh/HTTP work"
@@ -1172,7 +1201,8 @@ mod tests {
             "label",
             &log,
             &no_render,
-        );
+        )
+        .expect("the PR token templates render");
         assert!(
             outcome.is_none(),
             "pull_request=None must short-circuit before any git/gh/HTTP work"
@@ -1203,7 +1233,8 @@ mod tests {
             "label",
             &log,
             &no_render,
-        );
+        )
+        .expect("the PR token templates render");
         assert!(
             outcome.is_none(),
             "pull_request.enabled=false must short-circuit before any git/gh/HTTP work"
@@ -1235,7 +1266,8 @@ mod tests {
             "label",
             &log,
             &no_render,
-        );
+        )
+        .expect("the PR token templates render");
         assert!(
             outcome.is_none(),
             "pull_request.enabled=None must short-circuit before any git/gh/HTTP work"
@@ -1511,7 +1543,8 @@ mod tests {
             "label",
             &log,
             &no_render,
-        );
+        )
+        .expect("the PR token templates render");
         assert!(outcome.is_none());
     }
 
@@ -1811,7 +1844,8 @@ mod tests {
             &log,
             &no_render,
             &env,
-        );
+        )
+        .expect("the PR token templates render");
         // 201 from the responder is the success path.
         assert!(
             outcome.is_none(),
@@ -1898,7 +1932,8 @@ mod tests {
             &log,
             &no_render,
             &env,
-        );
+        )
+        .expect("the PR token templates render");
         assert!(
             outcome.is_none(),
             "201 PR create is success; got {outcome:?}"
@@ -1971,7 +2006,8 @@ mod tests {
             &log,
             &no_render,
             &env,
-        );
+        )
+        .expect("the PR token templates render");
         assert!(outcome.is_none(), "201 is success; got {outcome:?}");
 
         let entries = req_log.lock().unwrap();
@@ -2039,7 +2075,8 @@ mod tests {
             &log,
             &no_render,
             &env,
-        );
+        )
+        .expect("the PR token templates render");
         assert!(
             outcome.is_none(),
             "env-resolved token must reach the API transport (201); got {outcome:?}"
@@ -2097,7 +2134,8 @@ mod tests {
             &log,
             &no_render,
             &env,
-        );
+        )
+        .expect("the PR token templates render");
         match outcome {
             Some(PublisherOutcome::Failed(msg)) => {
                 assert!(
@@ -2122,7 +2160,7 @@ mod tests {
     /// renders blank falls through to the next one.
     #[test]
     fn configured_pr_token_prefers_the_pull_request_token_and_skips_a_blank_one() {
-        let render = |s: &str| s.replace("{{ .Env.T }}", "rendered-token");
+        let render = |s: &str| Ok(s.replace("{{ .Env.T }}", "rendered-token"));
         let repo = RepositoryConfig {
             token: Some("repo-token".into()),
             pull_request: Some(PullRequestConfig {
@@ -2132,7 +2170,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            configured_pr_token(Some(&repo), &render).as_deref(),
+            configured_pr_token(Some(&repo), &render)
+                .expect("renders")
+                .as_deref(),
             Some("rendered-token")
         );
 
@@ -2144,7 +2184,9 @@ mod tests {
             ..repo.clone()
         };
         assert_eq!(
-            configured_pr_token(Some(&blank_pr_token), &render).as_deref(),
+            configured_pr_token(Some(&blank_pr_token), &render)
+                .expect("renders")
+                .as_deref(),
             Some("repo-token"),
             "a blank pull_request.token falls through to repository.token"
         );
@@ -2154,8 +2196,84 @@ mod tests {
             pull_request: Some(PullRequestConfig::default()),
             ..Default::default()
         };
-        assert_eq!(configured_pr_token(Some(&nothing), &render), None);
-        assert_eq!(configured_pr_token(None, &render), None);
+        assert_eq!(
+            configured_pr_token(Some(&nothing), &render).expect("renders"),
+            None
+        );
+        assert_eq!(configured_pr_token(None, &render).expect("renders"), None);
+    }
+
+    /// A `pull_request.token` template the run cannot render is an error
+    /// naming the field, and no PR is attempted on either transport: with gh
+    /// absent and the API responder scripted, the request log stays empty.
+    #[cfg(unix)]
+    #[test]
+    #[serial(path_env)]
+    fn an_unrenderable_pull_request_token_is_an_error_before_any_transport() {
+        let (_tools, _guard) = gh_absent_path();
+        let (_origin_url, _bare, work) = init_origin_with_work();
+        git_ok(work.path(), &["checkout", "-b", "release/v7.7.7"]);
+        write_commit(work.path(), "manifest.rb", "formula\n", "add manifest");
+
+        let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/fork-owner/fork-repo/pulls",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            times: None,
+        }]);
+
+        let log = quiet_log();
+        let repo = RepositoryConfig {
+            owner: Some("fork-owner".into()),
+            name: Some("fork-repo".into()),
+            token: Some("repo-token".into()),
+            pull_request: Some(PullRequestConfig {
+                enabled: Some(true),
+                token: Some("{{ PrToken }}".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let origin = PrOrigin {
+            repo_owner: "fork-owner",
+            repo_name: "fork-repo",
+            branch_name: "release/v7.7.7",
+            update_existing_pr: false,
+        };
+        let env = MapEnvSource::new()
+            .with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"))
+            .with("ANODIZER_GITHUB_TOKEN", "env-token");
+        // The real template layer over an empty variable set: a variable
+        // nothing defined is an error there, never the literal. (An unset
+        // `.Env.X` renders empty by design and falls through to the next link.)
+        let vars = anodizer_core::template::TemplateVars::new();
+        let render = |s: &str| anodizer_core::template::render(s, &vars);
+        assert!(
+            render("{{ PrToken }}").is_err(),
+            "the fixture template must fail to render for the test to mean anything"
+        );
+        let err = maybe_submit_pr_with_env(
+            work.path(),
+            Some(&repo),
+            &origin,
+            "title",
+            "body",
+            "homebrew",
+            &log,
+            &render,
+            &env,
+        )
+        .expect_err("an unrenderable pull_request.token is an error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("render pull_request.token template"),
+            "the error names the field; got: {msg}"
+        );
+        assert!(
+            req_log.lock().unwrap().is_empty(),
+            "no PR-create request may be sent with an unrendered token"
+        );
+        drop(work);
     }
 
     /// `pull_request.token` wins over `repository.token` and over the
@@ -2198,7 +2316,7 @@ mod tests {
         let env = MapEnvSource::new()
             .with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"))
             .with("ANODIZER_GITHUB_TOKEN", "env-token");
-        let render = |s: &str| s.replace("{{ .Env.PR_TOKEN }}", "pr-token");
+        let render = |s: &str| Ok(s.replace("{{ .Env.PR_TOKEN }}", "pr-token"));
         let outcome = maybe_submit_pr_with_env(
             work.path(),
             Some(&repo),
@@ -2209,7 +2327,8 @@ mod tests {
             &log,
             &render,
             &env,
-        );
+        )
+        .expect("the PR token templates render");
         assert!(outcome.is_none(), "201 is a success; got {outcome:?}");
         let entries = req_log.lock().unwrap();
         assert_eq!(entries.len(), 1, "exactly one PR-create POST expected");
@@ -2272,7 +2391,8 @@ mod tests {
             &log,
             &no_render,
             &env,
-        );
+        )
+        .expect("the PR token templates render");
         assert!(outcome.is_none(), "gh exit 0 is a success; got {outcome:?}");
         let calls = tools.calls("gh");
         assert!(
@@ -2380,7 +2500,7 @@ mod tests {
         write_commit(work.path(), "formula.rb", "formula\n", "add formula");
 
         // The render closure expands `{{ .ProjectName }}` → `"mytool"`.
-        let render = |s: &str| s.replace("{{ .ProjectName }}", "mytool");
+        let render = |s: &str| Ok(s.replace("{{ .ProjectName }}", "mytool"));
 
         // Responder accepts the PR at the RENDERED upstream slug
         // (`mytool-org/index`), not the literal template slug.
@@ -2425,7 +2545,8 @@ mod tests {
             &log,
             &render,
             &env,
-        );
+        )
+        .expect("the PR token templates render");
         assert!(
             outcome.is_none(),
             "201 is the success path; got {outcome:?}"

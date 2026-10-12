@@ -279,8 +279,8 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         ),
         "homebrew cask",
         log,
-        &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
-    );
+        &|s| ctx.render_template(s),
+    )?;
 
     // Surface PR-already-exists skips to the dispatch summary table.
     if let Some(outcome) = pr_outcome {

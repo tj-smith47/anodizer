@@ -262,6 +262,8 @@ Anodizer resolves a GitHub token from the first source that is set, in this orde
 3. `ANODIZER_GITHUB_TOKEN` environment variable
 4. `GITHUB_TOKEN` environment variable
 
+The pull request itself is opened with `repository.pull_request.token` when that is set, falling back to the same chain; set it when the fork token cannot open PRs against `SchemaStore/schemastore`.
+
 The token needs push access to your fork (`contents:write`) and permission to open a pull request against the upstream `SchemaStore/schemastore` (`pull_request:write`).
 
 See the anodizer-action docs for how to wire the fork token in GitHub Actions alongside other publisher tokens.
@@ -318,6 +320,7 @@ schemastore:
     name: schemastore
     pull_request:
       enabled: true
+      token: ""                      # token used to open the PR (default: repository.token, then GITHUB_TOKEN)
       base:
         owner: SchemaStore
         name: schemastore

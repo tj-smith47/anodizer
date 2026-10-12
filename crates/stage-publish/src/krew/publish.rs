@@ -266,7 +266,7 @@ pub fn publish_to_krew(
     // drops the immutable borrow, making the subsequent `&mut ctx`
     // call legal.
     let repo_for_pr = krew_cfg.repository.clone();
-    let render = |s: &str| ctx.render_template(s).unwrap_or_else(|_| s.to_string());
+    let render = |s: &str| ctx.render_template(s);
 
     let pr_outcome = if has_pr_config {
         util::maybe_submit_pr_with_env(
@@ -289,7 +289,7 @@ pub fn publish_to_krew(
             log,
             &render,
             ctx.env_source(),
-        )
+        )?
     } else {
         // No `repository.pull_request:` block — always submit a PR against the
         // canonical kubernetes-sigs/krew-index slug (or the override in
@@ -321,7 +321,7 @@ pub fn publish_to_krew(
             log,
             util::SubmitPrOpts {
                 update_existing_pr,
-                token: util::configured_pr_token(repo_for_pr.as_ref(), &render),
+                token: util::configured_pr_token(repo_for_pr.as_ref(), &render)?,
             },
             ctx.env_source(),
         )

@@ -90,6 +90,7 @@ crates:
           token: "{{ Env.GITHUB_TOKEN }}"   # optional
           pull_request:
             enabled: false                   # optional; open PR instead of direct push
+            token: ""                        # token used to open the PR (default: repository.token, then GITHUB_TOKEN)
             base: master                     # optional
         dependencies:                        # optional; runtime deps as Nix attr paths
           - name: openssl                    # Nix attribute path
@@ -146,6 +147,7 @@ repository:
   token: "{{ Env.GITHUB_TOKEN }}"
   pull_request:
     enabled: true        # open a PR instead of pushing directly
+    token: ""            # token used to open the PR (default: repository.token, then GITHUB_TOKEN)
     base: master
 ```
 

@@ -287,7 +287,7 @@ fn submit_homebrew_pr(
     cask_name: Option<&str>,
     pr_branch: &str,
     log: &StageLogger,
-) {
+) -> Result<()> {
     let formula_name = ident.formula_name;
     let version = ident.version;
     let (pr_title, pr_body) = if let Some(cask_name) = cask_name {
@@ -331,12 +331,13 @@ fn submit_homebrew_pr(
         &pr_body,
         "homebrew",
         log,
-        &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
-    );
+        &|s| ctx.render_template(s),
+    )?;
 
     if let Some(pr_outcome) = pr_outcome {
         ctx.record_publisher_outcome(pr_outcome);
     }
+    Ok(())
 }
 
 /// A rendered formula plus the formula name used as its `.rb` filename stem.
@@ -665,7 +666,7 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         cask.cask_name.as_deref(),
         pr_branch,
         log,
-    );
+    )?;
 
     Ok(outcome.is_pushed())
 }

@@ -751,8 +751,8 @@ pub fn publish_top_level_homebrew_casks(
             ),
             "homebrew_casks",
             log,
-            &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
-        );
+            &|s| ctx.render_template(s),
+        )?;
 
         // Sticky-pending: once any cask in this top-level group
         // records a Pending outcome (e.g. PR-already-exists skip), a

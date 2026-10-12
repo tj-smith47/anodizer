@@ -231,9 +231,9 @@ pub(crate) fn submit_winget_pr(
     version: &str,
     update_existing_pr: bool,
     log: &StageLogger,
-    render: &dyn Fn(&str) -> String,
+    render: &dyn Fn(&str) -> Result<String>,
     env: &dyn anodizer_core::EnvSource,
-) -> Option<anodizer_core::PublisherOutcome> {
+) -> Result<Option<anodizer_core::PublisherOutcome>> {
     let has_pr_config = repo_for_pr
         .and_then(|r| r.pull_request.as_ref())
         .and_then(|pr| pr.enabled)
@@ -271,13 +271,16 @@ pub(crate) fn submit_winget_pr(
             .and_then(|r| r.pull_request.as_ref())
             .and_then(|pr| pr.base.as_ref())
             .and_then(|base| {
+                // The base slug keeps its text when it fails to render, the
+                // way `maybe_submit_pr` treats its base branch.
+                let render = |s: &str| render(s).unwrap_or_else(|_| s.to_string());
                 let owner = render(base.owner.as_deref()?);
                 let name = render(base.name.as_deref()?);
                 Some(format!("{}/{}", owner, name))
             })
             .unwrap_or_else(|| "microsoft/winget-pkgs".to_string());
 
-        util::submit_pr_via_gh_with_opts_with_env(
+        Ok(util::submit_pr_via_gh_with_opts_with_env(
             repo_path,
             &upstream_slug,
             &format!("{}:{}", repo_owner, branch_name),
@@ -287,10 +290,10 @@ pub(crate) fn submit_winget_pr(
             log,
             util::SubmitPrOpts {
                 update_existing_pr,
-                token: util::configured_pr_token(repo_for_pr, render),
+                token: util::configured_pr_token(repo_for_pr, render)?,
             },
             env,
-        )
+        ))
     }
 }
 

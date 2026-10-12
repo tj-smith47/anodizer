@@ -52,6 +52,7 @@ crates:
 |-------|------|---------|-------------|
 | `repository.owner` | string | — | GitHub owner of the bucket repo |
 | `repository.name` | string | — | Bucket repository name |
+| `repository.pull_request.token` | string | `repository.token`, then `GITHUB_TOKEN` | Token used to open the PR when `repository.pull_request.enabled` is set (templates allowed). Set it when the bucket token cannot open pull requests. |
 | `description` | string | Cargo `[package].description` | Manifest description. Derived from `Cargo.toml`; set to override. |
 | `directory` | string | `bucket` | Subdirectory in the bucket repo for manifest placement. Scoop resolves manifests only from `bucket/` when that directory exists (repo root otherwise), so `bucket/` is correct for both layouts. Set to `""` to target the repo root. A stale same-named root-level manifest is removed when publishing into a subdirectory. |
 | `license` | string | Cargo `[package].license` | License identifier. Derived from `Cargo.toml`; set to override. |
@@ -69,6 +70,9 @@ crates:
           name: scoop-bucket        # required
           token: ""                 # falls back to GITHUB_TOKEN
           branch: ""                # default: repo default branch (versioned <manifest>-<version> when pull_request.enabled)
+          pull_request:
+            enabled: false          # optional; open PR instead of direct push
+            token: ""               # token used to open the PR (default: repository.token, then GITHUB_TOKEN)
         description: "A fast CLI tool"   # optional; derived from Cargo.toml description
         license: MIT                     # optional; derived from Cargo.toml license
         directory: bucket                # optional; default "bucket" ("" targets the repo root)
