@@ -16755,6 +16755,17 @@
     "WingetConfig": {
       "type": "object",
       "properties": {
+        "additional_locales": {
+          "description": "Locale manifests published beside the default locale manifest, one `<PackageIdentifier>.locale.<locale>.yaml` per entry. Each entry names its `locale` and may override any localizable field; a field left unset takes the default locale's value, so a translation only has to carry the text that differs. Every field supports templates, and `release_notes` reads `Changelog` the way the top-level field does.\n\nAn entry whose `locale` renders empty, equals `default_locale`, or repeats an earlier entry's locale skips the crate before any manifest is written or pushed.\n\n```yaml\nwinget:\n  default_locale: \"en-US\"\n  additional_locales:\n    - locale: \"pt-BR\"\n      short_description: \"Gerencia widgets\"\n      description: \"Uma ferramenta completa para gerenciar widgets.\"\n    - locale: \"de-DE\"\n      short_description: \"Verwaltet Widgets\"\n```",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/WingetLocaleConfig"
+          }
+        },
         "amd64_variant": {
           "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed.",
           "default": null,
@@ -17157,6 +17168,157 @@
           "description": "Target URL for the documentation entry.",
           "default": "",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WingetLocaleConfig": {
+      "description": "One additional locale manifest of a WinGet package. Every field but `locale` is optional and falls back to the same-named field of the default locale, so an entry carries only the translated text.",
+      "type": "object",
+      "properties": {
+        "author": {
+          "description": "Author name for this locale.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "copyright": {
+          "description": "Copyright notice for this locale.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "copyright_url": {
+          "description": "Copyright URL for this locale.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "Full package description for this locale.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "homepage": {
+          "description": "Project homepage URL for this locale.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "installation_notes": {
+          "description": "Post-install notes shown to the user for this locale.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "license": {
+          "description": "License identifier for this locale.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "license_url": {
+          "description": "License URL for this locale.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "locale": {
+          "description": "BCP 47 locale tag stamped into `PackageLocale` and the `.locale.<locale>.yaml` file name (e.g. `pt-BR`). Required; supports templates. Must differ from `default_locale` and from every other entry.",
+          "default": "",
+          "type": "string"
+        },
+        "package_name": {
+          "description": "Display name shown in the WinGet gallery for this locale.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "privacy_url": {
+          "description": "Privacy policy URL for this locale.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "publisher": {
+          "description": "Publisher name for this locale.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "publisher_support_url": {
+          "description": "Publisher support URL for this locale.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "publisher_url": {
+          "description": "Publisher homepage URL for this locale.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "release_notes": {
+          "description": "Release notes for this locale. `Changelog` is available to the template.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "release_notes_url": {
+          "description": "URL to the full release notes for this locale.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "short_description": {
+          "description": "Short description for this locale (max 256 chars).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tags": {
+          "description": "Tags for this locale (lowercased, spaces replaced with hyphens). An empty or unset list takes the default locale's tags.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

@@ -3,7 +3,8 @@
 //! WinGet's `microsoft/winget-pkgs` submission pipeline validates every
 //! manifest against Microsoft's published JSON Schemas before a maintainer ever
 //! sees the PR. anodizer emits the three-file `version` / `installer` /
-//! `defaultLocale` manifest set (ManifestVersion 1.12.0); this validator renders
+//! `defaultLocale` manifest set plus one `locale` manifest per additional
+//! locale (ManifestVersion 1.12.0); this validator renders
 //! that exact set for every in-scope crate — via the same param-assembly path
 //! the live publish uses — and checks each document against the matching
 //! vendored schema, so a structural defect (a wrong-typed value, an
@@ -30,6 +31,7 @@ const VERSION_SCHEMA: &str = include_str!("../../schemas/winget.version.1.12.0.s
 const INSTALLER_SCHEMA: &str = include_str!("../../schemas/winget.installer.1.12.0.schema.json");
 const DEFAULT_LOCALE_SCHEMA: &str =
     include_str!("../../schemas/winget.defaultLocale.1.12.0.schema.json");
+const LOCALE_SCHEMA: &str = include_str!("../../schemas/winget.locale.1.12.0.schema.json");
 
 /// Validates anodizer's rendered WinGet manifests against Microsoft's
 /// published JSON Schemas.
@@ -111,6 +113,9 @@ impl PublisherSchemaValidator for WingetSchemaValidator {
                             &rendered.locale_yaml,
                             DEFAULT_LOCALE_SCHEMA,
                         )?);
+                        for (_, yaml) in &rendered.additional_locale_yaml {
+                            out.extend(validate_manifest(yaml, LOCALE_SCHEMA)?);
+                        }
                     }
                     Ok(out)
                 })?;
@@ -189,6 +194,12 @@ mod tests {
             documentations: Some(vec![anodizer_core::config::WingetDocumentation {
                 label: "User Guide".to_string(),
                 url: "https://acme.example/widget/guide".to_string(),
+            }]),
+            additional_locales: Some(vec![anodizer_core::config::WingetLocaleConfig {
+                locale: "pt-BR".to_string(),
+                short_description: Some("Uma ferramenta de widgets".to_string()),
+                description: Some("Uma ferramenta completa para gerenciar widgets.".to_string()),
+                ..Default::default()
             }]),
             upgrade_behavior: Some("install".to_string()),
             silent_switch: None,
@@ -897,6 +908,137 @@ mod tests {
     /// A crate whose Windows archives claim one architecture twice disqualifies
     /// itself, not the pass: the reason is recorded as a skip and the crate
     /// configured after it is still validated.
+    /// Run the validator over `widget` (carrying `locales` as its
+    /// `additional_locales`) and `gadget` (whose over-long short
+    /// description produces a finding only if the pass reached it), and
+    /// return widget's recorded skip reason plus gadget's findings.
+    fn validate_widget_with_locales(
+        locales: Vec<anodizer_core::config::WingetLocaleConfig>,
+    ) -> (String, Vec<SchemaFinding>) {
+        let widget = winget_crate(
+            "widget",
+            "v{{ .Version }}",
+            WingetConfig {
+                additional_locales: Some(locales),
+                ..every_option_winget_cfg()
+            },
+        );
+        let gadget = winget_crate(
+            "gadget",
+            "v{{ .Version }}",
+            WingetConfig {
+                package_identifier: Some("AcmeCo.Gadget".to_string()),
+                short_description: Some("g".repeat(300)),
+                ..every_option_winget_cfg()
+            },
+        );
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![widget, gadget])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        add_windows_zip(&mut ctx, "widget", "widget");
+        add_windows_zip(&mut ctx, "gadget", "gadget");
+
+        let findings = WingetSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("a bad additional locale is a skip, never an abort");
+        let skips = ctx.skip_memento.snapshot();
+        let reason = skips
+            .iter()
+            .find(|e| e.stage == "winget" && e.label == "widget")
+            .map(|e| e.reason.clone())
+            .expect("the crate with the bad locale is recorded as a skipped winget entry");
+        (reason, findings)
+    }
+
+    fn locale(tag: &str) -> anodizer_core::config::WingetLocaleConfig {
+        anodizer_core::config::WingetLocaleConfig {
+            locale: tag.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_empty_additional_locale_skips_the_crate_and_the_next_crate_is_still_validated() {
+        let (reason, findings) = validate_widget_with_locales(vec![locale("")]);
+        assert_eq!(reason, "additional_locales[0].locale is empty");
+        assert!(
+            findings.iter().any(|f| f.field == "/ShortDescription"),
+            "the crate after the skipped one is still validated, got: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn an_additional_locale_equal_to_the_default_skips_the_crate_and_the_next_crate_is_still_validated()
+     {
+        let (reason, findings) =
+            validate_widget_with_locales(vec![locale("pt-BR"), locale("en-US")]);
+        assert_eq!(
+            reason,
+            "additional_locales[1].locale 'en-US' equals default_locale"
+        );
+        assert!(
+            findings.iter().any(|f| f.field == "/ShortDescription"),
+            "the crate after the skipped one is still validated, got: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_additional_locale_skips_the_crate_and_the_next_crate_is_still_validated() {
+        let (reason, findings) = validate_widget_with_locales(vec![
+            locale("pt-BR"),
+            locale("de-DE"),
+            locale("{{ \"pt-\" ~ \"BR\" }}"),
+        ]);
+        assert_eq!(
+            reason,
+            "additional_locales[2].locale 'pt-BR' is already listed"
+        );
+        assert!(
+            findings.iter().any(|f| f.field == "/ShortDescription"),
+            "the crate after the skipped one is still validated, got: {findings:?}"
+        );
+    }
+
+    /// The additional locale manifest of the every-option fixture is
+    /// validated against the vendored `locale` schema and produces no
+    /// finding, and a locale manifest that breaks that schema does.
+    #[test]
+    fn additional_locale_manifests_are_validated_against_the_locale_schema() {
+        let widget = winget_crate("widget", "v{{ .Version }}", every_option_winget_cfg());
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![widget])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        add_windows_zip(&mut ctx, "widget", "widget");
+        let findings = WingetSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validate");
+        assert!(findings.is_empty(), "{findings:?}");
+
+        let rendered = render_winget_manifests_for_crate(&ctx, "widget", &ctx.logger("publish"))
+            .expect("render")
+            .expect("not skipped");
+        assert_eq!(rendered.additional_locale_yaml.len(), 1);
+        assert_eq!(rendered.additional_locale_yaml[0].0, "pt-BR");
+        let long = rendered.additional_locale_yaml[0]
+            .1
+            .replace("Uma ferramenta de widgets", &"x".repeat(300));
+        let violations = validate_manifest(&long, LOCALE_SCHEMA).expect("validate yaml");
+        assert!(
+            violations.iter().any(|f| f.field == "/ShortDescription"),
+            "{violations:?}"
+        );
+    }
+
     #[test]
     fn an_ambiguous_crate_is_skipped_and_the_next_crate_is_still_validated() {
         let widget = winget_crate("widget", "v{{ .Version }}", every_option_winget_cfg());

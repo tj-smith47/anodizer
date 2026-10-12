@@ -115,6 +115,7 @@ If `package_identifier` is not set, Anodizer auto-generates it as `Publisher.Nam
 | `release_notes_url` | string | none | URL to full release notes |
 | `installation_notes` | string | none | Post-install notes shown to the user |
 | `documentations` | list of objects | none | Documentation links shown in the WinGet gallery — each entry is `{ label, url }`. See [Documentation links](#documentation-links). |
+| `additional_locales` | list of objects | none | Extra locale manifests published beside the default one, each a `{ locale, ...translated fields }` entry. See [Additional locales](#additional-locales). |
 | `moniker` | string | binary name | Short invoke alias surfaced as `Moniker` in the locale manifest, e.g. `winget install --id <id>` users can later run `winget show <moniker>`. Auto-derives from the binary name; set to override. |
 | `upgrade_behavior` | string | `install` | Installer upgrade behavior written to the installer manifest: `install` (overlay the new version), `uninstallPrevious`, or `deny`. Portable-zip tools want `install`. |
 | `silent_switch` | string | none | Silent-install switch string for `msi`/`exe` installers (e.g. `/S`, `/quiet`). Only meaningful when `use: msi`/`use: nsis`; portable-zip packages need no switch. |
@@ -189,6 +190,9 @@ crates:
         documentations:                  # gallery links: { label, url } pairs
           - label: "Documentation"
             url: "https://example.com/docs"
+        additional_locales:              # one .locale.<locale>.yaml per entry; unset fields inherit the default locale
+          - locale: "pt-BR"
+            short_description: "Descrição curta"
         moniker: ""                      # short alias; derives from binary name
         upgrade_behavior: install        # install | uninstallPrevious | deny
         silent_switch: ""                # msi/exe installers only (InstallerSwitches.Silent)
@@ -339,6 +343,57 @@ Documentations:
   DocumentUrl: https://github.com/tj-smith47/anodizer
 ```
 
+## Additional locales
+
+`additional_locales` publishes one more locale manifest per entry beside the
+default locale manifest, as `PackageId.locale.<locale>.yaml` with
+`ManifestType: locale`. Each entry names its `locale` and carries only the
+text that differs; every field left unset is inherited from the default
+locale, so a translation does not repeat the URLs, license or tags. Every
+field supports templates, and `release_notes` can read `Changelog` the way
+the top-level field does.
+
+```yaml
+crates:
+  - name: myapp
+    publish:
+      winget:
+        default_locale: en-US
+        short_description: "Manage widgets"
+        description: "A full-featured tool for managing widgets."
+        tags: ["widgets", "cli"]
+        additional_locales:
+          - locale: pt-BR
+            short_description: "Gerencia widgets"
+            description: "Uma ferramenta completa para gerenciar widgets."
+          - locale: de-DE
+            short_description: "Verwaltet Widgets"
+            tags: ["widgets", "kommandozeile"]
+```
+
+pushes `PackageId.locale.pt-BR.yaml` and `PackageId.locale.de-DE.yaml` next to
+the three default files. The `de-DE` manifest keeps the English `Description`
+and replaces the tags; the `pt-BR` manifest keeps the default tags.
+
+| Field | Required | Falls back to |
+|-------|----------|---------------|
+| `locale` | **yes** | — ; must differ from `default_locale` and from every other entry |
+| `publisher`, `publisher_url`, `publisher_support_url`, `privacy_url`, `author` | no | the top-level field of the same name |
+| `package_name`, `homepage`, `license`, `license_url`, `copyright`, `copyright_url` | no | the top-level field of the same name |
+| `short_description`, `description`, `release_notes`, `release_notes_url`, `installation_notes` | no | the top-level field of the same name |
+| `tags` | no | the top-level `tags` when unset or empty |
+
+`Moniker` is shared with the default locale, and `Documentations` stays on the
+default locale manifest only, where WinGet reads it.
+
+An entry whose `locale` renders empty, equals `default_locale`, or repeats an
+earlier entry's locale skips the crate before any manifest is written or
+pushed, and the run summary names the entry:
+
+```text
+skipped winget for 'myapp' — additional_locales[1].locale 'en-US' equals default_locale
+```
+
 ## Upgrade behavior, moniker, and silent switch
 
 - **`upgrade_behavior`** is written to every installer entry as
@@ -368,6 +423,7 @@ Anodizer generates the WinGet 3-file manifest format:
 - **`PackageId.yaml`** -- Version manifest declaring the package identifier, version, and default locale.
 - **`PackageId.installer.yaml`** -- Installer manifest with download URLs, SHA-256 checksums, architecture mappings, and upgrade behavior. For `.zip` archives, nested installer entries map each binary as a portable executable.
 - **`PackageId.locale.<locale>.yaml`** -- Default locale manifest with publisher info, descriptions, license, tags, release notes, and other metadata. The locale defaults to `en-US`; set `default_locale` to change it.
+- **`PackageId.locale.<locale>.yaml`**, one per `additional_locales` entry -- Additional locale manifest (`ManifestType: locale`) carrying that locale's translations over the default locale's values. See [Additional locales](#additional-locales).
 
 Each file includes a YAML language server schema reference header and a generated-by-anodizer comment.
 

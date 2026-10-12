@@ -106,12 +106,135 @@ fn test_write_manifests_locale_filename() {
         "v",
         "i",
         "l",
+        &[("de-DE".to_string(), "d".to_string())],
     )
     .unwrap();
     assert!(dir.join("Org.MyTool.locale.pt-BR.yaml").is_file());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Org.MyTool.locale.de-DE.yaml")).unwrap(),
+        "d"
+    );
     assert!(dir.join("Org.MyTool.yaml").is_file());
     assert!(dir.join("Org.MyTool.installer.yaml").is_file());
     assert!(!dir.join("Org.MyTool.locale.en-US.yaml").exists());
+}
+
+/// Two additional locales each render their own `locale` manifest: the
+/// overridden fields carry the translation, every other field is inherited
+/// from the default locale, `Documentations` stays on the default locale
+/// manifest, and the locale's own tags replace the default tags.
+#[test]
+fn additional_locale_manifests_carry_their_overrides_and_inherit_the_rest() {
+    let docs = [anodizer_core::config::WingetDocumentation {
+        label: "FAQ".to_string(),
+        url: "https://example.com/faq".to_string(),
+    }];
+    let tags = ["CLI Tool".to_string()];
+    let mut params = default_params();
+    params.homepage = Some("https://example.com/mytool");
+    params.release_notes = Some("Fixed things");
+    params.tags = Some(&tags);
+    params.documentations = &docs;
+
+    let pt = WingetLocaleOverrides {
+        short_description: Some("Uma ótima ferramenta".to_string()),
+        description: Some("Uma ferramenta completa.".to_string()),
+        release_notes: Some("Coisas corrigidas".to_string()),
+        tags: Some(vec!["Ferramenta CLI".to_string()]),
+        ..Default::default()
+    };
+    let de = WingetLocaleOverrides {
+        package_name: Some("Mein Werkzeug".to_string()),
+        publisher: Some("Meine Org".to_string()),
+        ..Default::default()
+    };
+
+    let pt_yaml = generate_locale_manifest(&params, "pt-BR", &pt).unwrap();
+    let de_yaml = generate_locale_manifest(&params, "de-DE", &de).unwrap();
+
+    let expected_pt = format!(
+        "{}\n\
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.locale.1.12.0.schema.json\n\
+PackageIdentifier: Org.MyTool\n\
+PackageVersion: 1.0.0\n\
+PackageLocale: pt-BR\n\
+Publisher: My Org\n\
+PublisherUrl: https://example.com\n\
+PackageName: mytool\n\
+PackageUrl: https://example.com/mytool\n\
+License: MIT\n\
+ShortDescription: Uma ótima ferramenta\n\
+Description: Uma ferramenta completa.\n\
+Moniker: mytool\n\
+Tags:\n\
+- ferramenta-cli\n\
+ReleaseNotes: Coisas corrigidas\n\
+ManifestType: locale\n\
+ManifestVersion: 1.12.0\n",
+        crate::util::GENERATED_FILE_HEADER
+    );
+    assert_eq!(pt_yaml, expected_pt);
+
+    let expected_de = format!(
+        "{}\n\
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.locale.1.12.0.schema.json\n\
+PackageIdentifier: Org.MyTool\n\
+PackageVersion: 1.0.0\n\
+PackageLocale: de-DE\n\
+Publisher: Meine Org\n\
+PublisherUrl: https://example.com\n\
+PackageName: Mein Werkzeug\n\
+PackageUrl: https://example.com/mytool\n\
+License: MIT\n\
+ShortDescription: A great tool\n\
+Description: A great tool\n\
+Moniker: mytool\n\
+Tags:\n\
+- cli-tool\n\
+ReleaseNotes: Fixed things\n\
+ManifestType: locale\n\
+ManifestVersion: 1.12.0\n",
+        crate::util::GENERATED_FILE_HEADER
+    );
+    assert_eq!(de_yaml, expected_de);
+
+    // The default locale manifest is unchanged by the extra locales.
+    let (_, _, default_yaml) = generate_manifests(&params).unwrap();
+    assert!(default_yaml.contains("ManifestType: defaultLocale"));
+    assert!(default_yaml.contains("DocumentLabel: FAQ"));
+    assert!(default_yaml.contains("- cli-tool"));
+}
+
+/// An additional locale that sets no `description` inherits the default
+/// locale's description; an empty override inherits it as well.
+#[test]
+fn additional_locale_description_falls_back_to_the_default_description() {
+    let mut params = default_params();
+    params.description = "The default\tdescription";
+    let unset =
+        generate_locale_manifest(&params, "pt-BR", &WingetLocaleOverrides::default()).unwrap();
+    assert!(
+        unset.contains("Description: The default  description"),
+        "{unset}"
+    );
+    let empty = generate_locale_manifest(
+        &params,
+        "pt-BR",
+        &WingetLocaleOverrides {
+            description: Some(String::new()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        empty.contains("Description: The default  description"),
+        "{empty}"
+    );
+
+    params.description = "";
+    let none =
+        generate_locale_manifest(&params, "pt-BR", &WingetLocaleOverrides::default()).unwrap();
+    assert!(!none.contains("\nDescription:"), "{none}");
 }
 
 #[test]
@@ -1971,6 +2094,91 @@ mod live_pr {
             "base branch must be the fork default"
         );
         drop(entries);
+        drop(bare);
+    }
+
+    /// Every `additional_locales[]` entry is pushed beside the three default
+    /// manifests as its own `<PackageIdentifier>.locale.<locale>.yaml`,
+    /// typed `locale` and carrying the entry's translation over the
+    /// inherited default text.
+    #[cfg(unix)]
+    #[test]
+    #[serial(path_env)]
+    fn publish_pushes_additional_locale_manifests_beside_the_default_set() {
+        let (_tools, _guard) = gh_absent();
+        let (bare_url, bare) = init_bare_fork();
+        let (addr, _l) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/fork-owner/winget-pkgs/pulls",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            times: Some(1),
+        }]);
+        let mut c = live_winget_crate("widget", &bare_url);
+        if let Some(w) = c.publish.as_mut().and_then(|p| p.winget.as_mut()) {
+            w.additional_locales = Some(vec![
+                anodizer_core::config::WingetLocaleConfig {
+                    locale: "pt-BR".to_string(),
+                    short_description: Some("Gerencia widgets".to_string()),
+                    ..Default::default()
+                },
+                anodizer_core::config::WingetLocaleConfig {
+                    locale: "{{ \"de-\" ~ \"DE\" }}".to_string(),
+                    ..Default::default()
+                },
+            ]);
+        }
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        inject_api_base(&mut ctx, &addr);
+        add_windows_zip(&mut ctx, "widget", &"e".repeat(64));
+
+        publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish ok");
+
+        let branch = "AcmeCo.widget-1.0.0";
+        let dir = "manifests/a/AcmeCo/widget/1.0.0";
+        let files = git_stdout(
+            bare.path(),
+            &["ls-tree", "--name-only", branch, &format!("{dir}/")],
+        );
+        let mut names: Vec<&str> = files.lines().collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec![
+                "manifests/a/AcmeCo/widget/1.0.0/AcmeCo.widget.installer.yaml",
+                "manifests/a/AcmeCo/widget/1.0.0/AcmeCo.widget.locale.de-DE.yaml",
+                "manifests/a/AcmeCo/widget/1.0.0/AcmeCo.widget.locale.en-US.yaml",
+                "manifests/a/AcmeCo/widget/1.0.0/AcmeCo.widget.locale.pt-BR.yaml",
+                "manifests/a/AcmeCo/widget/1.0.0/AcmeCo.widget.yaml",
+            ]
+        );
+        let pt = manifest_show(
+            bare.path(),
+            branch,
+            &format!("{dir}/AcmeCo.widget.locale.pt-BR.yaml"),
+        );
+        assert!(
+            pt.contains("PackageLocale: pt-BR")
+                && pt.contains("ShortDescription: Gerencia widgets")
+                && pt.contains("ManifestType: locale"),
+            "{pt}"
+        );
+        let de = manifest_show(
+            bare.path(),
+            branch,
+            &format!("{dir}/AcmeCo.widget.locale.de-DE.yaml"),
+        );
+        assert!(
+            de.contains("PackageLocale: de-DE")
+                && de.contains("ShortDescription: Manage widgets")
+                && de.contains("ManifestType: locale"),
+            "{de}"
+        );
+        let default = manifest_show(
+            bare.path(),
+            branch,
+            &format!("{dir}/AcmeCo.widget.locale.en-US.yaml"),
+        );
+        assert!(default.contains("ManifestType: defaultLocale"), "{default}");
         drop(bare);
     }
 

@@ -78,6 +78,9 @@ pub(crate) fn submit_winget_manifests(
     util::guard_no_unrendered(ctx, log, "winget version manifest", ver_yaml)?;
     util::guard_no_unrendered(ctx, log, "winget installer manifest", inst_yaml)?;
     util::guard_no_unrendered(ctx, log, "winget locale manifest", locale_yaml)?;
+    for (locale, yaml) in &rendered.additional_locale_yaml {
+        util::guard_no_unrendered(ctx, log, &format!("winget {locale} locale manifest"), yaml)?;
+    }
 
     let token = util::resolve_repo_token(
         ctx,
@@ -107,6 +110,7 @@ pub(crate) fn submit_winget_manifests(
         ver_yaml,
         inst_yaml,
         locale_yaml,
+        &rendered.additional_locale_yaml,
     )?;
 
     log.status(&format!(

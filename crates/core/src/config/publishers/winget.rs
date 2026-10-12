@@ -104,6 +104,28 @@ pub struct WingetConfig {
     ///     url: "https://github.com/owner/repo/blob/master/GUIDE.md"
     /// ```
     pub documentations: Option<Vec<WingetDocumentation>>,
+    /// Locale manifests published beside the default locale manifest, one
+    /// `<PackageIdentifier>.locale.<locale>.yaml` per entry. Each entry names
+    /// its `locale` and may override any localizable field; a field left
+    /// unset takes the default locale's value, so a translation only has to
+    /// carry the text that differs. Every field supports templates, and
+    /// `release_notes` reads `Changelog` the way the top-level field does.
+    ///
+    /// An entry whose `locale` renders empty, equals `default_locale`, or
+    /// repeats an earlier entry's locale skips the crate before any manifest
+    /// is written or pushed.
+    ///
+    /// ```yaml
+    /// winget:
+    ///   default_locale: "en-US"
+    ///   additional_locales:
+    ///     - locale: "pt-BR"
+    ///       short_description: "Gerencia widgets"
+    ///       description: "Uma ferramenta completa para gerenciar widgets."
+    ///     - locale: "de-DE"
+    ///       short_description: "Verwaltet Widgets"
+    /// ```
+    pub additional_locales: Option<Vec<WingetLocaleConfig>>,
     /// Installer `UpgradeBehavior` for every installer entry. winget accepts
     /// `install`, `uninstallPrevious`, and `deny`. Defaults to `install` —
     /// the correct behavior for portable-zip CLI tools (`uninstallPrevious`
@@ -175,6 +197,55 @@ pub struct WingetDocumentation {
     pub label: String,
     /// Target URL for the documentation entry.
     pub url: String,
+}
+
+/// One additional locale manifest of a WinGet package. Every field but
+/// `locale` is optional and falls back to the same-named field of the
+/// default locale, so an entry carries only the translated text.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct WingetLocaleConfig {
+    /// BCP 47 locale tag stamped into `PackageLocale` and the
+    /// `.locale.<locale>.yaml` file name (e.g. `pt-BR`). Required; supports
+    /// templates. Must differ from `default_locale` and from every other
+    /// entry.
+    pub locale: String,
+    /// Publisher name for this locale.
+    pub publisher: Option<String>,
+    /// Publisher homepage URL for this locale.
+    pub publisher_url: Option<String>,
+    /// Publisher support URL for this locale.
+    pub publisher_support_url: Option<String>,
+    /// Privacy policy URL for this locale.
+    pub privacy_url: Option<String>,
+    /// Author name for this locale.
+    pub author: Option<String>,
+    /// Display name shown in the WinGet gallery for this locale.
+    pub package_name: Option<String>,
+    /// Project homepage URL for this locale.
+    pub homepage: Option<String>,
+    /// License identifier for this locale.
+    pub license: Option<String>,
+    /// License URL for this locale.
+    pub license_url: Option<String>,
+    /// Copyright notice for this locale.
+    pub copyright: Option<String>,
+    /// Copyright URL for this locale.
+    pub copyright_url: Option<String>,
+    /// Short description for this locale (max 256 chars).
+    pub short_description: Option<String>,
+    /// Full package description for this locale.
+    pub description: Option<String>,
+    /// Tags for this locale (lowercased, spaces replaced with hyphens).
+    /// An empty or unset list takes the default locale's tags.
+    pub tags: Option<Vec<String>>,
+    /// Release notes for this locale. `Changelog` is available to the
+    /// template.
+    pub release_notes: Option<String>,
+    /// URL to the full release notes for this locale.
+    pub release_notes_url: Option<String>,
+    /// Post-install notes shown to the user for this locale.
+    pub installation_notes: Option<String>,
 }
 
 /// WinGet package dependency.

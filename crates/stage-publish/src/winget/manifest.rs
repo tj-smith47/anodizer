@@ -339,71 +339,143 @@ pub(crate) fn generate_manifests(
         manifest_version: "1.12.0".to_string(),
     };
 
-    let tags = params.tags.map(|t| {
-        t.iter()
-            .map(|s| s.to_lowercase().replace(' ', "-"))
-            .collect::<Vec<_>>()
-    });
+    let locale = build_locale_manifest(params, params.default_locale, None);
 
-    let locale = LocaleManifest {
+    let version_yaml =
+        serde_yaml_ng::to_string(&version).context("winget: serialize version manifest")?;
+    let installer_yaml =
+        serde_yaml_ng::to_string(&installer).context("winget: serialize installer manifest")?;
+    let locale_yaml =
+        serde_yaml_ng::to_string(&locale).context("winget: serialize locale manifest")?;
+    Ok((
+        with_headers(SCHEMA_VERSION, &version_yaml),
+        with_headers(SCHEMA_INSTALLER, &installer_yaml),
+        with_headers(SCHEMA_DEFAULT_LOCALE, &locale_yaml),
+    ))
+}
+
+const SCHEMA_VERSION: &str =
+    "# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json\n";
+const SCHEMA_INSTALLER: &str =
+    "# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json\n";
+const SCHEMA_DEFAULT_LOCALE: &str = "# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json\n";
+const SCHEMA_LOCALE: &str =
+    "# yaml-language-server: $schema=https://aka.ms/winget-manifest.locale.1.12.0.schema.json\n";
+
+fn with_headers(schema: &str, yaml: &str) -> String {
+    format!("{}\n{}{}", crate::util::GENERATED_FILE_HEADER, schema, yaml)
+}
+
+/// The rendered field overrides of one `additional_locales[]` entry. A
+/// `None` or empty field takes the default locale's value.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct WingetLocaleOverrides {
+    pub(crate) publisher: Option<String>,
+    pub(crate) publisher_url: Option<String>,
+    pub(crate) publisher_support_url: Option<String>,
+    pub(crate) privacy_url: Option<String>,
+    pub(crate) author: Option<String>,
+    pub(crate) package_name: Option<String>,
+    pub(crate) homepage: Option<String>,
+    pub(crate) license: Option<String>,
+    pub(crate) license_url: Option<String>,
+    pub(crate) copyright: Option<String>,
+    pub(crate) copyright_url: Option<String>,
+    pub(crate) short_description: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) tags: Option<Vec<String>>,
+    pub(crate) release_notes: Option<String>,
+    pub(crate) release_notes_url: Option<String>,
+    pub(crate) installation_notes: Option<String>,
+}
+
+/// Generate the `<PackageIdentifier>.locale.<locale>.yaml` manifest of one
+/// additional locale: `ManifestType: locale`, every field the entry left
+/// unset inherited from the default locale.
+pub(crate) fn generate_locale_manifest(
+    params: &WingetManifestParams<'_>,
+    locale: &str,
+    overrides: &WingetLocaleOverrides,
+) -> Result<String> {
+    let manifest = build_locale_manifest(params, locale, Some(overrides));
+    let yaml = serde_yaml_ng::to_string(&manifest)
+        .with_context(|| format!("winget: serialize locale manifest for '{locale}'"))?;
+    Ok(with_headers(SCHEMA_LOCALE, &yaml))
+}
+
+/// The override when it is set and non-empty, else the default, else nothing.
+fn first_non_empty(over: Option<&str>, default: Option<&str>) -> Option<String> {
+    over.filter(|s| !s.is_empty())
+        .or(default)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn normalize_tags(tags: &[String]) -> Vec<String> {
+    tags.iter()
+        .map(|s| s.to_lowercase().replace(' ', "-"))
+        .collect()
+}
+
+/// Build the locale manifest for `locale`. With no overrides this is the
+/// default locale manifest (`defaultLocale`, carrying `Documentations`);
+/// with overrides it is an additional locale (`locale`), which winget
+/// resolves against the default locale, so `Documentations` is left to it.
+fn build_locale_manifest(
+    params: &WingetManifestParams<'_>,
+    locale: &str,
+    overrides: Option<&WingetLocaleOverrides>,
+) -> LocaleManifest {
+    let over = overrides.cloned().unwrap_or_default();
+    let tags = over
+        .tags
+        .as_deref()
+        .filter(|t| !t.is_empty())
+        .or(params.tags)
+        .map(normalize_tags);
+    let description = first_non_empty(over.description.as_deref(), Some(params.description))
+        .map(|d| d.replace('\t', "  "));
+
+    LocaleManifest {
         package_identifier: params.package_id.to_string(),
         package_version: params.version.to_string(),
-        package_locale: params.default_locale.to_string(),
-        publisher: params.publisher.to_string(),
-        publisher_url: params
-            .publisher_url
-            .map(|s| s.to_string())
-            .filter(|s| !s.is_empty()),
-        publisher_support_url: params
-            .publisher_support_url
-            .map(|s| s.to_string())
-            .filter(|s| !s.is_empty()),
-        privacy_url: params
-            .privacy_url
-            .map(|s| s.to_string())
-            .filter(|s| !s.is_empty()),
-        author: params
-            .author
-            .map(|s| s.to_string())
-            .filter(|s| !s.is_empty()),
-        package_name: params.package_name.unwrap_or(params.name).to_string(),
-        package_url: params
-            .homepage
-            .map(|s| s.to_string())
-            .filter(|s| !s.is_empty()),
-        license: params.license.to_string(),
-        license_url: params
-            .license_url
-            .map(|s| s.to_string())
-            .filter(|s| !s.is_empty()),
-        copyright: params
-            .copyright
-            .map(|s| s.to_string())
-            .filter(|s| !s.is_empty()),
-        copyright_url: params
-            .copyright_url
-            .map(|s| s.to_string())
-            .filter(|s| !s.is_empty()),
-        short_description: params.short_description.to_string(),
-        description: if params.description.is_empty() {
-            None
-        } else {
-            Some(params.description.to_string())
-        },
+        package_locale: locale.to_string(),
+        publisher: first_non_empty(over.publisher.as_deref(), Some(params.publisher))
+            .unwrap_or_default(),
+        publisher_url: first_non_empty(over.publisher_url.as_deref(), params.publisher_url),
+        publisher_support_url: first_non_empty(
+            over.publisher_support_url.as_deref(),
+            params.publisher_support_url,
+        ),
+        privacy_url: first_non_empty(over.privacy_url.as_deref(), params.privacy_url),
+        author: first_non_empty(over.author.as_deref(), params.author),
+        package_name: first_non_empty(
+            over.package_name.as_deref(),
+            Some(params.package_name.unwrap_or(params.name)),
+        )
+        .unwrap_or_default(),
+        package_url: first_non_empty(over.homepage.as_deref(), params.homepage),
+        license: first_non_empty(over.license.as_deref(), Some(params.license)).unwrap_or_default(),
+        license_url: first_non_empty(over.license_url.as_deref(), params.license_url),
+        copyright: first_non_empty(over.copyright.as_deref(), params.copyright),
+        copyright_url: first_non_empty(over.copyright_url.as_deref(), params.copyright_url),
+        short_description: first_non_empty(
+            over.short_description.as_deref(),
+            Some(params.short_description),
+        )
+        .unwrap_or_default(),
+        description,
         moniker: params
             .moniker
             .map(|s| s.to_string())
             .filter(|s| !s.is_empty()),
         tags,
-        release_notes: params
-            .release_notes
-            .map(|s| s.to_string())
-            .filter(|s| !s.is_empty()),
-        release_notes_url: params
-            .release_notes_url
-            .map(|s| s.to_string())
-            .filter(|s| !s.is_empty()),
-        documentations: if params.documentations.is_empty() {
+        release_notes: first_non_empty(over.release_notes.as_deref(), params.release_notes),
+        release_notes_url: first_non_empty(
+            over.release_notes_url.as_deref(),
+            params.release_notes_url,
+        ),
+        documentations: if overrides.is_some() || params.documentations.is_empty() {
             None
         } else {
             Some(
@@ -417,30 +489,18 @@ pub(crate) fn generate_manifests(
                     .collect(),
             )
         },
-        installation_notes: params
-            .installation_notes
-            .map(|s| s.to_string())
-            .filter(|s| !s.is_empty()),
-        manifest_type: "defaultLocale".to_string(),
+        installation_notes: first_non_empty(
+            over.installation_notes.as_deref(),
+            params.installation_notes,
+        ),
+        manifest_type: if overrides.is_some() {
+            "locale"
+        } else {
+            "defaultLocale"
+        }
+        .to_string(),
         manifest_version: "1.12.0".to_string(),
-    };
-
-    let generated_header = format!("{}\n", crate::util::GENERATED_FILE_HEADER);
-    const SCHEMA_VERSION: &str = "# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json\n";
-    const SCHEMA_INSTALLER: &str = "# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json\n";
-    const SCHEMA_LOCALE: &str = "# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json\n";
-
-    let version_yaml =
-        serde_yaml_ng::to_string(&version).context("winget: serialize version manifest")?;
-    let installer_yaml =
-        serde_yaml_ng::to_string(&installer).context("winget: serialize installer manifest")?;
-    let locale_yaml =
-        serde_yaml_ng::to_string(&locale).context("winget: serialize locale manifest")?;
-    Ok((
-        format!("{}{}{}", generated_header, SCHEMA_VERSION, version_yaml),
-        format!("{}{}{}", generated_header, SCHEMA_INSTALLER, installer_yaml),
-        format!("{}{}{}", generated_header, SCHEMA_LOCALE, locale_yaml),
-    ))
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -40,20 +40,7 @@ pub(crate) fn render_winget_fields(
     short_desc: &str,
     log: &StageLogger,
 ) -> Result<RenderedWingetFields> {
-    let release_notes_var = ctx
-        .template_vars()
-        .get("ReleaseNotes")
-        .cloned()
-        .unwrap_or_default();
-    let is_strict = ctx.render_is_strict();
-    let render = |field: &str, s: Option<&str>| -> Result<Option<String>> {
-        s.map(|v| {
-            let mut vars = ctx.template_vars().clone();
-            vars.set("Changelog", &release_notes_var);
-            util::render_or_warn_with_vars(&vars, log, field, v, is_strict)
-        })
-        .transpose()
-    };
+    let render = |field: &str, s: Option<&str>| render_winget_field(ctx, log, field, s);
 
     Ok(RenderedWingetFields {
         publisher: render("winget.publisher", Some(publisher_name))?
@@ -94,8 +81,94 @@ pub(crate) fn render_winget_fields(
     })
 }
 
+/// Template-render one winget config string field against the live context,
+/// with `Changelog` (the release notes) available to the template.
+///
+/// Strict-aware via [`util::render_or_warn_with_vars`]: a malformed field
+/// template errors under the guard / `--strict`, else warns and falls back to
+/// its raw value.
+pub(crate) fn render_winget_field(
+    ctx: &Context,
+    log: &StageLogger,
+    field: &str,
+    raw: Option<&str>,
+) -> Result<Option<String>> {
+    raw.map(|v| {
+        let mut vars = ctx.template_vars().clone();
+        let release_notes = vars.get("ReleaseNotes").cloned().unwrap_or_default();
+        vars.set("Changelog", &release_notes);
+        util::render_or_warn_with_vars(&vars, log, field, v, ctx.render_is_strict())
+    })
+    .transpose()
+}
+
+/// Render and check every `additional_locales[]` entry, returning each
+/// locale with its rendered overrides in config order.
+///
+/// Runs before any manifest is generated: an entry whose locale renders
+/// empty, equals the default locale, or repeats an earlier entry is an entry
+/// skip for the crate, so a bad translation never leaves a partial manifest
+/// set on the fork.
+pub(crate) fn resolve_additional_locales(
+    ctx: &Context,
+    winget_cfg: &anodizer_core::config::WingetConfig,
+    default_locale: &str,
+    log: &StageLogger,
+) -> Result<Vec<(String, WingetLocaleOverrides)>> {
+    let entries = winget_cfg.additional_locales.as_deref().unwrap_or(&[]);
+    let mut out: Vec<(String, WingetLocaleOverrides)> = Vec::with_capacity(entries.len());
+    for (i, entry) in entries.iter().enumerate() {
+        let key = |name: &str| format!("winget.additional_locales[{i}].{name}");
+        let locale =
+            render_winget_field(ctx, log, &key("locale"), Some(&entry.locale))?.unwrap_or_default();
+        if locale.is_empty() {
+            anyhow::bail!(anodizer_core::pipe_skip::entry_skip(format!(
+                "additional_locales[{i}].locale is empty"
+            )));
+        }
+        if locale == default_locale {
+            anyhow::bail!(anodizer_core::pipe_skip::entry_skip(format!(
+                "additional_locales[{i}].locale '{locale}' equals default_locale"
+            )));
+        }
+        if out.iter().any(|(seen, _)| *seen == locale) {
+            anyhow::bail!(anodizer_core::pipe_skip::entry_skip(format!(
+                "additional_locales[{i}].locale '{locale}' is already listed"
+            )));
+        }
+        let field = |name: &str, raw: Option<&str>| render_winget_field(ctx, log, &key(name), raw);
+        let overrides = WingetLocaleOverrides {
+            publisher: field("publisher", entry.publisher.as_deref())?,
+            publisher_url: field("publisher_url", entry.publisher_url.as_deref())?,
+            publisher_support_url: field(
+                "publisher_support_url",
+                entry.publisher_support_url.as_deref(),
+            )?,
+            privacy_url: field("privacy_url", entry.privacy_url.as_deref())?,
+            author: field("author", entry.author.as_deref())?,
+            package_name: field("package_name", entry.package_name.as_deref())?,
+            homepage: field("homepage", entry.homepage.as_deref())?,
+            license: field("license", entry.license.as_deref())?,
+            license_url: field("license_url", entry.license_url.as_deref())?,
+            copyright: field("copyright", entry.copyright.as_deref())?,
+            copyright_url: field("copyright_url", entry.copyright_url.as_deref())?,
+            short_description: field("short_description", entry.short_description.as_deref())?
+                .map(|s| s.replace('\t', "  ")),
+            description: field("description", entry.description.as_deref())?,
+            tags: entry.tags.clone(),
+            release_notes: field("release_notes", entry.release_notes.as_deref())?,
+            release_notes_url: field("release_notes_url", entry.release_notes_url.as_deref())?,
+            installation_notes: field("installation_notes", entry.installation_notes.as_deref())?,
+        };
+        out.push((locale, overrides));
+    }
+    Ok(out)
+}
+
 /// Compute the on-disk manifest directory inside the cloned winget repo
-/// and write the three manifest files. Returns the directory for logging.
+/// and write the manifest files: the version, installer and default locale
+/// manifests plus one `.locale.<locale>.yaml` per additional locale.
+/// Returns the directory for logging.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_winget_manifests_to_disk(
     repo_path: &std::path::Path,
@@ -106,6 +179,7 @@ pub(crate) fn write_winget_manifests_to_disk(
     ver_yaml: &str,
     inst_yaml: &str,
     locale_yaml: &str,
+    additional_locales: &[(String, String)],
 ) -> Result<std::path::PathBuf> {
     let manifest_dir = if let Some(path) = path_rendered {
         repo_path.join(path)
@@ -131,6 +205,12 @@ pub(crate) fn write_winget_manifests_to_disk(
     std::fs::write(&ver_path, ver_yaml)?;
     std::fs::write(&inst_path, inst_yaml)?;
     std::fs::write(&locale_path, locale_yaml)?;
+    for (locale, yaml) in additional_locales {
+        std::fs::write(
+            manifest_dir.join(format!("{}.locale.{}.yaml", package_id, locale)),
+            yaml,
+        )?;
+    }
 
     Ok(manifest_dir)
 }
@@ -230,6 +310,10 @@ pub(crate) struct RenderedWingetManifests {
     pub(crate) installer_yaml: String,
     /// Locale manifest YAML (the `<PackageIdentifier>.locale.<locale>.yaml` file).
     pub(crate) locale_yaml: String,
+    /// One `(locale, YAML)` per `additional_locales[]` entry, in config
+    /// order; each is the `<PackageIdentifier>.locale.<locale>.yaml` file of
+    /// that locale.
+    pub(crate) additional_locale_yaml: Vec<(String, String)>,
     /// Resolved manifest locale (default `en-US`); also names the locale
     /// manifest file.
     pub(crate) default_locale: String,
@@ -392,7 +476,11 @@ pub(crate) fn render_winget_manifests_with_identity(
         log,
     )?;
 
-    let (version_yaml, installer_yaml, locale_yaml) = generate_manifests(&WingetManifestParams {
+    // Checked before any manifest is generated so a bad entry skips the crate
+    // with nothing written.
+    let additional_locales = resolve_additional_locales(ctx, winget_cfg, &default_locale, log)?;
+
+    let params = WingetManifestParams {
         package_id,
         name,
         package_name: rendered.package_name.as_deref(),
@@ -421,12 +509,23 @@ pub(crate) fn render_winget_manifests_with_identity(
         upgrade_behavior,
         default_locale: &default_locale,
         documentations,
-    })?;
+    };
+    let (version_yaml, installer_yaml, locale_yaml) = generate_manifests(&params)?;
+    let additional_locale_yaml = additional_locales
+        .iter()
+        .map(|(locale, overrides)| {
+            Ok((
+                locale.clone(),
+                generate_locale_manifest(&params, locale, overrides)?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(RenderedWingetManifests {
         version_yaml,
         installer_yaml,
         locale_yaml,
+        additional_locale_yaml,
         default_locale,
         repo_owner: identity.repo_owner.clone(),
         repo_name: identity.repo_name.clone(),
