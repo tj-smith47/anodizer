@@ -335,25 +335,36 @@ mod tests {
 
     /// Every GitHub DELETE in this crate goes through [`delete_checked`]:
     /// octocrab's typed `releases().delete` / `release_assets().delete`
-    /// return `Ok` on any status, so a production body spelling either is a
+    /// return `Ok` on any status, and the raw `_delete` they wrap returns the
+    /// response unread, so a production body spelling any of the three is a
     /// delete whose failure nobody reads.
     #[test]
     fn every_github_delete_reads_its_status() {
         use anodizer_core::test_helpers::test_sources::{production_half, rust_sources};
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut callers = 0usize;
+        let mut callers = Vec::new();
         for path in rust_sources(&src) {
             let text = std::fs::read_to_string(&path).expect("read source");
             let prod: String = production_half(&text).split_whitespace().collect();
+            let is_definition = path.ends_with("github/client.rs");
             assert!(
                 !prod.contains(".releases().delete(")
-                    && !prod.contains(".release_assets().delete("),
-                "{}: octocrab's typed delete ignores the status; call delete_checked",
+                    && !prod.contains(".release_assets().delete(")
+                    && (is_definition || !prod.contains("._delete(")),
+                "{}: an octocrab delete that never reads its status; call delete_checked",
                 path.display()
             );
-            callers += prod.matches("delete_checked(").count();
+            for _ in 0..prod.matches("delete_checked(").count() {
+                callers.push(path.display().to_string());
+            }
         }
-        // The definition plus the asset delete and the two release deletes.
-        assert_eq!(callers, 4, "the GitHub delete population moved");
+        callers.sort();
+        // The definition, the asset delete, the draft-release delete and the
+        // retention release and tag deletes.
+        assert_eq!(
+            callers.len(),
+            5,
+            "the GitHub delete population moved; delete_checked is called from: {callers:?}"
+        );
     }
 }

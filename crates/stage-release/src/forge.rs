@@ -40,10 +40,6 @@ pub(crate) enum UploadOutcome {
     Uploaded(String),
     /// A byte-identical remote asset already existed; nothing was sent.
     SkippedIdentical(String),
-    /// GitHub only: a stale published asset reappeared after delete+retry
-    /// (eventual consistency) and its bytes were kept. The upload path
-    /// already warned at default visibility, so the drain stays silent.
-    SkippedStaleKept(String),
 }
 
 /// The API-shaped operations one forge contributes to the shared upload
@@ -310,9 +306,6 @@ pub(crate) async fn run_upload_loop<C: ForgeAssetClient>(
                     file_name
                 ));
             }
-            // The stale-kept arm already reported itself with a
-            // default-visibility warn; a second drain line would be noise.
-            Ok(Ok(UploadOutcome::SkippedStaleKept(_))) => {}
             Ok(Err(e)) => return Err(e),
             Err(join_err) => {
                 return Err(anyhow::anyhow!(

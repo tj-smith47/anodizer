@@ -648,9 +648,7 @@ pub(crate) fn run_github_backend(
                         retry_octocrab_call(&policy, deadline, "delete tag (retention)", Some(&retry_after_capture), || {
                             let octo = octo.clone();
                             let route = tag_route.clone();
-                            async move {
-                                octo._delete(route, None::<&()>).await.map(|_| ())
-                            }
+                            async move { super::super::delete_checked(&octo, route).await }
                         })
                         .await;
                     match tag_delete {

@@ -242,22 +242,6 @@ pub(crate) async fn upload_release_asset(
     // 422-bail arms still fast-fail regardless of this floor.
     let max_upload_attempts = std::cmp::max(configured_attempts, MIN_UPLOAD_TRANSIENT_ATTEMPTS);
 
-    // One-shot overwrite guard: once a stale PUBLISHED asset has been
-    // successfully deleted and the upload *still* hits `already_exists`,
-    // accept the stale bytes instead of looping. GitHub's release-asset delete
-    // is eventually consistent: the delete returns Ok immediately but the
-    // subsequent upload can still see the stale asset for a short window.
-    // Rather than burn the remaining retries (and ultimately fail the whole
-    // release), keep the stale bytes and move on. PARTIAL assets are exempt —
-    // accepting one would leave a corrupt, non-downloadable asset — so they
-    // keep delete-retrying until the attempt budget is exhausted.
-    //
-    // An `AtomicBool` (not a plain `bool`) so the per-attempt retry closure can
-    // read and set it across its `.await` points while the whole upload future
-    // stays `Send` for the spawned per-asset task (`&AtomicBool` is `Sync`; a
-    // `&Cell`/`&mut bool` held across an await would not be).
-    let overwrite_attempted = std::sync::atomic::AtomicBool::new(false);
-
     // Terminal failure carried out of the step engine. `Fatal` already holds
     // its fully-contexted error and propagates verbatim (a 422-bail, a 403
     // denial, a failed probe/partial-delete); `Transient` is the last retriable
@@ -275,14 +259,9 @@ pub(crate) async fn upload_release_asset(
         max_upload_attempts,
         deadline,
         |attempt| {
-            // Re-borrow the latch as a shared `&AtomicBool` so the `async move`
-            // block below captures a `Copy` reference each attempt rather than
-            // moving the `AtomicBool` itself out of the enclosing frame.
-            let overwrite_attempted = &overwrite_attempted;
             async move {
                 use anodizer_core::retry::RetryStep;
                 type Step = RetryStep<crate::forge::UploadOutcome, UploadFailure>;
-                use std::sync::atomic::Ordering;
 
                 // Exponential-backoff slot for this attempt (jittered, capped),
                 // shared by the transient / read-after-write-404 / delete-retry
@@ -322,9 +301,6 @@ pub(crate) async fn upload_release_asset(
                 };
 
                 let mut result = post(data).await;
-                // A re-upload after a delete is classified like the first
-                // POST, so a fatal 4xx fails at once and a rate limit waits
-                // its own slot; it happens at most once per attempt.
                 let mut replaced = false;
                 loop {
                     break match classify_upload_attempt(&result) {
@@ -333,6 +309,12 @@ pub(crate) async fn upload_release_asset(
                     }
                     UploadAttemptOutcome::AlreadyExists => {
                         let err = result.expect_err("AlreadyExists outcome guarantees Err variant");
+                        // The re-upload after a delete is classified like the
+                        // first POST (a fatal 4xx fails at once, a rate limit
+                        // waits its own slot), and `replaced` bounds it to one
+                        // per attempt: a second `already_exists` is the asset
+                        // reappearing behind an eventually consistent delete,
+                        // and the next attempt deletes it again.
                         if replaced {
                             return Step::Retry {
                                 error: UploadFailure::Transient(anyhow::anyhow!(err)),
@@ -361,25 +343,6 @@ pub(crate) async fn upload_release_asset(
                             }
                         };
                         let partial = probe.as_ref().is_some_and(|p| !p.uploaded);
-
-                        // Eventual-consistency tolerance for PUBLISHED assets
-                        // only: if a prior attempt already deleted the stale
-                        // asset and GitHub still reports `already_exists`, keep
-                        // the stale bytes rather than fail the release. A
-                        // reappearing PARTIAL must keep retrying — skipping
-                        // would leave a corrupt asset behind.
-                        if overwrite_attempted.load(Ordering::Relaxed) && !partial {
-                            release_log().warn(&format!(
-                                "skipped re-upload — existing asset '{file_name}' on release \
-                                 '{tag}' reappeared after delete+retry; stale asset kept"
-                            ));
-                            // DoneQuiet: the warn above is the resolution
-                            // narrative; a "succeeded after N attempt(s)" note
-                            // would contradict "stale asset kept".
-                            return Step::DoneQuiet(crate::forge::UploadOutcome::SkippedStaleKept(
-                                file_name.to_string(),
-                            ));
-                        }
 
                         // `data` was already moved into the upload request, so
                         // the digest is computed lazily here (re-read from
@@ -472,9 +435,6 @@ pub(crate) async fn upload_release_asset(
                         .await
                         {
                             Ok(_) => {
-                                if !partial {
-                                    overwrite_attempted.store(true, Ordering::Relaxed);
-                                }
                                 // Re-upload inside this attempt: the delete is
                                 // not a failed upload, so it must not spend one
                                 // of the attempts and must still replace the
@@ -1047,7 +1007,7 @@ mod tests {
     }
 
     /// A delete that fails leaves the previous release's bytes under this
-    /// tag, so the upload fails instead of reporting the stale asset as kept.
+    /// tag, so the upload fails instead of continuing past it.
     #[tokio::test]
     async fn a_failed_delete_of_a_differing_asset_fails_the_upload() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -1080,6 +1040,54 @@ mod tests {
             "the error names the delete; got: {msg}"
         );
         assert_eq!(calls.load(Ordering::SeqCst), 5, "no re-upload is attempted");
+    }
+
+    /// A published asset that reappears behind an eventually consistent
+    /// delete is deleted again on the next attempt, never kept: attempt 1
+    /// deletes and re-posts into a second `already_exists`, attempt 2 meets
+    /// the asset again, deletes it and uploads.
+    #[tokio::test]
+    async fn a_reappeared_asset_is_deleted_again_on_the_next_attempt() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_artifact(tmp.path(), "app.tar.gz", b"new-content");
+        let stale_list = |addr| {
+            http(
+                "200 OK",
+                &format!("[{}]", asset_json(addr, "app.tar.gz", 4, "uploaded")),
+            )
+        };
+        let (addr, calls) = spawn_oneshot_http_responder_with(|addr| {
+            vec![
+                // attempt 1: POST, probe, delete, re-POST meets the asset again
+                release_json(addr),
+                http("422 Unprocessable Entity", BODY_422_ALREADY_EXISTS),
+                stale_list(addr),
+                stale_list(addr),
+                http("204 No Content", ""),
+                release_json(addr),
+                http("422 Unprocessable Entity", BODY_422_ALREADY_EXISTS),
+                // attempt 2: the same ladder, and the re-POST is accepted
+                release_json(addr),
+                http("422 Unprocessable Entity", BODY_422_ALREADY_EXISTS),
+                stale_list(addr),
+                stale_list(addr),
+                http("204 No Content", ""),
+                release_json(addr),
+                uploaded_asset_response(addr, "app.tar.gz", 11),
+            ]
+        });
+
+        let result = run_upload(addr, &path, true).await;
+
+        assert_eq!(
+            result.expect("the second attempt replaces the reappeared asset"),
+            crate::forge::UploadOutcome::Uploaded("app.tar.gz".to_string()),
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            14,
+            "two full delete-and-re-upload ladders"
+        );
     }
 
     /// `replace_existing_artifacts: false` deletes nothing: the first 422 on a

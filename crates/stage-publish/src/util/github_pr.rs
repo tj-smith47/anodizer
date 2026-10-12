@@ -1,6 +1,6 @@
 //! GitHub PR close + lookup helpers — used by the close-PR rollback
 //! shape (krew today; reusable for any future publisher whose rollback
-//! is "close the PR we opened against an upstream").
+//! is "close the PR the run opened against an upstream").
 //!
 //! Two public helpers:
 //! - [`find_open_pr_numbers_for_head_with_env`] — `GET /repos/{owner}/{repo}/pulls`
@@ -95,7 +95,7 @@ pub(crate) fn classify_close_status(status: reqwest::StatusCode, body: &str) -> 
 /// Failure modes for [`find_open_pr_numbers_for_head_with_env`].
 ///
 /// Distinguishes "no open PRs match" (the empty `Vec` return) from
-/// "we couldn't tell whether any PRs match" (this enum). Critical for
+/// "the listing could not tell whether any PRs match" (this enum). Critical for
 /// incident response: if `KREW_INDEX_TOKEN` is rotated mid-release,
 /// rollback must warn "auth failed" rather than the misleading
 /// "no PR found; verify manually" that previously fired.
@@ -237,12 +237,23 @@ pub(crate) fn classify_find_pr_status(
     Ok(())
 }
 
-/// List the open pull requests from `fork_owner:branch` by number — resolves the
-/// GitHub API base through `env` (honoring `ANODIZER_GITHUB_API_BASE`) so a
-/// rollback driven by an injected [`MapEnvSource`](anodizer_core::MapEnvSource)
-/// can be pointed at an in-process responder without touching the process env.
-/// Production passes [`ProcessEnvSource`], where the override is unset and the
-/// base resolves to the canonical `https://api.github.com`.
+/// List the open pull requests from `fork_owner:branch` against
+/// `upstream_owner/upstream_repo`, by number.
+///
+/// `Ok(Vec::new())` is a genuine "no open pull request matches";
+/// `Err(FindPrError)` is every failure, and `env_hint` is the name of the
+/// token variable the auth variants put in their message so the warn names
+/// what to fix. Callers surface the variant; collapsing an `Err` to an empty
+/// list reads a rotated token as "nothing to close". Pagination follows
+/// `Link: rel="next"` up to 10 pages; a head with more open pull requests
+/// than that is not a rollback this helper is shaped for.
+///
+/// The GitHub API base is resolved through `env` (honoring
+/// `ANODIZER_GITHUB_API_BASE`) so a rollback driven by an injected
+/// [`MapEnvSource`](anodizer_core::MapEnvSource) can be pointed at an
+/// in-process responder without touching the process env. Production passes
+/// [`ProcessEnvSource`], where the override is unset and the base resolves to
+/// the canonical `https://api.github.com`.
 pub(crate) fn find_open_pr_numbers_for_head_with_env<E: EnvSource + ?Sized>(
     upstream_owner: &str,
     upstream_repo: &str,

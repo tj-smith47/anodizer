@@ -8,7 +8,7 @@
 //! exponential-backoff slot, surface the error). The decision itself —
 //! "given this `octocrab::Error`, what kind of attempt outcome is it?" —
 //! is a pure function of the error shape, independent of the surrounding
-//! stateful machinery (`last_err`, `overwrite_attempted`, `sleep`s,
+//! stateful machinery (`last_err`, `replaced`, `sleep`s,
 //! `delete_release_asset_by_name`).
 //!
 //! [`classify_upload_attempt`] is that pure function. The loop body in
