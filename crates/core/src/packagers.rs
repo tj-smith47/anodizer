@@ -512,6 +512,29 @@ pub struct SrpmConfig {
 
 #[cfg(test)]
 mod tests {
+    /// Every `srpm:` field has a row on the srpm docs page; the other
+    /// packager pages are complete, this one had drifted by seven fields.
+    #[test]
+    fn every_srpm_field_has_a_row_in_its_docs_page() {
+        let schema = serde_json::to_value(schemars::schema_for!(super::SrpmConfig)).unwrap();
+        let page = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/site/content/docs/packages/srpm.md"
+        ))
+        .unwrap();
+        let fields = schema["properties"].as_object().unwrap();
+        let missing: Vec<&String> = fields
+            .keys()
+            .filter(|field| !page.contains(&format!("| `{field}` |")))
+            .collect();
+        assert!(missing.is_empty(), "undocumented srpm fields: {missing:?}");
+        assert_eq!(
+            fields.len(),
+            27,
+            "the schema walk found a different number of fields"
+        );
+    }
+
     use super::*;
 
     /// Wrapper exercising the `deserialize_makeselfs` custom visitor through
