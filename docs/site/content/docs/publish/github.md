@@ -44,7 +44,20 @@ crates:
         name: myapp
 ```
 
-If `github.owner` and `github.name` are omitted, anodizer auto-detects them from the git remote URL.
+If `github.owner` and `github.name` are omitted, anodizer auto-detects them from the `origin` git remote URL. That holds for a block that names only a token, so a token override needs no repeated owner/name:
+
+```yaml
+release:
+  github:
+    token: "{{ .Env.RELEASE_GITHUB_TOKEN }}"   # owner/name come from the origin remote
+```
+
+With no `origin` remote to read, a block whose owner or name is still empty is refused:
+
+```
+$ anodizer check config
+       Error crate 'myapp': release.github leaves owner and name empty and the `origin` remote could not supply them. Set release.github.owner and release.github.name or add an `origin` remote.
+```
 
 ## Release config fields
 

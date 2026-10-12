@@ -810,9 +810,9 @@ pypis:
 | `extra_files` | list of ExtraFileSpec | — | Extra files to upload to the release beyond build artifacts.<br><br>Paths / globs are resolved relative to the project root. `..` segments are accepted, so an entry like `../sibling/dist/*` will reach outside the project tree — security-conscious users should keep the entries inside the repo or canonicalise them before invoking the release pipeline. |
 | `footer` | ContentSource | — | Text appended to the release body (inline string, from_file, or from_url).<br><br>REPLACES anodizer's default attribution footer rather than stacking with it. Set to `""` for no footer at all. |
 | `full_changelog_link` | bool | — | Append a derived `**Full Changelog**: <compare-url>` line to the release body, below the changelog and above the footer. The compare range is `<previous tag>...<tag>` on the repository this release publishes to. Suppressed automatically when no previous tag exists (a first release) or when the changelog body already carries such a line (`changelog.use: github-native`). Default: `true`.<br><br><code>release:</code><br><code>  full_changelog_link: false   # do not append the derived compare link</code> |
-| `gitea` | ScmRepoConfig | — | Gitea repository to release to (owner and name). |
-| `github` | ScmRepoConfig | — | GitHub repository to release to (owner and name). |
-| `gitlab` | ScmRepoConfig | — | GitLab repository to release to (owner and name). |
+| `gitea` | ScmRepoConfig | — | Gitea repository to release to (owner and name, inferred from the `origin` remote when omitted). |
+| `github` | ScmRepoConfig | — | GitHub repository to release to (owner and name, inferred from the `origin` remote when omitted). |
+| `gitlab` | ScmRepoConfig | — | GitLab repository to release to (owner and name, inferred from the `origin` remote when omitted). |
 | `header` | ContentSource | — | Text prepended to the release body (inline string, from_file, or from_url). |
 | `ids` | list of string | — | Artifact IDs filter for uploads. Release-wide artifacts (checksums, source archive, extra files, metadata) always upload regardless of the filter, and derived artifacts (signatures, certificates, SBOMs) inherit the verdict of the artifact they derive from — a signature uploads iff the artifact it signs uploads. |
 | `include_meta` | bool | — | Upload `dist/metadata.json` as a release asset. The sibling `dist/artifacts.json` manifest is never uploaded — it stays local to the dist directory. |

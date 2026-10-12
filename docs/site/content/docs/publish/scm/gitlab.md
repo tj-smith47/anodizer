@@ -16,6 +16,14 @@ release:
     name: myproject
 ```
 
+`owner` and `name` are inferred from the `origin` git remote when omitted, so a block may name only a token override:
+
+```yaml
+release:
+  gitlab:
+    token: "{{ .Env.RELEASE_GITLAB_TOKEN }}"   # owner/name come from the origin remote
+```
+
 ## GitLab-specific config
 
 The `release` config is shared across all SCM providers. See the [GitHub releases](/docs/publish/github/) page for the full list of shared fields. The GitLab-specific fields are:

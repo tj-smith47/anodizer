@@ -2300,7 +2300,7 @@ fn auto_detect_github_leaves_github_none_without_remote() {
             }],
             ..Default::default()
         };
-        auto_detect_github(&mut config, &quiet_log());
+        auto_detect_github(&mut config, &quiet_log(), false).unwrap();
         assert!(
             config.crates[0].release.as_ref().unwrap().github.is_none(),
             "with no detectable remote, the missing github block must stay None"
@@ -2347,7 +2347,7 @@ fn auto_detect_github_fills_workspace_crates_from_remote() {
             }]),
             ..Default::default()
         };
-        auto_detect_github(&mut config, &quiet_log());
+        auto_detect_github(&mut config, &quiet_log(), false).unwrap();
         let top = config.crates[0].release.as_ref().unwrap();
         let top_gh = top
             .github
@@ -2371,10 +2371,11 @@ fn auto_detect_github_fills_workspace_crates_from_remote() {
         );
     });
 }
-
-/// A crate that wrote its own `github:` block keeps it whole through the
-/// inference pass — owner, name and the token override — even when the
-/// remote names a different repository. Inference fills only an absent block.
+/// An explicit block survives the inference pass untouched — owner, name
+/// and the token override — even when the remote names a different
+/// repository, while a block naming only `token` has owner and name filled
+/// from the remote and keeps its token. Asked of a top-level crate and a
+/// workspace member, for github, gitlab and gitea.
 #[cfg(unix)]
 #[test]
 #[serial_test::serial(cwd)]
@@ -2393,55 +2394,160 @@ fn auto_detect_github_keeps_an_explicit_block_and_its_token() {
                 .success(),
             "git remote add must succeed"
         );
+        let token = || Some("{{ .Env.RELEASE_TOKEN }}".to_string());
         let explicit = || anodizer_core::config::GitHubConfig {
             owner: "other-org".to_string(),
             name: "mirror".to_string(),
-            token: Some("{{ .Env.RELEASE_TOKEN }}".to_string()),
+            token: token(),
         };
-        let release = || anodizer_core::config::ReleaseConfig {
-            github: Some(explicit()),
-            ..Default::default()
+        let token_only = || anodizer_core::config::GitHubConfig {
+            owner: String::new(),
+            name: String::new(),
+            token: token(),
         };
-        let mut config = Config {
-            project_name: "x".to_string(),
-            crates: vec![CrateConfig {
-                name: "top".to_string(),
-                release: Some(release()),
+        let release = |block: anodizer_core::config::GitHubConfig, forge: &str| {
+            let mut r = anodizer_core::config::ReleaseConfig::default();
+            match forge {
+                "github" => r.github = Some(block),
+                "gitlab" => r.gitlab = Some(block),
+                _ => r.gitea = Some(block),
+            }
+            r
+        };
+        let read = |r: &anodizer_core::config::ReleaseConfig, forge: &str| {
+            let block = match forge {
+                "github" => r.github.as_ref(),
+                "gitlab" => r.gitlab.as_ref(),
+                _ => r.gitea.as_ref(),
+            }
+            .unwrap();
+            (block.owner.clone(), block.name.clone(), block.token.clone())
+        };
+        for forge in ["github", "gitlab", "gitea"] {
+            let mut config = Config {
+                project_name: "x".to_string(),
+                crates: vec![
+                    CrateConfig {
+                        name: "explicit".to_string(),
+                        release: Some(release(explicit(), forge)),
+                        ..Default::default()
+                    },
+                    CrateConfig {
+                        name: "token-only".to_string(),
+                        release: Some(release(token_only(), forge)),
+                        ..Default::default()
+                    },
+                ],
+                workspaces: Some(vec![WorkspaceConfig {
+                    name: "ws".to_string(),
+                    crates: vec![CrateConfig {
+                        name: "member".to_string(),
+                        release: Some(release(token_only(), forge)),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }]),
                 ..Default::default()
-            }],
-            workspaces: Some(vec![WorkspaceConfig {
-                name: "ws".to_string(),
+            };
+            auto_detect_github(&mut config, &quiet_log(), false).unwrap();
+            assert_eq!(
+                read(config.crates[0].release.as_ref().unwrap(), forge),
+                ("other-org".to_string(), "mirror".to_string(), token()),
+                "{forge}: an explicit block must survive inference untouched"
+            );
+            let member = &config.workspaces.as_ref().unwrap()[0].crates[0];
+            for crate_cfg in [&config.crates[1], member] {
+                assert_eq!(
+                    read(crate_cfg.release.as_ref().unwrap(), forge),
+                    ("acme".to_string(), "widget".to_string(), token()),
+                    "{forge}: crate '{}' must take owner/name from the remote and keep its token",
+                    crate_cfg.name
+                );
+            }
+        }
+    });
+}
+
+/// With no remote to read, a block that still leaves owner or name empty is
+/// refused naming the crate, the forge and the empty field; a snapshot run
+/// tolerates the github block with a warning so an offline build still runs.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(cwd)]
+fn auto_detect_github_refuses_an_unfilled_block_without_a_remote() {
+    with_empty_git_repo_cwd(|| {
+        let build = |forge: &str| {
+            let mut r = anodizer_core::config::ReleaseConfig::default();
+            let block = anodizer_core::config::GitHubConfig {
+                owner: String::new(),
+                name: "widget".to_string(),
+                token: Some("{{ .Env.RELEASE_TOKEN }}".to_string()),
+            };
+            match forge {
+                "github" => r.github = Some(block),
+                "gitlab" => r.gitlab = Some(block),
+                _ => r.gitea = Some(block),
+            }
+            Config {
+                project_name: "x".to_string(),
                 crates: vec![CrateConfig {
-                    name: "member".to_string(),
-                    release: Some(release()),
+                    name: "app".to_string(),
+                    release: Some(r),
                     ..Default::default()
                 }],
                 ..Default::default()
-            }]),
-            ..Default::default()
+            }
         };
-        auto_detect_github(&mut config, &quiet_log());
-        let top = config.crates[0]
-            .release
-            .as_ref()
-            .unwrap()
-            .github
-            .as_ref()
-            .unwrap();
-        let member = config.workspaces.as_ref().unwrap()[0].crates[0]
-            .release
-            .as_ref()
-            .unwrap()
-            .github
-            .as_ref()
-            .unwrap();
-        for gh in [top, member] {
+        for forge in ["github", "gitlab", "gitea"] {
+            let err = auto_detect_github(&mut build(forge), &quiet_log(), false).unwrap_err();
             assert_eq!(
-                (gh.owner.as_str(), gh.name.as_str(), gh.token.as_deref()),
-                ("other-org", "mirror", Some("{{ .Env.RELEASE_TOKEN }}")),
-                "an explicit block must survive inference untouched"
+                err.to_string(),
+                format!(
+                    "crate 'app': release.{forge} leaves owner empty and the `origin` remote \
+                     could not supply them. Set release.{forge}.owner and release.{forge}.name \
+                     or add an `origin` remote."
+                ),
             );
         }
+        auto_detect_github(&mut build("github"), &quiet_log(), true)
+            .expect("a snapshot tolerates an unfilled github block");
+        auto_detect_github(&mut build("gitlab"), &quiet_log(), true)
+            .expect_err("a snapshot still refuses an unfilled gitlab block");
+    });
+}
+
+/// The GitHub release page quotes the refusal a token-only block meets when
+/// no `origin` remote can supply owner and name; the line has to be what the
+/// inference pass produces for the documented config.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(cwd)]
+fn the_refusal_quoted_in_the_github_release_docs_is_what_the_inference_produces() {
+    let quoted = crate::commands::check::config::tests::quoted_error_lines("publish/github.md");
+    assert_eq!(
+        quoted.len(),
+        1,
+        "the page quotes one Error line: {quoted:?}"
+    );
+    with_empty_git_repo_cwd(|| {
+        let mut config = Config {
+            project_name: "myapp".to_string(),
+            crates: vec![CrateConfig {
+                name: "myapp".to_string(),
+                release: Some(anodizer_core::config::ReleaseConfig {
+                    github: Some(anodizer_core::config::GitHubConfig {
+                        owner: String::new(),
+                        name: String::new(),
+                        token: Some("{{ .Env.RELEASE_GITHUB_TOKEN }}".to_string()),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let err = auto_detect_github(&mut config, &quiet_log(), false).unwrap_err();
+        assert_eq!(vec![err.to_string()], quoted);
     });
 }
 

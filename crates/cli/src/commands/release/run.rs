@@ -92,7 +92,7 @@ pub(crate) fn run(mut opts: ReleaseOpts) -> Result<()> {
     let workspace_skip = apply_workspace_overlay_for_opts(&mut config, &opts, &log)?;
 
     helpers::infer_project_name(&mut config, &log);
-    helpers::auto_detect_github(&mut config, &log);
+    helpers::auto_detect_github(&mut config, &log, opts.snapshot)?;
 
     apply_release_meta_overrides(&mut config, &opts)?;
 

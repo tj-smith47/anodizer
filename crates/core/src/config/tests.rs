@@ -937,29 +937,35 @@ fn test_release_on_failure_parses_both_values() {
     }
 }
 
-/// `release.github.token` can only be written beside `owner` and `name`:
-/// a block naming the token alone is refused at load. Owner/name inference
-/// therefore only ever fills a block that does not exist, so it can never
-/// meet a configured token and drop it.
+/// A `release.<forge>` block may name `token` alone: `owner` and `name`
+/// load empty for the remote inference to fill, and the token is kept.
 #[test]
-fn a_release_repo_block_with_only_a_token_does_not_load() {
-    for (provider, yaml) in [
-        ("github", "github:\n  token: \"{{ .Env.RELEASE_TOKEN }}\""),
-        ("gitlab", "gitlab:\n  token: \"{{ .Env.RELEASE_TOKEN }}\""),
-        ("gitea", "gitea:\n  token: \"{{ .Env.RELEASE_TOKEN }}\""),
-    ] {
-        let err = serde_yaml_ng::from_str::<ReleaseConfig>(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("missing field") && msg.contains("owner"),
-            "{provider}: a token-only block must be refused naming the missing owner, got: {msg}"
+fn a_release_repo_block_with_only_a_token_loads_with_empty_owner_and_name() {
+    for forge in ["github", "gitlab", "gitea"] {
+        let yaml = format!("{forge}:\n  token: \"{{{{ .Env.RELEASE_TOKEN }}}}\"");
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+        let block = match forge {
+            "github" => cfg.github,
+            "gitlab" => cfg.gitlab,
+            _ => cfg.gitea,
+        }
+        .unwrap_or_else(|| panic!("{forge}: a token-only block must load"));
+        assert_eq!(
+            (
+                block.owner.as_str(),
+                block.name.as_str(),
+                block.token.as_deref()
+            ),
+            ("", "", Some("{{ .Env.RELEASE_TOKEN }}")),
+            "{forge}: owner and name are left for the remote to fill, the token is kept"
         );
     }
     let yaml = "github:\n  owner: acme\n  name: widget\n  token: \"{{ .Env.RELEASE_TOKEN }}\"";
     let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+    let gh = cfg.github.unwrap();
     assert_eq!(
-        cfg.github.unwrap().token.as_deref(),
-        Some("{{ .Env.RELEASE_TOKEN }}")
+        (gh.owner.as_str(), gh.name.as_str(), gh.token.as_deref()),
+        ("acme", "widget", Some("{{ .Env.RELEASE_TOKEN }}"))
     );
 }
 

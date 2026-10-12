@@ -13375,7 +13375,7 @@
           ]
         },
         "gitea": {
-          "description": "Gitea repository to release to (owner and name).",
+          "description": "Gitea repository to release to (owner and name, inferred from the `origin` remote when omitted).",
           "default": null,
           "anyOf": [
             {
@@ -13387,7 +13387,7 @@
           ]
         },
         "github": {
-          "description": "GitHub repository to release to (owner and name).",
+          "description": "GitHub repository to release to (owner and name, inferred from the `origin` remote when omitted).",
           "default": null,
           "anyOf": [
             {
@@ -13399,7 +13399,7 @@
           ]
         },
         "gitlab": {
-          "description": "GitLab repository to release to (owner and name).",
+          "description": "GitLab repository to release to (owner and name, inferred from the `origin` remote when omitted).",
           "default": null,
           "anyOf": [
             {
@@ -14058,21 +14058,19 @@
     },
     "ScmRepoConfig": {
       "type": "object",
-      "required": [
-        "name",
-        "owner"
-      ],
       "properties": {
         "name": {
-          "description": "Repository name.",
+          "description": "Repository name. Omitted or empty: inferred from the `origin` git remote together with `owner`.",
+          "default": "",
           "type": "string"
         },
         "owner": {
-          "description": "Repository owner (user or organization).",
+          "description": "Repository owner (user or organization). Omitted or empty: inferred from the `origin` git remote, so a block may name only `token`.",
+          "default": "",
           "type": "string"
         },
         "token": {
-          "description": "Auth token override for this repository, instead of the default one. Useful when the release repository requires a different token than the one used to build from — for instance, when publishing to a repository in another organization. Supports templates (environment variables). Unset falls back to the pipeline token.\n\n```yaml\nrelease:\n  github:\n    owner: my-org\n    name: my-repo\n    token: \"{{ .Env.RELEASE_GITHUB_TOKEN }}\"\n```",
+          "description": "Auth token override for this repository, instead of the default one. Useful when the release repository requires a different token than the one used to build from — for instance, when publishing to a repository in another organization. Supports templates (environment variables). Unset falls back to the pipeline token.\n\n```yaml\nrelease:\n  github:\n    owner: my-org\n    name: my-repo\n    token: \"{{ .Env.RELEASE_GITHUB_TOKEN }}\"\n```\n\nThe token alone is enough when the release repository is the one `origin` points at:\n\n```yaml\nrelease:\n  github:\n    token: \"{{ .Env.RELEASE_GITHUB_TOKEN }}\"\n```",
           "type": [
             "string",
             "null"

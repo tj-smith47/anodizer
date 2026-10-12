@@ -3704,7 +3704,7 @@ fn the_warning_quoted_in_the_resilience_docs_is_a_message_the_check_produces() {
 /// order, with the label and the renderer's indentation stripped. A line
 /// carrying the elision character is an abbreviation of real output rather
 /// than a claim about it, so it is left out.
-fn quoted_label_lines(relative: &str, label: &str) -> Vec<String> {
+pub(crate) fn quoted_label_lines(relative: &str, label: &str) -> Vec<String> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/site/content/docs")
         .join(relative);
@@ -3718,7 +3718,7 @@ fn quoted_label_lines(relative: &str, label: &str) -> Vec<String> {
 }
 
 /// Every `Error ` line a docs page quotes.
-fn quoted_error_lines(relative: &str) -> Vec<String> {
+pub(crate) fn quoted_error_lines(relative: &str) -> Vec<String> {
     quoted_label_lines(relative, "Error ")
 }
 

@@ -13,11 +13,14 @@ use super::{
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ReleaseConfig {
-    /// GitHub repository to release to (owner and name).
+    /// GitHub repository to release to (owner and name, inferred from the
+    /// `origin` remote when omitted).
     pub github: Option<ScmRepoConfig>,
-    /// GitLab repository to release to (owner and name).
+    /// GitLab repository to release to (owner and name, inferred from the
+    /// `origin` remote when omitted).
     pub gitlab: Option<ScmRepoConfig>,
-    /// Gitea repository to release to (owner and name).
+    /// Gitea repository to release to (owner and name, inferred from the
+    /// `origin` remote when omitted).
     pub gitea: Option<ScmRepoConfig>,
     /// When true, create the release as a draft (unpublished).
     pub draft: Option<bool>,
@@ -357,9 +360,13 @@ fn auto_or_bool_schema() -> schemars::Schema {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScmRepoConfig {
-    /// Repository owner (user or organization).
+    /// Repository owner (user or organization). Omitted or empty: inferred
+    /// from the `origin` git remote, so a block may name only `token`.
+    #[serde(default)]
     pub owner: String,
-    /// Repository name.
+    /// Repository name. Omitted or empty: inferred from the `origin` git
+    /// remote together with `owner`.
+    #[serde(default)]
     pub name: String,
     /// Auth token override for this repository, instead of the default one.
     /// Useful when the release repository requires a different token than
@@ -372,6 +379,15 @@ pub struct ScmRepoConfig {
     ///   github:
     ///     owner: my-org
     ///     name: my-repo
+    ///     token: "{{ .Env.RELEASE_GITHUB_TOKEN }}"
+    /// ```
+    ///
+    /// The token alone is enough when the release repository is the one
+    /// `origin` points at:
+    ///
+    /// ```yaml
+    /// release:
+    ///   github:
     ///     token: "{{ .Env.RELEASE_GITHUB_TOKEN }}"
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]

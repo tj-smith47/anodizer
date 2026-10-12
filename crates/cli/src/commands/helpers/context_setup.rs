@@ -30,12 +30,21 @@ pub fn infer_project_name(config: &mut Config, log: &StageLogger) {
     }
 }
 
-/// Auto-detect the GitHub owner/name from the git remote and fill in any crate
-/// release configs that are missing the `github` section.
-pub fn auto_detect_github(config: &mut Config, log: &StageLogger) {
-    // Resolve the slug once from the origin remote (no config override here —
-    // this fills the per-crate override precisely when it is absent).
-    let detected_github = git::resolve_github_slug(None, None).ok();
+/// Fill the repository identity of every crate's `release:` block from the
+/// `origin` git remote.
+///
+/// An absent `github:` block is created from a github.com remote. A
+/// `github:` / `gitlab:` / `gitea:` block that names only `token` (or leaves
+/// `owner` / `name` empty) has the empty fields filled from the remote and
+/// keeps its token. A block that still has an empty field after the remote
+/// could not be read is refused; under `snapshot` a `github:` block is
+/// tolerated with a warning so an offline snapshot build still runs.
+pub fn auto_detect_github(config: &mut Config, log: &StageLogger, snapshot: bool) -> Result<()> {
+    // Resolved once each: the github.com-only parse for the `github:` block
+    // (what an absent block has always been filled from) and the host-agnostic
+    // parse for gitlab / gitea, which keeps a nested `group/subgroup` owner.
+    let github_slug = git::resolve_github_slug(None, None).ok();
+    let any_slug = git::resolve_repo_slug(None, None).ok();
     // Raw chained walk (not `crate_universe()`): this is a mutation pass and
     // the universe walker only hands out shared borrows. Filling every entry
     // as written (shadowed ones included) is also correct here since dedup
@@ -48,19 +57,61 @@ pub fn auto_detect_github(config: &mut Config, log: &StageLogger) {
             .flat_map(|w| w.crates.iter_mut()),
     );
     for crate_cfg in crates_iter {
-        if let Some(ref mut release) = crate_cfg.release
-            && release.github.is_none()
-        {
-            if let Some(slug) = &detected_github {
-                release.github = Some(GitHubConfig {
-                    owner: slug.owner().to_string(),
-                    name: slug.name().to_string(),
-                    token: None,
-                });
-            } else {
-                log.warn("could not auto-detect GitHub repo from git remote");
+        let Some(ref mut release) = crate_cfg.release else {
+            continue;
+        };
+        if release.github.is_none() {
+            match &github_slug {
+                Some(slug) => {
+                    release.github = Some(GitHubConfig {
+                        owner: slug.owner().to_string(),
+                        name: slug.name().to_string(),
+                        token: None,
+                    });
+                }
+                None => log.warn("could not auto-detect GitHub repo from git remote"),
             }
         }
+        for (forge, block, slug) in [
+            ("github", release.github.as_mut(), github_slug.as_ref()),
+            ("gitlab", release.gitlab.as_mut(), any_slug.as_ref()),
+            ("gitea", release.gitea.as_mut(), any_slug.as_ref()),
+        ] {
+            let Some(block) = block else {
+                continue;
+            };
+            fill_empty_repo_fields(block, slug);
+            let missing = match (block.owner.trim().is_empty(), block.name.trim().is_empty()) {
+                (false, false) => continue,
+                (true, true) => "owner and name",
+                (true, false) => "owner",
+                (false, true) => "name",
+            };
+            let message = format!(
+                "crate '{}': release.{forge} leaves {missing} empty and the `origin` remote \
+                 could not supply them. Set release.{forge}.owner and release.{forge}.name \
+                 or add an `origin` remote.",
+                crate_cfg.name
+            );
+            if snapshot && forge == "github" {
+                log.warn(&message);
+                continue;
+            }
+            anyhow::bail!(message);
+        }
+    }
+    Ok(())
+}
+
+fn fill_empty_repo_fields(block: &mut GitHubConfig, slug: Option<&git::RepoSlug>) {
+    let Some(slug) = slug else {
+        return;
+    };
+    if block.owner.trim().is_empty() {
+        block.owner = slug.owner().to_string();
+    }
+    if block.name.trim().is_empty() {
+        block.name = slug.name().to_string();
     }
 }
 
@@ -171,7 +222,7 @@ pub fn init_publish_stage_ctx(
     if infer_project {
         infer_project_name(&mut config, log);
     }
-    auto_detect_github(&mut config, log);
+    auto_detect_github(&mut config, log, false)?;
 
     let mut ctx = Context::new(config.clone(), ctx_opts);
     crate::pipeline::emit_config_advisories_filtered(&config, log, |name| {
@@ -211,7 +262,7 @@ pub fn init_merge_stage_ctx(
     // surface (see `init_publish_stage_ctx`).
     let mut config = crate::pipeline::load_config(&config_path)?;
     infer_project_name(&mut config, log);
-    auto_detect_github(&mut config, log);
+    auto_detect_github(&mut config, log, false)?;
     let mut ctx = Context::new(config.clone(), ctx_opts);
     crate::pipeline::emit_config_advisories_filtered(&config, log, |name| {
         ctx.publisher_deselected(name)

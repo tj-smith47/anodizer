@@ -16,6 +16,14 @@ release:
     name: myrepo
 ```
 
+`owner` and `name` are inferred from the `origin` git remote when omitted, so a block may name only a token override:
+
+```yaml
+release:
+  gitea:
+    token: "{{ .Env.RELEASE_GITEA_TOKEN }}"   # owner/name come from the origin remote
+```
+
 ## Gitea-specific config
 
 The `release` config is shared across all SCM providers. See the [GitHub releases](/docs/publish/github/) page for the full list of shared fields. The Gitea-specific fields are:

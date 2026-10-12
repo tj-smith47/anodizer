@@ -47,8 +47,7 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     // Auto-infer project_name from Cargo.toml when not set in config.
     helpers::infer_project_name(&mut config, &log);
 
-    // Auto-detect GitHub owner/name from git remote
-    helpers::auto_detect_github(&mut config, &log);
+    helpers::auto_detect_github(&mut config, &log, true)?;
 
     log.status("building (snapshot)");
 

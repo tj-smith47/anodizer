@@ -25,6 +25,9 @@ pub(crate) fn run(
     // Auto-infer project_name from Cargo.toml when not set in config so
     // check validates the same project_name the release pipeline would see.
     helpers::infer_project_name(&mut config, &log);
+    // The release repository is checked as the pipeline would see it: a
+    // token-only block is valid when the remote names the repository.
+    helpers::auto_detect_github(&mut config, &log, false)?;
 
     // The raw whole-file pass belongs to the no-flag form only: a
     // `--workspace` run validates the OVERLAID config below, so a sibling
@@ -153,7 +156,7 @@ use structure::*;
 use tooling::*;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// Emit warnings, then either log success or emit all errors and bail.
 fn report_results(log: &StageLogger, warnings: &[String], errors: &[String]) -> Result<()> {
