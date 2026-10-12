@@ -1158,6 +1158,61 @@ async fn find_release_stops_on_a_listing_that_repeats_a_page() {
     assert_eq!(entries.len(), 3, "the by-tag probe and two listing pages");
 }
 
+/// The listing sweep stops at the run's retry deadline: a full first page
+/// without the tag is read, and the second page is never requested once the
+/// deadline has passed.
+#[tokio::test]
+async fn find_release_stops_the_listing_sweep_when_the_deadline_passes() {
+    let page: Vec<serde_json::Value> = (0..50u64)
+        .map(|i| serde_json::json!({"id": 100 + i, "tag_name": format!("p-{i}")}))
+        .collect();
+    let (addr, log) = spawn_scripted_responder(vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+            response: http_json("200 OK", serde_json::Value::Array(page).to_string()),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/api/v1/repos/o/r/releases?page=2&limit=50",
+            response: http_json("200 OK", "[]".to_string()),
+            times: None,
+        },
+    ]);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let err = find_release_by_tag(
+        &GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+            deadline: Some(std::time::Instant::now()),
+            log: tlog(),
+        },
+        "v9.9.9",
+    )
+    .await
+    .expect_err("a sweep cut short by the deadline is an error, not an absence");
+    assert!(
+        format!("{err:#}").contains("the retry deadline passed while reading the listing (page 2)"),
+        "{err:#}"
+    );
+    let entries = log.lock().unwrap();
+    assert!(
+        entries.iter().all(|e| !e.path.contains("page=2")),
+        "page 2 is never requested: {entries:?}"
+    );
+    assert!(
+        entries.iter().any(|e| e.path.contains("page=1")),
+        "page 1 is read: {entries:?}"
+    );
+}
+
 /// A matched release object missing its `id` field surfaces an explicit
 /// error from the listing parse rather than a silent skip.
 #[tokio::test]
