@@ -150,6 +150,7 @@ You can configure the target repository with either the legacy `manifests_repo` 
 | `repository.pull_request.enabled` | bool | Enable PR creation |
 | `repository.pull_request.draft` | bool | Create PR as draft |
 | `repository.pull_request.body` | string | Body text for the PR |
+| `repository.pull_request.token` | string | Token used to open the PR (templates allowed); falls back to `repository.token`, then `GITHUB_TOKEN`. Set it when the fork token cannot open PRs against `microsoft/winget-pkgs`. |
 | `repository.pull_request.base.owner` | string | Upstream repo owner to PR against |
 | `repository.pull_request.base.name` | string | Upstream repo name to PR against |
 | `repository.pull_request.base.branch` | string | Upstream base branch to target |
@@ -204,6 +205,7 @@ crates:
           branch: ""
           pull_request:
             enabled: true
+            token: ""                    # token used to open the PR (default: repository.token, then GITHUB_TOKEN)
             base:
               owner: microsoft
               name: winget-pkgs

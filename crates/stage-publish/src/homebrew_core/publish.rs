@@ -361,7 +361,20 @@ pub(crate) fn publish_to_homebrew_core(
                 crate::util::SUBMITTED_BY_FOOTER
             ),
         };
-        let pr_url = match api.create_pr(
+        // The pull request may open with a token of its own: the fork token
+        // commonly cannot open pull requests against the upstream repository.
+        let pr_api = match pr_cfg.and_then(|p| p.token.as_deref()) {
+            Some(raw) => {
+                let rendered = ctx
+                    .render_template(raw)
+                    .context("homebrew-core: render pull_request.token template")?;
+                (!rendered.is_empty())
+                    .then(|| GithubApi::new(ctx.env_source(), &rendered))
+                    .transpose()?
+            }
+            None => None,
+        };
+        let pr_url = match pr_api.as_ref().unwrap_or(&api).create_pr(
             &up_owner,
             &up_repo,
             &message,

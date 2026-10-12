@@ -205,7 +205,10 @@ pub(crate) fn submit_winget_pr(
             &body,
             "winget",
             log,
-            util::SubmitPrOpts { update_existing_pr },
+            util::SubmitPrOpts {
+                update_existing_pr,
+                token: util::configured_pr_token(repo_for_pr, render),
+            },
             env,
         )
     }

@@ -78,6 +78,21 @@ pub struct PullRequestConfig {
     pub body: Option<String>,
     /// Target base repository/branch for the PR.
     pub base: Option<PullRequestBaseConfig>,
+    /// Token used to open the pull request. Supports templates. Falls back
+    /// to `repository.token`, then to the `ANODIZER_GITHUB_TOKEN` /
+    /// `GITHUB_TOKEN` environment chain. Set it when the token that pushes
+    /// to the fork may not open pull requests against the upstream
+    /// repository (a fine-grained token scoped to the fork beside a classic
+    /// token for `microsoft/winget-pkgs`, for example).
+    ///
+    /// ```yaml
+    /// repository:
+    ///   token: "{{ .Env.FORK_TOKEN }}"
+    ///   pull_request:
+    ///     enabled: true
+    ///     token: "{{ .Env.UPSTREAM_PR_TOKEN }}"
+    /// ```
+    pub token: Option<String>,
 }
 
 /// Target base for pull requests (upstream repo to PR against).

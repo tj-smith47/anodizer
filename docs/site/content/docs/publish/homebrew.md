@@ -100,6 +100,7 @@ crates:
           pull_request:
             enabled: false
             draft: false
+            token: ""           # token used to open the PR (default: repository.token, then GITHUB_TOKEN)
             base:
               owner: ""
               name: ""

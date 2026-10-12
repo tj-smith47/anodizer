@@ -1198,6 +1198,7 @@ fn pr_direct_crate(crate_name: &str, plugin: &str, bare_url: &str) -> CrateConfi
                         base: None,
                         draft: None,
                         body: None,
+                        token: None,
                     }),
                     ..Default::default()
                 }),

@@ -284,6 +284,7 @@ fn krew_collect_run_targets_honors_pull_request_base_override() {
             }),
             draft: None,
             body: None,
+            token: None,
         });
     }
     let ctx = TestContextBuilder::new().crates(vec![c]).build();

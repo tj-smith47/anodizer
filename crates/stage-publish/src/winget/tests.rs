@@ -1853,6 +1853,7 @@ mod live_pr {
                             base: None,
                             draft: None,
                             body: None,
+                            token: None,
                         }),
                         ..Default::default()
                     }),
@@ -2299,6 +2300,7 @@ mod live_pr {
                 }),
                 draft: None,
                 body: None,
+                token: None,
             });
         }
         let mut ctx = build_ctx(vec![c], "1.0.0");

@@ -266,6 +266,7 @@ pub fn publish_to_krew(
     // drops the immutable borrow, making the subsequent `&mut ctx`
     // call legal.
     let repo_for_pr = krew_cfg.repository.clone();
+    let render = |s: &str| ctx.render_template(s).unwrap_or_else(|_| s.to_string());
 
     let pr_outcome = if has_pr_config {
         util::maybe_submit_pr_with_env(
@@ -286,7 +287,7 @@ pub fn publish_to_krew(
             ),
             "krew",
             log,
-            &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
+            &render,
             ctx.env_source(),
         )
     } else {
@@ -318,7 +319,10 @@ pub fn publish_to_krew(
             ),
             "krew",
             log,
-            util::SubmitPrOpts { update_existing_pr },
+            util::SubmitPrOpts {
+                update_existing_pr,
+                token: util::configured_pr_token(repo_for_pr.as_ref(), &render),
+            },
             ctx.env_source(),
         )
     };

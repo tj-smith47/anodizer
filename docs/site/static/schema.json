@@ -12973,6 +12973,14 @@
             "boolean",
             "null"
           ]
+        },
+        "token": {
+          "description": "Token used to open the pull request. Supports templates. Falls back to `repository.token`, then to the `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` environment chain. Set it when the token that pushes to the fork may not open pull requests against the upstream repository (a fine-grained token scoped to the fork beside a classic token for `microsoft/winget-pkgs`, for example).\n\n```yaml\nrepository:\n  token: \"{{ .Env.FORK_TOKEN }}\"\n  pull_request:\n    enabled: true\n    token: \"{{ .Env.UPSTREAM_PR_TOKEN }}\"\n```",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false

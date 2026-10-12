@@ -211,6 +211,7 @@ fn create_pr_via_gh_cli(
     repo_path: &Path,
     upstream_repo: &str,
     spec: &PrSpec<'_>,
+    token: Option<&str>,
     label: &str,
     log: &StageLogger,
 ) -> Option<PublisherOutcome> {
@@ -275,9 +276,16 @@ fn create_pr_via_gh_cli(
         |attempt| -> RetryStep<Option<PublisherOutcome>, PrCreateFailure> {
             let mut gh_cmd = Command::new("gh");
             gh_cmd.current_dir(repo_path).args(&args);
+            // `GH_TOKEN` outranks gh's own stored login and `GITHUB_TOKEN`, so
+            // the token the config chose for the pull request is the one gh
+            // authenticates with.
+            if let Some(token) = token {
+                gh_cmd.env("GH_TOKEN", token);
+            }
+            let child_log = log.with_child_env(&gh_cmd);
             let pr_result = run_capture_timeout(
                 &mut gh_cmd,
-                log,
+                &child_log,
                 &format!("{label}: gh pr create"),
                 GH_PR_CREATE_TIMEOUT,
             );
@@ -287,7 +295,7 @@ fn create_pr_via_gh_cli(
                     RetryStep::Done(None)
                 }
                 Ok(output) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    let stderr = child_log.redact(&String::from_utf8_lossy(&output.stderr));
                     // An open PR with identical head/base already exists.
                     if stderr.contains("already exists") {
                         if update_existing_pr {
@@ -603,6 +611,24 @@ pub(crate) fn reconcile_open_prs(
     }
 }
 
+/// The token the config names for opening a pull request:
+/// `pull_request.token`, else `repository.token`, each rendered. A link that
+/// renders blank falls through to the next one, and `None` leaves the choice
+/// to the environment chain (`anodizer_core::git::resolve_github_token_with_env`).
+pub(crate) fn configured_pr_token(
+    repo: Option<&RepositoryConfig>,
+    render: &dyn Fn(&str) -> String,
+) -> Option<String> {
+    let repo = repo?;
+    repo.pull_request
+        .as_ref()
+        .and_then(|pr| pr.token.as_deref())
+        .into_iter()
+        .chain(repo.token.as_deref())
+        .map(render)
+        .find(|rendered| !rendered.is_empty())
+}
+
 /// Submit a pull request if `repo.pull_request.enabled` is true.
 ///
 /// Uses `pull_request.base` for the upstream target when available,
@@ -612,8 +638,10 @@ pub(crate) fn reconcile_open_prs(
 /// When the base repository differs from the fork (i.e. a PR across repos),
 /// the fork is synced with upstream before submitting.
 ///
-/// Tries `gh` CLI first; if unavailable, falls back to the GitHub REST API
-/// using the token from the RepositoryConfig (or `GITHUB_TOKEN` env var).
+/// Tries `gh` CLI first; if unavailable, falls back to the GitHub REST API.
+/// Both transports authenticate with the same token: `pull_request.token`,
+/// else `repository.token`, else the `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN`
+/// environment chain (gh receives it as `GH_TOKEN`).
 ///
 /// Returns `Some(PublisherOutcome::PendingValidation)` when the PR
 /// already exists and could not be updated, or `Some(Failed(msg))` when
@@ -697,12 +725,10 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
         .and_then(|b| b.branch.as_deref())
         .map(render)
         .unwrap_or_else(|| "main".to_string());
-    // A configured `repository.token` may be templated; render it before it
-    // becomes the API bearer credential, or the literal template is sent.
-    // The canonical resolver applies the empty-string filter at every link
-    // (including the rendered `repository.token`), so a blank value falls
-    // through to ANODIZER_GITHUB_TOKEN -> GITHUB_TOKEN.
-    let explicit = repo.and_then(|r| r.token.as_deref()).map(render);
+    // The configured token is rendered before it becomes a credential, or the
+    // literal template would be sent; a blank rendering falls through to
+    // ANODIZER_GITHUB_TOKEN -> GITHUB_TOKEN inside the resolver.
+    let explicit = configured_pr_token(repo, render);
     let token =
         anodizer_core::git::resolve_github_token_with_env(explicit.as_deref(), &|key| env.var(key));
 
@@ -747,7 +773,14 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
 
     // PR creation: try gh CLI first, fall back to GitHub API.
     match classify_pr_transport(gh_is_available(log), token.is_some()) {
-        PrTransport::GhCli => create_pr_via_gh_cli(repo_path, &upstream_slug, &spec, label, log),
+        PrTransport::GhCli => create_pr_via_gh_cli(
+            repo_path,
+            &upstream_slug,
+            &spec,
+            token.as_deref(),
+            label,
+            log,
+        ),
         PrTransport::Api => {
             let tok = token
                 .as_deref()
@@ -799,10 +832,13 @@ pub(crate) fn classify_pr_transport(gh_available: bool, token_present: bool) -> 
 
 /// Options for [`submit_pr_via_gh_with_opts`]. Bundles infrequently-varying
 /// knobs so the function stays within the argument-count lint budget.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct SubmitPrOpts {
     /// When true, force-push to an existing PR branch rather than skipping.
     pub update_existing_pr: bool,
+    /// The token the config names for the pull request, already rendered
+    /// ([`configured_pr_token`]). `None` resolves from the environment chain.
+    pub token: Option<String>,
 }
 
 /// Submit a pull request via the GitHub CLI. Logs a warning instead of failing
@@ -868,7 +904,9 @@ pub(crate) fn submit_pr_via_gh_with_opts_with_env<E: EnvSource + ?Sized>(
     opts: SubmitPrOpts,
     env: &E,
 ) -> Option<PublisherOutcome> {
-    let token = anodizer_core::git::resolve_github_token_with_env(None, &|key| env.var(key));
+    let token = anodizer_core::git::resolve_github_token_with_env(opts.token.as_deref(), &|key| {
+        env.var(key)
+    });
 
     // Discover the upstream's actual default branch. Hardcoding "main" breaks
     // PR creation against repos whose default is "master" (e.g.
@@ -891,7 +929,14 @@ pub(crate) fn submit_pr_via_gh_with_opts_with_env<E: EnvSource + ?Sized>(
     };
 
     match classify_pr_transport(gh_is_available(log), token.is_some()) {
-        PrTransport::GhCli => create_pr_via_gh_cli(repo_path, upstream_repo, &spec, label, log),
+        PrTransport::GhCli => create_pr_via_gh_cli(
+            repo_path,
+            upstream_repo,
+            &spec,
+            token.as_deref(),
+            label,
+            log,
+        ),
         PrTransport::Api => {
             let tok = token
                 .as_deref()
@@ -924,8 +969,8 @@ mod tests {
     #[cfg(unix)]
     use super::maybe_submit_pr_with_env;
     use super::{
-        PrOrigin, PrSpec, PrTransport, Upstream, classify_pr_transport, create_pr_via_api_with_env,
-        gh_is_available, maybe_submit_pr, sync_fork,
+        PrOrigin, PrSpec, PrTransport, Upstream, classify_pr_transport, configured_pr_token,
+        create_pr_via_api_with_env, gh_is_available, maybe_submit_pr, sync_fork,
     };
     use anodizer_core::MapEnvSource;
     use anodizer_core::PublisherOutcome;
@@ -1905,6 +1950,7 @@ mod tests {
                 draft: Some(true),
                 body: Some("PR body from config".into()),
                 base: None,
+                token: None,
             }),
             ..Default::default()
         };
@@ -2070,6 +2116,177 @@ mod tests {
     // pin the actual request the API transport emits (method, path, and
     // JSON payload fields) via the scripted responder's request log.
     // -----------------------------------------------------------------
+
+    /// `pull_request.token` is the first link of the configured chain and
+    /// `repository.token` the second; each is rendered, and a link that
+    /// renders blank falls through to the next one.
+    #[test]
+    fn configured_pr_token_prefers_the_pull_request_token_and_skips_a_blank_one() {
+        let render = |s: &str| s.replace("{{ .Env.T }}", "rendered-token");
+        let repo = RepositoryConfig {
+            token: Some("repo-token".into()),
+            pull_request: Some(PullRequestConfig {
+                token: Some("{{ .Env.T }}".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            configured_pr_token(Some(&repo), &render).as_deref(),
+            Some("rendered-token")
+        );
+
+        let blank_pr_token = RepositoryConfig {
+            pull_request: Some(PullRequestConfig {
+                token: Some("".into()),
+                ..Default::default()
+            }),
+            ..repo.clone()
+        };
+        assert_eq!(
+            configured_pr_token(Some(&blank_pr_token), &render).as_deref(),
+            Some("repo-token"),
+            "a blank pull_request.token falls through to repository.token"
+        );
+
+        let nothing = RepositoryConfig {
+            token: None,
+            pull_request: Some(PullRequestConfig::default()),
+            ..Default::default()
+        };
+        assert_eq!(configured_pr_token(Some(&nothing), &render), None);
+        assert_eq!(configured_pr_token(None, &render), None);
+    }
+
+    /// `pull_request.token` wins over `repository.token` and over the
+    /// environment chain: with gh absent, the API transport sends it as the
+    /// bearer of the PR-create POST.
+    #[cfg(unix)]
+    #[test]
+    #[serial(path_env)]
+    fn maybe_submit_pr_opens_the_pr_with_the_pull_request_token_over_the_repository_token() {
+        let (_tools, _guard) = gh_absent_path();
+        let (_origin_url, _bare, work) = init_origin_with_work();
+        git_ok(work.path(), &["checkout", "-b", "release/v7.7.7"]);
+        write_commit(work.path(), "manifest.rb", "formula\n", "add manifest");
+
+        let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/fork-owner/fork-repo/pulls",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            times: Some(1),
+        }]);
+
+        let log = quiet_log();
+        let repo = RepositoryConfig {
+            owner: Some("fork-owner".into()),
+            name: Some("fork-repo".into()),
+            token: Some("repo-token".into()),
+            pull_request: Some(PullRequestConfig {
+                enabled: Some(true),
+                token: Some("{{ .Env.PR_TOKEN }}".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let origin = PrOrigin {
+            repo_owner: "fork-owner",
+            repo_name: "fork-repo",
+            branch_name: "release/v7.7.7",
+            update_existing_pr: false,
+        };
+        let env = MapEnvSource::new()
+            .with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"))
+            .with("ANODIZER_GITHUB_TOKEN", "env-token");
+        let render = |s: &str| s.replace("{{ .Env.PR_TOKEN }}", "pr-token");
+        let outcome = maybe_submit_pr_with_env(
+            work.path(),
+            Some(&repo),
+            &origin,
+            "title",
+            "body",
+            "homebrew",
+            &log,
+            &render,
+            &env,
+        );
+        assert!(outcome.is_none(), "201 is a success; got {outcome:?}");
+        let entries = req_log.lock().unwrap();
+        assert_eq!(entries.len(), 1, "exactly one PR-create POST expected");
+        assert_eq!(
+            entries[0].header("Authorization"),
+            Some("token pr-token"),
+            "the rendered pull_request.token is the bearer, not repository.token or the env"
+        );
+        drop(entries);
+        drop(work);
+    }
+
+    /// With gh on PATH, the same token reaches `gh pr create` as `GH_TOKEN`,
+    /// so gh authenticates with the token the config chose rather than its
+    /// stored login.
+    #[cfg(unix)]
+    #[test]
+    #[serial(path_env)]
+    fn gh_pr_create_receives_the_pull_request_token_as_gh_token() {
+        let tools = FakeToolDir::new();
+        let seen = tools.bin_dir().join("gh-token-seen");
+        tools
+            .tool("gh")
+            .script(format!(
+                "case \"$1\" in --version) exit 0;; esac\n\
+                 printf '%s' \"${{GH_TOKEN:-unset}}\" > '{}'\n\
+                 exit 0\n",
+                seen.display()
+            ))
+            .install();
+        let _guard = tools.activate();
+        let work = tempfile::tempdir().expect("tempdir");
+
+        let log = quiet_log();
+        let repo = RepositoryConfig {
+            owner: Some("fork-owner".into()),
+            name: Some("fork-repo".into()),
+            token: Some("repo-token".into()),
+            pull_request: Some(PullRequestConfig {
+                enabled: Some(true),
+                token: Some("pr-token-value".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let origin = PrOrigin {
+            repo_owner: "fork-owner",
+            repo_name: "fork-repo",
+            branch_name: "release/v8.8.8",
+            update_existing_pr: false,
+        };
+        let env = MapEnvSource::new().with("ANODIZER_GITHUB_TOKEN", "env-token");
+        let outcome = maybe_submit_pr_with_env(
+            work.path(),
+            Some(&repo),
+            &origin,
+            "title",
+            "body",
+            "homebrew",
+            &log,
+            &no_render,
+            &env,
+        );
+        assert!(outcome.is_none(), "gh exit 0 is a success; got {outcome:?}");
+        let calls = tools.calls("gh");
+        assert!(
+            calls
+                .iter()
+                .any(|argv| argv.first().map(String::as_str) == Some("pr")),
+            "gh pr create must have been spawned; argv seen: {calls:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&seen).expect("gh stub recorded GH_TOKEN"),
+            "pr-token-value",
+            "gh must receive the pull_request.token as GH_TOKEN"
+        );
+    }
 
     /// The API transport must POST to
     /// `/repos/{owner}/{name}/pulls` with the spec's title/head/base/body

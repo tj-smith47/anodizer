@@ -1259,7 +1259,7 @@ fn every_spawn_with_its_own_env_logs_through_the_child_env_redactor() {
         "the population is every converted site plus every exemption"
     );
     assert_eq!(
-        converted, 25,
+        converted, 26,
         "the count of sites logging through with_child_env moved; update \
          .claude/rules/child-env-redaction.md's population table"
     );

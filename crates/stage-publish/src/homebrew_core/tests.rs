@@ -2182,6 +2182,44 @@ fn run_pull_request_enabled_false_still_forks_pr_for_core() {
     assert!(find(&reqs, "POST", "/repos/Homebrew/homebrew-core/pulls").is_some());
 }
 
+#[test]
+fn run_opens_the_pull_request_with_the_pull_request_token() {
+    // The fork token pushes the bump; the pull request against the upstream
+    // repository opens with `pull_request.token` when one is set.
+    let (addr, log) = spawn_scripted_responder(core_fork_pr_routes());
+    let mut cfg = pinned_cfg();
+    cfg.repository = Some(RepositoryConfig {
+        pull_request: Some(PullRequestConfig {
+            token: Some("{{ .Env.UPSTREAM_PR_TOKEN }}".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate("my-tool", ".")])
+        .env("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"))
+        .env("HOMEBREW_CORE_GITHUB_TOKEN", "ghp_test")
+        .build();
+    ctx.template_vars_mut()
+        .set_env("UPSTREAM_PR_TOKEN", "ghp_pr_token");
+    ctx.config.homebrew_cores = Some(vec![cfg]);
+    let mut targets = Vec::new();
+    publish_to_homebrew_core(&ctx, &ctx.logger("publish"), &mut targets).expect("publish");
+
+    let reqs = logged(&log);
+    let put = find(
+        &reqs,
+        "PUT",
+        "/repos/forkuser/homebrew-core/contents/Formula/m/my-tool.rb",
+    )
+    .expect("PUT contents");
+    assert_eq!(put.header("Authorization"), Some("Bearer ghp_test"));
+    let pr = find(&reqs, "POST", "/repos/Homebrew/homebrew-core/pulls").expect("PR POST");
+    assert_eq!(pr.header("Authorization"), Some("Bearer ghp_pr_token"));
+}
+
 // =============================================================================
 // update_existing_pr — refresh an open bump PR in place
 // =============================================================================

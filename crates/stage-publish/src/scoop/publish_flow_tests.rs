@@ -1183,6 +1183,7 @@ mod e2e {
                 }),
                 draft: None,
                 body: None,
+                token: None,
             });
         }
     }

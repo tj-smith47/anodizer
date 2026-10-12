@@ -79,6 +79,7 @@ homebrew_cores:
 | `repository.token` | **yes** | token ladder (below) | Auth token override |
 | `repository.pull_request.draft` | — | `false` | Open the bump PR as a draft |
 | `repository.pull_request.body` | **yes** | generated "Bump …" body | PR description |
+| `repository.pull_request.token` | **yes** | `repository.token`, then the token ladder | Token used to open the PR when the token that pushes the bump cannot open PRs against the formula repository |
 | `path` | **yes** | sharded `Formula/<letter>/<name>.rb`, then flat `Formula/<name>.rb` | Formula file path in the repo |
 | `download_url` | **yes** | GitHub source tarball for the tag | URL written into the formula's `url` stanza |
 | `sha256` | **yes** | download + hash `download_url` | Source-archive digest |
