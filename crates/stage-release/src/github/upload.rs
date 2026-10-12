@@ -1002,9 +1002,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_307_with_a_location_is_not_followed_and_names_the_moved_repository() {
-        // The upload body is streamed, so the client cannot replay it to a
-        // Location; a 307 that carries one reaches the same arm as one that
-        // does not, and is not retried either.
+        // The client's redirect policy does not clone a non-empty request
+        // body, so a 307 is handed back unfollowed; one that carries a
+        // Location reaches the same arm as one that does not, and is not
+        // retried either.
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = write_artifact(tmp.path(), "app.tar.gz", b"bytes");
         let (addr, calls) = spawn_oneshot_http_responder_with(|addr| {

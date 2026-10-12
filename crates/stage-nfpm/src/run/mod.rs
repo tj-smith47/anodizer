@@ -360,6 +360,11 @@ fn process_nfpm_format(
     })?;
 
     let mut pkg_metadata = HashMap::from([("format".to_string(), format.to_string())]);
+    // The generic extension parser reads `.pkg.tar.zst` as `.tar.zst`, so the
+    // extension the file was named with is recorded for `{{ ArtifactExt }}`.
+    if !ext.is_empty() {
+        pkg_metadata.insert("ext".to_string(), ext.to_string());
+    }
     if let Some(ref id) = nfpm_cfg.id {
         pkg_metadata.insert("id".to_string(), id.clone());
     }

@@ -924,6 +924,46 @@ fn test_artifact_registration_of_linux_package() {
     assert_eq!(pkgs[0].kind, ArtifactKind::LinuxPackage);
     assert_eq!(pkgs[0].crate_name, "myapp");
     assert_eq!(pkgs[0].metadata.get("format"), Some(&"deb".to_string()));
+    assert_eq!(pkgs[0].ext(), ".deb");
+}
+
+/// The registered extension is the one the file was named with, so an Arch
+/// package renders `{{ ArtifactExt }}` as `.pkg.tar.zst`, which the generic
+/// parser cannot tell from `.tar.zst`.
+#[test]
+fn an_archlinux_package_registers_its_whole_conventional_extension() {
+    use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    let nfpm_cfg = NfpmConfig {
+        package_name: Some("myapp".to_string()),
+        formats: vec!["archlinux".to_string()],
+        maintainer: Some("test@example.com".to_string()),
+        ..Default::default()
+    };
+    let tmp = TempDir::new().unwrap();
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: Some("v{{ .Version }}".to_string()),
+        nfpms: Some(vec![nfpm_cfg]),
+        ..Default::default()
+    }];
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    NfpmStage.run(&mut ctx).unwrap();
+    let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+    assert_eq!(pkgs.len(), 1);
+    assert!(pkgs[0].name.ends_with(".pkg.tar.zst"), "{}", pkgs[0].name);
+    assert_eq!(pkgs[0].ext(), ".pkg.tar.zst");
 }
 
 #[test]

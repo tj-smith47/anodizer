@@ -9601,7 +9601,7 @@ fn a_none_config_does_not_mask_a_failing_sibling_on_any_sign_slice() {
         .run(&mut ctx)
         .expect_err("signs: the config after a `none` one must still run and fail");
     assert!(
-        format!("{err:#}").contains("false"),
+        format!("{err:#}").contains("failed with exit code: 1"),
         "signs: error must come from the failing command: {err:#}"
     );
 
@@ -9619,7 +9619,7 @@ fn a_none_config_does_not_mask_a_failing_sibling_on_any_sign_slice() {
         .run(&mut ctx)
         .expect_err("binary_signs: the config after a `none` one must still run and fail");
     assert!(
-        format!("{err:#}").contains("false"),
+        format!("{err:#}").contains("failed with exit code: 1"),
         "binary_signs: error must come from the failing command: {err:#}"
     );
 
@@ -9656,7 +9656,7 @@ fn a_none_config_does_not_mask_a_failing_sibling_on_any_sign_slice() {
         .run(&mut ctx)
         .expect_err("docker_signs: the config after a `none` one must still run and fail");
     assert!(
-        format!("{err:#}").contains("false"),
+        format!("{err:#}").contains("failed with exit code: 1"),
         "docker_signs: error must come from the failing command: {err:#}"
     );
 }
