@@ -1818,3 +1818,52 @@ fn a_message_holding_the_old_record_markers_decodes_beside_its_neighbours() {
     let pair_subjects: Vec<&str> = pairs.iter().map(|(_, s)| s.as_str()).collect();
     assert_eq!(pair_subjects, subjects);
 }
+
+/// A touched file is reported with the name git holds: a leading or trailing
+/// space is kept, a non-ASCII name is not octal-escaped, and a commit with no
+/// message is still one message for the release signal.
+#[test]
+fn file_names_and_empty_messages_survive_the_commit_record_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let run = |args: &[&str]| {
+        assert!(
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
+        );
+    };
+    run(&["init"]);
+    std::fs::write(dir.join("base"), "base").unwrap();
+    run(&["add", "."]);
+    run(&["commit", "-m", "initial"]);
+    let base = get_head_commit_in(dir).unwrap();
+    for name in [" lead", "trail ", "mid space", "\u{e9}.rs"] {
+        std::fs::write(dir.join(name), name).unwrap();
+    }
+    run(&["add", "."]);
+    run(&["commit", "-m", "feat: odd names"]);
+    run(&["commit", "--allow-empty", "--allow-empty-message", "-m", ""]);
+
+    let with_files = get_commits_between_paths_with_files_in(dir, &base, "HEAD", &[]).unwrap();
+    assert_eq!(with_files.len(), 2);
+    assert!(with_files[0].files.is_empty());
+    let mut files = with_files[1].files.clone();
+    files.sort();
+    assert_eq!(files, [" lead", "mid space", "trail ", "\u{e9}.rs"]);
+
+    let messages = get_commit_messages_between_in(dir, &base, "HEAD", false).unwrap();
+    assert_eq!(messages, ["", "feat: odd names"]);
+}

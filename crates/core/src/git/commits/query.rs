@@ -211,9 +211,12 @@ pub fn parse_commit_output_with_files(output: &str) -> Vec<CommitWithFiles> {
         let files_text = records
             .get(idx + 1)
             .map_or(trailing, |(leading, _)| *leading);
+        // A path is printed as git has it (`core.quotePath=false` on the
+        // spawn), so only the line ending is removed: a leading or trailing
+        // space is part of the file name.
         let files = files_text
             .lines()
-            .map(str::trim)
+            .map(|line| line.trim_end_matches('\r'))
             .filter(|line| !line.is_empty())
             .map(str::to_string)
             .collect();
@@ -235,6 +238,8 @@ pub fn get_commits_between_paths_with_files_in(
     let mut args = vec![
         "-c".to_string(),
         "log.showSignature=false".to_string(),
+        "-c".to_string(),
+        "core.quotePath=false".to_string(),
         "log".to_string(),
         "--name-only".to_string(),
         COMMIT_RECORD_FORMAT.to_string(),
@@ -259,6 +264,8 @@ pub fn get_all_commits_paths_with_files_in(
     let mut args = vec![
         "-c".to_string(),
         "log.showSignature=false".to_string(),
+        "-c".to_string(),
+        "core.quotePath=false".to_string(),
         "log".to_string(),
         "--name-only".to_string(),
         COMMIT_RECORD_FORMAT.to_string(),
@@ -311,6 +318,8 @@ pub fn get_commits_reachable_paths_with_files_in(
     let mut args = vec![
         "-c".to_string(),
         "log.showSignature=false".to_string(),
+        "-c".to_string(),
+        "core.quotePath=false".to_string(),
         "log".to_string(),
         "--name-only".to_string(),
         COMMIT_RECORD_FORMAT.to_string(),
@@ -367,7 +376,6 @@ pub(crate) fn release_messages(output: &str, expand_squash_merges: bool) -> Vec<
         .0
         .iter()
         .map(|[subject, body]| (subject.trim(), body.trim()))
-        .filter(|(subject, body)| !(subject.is_empty() && body.is_empty()))
         .flat_map(|(subject, body)| messages_with_squashed(subject, body, expand_squash_merges))
         .collect()
 }
