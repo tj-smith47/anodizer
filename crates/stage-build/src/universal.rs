@@ -115,6 +115,32 @@ pub(crate) fn project_universal_out_path(
     Ok(Some(ub_dir.join(&out_name)))
 }
 
+/// The one binary of `target` among the selected slices, or `None` when
+/// there is none. Two binaries on one target are two slices of one CPU type
+/// (a baseline and a `v3` amd64 build of the same binary), and `lipo` can
+/// hold only one of them; taking the first would merge whichever was built
+/// first and drop the other without a word.
+fn one_slice_per_target<'a>(
+    binaries: &[&'a anodizer_core::artifact::Artifact],
+    target: &str,
+    crate_name: &str,
+) -> anyhow::Result<Option<&'a anodizer_core::artifact::Artifact>> {
+    let mut slices = binaries
+        .iter()
+        .copied()
+        .filter(|a| a.target.as_deref() == Some(target));
+    let first = slices.next();
+    if let (Some(first), Some(second)) = (first, slices.next()) {
+        anyhow::bail!(
+            "universal binary for {crate_name}: duplicate darwin binary slice for {target}: \
+             {} and {}; narrow `universal_binaries[].ids` to one build",
+            first.path.display(),
+            second.path.display()
+        );
+    }
+    Ok(first)
+}
+
 pub(crate) fn build_universal_binary(
     crate_name: &str,
     ub: &UniversalBinaryConfig,
@@ -151,12 +177,8 @@ pub(crate) fn build_universal_binary(
         binaries
     };
 
-    let arm64 = filtered
-        .iter()
-        .find(|a| a.target.as_deref() == Some("aarch64-apple-darwin"));
-    let x86_64 = filtered
-        .iter()
-        .find(|a| a.target.as_deref() == Some("x86_64-apple-darwin"));
+    let arm64 = one_slice_per_target(&filtered, "aarch64-apple-darwin", crate_name)?;
+    let x86_64 = one_slice_per_target(&filtered, "x86_64-apple-darwin", crate_name)?;
 
     let (arm64_path, x86_64_path) = match (arm64, x86_64) {
         (Some(a), Some(x)) => (a.path.clone(), x.path.clone()),

@@ -923,6 +923,65 @@ fn test_universal_binary_skips_when_missing_arch() {
 }
 
 #[test]
+fn test_universal_binary_refuses_two_binaries_on_one_darwin_target() {
+    use anodizer_core::config::UniversalBinaryConfig;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let config = anodizer_core::config::Config::default();
+    let opts = ContextOptions {
+        dry_run: true,
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, opts);
+    register_binary(
+        &mut ctx,
+        "myapp",
+        "aarch64-apple-darwin",
+        std::path::PathBuf::from("target/aarch64-apple-darwin/release/myapp"),
+    );
+    register_binary(
+        &mut ctx,
+        "myapp",
+        "x86_64-apple-darwin",
+        std::path::PathBuf::from("target/x86_64-apple-darwin/release/myapp"),
+    );
+    register_binary(
+        &mut ctx,
+        "myapp",
+        "x86_64-apple-darwin",
+        std::path::PathBuf::from("target/x86_64-apple-darwin-v3/release/myapp"),
+    );
+
+    let ub = UniversalBinaryConfig {
+        id: None,
+        name_template: None,
+        replace: None,
+        ids: None,
+        hooks: None,
+        mod_timestamp: None,
+    };
+
+    let err = build_universal_binary("myapp", &ub, &mut ctx, true)
+        .expect_err("two x86_64 slices cannot both go into one universal binary");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("duplicate darwin binary slice for x86_64-apple-darwin"),
+        "{msg}"
+    );
+    assert!(
+        msg.contains("target/x86_64-apple-darwin/release/myapp")
+            && msg.contains("target/x86_64-apple-darwin-v3/release/myapp"),
+        "both slices are named: {msg}"
+    );
+    assert!(
+        ctx.artifacts
+            .by_kind(ArtifactKind::UniversalBinary)
+            .is_empty(),
+        "nothing is registered after the refusal"
+    );
+}
+
+#[test]
 fn test_universal_binary_skips_for_different_crate() {
     use anodizer_core::config::UniversalBinaryConfig;
     use anodizer_core::context::{Context, ContextOptions};
