@@ -261,6 +261,41 @@ fn test_slack_blocks_template_vars_are_expanded() {
 }
 
 #[test]
+fn slack_blocks_keep_literal_quotes_and_rendered_newlines() {
+    let blocks = serde_json::json!([
+        { "type": "section", "text": { "type": "plain_text", "text": "Release \"stable\"" } },
+        { "type": "section", "text": { "type": "plain_text", "text": "{{ .ReleaseNotes }}" } },
+        { "type": "divider", "block_id": 7, "optional": true }
+    ]);
+    let attachments = serde_json::json!([
+        { "text": "Release \"stable\"" },
+        { "text": "{{ .ReleaseNotes }}", "fields": [ { "title": "{{ .ProjectName }}" } ] }
+    ]);
+    let mut config = Config::default();
+    config.dist = isolated_test_dist();
+    config.project_name = "myapp".to_string();
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut()
+        .set("ReleaseNotes", "line \"one\"\nline two");
+
+    let rendered = render_json_template(&ctx, Some(&blocks)).unwrap().unwrap();
+    assert_eq!(rendered[0]["text"]["text"], "Release \"stable\"");
+    assert_eq!(rendered[1]["text"]["text"], "line \"one\"\nline two");
+    assert_eq!(
+        rendered[2], blocks[2],
+        "non-string leaves pass through unchanged"
+    );
+
+    let rendered = render_json_template(&ctx, Some(&attachments))
+        .unwrap()
+        .unwrap();
+    assert_eq!(rendered[0]["text"], "Release \"stable\"");
+    assert_eq!(rendered[1]["text"], "line \"one\"\nline two");
+    assert_eq!(rendered[1]["fields"][0]["title"], "myapp");
+    assert_eq!(render_json_template(&ctx, None).unwrap(), None);
+}
+
+#[test]
 fn test_dry_run_webhook_does_not_send() {
     let announce = AnnounceConfig {
         discord: None,

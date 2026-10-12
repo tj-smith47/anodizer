@@ -534,6 +534,66 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn slack_blocks_and_attachments_survive_the_effective_config_round_trip() {
+        let yaml = r##"
+project_name: app
+announce:
+  slack:
+    enabled: true
+    blocks:
+      - type: section
+        text:
+          type: plain_text
+          text: 'Release "stable"'
+        block_id: intro
+        accessory:
+          type: image
+          image_url: https://example.invalid/a.png
+      - type: section
+        text:
+          type: mrkdwn
+          text: "{{ ReleaseNotes }}"
+    attachments:
+      - color: "#36a64f"
+        text: 'Release "stable"'
+        fields:
+          - title: Version
+            short: true
+"##;
+        let loaded: crate::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let effective = serde_yaml_ng::to_string(&loaded).unwrap();
+        let reloaded: crate::config::Config = serde_yaml_ng::from_str(&effective).unwrap();
+        let before = loaded
+            .announce
+            .as_ref()
+            .and_then(|a| a.slack.as_ref())
+            .unwrap();
+        let after = reloaded
+            .announce
+            .as_ref()
+            .and_then(|a| a.slack.as_ref())
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&before.blocks).unwrap(),
+            serde_json::to_value(&after.blocks).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&before.attachments).unwrap(),
+            serde_json::to_value(&after.attachments).unwrap()
+        );
+        let blocks = after.blocks.as_ref().unwrap();
+        assert_eq!(blocks[0].text.as_ref().unwrap().text, "Release \"stable\"");
+        assert_eq!(
+            blocks[0].extra["accessory"]["image_url"],
+            "https://example.invalid/a.png"
+        );
+        assert_eq!(blocks[1].text.as_ref().unwrap().text, "{{ ReleaseNotes }}");
+        let attachments = after.attachments.as_ref().unwrap();
+        assert_eq!(attachments[0].text.as_deref(), Some("Release \"stable\""));
+        assert_eq!(attachments[0].extra["fields"][0]["short"], true);
+    }
+
+    #[test]
     fn deadline_unset_uses_default() {
         let cfg = AnnounceConfig::default();
         assert_eq!(cfg.deadline_duration(), DEFAULT_ANNOUNCE_DEADLINE);

@@ -201,25 +201,41 @@ pub(crate) fn resolve_smtp_port(cfg_port: Option<u16>, env_port: Option<u16>) ->
     cfg_port.or(env_port).unwrap_or(587)
 }
 
-/// Render template variables inside a `serde_json::Value` by serializing to
-/// string, running through the template engine, then parsing back. Skips the
-/// round-trip when the serialised form has no template markers, since a
-/// no-op render would still pay for two JSON parses.
+/// Render template variables inside every string of a `serde_json::Value`,
+/// leaving the structure, numbers and booleans as they are.
+///
+/// Each string is rendered on its own and put back as a JSON string, so a
+/// literal `"` in a block's text and a newline the template produced (a
+/// `{{ .ReleaseNotes }}` body) survive. Rendering the serialised document
+/// as one template and parsing it back broke on both: the quotes it
+/// un-escaped to make `{{ "x" }}` work ended the JSON string early, and a
+/// rendered newline is not valid inside one.
 pub(crate) fn render_json_template(
     ctx: &Context,
     val: Option<&serde_json::Value>,
 ) -> Result<Option<serde_json::Value>> {
-    match val {
-        Some(v) => {
-            let json_str = v.to_string().replace("\\\"", "\"");
-            if !json_str.contains("{{") && !json_str.contains("{%") {
-                return Ok(Some(v.clone()));
-            }
-            let rendered = ctx.render_template(&json_str)?;
-            Ok(Some(serde_json::from_str(&rendered)?))
+    val.map(|v| render_json_strings(ctx, v)).transpose()
+}
+
+fn render_json_strings(ctx: &Context, val: &serde_json::Value) -> Result<serde_json::Value> {
+    use serde_json::Value;
+    Ok(match val {
+        Value::String(s) if s.contains("{{") || s.contains("{%") => {
+            Value::String(ctx.render_template(s)?)
         }
-        None => Ok(None),
-    }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| render_json_strings(ctx, item))
+                .collect::<Result<_>>()?,
+        ),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| Ok((k.clone(), render_json_strings(ctx, v)?)))
+                .collect::<Result<_>>()?,
+        ),
+        other => other.clone(),
+    })
 }
 
 // ---------------------------------------------------------------------------
