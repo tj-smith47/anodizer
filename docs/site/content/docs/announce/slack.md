@@ -19,11 +19,11 @@ When `webhook_url` is unset, anodizer falls back to the `SLACK_WEBHOOK` env var.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `enabled` | bool | Enable Slack notifications |
+| `enabled` | bool or template | Enable Slack notifications |
 | `webhook_url` | string | Slack webhook URL (falls back to `SLACK_WEBHOOK`) |
-| `message_template` | string | Message body (templates supported) |
+| `message_template` | string | Message body (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |
 | `channel` | string | Override the webhook's default channel (`#releases`) |
-| `username` | string | Override the webhook's default username |
+| `username` | string | Username the post arrives under. Default: `anodizer` |
 | `icon_emoji` | string | Override the webhook's default icon with an emoji (`:rocket:`) |
 | `icon_url` | string | Override the webhook's default icon with an image URL |
 | `blocks` | list | Slack Block Kit blocks; every string in them is a template |

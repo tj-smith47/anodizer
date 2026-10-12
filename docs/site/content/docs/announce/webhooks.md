@@ -21,7 +21,7 @@ Use webhooks to integrate with any service that accepts HTTP POST requests. The 
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `enabled` | bool | Enable webhook notifications |
+| `enabled` | bool or template | Enable webhook notifications |
 | `endpoint_url` | string | Endpoint URL |
 | `headers` | map | Custom HTTP headers. A header named here replaces the default of the same name, including `Content-Type`, `User-Agent` and the `Authorization` header derived from `BASIC_AUTH_HEADER_VALUE` / `BEARER_TOKEN_HEADER_VALUE` |
 | `content_type` | string | Content-Type header (e.g., `application/json`) |

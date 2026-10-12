@@ -18,7 +18,7 @@ announce:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `enabled` | bool | Enable OpenCollective announcements |
+| `enabled` | bool or template | Enable OpenCollective announcements |
 | `slug` | string | The collective slug from your OpenCollective URL (e.g. `my-project` from `opencollective.com/my-project`) |
 | `title_template` | string | Update title (templates supported). Default: `{{ Tag }}` |
 | `message_template` | string | Update body as HTML (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out!<br/>Check it out at <a href="{{ ReleaseURL }}">{{ ReleaseURL }}</a>` |

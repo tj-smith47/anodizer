@@ -209,29 +209,43 @@ pub(crate) fn resolve_smtp_port(cfg_port: Option<u16>, env_port: Option<u16>) ->
 /// `{{ .ReleaseNotes }}` body) survive. Rendering the serialised document
 /// as one template and parsing it back broke on both: the quotes it
 /// un-escaped to make `{{ "x" }}` work ended the JSON string early, and a
-/// rendered newline is not valid inside one.
+/// rendered newline is not valid inside one. A string that fails to render
+/// is reported under its JSON path below `field`
+/// (`announce.slack.blocks[1].text.text`).
 pub(crate) fn render_json_template(
     ctx: &Context,
+    field: &str,
     val: Option<&serde_json::Value>,
 ) -> Result<Option<serde_json::Value>> {
-    val.map(|v| render_json_strings(ctx, v)).transpose()
+    val.map(|v| render_json_strings(ctx, field, v)).transpose()
 }
 
-fn render_json_strings(ctx: &Context, val: &serde_json::Value) -> Result<serde_json::Value> {
+fn render_json_strings(
+    ctx: &Context,
+    path: &str,
+    val: &serde_json::Value,
+) -> Result<serde_json::Value> {
     use serde_json::Value;
     Ok(match val {
-        Value::String(s) if s.contains("{{") || s.contains("{%") => {
-            Value::String(ctx.render_template(s)?)
-        }
+        Value::String(s) => Value::String(
+            ctx.render_template(s)
+                .with_context(|| format!("render {path}"))?,
+        ),
         Value::Array(items) => Value::Array(
             items
                 .iter()
-                .map(|item| render_json_strings(ctx, item))
+                .enumerate()
+                .map(|(i, item)| render_json_strings(ctx, &format!("{path}[{i}]"), item))
                 .collect::<Result<_>>()?,
         ),
         Value::Object(map) => Value::Object(
             map.iter()
-                .map(|(k, v)| Ok((k.clone(), render_json_strings(ctx, v)?)))
+                .map(|(k, v)| {
+                    Ok((
+                        k.clone(),
+                        render_json_strings(ctx, &format!("{path}.{k}"), v)?,
+                    ))
+                })
                 .collect::<Result<_>>()?,
         ),
         other => other.clone(),

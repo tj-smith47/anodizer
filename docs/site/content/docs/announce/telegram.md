@@ -37,7 +37,7 @@ bot_token: "{{ Env.TELEGRAM_TOKEN }}"
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `enabled` | bool | Enable Telegram notifications |
+| `enabled` | bool or template | Enable Telegram notifications |
 | `bot_token` | string | Telegram Bot API token (falls back to `TELEGRAM_TOKEN`) |
 | `chat_id` | string | Target chat, group, or channel ID |
 | `parse_mode` | string | Optional: `MarkdownV2` or `HTML` |

@@ -57,11 +57,19 @@ impl Announcer for SlackAnnouncer {
         let icon_emoji = ctx.render_template_opt(cfg.icon_emoji.as_deref())?;
         let icon_url = ctx.render_template_opt(cfg.icon_url.as_deref())?;
         let blocks = match cfg.blocks.as_ref() {
-            Some(b) => render_json_template(ctx, Some(&serde_json::to_value(b)?))?,
+            Some(b) => render_json_template(
+                ctx,
+                "announce.slack.blocks",
+                Some(&serde_json::to_value(b)?),
+            )?,
             None => None,
         };
         let attachments = match cfg.attachments.as_ref() {
-            Some(a) => render_json_template(ctx, Some(&serde_json::to_value(a)?))?,
+            Some(a) => render_json_template(
+                ctx,
+                "announce.slack.attachments",
+                Some(&serde_json::to_value(a)?),
+            )?,
             None => None,
         };
         let retry_policy = *retry_policy;
@@ -92,10 +100,18 @@ impl Announcer for SlackAnnouncer {
         ctx.render_template_opt(cfg.icon_emoji.as_deref())?;
         ctx.render_template_opt(cfg.icon_url.as_deref())?;
         if let Some(b) = cfg.blocks.as_ref() {
-            render_json_template(ctx, Some(&serde_json::to_value(b)?))?;
+            render_json_template(
+                ctx,
+                "announce.slack.blocks",
+                Some(&serde_json::to_value(b)?),
+            )?;
         }
         if let Some(a) = cfg.attachments.as_ref() {
-            render_json_template(ctx, Some(&serde_json::to_value(a)?))?;
+            render_json_template(
+                ctx,
+                "announce.slack.attachments",
+                Some(&serde_json::to_value(a)?),
+            )?;
         }
         Ok(())
     }

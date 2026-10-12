@@ -254,7 +254,7 @@ fn test_slack_blocks_template_vars_are_expanded() {
     ctx.template_vars_mut().set("Tag", "v2.0.0");
     ctx.template_vars_mut().set("Version", "2.0.0");
     // Use the same render_json_template helper
-    let rendered = render_json_template(&ctx, Some(&blocks_json))
+    let rendered = render_json_template(&ctx, "announce.slack.blocks", Some(&blocks_json))
         .unwrap()
         .unwrap();
     assert_eq!(rendered[0]["text"]["text"], "myapp v2.0.0 is out!");
@@ -278,7 +278,9 @@ fn slack_blocks_keep_literal_quotes_and_rendered_newlines() {
     ctx.template_vars_mut()
         .set("ReleaseNotes", "line \"one\"\nline two");
 
-    let rendered = render_json_template(&ctx, Some(&blocks)).unwrap().unwrap();
+    let rendered = render_json_template(&ctx, "announce.slack.blocks", Some(&blocks))
+        .unwrap()
+        .unwrap();
     assert_eq!(rendered[0]["text"]["text"], "Release \"stable\"");
     assert_eq!(rendered[1]["text"]["text"], "line \"one\"\nline two");
     assert_eq!(
@@ -286,13 +288,47 @@ fn slack_blocks_keep_literal_quotes_and_rendered_newlines() {
         "non-string leaves pass through unchanged"
     );
 
-    let rendered = render_json_template(&ctx, Some(&attachments))
+    let rendered = render_json_template(&ctx, "announce.slack.attachments", Some(&attachments))
         .unwrap()
         .unwrap();
     assert_eq!(rendered[0]["text"], "Release \"stable\"");
     assert_eq!(rendered[1]["text"], "line \"one\"\nline two");
     assert_eq!(rendered[1]["fields"][0]["title"], "myapp");
-    assert_eq!(render_json_template(&ctx, None).unwrap(), None);
+    assert_eq!(
+        render_json_template(&ctx, "announce.slack.blocks", None).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn a_slack_leaf_that_fails_to_render_is_named_by_its_json_path() {
+    let blocks = serde_json::json!([
+        { "type": "section", "text": { "type": "plain_text", "text": "fine" } },
+        { "type": "section", "fields": [ { "type": "mrkdwn", "text": "{{ Undefined }}" } ] }
+    ]);
+    let mut config = Config::default();
+    config.dist = isolated_test_dist();
+    let ctx = Context::new(config, ContextOptions::default());
+    let err = render_json_template(&ctx, "announce.slack.blocks", Some(&blocks))
+        .expect_err("an undefined variable fails the render");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("render announce.slack.blocks[1].fields[0].text"),
+        "{msg}"
+    );
+    assert!(msg.contains("Undefined"), "{msg}");
+}
+
+#[test]
+fn a_slack_string_without_markers_is_rendered_like_every_other() {
+    let blocks = serde_json::json!([{ "type": "section", "text": { "type": "plain_text", "text": "see {# hidden #}notes" } }]);
+    let mut config = Config::default();
+    config.dist = isolated_test_dist();
+    let ctx = Context::new(config, ContextOptions::default());
+    let rendered = render_json_template(&ctx, "announce.slack.blocks", Some(&blocks))
+        .unwrap()
+        .unwrap();
+    assert_eq!(rendered[0]["text"]["text"], "see notes");
 }
 
 #[test]

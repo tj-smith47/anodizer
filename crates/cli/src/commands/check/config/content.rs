@@ -223,27 +223,43 @@ pub(super) fn check_announce_secret_exposure(config: &Config, warnings: &mut Vec
             &s.message_template,
             warnings,
         );
-        if let Some(blocks) = &s.blocks {
-            for (i, block) in blocks.iter().enumerate() {
-                if let Some(text) = &block.text {
-                    warn_secret_env_refs(
-                        &format!("announce.slack.blocks[{}].text", i),
-                        &text.text,
-                        warnings,
-                    );
-                }
+        // The announcer renders every string of a block or attachment, the
+        // flattened block-specific fields included, so the lint reads the
+        // same tree it renders rather than a list of typed fields.
+        for (field, entries) in [
+            (
+                "announce.slack.blocks",
+                s.blocks.as_deref().map(serde_json::to_value),
+            ),
+            (
+                "announce.slack.attachments",
+                s.attachments.as_deref().map(serde_json::to_value),
+            ),
+        ] {
+            if let Some(Ok(tree)) = entries {
+                scan_json_strings(field, &tree, warnings);
             }
         }
-        if let Some(attachments) = &s.attachments {
-            for (i, att) in attachments.iter().enumerate() {
-                let prefix = format!("announce.slack.attachments[{}]", i);
-                scan(&format!("{}.text", prefix), &att.text, warnings);
-                scan(&format!("{}.title", prefix), &att.title, warnings);
-                scan(&format!("{}.fallback", prefix), &att.fallback, warnings);
-                scan(&format!("{}.pretext", prefix), &att.pretext, warnings);
-                scan(&format!("{}.footer", prefix), &att.footer, warnings);
+    }
+}
+
+/// Run [`warn_secret_env_refs`] over every string leaf of `val`, labelling
+/// each with its JSON path below `path` (`announce.slack.blocks[0].text.text`).
+fn scan_json_strings(path: &str, val: &serde_json::Value, warnings: &mut Vec<String>) {
+    use serde_json::Value;
+    match val {
+        Value::String(s) => warn_secret_env_refs(path, s, warnings),
+        Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                scan_json_strings(&format!("{path}[{i}]"), item, warnings);
             }
         }
+        Value::Object(map) => {
+            for (k, v) in map {
+                scan_json_strings(&format!("{path}.{k}"), v, warnings);
+            }
+        }
+        _ => {}
     }
 }
 

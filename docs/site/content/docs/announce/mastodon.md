@@ -17,7 +17,7 @@ announce:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `enabled` | bool | Enable Mastodon announcements |
+| `enabled` | bool or template | Enable Mastodon announcements |
 | `server` | string | Full URL of your Mastodon instance (e.g. `https://mastodon.social`) |
 | `message_template` | string | Toot text (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |
 

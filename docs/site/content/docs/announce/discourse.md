@@ -20,7 +20,7 @@ announce:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `enabled` | bool | Enable Discourse announcements |
+| `enabled` | bool or template | Enable Discourse announcements |
 | `server` | string | Full URL of your Discourse instance (e.g. `https://forum.example.com`) |
 | `category_id` | integer | Category ID to create the topic in (required, must be non-zero) |
 | `username` | string | API username for the request. Default: `system` |

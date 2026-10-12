@@ -31,6 +31,6 @@ webhook_url: "{{ Env.TEAMS_WEBHOOK }}"
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `enabled` | bool | Enable Teams notifications |
+| `enabled` | bool or template | Enable Teams notifications |
 | `webhook_url` | string | Teams incoming webhook URL (falls back to `TEAMS_WEBHOOK`) |
 | `message_template` | string | Message body (templates supported) |

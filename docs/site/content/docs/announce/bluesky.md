@@ -17,7 +17,7 @@ announce:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `enabled` | bool | Enable Bluesky announcements |
+| `enabled` | bool or template | Enable Bluesky announcements |
 | `username` | string | Bluesky handle (e.g. `yourhandle.bsky.social`) |
 | `message_template` | string | Post text (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |
 

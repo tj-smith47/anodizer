@@ -20,7 +20,7 @@ announce:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `enabled` | bool | Enable Reddit announcements |
+| `enabled` | bool or template | Enable Reddit announcements |
 | `application_id` | string | Reddit OAuth application (client) ID |
 | `username` | string | Reddit account username for posting |
 | `sub` | string | Subreddit name to post to (without the `/r/` prefix) |

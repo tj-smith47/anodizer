@@ -16,7 +16,7 @@ announce:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `enabled` | bool | Enable LinkedIn announcements |
+| `enabled` | bool or template | Enable LinkedIn announcements |
 | `message_template` | string | Share post text (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |
 
 ## Environment variables

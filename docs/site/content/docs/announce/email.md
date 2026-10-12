@@ -39,7 +39,7 @@ The `to` field accepts a list. Each address becomes a comma-separated entry in t
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `enabled` | bool | Enable email notifications |
+| `enabled` | bool or template | Enable email notifications |
 | `from` | string | Sender address |
 | `to` | list of strings | Recipient addresses |
 | `subject_template` | string | Subject line (templates supported) |

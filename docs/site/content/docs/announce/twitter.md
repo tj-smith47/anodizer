@@ -16,7 +16,7 @@ announce:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `enabled` | bool | Enable Twitter/X announcements |
+| `enabled` | bool or template | Enable Twitter/X announcements |
 | `message_template` | string | Tweet text (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |
 
 ## Environment variables

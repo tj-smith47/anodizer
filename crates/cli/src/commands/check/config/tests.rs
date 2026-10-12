@@ -3508,6 +3508,47 @@ fn announce_secret_warns_in_slack_attachment_text_fields() {
     }
 }
 
+#[test]
+fn slack_secret_lint_reads_the_flattened_block_and_attachment_fields() {
+    use anodizer_core::config::{SlackAnnounce, SlackAttachment, SlackBlock};
+    let mut block = SlackBlock {
+        block_type: "section".to_string(),
+        ..Default::default()
+    };
+    block.extra.insert(
+        "accessory".to_string(),
+        serde_json::json!({ "type": "button", "url": "{{ Env.SLACK_E_TOKEN }}" }),
+    );
+    let mut attachment = SlackAttachment::default();
+    attachment.extra.insert(
+        "fields".to_string(),
+        serde_json::json!([{ "title": "Token", "value": "{{ Env.SLACK_F_TOKEN }}" }]),
+    );
+    let warnings = collect_announce_warnings(AnnounceConfig {
+        slack: Some(SlackAnnounce {
+            blocks: Some(vec![block]),
+            attachments: Some(vec![attachment]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("announce.slack.blocks[0].accessory.url")
+                && w.contains("Env.SLACK_E_TOKEN")),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings.iter().any(
+            |w| w.contains("announce.slack.attachments[0].fields[0].value")
+                && w.contains("Env.SLACK_F_TOKEN")
+        ),
+        "{warnings:?}"
+    );
+}
+
 // ---- Signing-tool availability warnings ----
 
 #[test]

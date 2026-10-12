@@ -593,6 +593,36 @@ announce:
         assert_eq!(attachments[0].extra["fields"][0]["short"], true);
     }
 
+    /// Every announcer's `enabled` is an `Option<StringOrBool>`, so every
+    /// announce page's field table says so; a page typing it `bool` tells
+    /// the reader a template there is a config error.
+    #[test]
+    fn every_announce_page_types_enabled_as_a_template() {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/site/content/docs/announce"
+        );
+        let mut pages = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name().is_some_and(|n| n == "_index.md") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let row = text
+                .lines()
+                .find(|l| l.starts_with("| `enabled` |"))
+                .unwrap_or_else(|| panic!("{} has no `enabled` row", path.display()));
+            assert!(
+                row.starts_with("| `enabled` | bool or template |"),
+                "{}: {row}",
+                path.display()
+            );
+            pages += 1;
+        }
+        assert_eq!(pages, 14, "one page per announcer");
+    }
+
     #[test]
     fn deadline_unset_uses_default() {
         let cfg = AnnounceConfig::default();

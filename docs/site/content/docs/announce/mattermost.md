@@ -38,7 +38,7 @@ webhook_url: "{{ Env.MATTERMOST_WEBHOOK }}"
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `enabled` | bool | Enable Mattermost notifications |
+| `enabled` | bool or template | Enable Mattermost notifications |
 | `webhook_url` | string | Mattermost incoming webhook URL (falls back to `MATTERMOST_WEBHOOK`) |
 | `channel` | string | Optional channel override |
 | `username` | string | Optional display name override |

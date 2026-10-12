@@ -19,6 +19,6 @@ When `webhook_url` is unset, anodizer assembles the webhook URL from the `DISCOR
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `enabled` | bool | Enable Discord notifications |
+| `enabled` | bool or template | Enable Discord notifications |
 | `webhook_url` | string | Discord webhook URL (falls back to the `DISCORD_WEBHOOK_ID` + `DISCORD_WEBHOOK_TOKEN` env pair) |
 | `message_template` | string | Message body (templates supported) |
