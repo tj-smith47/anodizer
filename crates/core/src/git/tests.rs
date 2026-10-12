@@ -1,5 +1,6 @@
 use super::remote::{
-    parse_github_remote, parse_remote_owner_repo, parse_remote_web_base, remote_identity,
+    parse_github_remote, parse_remote_owner_repo, parse_remote_web_base, remote_host,
+    remote_identity,
 };
 use super::semver::{compare_prerelease, parse_semver, parse_semver_tag};
 use super::tags::{
@@ -182,6 +183,40 @@ fn every_spelling_of_one_remote_has_one_identity() {
     assert_eq!(remote_identity("/srv/git/widget.git"), "/srv/git/widget");
     assert_eq!(remote_identity(r"C:\repos\widget.git"), r"C:\repos\widget");
     assert_eq!(remote_identity("   "), "");
+}
+
+/// `remote_host` reads the host of every remote spelling and of an API URL
+/// with no path, lower-cased, an SSH port and userinfo dropped, the port-443
+/// SSH names mapped to their web host, and names no host for a local path.
+#[test]
+fn remote_host_reads_every_spelling_and_an_api_url_without_a_path() {
+    for (url, want) in [
+        ("https://github.com/acme/widget.git", "github.com"),
+        ("https://User:tok@GitHub.com/acme/widget", "github.com"),
+        ("ssh://git@ssh.github.com:443/acme/widget.git", "github.com"),
+        ("git@ssh.github.com:acme/widget.git", "github.com"),
+        ("git@github.mycorp.com:acme/widget.git", "github.mycorp.com"),
+        (
+            "ssh://git@github.mycorp.com:2222/acme/widget.git",
+            "github.mycorp.com",
+        ),
+        ("git@altssh.gitlab.com:group/sub/repo.git", "gitlab.com"),
+        ("https://gitlab.mycorp.com/api/v4", "gitlab.mycorp.com"),
+        ("https://api.github.com/", "api.github.com"),
+        ("https://api.github.com", "api.github.com"),
+        ("https://host.example:8443/a/b", "host.example:8443"),
+    ] {
+        assert_eq!(remote_host(url).as_deref(), Some(want), "{url}");
+    }
+    for url in [
+        "/srv/git/widget.git",
+        r"C:\repos\widget.git",
+        "",
+        "   ",
+        "https://",
+    ] {
+        assert_eq!(remote_host(url), None, "{url:?}");
+    }
 }
 
 #[test]

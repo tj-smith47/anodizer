@@ -115,6 +115,47 @@ fn split_scheme_url(url: &str) -> Option<(&str, &str)> {
     Some((host, path))
 }
 
+/// The host a remote or API URL names, lower-cased, with any userinfo
+/// dropped. An `ssh://` port is dropped and the host mapped through
+/// [`ssh_web_host`], the way [`split_scheme_url`] reads it; an `http(s)://`
+/// port is the web port and stays. A scp-style `user@host:path` host is
+/// read the way [`remote_identity`] reads it. The path is not required, so
+/// `https://api.github.com/` names `api.github.com`. `None` for a URL with
+/// no host: a local path, a Windows drive, an empty string.
+pub fn remote_host(url: &str) -> Option<String> {
+    let url = url.trim();
+    let host = if let Some((scheme, rest)) = ["https://", "http://", "ssh://"]
+        .iter()
+        .find_map(|scheme| url.strip_prefix(scheme).map(|rest| (*scheme, rest)))
+    {
+        let host_seg = rest.split('/').next().unwrap_or(rest);
+        let host = host_seg.rsplit('@').next().unwrap_or(host_seg);
+        if scheme == "ssh://" {
+            ssh_web_host(strip_ssh_port(host))
+        } else {
+            host
+        }
+    } else {
+        let (before, path) = url.split_once(':')?;
+        if before.contains(['/', '\\'])
+            || !(before.contains('@') || before.contains('.'))
+            || path.is_empty()
+        {
+            return None;
+        }
+        ssh_web_host(before.rsplit('@').next().unwrap_or(before))
+    };
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
+/// The host of the `origin` remote configured in `cwd`; `None` when there is
+/// no such remote or its URL names no host.
+pub fn detect_origin_remote_host_in(cwd: &Path) -> Option<String> {
+    git_output_in(cwd, &["remote", "get-url", "origin"])
+        .ok()
+        .and_then(|url| remote_host(&url))
+}
+
 /// Parse owner and repo name from a GitHub remote URL.
 /// Supports HTTPS (`https://github.com/owner/repo.git`) and both SSH
 /// spellings (`git@github.com:owner/repo.git`,

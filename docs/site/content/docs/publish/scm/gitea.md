@@ -24,6 +24,8 @@ release:
     token: "{{ .Env.RELEASE_GITEA_TOKEN }}"   # owner/name come from the origin remote
 ```
 
+Gitea has no canonical public host, so the remote is read only when `gitea_urls.api` names its host (`https://gitea.mycorp.com/api/v1` reads a `gitea.mycorp.com` remote). Without `gitea_urls.api`, or with a remote on another host, nothing is filled and the block is refused naming the host.
+
 ## Gitea-specific config
 
 The `release` config is shared across all SCM providers. See the [GitHub releases](/docs/publish/github/) page for the full list of shared fields. The Gitea-specific fields are:

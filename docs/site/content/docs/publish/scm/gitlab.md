@@ -24,6 +24,8 @@ release:
     token: "{{ .Env.RELEASE_GITLAB_TOKEN }}"   # owner/name come from the origin remote
 ```
 
+The remote has to be on GitLab's host: gitlab.com (`altssh.gitlab.com` counts), or the host `gitlab_urls.api` names for a self-hosted instance. A remote on another host fills nothing and the block is refused naming that host. A block with an empty `owner` and a set `name` is a project named by id or full path with no namespace to infer (`owner: ""`, `name: "12345"`), and is left as written.
+
 ## GitLab-specific config
 
 The `release` config is shared across all SCM providers. See the [GitHub releases](/docs/publish/github/) page for the full list of shared fields. The GitLab-specific fields are:
