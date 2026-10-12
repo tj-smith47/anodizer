@@ -1761,6 +1761,9 @@ mod publisher_tests {
                         owner: "acme".into(),
                         repo: "widget".into(),
                         tag: "v1.0.0".into(),
+                        url: "https://github.com/acme/widget/releases/tag/v1.0.0".into(),
+                        draft: false,
+                        assets: 0,
                     });
             }
             let mock = MockGitHubClient::new();

@@ -83,6 +83,9 @@ pub struct StageOutputs {
     /// may delete; a release that existed before the run and was not
     /// touched is not among them.
     pub releases_written: Vec<WrittenRelease>,
+    /// The `publishers:` entries that ran this run, one per entry whose
+    /// command was executed over at least one artifact.
+    pub custom_publishers_run: Vec<CustomPublisherRun>,
 }
 
 /// A forge release the release stage created or updated this run.
@@ -92,6 +95,19 @@ pub struct WrittenRelease {
     pub owner: String,
     pub repo: String,
     pub tag: String,
+    /// The release page URL the backend returned.
+    pub url: String,
+    /// Whether the release was left as a draft.
+    pub draft: bool,
+    /// How many assets the stage uploaded to it; zero under `skip_upload`.
+    pub assets: usize,
+}
+
+/// One `publishers:` entry that ran this run, and how many artifacts it ran on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomPublisherRun {
+    pub name: String,
+    pub artifacts: usize,
 }
 
 /// Callback that re-runs release-content verification against the already

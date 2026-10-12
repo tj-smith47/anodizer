@@ -281,7 +281,7 @@ pub(crate) fn run_post_pipeline(
         let selected = select_custom_publishers(ctx, publishers, log);
         if !selected.is_empty() {
             log.status("running custom publishers...");
-            crate::commands::publisher::run_publishers(
+            let ran = crate::commands::publisher::run_publishers(
                 &selected,
                 ctx.artifacts.all(),
                 ctx.template_vars(),
@@ -290,6 +290,7 @@ pub(crate) fn run_post_pipeline(
                 ctx.options.parallelism,
                 Some(&ctx.skip_memento),
             )?;
+            ctx.stage_outputs.custom_publishers_run.extend(ran);
         }
     }
 

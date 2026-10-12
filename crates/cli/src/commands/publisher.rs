@@ -1,5 +1,6 @@
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::PublisherConfig;
+use anodizer_core::context::CustomPublisherRun;
 use anodizer_core::log::StageLogger;
 use anodizer_core::pipe_skip::SkipMemento;
 use anodizer_core::template::{self, TemplateVars};
@@ -57,8 +58,9 @@ pub fn run_publishers(
     log: &StageLogger,
     parallelism: usize,
     skip_memento: Option<&SkipMemento>,
-) -> Result<()> {
+) -> Result<Vec<CustomPublisherRun>> {
     let parallelism = parallelism.max(1);
+    let mut ran = Vec::new();
     for (i, publisher) in publishers.iter().enumerate() {
         let default_label = format!("publisher[{}]", i);
         let label = publisher.name.as_deref().unwrap_or(&default_label);
@@ -314,8 +316,12 @@ pub fn run_publishers(
                 return Err(errs.remove(0));
             }
         }
+        ran.push(CustomPublisherRun {
+            name: label.to_string(),
+            artifacts: matching.len(),
+        });
     }
-    Ok(())
+    Ok(ran)
 }
 
 /// Check whether an artifact matches a publisher's filter criteria.

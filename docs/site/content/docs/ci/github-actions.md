@@ -225,6 +225,26 @@ If you can't use the action (e.g., a self-hosted environment that can't pull fro
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
+## Job summary
+
+Inside GitHub Actions, `anodizer release` appends what the run published to the job summary page, so the outcome of a release can be read without opening its logs. There is nothing to configure: anodizer appends to the file named by the `GITHUB_STEP_SUMMARY` environment variable, which GitHub Actions sets for every step.
+
+Each published thing becomes one bullet, with a link when there is one:
+
+```text
+- Published v1.2.3 to `acme/app` with 12 assets: https://github.com/acme/app/releases/tag/v1.2.3
+- Pushed image `ghcr.io/acme/app:1.2.3`
+- Updated homebrew `app` in `https://github.com/acme/homebrew-tap`
+- Opened pull request to `Homebrew/homebrew-core` (homebrew formula `app` 1.2.3): https://github.com/Homebrew/homebrew-core/pull/12
+- Published `@acme/app@1.2.3` to npm (https://registry.npmjs.org)
+- Uploaded 8 objects to `s3://my-bucket`
+- Ran custom publisher `mirror` on 8 artifacts
+```
+
+A bullet is written only for an action that completed, read off the same run report `anodizer tag rollback` consumes: the forge release (with its asset count and URL), pull requests opened and taps updated by the package-manager publishers, packages pushed to npm, crates.io, PyPI, Chocolatey, the Snap Store, GemFury and Cloudsmith, container images pushed, files uploaded to blob storage, Artifactory and HTTP upload targets, MCP registry entries, SchemaStore registrations, Docker Hub descriptions and every custom `publishers:` entry that ran. A publisher that failed after pushing part of its work still lists the part that is live.
+
+Nothing is written when `GITHUB_STEP_SUMMARY` is unset, so runs outside GitHub Actions produce no extra output. Nothing is written either on `--dry-run`, on `--snapshot`, for a publisher that was skipped (already published, deselected, gated) or for a draft release, which nobody can download from until it is published by hand.
+
 ## See also
 
 - [The Release Pipeline (topology)](@/docs/ci/release-pipeline.md) — the hardened end-to-end shape (preflight → auto-tag → 4-shard determinism → publish → npm-provenance) anodizer runs against itself

@@ -328,6 +328,13 @@ fn release_one_crate(
                 owner: repo_owner.clone(),
                 repo: repo_name.clone(),
                 tag: tag.clone(),
+                url: release_url.clone(),
+                draft: flags.draft,
+                assets: if flags.skip_upload {
+                    0
+                } else {
+                    artifact_entries.len()
+                },
             });
         if !flags.skip_upload {
             populate_artifact_download_urls(

@@ -2194,6 +2194,11 @@ fn the_stage_records_the_releases_it_wrote_before_a_later_crate_failed() {
             owner: "o".into(),
             repo: "r".into(),
             tag: "v1.2.3".into(),
-        }]
+            url: format!("http://{addr}/o/r/releases/tag/v1.2.3"),
+            draft: true,
+            assets: 0,
+        }],
+        "the record carries the URL the forge returned, the draft flag and the \
+         asset count the job summary reads"
     );
 }

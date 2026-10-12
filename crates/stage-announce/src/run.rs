@@ -375,6 +375,7 @@ pub fn emit_summary(ctx: &mut Context) {
         anodizer_stage_publish::run_summary::PublishDisposition::Skipped
     };
     anodizer_stage_publish::run_summary::emit_status_table(&summary, disposition, &log);
+    anodizer_core::step_summary::write(ctx, &log);
 }
 
 #[cfg(test)]
@@ -1053,6 +1054,60 @@ mod summary_tests {
         let summary = parse_summary(&summary_path);
         assert_eq!(summary.schema_version, RunSummary::CURRENT_SCHEMA_VERSION);
         assert_eq!(summary.tag, "v1.2.3");
+    }
+
+    /// The pipeline-end write is also where the GitHub Actions job summary
+    /// is appended: a `GITHUB_STEP_SUMMARY` naming a file gets one bullet
+    /// per published thing, after whatever an earlier step wrote there.
+    #[test]
+    fn emit_summary_appends_the_job_summary_when_the_runner_names_a_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let step_summary = tmp.path().join("step-summary.md");
+        fs::write(&step_summary, "## build\n").unwrap();
+        let report = PublishReport {
+            results: vec![PublisherResult {
+                name: "blob".into(),
+                group: PublisherGroup::Assets,
+                required: true,
+                outcome: PublisherOutcome::Succeeded,
+                evidence: Some(anodizer_core::publish_evidence::PublishEvidence {
+                    schema_version: 1,
+                    publisher: "blob".into(),
+                    primary_ref: None,
+                    artifact_paths: Vec::new(),
+                    artifact_digests: Default::default(),
+                    nondeterministic: None,
+                    extra: anodizer_core::publish_evidence::PublishEvidenceExtra::Blob(
+                        anodizer_core::publish_evidence::BlobExtra {
+                            blob_targets: vec![
+                                anodizer_core::publish_evidence::BlobTargetSnapshot {
+                                    provider: "s3".into(),
+                                    bucket: "mirror".into(),
+                                    key: "app.tar.gz".into(),
+                                    ..Default::default()
+                                },
+                            ],
+                        },
+                    ),
+                }),
+                entry_skips: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        let mut ctx = ctx_with(
+            opts_with_summary_path(tmp.path().join("summary.json")),
+            None,
+            Some(report),
+        );
+        ctx.set_env_source(
+            anodizer_core::MapEnvSource::new()
+                .with("GITHUB_STEP_SUMMARY", step_summary.display().to_string()),
+        );
+        emit_summary(&mut ctx);
+        assert_eq!(
+            fs::read_to_string(&step_summary).unwrap(),
+            "## build\n- Uploaded 1 object to `s3://mirror`\n"
+        );
     }
 
     #[test]

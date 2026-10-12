@@ -566,7 +566,7 @@ pub struct HomebrewCoreExtra {
 /// per-evidence operator-public fields (or that no-op'd the run).
 /// Serializes as `null` on the wire and is the deserialization
 /// fallback for the same shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, strum::EnumCount)]
 #[serde(untagged)]
 pub enum PublishEvidenceExtra {
     Homebrew(HomebrewExtra),
