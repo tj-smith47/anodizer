@@ -69,8 +69,8 @@ pub(super) fn check_docker_platforms(config: &Config, errors: &mut Vec<String>) 
                 let dir = anodizer_stage_docker::staging_platform_dir(platform);
                 if let Some((k, other)) = staged.insert(dir.clone(), (j, platform)) {
                     errors.push(format!(
-                        "crate '{}': dockers_v2[{i}].platforms[{j}] '{platform}' and \
-                         platforms[{k}] '{other}' both stage under '{dir}' (the directory \
+                        "crate '{}': dockers_v2[{i}].platforms[{k}] '{other}' and \
+                         platforms[{j}] '{platform}' both stage under '{dir}' (the directory \
                          TARGETPLATFORM spells): keep one of them",
                         c.name
                     ));

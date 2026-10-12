@@ -26,6 +26,8 @@ pub fn platform_to_arch(platform: &str) -> &str {
             ("amd64", _) | ("arm64", _) => arch,
             _ => variant,
         },
+        // buildx reads a bare `linux/arm` as `linux/arm/v7`.
+        (Some(_), Some("arm"), None, None) => "armv7",
         (Some(_), Some(arch), None, None) => arch,
         _ => platform,
     }
@@ -76,8 +78,8 @@ pub(crate) fn artifact_matches_platform(
 /// The directory a platform's artifacts are staged under, spelled the way
 /// buildx hands the platform to the Dockerfile as `$TARGETPLATFORM`: the
 /// arm64 `v8` and amd64 `v1` baselines are dropped (`linux/arm64/v8` →
-/// `linux/arm64`), every other variant is kept (`linux/arm/v7`,
-/// `linux/amd64/v3`).
+/// `linux/arm64`), a bare `linux/arm` gains the `v7` buildx reads it as, and
+/// every other variant is kept (`linux/arm/v7`, `linux/amd64/v3`).
 pub fn staging_platform_dir(platform: &str) -> String {
     let mut parts = platform.split('/');
     match (parts.next(), parts.next(), parts.next(), parts.next()) {
@@ -86,6 +88,7 @@ pub fn staging_platform_dir(platform: &str) -> String {
         {
             format!("{os}/{arch}")
         }
+        (Some(os), Some("arm"), None, None) => format!("{os}/arm/v7"),
         _ => platform.to_string(),
     }
 }

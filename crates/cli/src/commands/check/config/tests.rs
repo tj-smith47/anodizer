@@ -3891,6 +3891,8 @@ fn two_platforms_that_stage_under_one_directory_are_an_error() {
             "linux/amd64/v1".to_string(),
             "linux/arm64/v8".to_string(),
             "linux/amd64".to_string(),
+            "linux/arm".to_string(),
+            "linux/arm/v7".to_string(),
         ]),
         ..Default::default()
     }]);
@@ -3899,10 +3901,12 @@ fn two_platforms_that_stage_under_one_directory_are_an_error() {
     assert_eq!(
         errors,
         vec![
-            "crate 'a': dockers_v2[0].platforms[2] 'linux/arm64/v8' and platforms[0] 'linux/arm64' \
+            "crate 'a': dockers_v2[0].platforms[0] 'linux/arm64' and platforms[2] 'linux/arm64/v8' \
              both stage under 'linux/arm64' (the directory TARGETPLATFORM spells): keep one of them",
-            "crate 'a': dockers_v2[0].platforms[3] 'linux/amd64' and platforms[1] 'linux/amd64/v1' \
+            "crate 'a': dockers_v2[0].platforms[1] 'linux/amd64/v1' and platforms[3] 'linux/amd64' \
              both stage under 'linux/amd64' (the directory TARGETPLATFORM spells): keep one of them",
+            "crate 'a': dockers_v2[0].platforms[4] 'linux/arm' and platforms[5] 'linux/arm/v7' \
+             both stage under 'linux/arm/v7' (the directory TARGETPLATFORM spells): keep one of them",
         ]
     );
 }

@@ -122,6 +122,8 @@ fn the_staging_dir_is_the_platform_as_target_platform_spells_it() {
     assert_eq!(staging_platform_dir("linux/amd64/v3"), "linux/amd64/v3");
     assert_eq!(staging_platform_dir("linux/arm/v7"), "linux/arm/v7");
     assert_eq!(staging_platform_dir("linux/amd64"), "linux/amd64");
+    assert_eq!(staging_platform_dir("linux/arm"), "linux/arm/v7");
+    assert_eq!(platform_to_arch("linux/arm"), "armv7");
 }
 
 #[test]
