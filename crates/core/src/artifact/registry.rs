@@ -111,13 +111,20 @@ impl Artifact {
     /// populate `metadata["ext"]` so downstream `{{ .ArtifactExt }}`
     /// renders the canonical value.
     pub fn ext(&self) -> String {
-        if let Some(ext) = self.metadata.get("ext")
-            && !ext.is_empty()
-        {
-            return ext.clone();
-        }
-        crate::template::extract_artifact_ext(&self.name).to_string()
+        ext_of(&self.metadata, &self.name)
     }
+}
+
+/// [`Artifact::ext`]'s rule over the parts rather than the artifact: the
+/// recorded `ext` metadata when it is set and non-empty, else the extension
+/// parsed from the file name.
+pub fn ext_of(metadata: &HashMap<String, String>, name: &str) -> String {
+    if let Some(ext) = metadata.get("ext")
+        && !ext.is_empty()
+    {
+        return ext.clone();
+    }
+    crate::template::extract_artifact_ext(name).to_string()
 }
 
 /// One image reference a run pushed to its registry, as

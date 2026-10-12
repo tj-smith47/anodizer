@@ -130,7 +130,9 @@ pub struct StructuredHook {
     /// failure hard-errors (not silent-skip).
     /// `before.hooks[].if:` / per-build / per-archive hook `if:` surface.
     /// An absent, empty or blank `if:` imposes no gate and always runs; the
-    /// falsy test applies to what a non-blank gate renders.
+    /// falsy test applies to what a non-blank gate renders. The gate is
+    /// evaluated before the hook's own `env:` is rendered, so it cannot read
+    /// those entries: a skipped hook's env is never rendered and cannot fail.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// Artifact-id allow-list (`before_publish:` only). When `Some`, the

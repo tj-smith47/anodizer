@@ -65,8 +65,14 @@ fn git_log_args(
         workspace_root.to_string_lossy().into_owned(),
         "-c".into(),
         "log.showSignature=false".into(),
-        "log".into(),
     ];
+    if name_only {
+        // Without this, git octal-quotes a non-ASCII file name
+        // ("caf\303\251.rs") and the `changelog.paths` intersect misses it.
+        args.push("-c".into());
+        args.push("core.quotePath=false".into());
+    }
+    args.push("log".into());
     if name_only {
         args.push("--name-only".into());
     }
@@ -399,6 +405,27 @@ mod tests {
                 .any(|c| c.raw_message.contains("only-in-repo")),
             "the workspace_root repo's commit is returned: {commits:?}"
         );
+    }
+
+    /// The touched-file read keeps a non-ASCII file name as written, so the
+    /// `changelog.paths` intersect can match it.
+    #[test]
+    fn touched_file_names_are_read_unquoted() {
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        let repo_path = repo.path();
+        git(repo_path, &["init", "-q"]);
+        git(repo_path, &["config", "user.email", "test@example.com"]);
+        git(repo_path, &["config", "user.name", "Test"]);
+        git(repo_path, &["config", "core.quotePath", "true"]);
+        std::fs::create_dir_all(repo_path.join("docs")).unwrap();
+        std::fs::write(repo_path.join("docs/caf\u{e9}.md"), "seed").unwrap();
+        git(repo_path, &["add", "."]);
+        git(repo_path, &["commit", "-q", "-m", "docs: accent"]);
+
+        let pairs =
+            fetch_git_commits_with_files_in(repo_path, None, None, &[]).expect("fetch with files");
+        assert_eq!(pairs.len(), 1, "{pairs:?}");
+        assert_eq!(pairs[0].files, vec!["docs/caf\u{e9}.md".to_string()]);
     }
 
     #[test]

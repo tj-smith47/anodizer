@@ -200,27 +200,10 @@ pub fn run_publishers(
 
         // Execute publisher command per artifact, with parallelism
         let run_for_artifact = |artifact: &&Artifact| -> Result<()> {
-            let (rendered_cmd, rendered_args) = build_publisher_command(
-                &publisher.cmd,
-                publisher.args.as_deref(),
-                artifact,
-                base_vars,
-            )
-            .with_context(|| format!("failed to render publisher command for {}", label))?;
-
-            let full_cmd = format_command_line(&rendered_cmd, &rendered_args);
-            // Parse with shellwords and exec directly instead of wrapping with
-            // `sh -c`. A command whose template renders to nothing is the same
-            // config error as a blank `cmd:`, so it is rejected before the
-            // dry-run branch — otherwise `--dry-run` would report a publish
-            // that can never happen.
-            let shell_args = split_shellwords(&full_cmd);
-            if shell_args.is_empty() {
-                anyhow::bail!("publisher {:?}: command is empty", label);
-            }
-            // Rendered ahead of the run line: a secret written in `env:` can
-            // be repeated by a rendered argument, and the line prints the
-            // whole command.
+            // The env is rendered first so `cmd:`, `args:` and `dir:` can read
+            // a value the same publisher's `env:` defines, and so a secret
+            // written in `env:` and repeated by a rendered argument is masked
+            // on the run line below.
             // A dry run spawns nothing and renders the env only for that
             // mask, so an entry that does not render there (a variable the
             // dry-run machine does not hold) is left out instead of failing.
@@ -234,6 +217,25 @@ pub fn run_publishers(
                 anodizer_core::config::render_env_entries(env_list, render_value)
                     .with_context(|| "publisher env: parse and render entries")?
             };
+            let job_vars = base_vars.with_env_overlay(&rendered_env);
+            let (rendered_cmd, rendered_args) = build_publisher_command(
+                &publisher.cmd,
+                publisher.args.as_deref(),
+                artifact,
+                &job_vars,
+            )
+            .with_context(|| format!("failed to render publisher command for {}", label))?;
+
+            let full_cmd = format_command_line(&rendered_cmd, &rendered_args);
+            // Parse with shellwords and exec directly instead of wrapping with
+            // `sh -c`. A command whose template renders to nothing is the same
+            // config error as a blank `cmd:`, so it is rejected before the
+            // dry-run branch — otherwise `--dry-run` would report a publish
+            // that can never happen.
+            let shell_args = split_shellwords(&full_cmd);
+            if shell_args.is_empty() {
+                anyhow::bail!("publisher {:?}: command is empty", label);
+            }
             log.status(
                 &log.with_job_env(rendered_env.iter().cloned())
                     .redact(&run_line(
@@ -248,7 +250,7 @@ pub fn run_publishers(
 
                 if let Some(ref dir) = publisher.dir {
                     let rendered_dir =
-                        template::render(dir, base_vars).unwrap_or_else(|_| dir.clone());
+                        template::render(dir, &job_vars).unwrap_or_else(|_| dir.clone());
                     cmd.current_dir(rendered_dir);
                 }
 
@@ -937,6 +939,48 @@ mod tests {
         assert!(
             format!("{err:#}").contains("render env value for 'ABSENT_TOKEN'"),
             "{err:#}"
+        );
+    }
+
+    /// A publisher's `env:` entries read the entries above them, and `cmd:`,
+    /// `args:` and `dir:` read the whole list.
+    #[cfg(unix)]
+    #[test]
+    fn publisher_env_entries_chain_and_cmd_args_and_dir_read_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let publishers = vec![PublisherConfig {
+            name: Some("touch-it".to_string()),
+            cmd: "{{ .Env.TOOL }}".to_string(),
+            args: Some(vec!["{{ .Env.NAME }}".to_string()]),
+            dir: Some("{{ .Env.WORK }}".to_string()),
+            env: Some(vec![
+                "TOOL=touch".to_string(),
+                format!("WORK={}", work.display()),
+                "TAG=v1".to_string(),
+                "NAME=made-{{ .Env.TAG }}.txt".to_string(),
+            ]),
+            ..Default::default()
+        }];
+        let artifacts = vec![make_artifact(
+            ArtifactKind::Archive,
+            "/dist/myapp.tar.gz",
+            None,
+        )];
+        run_publishers(
+            &publishers,
+            &artifacts,
+            &base_vars(),
+            false,
+            &test_logger(),
+            1,
+            None,
+        )
+        .expect("the publisher runs");
+        assert!(
+            work.join("made-v1.txt").is_file(),
+            "cmd, args and dir must all have read the hook's env"
         );
     }
 

@@ -15737,7 +15737,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: when set, the hook only runs if the rendered result is truthy (not `\"false\"` / `\"0\"` / `\"no\"` / empty). Render failure hard-errors (not silent-skip). `before.hooks[].if:` / per-build / per-archive hook `if:` surface. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
+          "description": "Template-conditional: when set, the hook only runs if the rendered result is truthy (not `\"false\"` / `\"0\"` / `\"no\"` / empty). Render failure hard-errors (not silent-skip). `before.hooks[].if:` / per-build / per-archive hook `if:` surface. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. The gate is evaluated before the hook's own `env:` is rendered, so it cannot read those entries: a skipped hook's env is never rendered and cannot fail.",
           "default": null,
           "type": [
             "string",

@@ -273,6 +273,20 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
 
         let first_doc = rendered_docs.first().cloned().unwrap_or_default();
 
+        // Each entry renders against the entries before it, so
+        // `B={{ .Env.A }}` reads the `A` defined above it, and the
+        // arguments read the whole list.
+        let mut rendered_env: Vec<(String, String)> = Vec::with_capacity(env_vars.len());
+        for (k, v) in &env_vars {
+            let rendered_val =
+                anodizer_core::template::render(v, &vars.with_env_overlay(&rendered_env))
+                    .with_context(|| {
+                        format!("sbom[{}]: failed to render env template '{}'", id, v)
+                    })?;
+            rendered_env.push((k.clone(), rendered_val));
+        }
+        let job_vars = vars.with_env_overlay(&rendered_env);
+
         let artifact_id = artifact_meta.get("id").map(|s| s.as_str()).unwrap_or("");
         let mut rendered_args: Vec<String> = Vec::with_capacity(args.len());
         for arg in &args {
@@ -282,16 +296,9 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                 s = s.replace(&format!("$document{}", i), doc);
             }
             s = s.replace("$document", &first_doc);
-            let rendered_arg = anodizer_core::template::render(&s, &vars)
+            let rendered_arg = anodizer_core::template::render(&s, &job_vars)
                 .with_context(|| format!("sbom[{}]: failed to render arg template '{}'", id, s))?;
             rendered_args.push(rendered_arg);
-        }
-
-        let mut rendered_env: Vec<(String, String)> = Vec::with_capacity(env_vars.len());
-        for (k, v) in &env_vars {
-            let rendered_val = anodizer_core::template::render(v, &vars)
-                .with_context(|| format!("sbom[{}]: failed to render env template '{}'", id, v))?;
-            rendered_env.push((k.clone(), rendered_val));
         }
 
         let mut command = Command::new(cmd);

@@ -29,7 +29,7 @@ signs:
 | `stdin` | string | none | Content piped to the signing command's stdin; template-expanded (e.g. `{{ Env.GPG_PASSPHRASE }}`). |
 | `stdin_file` | string | none | Path to a file piped to the signing command's stdin. |
 | `ids` | list | none | Only sign artifacts from builds whose `id` is in this list. |
-| `env` | list | none | Environment variables passed to the signing command (`KEY=VALUE` strings). |
+| `env` | list | none | Environment variables passed to the signing command (`KEY=VALUE` strings). Entries render in order; a later one can read an earlier one through `.Env`. |
 | `output` | bool/template | `false` | Capture and log the signing command's stdout/stderr. Accepts a bool or a template (e.g. `"{{ IsSnapshot }}"`). |
 | `if` | string | none | Template-conditional: skip this config when the rendered result is `false` or empty. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 

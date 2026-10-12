@@ -1221,6 +1221,48 @@ fn the_sbom_echo_masks_an_env_value_repeated_in_the_argv() {
     );
 }
 
+/// An `env:` entry reads the entries above it, and `args:` read the whole
+/// list.
+#[cfg(unix)]
+#[test]
+fn sbom_env_entries_chain_and_the_args_read_them() {
+    let tools = FakeToolDir::new();
+    tools
+        .tool("syft")
+        .script("echo \"$C\" > bom.spdx.json")
+        .install();
+
+    let tmpdir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myproj")
+        .tag("v1.0.0")
+        .dist(tmpdir.path().to_path_buf())
+        .add_sbom(SbomConfig {
+            id: Some("syftcfg".into()),
+            cmd: Some(tools.tool_path("syft").to_string_lossy().into_owned()),
+            artifacts: Some("any".into()),
+            documents: Some(vec!["bom.spdx.json".into()]),
+            args: Some(vec!["scan".into(), "--mode={{ .Env.C }}".into()]),
+            env: Some(vec![
+                "A=value".into(),
+                "B={{ .Env.A }}-b".into(),
+                "C={{ .Env.B }}-c".into(),
+            ]),
+            ..Default::default()
+        })
+        .build();
+
+    SbomStage.run(&mut ctx).expect("sbom stage");
+
+    assert_eq!(
+        tools.calls("syft")[0],
+        vec!["scan".to_string(), "--mode=value-b-c".to_string()]
+    );
+    let written = std::fs::read_to_string(tmpdir.path().join("bom.spdx.json"))
+        .expect("the tool wrote the document under dist");
+    assert_eq!(written.trim(), "value-b-c");
+}
+
 /// Two SBOM configs sharing the same resolved id is a config error caught
 /// before any subprocess runs.
 #[cfg(unix)]

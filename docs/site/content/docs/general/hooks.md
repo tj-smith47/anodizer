@@ -149,6 +149,18 @@ caller's single skip list does not have to vary by command.
   pipeline aborts before any subsequent stage runs
 - Hooks are skipped in `--dry-run` mode (logged but not executed)
 - Environment variables from the `env` config section are available to hooks
+- A hook's own `env:` entries render in order, and each entry can read the
+  ones above it through `.Env`; `cmd:` and `dir:` read the whole list. The
+  `if:` gate is evaluated before the env renders and does not see it
+
+```yaml
+before:
+  - cmd: "./scripts/stage.sh {{ .Env.STAGE_DIR }}"
+    dir: "{{ .Env.WORK }}"
+    env:
+      - "WORK=/srv/build"
+      - "STAGE_DIR={{ .Env.WORK }}/stage-{{ .Version }}"
+```
 
 ## `always` and multi-host releases
 

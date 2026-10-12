@@ -60,11 +60,7 @@ pub(crate) fn artifact_template_vars(
     vars.set("ArtifactName", artifact_name);
     vars.set(
         "ArtifactExt",
-        artifact_meta
-            .get("ext")
-            .filter(|s| !s.is_empty())
-            .map(|s| s.as_str())
-            .unwrap_or_else(|| anodizer_core::template::extract_artifact_ext(artifact_name)),
+        &anodizer_core::artifact::ext_of(artifact_meta, artifact_name),
     );
     vars.set(
         "ArtifactID",

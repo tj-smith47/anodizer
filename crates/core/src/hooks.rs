@@ -927,6 +927,48 @@ mod tests {
         assert_eq!(contents.trim(), "value-b-c");
     }
 
+    /// The `if:` gate is evaluated before the hook's own `env:` is rendered,
+    /// so a gate reading one of those entries sees it unset and skips the
+    /// hook, and a skipped hook's unrenderable env never fails the run.
+    #[test]
+    fn the_if_gate_does_not_read_the_hooks_own_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("ran.txt");
+        let log = test_logger();
+        let vars = TemplateVars::new();
+        let run = |if_condition: &str, env: Vec<String>| {
+            let hooks = vec![HookEntry::Structured(StructuredHook {
+                cmd: format!(
+                    "echo ran > {}",
+                    marker.display().to_string().replace('\\', "/")
+                ),
+                env: Some(env),
+                if_condition: Some(if_condition.to_string()),
+                ..Default::default()
+            })];
+            run_hooks(
+                &hooks,
+                "build",
+                HookRunContext {
+                    dry_run: false,
+                    log: &log,
+                    template_vars: Some(&vars),
+                    build_env: None,
+                    extra_env: None,
+                },
+            )
+        };
+        run(
+            "{{ .Env.ONLY_IN_HOOK }}",
+            vec!["ONLY_IN_HOOK=true".to_string()],
+        )
+        .expect("an unset gate variable renders empty and skips the hook");
+        assert!(!marker.exists(), "the gate must not see the hook's own env");
+        run("false", vec!["X={{ .Env.UNDEFINED_ANYWHERE }}".to_string()])
+            .expect("a skipped hook's env is never rendered");
+        assert!(!marker.exists());
+    }
+
     #[test]
     fn build_env_reaches_build_hook() {
         let tmp = tempfile::tempdir().unwrap();

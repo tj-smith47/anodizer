@@ -18,7 +18,7 @@ pub use kind::{
     release_uploadable_kinds, signable_subject_kinds, size_reportable_kinds, uploadable_kinds,
 };
 pub use registry::{
-    Artifact, ArtifactRegistry, PushedImage, TargetVariantKey, binary_name_of,
+    Artifact, ArtifactRegistry, PushedImage, TargetVariantKey, binary_name_of, ext_of,
     group_by_target_variant,
 };
 pub use size_report::{format_size, print_size_report};

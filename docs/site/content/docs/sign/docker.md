@@ -29,7 +29,7 @@ docker_signs:
 | `ids` | list | all | Only sign images from docker configs whose `id` is in this list. |
 | `stdin` | string | | Content written to the signing command's stdin (e.g. a passphrase); rendered as a template (e.g. `{{ Env.GPG_PASSPHRASE }}`) with nothing substituted first, so neither `{{ Artifact }}` nor `${artifact}` names anything here. |
 | `stdin_file` | string | | Path to a file whose content is written to the signing command's stdin. |
-| `env` | list | | Environment variables passed to the signing command (`KEY=VALUE` strings). |
+| `env` | list | | Environment variables passed to the signing command (`KEY=VALUE` strings). Entries render in order; a later one can read an earlier one through `.Env`. |
 | `output` | bool | `false` | Capture and log the signing command's stdout/stderr. |
 | `if` | string | | Template-conditional: skip this config when the rendered result is `false` or empty. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 

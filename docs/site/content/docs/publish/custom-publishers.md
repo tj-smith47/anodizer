@@ -54,6 +54,7 @@ Not applicable to anodizer — credentials are the responsibility of the command
 - Custom publishers run sequentially in publisher order. Slow commands block the pipeline.
 - `args` entries are template-rendered individually; quote them in YAML if they contain spaces.
 - The env whitelist means most ambient credentials are NOT visible to the subprocess — declare every var you need via `env:`.
+- `env:` entries render in order and each can read the ones above it through `.Env`; `cmd:`, `args:` and `dir:` can read the whole list (`args: ["--token={{ .Env.TOKEN }}"]`).
 - `artifact_types` filters at dispatch time; if no artifacts match, the publisher is a no-op (no error).
 - An empty, blank or template-emptied `cmd:` fails the run with `publisher "<name>": command is empty` as soon as the publisher matches an artifact — on a dry run too, so `anodizer release --snapshot` catches the typo. A publisher whose filters match nothing is still a clean skip.
 

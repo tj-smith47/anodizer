@@ -808,60 +808,63 @@ fn os_dependencies_join_the_existing_per_os_block() {
         dependencies: Some(&deps),
         ..Default::default()
     };
-    let formula = generate_formula_with_opts(
-        &super::formula::FormulaCore {
-            name: "mytool",
-            version: "1.0.0",
-            description: "desc",
-            license: "MIT",
-        },
-        &[
-            (
-                "darwin-amd64",
-                "https://example.com/mytool-darwin-amd64.tar.gz",
-                "aaaa",
-            ),
-            (
-                "darwin-arm64",
-                "https://example.com/mytool-darwin-arm64.tar.gz",
-                "bbbb",
-            ),
-            (
-                "linux-amd64",
-                "https://example.com/mytool-linux-amd64.tar.gz",
-                "cccc",
-            ),
-        ],
-        &super::formula::FormulaCode {
-            install: "bin.install \"mytool\"",
-            test: "system \"#{bin}/mytool\"",
-        },
-        &opts,
-    )
-    .unwrap();
-    assert_eq!(
-        formula.matches("on_macos do").count(),
-        1,
-        "formula:\n{formula}"
+    let amd64 = (
+        "darwin-amd64",
+        "https://example.com/mytool-darwin-amd64.tar.gz",
+        "aaaa",
     );
-    assert_eq!(
-        formula.matches("on_linux do").count(),
-        1,
-        "formula:\n{formula}"
+    let arm64 = (
+        "darwin-arm64",
+        "https://example.com/mytool-darwin-arm64.tar.gz",
+        "bbbb",
     );
-    let mac_block =
-        &formula[formula.find("on_macos do").unwrap()..formula.find("on_linux do").unwrap()];
-    assert!(
-        mac_block.contains("depends_on \"mac-only\""),
-        "formula:\n{formula}"
+    let linux = (
+        "linux-amd64",
+        "https://example.com/mytool-linux-amd64.tar.gz",
+        "cccc",
     );
-    assert!(!mac_block.contains("linux-only"), "formula:\n{formula}");
-    let linux_block = &formula[formula.find("on_linux do").unwrap()..];
-    assert!(
-        linux_block.contains("depends_on \"linux-only\""),
-        "formula:\n{formula}"
-    );
-    assert!(!linux_block.contains("mac-only"), "formula:\n{formula}");
+    // Two macOS shapes render the block differently: one amd64 archive alone,
+    // and one archive per architecture.
+    for archives in [vec![amd64, linux], vec![amd64, arm64, linux]] {
+        let formula = generate_formula_with_opts(
+            &super::formula::FormulaCore {
+                name: "mytool",
+                version: "1.0.0",
+                description: "desc",
+                license: "MIT",
+            },
+            &archives,
+            &super::formula::FormulaCode {
+                install: "bin.install \"mytool\"",
+                test: "system \"#{bin}/mytool\"",
+            },
+            &opts,
+        )
+        .unwrap();
+        assert_eq!(
+            formula.matches("on_macos do").count(),
+            1,
+            "formula:\n{formula}"
+        );
+        assert_eq!(
+            formula.matches("on_linux do").count(),
+            1,
+            "formula:\n{formula}"
+        );
+        let mac_block =
+            &formula[formula.find("on_macos do").unwrap()..formula.find("on_linux do").unwrap()];
+        assert!(
+            mac_block.contains("depends_on \"mac-only\""),
+            "formula:\n{formula}"
+        );
+        assert!(!mac_block.contains("linux-only"), "formula:\n{formula}");
+        let linux_block = &formula[formula.find("on_linux do").unwrap()..];
+        assert!(
+            linux_block.contains("depends_on \"linux-only\""),
+            "formula:\n{formula}"
+        );
+        assert!(!linux_block.contains("mac-only"), "formula:\n{formula}");
+    }
 }
 
 /// `type` renders as the Ruby symbol and wins over `version` on one entry.
