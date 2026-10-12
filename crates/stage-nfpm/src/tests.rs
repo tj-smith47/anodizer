@@ -5900,6 +5900,13 @@ fn two_crates_rendering_one_package_path_are_refused_before_packaging() {
                     formats: vec!["deb".to_string()],
                     maintainer: Some("test@example.com".to_string()),
                     file_name_template: Some(tmpl.to_string()),
+                    // A sidecar the render writes under dist on a live run,
+                    // so the test can tell a claim made before the render
+                    // from one made after it.
+                    deb: Some(anodizer_core::config::NfpmDebConfig {
+                        lintian_overrides: Some(vec![format!("{name}-override")]),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 }]),
                 ..Default::default()
@@ -5957,8 +5964,9 @@ fn two_crates_rendering_one_package_path_are_refused_before_packaging() {
     );
 
     // A live run is refused while collecting jobs, before `nfpm` could be
-    // spawned: the claim precedes the render, so the colliding job writes no
-    // sidecar and no package exists anywhere under dist.
+    // spawned. The first job claims its path and renders, which writes its
+    // lintian sidecar under dist; the second job collides on the claim, which
+    // precedes its render, so nothing of the second job reaches dist.
     let (result, planned, tmp) = run(["shared-{{ .Version }}", "shared-{{ .Version }}"], false);
     let err = result.unwrap_err().to_string();
     assert!(err.contains("both writing"), "{err}");
@@ -5982,6 +5990,15 @@ fn two_crates_rendering_one_package_path_are_refused_before_packaging() {
             .iter()
             .all(|p| p.extension().is_none_or(|e| e != "deb")),
         "no package is written on a refused live run: {written:?}"
+    );
+    let [sidecar] = written.as_slice() else {
+        panic!("exactly the first job's lintian sidecar is written: {written:?}");
+    };
+    let overrides = std::fs::read_to_string(sidecar).unwrap();
+    assert!(
+        overrides.contains("alpha-override") && !overrides.contains("beta-override"),
+        "the colliding job was refused before its render, so only the first job's \
+         overrides were written: {overrides:?}"
     );
 
     let (result, planned, _tmp) = run(["alpha-{{ .Version }}", "beta-{{ .Version }}"], true);

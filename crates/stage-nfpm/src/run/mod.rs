@@ -326,9 +326,7 @@ fn process_nfpm_format(
     };
 
     // The output path is claimed before anything is rendered or written for
-    // this job, so a colliding job leaves no sidecar behind; the per-target
-    // variables the file name reads are seeded here and again by the render.
-    set_nfpm_per_target_template_vars(ctx, &os, &arch, target.as_deref(), amd64_variant);
+    // this job, so a colliding job leaves no sidecar behind.
     set_nfpm_per_pkg_template_vars(
         ctx,
         nfpm_cfg,

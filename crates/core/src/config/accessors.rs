@@ -710,8 +710,10 @@ mod tests {
         /// A `kind` struct field whose value is not an `ArtifactKind::…`
         /// literal: `kind: kind`, `kind: *kind`, `kind: a.kind`, or the
         /// shorthand `kind,` / `kind }`. Only a field position counts (the
-        /// text before it is `{` or `,`), so a comment or a `by_kind:` label
-        /// is not read as one.
+        /// text before it is `{` or `,`), so a `by_kind:` label is not read
+        /// as one. Comments are kept in the flattened text, so one spelling
+        /// `, kind:` or `{ kind:` is read as a field; that direction fails
+        /// the walk loudly and is fixed by rewording the comment.
         fn names_a_variable_kind(flat: &str) -> bool {
             flat.match_indices("kind").any(|(i, _)| {
                 let field = i == 0 || matches!(&flat[i - 1..i], "{" | ",");

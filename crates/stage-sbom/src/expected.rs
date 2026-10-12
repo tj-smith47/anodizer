@@ -851,6 +851,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn lockstep_external_typed_expectations_match_the_stage_per_crate() {
         // One document per archive, each registered under its archive's crate.
         assert_lockstep_gate_matches_stage(
@@ -867,6 +868,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn lockstep_external_any_expectations_match_the_stage_per_crate() {
         // The whole-project document is registered under the release owner,
         // never under the project crate.
