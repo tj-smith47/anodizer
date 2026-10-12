@@ -580,8 +580,9 @@ mod tests {
             missing.join("\n")
         );
         // Every property of AnnounceConfig but `skip`, `if`, `gate_on` and
-        // `deadline` is an announcer; a new one whose type name ends in
-        // neither `Announce` nor `Config` would be skipped silently otherwise.
+        // `deadline` is an announcer; a new one whose type name is neither
+        // `*Announce` nor the one `WebhookConfig` would be skipped silently
+        // otherwise.
         let properties = schema["properties"].as_object().unwrap().len();
         assert_eq!(
             announcers,

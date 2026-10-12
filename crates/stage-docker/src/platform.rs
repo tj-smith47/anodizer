@@ -11,7 +11,7 @@
 /// Examples:
 /// - `"linux/amd64"` and `"linux/amd64/v3"` → `"amd64"`
 /// - `"linux/arm64"` and `"linux/arm64/v8"` → `"arm64"`
-/// - `"linux/arm/v7"` → `"armv7"`
+/// - `"linux/arm/v7"` and the bare `"linux/arm"` → `"armv7"`
 /// - `"linux/arm/v6"` → `"armv6"`
 pub fn platform_to_arch(platform: &str) -> &str {
     let mut parts = platform.split('/');
