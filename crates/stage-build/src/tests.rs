@@ -728,6 +728,18 @@ fn register_binary(
     target: &str,
     path: std::path::PathBuf,
 ) {
+    register_binary_with_id(ctx, crate_name, target, path, None);
+}
+
+/// Like `register_binary`, with `builds[].id` set to `build_id` (the binary
+/// name when `None`, as `artifact_meta` defaults it).
+fn register_binary_with_id(
+    ctx: &mut anodizer_core::context::Context,
+    crate_name: &str,
+    target: &str,
+    path: std::path::PathBuf,
+    build_id: Option<&str>,
+) {
     use anodizer_core::artifact::Artifact;
     let binary_name = path
         .file_name()
@@ -735,7 +747,10 @@ fn register_binary(
         .unwrap_or_default();
     let mut meta = HashMap::new();
     meta.insert("binary".to_string(), binary_name.clone());
-    meta.insert("id".to_string(), binary_name);
+    meta.insert(
+        "id".to_string(),
+        build_id.map(str::to_owned).unwrap_or(binary_name),
+    );
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Binary,
         name: String::new(),
@@ -969,15 +984,72 @@ fn test_universal_binary_refuses_two_binaries_on_one_darwin_target() {
         "{msg}"
     );
     assert!(
-        msg.contains("target/x86_64-apple-darwin/release/myapp")
-            && msg.contains("target/x86_64-apple-darwin-v3/release/myapp"),
-        "both slices are named: {msg}"
+        msg.contains("target/x86_64-apple-darwin/release/myapp (id myapp, amd64 v1)")
+            && msg.contains("target/x86_64-apple-darwin-v3/release/myapp (id myapp, amd64 v1)"),
+        "both slices are named with their id and amd64 level: {msg}"
+    );
+    assert!(
+        msg.contains("give each build its own `builds[].id` and narrow `universal_binaries[].ids` to one of them"),
+        "{msg}"
     );
     assert!(
         ctx.artifacts
             .by_kind(ArtifactKind::UniversalBinary)
             .is_empty(),
         "nothing is registered after the refusal"
+    );
+}
+
+#[test]
+fn test_universal_binary_ids_selects_one_of_two_builds_on_one_darwin_target() {
+    use anodizer_core::config::UniversalBinaryConfig;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let config = anodizer_core::config::Config::default();
+    let opts = ContextOptions {
+        dry_run: true,
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, opts);
+    register_binary_with_id(
+        &mut ctx,
+        "myapp",
+        "aarch64-apple-darwin",
+        std::path::PathBuf::from("target/aarch64-apple-darwin/release/myapp"),
+        Some("baseline"),
+    );
+    register_binary_with_id(
+        &mut ctx,
+        "myapp",
+        "x86_64-apple-darwin",
+        std::path::PathBuf::from("target/x86_64-apple-darwin/release/myapp"),
+        Some("baseline"),
+    );
+    register_binary_with_id(
+        &mut ctx,
+        "myapp",
+        "x86_64-apple-darwin",
+        std::path::PathBuf::from("target/x86_64-apple-darwin-v3/release/myapp"),
+        Some("v3"),
+    );
+
+    let ub = UniversalBinaryConfig {
+        id: None,
+        name_template: None,
+        replace: None,
+        ids: Some(vec!["baseline".to_string()]),
+        hooks: None,
+        mod_timestamp: None,
+    };
+
+    build_universal_binary("myapp", &ub, &mut ctx, true)
+        .expect("ids narrowed to one build merges without a duplicate slice");
+    let universals = ctx.artifacts.by_kind(ArtifactKind::UniversalBinary);
+    assert_eq!(universals.len(), 1, "one universal binary is registered");
+    assert_eq!(
+        universals[0].metadata.get("id").map(String::as_str),
+        Some("baseline"),
+        "the universal binary inherits the selected build's id"
     );
 }
 

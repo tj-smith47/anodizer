@@ -15,12 +15,10 @@ use anodizer_core::tool_detect::on_path;
 
 /// Resolve the default `ids` filter for a `universal_binaries[]` entry.
 ///
-/// The default `unibin.ID` is the project name,
-/// then `unibin.IDs` to `[unibin.ID]`. Anodizer's per-crate workspace model
-/// complicates this — `Binary` artifacts default their `id` metadata to the
-/// binary name (= crate name in the common case), not to `project_name`. To
-/// match the `ids: [<project>]` idiom while keeping multi-crate workspaces
-/// working, the resolved default is:
+/// `Binary` artifacts default their `id` metadata to the binary name (the
+/// crate name in the common case), not to `project_name`, so the default
+/// has to serve both the single-crate `ids: [<project>]` idiom and a
+/// multi-crate workspace. The resolved default is:
 ///
 ///   1. `ub.id` if explicitly set (verbatim);
 ///   2. `project_name` if any candidate Binary actually carries that id
@@ -60,6 +58,32 @@ fn resolve_default_unibin_ids(
     vec![crate_name.to_string()]
 }
 
+/// The crate's `Binary` artifacts that `ub.ids` (or its resolved default)
+/// selects. The filter reads the `id` metadata key only: `artifact_meta`
+/// always sets it, defaulting to the binary name when `builds[].id` is unset.
+fn selected_binaries<'a>(
+    ctx: &'a Context,
+    crate_name: &str,
+    ub: &UniversalBinaryConfig,
+) -> Vec<&'a Artifact> {
+    let binaries = ctx
+        .artifacts
+        .by_kind_and_crate(ArtifactKind::Binary, crate_name);
+    let default_ids = resolve_default_unibin_ids(ub, crate_name, ctx);
+    let effective_ids = ub.ids.clone().unwrap_or(default_ids);
+    if effective_ids.is_empty() {
+        return binaries;
+    }
+    binaries
+        .into_iter()
+        .filter(|a| {
+            a.metadata
+                .get("id")
+                .is_some_and(|v| effective_ids.contains(v))
+        })
+        .collect()
+}
+
 /// Resolve the output path that `build_universal_binary` will write to without
 /// performing the build. Returns `None` when the source binaries needed for
 /// the lipo step are not present, so callers can skip the duplicate-output
@@ -70,29 +94,7 @@ pub(crate) fn project_universal_out_path(
     ctx: &mut Context,
 ) -> anyhow::Result<Option<std::path::PathBuf>> {
     let log = ctx.logger("build");
-    let binaries = ctx
-        .artifacts
-        .by_kind_and_crate(ArtifactKind::Binary, crate_name);
-    let default_ids = resolve_default_unibin_ids(ub, crate_name, ctx);
-    let effective_ids = ub.ids.clone().unwrap_or(default_ids);
-    let filtered: Vec<_> = if !effective_ids.is_empty() {
-        binaries
-            .into_iter()
-            .filter(|a| {
-                // `id`-only filter (
-                // `artifact.ByIDs(unibin.IDs...)`). Binary artifacts now always
-                // carry an `id` metadata key (see `artifact_meta`), defaulted to
-                // the binary name when `build.id` is unset, so the historical
-                // `binary`-key fallback is no longer needed.
-                a.metadata
-                    .get("id")
-                    .map(|v| effective_ids.contains(v))
-                    .unwrap_or(false)
-            })
-            .collect()
-    } else {
-        binaries
-    };
+    let filtered = selected_binaries(ctx, crate_name, ub);
     let arm64_present = filtered
         .iter()
         .any(|a| a.target.as_deref() == Some("aarch64-apple-darwin"));
@@ -121,10 +123,10 @@ pub(crate) fn project_universal_out_path(
 /// hold only one of them; taking the first would merge whichever was built
 /// first and drop the other without a word.
 fn one_slice_per_target<'a>(
-    binaries: &[&'a anodizer_core::artifact::Artifact],
+    binaries: &[&'a Artifact],
     target: &str,
     crate_name: &str,
-) -> anyhow::Result<Option<&'a anodizer_core::artifact::Artifact>> {
+) -> anyhow::Result<Option<&'a Artifact>> {
     let mut slices = binaries
         .iter()
         .copied()
@@ -133,12 +135,25 @@ fn one_slice_per_target<'a>(
     if let (Some(first), Some(second)) = (first, slices.next()) {
         anyhow::bail!(
             "universal binary for {crate_name}: duplicate darwin binary slice for {target}: \
-             {} and {}; narrow `universal_binaries[].ids` to one build",
-            first.path.display(),
-            second.path.display()
+             {} and {}; give each build its own `builds[].id` and narrow \
+             `universal_binaries[].ids` to one of them",
+            describe_slice(first),
+            describe_slice(second)
         );
     }
     Ok(first)
+}
+
+/// `<path> (id <id>, amd64 <level>)`: what `builds[].id` and
+/// `universal_binaries[].ids` would have to name to pick this slice.
+fn describe_slice(a: &Artifact) -> String {
+    let id = a.metadata.get("id").map(String::as_str).unwrap_or("");
+    let level = a
+        .metadata
+        .get("amd64_variant")
+        .map(String::as_str)
+        .unwrap_or("v1");
+    format!("{} (id {id}, amd64 {level})", a.path.display())
 }
 
 pub(crate) fn build_universal_binary(
@@ -148,34 +163,7 @@ pub(crate) fn build_universal_binary(
     dry_run: bool,
 ) -> anyhow::Result<()> {
     let log = ctx.logger("build");
-    // Collect arm64 and x86_64 macOS binary artifacts for this crate.
-    // When `ids` is set, only consider artifacts whose "binary" metadata key (the binary name)
-    // is in the list. Build artifacts use "binary" as their identifier, not "id".
-    let binaries = ctx
-        .artifacts
-        .by_kind_and_crate(ArtifactKind::Binary, crate_name);
-
-    let default_ids = resolve_default_unibin_ids(ub, crate_name, ctx);
-    let effective_ids = ub.ids.clone().unwrap_or(default_ids);
-
-    let filtered: Vec<_> = if !effective_ids.is_empty() {
-        binaries
-            .into_iter()
-            .filter(|a| {
-                // `id`-only filter (
-                // `artifact.ByIDs(unibin.IDs...)`). `id` is now always populated
-                // on Binary artifacts (defaulted to the binary name when
-                // `build.id` is unset) so the historical `binary` fallback is
-                // unnecessary.
-                a.metadata
-                    .get("id")
-                    .map(|v| effective_ids.contains(v))
-                    .unwrap_or(false)
-            })
-            .collect()
-    } else {
-        binaries
-    };
+    let filtered = selected_binaries(ctx, crate_name, ub);
 
     let arm64 = one_slice_per_target(&filtered, "aarch64-apple-darwin", crate_name)?;
     let x86_64 = one_slice_per_target(&filtered, "x86_64-apple-darwin", crate_name)?;
@@ -319,12 +307,9 @@ pub(crate) fn build_universal_binary(
     // true = this universal binary supersedes per-arch variants in publishers.
     let replaces = ub.replace == Some(true);
 
-    // Copy the entire `Extra` map
-    // from the first source binary, then overwrite universal-specific keys.
-    // The previous 4-key whitelist (`dynamically_linked`, `abi`, `libc`, `id`)
-    // silently dropped any other metadata stage-build emits today or might
-    // emit tomorrow (e.g. `DynamicallyLinked`, `amd64_variant`, future keys),
-    // so fidelity is preserved.
+    // Every metadata key of the first source binary is copied, then the
+    // universal-specific keys overwrite: a key whitelist would drop whatever
+    // stage-build adds later (`DynamicallyLinked`, `amd64_variant`, …).
     //
     // Caveat for downstream consumers: any metadata key inherited here
     // (notably `DynamicallyLinked`) reflects the FIRST source arch only —
@@ -343,10 +328,7 @@ pub(crate) fn build_universal_binary(
     metadata.insert("binary".to_string(), binary_name);
     metadata.insert("universal".to_string(), "true".to_string());
     metadata.insert("replaces".to_string(), replaces.to_string());
-    // Universal binary's own id, if configured (otherwise the inherited
-    // source-binary `id` remains via the `id` extra
-    // override — when `unibin.ID` is empty, the
-    // first source's id passes through unchanged).
+    // Without a configured id the first source's `id` stays as copied.
     if let Some(ref id) = ub.id {
         metadata.insert("id".to_string(), id.clone());
     }
