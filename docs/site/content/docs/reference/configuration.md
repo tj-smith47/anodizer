@@ -214,7 +214,7 @@ attestations:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `amd64_variant` | Amd64Variant | — | `x86_64` micro-architecture variant — `v1` (baseline), `v2`, `v3` (AVX2), or `v4`. Constrained to a typed enum because AUR source pkgs build from the upstream tarball (no binary artifacts to filter), so the value's only role is as the `Amd64` template var consumed by `prepare:` / `build:` / `package:` script bodies — typos must fail at parse time, not silently render an invalid string into the PKGBUILD. When unset, defaults to `v1` at template-render time. |
-| `arches` | list of string | — | Explicit architecture list (default: auto-detect from artifacts). |
+| `arches` | list of string | — | Pacman architectures for `arch=()`. Defaults to the architectures of the Linux build targets, `x86_64` when there are none. |
 | `backup` | list of string | — | Backup files to preserve on upgrade. |
 | `build` | string | — | Custom `build()` function body for PKGBUILD. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
@@ -227,7 +227,7 @@ attestations:
 | `git_ssh_command` | string | — | Custom SSH command for git operations. |
 | `git_url` | string | — | AUR SSH git URL override. Defaults to `ssh://aur@aur.archlinux.org/<package>.git`, derived from the resolved package name; set this only for a non-standard endpoint. |
 | `homepage` | string | — | Project homepage URL. |
-| `ids` | list of string | — | Build IDs filter. |
+| `ids` | list of string | — | Has no effect on a source package: the PKGBUILD builds from the one source archive the release carries, not from build artifacts. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the AUR source config is skipped. Render failure hard-errors. The `aur_sources[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `install` | string | — | Content for a .install file (post-install/pre-remove scripts). |
 | `license` | string | — | SPDX license identifier. |
@@ -244,7 +244,7 @@ attestations:
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip this config. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. |
-| `url_template` | string | — | Custom URL template for download URLs. |
+| `url_template` | string | — | Download URL of the source archive (template). Defaults to the release asset URL of the archive the `source:` stage produced; `{{ .ArtifactName }}` is that archive's file name. |
 
 ## `before` {#before}
 A lifecycle hook block: `before:`, `after:`, `on_error:`, `always:`, or `before_publish:`. Each block carries a list of hook commands that run around the entire pipeline (not individual stages); which block a list sits under decides when it fires.
@@ -1407,7 +1407,7 @@ Fields from both original types are present; any field may be `None` at either c
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `amd64_variant` | Amd64Variant | — | `x86_64` micro-architecture variant — `v1` (baseline), `v2`, `v3` (AVX2), or `v4`. Constrained to a typed enum because AUR source pkgs build from the upstream tarball (no binary artifacts to filter), so the value's only role is as the `Amd64` template var consumed by `prepare:` / `build:` / `package:` script bodies — typos must fail at parse time, not silently render an invalid string into the PKGBUILD. When unset, defaults to `v1` at template-render time. |
-| `arches` | list of string | — | Explicit architecture list (default: auto-detect from artifacts). |
+| `arches` | list of string | — | Pacman architectures for `arch=()`. Defaults to the architectures of the Linux build targets, `x86_64` when there are none. |
 | `backup` | list of string | — | Backup files to preserve on upgrade. |
 | `build` | string | — | Custom `build()` function body for PKGBUILD. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
@@ -1420,7 +1420,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `git_ssh_command` | string | — | Custom SSH command for git operations. |
 | `git_url` | string | — | AUR SSH git URL override. Defaults to `ssh://aur@aur.archlinux.org/<package>.git`, derived from the resolved package name; set this only for a non-standard endpoint. |
 | `homepage` | string | — | Project homepage URL. |
-| `ids` | list of string | — | Build IDs filter. |
+| `ids` | list of string | — | Has no effect on a source package: the PKGBUILD builds from the one source archive the release carries, not from build artifacts. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the AUR source config is skipped. Render failure hard-errors. The `aur_sources[].if:`. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `install` | string | — | Content for a .install file (post-install/pre-remove scripts). |
 | `license` | string | — | SPDX license identifier. |
@@ -1437,7 +1437,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `skip` | StringOrBool | — | Skip this config. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. |
-| `url_template` | string | — | Custom URL template for download URLs. |
+| `url_template` | string | — | Download URL of the source archive (template). Defaults to the release asset URL of the archive the `source:` stage produced; `{{ .ArtifactName }}` is that archive's file name. |
 
 ## `crates[].publish.krew` {#crates-publish-krew}
 | Field | Type | Default | Description |

@@ -9,6 +9,30 @@ use anodizer_core::log::StageLogger;
 #[cfg(unix)]
 use crate::util;
 
+/// Extras that add nothing: no people, no hooks, no backup, no install script.
+const NO_EXTRAS: AurExtras<'static> = AurExtras {
+    people: AurPeople {
+        maintainers: &[],
+        contributors: &[],
+    },
+    hooks: AurHooks {
+        prepare: None,
+        build: None,
+        package: None,
+    },
+    backup: &[],
+    binary_name: "myapp",
+    install_file: None,
+};
+
+/// The source archive every file-level render test downloads.
+const TEST_SOURCE: AurSourceFile<'static> = AurSourceFile {
+    url: "https://github.com/user/myapp/releases/download/v1.0.0/myapp-1.0.0.tar.gz",
+    sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    format: "tar.gz",
+    prefix: "myapp-1.0.0",
+};
+
 #[test]
 fn test_generate_source_pkgbuild() {
     let maintainers = vec!["Test <test@example.com>".to_string()];
@@ -46,12 +70,7 @@ fn test_generate_source_pkgbuild() {
         binary_name: "myapp",
         install_file: None,
     };
-    let pkgbuild = generate_source_pkgbuild(
-        &meta,
-        &deps,
-        &extras,
-        "https://github.com/user/myapp/archive/refs/tags/v1.0.0.tar.gz",
-    );
+    let pkgbuild = generate_source_pkgbuild(&meta, &deps, &extras, &TEST_SOURCE);
 
     assert!(pkgbuild.contains("pkgname='myapp'"));
     assert!(pkgbuild.contains("pkgver='1.0.0'"));
@@ -96,8 +115,7 @@ fn test_generate_source_pkgbuild_custom_build() {
         binary_name: "myapp",
         install_file: None,
     };
-    let pkgbuild =
-        generate_source_pkgbuild(&meta, &deps, &extras, "https://example.com/source.tar.gz");
+    let pkgbuild = generate_source_pkgbuild(&meta, &deps, &extras, &TEST_SOURCE);
 
     assert!(pkgbuild.contains("prepare() {"));
     assert!(pkgbuild.contains("patch -p1 < fix.patch"));
@@ -138,8 +156,7 @@ fn test_generate_source_pkgbuild_install_file() {
         binary_name: "myapp",
         install_file: Some("myapp.install"),
     };
-    let pkgbuild =
-        generate_source_pkgbuild(&meta, &deps, &with, "https://example.com/source.tar.gz");
+    let pkgbuild = generate_source_pkgbuild(&meta, &deps, &with, &TEST_SOURCE);
     assert!(
         pkgbuild.contains("install=myapp.install"),
         "PKGBUILD must emit install=<name>.install when set:\n{pkgbuild}"
@@ -149,8 +166,7 @@ fn test_generate_source_pkgbuild_install_file() {
         install_file: None,
         ..with
     };
-    let pkgbuild_none =
-        generate_source_pkgbuild(&meta, &deps, &without, "https://example.com/source.tar.gz");
+    let pkgbuild_none = generate_source_pkgbuild(&meta, &deps, &without, &TEST_SOURCE);
     assert!(
         !pkgbuild_none.contains("install="),
         "PKGBUILD must NOT emit install= when unset:\n{pkgbuild_none}"
@@ -221,11 +237,7 @@ fn test_generate_source_srcinfo() {
         conflicts: &conflicts,
         provides: &provides,
     };
-    let srcinfo = generate_source_srcinfo(
-        &meta,
-        &deps,
-        "https://github.com/user/myapp/archive/refs/tags/v1.0.0.tar.gz",
-    );
+    let srcinfo = generate_source_srcinfo(&meta, &deps, &NO_EXTRAS, &TEST_SOURCE);
 
     assert!(srcinfo.contains("pkgbase = myapp"));
     assert!(srcinfo.contains("\tpkgver = 1.0.0"));
@@ -418,7 +430,17 @@ fn generate_source_srcinfo_omits_url_when_homepage_empty() {
         conflicts: &[],
         provides: &[],
     };
-    let srcinfo = generate_source_srcinfo(&meta, &deps, "https://example.com/src-2.3.0.tar.gz");
+    let srcinfo = generate_source_srcinfo(
+        &meta,
+        &deps,
+        &NO_EXTRAS,
+        &AurSourceFile {
+            url: "https://example.com/src-2.3.0.tar.gz",
+            sha256: "SKIP",
+            format: "tar.gz",
+            prefix: "",
+        },
+    );
 
     // empty homepage -> NO `url =` line.
     assert!(
@@ -431,7 +453,9 @@ fn generate_source_srcinfo_omits_url_when_homepage_empty() {
     assert!(srcinfo.contains("\tarch = x86_64"));
     assert!(srcinfo.contains("\tarch = aarch64"));
     assert!(srcinfo.contains("\tlicense = Apache-2.0"));
-    assert!(srcinfo.contains("\tsource = https://example.com/src-2.3.0.tar.gz"));
+    assert!(
+        srcinfo.contains("\tsource = myapp_2.3.0.tar.gz::https://example.com/src-2.3.0.tar.gz")
+    );
     assert!(srcinfo.contains("\tsha256sums = SKIP"));
 }
 
@@ -463,6 +487,7 @@ fn resolve_aur_source_package_name_strip_bin_honors_explicit_name() {
 // PKGBUILD/.SRCINFO.
 // -----------------------------------------------------------------------
 
+use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::{Config, CrateConfig, PublishConfig, StringOrBool};
 use anodizer_core::context::ContextOptions;
 use anodizer_core::log::Verbosity;
@@ -481,12 +506,43 @@ fn source_ctx(git_url: &str, project: &str, version: &str, tag: &str) -> Context
     ctx.template_vars_mut().set("Tag", tag);
     ctx.template_vars_mut().set("GitURL", git_url);
     ctx.template_vars_mut().set("ProjectName", project);
+    let owner = git_url
+        .trim_start_matches("https://github.com/")
+        .trim_start_matches("git@github.com:")
+        .split('/')
+        .next()
+        .unwrap_or("");
+    ctx.artifacts
+        .add(source_archive(owner, project, version, tag));
     ctx
 }
 
-/// Default source URL: owner extracted from an `https://` GitURL
-/// (`split('/').nth(3)`), project from `ProjectName`, tag from `Tag`. The
-/// PKGBUILD `pkgver` carries the `Version` var with hyphens underscored.
+/// The source archive the `source:` stage registers and the release uploads:
+/// its download URL, checksum, format and top-level directory in metadata.
+fn source_archive(owner: &str, project: &str, version: &str, tag: &str) -> Artifact {
+    let name = format!("{project}-{version}.tar.gz");
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert(
+        "url".to_string(),
+        format!("https://github.com/{owner}/{project}/releases/download/{tag}/{name}"),
+    );
+    metadata.insert("sha256".to_string(), "f".repeat(64));
+    metadata.insert("format".to_string(), "tar.gz".to_string());
+    metadata.insert("prefix".to_string(), format!("{project}-{version}"));
+    Artifact {
+        kind: ArtifactKind::SourceArchive,
+        path: std::path::PathBuf::from(format!("/dist/{name}")),
+        name,
+        target: None,
+        crate_name: project.to_string(),
+        metadata,
+        size: None,
+    }
+}
+
+/// The default source is the archive the release uploaded: its URL, with the
+/// version replaced by `${pkgver}` when it appears verbatim, and its checksum.
+/// The PKGBUILD `pkgver` carries the `Version` var with hyphens underscored.
 #[test]
 fn render_inner_default_url_from_https_giturl() {
     let ctx = source_ctx(
@@ -503,12 +559,20 @@ fn render_inner_default_url_from_https_giturl() {
     let render = render_aur_source_inner(&ctx, &cfg, "mytool", false, "aur_source", &quiet_log())
         .expect("render ok");
     assert_eq!(render.pkg_name, "mytool");
-    // Default source URL points at the github archive tarball.
+    // The hyphenated version differs from pkgver, so the URL stays literal.
     assert!(
         render.rendered.pkgbuild.contains(
-            "source=(\"https://github.com/myorg/mytool/archive/refs/tags/v1.2.3-rc1.tar.gz\")"
+            "source=(\"${pkgname}_${pkgver}.tar.gz::https://github.com/myorg/mytool/releases/download/v1.2.3-rc1/mytool-1.2.3-rc1.tar.gz\")"
         ),
-        "default source URL must derive owner from GitURL + project from ProjectName:\n{}",
+        "default source must be the uploaded source archive:\n{}",
+        render.rendered.pkgbuild
+    );
+    assert!(
+        render
+            .rendered
+            .pkgbuild
+            .contains(&format!("sha256sums=('{}')", "f".repeat(64))),
+        "the archive's checksum must be carried:\n{}",
         render.rendered.pkgbuild
     );
     // Version hyphen → underscore per AUR pkgver rules.
@@ -637,10 +701,11 @@ fn render_inner_description_and_homepage_templates_are_rendered() {
     );
 }
 
-/// Default source URL owner extraction for an SCP-style `git@host:owner/repo`
-/// remote (the `contains(':')` branch, `split(':').nth(1).split('/').next()`).
+/// A version that appears verbatim in the archive URL and its top-level
+/// directory is written as `${pkgver}` in the PKGBUILD, so the download and
+/// the `cd` move with the next bump; `.SRCINFO` carries the literal values.
 #[test]
-fn render_inner_default_url_from_scp_giturl() {
+fn render_inner_substitutes_pkgver_into_the_source_and_the_build_tree() {
     let ctx = source_ctx(
         "git@github.com:acme/widget.git",
         "widget",
@@ -650,43 +715,251 @@ fn render_inner_default_url_from_scp_giturl() {
     let cfg = AurSourceConfig::default();
     let render = render_aur_source_inner(&ctx, &cfg, "widget", false, "aur_source", &quiet_log())
         .expect("render ok");
+    let pkgbuild = &render.rendered.pkgbuild;
     assert!(
-        render.rendered.pkgbuild.contains(
-            "source=(\"https://github.com/acme/widget/archive/refs/tags/v2.0.0.tar.gz\")"
+        pkgbuild.contains(
+            "source=(\"${pkgname}_${pkgver}.tar.gz::https://github.com/acme/widget/releases/download/v${pkgver}/widget-${pkgver}.tar.gz\")"
         ),
-        "SCP-style GitURL owner must extract to 'acme':\n{}",
-        render.rendered.pkgbuild
+        "{pkgbuild}"
+    );
+    let expected_build = r#"build() {
+  cd "$srcdir/widget-${pkgver}"
+  cargo build --release --locked
+}"#;
+    assert!(pkgbuild.contains(expected_build), "{pkgbuild}");
+    assert!(
+        pkgbuild.contains("package() {\n  cd \"$srcdir/widget-${pkgver}\"\n  install -Dm755 \"target/release/widget\" \"$pkgdir/usr/bin/widget\""),
+        "{pkgbuild}"
+    );
+    assert!(
+        render.rendered.srcinfo.contains(
+            "\tsource = widget_2.0.0.tar.gz::https://github.com/acme/widget/releases/download/v2.0.0/widget-2.0.0.tar.gz\n"
+        ),
+        "{}",
+        render.rendered.srcinfo
+    );
+    assert!(
+        render
+            .rendered
+            .srcinfo
+            .contains(&format!("\tsha256sums = {}\n", "f".repeat(64))),
+        "{}",
+        render.rendered.srcinfo
     );
 }
 
-/// An unparseable GitURL (no scheme, no `:`) yields an empty owner; the
-/// renderer warns and still produces a (malformed-owner) source URL rather
-/// than panicking.
+/// A flat source archive (no `prefix_template`) is extracted straight into
+/// `$srcdir`, so the default build and package bodies run there without a
+/// `cd`.
 #[test]
-fn render_inner_empty_owner_warns_and_continues() {
-    let capture = anodizer_core::log::LogCapture::new();
-    let mut ctx = source_ctx("not-a-url", "thing", "1.0.0", "v1.0.0");
-    ctx.with_log_capture(capture.clone());
-    let log = ctx.logger("publish");
+fn render_inner_flat_archive_builds_in_srcdir() {
+    let mut ctx = source_ctx(
+        "https://github.com/acme/widget.git",
+        "widget",
+        "2.0.0",
+        "v2.0.0",
+    );
+    ctx.artifacts.all_mut()[0]
+        .metadata
+        .insert("prefix".to_string(), String::new());
     let cfg = AurSourceConfig::default();
-    let render = render_aur_source_inner(&ctx, &cfg, "thing", false, "aur_source", &log)
-        .expect("render ok despite unextractable owner");
-    // Empty owner → URL has an empty owner segment.
+    let render = render_aur_source_inner(&ctx, &cfg, "widget", false, "aur_source", &quiet_log())
+        .expect("render ok");
+    let pkgbuild = &render.rendered.pkgbuild;
+    assert!(
+        pkgbuild.contains("build() {\n  cargo build --release --locked\n}"),
+        "{pkgbuild}"
+    );
+    assert!(!pkgbuild.contains("  cd \""), "{pkgbuild}");
+}
+
+/// Without a source archive and without `url_template` there is nothing to
+/// build from: the entry is skipped with a reason naming `source.enabled`,
+/// or, when the stage is on but did not run, saying so.
+#[test]
+fn render_inner_without_a_source_archive_skips_the_entry() {
+    let mut ctx = source_ctx(
+        "https://github.com/acme/thing.git",
+        "thing",
+        "1.0.0",
+        "v1.0.0",
+    );
+    ctx.artifacts = Default::default();
+    let cfg = AurSourceConfig::default();
+    let err = render_aur_source_inner(&ctx, &cfg, "thing", false, "aur_source", &quiet_log())
+        .err()
+        .expect("no source archive must disqualify the entry");
+    assert_eq!(
+        anodizer_core::pipe_skip::entry_skip_reason(&err),
+        Some("no source archive found: enable `source.enabled: true`"),
+        "{err:#}"
+    );
+
+    ctx.config.source = Some(anodizer_core::config::SourceConfig {
+        enabled: Some(true),
+        ..Default::default()
+    });
+    let err = render_aur_source_inner(&ctx, &cfg, "thing", false, "aur_source", &quiet_log())
+        .err()
+        .expect("no source archive must disqualify the entry");
+    assert_eq!(
+        anodizer_core::pipe_skip::entry_skip_reason(&err),
+        Some(
+            "no source archive was produced: the source stage did not run (a dry run, or `--skip=source`)"
+        ),
+        "{err:#}"
+    );
+}
+
+/// An archive the release has not uploaded yet has no URL: a snapshot or dry
+/// run names it by file name, a live run skips the entry.
+#[test]
+fn render_inner_archive_without_a_url_is_named_on_a_snapshot_and_skipped_live() {
+    let mut ctx = source_ctx(
+        "https://github.com/acme/thing.git",
+        "thing",
+        "1.0.0",
+        "v1.0.0",
+    );
+    ctx.artifacts.all_mut()[0].metadata.remove("url");
+    let cfg = AurSourceConfig::default();
+    let err = render_aur_source_inner(&ctx, &cfg, "thing", false, "aur_source", &quiet_log())
+        .err()
+        .expect("a live run cannot name a URL it does not have");
+    assert_eq!(
+        anodizer_core::pipe_skip::entry_skip_reason(&err),
+        Some(
+            "source archive 'thing-1.0.0.tar.gz' has no download URL yet; the release stage sets it when the archive is uploaded"
+        ),
+        "{err:#}"
+    );
+
+    ctx.options.snapshot = true;
+    let render = render_aur_source_inner(&ctx, &cfg, "thing", false, "aur_source", &quiet_log())
+        .expect("a snapshot renders against the file name");
     assert!(
         render
             .rendered
             .pkgbuild
-            .contains("source=(\"https://github.com//thing/archive/refs/tags/v1.0.0.tar.gz\")"),
+            .contains("source=(\"${pkgname}_${pkgver}.tar.gz::thing-${pkgver}.tar.gz\")"),
         "{}",
         render.rendered.pkgbuild
     );
+}
+
+/// An archive without a recorded checksum is hashed from its bytes when the
+/// file is at hand, and marked `SKIP` when it is not.
+#[test]
+fn render_inner_hashes_the_archive_when_no_checksum_was_recorded() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("thing-1.0.0.tar.gz");
+    std::fs::write(&path, b"not really a tarball").expect("write");
+    let expected = anodizer_core::hashing::sha256_file(&path).expect("hash");
+
+    let mut ctx = source_ctx(
+        "https://github.com/acme/thing.git",
+        "thing",
+        "1.0.0",
+        "v1.0.0",
+    );
+    let archive = &mut ctx.artifacts.all_mut()[0];
+    archive.metadata.remove("sha256");
+    archive.path = path;
+    let cfg = AurSourceConfig::default();
+    let render = render_aur_source_inner(&ctx, &cfg, "thing", false, "aur_source", &quiet_log())
+        .expect("render ok");
     assert!(
-        capture
-            .warn_messages()
-            .iter()
-            .any(|m| m.contains("could not extract owner")),
-        "an unextractable GitURL must warn the operator; got: {:?}",
-        capture.warn_messages()
+        render
+            .rendered
+            .pkgbuild
+            .contains(&format!("sha256sums=('{expected}')")),
+        "{}",
+        render.rendered.pkgbuild
+    );
+
+    ctx.artifacts.all_mut()[0].path = dir.path().join("gone.tar.gz");
+    let render = render_aur_source_inner(&ctx, &cfg, "thing", false, "aur_source", &quiet_log())
+        .expect("render ok");
+    assert!(
+        render.rendered.pkgbuild.contains("sha256sums=('SKIP')"),
+        "{}",
+        render.rendered.pkgbuild
+    );
+}
+
+/// `backup:` entries and the `install:` script are named in `.SRCINFO` the
+/// way they are in the PKGBUILD.
+#[test]
+fn render_inner_srcinfo_names_backup_files_and_the_install_script() {
+    let ctx = source_ctx(
+        "https://github.com/acme/thing.git",
+        "thing",
+        "1.0.0",
+        "v1.0.0",
+    );
+    let cfg = AurSourceConfig {
+        backup: Some(vec!["etc/thing/config.toml".to_string()]),
+        install: Some("post_install() { :; }".to_string()),
+        ..Default::default()
+    };
+    let render = render_aur_source_inner(&ctx, &cfg, "thing", false, "aur_source", &quiet_log())
+        .expect("render ok");
+    for line in [
+        "\tbackup = etc/thing/config.toml",
+        "\tinstall = thing.install",
+    ] {
+        assert!(
+            render.rendered.srcinfo.lines().any(|l| l == line),
+            "missing {line:?}:\n{}",
+            render.rendered.srcinfo
+        );
+    }
+    assert!(
+        render
+            .rendered
+            .pkgbuild
+            .contains("backup=('etc/thing/config.toml')\ninstall=thing.install"),
+        "{}",
+        render.rendered.pkgbuild
+    );
+}
+
+/// An explicit `arches:` list replaces the one derived from the build
+/// targets, sorted and de-duplicated.
+#[test]
+fn render_inner_explicit_arches_replace_the_derived_list() {
+    let ctx = source_ctx(
+        "https://github.com/acme/thing.git",
+        "thing",
+        "1.0.0",
+        "v1.0.0",
+    );
+    let cfg = AurSourceConfig {
+        arches: Some(vec![
+            "x86_64".to_string(),
+            "armv7h".to_string(),
+            "x86_64".to_string(),
+        ]),
+        ..Default::default()
+    };
+    let render = render_aur_source_inner(&ctx, &cfg, "thing", false, "aur_source", &quiet_log())
+        .expect("render ok");
+    assert!(
+        render
+            .rendered
+            .pkgbuild
+            .contains("arch=('armv7h' 'x86_64')"),
+        "{}",
+        render.rendered.pkgbuild
+    );
+    assert_eq!(
+        render
+            .rendered
+            .srcinfo
+            .lines()
+            .filter(|l| l.starts_with("\tarch = "))
+            .collect::<Vec<_>>(),
+        vec!["\tarch = armv7h", "\tarch = x86_64"]
     );
 }
 
@@ -702,10 +975,9 @@ fn render_inner_url_template_overrides_with_amd64_scope() {
     let render = render_aur_source_inner(&ctx, &cfg, "p", false, "aur_source", &quiet_log())
         .expect("render ok");
     assert!(
-        render
-            .rendered
-            .pkgbuild
-            .contains("source=(\"https://dl.example/3.1.0/v1/src.tar.gz\")"),
+        render.rendered.pkgbuild.contains(
+            "source=(\"${pkgname}_${pkgver}.tar.gz::https://dl.example/${pkgver}/v1/src.tar.gz\")"
+        ),
         "url_template must render with default Amd64=v1:\n{}",
         render.rendered.pkgbuild
     );
@@ -733,7 +1005,7 @@ fn render_inner_amd64_variant_threads_into_template() {
         render
             .rendered
             .pkgbuild
-            .contains("source=(\"https://dl/v3.tar.gz\")"),
+            .contains("source=(\"${pkgname}_${pkgver}.tar.gz::https://dl/v3.tar.gz\")"),
         "{}",
         render.rendered.pkgbuild
     );
@@ -780,6 +1052,7 @@ fn render_inner_strips_bin_and_defaults_version() {
     let mut ctx = Context::new(Config::default(), ContextOptions::default());
     // No Version var → defaults to 0.0.0; GitURL/ProjectName empty.
     ctx.template_vars_mut().set("Tag", "v9");
+    ctx.artifacts.add(source_archive("o", "foo", "0.0.0", "v9"));
     let cfg = AurSourceConfig::default();
     let render =
         render_aur_source_inner(&ctx, &cfg, "foo-bin", true, "aur_sources[0]", &quiet_log())
@@ -955,6 +1228,8 @@ fn render_per_crate_emits_pkgbuild() {
     ctx.template_vars_mut()
         .set("GitURL", "https://github.com/o/demo.git");
     ctx.template_vars_mut().set("ProjectName", "demo");
+    ctx.artifacts
+        .add(source_archive("o", "demo", "1.0.0", "v1.0.0"));
     let rendered = render_aur_source_pkgbuild_and_srcinfo_for_crate(&ctx, "demo", &quiet_log())
         .expect("render ok")
         .expect("not skipped");
@@ -1015,6 +1290,8 @@ fn render_per_crate_resolves_workspace_only_crate() {
     ctx.template_vars_mut()
         .set("GitURL", "https://github.com/o/ws-only.git");
     ctx.template_vars_mut().set("ProjectName", "ws-only");
+    ctx.artifacts
+        .add(source_archive("o", "ws-only", "1.0.0", "v1.0.0"));
     let rendered = render_aur_source_pkgbuild_and_srcinfo_for_crate(&ctx, "ws-only", &quiet_log())
         .expect("render ok")
         .expect("workspace-only crate must resolve, not silently skip");
@@ -1060,6 +1337,8 @@ fn render_top_level_handles_empty_populated_and_skip() {
     ctx2.template_vars_mut().set("ProjectName", "p");
     ctx2.template_vars_mut().set("Tag", "v1.0.0");
     ctx2.template_vars_mut().set("Version", "1.0.0");
+    ctx2.artifacts
+        .add(source_archive("o", "p", "1.0.0", "v1.0.0"));
     let out = render_top_level_aur_source(&ctx2, &quiet_log()).expect("render ok");
     assert_eq!(out.len(), 1, "skipped entry must be dropped");
     assert_eq!(out[0].0, 0);
@@ -1095,6 +1374,8 @@ fn publish_to_aur_source_dry_run_returns_false() {
     ctx.template_vars_mut()
         .set("GitURL", "https://github.com/o/demo.git");
     ctx.template_vars_mut().set("ProjectName", "demo");
+    ctx.artifacts
+        .add(source_archive("o", "demo", "1.0.0", "v1.0.0"));
     let pushed = publish_to_aur_source(&mut ctx, "demo", &quiet_log()).expect("dry-run ok");
     assert!(!pushed, "dry-run must not push");
 }
@@ -1201,6 +1482,8 @@ fn live_source_ctx(
     ctx.template_vars_mut()
         .set("GitURL", "https://github.com/myorg/mytool.git");
     ctx.template_vars_mut().set("ProjectName", "mytool");
+    ctx.artifacts
+        .add(source_archive("myorg", "mytool", "1.2.3", "v1.2.3"));
     (ctx, dist)
 }
 
@@ -1218,7 +1501,7 @@ fn publish_to_aur_source_pushes_to_master() {
     assert!(pkgbuild.contains("pkgname='mytool'"), "{pkgbuild}");
     assert!(
         pkgbuild.contains(
-            "source=(\"https://github.com/myorg/mytool/archive/refs/tags/v1.2.3.tar.gz\")"
+            "source=(\"${pkgname}_${pkgver}.tar.gz::https://github.com/myorg/mytool/releases/download/v${pkgver}/mytool-${pkgver}.tar.gz\")"
         ),
         "{pkgbuild}"
     );
@@ -1501,6 +1784,8 @@ fn aur_source_publisher_run_pushes_top_level_entry() {
     ctx.template_vars_mut()
         .set("GitURL", "https://github.com/myorg/widget.git");
     ctx.template_vars_mut().set("ProjectName", "widget");
+    ctx.artifacts
+        .add(source_archive("myorg", "widget", "2.0.0", "v2.0.0"));
     let p = AurSourcePublisher::new();
 
     let evidence = p.run(&mut ctx).expect("run ok");
@@ -1618,5 +1903,40 @@ fn aur_source_publisher_run_dry_run_records_no_targets() {
     assert!(
         targets.is_empty(),
         "dry-run must not record force-push targets: {targets:?}"
+    );
+}
+
+/// A templated `description:` is expanded first and quoted second, so an
+/// apostrophe the template renders is escaped for the shell rather than the
+/// template text being quoted unexpanded.
+#[test]
+fn aur_source_description_template_is_expanded_before_it_is_quoted() {
+    let ctx = source_ctx(
+        "https://github.com/myorg/mytool.git",
+        "mytool",
+        "1.2.3",
+        "v1.2.3",
+    );
+    let cfg = AurSourceConfig {
+        description: Some("{{ .ProjectName }}'s tool, {{ .Version }}".to_string()),
+        ..Default::default()
+    };
+    let render = render_aur_source_inner(&ctx, &cfg, "mytool", false, "aur_source", &quiet_log())
+        .expect("render ok");
+    assert!(
+        render
+            .rendered
+            .pkgbuild
+            .contains(r"pkgdesc='mytool'\''s tool, 1.2.3'"),
+        "{}",
+        render.rendered.pkgbuild
+    );
+    assert!(
+        render
+            .rendered
+            .srcinfo
+            .contains("\tpkgdesc = mytool's tool, 1.2.3\n"),
+        "{}",
+        render.rendered.srcinfo
     );
 }

@@ -92,12 +92,102 @@ pub(super) fn aur_source_arches(ctx: &Context, crate_name: &str) -> Result<Vec<S
     Ok(arches)
 }
 
+/// The source archive a source package downloads, resolved from the run.
+struct ResolvedSource {
+    url: String,
+    sha256: String,
+    format: String,
+    prefix: String,
+}
+
+/// Find the source archive the release carries and the URL, checksum,
+/// format and top-level directory the PKGBUILD needs from it.
+///
+/// `url_template` overrides the URL (with `ArtifactName` set to the archive's
+/// file name) and is the one way to render without an archive, in which case
+/// the checksum is `SKIP`. Without it, a run that produced no source archive
+/// disqualifies the entry: the reason names `source.enabled: true` when the
+/// stage is off, and the stage not having run when it is on (a dry run, or
+/// `--skip=source`). An archive whose download URL is not known yet is used
+/// under its file name on a snapshot or dry run and disqualifies the entry
+/// otherwise.
+fn resolve_source_archive(
+    ctx: &Context,
+    cfg: &AurSourceConfig,
+    scoped_vars: &mut anodizer_core::template::TemplateVars,
+    label: &str,
+) -> Result<ResolvedSource> {
+    let archive = ctx
+        .artifacts
+        .all()
+        .iter()
+        .find(|a| a.kind == anodizer_core::artifact::ArtifactKind::SourceArchive);
+    if let Some(a) = archive {
+        scoped_vars.set("ArtifactName", &a.name);
+    }
+
+    let url = match (&cfg.url_template, archive) {
+        (Some(tmpl), _) => anodizer_core::template::render(tmpl, scoped_vars)
+            .with_context(|| format!("{label}: render url_template"))?,
+        (None, None) => {
+            let reason = if ctx.config.source.as_ref().is_some_and(|s| s.is_enabled()) {
+                "no source archive was produced: the source stage did not run \
+                 (a dry run, or `--skip=source`)"
+            } else {
+                "no source archive found: enable `source.enabled: true`"
+            };
+            return Err(anodizer_core::pipe_skip::entry_skip(reason));
+        }
+        (None, Some(a)) => match a.metadata.get("url") {
+            Some(url) => url.clone(),
+            None if ctx.is_snapshot() || ctx.is_dry_run() => a.name.clone(),
+            None => {
+                return Err(anodizer_core::pipe_skip::entry_skip(format!(
+                    "source archive '{}' has no download URL yet; the release \
+                     stage sets it when the archive is uploaded",
+                    a.name
+                )));
+            }
+        },
+    };
+
+    let sha256 = match archive {
+        Some(a) => match a.metadata.get("sha256") {
+            Some(sum) if !sum.is_empty() => sum.clone(),
+            _ if a.path.is_file() => anodizer_core::hashing::sha256_file(&a.path)
+                .with_context(|| format!("{label}: checksum {}", a.path.display()))?,
+            _ => "SKIP".to_string(),
+        },
+        None => "SKIP".to_string(),
+    };
+
+    let format = archive
+        .and_then(|a| a.metadata.get("format").cloned())
+        .filter(|f| !f.is_empty())
+        .unwrap_or_else(|| crate::aur::extract_archive_extension(&url).to_string());
+
+    // The archive's top-level directory travels in its metadata so a
+    // `--publish-only` run rehydrated from `artifacts.json` still knows it;
+    // the `SourcePrefix` variable covers a run in which the stage just ran.
+    let prefix = archive
+        .and_then(|a| a.metadata.get("prefix").cloned())
+        .or_else(|| ctx.template_vars().get("SourcePrefix").cloned())
+        .unwrap_or_default();
+
+    Ok(ResolvedSource {
+        url,
+        sha256,
+        format,
+        prefix,
+    })
+}
+
 /// Skip-unaware render of a single source-AUR entry's `PKGBUILD` + `.SRCINFO`.
 ///
-/// Resolves every field default, derives the source tarball URL (honoring
-/// `url_template`, with the `Amd64` micro-architecture variable scoped onto a
-/// throwaway copy of the template vars so this stays a pure read of `ctx`), and
-/// renders both artifacts. The skip / `skip_upload` / `if` gate is evaluated by
+/// Resolves every field default, resolves the source archive the release
+/// carries (honoring `url_template`, with the `Amd64` micro-architecture
+/// variable scoped onto a throwaway copy of the template vars so this stays a
+/// pure read of `ctx`), and renders both artifacts. The skip / `skip_upload` / `if` gate is evaluated by
 /// the callers, so this never double-evaluates it and `ctx` is not mutated.
 pub(super) fn render_aur_source_inner(
     ctx: &Context,
@@ -169,7 +259,15 @@ pub(super) fn render_aur_source_inner(
     // Derive the pacman `arch=()` set from the linux build targets this source
     // package supports (per-crate when `default_name` names a configured crate
     // with explicit builds; workspace-wide otherwise).
-    let arches = aur_source_arches(ctx, default_name)?;
+    let arches = match cfg.arches.as_deref() {
+        Some(explicit) if !explicit.is_empty() => {
+            let mut arches = explicit.to_vec();
+            arches.sort();
+            arches.dedup();
+            arches
+        }
+        _ => aur_source_arches(ctx, default_name)?,
+    };
 
     let pkgrel: u32 = cfg.rel.as_deref().and_then(|r| r.parse().ok()).unwrap_or(1);
 
@@ -212,45 +310,7 @@ pub(super) fn render_aur_source_inner(
         is_strict,
     )?;
 
-    // Source URL — use url_template or default release URL
-    let tag = ctx.template_vars().get("Tag").cloned().unwrap_or_default();
-
-    let source_url = if let Some(ref tmpl) = cfg.url_template {
-        anodizer_core::template::render(tmpl, &scoped_vars)
-            .with_context(|| format!("{}: render url_template", label))?
-    } else {
-        let git_url = ctx
-            .template_vars()
-            .get("GitURL")
-            .cloned()
-            .unwrap_or_default();
-        let owner = if git_url.contains("://") {
-            git_url.split('/').nth(3).unwrap_or("").to_string()
-        } else if git_url.contains(':') {
-            git_url
-                .split(':')
-                .nth(1)
-                .unwrap_or("")
-                .split('/')
-                .next()
-                .unwrap_or("")
-                .to_string()
-        } else {
-            String::new()
-        };
-        let project = ctx
-            .template_vars()
-            .get("ProjectName")
-            .cloned()
-            .unwrap_or_default();
-        if owner.is_empty() {
-            log.warn(&format!(
-                "could not extract owner from GitURL for {}; set url_template explicitly",
-                label
-            ));
-        }
-        format!("https://github.com/{owner}/{project}/archive/refs/tags/{tag}.tar.gz",)
-    };
+    let source = resolve_source_archive(ctx, cfg, &mut scoped_vars, label)?;
 
     let maintainers = cfg
         .maintainers
@@ -315,8 +375,14 @@ pub(super) fn render_aur_source_inner(
         binary_name: default_name,
         install_file: install_file_ref,
     };
-    let pkgbuild = generate_source_pkgbuild(&meta, &deps, &extras, &source_url);
-    let srcinfo = generate_source_srcinfo(&meta, &deps, &source_url);
+    let source_file = AurSourceFile {
+        url: &source.url,
+        sha256: &source.sha256,
+        format: &source.format,
+        prefix: &source.prefix,
+    };
+    let pkgbuild = generate_source_pkgbuild(&meta, &deps, &extras, &source_file);
+    let srcinfo = generate_source_srcinfo(&meta, &deps, &extras, &source_file);
     util::guard_no_unrendered(ctx, log, "aur-source PKGBUILD", &pkgbuild)?;
     util::guard_no_unrendered(ctx, log, "aur-source .SRCINFO", &srcinfo)?;
 

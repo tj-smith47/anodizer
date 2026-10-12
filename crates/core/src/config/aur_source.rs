@@ -13,7 +13,8 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 pub struct AurSourceConfig {
     /// Override the package name (default: crate name, no -bin suffix).
     pub name: Option<String>,
-    /// Build IDs filter.
+    /// Has no effect on a source package: the PKGBUILD builds from the one
+    /// source archive the release carries, not from build artifacts.
     pub ids: Option<Vec<String>>,
     /// Commit author with optional signing.
     pub commit_author: Option<CommitAuthorConfig>,
@@ -28,7 +29,9 @@ pub struct AurSourceConfig {
     /// Skip publishing. `"true"` always skips; `"auto"` skips for prereleases.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip_upload: Option<StringOrBool>,
-    /// Custom URL template for download URLs.
+    /// Download URL of the source archive (template). Defaults to the release
+    /// asset URL of the archive the `source:` stage produced; `{{ .ArtifactName }}`
+    /// is that archive's file name.
     pub url_template: Option<String>,
     /// PKGBUILD maintainer entries.
     pub maintainers: Option<Vec<String>>,
@@ -74,7 +77,8 @@ pub struct AurSourceConfig {
     pub skip: Option<StringOrBool>,
     /// Content for a .install file (post-install/pre-remove scripts).
     pub install: Option<String>,
-    /// Explicit architecture list (default: auto-detect from artifacts).
+    /// Pacman architectures for `arch=()`. Defaults to the architectures of the
+    /// Linux build targets, `x86_64` when there are none.
     pub arches: Option<Vec<String>>,
     /// `x86_64` micro-architecture variant — `v1` (baseline), `v2`, `v3`
     /// (AVX2), or `v4`. Constrained

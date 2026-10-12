@@ -55,9 +55,23 @@ pub(super) struct AurHooks<'a> {
     pub(super) package: Option<&'a str>,
 }
 
-/// Everything PKGBUILD-only beyond `meta` + `deps` + `source_url`.
-/// Bundles people, hooks, backup file list, and the binary name used by
-/// the default build/package bodies.
+/// The source archive a source package downloads and builds from.
+#[derive(Clone, Copy)]
+pub(super) struct AurSourceFile<'a> {
+    /// Download URL of the archive.
+    pub(super) url: &'a str,
+    /// Its sha256, or `SKIP` when the archive bytes are not at hand.
+    pub(super) sha256: &'a str,
+    /// Archive format (`tar.gz`, `zip`, …), the alias's extension.
+    pub(super) format: &'a str,
+    /// The archive's top-level directory; empty when its files sit at the root.
+    pub(super) prefix: &'a str,
+}
+
+/// Everything beyond `meta` + `deps` + the source archive: people, hooks,
+/// the backup file list, the install script and the binary name the default
+/// build/package bodies use. `.SRCINFO` reads the backup list and the
+/// install script name from it.
 #[derive(Clone, Copy)]
 pub(super) struct AurExtras<'a> {
     pub(super) people: AurPeople<'a>,
@@ -97,7 +111,8 @@ pub(super) fn write_aur_source_files(
 pub(super) fn generate_source_srcinfo(
     meta: &AurMeta<'_>,
     deps: &AurDeps<'_>,
-    source_url: &str,
+    extras: &AurExtras<'_>,
+    source: &AurSourceFile<'_>,
 ) -> String {
     let AurMeta {
         name,
@@ -145,11 +160,31 @@ pub(super) fn generate_source_srcinfo(
     for p in provides {
         lines.push(format!("\tprovides = {}", p));
     }
-    lines.push(format!("\tsource = {}", source_url));
-    lines.push("\tsha256sums = SKIP".to_string());
+    for b in extras.backup {
+        lines.push(format!("\tbackup = {}", b));
+    }
+    if let Some(install_file) = extras.install_file {
+        lines.push(format!("\tinstall = {}", install_file));
+    }
+    lines.push(format!(
+        "\tsource = {}::{}",
+        source_alias(name, version, source.format),
+        source.url
+    ));
+    lines.push(format!("\tsha256sums = {}", source.sha256));
     lines.push(String::new());
     lines.push(format!("pkgname = {}", name));
     lines.join("\n")
+}
+
+/// The file name makepkg saves the source archive under: one name per package
+/// and version, whatever the release called the asset.
+fn source_alias(name: &str, version: &str, format: &str) -> String {
+    if format.is_empty() {
+        format!("{name}_{version}")
+    } else {
+        format!("{name}_{version}.{format}")
+    }
 }
 
 /// Generate a source-only PKGBUILD that builds from source using cargo.
@@ -157,7 +192,7 @@ pub(super) fn generate_source_pkgbuild(
     meta: &AurMeta<'_>,
     deps: &AurDeps<'_>,
     extras: &AurExtras<'_>,
-    source_url: &str,
+    source: &AurSourceFile<'_>,
 ) -> String {
     let AurMeta {
         name,
@@ -243,10 +278,29 @@ pub(super) fn generate_source_pkgbuild(
         lines.push(format!("install={}", install_file));
     }
 
-    lines.push(format!("source=(\"{}\")", source_url));
-    lines.push("sha256sums=('SKIP')".to_string());
+    // The version inside the URL and the prefix becomes `${pkgver}` so a
+    // pkgver bump moves them with it; an empty version matches everywhere and
+    // is left alone.
+    let pkgver = |text: &str| {
+        if version.is_empty() {
+            text.to_string()
+        } else {
+            text.replace(version, "${pkgver}")
+        }
+    };
+    lines.push(format!(
+        "source=(\"{}::{}\")",
+        source_alias("${pkgname}", "${pkgver}", source.format),
+        pkgver(source.url)
+    ));
+    lines.push(format!("sha256sums=({})", q(source.sha256)));
 
     lines.push(String::new());
+
+    // makepkg extracts the archive into $srcdir; the build runs where the
+    // sources are, which is the archive's top-level directory when it has one.
+    let enter_tree =
+        (!source.prefix.is_empty()).then(|| format!("  cd \"$srcdir/{}\"", pkgver(source.prefix)));
 
     // prepare() function
     if let Some(prep) = prepare {
@@ -265,7 +319,7 @@ pub(super) fn generate_source_pkgbuild(
             lines.push(format!("  {}", line));
         }
     } else {
-        lines.push(format!("  cd \"$srcdir/{}-$pkgver\"", binary_name));
+        lines.extend(enter_tree.clone());
         lines.push("  cargo build --release --locked".to_string());
     }
     lines.push("}".to_string());
@@ -278,7 +332,7 @@ pub(super) fn generate_source_pkgbuild(
             lines.push(format!("  {}", line));
         }
     } else {
-        lines.push(format!("  cd \"$srcdir/{}-$pkgver\"", binary_name));
+        lines.extend(enter_tree);
         lines.push(format!(
             "  install -Dm755 \"target/release/{}\" \"$pkgdir/usr/bin/{}\"",
             binary_name, binary_name

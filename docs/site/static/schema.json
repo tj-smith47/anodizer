@@ -2097,7 +2097,7 @@
           ]
         },
         "arches": {
-          "description": "Explicit architecture list (default: auto-detect from artifacts).",
+          "description": "Pacman architectures for `arch=()`. Defaults to the architectures of the Linux build targets, `x86_64` when there are none.",
           "default": null,
           "type": [
             "array",
@@ -2220,7 +2220,7 @@
           ]
         },
         "ids": {
-          "description": "Build IDs filter.",
+          "description": "Has no effect on a source package: the PKGBUILD builds from the one source archive the release carries, not from build artifacts.",
           "default": null,
           "type": [
             "array",
@@ -2378,7 +2378,7 @@
           ]
         },
         "url_template": {
-          "description": "Custom URL template for download URLs.",
+          "description": "Download URL of the source archive (template). Defaults to the release asset URL of the archive the `source:` stage produced; `{{ .ArtifactName }}` is that archive's file name.",
           "default": null,
           "type": [
             "string",

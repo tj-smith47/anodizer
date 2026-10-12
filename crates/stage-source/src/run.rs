@@ -254,6 +254,7 @@ impl SourceStage {
 
         let mut metadata = HashMap::new();
         metadata.insert("format".to_string(), format);
+        metadata.insert("prefix".to_string(), source_prefix);
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::SourceArchive,

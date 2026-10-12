@@ -616,6 +616,29 @@ mod tests {
         });
     }
 
+    /// Add the source archive the `source:` stage registers, with the url,
+    /// sha256, format and top-level directory the source PKGBUILD reads.
+    fn add_source_archive(ctx: &mut Context, project: &str, version: &str) {
+        let name = format!("{project}-{version}.tar.gz");
+        let mut meta = HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            format!("https://github.com/acme/widget/releases/download/v{version}/{name}"),
+        );
+        meta.insert("sha256".to_string(), "b".repeat(64));
+        meta.insert("format".to_string(), "tar.gz".to_string());
+        meta.insert("prefix".to_string(), format!("{project}-{version}"));
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::SourceArchive,
+            path: std::path::PathBuf::from(format!("/dist/{name}")),
+            name,
+            target: None,
+            crate_name: project.to_string(),
+            metadata: meta,
+            size: None,
+        });
+    }
+
     /// (a) Single-crate mode, BINARY AUR: one crate, every option set. The
     /// rendered PKGBUILD + .SRCINFO must clear both structural floors with zero
     /// findings and stamp the key fields a release ships.
@@ -784,6 +807,7 @@ mod tests {
 
         let mut ctx = TestContextBuilder::new().crates(vec![krate]).build();
         scope_version(&mut ctx, "1.0.0");
+        add_source_archive(&mut ctx, "widget", "1.0.0");
 
         let rendered = render_aur_source_pkgbuild_and_srcinfo_for_crate(
             &ctx,
@@ -1187,7 +1211,7 @@ mod tests {
         assert!(
             rendered
                 .pkgbuild
-                .contains("https://acme.example/v3/widget-1.0.0.tar.gz"),
+                .contains("https://acme.example/v3/widget-${pkgver}.tar.gz"),
             "the url_template must resolve {{ .Amd64 }} to the configured v3, got: {}",
             rendered.pkgbuild
         );
