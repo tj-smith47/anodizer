@@ -78,7 +78,7 @@ pub(crate) fn artifact_matches_platform(
 /// arm64 `v8` and amd64 `v1` baselines are dropped (`linux/arm64/v8` →
 /// `linux/arm64`), every other variant is kept (`linux/arm/v7`,
 /// `linux/amd64/v3`).
-pub(crate) fn staging_platform_dir(platform: &str) -> String {
+pub fn staging_platform_dir(platform: &str) -> String {
     let mut parts = platform.split('/');
     match (parts.next(), parts.next(), parts.next(), parts.next()) {
         (Some(os), Some(arch @ ("arm64" | "amd64")), Some(variant), None)

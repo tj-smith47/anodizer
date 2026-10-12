@@ -63,7 +63,18 @@ pub(super) fn check_docker_platforms(config: &Config, errors: &mut Vec<String>) 
     ];
     for c in config.crate_universe() {
         for (i, d) in c.dockers_v2.iter().flatten().enumerate() {
+            let mut staged: std::collections::HashMap<String, (usize, &str)> =
+                std::collections::HashMap::new();
             for (j, platform) in d.platforms.iter().flatten().enumerate() {
+                let dir = anodizer_stage_docker::staging_platform_dir(platform);
+                if let Some((k, other)) = staged.insert(dir.clone(), (j, platform)) {
+                    errors.push(format!(
+                        "crate '{}': dockers_v2[{i}].platforms[{j}] '{platform}' and \
+                         platforms[{k}] '{other}' both stage under '{dir}' (the directory \
+                         TARGETPLATFORM spells): keep one of them",
+                        c.name
+                    ));
+                }
                 let mut parts = platform.split('/');
                 if let (Some(_), Some("amd64"), Some(level), None) =
                     (parts.next(), parts.next(), parts.next(), parts.next())

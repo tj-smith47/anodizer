@@ -3882,6 +3882,32 @@ fn an_amd64_platform_level_outside_the_variant_vocabulary_is_an_error() {
 }
 
 #[test]
+fn two_platforms_that_stage_under_one_directory_are_an_error() {
+    use anodizer_core::config::DockerV2Config;
+    let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+    config.crates[0].dockers_v2 = Some(vec![DockerV2Config {
+        platforms: Some(vec![
+            "linux/arm64".to_string(),
+            "linux/amd64/v1".to_string(),
+            "linux/arm64/v8".to_string(),
+            "linux/amd64".to_string(),
+        ]),
+        ..Default::default()
+    }]);
+    let mut errors: Vec<String> = vec![];
+    check_docker_platforms(&config, &mut errors);
+    assert_eq!(
+        errors,
+        vec![
+            "crate 'a': dockers_v2[0].platforms[2] 'linux/arm64/v8' and platforms[0] 'linux/arm64' \
+             both stage under 'linux/arm64' (the directory TARGETPLATFORM spells): keep one of them",
+            "crate 'a': dockers_v2[0].platforms[3] 'linux/amd64' and platforms[1] 'linux/amd64/v1' \
+             both stage under 'linux/amd64' (the directory TARGETPLATFORM spells): keep one of them",
+        ]
+    );
+}
+
+#[test]
 fn a_target_variant_call_with_the_wrong_argument_is_an_error() {
     use anodizer_core::config::SbomConfig;
     let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);

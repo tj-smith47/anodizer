@@ -259,15 +259,22 @@ addition to the standard template surface, hooks see:
 ## Dockerfile pattern (distroless + dist-tree binary)
 
 The recommended pattern: a multi-stage-free Dockerfile that copies the
-pre-built release binary from anodizer's dist tree. The `BIN` build-arg names
-the per-arch binary path.
+pre-built release binary from the context anodizer stages. The context holds
+one binary per platform under the directory `$TARGETPLATFORM` spells
+(`linux/amd64/myapp`, `linux/arm64/myapp`, `linux/arm/v7/myapp`,
+`linux/amd64/v3/myapp`), so the `COPY` selects by `TARGETOS`, `TARGETARCH`
+and, when buildx sets one, `TARGETVARIANT`. The `BIN` build-arg names the
+binary.
 
 ```dockerfile
 # syntax=docker/dockerfile:1.7
 FROM --platform=$TARGETPLATFORM gcr.io/distroless/cc-debian12:nonroot
 
+ARG TARGETOS
+ARG TARGETARCH
+ARG TARGETVARIANT
 ARG BIN=myapp
-COPY ${BIN} /usr/local/bin/myapp
+COPY ${TARGETOS}/${TARGETARCH}${TARGETVARIANT:+/$TARGETVARIANT}/${BIN} /usr/local/bin/myapp
 
 USER nonroot
 ENTRYPOINT ["/usr/local/bin/myapp"]

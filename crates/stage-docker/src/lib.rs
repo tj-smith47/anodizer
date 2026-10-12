@@ -13,7 +13,7 @@ pub use detect::{is_retriable_build, is_retriable_error};
 // platform_to_arch / tag_suffix
 // ---------------------------------------------------------------------------
 mod platform;
-pub use platform::platform_to_arch;
+pub use platform::{platform_to_arch, staging_platform_dir};
 
 // ---------------------------------------------------------------------------
 // parse_duration_string / resolve_retry_params
