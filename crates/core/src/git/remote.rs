@@ -121,7 +121,16 @@ fn split_scheme_url(url: &str) -> Option<(&str, &str)> {
 /// separator (which would make it a local path or a Windows drive) and names
 /// a host (`@` or `.`); `None` otherwise, or with an empty path.
 fn split_scp_url(url: &str) -> Option<(&str, &str)> {
-    let (before, path) = url.split_once(':')?;
+    // A bracketed IPv6 host carries colons of its own; the separating colon
+    // is the first one after its closing bracket.
+    let host_start = url.rfind('@').map_or(0, |at| at + 1);
+    let split_at = if url[host_start..].starts_with('[') {
+        let close = host_start + url[host_start..].find(']')?;
+        close + url[close..].find(':')?
+    } else {
+        url.find(':')?
+    };
+    let (before, path) = (&url[..split_at], &url[split_at + 1..]);
     if before.contains(['/', '\\'])
         || !(before.contains('@') || before.contains('.'))
         || path.is_empty()
@@ -225,22 +234,11 @@ pub(crate) fn parse_remote_owner_repo(url: &str) -> Option<(String, String)> {
         return None;
     }
 
-    // SSH: git@host:owner/repo or git@host:group/subgroup/repo
-    if let Some(colon_pos) = url.find(':') {
-        let before_colon = &url[..colon_pos];
-        // Ensure it looks like an SSH URL (contains @, no //)
-        if before_colon.contains('@') && !before_colon.contains("//") {
-            let path = &url[colon_pos + 1..];
-            let last_slash = path.rfind('/')?;
-            let owner = &path[..last_slash];
-            let repo = &path[last_slash + 1..];
-            if !owner.is_empty() && !repo.is_empty() {
-                return Some((owner.to_string(), repo.to_string()));
-            }
-        }
-    }
-
-    None
+    let (_, path) = split_scp_url(url)?;
+    let last_slash = path.rfind('/')?;
+    let owner = &path[..last_slash];
+    let repo = &path[last_slash + 1..];
+    (!owner.is_empty() && !repo.is_empty()).then(|| (owner.to_string(), repo.to_string()))
 }
 
 /// Convert a git remote URL into its web base (`https://host/owner/repo`),
@@ -266,19 +264,8 @@ pub fn parse_remote_web_base(url: &str) -> Option<String> {
         return Some(format!("https://{}/{}", host, path));
     }
 
-    // SSH: git@host:owner/repo
-    if let Some(colon_pos) = url.find(':') {
-        let before_colon = &url[..colon_pos];
-        if before_colon.contains('@') && !before_colon.contains("//") {
-            let host = ssh_web_host(before_colon.rsplit('@').next().unwrap_or(before_colon));
-            let path = &url[colon_pos + 1..];
-            if !host.is_empty() && !path.is_empty() {
-                return Some(format!("https://{}/{}", host, path));
-            }
-        }
-    }
-
-    None
+    let (host, path) = split_scp_url(url)?;
+    (!host.is_empty()).then(|| format!("https://{host}/{path}"))
 }
 
 /// Get the web base (`https://host/owner/repo`) for the `origin` remote

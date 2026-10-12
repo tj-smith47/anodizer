@@ -191,6 +191,38 @@ fn every_spelling_of_one_remote_has_one_identity() {
 /// A port is dropped on an API base too, so an ssh remote and an https API
 /// base on one machine name one host.
 #[test]
+fn every_scp_reader_accepts_the_same_spellings() {
+    for (url, host, owner, repo) in [
+        (
+            "git@gitlab.com:acme/widget.git",
+            "gitlab.com",
+            "acme",
+            "widget",
+        ),
+        ("gitlab.com:acme/widget.git", "gitlab.com", "acme", "widget"),
+        ("git@[::1]:o/r.git", "[::1]", "o", "r"),
+        ("git@host:2222/o/r.git", "host", "2222/o", "r"),
+    ] {
+        assert_eq!(remote_host(url).as_deref(), Some(host), "host: {url}");
+        assert_eq!(
+            parse_remote_owner_repo(url),
+            Some((owner.to_string(), repo.to_string())),
+            "owner/repo: {url}"
+        );
+        assert_eq!(
+            parse_remote_web_base(url),
+            Some(format!("https://{host}/{owner}/{repo}")),
+            "web base: {url}"
+        );
+    }
+    for url in [r"C:\x@y:z", "/srv/git/widget.git", "widget:"] {
+        assert_eq!(remote_host(url), None, "{url}");
+        assert_eq!(parse_remote_owner_repo(url), None, "{url}");
+        assert_eq!(parse_remote_web_base(url), None, "{url}");
+    }
+}
+
+#[test]
 fn remote_host_reads_every_spelling_and_an_api_url_without_a_path() {
     for (url, want) in [
         ("https://github.com/acme/widget.git", "github.com"),
@@ -210,6 +242,8 @@ fn remote_host_reads_every_spelling_and_an_api_url_without_a_path() {
         ("https://ghe.corp:8443/api/v3", "ghe.corp"),
         ("ssh://git@ghe.corp:2222/o/r.git", "ghe.corp"),
         ("https://[::1]:8443/api/v3", "[::1]"),
+        ("git@[::1]:o/r.git", "[::1]"),
+        ("gitlab.com:acme/widget.git", "gitlab.com"),
     ] {
         assert_eq!(remote_host(url).as_deref(), Some(want), "{url}");
     }
