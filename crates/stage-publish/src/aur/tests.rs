@@ -2764,6 +2764,81 @@ fn source_alias_takes_the_recorded_format_over_the_url_extension() {
     );
 }
 
+/// An archive whose recorded format is empty is read as recording none: the
+/// alias takes the URL's own extension rather than ending in a bare `.`.
+#[test]
+fn an_archive_without_a_recorded_format_falls_back_to_the_url_extension() {
+    let mut ctx = render_ctx(
+        "mytool",
+        AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        },
+        false,
+    );
+    ctx.artifacts = Default::default();
+    ctx.artifacts.add(linux_archive_with_metadata(
+        "x86_64-unknown-linux-gnu",
+        "https://example.com/v1.0.0/mytool-linux-amd64.tar.xz",
+        "aaaa",
+        &[("format", "")],
+    ));
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    let rendered = render_mytool(&ctx);
+    assert!(
+        rendered.srcinfo.lines().any(|l| l
+            == "\tsource_x86_64 = mytool-bin_1.0.0_x86_64.tar.xz::https://example.com/v1.0.0/mytool-linux-amd64.tar.xz"),
+        "the alias carries the URL's extension:\n{}",
+        rendered.srcinfo
+    );
+}
+
+/// The archive stage records `format: binary` on a raw executable it
+/// uploads; that is not an extension, so the alias stays bare and makepkg
+/// keeps the file under the name `package()` installs it from.
+#[test]
+fn a_raw_binary_alias_ignores_its_recorded_binary_format() {
+    let mut ctx = render_ctx(
+        "mytool",
+        AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        },
+        false,
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts = Default::default();
+    let mut artifact = linux_archive_with_metadata(
+        "x86_64-unknown-linux-gnu",
+        "https://example.com/mytool-1.0.0-linux-amd64",
+        "aaaa",
+        &[("binary", "mytool"), ("format", "binary")],
+    );
+    artifact.kind = ArtifactKind::UploadableBinary;
+    artifact.name = "mytool-1.0.0-linux-amd64".to_string();
+    artifact.path = std::path::PathBuf::from("/tmp/mytool-1.0.0-linux-amd64");
+    ctx.artifacts.add(artifact);
+    let rendered = render_mytool(&ctx);
+    assert!(
+        rendered.pkgbuild.contains(
+            "source_x86_64=(\"mytool-bin_${pkgver}_x86_64::https://example.com/mytool-${pkgver}-linux-amd64\")"
+        ),
+        "a raw binary's alias has no extension, recorded format or not:\n{}",
+        rendered.pkgbuild
+    );
+    assert!(
+        rendered.pkgbuild.contains(
+            "install -Dm755 \"$srcdir/mytool-bin_${pkgver}_x86_64\" \"$pkgdir/usr/bin/mytool\""
+        ),
+        "{}",
+        rendered.pkgbuild
+    );
+}
+
 /// Archives that wrap their contents in a directory install the binary from
 /// under that directory, and when every architecture uses one layout the
 /// `package()` body is a single run of install lines with no `case`.
