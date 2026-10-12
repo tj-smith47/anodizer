@@ -15,7 +15,9 @@
 //!   [`MIN_UPLOAD_TRANSIENT_ATTEMPTS`]`)`.
 //! - `AlreadyExists` (422) probes the remote asset's size + state and
 //!   dispatches skip / bail / delete-and-re-upload (inside the same attempt) via
-//!   [`classify_already_exists`]. A PARTIAL asset (GitHub state not
+//!   [`classify_already_exists`]. The re-upload is classified like the first
+//!   POST, and a delete that fails is `Fatal`: the release would otherwise
+//!   carry another release's bytes under this tag. A PARTIAL asset (GitHub state not
 //!   `"uploaded"` — debris from an interrupted prior attempt, e.g. one of
 //!   the transient failures above) is always deleted and re-uploaded,
 //!   regardless of `replace_existing_artifacts`.
@@ -319,13 +321,25 @@ pub(crate) async fn upload_release_asset(
                         .await
                 };
 
-                let result = post(data).await;
-                match classify_upload_attempt(&result) {
+                let mut result = post(data).await;
+                // A re-upload after a delete is classified like the first
+                // POST, so a fatal 4xx fails at once and a rate limit waits
+                // its own slot; it happens at most once per attempt.
+                let mut replaced = false;
+                loop {
+                    break match classify_upload_attempt(&result) {
                     UploadAttemptOutcome::Success => {
                         Step::Done(crate::forge::UploadOutcome::Uploaded(file_name.to_string()))
                     }
                     UploadAttemptOutcome::AlreadyExists => {
                         let err = result.expect_err("AlreadyExists outcome guarantees Err variant");
+                        if replaced {
+                            return Step::Retry {
+                                error: UploadFailure::Transient(anyhow::anyhow!(err)),
+                                delay: exp_backoff(),
+                                cause: "asset reappeared after its delete and re-upload".to_string(),
+                            };
+                        }
 
                         // Probe the remote asset's size + state to distinguish
                         // "same bytes uploaded earlier" (idempotent no-op),
@@ -447,12 +461,11 @@ pub(crate) async fn upload_release_asset(
                             }
                         }
 
-                        // Delete the conflicting asset and retry. If the delete
-                        // itself fails (perms, asset disappeared mid-flight),
-                        // treat the upload as skipped for a PUBLISHED asset (a
-                        // stale asset beats aborting the release); a PARTIAL that
-                        // cannot be deleted is a hard error — it is not
-                        // downloadable, so "keep it" is not an option.
+                        // Delete the conflicting asset and upload again. A
+                        // delete that fails is a hard error either way: a
+                        // published asset left in place would carry the
+                        // previous release's bytes under this tag, and a
+                        // partial one is not downloadable at all.
                         match delete_release_asset_by_name(
                             octo, owner, repo, release_id, file_name, policy, retry_after,
                         )
@@ -466,8 +479,8 @@ pub(crate) async fn upload_release_asset(
                                 // not a failed upload, so it must not spend one
                                 // of the attempts and must still replace the
                                 // asset when this attempt is the last one.
-                                let reupload = match std::fs::read(path) {
-                                    Ok(d) => post(d).await,
+                                let data = match std::fs::read(path) {
+                                    Ok(d) => d,
                                     Err(e) => {
                                         return Step::Fail(UploadFailure::Fatal(
                                             anyhow::Error::new(e).context(format!(
@@ -477,19 +490,9 @@ pub(crate) async fn upload_release_asset(
                                         ));
                                     }
                                 };
-                                match reupload {
-                                    Ok(_) => Step::Done(crate::forge::UploadOutcome::Uploaded(
-                                        file_name.to_string(),
-                                    )),
-                                    Err(reupload_err) => Step::Retry {
-                                        error: UploadFailure::Transient(anyhow::anyhow!(
-                                            reupload_err
-                                        )),
-                                        delay: exp_backoff(),
-                                        cause: "asset already exists; deleted and re-uploaded"
-                                            .to_string(),
-                                    },
-                                }
+                                result = post(data).await;
+                                replaced = true;
+                                continue;
                             }
                             Err(del_err) if partial => Step::Fail(UploadFailure::Fatal(
                                 del_err.context(format!(
@@ -498,19 +501,13 @@ pub(crate) async fn upload_release_asset(
                                     file_name, tag
                                 )),
                             )),
-                            Err(del_err) => {
-                                release_log().warn(&format!(
-                                    "skipped overwrite of existing asset '{file_name}' on release \
-                                     '{tag}' — size mismatch and delete failed: {del_err}; stale \
-                                     asset kept"
-                                ));
-                                // DoneQuiet: the delete-failed warn is the
-                                // resolution; announcing "succeeded after N"
-                                // would contradict it.
-                                Step::DoneQuiet(crate::forge::UploadOutcome::SkippedStaleKept(
-                                    file_name.to_string(),
-                                ))
-                            }
+                            Err(del_err) => Step::Fail(UploadFailure::Fatal(del_err.context(
+                                format!(
+                                    "release: delete existing asset '{}' on release '{}' before \
+                                     replacing it (`replace_existing_artifacts: true`)",
+                                    file_name, tag
+                                ),
+                            ))),
                         }
                     }
                     UploadAttemptOutcome::SecondaryRateLimited => {
@@ -631,6 +628,7 @@ pub(crate) async fn upload_release_asset(
                             },
                         )))
                     }
+                    };
                 }
             }
         },
@@ -1002,6 +1000,86 @@ mod tests {
             11,
             "3 GET+POST pairs + probe list + delete list + DELETE + re-upload GET+POST"
         );
+    }
+
+    /// The re-upload after a delete is classified like any POST: a 403 with
+    /// no rate-limit signal is a denial, so the upload fails on that attempt
+    /// with the scope hint and no attempt is spent re-asking.
+    #[tokio::test]
+    async fn a_fatal_re_upload_fails_at_once_instead_of_retrying() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_artifact(tmp.path(), "app.tar.gz", b"new-content");
+        let stale_list = |addr| {
+            http(
+                "200 OK",
+                &format!("[{}]", asset_json(addr, "app.tar.gz", 4, "uploaded")),
+            )
+        };
+        let (addr, calls) = spawn_oneshot_http_responder_with(|addr| {
+            vec![
+                release_json(addr),
+                http("422 Unprocessable Entity", BODY_422_ALREADY_EXISTS),
+                stale_list(addr),
+                stale_list(addr),
+                http("204 No Content", ""),
+                // re-upload: denied
+                release_json(addr),
+                http(
+                    "403 Forbidden",
+                    r#"{"message":"Resource not accessible by integration"}"#,
+                ),
+            ]
+        });
+
+        let err = run_upload(addr, &path, true)
+            .await
+            .expect_err("a denied re-upload fails the upload");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("GitHub denied the upload (403)") && !msg.contains("failed after"),
+            "the denial is reported once, with no retry summary; got: {msg}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            7,
+            "nothing is asked after the denied re-upload"
+        );
+    }
+
+    /// A delete that fails leaves the previous release's bytes under this
+    /// tag, so the upload fails instead of reporting the stale asset as kept.
+    #[tokio::test]
+    async fn a_failed_delete_of_a_differing_asset_fails_the_upload() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_artifact(tmp.path(), "app.tar.gz", b"new-content");
+        let stale_list = |addr| {
+            http(
+                "200 OK",
+                &format!("[{}]", asset_json(addr, "app.tar.gz", 4, "uploaded")),
+            )
+        };
+        let (addr, calls) = spawn_oneshot_http_responder_with(|addr| {
+            vec![
+                release_json(addr),
+                http("422 Unprocessable Entity", BODY_422_ALREADY_EXISTS),
+                stale_list(addr),
+                stale_list(addr),
+                http(
+                    "403 Forbidden",
+                    r#"{"message":"Resource not accessible by integration"}"#,
+                ),
+            ]
+        });
+
+        let err = run_upload(addr, &path, true)
+            .await
+            .expect_err("a failed delete fails the upload");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("delete existing asset 'app.tar.gz' on release 'v1' before replacing it"),
+            "the error names the delete; got: {msg}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 5, "no re-upload is attempted");
     }
 
     /// `replace_existing_artifacts: false` deletes nothing: the first 422 on a

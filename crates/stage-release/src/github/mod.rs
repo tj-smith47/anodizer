@@ -28,7 +28,7 @@ mod upload;
 mod upload_outcome;
 
 pub(crate) use assets::{delete_release_asset_by_name, find_release_asset_probe};
-pub(crate) use client::build_octocrab_client;
+pub(crate) use client::{build_octocrab_client, delete_checked};
 pub(crate) use rate_limit::check_github_rate_limit_with_env;
 pub(crate) use retry_call::{
     is_octocrab_404, is_octocrab_transport_error, octocrab_retry_cause, retry_octocrab_call,

@@ -3,7 +3,7 @@
 //! is "close the PR we opened against an upstream").
 //!
 //! Two public helpers:
-//! - [`find_open_pr_numbers_for_head`] — `GET /repos/{owner}/{repo}/pulls`
+//! - [`find_open_pr_numbers_for_head_with_env`] — `GET /repos/{owner}/{repo}/pulls`
 //!   with `head=<fork_owner>:<branch>` and `state=open`. Returns the
 //!   PR numbers of every match, following `Link: rel="next"` pagination
 //!   up to a sanity cap of 10 pages (1000 PRs). Distinguishes
@@ -92,7 +92,7 @@ pub(crate) fn classify_close_status(status: reqwest::StatusCode, body: &str) -> 
 // FindPrError — auth-vs-empty-result discrimination
 // ---------------------------------------------------------------------------
 
-/// Failure modes for [`find_open_pr_numbers_for_head`].
+/// Failure modes for [`find_open_pr_numbers_for_head_with_env`].
 ///
 /// Distinguishes "no open PRs match" (the empty `Vec` return) from
 /// "we couldn't tell whether any PRs match" (this enum). Critical for
@@ -183,7 +183,7 @@ impl std::error::Error for FindPrError {
 /// `Err(FindPrError)` for every other status code. Pure helper so the
 /// auth-vs-empty-result boundary can be unit-tested without firing an
 /// HTTP request — production callers go through
-/// [`find_open_pr_numbers_for_head`].
+/// [`find_open_pr_numbers_for_head_with_env`].
 ///
 /// `rate_limited` is the response's header verdict from the shared
 /// [`anodizer_core::git::response_is_rate_limited`] check: GitHub returns
@@ -237,52 +237,7 @@ pub(crate) fn classify_find_pr_status(
     Ok(())
 }
 
-/// Look up open PR numbers for a given `head=<fork_owner>:<branch>`
-/// filter against `<upstream_owner>/<upstream_repo>`.
-///
-/// Follows `Link: rel="next"` pagination so the helper remains
-/// correct as publishers (winget reusing this helper against
-/// `microsoft/winget-pkgs`) target repos with thousands of open PRs.
-/// The `head=` filter is exact-match so the result set per-fork-per-
-/// branch is realistically small (usually 0 or 1); the pagination
-/// loop is a safety net.
-///
-/// **Capped at 10 pages (1000 PRs)** as a sanity bound. If your fork
-/// branch could plausibly carry more than 1000 open PRs at rollback
-/// time, redesign the rollback strategy — `git push --force` to the
-/// fork branch + close-by-head-filter is not the right shape.
-///
-/// `env_hint` is the env-var name the caller resolved the `token`
-/// from (e.g. `"KREW_INDEX_TOKEN"`) — surfaced verbatim in
-/// [`FindPrError::Auth401`] / [`FindPrError::Auth403`] so the
-/// operator-facing warn line names the specific variable they need
-/// to fix.
-///
-/// Returns `Ok(Vec::new())` for a genuine "no open PRs match" result,
-/// and `Err(FindPrError::...)` for every failure mode. Callers must
-/// surface the error variant in the warn line — collapsing
-/// `Err(...)` to `Vec::new()` reintroduces the auth-blindness bug
-/// this signature exists to prevent.
-pub(crate) fn find_open_pr_numbers_for_head(
-    upstream_owner: &str,
-    upstream_repo: &str,
-    fork_owner: &str,
-    branch: &str,
-    token: Option<&str>,
-    env_hint: &str,
-) -> Result<Vec<u64>, FindPrError> {
-    find_open_pr_numbers_for_head_with_env(
-        upstream_owner,
-        upstream_repo,
-        fork_owner,
-        branch,
-        token,
-        env_hint,
-        &ProcessEnvSource,
-    )
-}
-
-/// Env-injectable form of [`find_open_pr_numbers_for_head`] — resolves the
+/// List the open pull requests from `fork_owner:branch` by number — resolves the
 /// GitHub API base through `env` (honoring `ANODIZER_GITHUB_API_BASE`) so a
 /// rollback driven by an injected [`MapEnvSource`](anodizer_core::MapEnvSource)
 /// can be pointed at an in-process responder without touching the process env.

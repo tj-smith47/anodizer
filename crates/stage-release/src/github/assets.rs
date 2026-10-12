@@ -62,10 +62,11 @@ pub(crate) async fn delete_release_asset_by_name(
                     let owner_s = owner_s.clone();
                     let repo_s = repo_s.clone();
                     async move {
-                        octo.repos(owner_s, repo_s)
-                            .release_assets()
-                            .delete(asset_id)
-                            .await
+                        super::delete_checked(
+                            &octo,
+                            format!("/repos/{owner_s}/{repo_s}/releases/assets/{asset_id}"),
+                        )
+                        .await
                     }
                 })
                 .await

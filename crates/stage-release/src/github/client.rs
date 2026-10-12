@@ -212,6 +212,22 @@ impl rustls::client::danger::ServerCertVerifier for DangerousNoCertVerifier {
     }
 }
 
+/// Send a `DELETE` and read its status.
+///
+/// octocrab's typed `delete` helpers (`releases().delete`,
+/// `release_assets().delete`) return `Ok(())` whatever status the server
+/// answered, so a 403 on a release or asset delete read as success and the
+/// caller carried on as if the object were gone. This maps the raw response
+/// through the GitHub error path, so a non-2xx is the `octocrab::Error` the
+/// retry classifier expects.
+pub(crate) async fn delete_checked(
+    octo: &octocrab::Octocrab,
+    route: String,
+) -> octocrab::Result<()> {
+    let response = octo._delete(route, None::<&()>).await?;
+    octocrab::map_github_error(response).await.map(drop)
+}
+
 #[cfg(test)]
 mod tests {
     //! End-to-end proof that the `RetryAfterLayer` actually captures the
@@ -275,5 +291,69 @@ mod tests {
             Some(Duration::from_secs(90)),
             "RetryAfterLayer must capture `Retry-After: 90` through the full stack"
         );
+    }
+
+    /// octocrab's typed delete helpers ignore the response status; the
+    /// shared [`delete_checked`] does not, so a 403 on a DELETE is the error
+    /// the retry classifier reads, and a 204 is `Ok`.
+    #[tokio::test]
+    async fn delete_checked_reads_the_status_the_typed_helpers_ignore() {
+        let forbidden = r#"{"message":"Resource not accessible by integration"}"#;
+        let resp_403 = Box::leak(
+            format!(
+                "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{forbidden}",
+                forbidden.len()
+            )
+            .into_boxed_str(),
+        );
+        let resp_204: &'static str = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
+        let (addr, calls) = spawn_oneshot_http_responder(vec![resp_403, resp_204]);
+        let github_urls = Some(GitHubUrlsConfig {
+            api: Some(format!("http://{addr}/")),
+            upload: Some(format!("http://{addr}/")),
+            download: Some(format!("http://{addr}/")),
+            skip_tls_verify: None,
+        });
+        let (octo, _capture) =
+            build_octocrab_client("test-token", &github_urls).expect("build client");
+
+        let err = delete_checked(&octo, "/repos/o/r/releases/assets/1".to_string())
+            .await
+            .expect_err("a 403 on the DELETE is an error");
+        match err {
+            octocrab::Error::GitHub { source, .. } => {
+                assert_eq!(source.status_code.as_u16(), 403);
+                assert_eq!(source.message, "Resource not accessible by integration");
+            }
+            other => panic!("expected a GitHub error, got {other:?}"),
+        }
+        delete_checked(&octo, "/repos/o/r/releases/assets/2".to_string())
+            .await
+            .expect("a 204 is a completed delete");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// Every GitHub DELETE in this crate goes through [`delete_checked`]:
+    /// octocrab's typed `releases().delete` / `release_assets().delete`
+    /// return `Ok` on any status, so a production body spelling either is a
+    /// delete whose failure nobody reads.
+    #[test]
+    fn every_github_delete_reads_its_status() {
+        use anodizer_core::test_helpers::test_sources::{production_half, rust_sources};
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut callers = 0usize;
+        for path in rust_sources(&src) {
+            let text = std::fs::read_to_string(&path).expect("read source");
+            let prod: String = production_half(&text).split_whitespace().collect();
+            assert!(
+                !prod.contains(".releases().delete(")
+                    && !prod.contains(".release_assets().delete("),
+                "{}: octocrab's typed delete ignores the status; call delete_checked",
+                path.display()
+            );
+            callers += prod.matches("delete_checked(").count();
+        }
+        // The definition plus the asset delete and the two release deletes.
+        assert_eq!(callers, 4, "the GitHub delete population moved");
     }
 }

@@ -81,7 +81,7 @@ pub(crate) use git_revert::RevertTarget;
 // out of the re-export surface honours the "only living surface" rule
 // in the module rustdoc above.
 pub(crate) use github_pr::{
-    CloseOutcome, close_pr_via_api, close_pr_via_api_with_env, find_open_pr_numbers_for_head,
+    CloseOutcome, close_pr_via_api, close_pr_via_api_with_env,
     find_open_pr_numbers_for_head_with_env, find_open_prs_for_head_with_env,
 };
 pub(crate) use parallelism::{

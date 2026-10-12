@@ -143,10 +143,11 @@ pub(crate) fn run_github_backend(
                 let owner = owner.clone();
                 let repo = repo.clone();
                 async move {
-                    octo.repos(&owner, &repo)
-                        .releases()
-                        .delete(existing_id)
-                        .await
+                    super::super::delete_checked(
+                        &octo,
+                        format!("/repos/{owner}/{repo}/releases/{existing_id}"),
+                    )
+                    .await
                 }
             })
             .await
@@ -610,10 +611,11 @@ pub(crate) fn run_github_backend(
                     let owner = github.owner.clone();
                     let repo = github.name.clone();
                     async move {
-                        octo.repos(&owner, &repo)
-                            .releases()
-                            .delete(rel_id)
-                            .await
+                        super::super::delete_checked(
+                            &octo,
+                            format!("/repos/{owner}/{repo}/releases/{rel_id}"),
+                        )
+                        .await
                     }
                 })
                 .await;

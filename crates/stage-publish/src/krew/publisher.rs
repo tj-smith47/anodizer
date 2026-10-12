@@ -449,13 +449,14 @@ impl anodizer_core::Publisher for KrewPublisher {
                 continue;
             };
             let env_hint_for_target = t.token_env_var.as_deref().unwrap_or("KREW_INDEX_TOKEN");
-            let pr_numbers = match crate::util::find_open_pr_numbers_for_head(
+            let pr_numbers = match crate::util::find_open_pr_numbers_for_head_with_env(
                 &t.upstream_owner,
                 &t.upstream_repo,
                 &t.fork_owner,
                 &t.branch,
                 Some(&token),
                 env_hint_for_target,
+                &anodizer_core::ProcessEnvSource,
             ) {
                 Ok(v) => v,
                 Err(e) => {
