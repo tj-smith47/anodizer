@@ -1940,3 +1940,206 @@ fn aur_source_description_template_is_expanded_before_it_is_quoted() {
         render.rendered.srcinfo
     );
 }
+
+/// An archive rehydrated from an `artifacts.json` without a `prefix` key, in a
+/// run where the source stage set `SourcePrefix`, builds in that directory.
+#[test]
+fn render_inner_reads_the_source_prefix_variable_when_the_metadata_has_none() {
+    let mut ctx = source_ctx(
+        "https://github.com/acme/widget.git",
+        "widget",
+        "2.0.0",
+        "v2.0.0",
+    );
+    ctx.artifacts.all_mut()[0].metadata.remove("prefix");
+    ctx.template_vars_mut().set("SourcePrefix", "widget-src");
+    let render = render_aur_source_inner(
+        &ctx,
+        &AurSourceConfig::default(),
+        "widget",
+        false,
+        "aur_source",
+        &quiet_log(),
+    )
+    .expect("render ok");
+    assert!(
+        render
+            .rendered
+            .pkgbuild
+            .contains("  cd \"$srcdir/widget-src\"\n"),
+        "{}",
+        render.rendered.pkgbuild
+    );
+}
+
+/// A `--publish-only` run over an `artifacts.json` written before the metadata
+/// carried `prefix`, with no source stage having run, renders the configured
+/// `prefix_template` the way the stage does: a trailing-slash template names
+/// the directory, a slash-less or absent one builds in `$srcdir`.
+#[test]
+fn render_inner_renders_the_prefix_template_when_neither_metadata_nor_variable_exists() {
+    for (template, expected_cd) in [
+        (
+            Some("{{ ProjectName }}-{{ Version }}/"),
+            Some("  cd \"$srcdir/widget-${pkgver}\"\n"),
+        ),
+        (Some("{{ ProjectName }}-{{ Version }}"), None),
+        (None, None),
+    ] {
+        let mut ctx = source_ctx(
+            "https://github.com/acme/widget.git",
+            "widget",
+            "2.0.0",
+            "v2.0.0",
+        );
+        ctx.artifacts.all_mut()[0].metadata.remove("prefix");
+        assert!(ctx.template_vars().get("SourcePrefix").is_none());
+        ctx.config.source = Some(anodizer_core::config::SourceConfig {
+            enabled: Some(true),
+            prefix_template: template.map(str::to_string),
+            ..Default::default()
+        });
+        let render = render_aur_source_inner(
+            &ctx,
+            &AurSourceConfig::default(),
+            "widget",
+            false,
+            "aur_source",
+            &quiet_log(),
+        )
+        .expect("render ok");
+        let pkgbuild = &render.rendered.pkgbuild;
+        match expected_cd {
+            Some(cd) => assert!(pkgbuild.contains(cd), "{template:?}: {pkgbuild}"),
+            None => assert!(!pkgbuild.contains("  cd \""), "{template:?}: {pkgbuild}"),
+        }
+    }
+}
+
+/// A dry run names an archive the release has not uploaded by its file name,
+/// the way a snapshot does.
+#[test]
+fn render_inner_archive_without_a_url_is_named_on_a_dry_run() {
+    let mut ctx = source_ctx(
+        "https://github.com/acme/thing.git",
+        "thing",
+        "1.0.0",
+        "v1.0.0",
+    );
+    ctx.artifacts.all_mut()[0].metadata.remove("url");
+    ctx.options.dry_run = true;
+    let render = render_aur_source_inner(
+        &ctx,
+        &AurSourceConfig::default(),
+        "thing",
+        false,
+        "aur_source",
+        &quiet_log(),
+    )
+    .expect("a dry run renders against the file name");
+    assert!(
+        render
+            .rendered
+            .pkgbuild
+            .contains("source=(\"${pkgname}_${pkgver}.tar.gz::thing-${pkgver}.tar.gz\")"),
+        "{}",
+        render.rendered.pkgbuild
+    );
+}
+
+/// The release stage stamps a download URL on the artifacts of each crate
+/// with a `release:` block. The source archive is registered under the crate
+/// whose release ships it, so in a single-crate, a lockstep and a per-crate
+/// config — the latter two with a `project_name` naming no crate — the
+/// PKGBUILD renders with the archive's release URL.
+#[test]
+fn the_source_pkgbuild_renders_the_release_url_in_every_config_mode() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{CrateConfig, ReleaseConfig, ScmRepoConfig, WorkspaceConfig};
+    use anodizer_core::stage::Stage;
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    fn crate_cfg(name: &str, release: bool) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ Version }}".to_string()),
+            release: release.then(|| ReleaseConfig {
+                github: Some(ScmRepoConfig {
+                    owner: "acme".to_string(),
+                    name: "ws".to_string(),
+                    token: None,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    let cases = [
+        ("myapp", vec![crate_cfg("myapp", true)], None),
+        (
+            "ws",
+            vec![crate_cfg("ws-core", false), crate_cfg("ws-cli", true)],
+            None,
+        ),
+        (
+            "ws",
+            vec![],
+            Some(vec![WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![crate_cfg("ws-core", true), crate_cfg("ws-cli", true)],
+                ..Default::default()
+            }]),
+        ),
+    ];
+    for (project_name, crates, workspaces) in cases {
+        let mut builder = TestContextBuilder::new()
+            .project_name(project_name)
+            .dry_run(true)
+            .crates(crates);
+        if let Some(ws) = workspaces {
+            builder = builder.workspaces(ws);
+        }
+        let mut ctx = builder.build();
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut()
+            .set("GitURL", "https://github.com/acme/ws.git");
+        let name = format!("{project_name}-1.0.0.tar.gz");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::SourceArchive,
+            path: std::path::PathBuf::from(format!("/dist/{name}")),
+            name: name.clone(),
+            target: None,
+            crate_name: ctx.config.release_owner_crate_name(),
+            metadata: std::collections::HashMap::from([
+                ("format".to_string(), "tar.gz".to_string()),
+                ("prefix".to_string(), format!("{project_name}-1.0.0")),
+            ]),
+            size: None,
+        });
+
+        anodizer_stage_release::ReleaseStage
+            .run(&mut ctx)
+            .unwrap_or_else(|e| panic!("{project_name}: dry-run release: {e:#}"));
+
+        let render = render_aur_source_inner(
+            &ctx,
+            &AurSourceConfig::default(),
+            project_name,
+            false,
+            "aur_source",
+            &quiet_log(),
+        )
+        .unwrap_or_else(|e| panic!("{project_name}: render: {e:#}"));
+        let expected = format!(
+            "source=(\"${{pkgname}}_${{pkgver}}.tar.gz::https://github.com/acme/ws/releases/download/v${{pkgver}}/{project_name}-${{pkgver}}.tar.gz\")"
+        );
+        assert!(
+            render.rendered.pkgbuild.contains(&expected),
+            "{project_name}: {}",
+            render.rendered.pkgbuild
+        );
+    }
+}

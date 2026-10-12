@@ -110,7 +110,7 @@ impl Stage for TemplateFilesStage {
                 path: output_path,
                 name: render.rendered_dst,
                 target: None,
-                crate_name: ctx.config.project_name.clone(),
+                crate_name: ctx.config.release_owner_crate_name(),
                 metadata: HashMap::from([("id".to_string(), id.to_string())]),
                 size: None,
             });

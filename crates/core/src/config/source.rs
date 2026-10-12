@@ -67,6 +67,21 @@ impl SourceConfig {
         self.format.as_deref().unwrap_or("tar.gz")
     }
 
+    /// The top-level directory a source archive has for a rendered
+    /// `prefix_template`, or empty when the archive is flat.
+    ///
+    /// `git archive --prefix` creates a directory only for a prefix ending in
+    /// `/`; a slash-less prefix is glued onto every path (`foomain.rs`), so
+    /// the archive is as flat as one with no prefix. Every reader of the
+    /// archive's layout — the `SourcePrefix` variable, the artifact's
+    /// `prefix` metadata, a source PKGBUILD's `cd` — takes this one answer.
+    pub fn archive_top_level_dir(rendered_prefix: &str) -> String {
+        rendered_prefix
+            .strip_suffix('/')
+            .map(str::to_string)
+            .unwrap_or_default()
+    }
+
     /// Apply defaults to `prefix_template`: when unset and `name_template` is
     /// set, default `prefix_template` to the same string as `name_template`.
     ///

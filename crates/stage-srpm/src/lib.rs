@@ -387,7 +387,7 @@ impl Stage for SrpmStage {
             name: package_filename,
             path: srpm_path,
             target: None,
-            crate_name: project_name,
+            crate_name: ctx.config.release_owner_crate_name(),
             metadata,
             size: None,
         });

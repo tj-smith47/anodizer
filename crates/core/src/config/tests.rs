@@ -11336,3 +11336,68 @@ fn the_rollback_policy_error_quoted_in_the_resilience_docs_is_what_validation_pr
     assert_eq!(quoted[1], produced, "the page's second Error line");
     assert_eq!(quoted.len(), 5, "the errors the page quotes");
 }
+
+/// The repository-level artifacts are owned by the first crate carrying a
+/// `release:` block, whatever `project_name` says, in every config mode; a
+/// config with no crates falls back to `project_name`.
+#[test]
+fn release_owner_crate_name_is_the_first_crate_with_a_release_block() {
+    use super::ReleaseConfig;
+
+    fn crate_cfg(name: &str, release: bool) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            release: release.then(ReleaseConfig::default),
+            ..Default::default()
+        }
+    }
+
+    let single = Config {
+        project_name: "myapp".to_string(),
+        crates: vec![crate_cfg("myapp", true)],
+        ..Default::default()
+    };
+    assert_eq!(single.release_owner_crate_name(), "myapp");
+
+    let lockstep = Config {
+        project_name: "ws".to_string(),
+        crates: vec![crate_cfg("ws-core", false), crate_cfg("ws-cli", true)],
+        ..Default::default()
+    };
+    assert_eq!(lockstep.release_owner_crate_name(), "ws-cli");
+
+    let per_crate = Config {
+        project_name: "ws".to_string(),
+        workspaces: Some(vec![WorkspaceConfig {
+            name: "ws".to_string(),
+            crates: vec![crate_cfg("ws-core", true), crate_cfg("ws-cli", true)],
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    assert_eq!(per_crate.release_owner_crate_name(), "ws-core");
+
+    let no_release_block = Config {
+        project_name: "ws".to_string(),
+        crates: vec![crate_cfg("ws-core", false)],
+        ..Default::default()
+    };
+    assert_eq!(no_release_block.release_owner_crate_name(), "ws-core");
+
+    let no_crates = Config {
+        project_name: "solo".to_string(),
+        ..Default::default()
+    };
+    assert_eq!(no_crates.release_owner_crate_name(), "solo");
+}
+
+/// The archive has a top-level directory only for a prefix ending in `/`.
+#[test]
+fn archive_top_level_dir_follows_the_trailing_slash() {
+    use super::SourceConfig;
+    assert_eq!(SourceConfig::archive_top_level_dir("app-1.0/"), "app-1.0");
+    assert_eq!(SourceConfig::archive_top_level_dir("app-1.0"), "");
+    assert_eq!(SourceConfig::archive_top_level_dir("foo/bar/"), "foo/bar");
+    assert_eq!(SourceConfig::archive_top_level_dir(""), "");
+}

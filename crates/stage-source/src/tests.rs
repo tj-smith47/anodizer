@@ -591,11 +591,11 @@ fn test_stage_dry_run_does_not_create_files() {
 
     // Dist dir should not be created in dry-run mode
     assert!(!dist.exists(), "dist dir should not be created in dry-run");
-    assert_eq!(
-        ctx.artifacts.all().len(),
-        0,
-        "no artifacts should be registered in dry-run"
-    );
+    // The archive a dry run would write is still registered, so a publisher
+    // reading it renders; nothing is on disk.
+    let artifacts = ctx.artifacts.all();
+    assert_eq!(artifacts.len(), 1, "{artifacts:?}");
+    assert!(!artifacts[0].path.exists(), "{:?}", artifacts[0].path);
 }
 
 /// Regression: `SourceStage::run` must not depend on the process cwd when
@@ -2025,6 +2025,155 @@ fn duplicate_extras_are_reported_once_per_archive() {
                     .any(|m| m
                         == &format!("skipped extra file '{tracked}' — already in the archive")),
                 "{format}: verbose lines should name '{tracked}' relative to the root, got {verbose:?}"
+            );
+        }
+    }
+}
+
+/// A context over a real git repository, with `Version` pinned so rendered
+/// names are deterministic, and the source stage enabled with `prefix`.
+fn source_ctx_in_repo(
+    tmp: &TempDir,
+    project_name: &str,
+    prefix_template: Option<&str>,
+    dry_run: bool,
+) -> anodizer_core::context::Context {
+    use anodizer_core::config::SourceConfig;
+    use anodizer_core::test_helpers::{create_test_project, init_git_repo};
+
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    // A live run hands `git archive` the context's commit, so it must be the
+    // fixture's real HEAD rather than the builder's placeholder.
+    let head = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = std::process::Command::new("git");
+            cmd.args(["rev-parse", "HEAD"]).current_dir(tmp.path());
+            cmd
+        },
+        "git",
+    );
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    let mut ctx = TestContextBuilder::new()
+        .project_name(project_name)
+        .commit(&head)
+        .dry_run(dry_run)
+        .dist(tmp.path().join("dist"))
+        .project_root(tmp.path().to_path_buf())
+        .build();
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.config.source = Some(SourceConfig {
+        enabled: Some(true),
+        format: Some("tar.gz".to_string()),
+        name_template: None,
+        prefix_template: prefix_template.map(str::to_string),
+        files: vec![],
+    });
+    ctx
+}
+
+/// The archive's `prefix` metadata is its top-level directory: the rendered
+/// `prefix_template` without the trailing `/`, and empty for a flat archive.
+/// A `--publish-only` run reads the directory from there.
+#[test]
+fn source_archive_metadata_prefix_is_the_archives_top_level_dir() {
+    for (template, expected) in [
+        (Some("{{ ProjectName }}-{{ Version }}/"), "myapp-1.0.0"),
+        (None, ""),
+    ] {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = source_ctx_in_repo(&tmp, "myapp", template, false);
+        SourceStage.run(&mut ctx).expect("live source stage");
+        let artifacts = ctx.artifacts.by_kind(ArtifactKind::SourceArchive);
+        assert_eq!(artifacts.len(), 1, "{artifacts:?}");
+        assert!(artifacts[0].path.is_file(), "{:?}", artifacts[0].path);
+        assert_eq!(
+            artifacts[0].metadata.get("prefix").map(String::as_str),
+            Some(expected),
+            "prefix_template {template:?}"
+        );
+        assert_eq!(
+            artifacts[0].metadata.get("format").map(String::as_str),
+            Some("tar.gz")
+        );
+    }
+}
+
+/// A dry run registers the archive it would write — name, format and
+/// top-level directory, no checksum — so a source publisher's dry-run render
+/// still shows the operator its PKGBUILD.
+#[test]
+fn a_dry_run_registers_the_source_archive_without_a_checksum() {
+    let tmp = TempDir::new().unwrap();
+    let mut ctx = source_ctx_in_repo(
+        &tmp,
+        "myapp",
+        Some("{{ ProjectName }}-{{ Version }}/"),
+        true,
+    );
+    SourceStage.run(&mut ctx).expect("dry-run source stage");
+    let artifacts = ctx.artifacts.by_kind(ArtifactKind::SourceArchive);
+    assert_eq!(artifacts.len(), 1, "{artifacts:?}");
+    let a = artifacts[0];
+    assert_eq!(a.name, "myapp-1.0.0.tar.gz");
+    assert_eq!(a.path, tmp.path().join("dist").join("myapp-1.0.0.tar.gz"));
+    assert!(!a.path.exists(), "a dry run writes nothing: {:?}", a.path);
+    assert_eq!(a.metadata.get("format").map(String::as_str), Some("tar.gz"));
+    assert_eq!(
+        a.metadata.get("prefix").map(String::as_str),
+        Some("myapp-1.0.0")
+    );
+    assert!(!a.metadata.contains_key("sha256"), "{:?}", a.metadata);
+    assert_eq!(a.crate_name, "myapp");
+}
+
+/// The archive is registered under the crate whose `release:` block uploads
+/// it, in a lockstep and in a per-crate workspace whose `project_name` names
+/// no crate; a single-crate config keeps its one crate.
+#[test]
+fn the_source_archive_is_owned_by_the_crate_whose_release_ships_it() {
+    use anodizer_core::config::{CrateConfig, ReleaseConfig, WorkspaceConfig};
+
+    fn crate_cfg(name: &str, release: bool) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            release: release.then(ReleaseConfig::default),
+            ..Default::default()
+        }
+    }
+
+    let cases = [
+        ("myapp", vec![crate_cfg("myapp", true)], None, "myapp"),
+        (
+            "ws",
+            vec![crate_cfg("ws-core", false), crate_cfg("ws-cli", true)],
+            None,
+            "ws-cli",
+        ),
+        (
+            "ws",
+            vec![],
+            Some(vec![WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![crate_cfg("ws-core", true), crate_cfg("ws-cli", true)],
+                ..Default::default()
+            }]),
+            "ws-core",
+        ),
+    ];
+    for (project_name, crates, workspaces, owner) in cases {
+        for dry_run in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let mut ctx = source_ctx_in_repo(&tmp, project_name, None, dry_run);
+            ctx.config.crates = crates.clone();
+            ctx.config.workspaces = workspaces.clone();
+            SourceStage.run(&mut ctx).expect("source stage");
+            let artifacts = ctx.artifacts.by_kind(ArtifactKind::SourceArchive);
+            assert_eq!(artifacts.len(), 1, "{artifacts:?}");
+            assert_eq!(
+                artifacts[0].crate_name, owner,
+                "project_name {project_name:?}, dry_run {dry_run}"
             );
         }
     }

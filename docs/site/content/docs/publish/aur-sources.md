@@ -134,7 +134,7 @@ aur_sources:
 | `build` | string | `cd` into the archive's directory, then `cargo build --release --locked` | Custom `build()` function body |
 | `package` | string | auto-generated | Custom `package()` function body |
 | `install` | string | none | Content for a `.install` file (post-install/pre-remove scripts). When set, the PKGBUILD and `.SRCINFO` name `<name>.install` and the file is written alongside them. |
-| `url_template` | string | the uploaded source archive's URL | Source archive download URL (template); `{{ .ArtifactName }}` is the archive's file name |
+| `url_template` | string | the uploaded source archive's URL | Source archive download URL (template); `{{ .ArtifactName }}` is the archive's file name. In the rendered URL the version is replaced by `${pkgver}` where it appears verbatim |
 | `git_url` | string | none | AUR git repository URL (for pushing) |
 | `git_ssh_command` | string | none | Custom `GIT_SSH_COMMAND` |
 | `private_key` | string | none | SSH private key path |

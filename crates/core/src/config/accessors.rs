@@ -212,6 +212,25 @@ impl Config {
         self.crate_universe().first().map(|c| c.name.as_str())
     }
 
+    /// The crate whose release ships the repository-level artifacts (the
+    /// source archive, SBOMs, the source RPM, install scripts, templated
+    /// files): the first crate in the universe carrying a `release:` block,
+    /// else the primary crate, else `project_name`.
+    ///
+    /// The release stage uploads `by_kind_and_crate` per crate with a
+    /// `release:` block and stamps download URLs on that crate's artifacts
+    /// only, so an artifact registered under a `project_name` that names no
+    /// such crate is neither uploaded nor given a URL.
+    pub fn release_owner_crate_name(&self) -> String {
+        let universe = self.crate_universe();
+        universe
+            .iter()
+            .find(|c| c.release.is_some())
+            .or_else(|| universe.first())
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| self.project_name.clone())
+    }
+
     /// Project homepage: top-level `metadata.homepage` wins, else the primary
     /// crate's `Cargo.toml`-derived homepage. For project-level publishers
     /// (top-level casks) with no owning crate.

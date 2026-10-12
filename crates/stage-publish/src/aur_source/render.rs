@@ -169,10 +169,27 @@ fn resolve_source_archive(
     // The archive's top-level directory travels in its metadata so a
     // `--publish-only` run rehydrated from `artifacts.json` still knows it;
     // the `SourcePrefix` variable covers a run in which the stage just ran.
-    let prefix = archive
+    // An `artifacts.json` written before the metadata carried `prefix` has
+    // neither, so the configured `prefix_template` is rendered the way the
+    // source stage renders it.
+    let prefix = match archive
         .and_then(|a| a.metadata.get("prefix").cloned())
         .or_else(|| ctx.template_vars().get("SourcePrefix").cloned())
-        .unwrap_or_default();
+    {
+        Some(prefix) => prefix,
+        None => match ctx
+            .config
+            .source
+            .as_ref()
+            .and_then(|s| s.prefix_template.as_deref())
+        {
+            Some(tpl) => anodizer_core::config::SourceConfig::archive_top_level_dir(
+                &ctx.render_template(tpl)
+                    .with_context(|| format!("{label}: render source.prefix_template '{tpl}'"))?,
+            ),
+            None => String::new(),
+        },
+    };
 
     Ok(ResolvedSource {
         url,

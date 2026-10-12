@@ -195,7 +195,7 @@ impl Stage for InstallScriptStage {
                 name: filename,
                 path: output_path,
                 target: None,
-                crate_name: project_name.clone(),
+                crate_name: ctx.config.release_owner_crate_name(),
                 metadata: std::collections::HashMap::from([("id".to_string(), id.to_string())]),
                 size: None,
             });

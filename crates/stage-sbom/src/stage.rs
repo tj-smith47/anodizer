@@ -393,7 +393,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                     name,
                     path: match_path,
                     target: None,
-                    crate_name: project_name.clone(),
+                    crate_name: ctx.config.release_owner_crate_name(),
                     metadata,
                     size: None,
                 });
@@ -653,7 +653,7 @@ pub(crate) fn run_sbom_builtin(
         // N copies and the duplicate-path guard rejects them. Subject
         // provenance the `ids:` filter needs is carried in `metadata`, not here.
         target: None,
-        crate_name: project_name.to_string(),
+        crate_name: ctx.config.release_owner_crate_name(),
         metadata,
         size: None,
     });

@@ -100,20 +100,11 @@ impl SourceStage {
             String::new()
         };
 
-        // The source archive has a real top-level directory IFF the rendered
-        // prefix ends with `/` — that is the only form `git archive --prefix`
-        // treats as a directory. A slash-less prefix (`foo`) is glued onto
-        // every path (`foomain.rs`), yielding a FLAT archive with no top dir,
-        // exactly like an empty prefix. `SourcePrefix` therefore means "the
-        // archive's top-level directory, or empty when the archive is flat":
-        // the dir name (slash stripped) for a trailing-slash prefix, else
-        // empty. The empty case routes the srpm `%autosetup` to `-c`, which is
-        // correct for both flat shapes. Owned so the `source_cfg` borrow can
-        // end before the `template_vars_mut()` write.
-        let source_prefix = prefix
-            .strip_suffix('/')
-            .map(str::to_string)
-            .unwrap_or_default();
+        // `SourcePrefix` is the archive's top-level directory, or empty when
+        // the archive is flat; the empty case routes the srpm `%autosetup` to
+        // `-c`. Owned so the `source_cfg` borrow can end before the
+        // `template_vars_mut()` write.
+        let source_prefix = anodizer_core::config::SourceConfig::archive_top_level_dir(&prefix);
 
         let log = ctx.logger("source");
 
@@ -206,11 +197,31 @@ impl SourceStage {
         // dry-run gate so the var is available even when no file is written.
         ctx.template_vars_mut().set("SourcePrefix", &source_prefix);
 
+        // Registered under the crate whose release uploads it: the release
+        // stage selects assets and stamps download URLs per crate with a
+        // `release:` block, and `project_name` need not name one.
+        let owner = ctx.config.release_owner_crate_name();
+        let mut metadata = HashMap::new();
+        metadata.insert("format".to_string(), format.clone());
+        metadata.insert("prefix".to_string(), source_prefix);
+
         if ctx.is_dry_run() {
             log.status(&format!(
                 "(dry-run) would create {}.{} archive",
                 name, format
             ));
+            // The archive is registered without a checksum so a dry run still
+            // shows the operator what a source publisher renders from it.
+            let artifact_name = format!("{name}.{format}");
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::SourceArchive,
+                path: dist.join(&artifact_name),
+                name: artifact_name,
+                target: None,
+                crate_name: owner,
+                metadata,
+                size: None,
+            });
             return Ok(());
         }
 
@@ -252,16 +263,12 @@ impl SourceStage {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let mut metadata = HashMap::new();
-        metadata.insert("format".to_string(), format);
-        metadata.insert("prefix".to_string(), source_prefix);
-
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::SourceArchive,
             name: artifact_name,
             path: output_path,
             target: None,
-            crate_name: project_name.clone(),
+            crate_name: owner,
             metadata,
             size: None,
         });
