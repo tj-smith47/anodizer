@@ -65,12 +65,11 @@ pub fn run(opts: BuildOpts) -> Result<()> {
         skip_stages,
         ..Default::default()
     };
-    if output_path.is_some() {
-        refuse_ambiguous_output(&config, &ctx_opts.selected_crates, has_single_target)?;
-    }
-
     let mut ctx = Context::new(config.clone(), ctx_opts);
     helpers::setup_context(&mut ctx, &config, &log)?;
+    if output_path.is_some() {
+        refuse_ambiguous_output(&ctx, has_single_target)?;
+    }
 
     // The run enters the `before:`/`always:` bracket here: from this call on,
     // every exit — including a `before:` hook that failed — leaves through the
@@ -91,31 +90,29 @@ pub fn run(opts: BuildOpts) -> Result<()> {
 /// `--output` copies ONE binary, so it is refused before anything compiles
 /// when the selection would build more than one: the build entries the stage
 /// itself would compile (`crate_build_target_entries`: producing, not
-/// `skip:`ped, with at least one target) are counted over every selected
-/// crate, and more than one names each crate so the operator can narrow with
-/// `--crate`. A `skip:` template is read without a context here, so only a
-/// literal truthy value counts as skipped. A single crate whose one build
+/// `skip:`ped under this run's variables, with at least one target) are
+/// counted over every selected crate, and more than one names each crate so
+/// the operator can narrow with `--crate`. A single crate whose one build
 /// yields several binaries is only known after the build and is refused there.
-fn refuse_ambiguous_output(
-    config: &anodizer_core::config::Config,
-    selected: &[String],
-    has_single_target: bool,
-) -> Result<()> {
+fn refuse_ambiguous_output(ctx: &Context, has_single_target: bool) -> Result<()> {
     if !has_single_target {
         anyhow::bail!("--output requires --single-target (only one binary can be copied)");
     }
-    let default_targets = config.effective_default_targets();
-    let per_crate: Vec<(&str, usize)> = config
-        .selected_crates(selected)
+    let default_targets = ctx.config.effective_default_targets();
+    let skipped = anodizer_core::build_plan::skipped_in(ctx);
+    let per_crate: Vec<(&str, usize)> = ctx
+        .config
+        .selected_crates(&ctx.options.selected_crates)
         .into_iter()
         .filter_map(|c| {
-            let producing =
-                anodizer_core::build_plan::crate_build_target_entries(c, &default_targets, |b| {
-                    anodizer_core::build_plan::build_is_skipped(b, |t| Ok(t.to_string()))
-                })
-                .into_iter()
-                .filter(|entry| !entry.targets.is_empty())
-                .count();
+            let producing = anodizer_core::build_plan::crate_build_target_entries(
+                c,
+                &default_targets,
+                &skipped,
+            )
+            .into_iter()
+            .filter(|entry| !entry.targets.is_empty())
+            .count();
             (producing > 0).then_some((c.name.as_str(), producing))
         })
         .collect();
@@ -251,6 +248,21 @@ fn run_inside_always_bracket(
 mod tests {
     use super::*;
 
+    /// A build-shaped context: snapshot, with the mode flags a `skip:`
+    /// template reads already seeded, the way `setup_context` leaves it.
+    fn ctx_for(config: anodizer_core::config::Config, selected: &[&str]) -> Context {
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                snapshot: true,
+                selected_crates: selected.iter().map(|s| s.to_string()).collect(),
+                ..Default::default()
+            },
+        );
+        ctx.populate_git_vars();
+        ctx
+    }
+
     fn crate_with_builds(name: &str, builds: usize) -> anodizer_core::config::CrateConfig {
         use anodizer_core::config::{BuildConfig, CrateConfig};
         CrateConfig {
@@ -274,7 +286,7 @@ mod tests {
             ..Default::default()
         };
 
-        let msg = refuse_ambiguous_output(&config, &[], true)
+        let msg = refuse_ambiguous_output(&ctx_for(config.clone(), &[]), true)
             .unwrap_err()
             .to_string();
         assert_eq!(
@@ -283,7 +295,7 @@ mod tests {
              a binary; narrow the selection with --crate, or keep one builds[] entry"
         );
 
-        let msg = refuse_ambiguous_output(&config, &["b".to_string()], true)
+        let msg = refuse_ambiguous_output(&ctx_for(config.clone(), &["b"]), true)
             .unwrap_err()
             .to_string();
         assert!(
@@ -291,10 +303,10 @@ mod tests {
             "{msg}"
         );
 
-        refuse_ambiguous_output(&config, &["a".to_string()], true)
+        refuse_ambiguous_output(&ctx_for(config.clone(), &["a"]), true)
             .expect("one selected crate with one build is unambiguous");
 
-        let msg = refuse_ambiguous_output(&config, &["a".to_string()], false)
+        let msg = refuse_ambiguous_output(&ctx_for(config.clone(), &["a"]), false)
             .unwrap_err()
             .to_string();
         assert_eq!(
@@ -311,6 +323,11 @@ mod tests {
         builds[1].skip = Some(StringOrBool::Bool(true));
         builds[2].targets = Some(vec![]);
         builds.push(BuildConfig {
+            binary: Some("a-release".into()),
+            skip: Some(StringOrBool::String("{{ IsSnapshot }}".into())),
+            ..Default::default()
+        });
+        builds.push(BuildConfig {
             binary: None,
             ..Default::default()
         });
@@ -319,8 +336,8 @@ mod tests {
             ..Default::default()
         };
 
-        refuse_ambiguous_output(&config, &[], true).expect(
-            "a skipped entry, an entry with no targets and a non-producing entry build nothing",
+        refuse_ambiguous_output(&ctx_for(config, &[]), true).expect(
+            "a skipped entry, one skipped by a rendered template, one with no targets and a non-producing entry build nothing",
         );
     }
 
@@ -332,7 +349,7 @@ mod tests {
             crates: vec![crate_with_builds("myapp", 2)],
             ..Default::default()
         };
-        let produced = refuse_ambiguous_output(&config, &[], true)
+        let produced = refuse_ambiguous_output(&ctx_for(config, &[]), true)
             .unwrap_err()
             .to_string();
         let page = std::fs::read_to_string(concat!(

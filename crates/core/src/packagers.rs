@@ -512,8 +512,9 @@ pub struct SrpmConfig {
 
 #[cfg(test)]
 mod tests {
-    /// Every `srpm:` field has a row on the srpm docs page; the other
-    /// packager pages are complete, this one had drifted by seven fields.
+    use super::*;
+
+    /// Every `srpm:` field has a row on the srpm docs page.
     #[test]
     fn every_srpm_field_has_a_row_in_its_docs_page() {
         let schema = serde_json::to_value(schemars::schema_for!(super::SrpmConfig)).unwrap();
@@ -534,8 +535,6 @@ mod tests {
             "the schema walk found a different number of fields"
         );
     }
-
-    use super::*;
 
     /// Wrapper exercising the `deserialize_makeselfs` custom visitor through
     /// the same `deserialize_with` attribute the real config uses.

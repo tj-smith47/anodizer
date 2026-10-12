@@ -90,8 +90,8 @@ Not applicable — this is a local packaging stage, not a publisher.
 | `bins` | map | `%{_bindir}/<name>` per built binary | Binary name → install path owned in the spec's `%files` section; set it to move a binary or declare extra owned paths |
 | `prefixes` | list | none | Filesystem prefixes the package may relocate to, one `Prefix:` tag each |
 | `build_host` | string | what rpmbuild records | `BuildHost:` tag written into the spec header |
-| `pretrans` | string | none | Path to the `%pretrans` scriptlet, run before any package in the transaction installs |
-| `posttrans` | string | none | Path to the `%posttrans` scriptlet, run after every package in the transaction installed |
+| `pretrans` | string | none | Path to a `%pretrans` script, sourced on the installing host before any package in the transaction installs (it must exist there) |
+| `posttrans` | string | none | Path to a `%posttrans` script, sourced on the installing host after every package in the transaction installed (it must exist there) |
 | `prerelease` | string | none | Prerelease component of the package version (e.g. `rc1`) |
 | `version_metadata` | string | none | Build-metadata component of the package version (e.g. a commit hash) |
 | `skip` | string/bool | none | Skip this config (accepts bool or template string) |
