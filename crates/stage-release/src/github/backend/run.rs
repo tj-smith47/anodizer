@@ -653,7 +653,10 @@ pub(crate) fn run_github_backend(
                         .await;
                     match tag_delete {
                         Ok(()) => {}
-                        // Already-absent tag is success (the prune post-condition).
+                        // An absent tag is the prune's post-condition. GitHub
+                        // answers a DELETE on a missing git ref with 404
+                        // (measured against api.github.com), not the 422 its
+                        // older documentation describes.
                         Err(ref err) if is_octocrab_404(err) => {}
                         Err(err) => {
                             // A failed tag delete is non-fatal: the release (the

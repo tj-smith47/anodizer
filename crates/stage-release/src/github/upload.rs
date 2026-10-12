@@ -316,10 +316,13 @@ pub(crate) async fn upload_release_asset(
                         // reappearing behind an eventually consistent delete,
                         // and the next attempt deletes it again.
                         if replaced {
+                            const REAPPEARED: &str = "asset reappeared after its delete and re-upload";
                             return Step::Retry {
-                                error: UploadFailure::Transient(anyhow::anyhow!(err)),
+                                error: UploadFailure::Transient(
+                                    anyhow::anyhow!(err).context(REAPPEARED),
+                                ),
                                 delay: exp_backoff(),
-                                cause: "asset reappeared after its delete and re-upload".to_string(),
+                                cause: REAPPEARED.to_string(),
                             };
                         }
 
@@ -1088,6 +1091,51 @@ mod tests {
             14,
             "two full delete-and-re-upload ladders"
         );
+    }
+
+    /// An asset that reappears on every attempt exhausts the budget, and the
+    /// terminal error says so: three deletes went through, so a bare
+    /// `already_exists` would read as if none had.
+    #[tokio::test]
+    async fn an_asset_that_keeps_reappearing_fails_naming_the_reappearance() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_artifact(tmp.path(), "app.tar.gz", b"new-content");
+        let stale_list = |addr| {
+            http(
+                "200 OK",
+                &format!("[{}]", asset_json(addr, "app.tar.gz", 4, "uploaded")),
+            )
+        };
+        let (addr, calls) = spawn_oneshot_http_responder_with(|addr| {
+            let mut responses = Vec::new();
+            for _ in 0..3 {
+                responses.extend([
+                    release_json(addr),
+                    http("422 Unprocessable Entity", BODY_422_ALREADY_EXISTS),
+                    stale_list(addr),
+                    stale_list(addr),
+                    http("204 No Content", ""),
+                    release_json(addr),
+                    http("422 Unprocessable Entity", BODY_422_ALREADY_EXISTS),
+                ]);
+            }
+            responses
+        });
+        let policy = anodizer_core::retry::RetryPolicy {
+            max_attempts: MIN_UPLOAD_TRANSIENT_ATTEMPTS,
+            ..test_retry_policy()
+        };
+
+        let err = run_upload_with_policy(addr, &path, true, &EmptyEnv, policy)
+            .await
+            .expect_err("the budget runs out");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("failed after 3 attempts")
+                && msg.contains("asset reappeared after its delete and re-upload"),
+            "the terminal error names the reappearance; got: {msg}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 21, "three full ladders");
     }
 
     /// `replace_existing_artifacts: false` deletes nothing: the first 422 on a

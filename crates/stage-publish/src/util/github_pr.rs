@@ -245,8 +245,8 @@ pub(crate) fn classify_find_pr_status(
 /// token variable the auth variants put in their message so the warn names
 /// what to fix. Callers surface the variant; collapsing an `Err` to an empty
 /// list reads a rotated token as "nothing to close". Pagination follows
-/// `Link: rel="next"` up to 10 pages; a head with more open pull requests
-/// than that is not a rollback this helper is shaped for.
+/// `Link: rel="next"` up to 10 pages: the first 1000 matches are returned
+/// and any beyond them are not listed.
 ///
 /// The GitHub API base is resolved through `env` (honoring
 /// `ANODIZER_GITHUB_API_BASE`) so a rollback driven by an injected
