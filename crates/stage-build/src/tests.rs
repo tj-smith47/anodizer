@@ -1054,6 +1054,50 @@ fn test_universal_binary_ids_selects_one_of_two_builds_on_one_darwin_target() {
 }
 
 #[test]
+fn test_universal_binary_names_an_arm64_duplicate_without_an_amd64_level() {
+    use anodizer_core::config::UniversalBinaryConfig;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let config = anodizer_core::config::Config::default();
+    let opts = ContextOptions {
+        dry_run: true,
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, opts);
+    register_binary_with_id(
+        &mut ctx,
+        "myapp",
+        "aarch64-apple-darwin",
+        std::path::PathBuf::from("target/aarch64-apple-darwin/release/myapp"),
+        None,
+    );
+    register_binary_with_id(
+        &mut ctx,
+        "myapp",
+        "aarch64-apple-darwin",
+        std::path::PathBuf::from("target/aarch64-apple-darwin-b/release/myapp"),
+        None,
+    );
+
+    let ub = UniversalBinaryConfig {
+        id: None,
+        name_template: None,
+        replace: None,
+        ids: None,
+        hooks: None,
+        mod_timestamp: None,
+    };
+
+    let msg = build_universal_binary("myapp", &ub, &mut ctx, true)
+        .expect_err("two arm64 slices cannot both go into one universal binary")
+        .to_string();
+    assert!(
+        msg.contains("duplicate darwin binary slice for aarch64-apple-darwin: target/aarch64-apple-darwin/release/myapp (id myapp) and target/aarch64-apple-darwin-b/release/myapp (id myapp);"),
+        "an arm64 slice has no amd64 level to print: {msg}"
+    );
+}
+
+#[test]
 fn test_universal_binary_skips_for_different_crate() {
     use anodizer_core::config::UniversalBinaryConfig;
     use anodizer_core::context::{Context, ContextOptions};

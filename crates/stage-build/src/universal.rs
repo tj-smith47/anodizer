@@ -144,16 +144,20 @@ fn one_slice_per_target<'a>(
     Ok(first)
 }
 
-/// `<path> (id <id>, amd64 <level>)`: what `builds[].id` and
-/// `universal_binaries[].ids` would have to name to pick this slice.
+/// `<path> (id <id>)`, with `, amd64 <level>` appended on an x86_64 slice:
+/// what `builds[].id` and `universal_binaries[].ids` would have to name to
+/// pick this slice. An arm64 slice has no amd64 level.
 fn describe_slice(a: &Artifact) -> String {
     let id = a.metadata.get("id").map(String::as_str).unwrap_or("");
     let level = a
         .metadata
         .get("amd64_variant")
         .map(String::as_str)
-        .unwrap_or("v1");
-    format!("{} (id {id}, amd64 {level})", a.path.display())
+        .or_else(|| a.target.as_deref()?.starts_with("x86_64-").then_some("v1"));
+    match level {
+        Some(level) => format!("{} (id {id}, amd64 {level})", a.path.display()),
+        None => format!("{} (id {id})", a.path.display()),
+    }
 }
 
 pub(crate) fn build_universal_binary(
