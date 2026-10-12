@@ -100,8 +100,7 @@ where
                                 status.as_u16(),
                             )
                             .with_retry_after(retry_after),
-                        )
-                        .context(inner);
+                        );
                         // `as_ref()` is the head of the chain; `is_retriable` walks
                         // `.source()` to reach `HttpError`. `root_cause()` would
                         // unwrap past `HttpError` to the io::Error leaf and miss
@@ -217,8 +216,7 @@ where
                                 status.as_u16(),
                             )
                             .with_retry_after(retry_after),
-                        )
-                        .context(inner);
+                        );
                         if is_retriable(wrapped.as_ref()) {
                             Err(ControlFlow::Continue(wrapped))
                         } else {
@@ -327,8 +325,7 @@ where
                                     status.as_u16(),
                                 )
                                 .with_retry_after(retry_after),
-                            )
-                            .context(inner);
+                            );
                             // `as_ref()` is the head of the chain; `is_retriable`
                             // walks `.source()` to reach `HttpError`. `root_cause()`
                             // would unwrap past `HttpError` to the io::Error leaf

@@ -444,6 +444,8 @@ fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
             if status.is_success() {
                 return Ok(());
             }
+            let retry_after =
+                anodizer_core::retry::rate_limit_retry_after(status.as_u16(), resp.headers());
             // Idempotent conflict: a 409 (Conflict) / 422 (Unprocessable) means the
             // version already exists on Fury — a re-run on an already-published
             // tag, or a racing concurrent uploader. The operator's intent ("publish
@@ -461,7 +463,13 @@ fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
                 status,
                 redact_bearer_tokens(body.trim())
             );
-            let err = anyhow::anyhow!(err_msg);
+            let err = anyhow::Error::new(
+                anodizer_core::retry::HttpError::new(
+                    std::io::Error::other(err_msg),
+                    status.as_u16(),
+                )
+                .with_retry_after(retry_after),
+            );
             if anodizer_core::retry::status_is_retriable(status.as_u16()) {
                 Err(ControlFlow::Continue(err))
             } else {

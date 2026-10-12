@@ -101,13 +101,7 @@ fn fetch_index_file(
             // The retry helper Breaks 4xx with HttpError(status) in the chain;
             // catch the 404 here and surface as Ok(None). Other 4xx and 5xx
             // exhaustion propagate.
-            let status_code = err
-                .chain()
-                .find_map(|e| {
-                    e.downcast_ref::<anodizer_core::retry::HttpError>()
-                        .map(|h| h.status)
-                })
-                .unwrap_or(0);
+            let status_code = anodizer_core::retry::http_status(&err);
             if status_code == 404 {
                 return Ok(None);
             }

@@ -101,8 +101,9 @@ and only require the wider API token in the rollback flow.
   gemfury formats filter, the publisher hard-errors with the offending
   crate name + format list so the operator narrows `formats:`.
 - Retry: transient `5xx`/`429` failures retry with exponential backoff
-  per the top-level `retry:` block. Non-transient failures break out
-  immediately.
+  per the top-level `retry:` block; a `429` waits the `Retry-After` or
+  `RateLimit-Reset` the server sent instead of the backoff step.
+  Non-transient failures break out immediately.
 - Rollback: per uploaded artifact, issue `DELETE https://api.fury.io/<account>/packages/<name>/versions/<version>`. When the API token is unavailable, rollback emits a manual-cleanup warn instead of erroring.
 
 ## Common gotchas

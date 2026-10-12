@@ -2569,12 +2569,12 @@ fn test_resolve_webhook_headers_basic_auth_priority_over_bearer() {
 #[test]
 fn announce_retry_classifier_matches_5xx_via_anyhow_chain() {
     use anodizer_core::retry::{HttpError, is_retriable};
-    let inner = anyhow::anyhow!("provider: HTTP 503 — body");
-    let wrapped = anyhow::Error::new(HttpError::new(
-        std::io::Error::other(inner.to_string()),
-        503,
-    ))
-    .context(inner);
+    // The wrapped error carries a cause of its own, the way a transport
+    // error does, so `root_cause()` stops below the HttpError.
+    let inner: Box<dyn std::error::Error + Send + Sync> = anyhow::anyhow!("connection detail")
+        .context("provider: HTTP 503 — body")
+        .into();
+    let wrapped = anyhow::Error::new(HttpError::new(std::io::Error::other(inner), 503));
     assert!(
         is_retriable(wrapped.as_ref()),
         "5xx must classify retriable via as_ref()"

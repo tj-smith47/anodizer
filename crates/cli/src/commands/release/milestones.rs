@@ -605,13 +605,7 @@ fn close_milestone_gitea(
         {
             Ok(_) => Ok(MilestoneCloseOutcome::Closed),
             Err(err) => {
-                let status_code = err
-                    .chain()
-                    .find_map(|e| {
-                        e.downcast_ref::<anodizer_core::retry::HttpError>()
-                            .map(|h| h.status)
-                    })
-                    .unwrap_or(0);
+                let status_code = anodizer_core::retry::http_status(&err);
                 if status_code == 404 {
                     Ok(MilestoneCloseOutcome::NotFound)
                 } else {

@@ -122,8 +122,7 @@ pub fn send_telegram(
                                 status.as_u16(),
                             )
                             .with_retry_after(retry_after),
-                        )
-                        .context(inner);
+                        );
                         return if is_retriable(wrapped.as_ref()) {
                             Err(ControlFlow::Continue(wrapped))
                         } else {

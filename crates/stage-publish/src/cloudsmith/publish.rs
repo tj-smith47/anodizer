@@ -469,18 +469,14 @@ pub(crate) fn publish_to_cloudsmith_into(
                         // it exists with a different md5, surface the same
                         // conflict the pre-check would have. Anything else
                         // (transport failure, 5xx after retries) propagates.
-                        let status_in_chain: Option<u16> = err.chain().find_map(|e| {
-                            e.downcast_ref::<anodizer_core::retry::HttpError>()
-                                .map(|h| h.status)
-                        });
-                        let is_conflict = matches!(status_in_chain, Some(409) | Some(422));
-                        if !is_conflict {
+                        let status = anodizer_core::retry::http_status(&err);
+                        if !matches!(status, 409 | 422) {
                             return Err(err);
                         }
                         log.warn(&format!(
-                            "cloudsmith step-3 returned {:?} for '{}'; re-checking remote to \
-                             decide between idempotent skip and real conflict",
-                            status_in_chain, art_name
+                            "cloudsmith step-3 returned HTTP {status} for '{art_name}'; \
+                             re-checking remote to decide between idempotent skip and real \
+                             conflict"
                         ));
                         match check_cloudsmith_package_exists(
                             &client,

@@ -199,10 +199,9 @@ fn do_mutation(
                 } else {
                     let msg = classify_opencollective_status(stage, status, &body);
                     let wrapped = anyhow::Error::new(
-                        HttpError::new(std::io::Error::other(msg.clone()), status.as_u16())
+                        HttpError::new(std::io::Error::other(msg), status.as_u16())
                             .with_retry_after(retry_after),
-                    )
-                    .context(msg);
+                    );
                     if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))
                     } else {

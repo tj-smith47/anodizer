@@ -212,17 +212,26 @@ pub(crate) fn upload_file(
             if status.is_success() {
                 return Ok(());
             }
+            let retry_after =
+                anodizer_core::retry::rate_limit_retry_after(status.as_u16(), resp.headers());
             let body = resp.text().unwrap_or_default();
             if is_duplicate_rejection(status.as_u16(), &body) {
                 duplicate.set(true);
                 return Ok(());
             }
-            let err = anyhow::anyhow!(
+            let inner = anyhow::anyhow!(
                 "pypi: POST {} for '{}' returned HTTP {}: {}",
                 repository,
                 filename,
                 status,
                 redact_bearer_tokens(body.trim())
+            );
+            let err = anyhow::Error::new(
+                anodizer_core::retry::HttpError::new(
+                    std::io::Error::other(inner.to_string()),
+                    status.as_u16(),
+                )
+                .with_retry_after(retry_after),
             );
             if status_is_retriable(status.as_u16()) {
                 Err(ControlFlow::Continue(err))

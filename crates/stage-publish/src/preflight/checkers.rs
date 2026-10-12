@@ -84,13 +84,7 @@ pub(super) fn query_crates_io(
         Ok(pair) => pair,
         Err(err) => {
             // 404 → crate has never been published.
-            let status_code = err
-                .chain()
-                .find_map(|e| {
-                    e.downcast_ref::<anodizer_core::retry::HttpError>()
-                        .map(|h| h.status)
-                })
-                .unwrap_or(0);
+            let status_code = anodizer_core::retry::http_status(&err);
             if status_code == 404 {
                 return Ok(false);
             }
@@ -355,13 +349,7 @@ pub(super) fn query_open_version_pr_at(
     let body = match result {
         Ok((_status, body)) => body,
         Err(err) => {
-            let status_code = err
-                .chain()
-                .find_map(|e| {
-                    e.downcast_ref::<anodizer_core::retry::HttpError>()
-                        .map(|h| h.status)
-                })
-                .unwrap_or(0);
+            let status_code = anodizer_core::retry::http_status(&err);
             // 422 = query validation error — treat as no-PR rather than
             // bubbling as Unknown (a malformed query is not a network blip).
             if status_code == 422 {
@@ -487,13 +475,7 @@ pub(super) fn query_aur_rpc_at(
     let body = match result {
         Ok((_status, body)) => body,
         Err(err) => {
-            let status_code = err
-                .chain()
-                .find_map(|e| {
-                    e.downcast_ref::<anodizer_core::retry::HttpError>()
-                        .map(|h| h.status)
-                })
-                .unwrap_or(0);
+            let status_code = anodizer_core::retry::http_status(&err);
             if status_code == 404 {
                 return Ok(false);
             }

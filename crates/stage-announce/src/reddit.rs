@@ -118,8 +118,7 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger, policy: &RetryPolic
                     let wrapped = anyhow::Error::new(
                         HttpError::new(std::io::Error::other(inner.to_string()), status.as_u16())
                             .with_retry_after(retry_after),
-                    )
-                    .context(inner);
+                    );
                     if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))
                     } else {
@@ -183,8 +182,7 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger, policy: &RetryPolic
                                 status.as_u16(),
                             )
                             .with_retry_after(retry_after),
-                        )
-                        .context(inner);
+                        );
                         if is_retriable(wrapped.as_ref()) {
                             Err(ControlFlow::Continue(wrapped))
                         } else {

@@ -128,8 +128,7 @@ pub fn send_webhook(
                     let wrapped = anyhow::Error::new(
                         HttpError::new(std::io::Error::other(inner.to_string()), status)
                             .with_retry_after(retry_after),
-                    )
-                    .context(inner);
+                    );
                     if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))
                     } else {
@@ -378,6 +377,40 @@ mod tests {
         )
         .unwrap();
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// A 429 carrying `Retry-After` is retried after the wait the server
+    /// asked for, not the policy's 30s backoff step.
+    #[test]
+    fn a_429_with_retry_after_on_the_webhook_sleeps_the_asked_wait() {
+        let (addr, counter) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let url = format!("http://{addr}/hook");
+        let policy = RetryPolicy {
+            max_attempts: 2,
+            base_delay: Duration::from_secs(30),
+            max_delay: Duration::from_secs(30),
+        };
+        let started = std::time::Instant::now();
+        send_webhook(
+            &url,
+            "{}",
+            &BTreeMap::new(),
+            "",
+            false,
+            &[200],
+            &policy,
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(
+            elapsed >= Duration::from_secs(1) && elapsed < Duration::from_secs(10),
+            "slept the asked 1s, not the 30s step: {elapsed:?}"
+        );
     }
 
     #[test]

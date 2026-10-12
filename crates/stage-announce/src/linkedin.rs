@@ -148,8 +148,7 @@ fn send_linkedin_to(
                     let wrapped = anyhow::Error::new(
                         HttpError::new(std::io::Error::other(inner.to_string()), status.as_u16())
                             .with_retry_after(retry_after),
-                    )
-                    .context(inner);
+                    );
                     if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))
                     } else {
@@ -204,16 +203,16 @@ fn get_profile_urn(
                 }
                 Ok(resp) => {
                     let status = resp.status();
-                    let retry_after = anodizer_core::retry::rate_limit_retry_after(
-                        status.as_u16(),
-                        resp.headers(),
-                    );
                     if status == reqwest::StatusCode::FORBIDDEN {
                         // Typed sentinel: 403 means "fall back to legacy
                         // endpoint" rather than retry. The downcast at the
                         // call-site is robust to error-message rewrites.
                         return Err(ControlFlow::Break(anyhow::Error::new(LinkedinFallback)));
                     }
+                    let retry_after = anodizer_core::retry::rate_limit_retry_after(
+                        status.as_u16(),
+                        resp.headers(),
+                    );
                     let body = anodizer_core::http::body_of_blocking(resp);
                     if status.is_success() {
                         Ok(body)
@@ -228,8 +227,7 @@ fn get_profile_urn(
                                 status.as_u16(),
                             )
                             .with_retry_after(retry_after),
-                        )
-                        .context(inner);
+                        );
                         if is_retriable(wrapped.as_ref()) {
                             Err(ControlFlow::Continue(wrapped))
                         } else {
@@ -301,8 +299,7 @@ fn get_profile_urn_legacy(
                     let wrapped = anyhow::Error::new(
                         HttpError::new(std::io::Error::other(inner.to_string()), status.as_u16())
                             .with_retry_after(retry_after),
-                    )
-                    .context(inner);
+                    );
                     if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))
                     } else {

@@ -430,6 +430,8 @@ pub(super) fn push_nupkg(
                 return Ok(());
             }
 
+            let retry_after =
+                anodizer_core::retry::rate_limit_retry_after(status.as_u16(), response.headers());
             let content_type = response
                 .headers()
                 .get(reqwest::header::CONTENT_TYPE)
@@ -462,7 +464,8 @@ pub(super) fn push_nupkg(
                     redact_bearer_tokens(&summarize_response_body(&body)),
                 );
                 let http_err =
-                    HttpError::new(std::io::Error::other(base_err.to_string()), status.as_u16());
+                    HttpError::new(std::io::Error::other(base_err.to_string()), status.as_u16())
+                        .with_retry_after(retry_after);
                 return Err(ControlFlow::Continue(anyhow::Error::new(Retriable::new(
                     http_err,
                 ))));
@@ -490,6 +493,10 @@ pub(super) fn push_nupkg(
                 push_url,
                 attempt,
                 redact_bearer_tokens(&summarize_response_body(&body)),
+            );
+            let base_err = anyhow::Error::new(
+                HttpError::new(std::io::Error::other(base_err.to_string()), status.as_u16())
+                    .with_retry_after(retry_after),
             );
             if anodizer_core::retry::status_is_retriable(status.as_u16()) {
                 // 5xx / 429 retry naturally.

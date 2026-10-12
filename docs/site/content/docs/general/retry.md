@@ -5,7 +5,7 @@ weight = 9
 template = "docs.html"
 +++
 
-Anodizer automatically retries failed operations with exponential backoff. Retry behavior is built into upload and Docker stages.
+Anodizer automatically retries failed operations with exponential backoff. Retry behavior is built into upload and Docker stages. A `429 Too Many Requests` that carries a `Retry-After` or `RateLimit-Reset` header waits the time the server asked for instead of the backoff step; a wait the run's deadline cannot hold ends the retries at once.
 
 ## Release uploads
 

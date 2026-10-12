@@ -18,10 +18,15 @@ use std::time::Duration;
 /// ever received (the no-response branch). Network-level failures
 /// are still classified via the inner error's message, so wrapping them in
 /// `HttpError { status: 0, .. }` does not lose retriability information.
+///
+/// The wrapper is transparent: it displays the wrapped error's message and
+/// its [`StdError::source`] continues the wrapped error's own chain, so
+/// `{:#}` prints each message once. The classifiers reach the wrapped error
+/// itself through [`error_links`].
 #[derive(Debug)]
 pub struct HttpError {
     /// The wrapped error (transport, decode, or status-derived message).
-    /// Reachable via the [`StdError::source`] trait method (not directly).
+    /// Reachable via [`HttpError::inner`] and [`error_links`].
     source: Box<dyn StdError + Send + Sync + 'static>,
     /// HTTP status code; `0` for transport-level failures.
     pub status: u16,
@@ -43,6 +48,11 @@ impl HttpError {
             status,
             retry_after: None,
         }
+    }
+
+    /// The wrapped error.
+    pub fn inner(&self) -> &(dyn StdError + 'static) {
+        &*self.source
     }
 
     /// Attach the wait a rate-limited response asked for.
@@ -68,7 +78,8 @@ impl HttpError {
 /// Returns `0` when no [`HttpError`] is present in the chain — a transport-level
 /// failure that never received a response, or a non-HTTP error.
 pub fn http_status(err: &anyhow::Error) -> u16 {
-    err.chain()
+    let head: &(dyn StdError + 'static) = err.as_ref();
+    error_links(head)
         .find_map(|e| e.downcast_ref::<HttpError>().map(|h| h.status))
         .unwrap_or(0)
 }
@@ -77,8 +88,26 @@ pub fn http_status(err: &anyhow::Error) -> u16 {
 /// chain the HTTP retry helpers produced; `None` when no [`HttpError`] in the
 /// chain carries one.
 pub fn http_retry_after(err: &anyhow::Error) -> Option<Duration> {
-    err.chain()
-        .find_map(|e| e.downcast_ref::<HttpError>().and_then(|h| h.retry_after))
+    let head: &(dyn StdError + 'static) = err.as_ref();
+    error_links(head).find_map(|e| e.downcast_ref::<HttpError>().and_then(|h| h.retry_after))
+}
+
+/// Every error in `err`'s chain, including the error each [`HttpError`] and
+/// [`Retriable`] wraps: those two are transparent, so their own `source()`
+/// skips the wrapped error and a plain `source()` walk never sees its type.
+pub fn error_links<'a>(
+    err: &'a (dyn StdError + 'static),
+) -> impl Iterator<Item = &'a (dyn StdError + 'static)> {
+    std::iter::successors(Some(err), |&e| transparent_inner(e).or_else(|| e.source()))
+}
+
+/// The error a transparent wrapper holds, `None` for any other error.
+fn transparent_inner<'a>(e: &'a (dyn StdError + 'static)) -> Option<&'a (dyn StdError + 'static)> {
+    if let Some(http) = e.downcast_ref::<HttpError>() {
+        return Some(http.inner());
+    }
+    e.downcast_ref::<Retriable>()
+        .map(|r| &*r.0 as &(dyn StdError + 'static))
 }
 
 /// How long a 429 asked the client to wait: `RateLimit-Reset` (a unix
@@ -114,15 +143,16 @@ pub fn rate_limit_retry_after(
 
 impl fmt::Display for HttpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Defer to the inner error so messages stay focused on the cause.
-        // Delegate to the inner error message.
         fmt::Display::fmt(&self.source, f)
     }
 }
 
 impl StdError for HttpError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        Some(&*self.source)
+        // The Display above already printed the wrapped error, so the chain
+        // continues below it; returning the wrapped error would print its
+        // message a second time.
+        self.source.source()
     }
 }
 
@@ -131,6 +161,9 @@ impl StdError for HttpError {
 /// caller knows the failure is transient (e.g. an idempotent registry write
 /// returning 422 because of a transient race condition) and wants the retry
 /// loop to ignore the usual 4xx fast-fail.
+///
+/// Transparent in the same way as [`HttpError`]: it displays the wrapped
+/// error and its `source()` continues the wrapped error's chain.
 #[derive(Debug)]
 pub struct Retriable(Box<dyn StdError + Send + Sync + 'static>);
 
@@ -156,7 +189,7 @@ impl fmt::Display for Retriable {
 
 impl StdError for Retriable {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        Some(&*self.0)
+        self.0.source()
     }
 }
 
@@ -184,13 +217,12 @@ impl StdError for Retriable {
 ///     error has been wrapped (e.g. reqwest coercing the inner kind to
 ///     `Other` while preserving the OS message text).
 ///
-/// Walks `.source()` for both branches — Rust's `Display` impls do NOT
+/// Walks [`error_links`] for both branches — Rust's `Display` impls do NOT
 /// inherit the wrapped error's text the way Go's `err.Error()` does, so a
 /// reqwest "Connection refused" message buried under an anyhow context would
 /// otherwise be invisible to the head-only string.
 pub fn is_network_error(err: &(dyn StdError + 'static)) -> bool {
-    let mut cur: Option<&(dyn StdError + 'static)> = Some(err);
-    while let Some(e) = cur {
+    for e in error_links(err) {
         // 1a. Structural ErrorKind check — robust to platform Display drift
         //     (Windows's "operation timed out" vs Linux's "Connection refused").
         if let Some(io_err) = e.downcast_ref::<io::Error>() {
@@ -216,8 +248,6 @@ pub fn is_network_error(err: &(dyn StdError + 'static)) -> bool {
         if NETWORK_ERROR_NEEDLES.iter().any(|n| s.contains(n)) {
             return true;
         }
-
-        cur = e.source();
     }
     false
 }
@@ -274,8 +304,7 @@ const NETWORK_ERROR_NEEDLES: &[&str] = &[
 /// those are fast-failed by the retry loop.
 pub fn is_retriable(err: &(dyn StdError + 'static)) -> bool {
     // 1. Any link in the chain is an explicit Retriable marker.
-    let mut cur: Option<&(dyn StdError + 'static)> = Some(err);
-    while let Some(e) = cur {
+    for e in error_links(err) {
         if e.is::<Retriable>() {
             return true;
         }
@@ -284,7 +313,6 @@ pub fn is_retriable(err: &(dyn StdError + 'static)) -> bool {
         {
             return true;
         }
-        cur = e.source();
     }
 
     // 2. Network-error substring / EOF chain match.

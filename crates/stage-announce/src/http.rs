@@ -114,7 +114,6 @@ mod tests {
             std::io::Error::other(inner.to_string()),
             status,
         ))
-        .context(inner)
     }
 
     #[test]
@@ -149,10 +148,15 @@ mod tests {
     #[test]
     fn post_json_classifier_drift_guard_root_cause_misses_http_error() {
         // Drift-guard pin: `root_cause()` walks past `HttpError` to the
-        // leaf, which has no status; this is precisely the bug that
-        // motivated the `as_ref()` fix. If a future refactor restores
-        // `root_cause()` here, this test fails.
-        let wrapped = wrap_status_like_post_json(503);
+        // leaf of an inner error that has a cause of its own, and the leaf
+        // carries no status; this is the bug that motivated the `as_ref()`
+        // fix. If a future refactor restores `root_cause()` here, this test
+        // fails.
+        let inner = anyhow::anyhow!("connection detail").context("provider: HTTP 503 — body");
+        let wrapped = anyhow::Error::new(HttpError::new(
+            std::io::Error::other(Box::<dyn std::error::Error + Send + Sync>::from(inner)),
+            503,
+        ));
         assert!(
             !is_retriable(wrapped.root_cause()),
             "root_cause() reaches the leaf — wrong API for chain-walk classification"

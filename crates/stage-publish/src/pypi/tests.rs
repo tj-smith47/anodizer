@@ -526,6 +526,56 @@ fn upload_sends_twine_protocol_form_fields() {
     }
 }
 
+/// A 429 carrying `Retry-After` is retried after the wait the index asked
+/// for, not the policy's 30s backoff step.
+#[test]
+fn a_429_with_retry_after_sleeps_the_asked_wait_not_the_policy_delay() {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let (path, s, client) = upload_ctx_pieces(tmp.path());
+    let (addr, log) = spawn_scripted_responder(vec![
+        ScriptedRoute {
+            method: "POST",
+            path_pattern: "/legacy/",
+            response: "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: 0\r\n\r\n",
+            times: Some(1),
+        },
+        ScriptedRoute {
+            method: "POST",
+            path_pattern: "/legacy/",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+            times: Some(1),
+        },
+    ]);
+    let policy = anodizer_core::retry::RetryPolicy {
+        max_attempts: 2,
+        base_delay: std::time::Duration::from_secs(30),
+        max_delay: std::time::Duration::from_secs(30),
+    };
+    let started = std::time::Instant::now();
+    let out = upload_file(
+        &client,
+        &format!("http://{addr}/legacy/"),
+        "pypi-AgToken",
+        "my-tool",
+        &s,
+        FileType::Wheel,
+        &path,
+        true,
+        &policy,
+        None,
+        anodizer_core::test_helpers::test_logger(),
+    )
+    .expect("the retry after the asked wait uploads");
+    let elapsed = started.elapsed();
+    assert!(matches!(out, UploadOutcome::Uploaded { .. }));
+    assert_eq!(log.lock().unwrap().len(), 2, "the 429, then the upload");
+    assert!(
+        elapsed >= std::time::Duration::from_secs(1)
+            && elapsed < std::time::Duration::from_secs(10),
+        "slept the asked 1s, not the 30s step: {elapsed:?}"
+    );
+}
+
 #[test]
 fn duplicate_rejection_shapes_are_matched_generously() {
     assert!(is_duplicate_rejection(409, ""));

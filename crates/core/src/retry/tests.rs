@@ -969,11 +969,26 @@ fn http_error_zero_status_routes_via_message() {
     assert!(!is_retriable(&non_net));
 }
 
+/// An error with a cause, for the chain tests: `top`, caused by `leaf`.
+fn caused(top: &'static str, leaf: &'static str) -> io::Error {
+    let boxed: Box<dyn StdError + Send + Sync> = anyhow::anyhow!(leaf).context(top).into();
+    io::Error::other(boxed)
+}
+
 #[test]
 fn http_error_unwrap_chain_visible() {
-    let inner = StrErr("inner");
-    let e = HttpError::new(inner, 503);
-    assert!(e.source().is_some());
+    let e = HttpError::new(StrErr("inner"), 503);
+    assert_eq!(e.inner().to_string(), "inner");
+    assert!(
+        e.source().is_none(),
+        "the wrapper displays its leaf inner itself, so nothing follows it"
+    );
+    let links: Vec<String> = error_links(&e).map(|l| l.to_string()).collect();
+    assert_eq!(
+        links,
+        ["inner", "inner"],
+        "the classifiers see the wrapper and the inner"
+    );
 }
 
 #[test]
@@ -993,8 +1008,8 @@ fn from_response_unwrap_chain_visible() {
     let inner = io::Error::other("connection reset by peer");
     let e = HttpError::from_response(inner, None);
     assert!(
-        e.source().is_some(),
-        "inner error must be reachable via source()"
+        error_links(&e).any(|l| l.downcast_ref::<io::Error>().is_some()),
+        "inner error must be reachable through error_links"
     );
     // And classification must walk through to the network-error matcher.
     assert!(is_retriable(&e));
@@ -1016,9 +1031,63 @@ fn retriable_wrapper_overrides_4xx() {
 
 #[test]
 fn retriable_wrapper_unwrap_chain_visible() {
-    let inner = StrErr("inner");
-    let e = Retriable::new(inner);
-    assert!(e.source().is_some());
+    let e = Retriable::new(caused("top", "leaf"));
+    assert_eq!(e.to_string(), "top");
+    assert_eq!(
+        e.source().map(|c| c.to_string()).as_deref(),
+        Some("leaf"),
+        "source() continues below the wrapped error"
+    );
+    assert!(
+        error_links(&e).any(|l| l.downcast_ref::<io::Error>().is_some()),
+        "the wrapped error itself is reachable through error_links"
+    );
+}
+
+/// The two transparent wrappers, the site shape the publishers and the HTTP
+/// retry helpers build, print every message of the chain exactly once.
+#[test]
+fn an_http_error_over_a_context_inner_prints_each_message_once() {
+    let site = anyhow::Error::new(
+        HttpError::new(io::Error::other("probe failed (HTTP 503): busy"), 503)
+            .with_retry_after(Some(Duration::from_secs(1))),
+    );
+    assert_eq!(format!("{site:#}"), "probe failed (HTTP 503): busy");
+    assert_eq!(http_status(&site), 503);
+    assert_eq!(http_retry_after(&site), Some(Duration::from_secs(1)));
+
+    let nested = anyhow::Error::new(Retriable::new(HttpError::new(caused("top", "leaf"), 502)))
+        .context("publish");
+    assert_eq!(format!("{nested:#}"), "publish: top: leaf");
+    assert_eq!(
+        http_status(&nested),
+        502,
+        "a status under Retriable is still read"
+    );
+    assert!(is_retriable(nested.as_ref()));
+}
+
+/// What the HTTP retry helper returns for a failed response names the
+/// failure once.
+#[test]
+fn the_retry_helpers_error_names_the_failure_once() {
+    use crate::test_helpers::responder::spawn_oneshot_http_responder;
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 404 Not Found\r\nContent-Length: 4\r\n\r\ngone",
+    ]);
+    let client = reqwest::blocking::Client::new();
+    let err = retry_http_blocking(
+        RetryLog::new("probe", crate::test_helpers::test_logger()),
+        &fast_policy(),
+        SuccessClass::Strict,
+        |_| client.get(format!("http://{addr}/")).send(),
+        |status, body| format!("probe failed (HTTP {status}): {body}"),
+    )
+    .expect_err("a 404 fast-fails");
+    assert_eq!(
+        format!("{err:#}"),
+        "probe failed (HTTP 404 Not Found): gone"
+    );
 }
 
 #[test]
@@ -1070,12 +1139,13 @@ fn classifier_5xx_via_anyhow_chain_uses_as_ref() {
 
 #[test]
 fn classifier_root_cause_walks_past_http_error_drift_guard() {
-    // Drift guard: root_cause() unwraps to the leaf io::Error, which
-    // has no status. If a future caller ever swaps as_ref → root_cause
+    // Drift guard: root_cause() unwraps to the leaf below the wrapped
+    // error, which has no status. If a future caller ever swaps as_ref → root_cause
     // they'll regress 5xx retry handling. This assertion locks the
     // distinction.
     let wrapped: anyhow::Error =
-        anyhow::Error::new(HttpError::new(std::io::Error::other("503"), 503)).context("publish");
+        anyhow::Error::new(HttpError::new(caused("503", "upstream said no"), 503))
+            .context("publish");
     assert!(
         !is_retriable(wrapped.root_cause()),
         "root_cause() walks past HttpError; 5xx must NOT be detected via the leaf"
@@ -1087,7 +1157,7 @@ fn classifier_429_via_anyhow_chain_uses_as_ref() {
     // Symmetry with the 5xx case: 429 is the other retriable status
     // class and must also stay reachable via as_ref().
     let wrapped: anyhow::Error =
-        anyhow::Error::new(HttpError::new(std::io::Error::other("429"), 429)).context("publish");
+        anyhow::Error::new(HttpError::new(caused("429", "slow down"), 429)).context("publish");
     assert!(is_retriable(wrapped.as_ref()));
     assert!(!is_retriable(wrapped.root_cause()));
 }
@@ -2081,23 +2151,53 @@ fn a_fast_fail_is_returned_without_the_exhausted_context() {
     );
 }
 
-/// Every production site that builds an [`HttpError`] off a response it
-/// holds reads the 429 wait headers into it, so the retry adapters sleep the
-/// wait the server asked for there too. A site outside the HTTP wrappers
-/// that classifies a response without `with_retry_after(` fails here unless
-/// it is named in `EXEMPT` with its reason.
+/// `retry_sync` over an `anyhow::Error` reads the wait an [`HttpError`] in
+/// the chain carries, so a closure-built 429 sleeps the server's one second
+/// instead of the policy's thirty.
+#[test]
+fn retry_sync_sleeps_the_wait_an_anyhow_http_error_carries() {
+    let policy = RetryPolicy {
+        max_attempts: 2,
+        base_delay: Duration::from_secs(30),
+        max_delay: Duration::from_secs(30),
+    };
+    let started = std::time::Instant::now();
+    let result: Result<u32, anyhow::Error> = retry_sync(tlog(), &policy, |attempt| {
+        if attempt == 1 {
+            Err(ControlFlow::Continue(
+                anyhow::Error::new(
+                    HttpError::new(io::Error::other("x"), 429)
+                        .with_retry_after(Some(Duration::from_secs(1))),
+                )
+                .context("rate limited"),
+            ))
+        } else {
+            Ok(attempt)
+        }
+    });
+    let elapsed = started.elapsed();
+    assert_eq!(result.expect("the second attempt succeeds"), 2);
+    assert!(
+        elapsed >= Duration::from_secs(1) && elapsed < Duration::from_secs(10),
+        "slept the carried one second, not the policy's thirty: {elapsed:?}"
+    );
+}
+
+/// Every production site that classifies a response it holds — building an
+/// [`HttpError`] from it, or asking `status_is_retriable` of its status —
+/// reads the 429 wait headers off that response (`rate_limit_retry_after(`)
+/// and hands them to EVERY `HttpError` it builds (`with_retry_after(` at least
+/// as often as `HttpError::new(`), so the retry adapters sleep the wait the
+/// server asked for there too. A body that retries a 429 through a plain
+/// `anyhow!` sleeps the policy's step instead, which is what three publishers
+/// did while the announce clients honored the header.
 #[test]
 fn every_http_error_built_from_a_response_carries_its_wait_headers() {
     use crate::test_helpers::test_sources::{
         function_bodies, production_half, workspace_production_sources,
     };
-    const EXEMPT: &[(&str, &str)] = &[(
-        "crates/stage-publish/src/chocolatey/package.rs",
-        "its HttpError is built for a 502-504 gateway page only; a 429 never reaches that arm, so there is no wait header to read",
-    )];
     let mut converted = 0usize;
     let mut unconverted: Vec<String> = Vec::new();
-    let mut exempt_seen: Vec<&str> = Vec::new();
     for source in workspace_production_sources() {
         let path = source.to_string_lossy().replace('\\', "/");
         if path.contains("/crates/core/src/retry/") {
@@ -2105,31 +2205,27 @@ fn every_http_error_built_from_a_response_carries_its_wait_headers() {
         }
         let text = std::fs::read_to_string(&source).expect("read source");
         for body in function_bodies(production_half(&text)) {
-            let holds_a_response = body.contains("resp.status()") || body.contains(".headers()");
-            if !(body.contains("HttpError::new(") && holds_a_response) {
+            let classifies =
+                body.contains("HttpError::new(") || body.contains("status_is_retriable(");
+            let holds_a_response = body.contains(".status()") || body.contains(".headers()");
+            if !(classifies && holds_a_response) {
                 continue;
             }
-            if body.contains("with_retry_after(") {
+            let built = body.matches("HttpError::new(").count();
+            let carried = body.matches(".with_retry_after(").count();
+            if body.contains("rate_limit_retry_after(") && carried >= built && built > 0 {
                 converted += 1;
-            } else if let Some((file, _)) = EXEMPT.iter().find(|(f, _)| path.ends_with(f)) {
-                exempt_seen.push(file);
             } else {
-                unconverted.push(path.clone());
+                unconverted.push(format!("{path} (built {built}, carried {carried})"));
             }
         }
     }
     assert!(
         unconverted.is_empty(),
-        "these bodies build an HttpError off a response without reading its wait headers: {unconverted:#?}"
+        "these bodies classify a response without reading its wait headers into every HttpError: {unconverted:#?}"
     );
-    for (file, _) in EXEMPT {
-        assert!(
-            exempt_seen.contains(file),
-            "EXEMPT entry no longer matches a site: {file}"
-        );
-    }
     assert_eq!(
-        converted, 8,
+        converted, 11,
         "the population of converted bodies (reddit builds its two errors in one function)"
     );
 }
