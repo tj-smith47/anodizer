@@ -154,9 +154,8 @@ fn gitea_auth_header_format() {
 // -- gitea_create_release retry behaviour (P1.4) -------------------------
 //
 // Pin: a 503 on the find-release-by-tag GET must retry through
-// `retry_http_async` rather than fast-fail. Mirrors the gitlab equivalent
-// and the core retry::tests::retry_http_async_retries_5xx_then_succeeds
-// test, but exercises the policy plumbing end-to-end at the publisher.
+// `retry_http_async` rather than fast-fail, and a 404 there falls through to
+// the listing instead of failing the release.
 
 use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 
@@ -165,12 +164,12 @@ async fn gitea_create_release_retries_5xx_on_list_releases() {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
-    // Sequence: 503 on the GET releases list, then 200 with an empty
-    // array (release does not exist), then 201 on the POST create with
-    // a fake id. The retry helper should retry past the 503 and the
-    // create succeeds.
+    // Sequence: 503 then 404 on the GET release by tag (retried, then read
+    // as absent), 200 with an empty array on the listing fallback, then 201
+    // on the POST create with a fake id.
     let (addr, calls) = spawn_oneshot_http_responder(vec![
         "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
         "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 9\r\n\r\n{\"id\":42}",
     ]);
@@ -212,8 +211,8 @@ async fn gitea_create_release_retries_5xx_on_list_releases() {
     }
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        3,
-        "expected 3 connections (503-retry GET, 200 GET, 201 POST)"
+        4,
+        "expected 4 connections (503 GET, 404 GET, 200 GET list, 201 POST)"
     );
 }
 
@@ -483,15 +482,20 @@ async fn create_release_posts_when_absent() {
     assert_eq!(id, 99, "release id parsed from POST 201 response");
 
     let entries = log.lock().unwrap();
-    assert_eq!(entries.len(), 2, "one GET list + one POST create");
-    assert_eq!(entries[0].method, "GET");
-    assert_eq!(entries[1].method, "POST");
     assert_eq!(
-        entries[1].path, "/api/v1/repos/myorg/myrepo/releases",
+        entries.len(),
+        3,
+        "GET by tag (404) + GET list + one POST create"
+    );
+    assert_eq!(entries[0].method, "GET");
+    assert_eq!(entries[1].method, "GET");
+    assert_eq!(entries[2].method, "POST");
+    assert_eq!(
+        entries[2].path, "/api/v1/repos/myorg/myrepo/releases",
         "create POSTs to the un-suffixed releases endpoint"
     );
     let payload: serde_json::Value =
-        serde_json::from_str(&entries[1].body).expect("POST body is JSON");
+        serde_json::from_str(&entries[2].body).expect("POST body is JSON");
     assert_eq!(payload["tag_name"], "v1.0.0");
     assert_eq!(payload["target_commitish"], "deadbeef");
     assert_eq!(payload["name"], "Release v1.0.0");
@@ -554,7 +558,11 @@ async fn create_release_surfaces_422() {
         "error must name the failing create call + status, got: {chain}"
     );
     let entries = log.lock().unwrap();
-    assert_eq!(entries.len(), 2, "GET list + single POST (no retry on 4xx)");
+    assert_eq!(
+        entries.len(),
+        3,
+        "GET by tag + GET list + single POST (no retry on 4xx)"
+    );
 }
 
 /// A 503 on the POST create retries through `retry_http_async` and then
@@ -920,10 +928,11 @@ async fn find_release_paginates_to_second_page() {
     assert_eq!(
         paths,
         vec![
+            "/api/v1/repos/o/r/releases/tags/v9.9.9",
             "/api/v1/repos/o/r/releases?page=1&limit=50",
             "/api/v1/repos/o/r/releases?page=2&limit=50",
         ],
-        "exactly two pages fetched, in order"
+        "the by-tag probe, then exactly two pages, in order"
     );
 }
 
@@ -964,9 +973,100 @@ async fn find_release_short_page_stops_and_returns_none() {
     let entries = log.lock().unwrap();
     assert_eq!(
         entries.len(),
-        1,
-        "a short first page must not trigger a second GET"
+        2,
+        "the by-tag probe and a short first page must not trigger a second GET"
     );
+}
+
+/// A server that answers the by-tag endpoint is never asked for a listing.
+#[tokio::test]
+async fn find_release_asks_the_by_tag_endpoint_first() {
+    let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/api/v1/repos/o/r/releases/tags/v2.0.0",
+        response: http_json(
+            "200 OK",
+            serde_json::json!({"id": 77, "tag_name": "v2.0.0", "body": "here"}).to_string(),
+        ),
+        times: None,
+    }]);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let found = find_release_by_tag(
+        &GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+            deadline: None,
+            log: tlog(),
+        },
+        "v2.0.0",
+    )
+    .await
+    .expect("lookup should succeed");
+    assert_eq!(found, Some((77, Some("here".to_string()))));
+
+    let entries = log.lock().unwrap();
+    let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(paths, vec!["/api/v1/repos/o/r/releases/tags/v2.0.0"]);
+}
+
+/// The listing fallback has no page cap: a release on the twelfth page of
+/// an old server's listing is still found.
+#[tokio::test]
+async fn find_release_sweeps_past_ten_pages_on_an_old_server() {
+    let full_page = |page: u64| {
+        let entries: Vec<serde_json::Value> = (0..50u64)
+            .map(|i| serde_json::json!({"id": page * 100 + i, "tag_name": format!("p{page}-{i}")}))
+            .collect();
+        serde_json::Value::Array(entries).to_string()
+    };
+    let mut routes: Vec<ScriptedRoute> = (1..=11u64)
+        .map(|page| ScriptedRoute {
+            method: "GET",
+            path_pattern: Box::leak(
+                format!("/api/v1/repos/o/r/releases?page={page}&limit=50").into_boxed_str(),
+            ),
+            response: http_json("200 OK", full_page(page)),
+            times: None,
+        })
+        .collect();
+    routes.push(ScriptedRoute {
+        method: "GET",
+        path_pattern: "/api/v1/repos/o/r/releases?page=12&limit=50",
+        response: http_json(
+            "200 OK",
+            serde_json::json!([{"id": 5150, "tag_name": "v12.0.0", "body": null}]).to_string(),
+        ),
+        times: None,
+    });
+    let (addr, log) = spawn_scripted_responder(routes);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let found = find_release_by_tag(
+        &GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+            deadline: None,
+            log: tlog(),
+        },
+        "v12.0.0",
+    )
+    .await
+    .expect("listing should succeed");
+    assert_eq!(found, Some((5150, None)));
+
+    let entries = log.lock().unwrap();
+    assert_eq!(entries.len(), 13, "the by-tag probe and twelve pages");
 }
 
 /// A matched release object missing its `id` field surfaces an explicit

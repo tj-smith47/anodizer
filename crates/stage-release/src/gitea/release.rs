@@ -2,8 +2,8 @@ use super::*;
 
 /// Create or update a Gitea release.
 ///
-/// Checks whether a release already exists for the given tag by listing
-/// releases (paginated). If it exists, applies mode-based body composition
+/// Checks whether a release already exists for the given tag
+/// ([`find_release_by_tag`]). If it exists, applies mode-based body composition
 /// (keep-existing / append / prepend / replace) and updates via PATCH. If it
 /// does not exist, creates via POST.
 ///
@@ -72,7 +72,6 @@ pub(crate) async fn gitea_create_release(
         );
     }
 
-    // Try to find an existing release by listing all releases and matching tag.
     let existing = find_release_by_tag(ctx, tag).await?;
 
     if let Some((release_id, existing_body)) = existing {
@@ -150,10 +149,12 @@ pub(crate) async fn gitea_create_release(
 
 /// Find an existing release by tag name.
 ///
-/// Iterates through paginated release listings (capped at 10 pages to avoid
-/// runaway pagination on repos with very long release histories). This is
-/// an intentional improvement: the listing paginates rather than truncating;
-/// and only checks the first page of results.
+/// Asks `GET /repos/{owner}/{repo}/releases/tags/{tag}` first. A 404 there
+/// means either no release on a current server or no such route on one
+/// older than Gitea 1.13, so it falls through to the paginated listing, which
+/// answers both: every page is read until a short one, with no page cap.
+/// A capped sweep read a repository holding more releases than the cap as
+/// never released and created a second release for the tag.
 ///
 /// Coordinates, retry policy and wall-clock budget all come from `ctx`; the
 /// percent-encoded owner/repo path segments are derived here rather than
@@ -177,10 +178,42 @@ pub(crate) async fn find_release_by_tag(
     let enc_owner = encode_segment(owner);
     let enc_repo = encode_segment(repo);
 
-    const MAX_PAGES: u32 = 10;
+    let by_tag_url = format!(
+        "{}/api/v1/repos/{}/{}/releases/tags/{}",
+        api,
+        enc_owner,
+        enc_repo,
+        encode_segment(tag)
+    );
+    let by_tag = retry_http_async_deadline(
+        RetryLog::new("gitea: GET release by tag", log),
+        policy,
+        deadline,
+        SuccessClass::Strict,
+        |_| client.get(&by_tag_url).send(),
+        |status, body| {
+            format!(
+                "gitea: get release by tag failed (HTTP {status}): {}",
+                redact_bearer_tokens(body)
+            )
+        },
+    )
+    .await;
+    match by_tag {
+        Ok(resp) => {
+            let release: serde_json::Value = resp
+                .json()
+                .await
+                .context("gitea: parse release by tag JSON")?;
+            return Ok(Some(release_id_and_body(&release)?));
+        }
+        Err(err) if anodizer_core::retry::http_status(&err) == 404 => {}
+        Err(err) => return Err(err),
+    }
+
     const PAGE_SIZE: u32 = 50;
 
-    for page in 1..=MAX_PAGES {
+    for page in 1.. {
         let url = format!(
             "{}/api/v1/repos/{}/{}/releases?page={}&limit={}",
             api, enc_owner, enc_repo, page, PAGE_SIZE
@@ -206,14 +239,11 @@ pub(crate) async fn find_release_by_tag(
             .await
             .context("gitea: parse releases list JSON")?;
 
-        for release in &releases {
-            if release["tag_name"].as_str() == Some(tag) {
-                let id = release["id"]
-                    .as_u64()
-                    .ok_or_else(|| anyhow::anyhow!("gitea: release missing 'id' field"))?;
-                let body = release["body"].as_str().map(|s| s.to_string());
-                return Ok(Some((id, body)));
-            }
+        if let Some(release) = releases
+            .iter()
+            .find(|release| release["tag_name"].as_str() == Some(tag))
+        {
+            return Ok(Some(release_id_and_body(release)?));
         }
 
         // Fewer results than the page size means there are no more pages.
@@ -223,4 +253,11 @@ pub(crate) async fn find_release_by_tag(
     }
 
     Ok(None)
+}
+
+fn release_id_and_body(release: &serde_json::Value) -> Result<(u64, Option<String>)> {
+    let id = release["id"]
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("gitea: release missing 'id' field"))?;
+    Ok((id, release["body"].as_str().map(str::to_string)))
 }
