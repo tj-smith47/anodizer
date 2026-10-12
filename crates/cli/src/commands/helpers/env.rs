@@ -160,9 +160,10 @@ pub fn setup_env(
         config.env.as_ref(),
     );
     if let Some(ref env_list) = merged_env {
-        let rendered_pairs =
-            anodizer_core::config::render_env_entries(env_list, |v| ctx.render_template(v))
-                .with_context(|| "config.env: parse and render entries")?;
+        let rendered_pairs = anodizer_core::config::render_env_entries(env_list, |v, so_far| {
+            ctx.render_template_with_env(v, so_far)
+        })
+        .with_context(|| "config.env: parse and render entries")?;
         for (key, rendered) in rendered_pairs {
             ctx.template_vars_mut().set_config_env(&key, &rendered);
             // Also set in the process environment so that child processes which

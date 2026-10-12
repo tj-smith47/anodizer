@@ -182,32 +182,39 @@ fn run_hooks_inner(
             }
         }
 
-        let cmd_str = if let Some(tv) = template_vars {
-            render_hook_template(raw_cmd, tv, label)?
-        } else {
-            raw_cmd.to_string()
-        };
-
-        let dir_str = match raw_dir {
-            Some(d) => Some(if let Some(tv) = template_vars {
-                render_hook_template(d, tv, label)?
-            } else {
-                d.to_string()
-            }),
-            None => None,
-        };
-
+        // The hook's `env:` renders first, each entry seeing the ones above
+        // it, and `dir:` and `cmd:` then render with that env overlaid, so a
+        // command can read a variable its own `env:` defined.
         let expanded_env: Option<Vec<(String, String)>> = match env {
             Some(envs) => {
                 let pairs = if let Some(tv) = template_vars {
-                    config::render_env_entries(envs, |s| render_hook_template(s, tv, label))
-                        .with_context(|| format!("{label} hook: render env entries"))?
+                    config::render_env_entries(envs, |s, so_far| {
+                        render_hook_template(s, &tv.with_env_overlay(so_far), label)
+                    })
+                    .with_context(|| format!("{label} hook: render env entries"))?
                 } else {
                     config::parse_env_entries(envs)
                         .with_context(|| format!("{label} hook: parse env entries"))?
                 };
                 Some(pairs)
             }
+            None => None,
+        };
+        let hook_vars =
+            template_vars.map(|tv| tv.with_env_overlay(expanded_env.as_deref().unwrap_or(&[])));
+
+        let cmd_str = if let Some(tv) = &hook_vars {
+            render_hook_template(raw_cmd, tv, label)?
+        } else {
+            raw_cmd.to_string()
+        };
+
+        let dir_str = match raw_dir {
+            Some(d) => Some(if let Some(tv) = &hook_vars {
+                render_hook_template(d, tv, label)?
+            } else {
+                d.to_string()
+            }),
             None => None,
         };
 
@@ -880,6 +887,44 @@ mod tests {
                 extra_env: None,
             },
         )
+    }
+
+    /// A hook `env:` entry reads the entry above it, and `cmd:` and `dir:`
+    /// read the hook's own env.
+    #[test]
+    fn hook_env_entries_chain_and_cmd_and_dir_read_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("chain.txt");
+        let log = test_logger();
+        let out_str = out.display().to_string().replace('\\', "/");
+        let hooks = vec![HookEntry::Structured(StructuredHook {
+            cmd: format!("echo \"{{{{ .Env.C }}}}\" > {out_str}"),
+            dir: Some("{{ .Env.WORK }}".to_string()),
+            env: Some(vec![
+                format!("WORK={}", dir.display().to_string().replace('\\', "/")),
+                "A=value".to_string(),
+                "B={{ .Env.A }}-b".to_string(),
+                "C={{ .Env.B }}-c".to_string(),
+            ]),
+            ..Default::default()
+        })];
+        let vars = TemplateVars::new();
+        run_hooks(
+            &hooks,
+            "build",
+            HookRunContext {
+                dry_run: false,
+                log: &log,
+                template_vars: Some(&vars),
+                build_env: None,
+                extra_env: None,
+            },
+        )
+        .expect("hook must run");
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(contents.trim(), "value-b-c");
     }
 
     #[test]

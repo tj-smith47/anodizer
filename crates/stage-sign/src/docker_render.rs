@@ -142,14 +142,14 @@ pub(crate) fn render_image_signs(
             // argv could repeat.
             anodizer_core::config::render_env_entries_that_render(
                 cfg.env.as_deref().unwrap_or(&[]),
-                |v| ctx.render_template(v),
+                |v, so_far| ctx.render_template_with_env(v, so_far),
             )
         } else {
-            let mut env =
-                anodizer_core::config::render_env_entries(cfg.env.as_deref().unwrap_or(&[]), |v| {
-                    ctx.render_template(v)
-                })
-                .with_context(|| "docker-sign: render env entries")?;
+            let mut env = anodizer_core::config::render_env_entries(
+                cfg.env.as_deref().unwrap_or(&[]),
+                |v, so_far| ctx.render_template_with_env(v, so_far),
+            )
+            .with_context(|| "docker-sign: render env entries")?;
             // Docker image signing is cosign — suppress the sigstore consent
             // prompt so it never blocks or banners in CI.
             ensure_cosign_consent_env(cmd, &mut env);

@@ -491,7 +491,7 @@ pub(crate) fn process_sign_configs(
                 // could repeat, so a failed render leaves nothing to mask.
                 let dry_env = anodizer_core::config::render_env_entries_that_render(
                     sign_cfg.env.as_deref().unwrap_or(&[]),
-                    |v| ctx.render_template(v),
+                    |v, so_far| ctx.render_template_with_env(v, so_far),
                 );
                 log.status(&log.with_job_env(dry_env).redact(&format!(
                     "(dry-run) would run: {} {}",
@@ -526,8 +526,10 @@ pub(crate) fn process_sign_configs(
                 .env
                 .as_deref()
                 .map(|env_list| {
-                    anodizer_core::config::render_env_entries(env_list, |v| ctx.render_template(v))
-                        .with_context(|| format!("sign[{label}]: render env entries"))
+                    anodizer_core::config::render_env_entries(env_list, |v, so_far| {
+                        ctx.render_template_with_env(v, so_far)
+                    })
+                    .with_context(|| format!("sign[{label}]: render env entries"))
                 })
                 .transpose()?
                 .unwrap_or_default();

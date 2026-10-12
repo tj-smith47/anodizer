@@ -226,7 +226,9 @@ pub fn verify_signature_assets(
             .env
             .as_deref()
             .map(|entries| {
-                anodizer_core::config::render_env_entries(entries, |v| ctx.render_template(v))
+                anodizer_core::config::render_env_entries(entries, |v, so_far| {
+                    ctx.render_template_with_env(v, so_far)
+                })
             })
             .transpose()
         {

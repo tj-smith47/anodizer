@@ -109,6 +109,17 @@ impl TemplateVars {
         self.env.insert(key.to_string(), value.to_string());
     }
 
+    /// A copy of these variables with `pairs` set as env on top, for a render
+    /// that must see values rendered a moment ago (an `env:` entry reading
+    /// the entry above it) without changing the caller's variables.
+    pub fn with_env_overlay(&self, pairs: &[(String, String)]) -> TemplateVars {
+        let mut overlaid = self.clone();
+        for (k, v) in pairs {
+            overlaid.set_env(k, v);
+        }
+        overlaid
+    }
+
     /// Remove an env var injected via [`set_env`](Self::set_env). Returns
     /// `true` if the key was present.
     ///

@@ -225,7 +225,9 @@ pub fn run_publishers(
             // mask, so an entry that does not render there (a variable the
             // dry-run machine does not hold) is left out instead of failing.
             let env_list = publisher.env.as_deref().unwrap_or(&[]);
-            let render_value = |v: &str| template::render(v, base_vars);
+            let render_value = |v: &str, so_far: &[(String, String)]| {
+                template::render(v, &base_vars.with_env_overlay(so_far))
+            };
             let rendered_env = if dry_run {
                 anodizer_core::config::render_env_entries_that_render(env_list, render_value)
             } else {

@@ -14,6 +14,17 @@ impl Context {
         crate::template::render(template, &self.template_vars)
     }
 
+    /// [`render_template`](Self::render_template) with `pairs` overlaid as
+    /// env for this one render. The closure shape
+    /// [`crate::config::render_env_entries`] asks for.
+    pub fn render_template_with_env(
+        &self,
+        template: &str,
+        pairs: &[(String, String)],
+    ) -> anyhow::Result<String> {
+        crate::template::render(template, &self.template_vars.with_env_overlay(pairs))
+    }
+
     /// Render `template` with the FULL version-derived var set (`Version`, `Tag`,
     /// `Major`/`Minor`/`Patch`, `RawVersion`, `Prerelease`, `BuildMetadata`,
     /// `Base`) re-derived from `version`/`tag` rather than the context's own git
