@@ -249,8 +249,8 @@ pub fn run_publishers(
                 let mut cmd = anodizer_core::user_command::whitelisted(&shell_args)?;
 
                 if let Some(ref dir) = publisher.dir {
-                    let rendered_dir =
-                        template::render(dir, &job_vars).unwrap_or_else(|_| dir.clone());
+                    let rendered_dir = template::render(dir, &job_vars)
+                        .with_context(|| format!("publisher '{label}': render dir '{dir}'"))?;
                     cmd.current_dir(rendered_dir);
                 }
 

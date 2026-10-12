@@ -107,8 +107,8 @@ struct ResolvedSource {
 /// file name) and is the one way to render without an archive, in which case
 /// the checksum is `SKIP`. Without it, a run that produced no source archive
 /// disqualifies the entry: the reason names `source.enabled: true` when the
-/// stage is off, and the stage not having run when it is on (a dry run, or
-/// `--skip=source`). An archive whose download URL is not known yet is used
+/// stage is off, and the stage not having registered one when it is on
+/// (`--skip=source`, or a failure before the archive was registered). An archive whose download URL is not known yet is used
 /// under its file name on a snapshot or dry run and disqualifies the entry
 /// otherwise.
 fn resolve_source_archive(
@@ -131,8 +131,8 @@ fn resolve_source_archive(
             .with_context(|| format!("{label}: render url_template"))?,
         (None, None) => {
             let reason = if ctx.config.source.as_ref().is_some_and(|s| s.is_enabled()) {
-                "no source archive was produced: the source stage did not run \
-                 (a dry run, or `--skip=source`)"
+                "no source archive was produced: the source stage did not register one \
+                 (`--skip=source`, or it failed before the archive was written)"
             } else {
                 "no source archive found: enable `source.enabled: true`"
             };

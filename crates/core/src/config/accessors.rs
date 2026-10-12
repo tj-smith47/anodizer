@@ -221,14 +221,14 @@ impl Config {
     /// `release:` block and stamps download URLs on that crate's artifacts
     /// only, so an artifact registered under a `project_name` that names no
     /// such crate is neither uploaded nor given a URL.
-    pub fn release_owner_crate_name(&self) -> String {
+    pub fn release_owner_crate_name(&self) -> &str {
         let universe = self.crate_universe();
         universe
             .iter()
             .find(|c| c.release.is_some())
             .or_else(|| universe.first())
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| self.project_name.clone())
+            .map(|c| c.name.as_str())
+            .unwrap_or(&self.project_name)
     }
 
     /// Project homepage: top-level `metadata.homepage` wins, else the primary

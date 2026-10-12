@@ -200,7 +200,7 @@ impl SourceStage {
         // Registered under the crate whose release uploads it: the release
         // stage selects assets and stamps download URLs per crate with a
         // `release:` block, and `project_name` need not name one.
-        let owner = ctx.config.release_owner_crate_name();
+        let owner = ctx.config.release_owner_crate_name().to_string();
         let mut metadata = HashMap::new();
         metadata.insert("format".to_string(), format.clone());
         metadata.insert("prefix".to_string(), source_prefix);

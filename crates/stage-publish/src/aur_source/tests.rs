@@ -805,7 +805,7 @@ fn render_inner_without_a_source_archive_skips_the_entry() {
     assert_eq!(
         anodizer_core::pipe_skip::entry_skip_reason(&err),
         Some(
-            "no source archive was produced: the source stage did not run (a dry run, or `--skip=source`)"
+            "no source archive was produced: the source stage did not register one (`--skip=source`, or it failed before the archive was written)"
         ),
         "{err:#}"
     );
@@ -2112,7 +2112,7 @@ fn the_source_pkgbuild_renders_the_release_url_in_every_config_mode() {
             path: std::path::PathBuf::from(format!("/dist/{name}")),
             name: name.clone(),
             target: None,
-            crate_name: ctx.config.release_owner_crate_name(),
+            crate_name: ctx.config.release_owner_crate_name().to_string(),
             metadata: std::collections::HashMap::from([
                 ("format".to_string(), "tar.gz".to_string()),
                 ("prefix".to_string(), format!("{project_name}-1.0.0")),

@@ -6,14 +6,16 @@ use anyhow::{Result, bail};
 use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::context::Context;
 
-/// One artifact an SBOM config selected: path, metadata, build target, and
-/// kind. The kind is `None` only for the synthetic whole-project subject of
-/// `artifacts: any` (which catalogs the source tree, not one artifact).
+/// One artifact an SBOM config selected: path, metadata, build target, kind
+/// and the crate it was registered under. The kind and the crate are `None`
+/// only for the synthetic whole-project subject of `artifacts: any` (which
+/// catalogs the source tree, not one artifact).
 pub(crate) type SbomSubject = (
     PathBuf,
     HashMap<String, String>,
     Option<String>,
     Option<ArtifactKind>,
+    Option<String>,
 );
 
 /// Map a typed (non-`any`, non-`binary`) `artifacts:` filter value to the

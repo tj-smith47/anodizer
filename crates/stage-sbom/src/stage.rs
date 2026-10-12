@@ -142,6 +142,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                         a.metadata.clone(),
                         a.target.clone(),
                         Some(a.kind),
+                        Some(a.crate_name.clone()),
                     )
                 })
                 .collect();
@@ -175,6 +176,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                         a.metadata.clone(),
                         a.target.clone(),
                         Some(a.kind),
+                        Some(a.crate_name.clone()),
                     )
                 })
                 .collect();
@@ -202,7 +204,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                 cmd, id
             ));
         } else {
-            for (path, _, _, _) in &matching_artifacts {
+            for (path, _, _, _, _) in &matching_artifacts {
                 log.status(&format!(
                     "(dry-run) would run '{}' on {} (sbom[{}])",
                     cmd,
@@ -215,12 +217,14 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     }
 
     let artifact_list: Vec<SbomSubject> = if artifacts_type == "any" {
-        vec![(PathBuf::new(), HashMap::new(), None, None)]
+        vec![(PathBuf::new(), HashMap::new(), None, None, None)]
     } else {
         matching_artifacts
     };
 
-    for (artifact_path, artifact_meta, artifact_target, artifact_kind) in &artifact_list {
+    for (artifact_path, artifact_meta, artifact_target, artifact_kind, artifact_crate) in
+        &artifact_list
+    {
         // The generator runs with `dist` as its working directory, so an
         // artifact that lives outside dist (a build binary under `target/`)
         // must be named absolutely or the tool resolves it against dist and
@@ -393,7 +397,12 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                     name,
                     path: match_path,
                     target: None,
-                    crate_name: ctx.config.release_owner_crate_name(),
+                    // A document about one artifact uploads with that
+                    // artifact; the whole-project document has no subject
+                    // and uploads with the repository-level artifacts.
+                    crate_name: artifact_crate
+                        .clone()
+                        .unwrap_or_else(|| ctx.config.release_owner_crate_name().to_string()),
                     metadata,
                     size: None,
                 });
@@ -526,7 +535,7 @@ pub(crate) fn run_sbom_builtin(
     // (syft) path's artifact-filter shape so swapping `cmd:` in and out
     // of the config doesn't change the user-visible artifact set.
     let matching_artifacts: Vec<SbomSubject> = match artifacts_type {
-        "any" => vec![(PathBuf::new(), HashMap::new(), None, None)],
+        "any" => vec![(PathBuf::new(), HashMap::new(), None, None, None)],
         "binary" => {
             let candidates = ctx.artifacts.binary_like_dedup();
             let pre_ids = candidates.len();
@@ -539,6 +548,7 @@ pub(crate) fn run_sbom_builtin(
                         a.metadata.clone(),
                         a.target.clone(),
                         Some(a.kind),
+                        Some(a.crate_name.clone()),
                     )
                 })
                 .collect();
@@ -570,6 +580,7 @@ pub(crate) fn run_sbom_builtin(
                         a.metadata.clone(),
                         a.target.clone(),
                         Some(a.kind),
+                        Some(a.crate_name.clone()),
                     )
                 })
                 .collect();
@@ -606,7 +617,7 @@ pub(crate) fn run_sbom_builtin(
     // Only the first match's metadata + kind are consumed (verdict record /
     // `ids:` inheritance); its `target` is deliberately NOT propagated — the
     // workspace SBOM is target-independent (registered `target: None` below).
-    let (_, subject_meta, _subject_target, subject_kind) = &matching_artifacts[0];
+    let (_, subject_meta, _subject_target, subject_kind, _) = &matching_artifacts[0];
 
     let filename = format!("{}-{}.{}", project_name, version, extension);
     let output_path = dist.join(filename);
@@ -653,7 +664,7 @@ pub(crate) fn run_sbom_builtin(
         // N copies and the duplicate-path guard rejects them. Subject
         // provenance the `ids:` filter needs is carried in `metadata`, not here.
         target: None,
-        crate_name: ctx.config.release_owner_crate_name(),
+        crate_name: ctx.config.release_owner_crate_name().to_string(),
         metadata,
         size: None,
     });

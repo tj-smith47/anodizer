@@ -25,11 +25,13 @@ use crate::{builtin_format_and_extension, typed_artifact_kind};
 /// Derive the SBOM asset names the `sboms:` config demands for `crate_name`'s
 /// published release, from config + the produced artifact set only.
 ///
-/// Returns a sorted, de-duplicated list of expected asset basenames. SBOM
-/// artifacts are registered under the project name (see `run_sbom` /
-/// `run_sbom_builtin`), so in workspace modes the expectations attach to the
-/// crate whose name matches the project and every other crate gets none —
-/// mirroring exactly which crate's release the upload path attaches SBOMs to.
+/// Returns a sorted, de-duplicated list of expected asset basenames. A
+/// document about one artifact is registered under that artifact's crate
+/// (see `run_sbom`), so its expectation attaches to the crate whose release
+/// carries the subject. The whole-project documents — `artifacts: any`, and
+/// the built-in generator's single workspace document — are registered under
+/// the release owner crate (see `run_sbom_builtin`), so only that crate's
+/// release expects them.
 ///
 /// `release_ids` is the release block's `ids:` upload filter: an SBOM
 /// inherits its SUBJECT artifact's upload verdict (see `matches_id_filter`),
@@ -43,9 +45,7 @@ pub fn expected_sbom_assets(
     if ctx.should_skip("sbom") {
         return Ok(Vec::new());
     }
-    if crate_name != ctx.config.project_name {
-        return Ok(Vec::new());
-    }
+    let owns_repository_documents = crate_name == ctx.config.release_owner_crate_name();
     let project_name = &ctx.config.project_name;
     let version = ctx
         .template_vars()
@@ -69,6 +69,9 @@ pub fn expected_sbom_assets(
         let use_builtin = cfg.cmd.is_none() && cfg.args.is_none();
 
         if artifacts_type == "any" {
+            if !owns_repository_documents {
+                continue;
+            }
             if use_builtin {
                 let (_, extension) = builtin_format_and_extension(&documents);
                 expected.push(format!("{project_name}-{version}.{extension}"));
@@ -109,6 +112,7 @@ pub fn expected_sbom_assets(
                 .into_iter()
                 .filter(|a| matches_id_filter(a, cfg.ids.as_deref()))
                 .filter(|a| matches_id_filter(a, release_ids))
+                .filter(|a| use_builtin || a.crate_name == crate_name)
                 .collect()
         } else {
             let kind = typed_artifact_kind(artifacts_type, id)?;
@@ -118,6 +122,7 @@ pub fn expected_sbom_assets(
                 .filter(|a| a.kind == kind)
                 .filter(|a| matches_id_filter(a, cfg.ids.as_deref()))
                 .filter(|a| matches_id_filter(a, release_ids))
+                .filter(|a| use_builtin || a.crate_name == crate_name)
                 .collect()
         };
 
@@ -127,7 +132,7 @@ pub fn expected_sbom_assets(
         // filename). The match scan above still gates it: zero matches means
         // the stage produced nothing, so demand nothing.
         if use_builtin {
-            if !matching.is_empty() {
+            if owns_repository_documents && !matching.is_empty() {
                 let (_, extension) = builtin_format_and_extension(&documents);
                 expected.push(format!("{project_name}-{version}.{extension}"));
             }
@@ -254,9 +259,10 @@ mod tests {
     }
 
     #[test]
-    fn non_project_crate_gets_no_sbom_expectations() {
-        // SBOM artifacts are registered under the project name; in workspace
-        // modes other crates' releases never carry them.
+    fn non_owner_crate_gets_no_workspace_sbom_expectations() {
+        // The built-in generator's single workspace document is registered
+        // under the release owner crate; another crate's release never
+        // carries it, whatever archives that crate produced.
         let mut ctx = TestContextBuilder::new()
             .project_name("app")
             .add_sbom(per_archive_cfg())
@@ -265,6 +271,82 @@ mod tests {
             .add(archive("other.tar.gz", "other-crate", None));
         let expected = expected_sbom_assets(&ctx, "other-crate", None).expect("derivation");
         assert!(expected.is_empty());
+    }
+
+    #[test]
+    fn workspace_sbom_expectations_follow_the_release_owner_not_the_project_name() {
+        // Lockstep workspace where `project_name` names the SECOND crate with
+        // a `release:` block: the stage registers the workspace document under
+        // the first one, so that crate's release expects it and the project
+        // crate's release does not.
+        use anodizer_core::config::{CrateConfig, ReleaseConfig};
+        let release = || {
+            Some(ReleaseConfig {
+                github: Some(anodizer_core::config::ScmRepoConfig {
+                    owner: "o".to_string(),
+                    name: "r".to_string(),
+                    token: None,
+                }),
+                ..Default::default()
+            })
+        };
+        let mut ctx = TestContextBuilder::new()
+            .project_name("ws-core")
+            .tag("v1.0.0")
+            .add_sbom(per_archive_cfg())
+            .crates(vec![
+                CrateConfig {
+                    name: "ws-cli".to_string(),
+                    path: "crates/cli".to_string(),
+                    release: release(),
+                    ..Default::default()
+                },
+                CrateConfig {
+                    name: "ws-core".to_string(),
+                    path: "crates/core".to_string(),
+                    release: release(),
+                    ..Default::default()
+                },
+            ])
+            .build();
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts
+            .add(archive("ws-cli-1.0.0.tar.gz", "ws-cli", None));
+        ctx.artifacts
+            .add(archive("ws-core-1.0.0.tar.gz", "ws-core", None));
+        assert_eq!(ctx.config.release_owner_crate_name(), "ws-cli");
+
+        let owner = expected_sbom_assets(&ctx, "ws-cli", None).expect("derivation");
+        assert_eq!(owner, vec!["ws-core-1.0.0.cdx.json".to_string()]);
+        let project = expected_sbom_assets(&ctx, "ws-core", None).expect("derivation");
+        assert!(project.is_empty(), "{project:?}");
+    }
+
+    #[test]
+    fn per_subject_external_sbom_expectations_follow_the_subject_crate() {
+        // An external generator writes one document per archive, registered
+        // under the archive's crate: each crate's release expects the
+        // documents of its own archives and none of its siblings'.
+        let cfg = SbomConfig {
+            cmd: Some("syft".to_string()),
+            ..per_archive_cfg()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .project_name("ws-cli")
+            .add_sbom(cfg)
+            .build();
+        ctx.artifacts
+            .add(archive("ws-cli-1.0.0.tar.gz", "ws-cli", None));
+        ctx.artifacts
+            .add(archive("ws-core-1.0.0.tar.gz", "ws-core", None));
+        assert_eq!(
+            expected_sbom_assets(&ctx, "ws-cli", None).expect("derivation"),
+            vec!["ws-cli-1.0.0.tar.gz.cdx.json".to_string()]
+        );
+        assert_eq!(
+            expected_sbom_assets(&ctx, "ws-core", None).expect("derivation"),
+            vec!["ws-core-1.0.0.tar.gz.cdx.json".to_string()]
+        );
     }
 
     #[test]
