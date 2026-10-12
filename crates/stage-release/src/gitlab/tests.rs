@@ -1539,11 +1539,11 @@ async fn upload_asset_link_conflict_without_replace_bails() {
     );
 }
 
-/// A link POST returning 500 (server error, not a 400/422 duplicate) with
-/// `replace_existing` TRUE still bails — the delete-and-retry path is
-/// reserved for 400/422 conflicts, not 5xx.
+/// A link POST returning 500 is retried on the run's policy and bails once
+/// the budget is spent, with no DELETE: the delete-and-recreate path is for
+/// a 400/422 duplicate, not a 5xx.
 #[tokio::test]
-async fn upload_asset_link_500_with_replace_still_bails() {
+async fn upload_asset_link_500_is_retried_then_bails_without_a_delete() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file = dir.path().join("a.bin");
     tokio::fs::write(&file, b"xyz")
@@ -1602,10 +1602,127 @@ async fn upload_asset_link_500_with_replace_still_bails() {
         "error must carry the 500 status, got: {err:#}"
     );
     let entries = log.lock().unwrap();
+    assert_eq!(
+        entries.iter().filter(|e| e.method == "POST").count(),
+        2,
+        "the link POST is retried on the run's policy (two attempts)"
+    );
     assert!(
         entries.iter().all(|e| e.method != "DELETE"),
-        "a 500 (not 400/422) must not trigger the delete-and-retry path"
+        "a 500 (not 400/422) must not trigger the delete-and-recreate path"
     );
+}
+
+/// A 400 on the link POST with `replace_existing` on, where the listing holds
+/// no link of that name, is the create failure itself and is reported as such
+/// with no second POST.
+#[tokio::test]
+async fn upload_asset_replace_with_no_matching_link_reports_the_create_failure() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("a.bin");
+    tokio::fs::write(&file, b"xyz")
+        .await
+        .expect("write fixture");
+
+    let (addr, log) = spawn_scripted_responder(vec![
+        ScriptedRoute {
+            method: "PUT",
+            path_pattern: "/projects/o%2Fr/packages/generic/p/1.0.0/a.bin",
+            response: http_json("201 Created", "{}".to_string()),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/version",
+            response: http_json(
+                "200 OK",
+                serde_json::json!({"version": "17.0.0"}).to_string(),
+            ),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "POST",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+            response: http_json(
+                "400 Bad Request",
+                serde_json::json!({"message": {"url": ["is invalid"]}}).to_string(),
+            ),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+            response: http_json("200 OK", "[]".to_string()),
+            times: None,
+        },
+    ]);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let ctx = GitlabCtx {
+        client: &client,
+        api_url: &api_url,
+        project_id: "o/r",
+        policy: &policy,
+        deadline: None,
+        log: tlog(),
+    };
+    let asset = GitlabAssetSpec {
+        file_path: &file,
+        file_name: "a.bin",
+    };
+    let pkg = GitlabPackageRegistrySpec {
+        project_name: "p",
+        version: "1.0.0",
+    };
+
+    let err = gitlab_upload_asset(&ctx, "v1.0.0", &asset, Some(&pkg), "https://x", true)
+        .await
+        .expect_err("a 400 that is not a duplicate must surface");
+    let chain = format!("{err:#}");
+    assert!(
+        chain.contains("create release link for 'a.bin' failed (HTTP 400")
+            && chain.contains("is invalid"),
+        "the original create failure is the error, got: {chain}"
+    );
+    let entries = log.lock().unwrap();
+    assert_eq!(entries.iter().filter(|e| e.method == "POST").count(), 1);
+    assert!(entries.iter().all(|e| e.method != "DELETE"));
+}
+
+/// A transient 503 on the version probe is retried on the probe's own small
+/// budget, so the answer is the server's version and not the conservative
+/// default.
+#[tokio::test]
+async fn detect_pre_v17_retries_a_transient_probe_failure() {
+    let (addr, log) = spawn_scripted_responder(vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/version",
+            response: "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+            times: Some(1),
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/version",
+            response: http_json(
+                "200 OK",
+                serde_json::json!({"version": "17.2.0"}).to_string(),
+            ),
+            times: None,
+        },
+    ]);
+    let client = test_client();
+    let api_url = format!("http://{addr}");
+    let env = anodizer_core::MapEnvSource::default();
+    assert!(
+        !detect_pre_v17_gitlab_with_env(&client, &api_url, &env, None, tlog()).await,
+        "the retried probe reads 17.2.0 as not pre-v17"
+    );
+    let entries = log.lock().unwrap();
+    assert_eq!(entries.len(), 2, "503 then 200 on /version");
+    assert_eq!(VERSION_PROBE_RETRY.max_attempts, 3);
 }
 
 // -- detect_pre_v17_gitlab_with_env -------------------------------------
@@ -1623,13 +1740,13 @@ async fn detect_pre_v17_env_short_circuits_without_http() {
 
     let env16 = MapEnvSource::new().with("CI_SERVER_VERSION", "16.5.0");
     assert!(
-        detect_pre_v17_gitlab_with_env(&client, &api_url, &env16).await,
+        detect_pre_v17_gitlab_with_env(&client, &api_url, &env16, None, tlog()).await,
         "16.x via env => pre-v17"
     );
 
     let env17 = MapEnvSource::new().with("CI_SERVER_VERSION", "17.1.0");
     assert!(
-        !detect_pre_v17_gitlab_with_env(&client, &api_url, &env17).await,
+        !detect_pre_v17_gitlab_with_env(&client, &api_url, &env17, None, tlog()).await,
         "17.x via env => not pre-v17"
     );
 
@@ -1657,7 +1774,7 @@ async fn detect_pre_v17_falls_back_to_version_api() {
     let env = MapEnvSource::new();
 
     assert!(
-        detect_pre_v17_gitlab_with_env(&client, &api_url, &env).await,
+        detect_pre_v17_gitlab_with_env(&client, &api_url, &env, None, tlog()).await,
         "16.x from /version API => pre-v17"
     );
     let entries = log.lock().unwrap();
@@ -1675,7 +1792,7 @@ async fn detect_pre_v17_defaults_true_on_api_failure() {
     let env = MapEnvSource::new();
 
     assert!(
-        detect_pre_v17_gitlab_with_env(&client, &api_url, &env).await,
+        detect_pre_v17_gitlab_with_env(&client, &api_url, &env, None, tlog()).await,
         "an unreachable/failed /version probe defaults to pre-v17"
     );
 }
@@ -1698,7 +1815,7 @@ async fn detect_pre_v17_unparseable_version_field_defaults_true() {
     let env = MapEnvSource::new();
 
     assert!(
-        detect_pre_v17_gitlab_with_env(&client, &api_url, &env).await,
+        detect_pre_v17_gitlab_with_env(&client, &api_url, &env, None, tlog()).await,
         "a 200 /version with a non-string version field defaults to pre-v17"
     );
     let entries = log.lock().unwrap();
@@ -1900,96 +2017,6 @@ async fn upload_asset_replace_list_links_failure_bails_with_original_status() {
         entries.iter().all(|e| e.method != "DELETE"),
         "a failed link-list must not proceed to DELETE"
     );
-}
-
-/// When replace_existing is true and the listed links contain NO entry
-/// matching the asset name, no DELETE fires but the POST is still retried
-/// (asset of line range 523-535 retry-after-delete closure). The retry
-/// then succeeds.
-#[tokio::test]
-async fn upload_asset_replace_no_matching_link_retries_post() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let file = dir.path().join("a.bin");
-    tokio::fs::write(&file, b"xyz")
-        .await
-        .expect("write fixture");
-
-    let other_links = serde_json::json!([{"id": 1, "name": "other.bin"}]).to_string();
-    let (addr, log) = spawn_scripted_responder(vec![
-        ScriptedRoute {
-            method: "PUT",
-            path_pattern: "/projects/o%2Fr/packages/generic/p/1.0.0/a.bin",
-            response: http_json("201 Created", "{}".to_string()),
-            times: None,
-        },
-        ScriptedRoute {
-            method: "GET",
-            path_pattern: "/version",
-            response: http_json(
-                "200 OK",
-                serde_json::json!({"version": "17.0.0"}).to_string(),
-            ),
-            times: None,
-        },
-        // First link POST conflicts (422)...
-        ScriptedRoute {
-            method: "POST",
-            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
-            response: http_json(
-                "422 Unprocessable Entity",
-                serde_json::json!({"message": "already exists"}).to_string(),
-            ),
-            times: Some(1),
-        },
-        // ...list returns only a non-matching link (no DELETE)...
-        ScriptedRoute {
-            method: "GET",
-            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
-            response: http_json("200 OK", other_links),
-            times: None,
-        },
-        // ...retry POST succeeds.
-        ScriptedRoute {
-            method: "POST",
-            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
-            response: http_json("201 Created", serde_json::json!({"id": 9}).to_string()),
-            times: None,
-        },
-    ]);
-
-    let client = test_client();
-    let policy = fast_policy(2);
-    let api_url = format!("http://{addr}");
-    let ctx = GitlabCtx {
-        client: &client,
-        api_url: &api_url,
-        project_id: "o/r",
-        policy: &policy,
-        deadline: None,
-        log: tlog(),
-    };
-    let asset = GitlabAssetSpec {
-        file_path: &file,
-        file_name: "a.bin",
-    };
-    let pkg = GitlabPackageRegistrySpec {
-        project_name: "p",
-        version: "1.0.0",
-    };
-
-    gitlab_upload_asset(&ctx, "v1.0.0", &asset, Some(&pkg), "https://x", true)
-        .await
-        .expect("retry POST after a no-match list should succeed");
-    let entries = log.lock().unwrap();
-    assert!(
-        entries.iter().all(|e| e.method != "DELETE"),
-        "no name match => no DELETE, but the POST is still retried"
-    );
-    let posts = entries
-        .iter()
-        .filter(|e| e.method == "POST" && e.path.ends_with("/assets/links"))
-        .count();
-    assert_eq!(posts, 2, "the conflicting POST is retried exactly once");
 }
 
 // -- run_gitlab_backend orchestration -----------------------------------

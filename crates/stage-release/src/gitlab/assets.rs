@@ -13,8 +13,9 @@ use super::*;
 /// After the upload, a release link is created pointing to the uploaded file.
 ///
 /// When `replace_existing` is true and the link creation returns HTTP 400/422
-/// (duplicate), the existing link with the same name is deleted and the POST
-/// is retried per the `replace_existing_artifacts` setting.
+/// (duplicate), the existing link with the same name is deleted and the link
+/// is created again in the same attempt; when no link carries that name the
+/// create failure was something else and is reported as it came.
 ///
 /// `ctx.policy` is the user-configured `Config.retry` block (or default 10 ×
 /// 10s × 5m cap), bounded by the invocation's wall-clock budget `ctx.deadline`
@@ -73,7 +74,7 @@ pub(crate) async fn gitlab_upload_asset(
 
     // Detect GitLab server version for the asset path field name.
     // GitLab v17+ uses `direct_asset_path`; older versions use `file_path`.
-    let use_legacy_file_path = detect_pre_v17_gitlab(client, api_url).await;
+    let use_legacy_file_path = detect_pre_v17_gitlab(client, api_url, deadline, log).await;
     let path_field = if use_legacy_file_path {
         "filepath"
     } else {
@@ -86,67 +87,59 @@ pub(crate) async fn gitlab_upload_asset(
         path_field: direct_asset_path,
     });
 
-    // First attempt at creating the link. `retry_http_async` is not used
-    // directly here because the 400/422 "already exists" status is part of
-    // the replace-existing control flow: those statuses are 4xx (would
-    // fast-fail under the helper's classifier), and the right reaction is to
-    // delete the conflicting link and retry.
-    let resp = client
-        .post(&links_api)
-        .json(&payload)
-        .send()
-        .await
-        .context("gitlab: POST create release link")?;
-
-    let status_code = resp.status().as_u16();
-    if resp.status().is_success() {
-        return Ok(());
+    // The create goes through the retry helper like every other call, so a
+    // 5xx or a 429 is retried on the run's policy; a 400/422 fast-fails there
+    // and is read here as "a link of this name already exists".
+    let create_err = match retry_http_async_deadline(
+        RetryLog::new("gitlab: POST create release link", log),
+        policy,
+        deadline,
+        SuccessClass::Strict,
+        |_| client.post(&links_api).json(&payload).send(),
+        |status, body| {
+            format!(
+                "gitlab: create release link for '{}' failed (HTTP {status}): {}",
+                file_name,
+                redact_bearer_tokens(body)
+            )
+        },
+    )
+    .await
+    {
+        Ok(_) => return Ok(()),
+        Err(err) => err,
+    };
+    let status_code = anodizer_core::retry::http_status(&create_err);
+    if !((status_code == 400 || status_code == 422) && replace_existing) {
+        return Err(create_err);
     }
 
-    // If the link already exists (400/422) and replace_existing is enabled,
-    // find and delete the conflicting link, then retry the POST.
-    if (status_code == 400 || status_code == 422) && replace_existing {
-        let text = anodizer_core::http::body_of(resp).await;
-        // A failed cleanup (list or delete) surfaces the ORIGINAL create
-        // failure as context — that is the actionable error — with the
-        // cleanup failure chained underneath.
-        if let Err(cleanup_err) = gitlab_delete_asset_link(ctx, tag, file_name).await {
-            return Err(cleanup_err).with_context(|| {
-                format!(
-                    "gitlab: create release link for '{}' failed (HTTP {}): {}",
-                    file_name,
-                    status_code,
-                    redact_bearer_tokens(&text)
-                )
-            });
+    // A failed cleanup (list or delete) and a listing holding no link of
+    // this name both report the ORIGINAL create failure, which is the
+    // actionable error, with the cleanup failure chained underneath.
+    match gitlab_delete_asset_link(ctx, tag, file_name).await {
+        Ok(true) => {}
+        Ok(false) => return Err(create_err),
+        Err(cleanup_err) => {
+            return Err(cleanup_err.context(format!("{create_err:#}")));
         }
-
-        // Retry the POST after deleting the conflicting link.
-        retry_http_async_deadline(
-            RetryLog::new("gitlab: POST create release link (retry after delete)", log),
-            policy,
-            deadline,
-            SuccessClass::Strict,
-            |_| client.post(&links_api).json(&payload).send(),
-            |status, body| {
-                format!(
-                    "gitlab: create release link for '{}' failed on retry (HTTP {status}): {}",
-                    file_name,
-                    redact_bearer_tokens(body)
-                )
-            },
-        )
-        .await?;
-    } else {
-        let text = anodizer_core::http::body_of(resp).await;
-        bail!(
-            "gitlab: create release link for '{}' failed (HTTP {}): {}",
-            file_name,
-            status_code,
-            redact_bearer_tokens(&text)
-        );
     }
 
+    retry_http_async_deadline(
+        RetryLog::new("gitlab: POST create release link (after delete)", log),
+        policy,
+        deadline,
+        SuccessClass::Strict,
+        |_| client.post(&links_api).json(&payload).send(),
+        |status, body| {
+            format!(
+                "gitlab: create release link for '{}' failed after deleting the existing link (HTTP {status}): {}",
+                file_name,
+                redact_bearer_tokens(body)
+            )
+        },
+    )
+    .await?;
     Ok(())
 }
 
