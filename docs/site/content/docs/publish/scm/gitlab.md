@@ -82,7 +82,7 @@ release:
 
 - GitLab does not support draft releases
 - Existing release detection: checks by tag; creates new on 403/404, updates on 200
-- `replace_existing_artifacts`: on conflict (400/422), deletes the conflicting link and retries
+- `replace_existing_artifacts`: on conflict (400/422), deletes the link of the same name and creates the new one in the same attempt; a 400 that no existing link explains is reported as the create failure
 - URL-encoded project paths (e.g., `group/subgroup/project` becomes `group%2Fsubgroup%2Fproject`)
 - 300-second HTTP timeout
 

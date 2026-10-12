@@ -187,6 +187,7 @@ pub(crate) fn run_gitlab_backend(
                     .then(|| (project_name_for_pkg.clone(), version_for_pkg.clone())),
                 replace_existing_artifacts,
                 log: log.clone(),
+                legacy_path_probe: tokio::sync::OnceCell::new(),
             });
             crate::forge::run_upload_loop(forge_client, &plan, artifact_entries, log).await?;
         }

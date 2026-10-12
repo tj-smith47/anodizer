@@ -31,6 +31,7 @@ pub(crate) async fn gitlab_upload_asset(
     pkg: Option<&GitlabPackageRegistrySpec<'_>>,
     download_url: &str,
     replace_existing: bool,
+    legacy_path_probe: &tokio::sync::OnceCell<bool>,
 ) -> Result<()> {
     let GitlabCtx {
         client,
@@ -74,7 +75,10 @@ pub(crate) async fn gitlab_upload_asset(
 
     // Detect GitLab server version for the asset path field name.
     // GitLab v17+ uses `direct_asset_path`; older versions use `file_path`.
-    let use_legacy_file_path = detect_pre_v17_gitlab(client, api_url, deadline, log).await;
+    // One probe per release run: every asset's link uses the same field.
+    let use_legacy_file_path = *legacy_path_probe
+        .get_or_init(|| detect_pre_v17_gitlab(client, api_url, deadline, log))
+        .await;
     let path_field = if use_legacy_file_path {
         "filepath"
     } else {
@@ -121,7 +125,9 @@ pub(crate) async fn gitlab_upload_asset(
         Ok(true) => {}
         Ok(false) => return Err(create_err),
         Err(cleanup_err) => {
-            return Err(cleanup_err.context(format!("{create_err:#}")));
+            return Err(create_err.context(format!(
+                "cleaning up the existing link failed: {cleanup_err:#}"
+            )));
         }
     }
 
@@ -172,34 +178,65 @@ pub(crate) async fn gitlab_find_asset_link(
         log,
     } = *ctx;
     let links_api = gitlab_links_api(api_url, project_id, tag);
-    let resp = retry_http_async_deadline(
-        RetryLog::new("gitlab: GET existing release links", log),
-        policy,
-        deadline,
-        SuccessClass::Strict,
-        |_| client.get(&links_api).send(),
-        |status, body| {
-            format!(
-                "gitlab: list existing release links failed (HTTP {status}): {}",
-                redact_bearer_tokens(body)
-            )
-        },
-    )
-    .await?;
-    let links: Vec<serde_json::Value> = resp
-        .json()
-        .await
-        .context("gitlab: parse release links JSON")?;
-    for link in &links {
-        if link["name"].as_str() == Some(file_name)
-            && let Some(link_id) = link["id"].as_u64()
-        {
-            let url = link["url"].as_str().unwrap_or_default().to_string();
-            return Ok(Some((link_id, url)));
+    // The listing is paged (20 per page by default); a release with more
+    // links than one page holds keeps its duplicate on a later page.
+    let mut previous_first_id: Option<u64> = None;
+    for page in 1u32.. {
+        if page > 1 && deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            bail!(
+                "gitlab: could not enumerate the release links of '{tag}': the retry \
+                 deadline passed while reading the listing (page {page})"
+            );
         }
+        let url = format!("{links_api}?page={page}&per_page={LINKS_PAGE_SIZE}");
+        let resp = retry_http_async_deadline(
+            RetryLog::new(
+                &format!("gitlab: GET existing release links page {page}"),
+                log,
+            ),
+            policy,
+            deadline,
+            SuccessClass::Strict,
+            |_| client.get(&url).send(),
+            |status, body| {
+                format!(
+                    "gitlab: list existing release links failed (HTTP {status}): {}",
+                    redact_bearer_tokens(body)
+                )
+            },
+        )
+        .await?;
+        let links: Vec<serde_json::Value> = resp
+            .json()
+            .await
+            .context("gitlab: parse release links JSON")?;
+        for link in &links {
+            if link["name"].as_str() == Some(file_name)
+                && let Some(link_id) = link["id"].as_u64()
+            {
+                let url = link["url"].as_str().unwrap_or_default().to_string();
+                return Ok(Some((link_id, url)));
+            }
+        }
+        if links.len() < LINKS_PAGE_SIZE as usize {
+            return Ok(None);
+        }
+        let first_id = links.first().and_then(|l| l["id"].as_u64());
+        if first_id.is_some() && first_id == previous_first_id {
+            bail!(
+                "gitlab: could not enumerate the release links of '{tag}': the listing \
+                 served the same page twice (page {page} repeats page {}), so the server \
+                 is not honoring the page parameter",
+                page - 1
+            );
+        }
+        previous_first_id = first_id;
     }
-    Ok(None)
+    unreachable!("the page loop returns or bails")
 }
+
+/// Links per listing page; GitLab's maximum.
+const LINKS_PAGE_SIZE: u32 = 100;
 
 /// Delete the release link named `file_name` on the release for `tag`.
 ///
@@ -486,6 +523,8 @@ pub(crate) struct GitlabAssetClient {
     pub pkg: Option<(String, String)>,
     pub replace_existing_artifacts: bool,
     pub log: anodizer_core::log::StageLogger,
+    /// The server-version probe's answer, taken once for every asset.
+    pub legacy_path_probe: tokio::sync::OnceCell<bool>,
 }
 
 impl GitlabAssetClient {
@@ -564,6 +603,7 @@ impl crate::forge::ForgeAssetClient for GitlabAssetClient {
                 pkg_spec.as_ref(),
                 &self.download_url,
                 self.replace_existing_artifacts,
+                &self.legacy_path_probe,
             )
         })
         .await

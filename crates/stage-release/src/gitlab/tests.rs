@@ -678,6 +678,7 @@ async fn gitlab_upload_asset_replace_existing_422_deletes_and_retries() {
         Some(&pkg),
         "https://gitlab.com/myorg/myproj",
         true,
+        &tokio::sync::OnceCell::new(),
     )
     .await;
 
@@ -1141,9 +1142,17 @@ async fn upload_asset_project_uploads_creates_link() {
 
     // download_url is the base the returned full_path is joined onto.
     let download_url = format!("http://{addr}");
-    gitlab_upload_asset(&ctx, "v1.0.0", &asset, None, &download_url, false)
-        .await
-        .expect("project-uploads upload should succeed");
+    gitlab_upload_asset(
+        &ctx,
+        "v1.0.0",
+        &asset,
+        None,
+        &download_url,
+        false,
+        &tokio::sync::OnceCell::new(),
+    )
+    .await
+    .expect("project-uploads upload should succeed");
 
     let entries = log.lock().unwrap();
     let upload = entries
@@ -1235,9 +1244,17 @@ async fn upload_asset_pre_v17_uses_legacy_filepath_field() {
     };
     let download_url = format!("http://{addr}");
 
-    gitlab_upload_asset(&ctx, "v1.0.0", &asset, None, &download_url, false)
-        .await
-        .expect("upload should succeed");
+    gitlab_upload_asset(
+        &ctx,
+        "v1.0.0",
+        &asset,
+        None,
+        &download_url,
+        false,
+        &tokio::sync::OnceCell::new(),
+    )
+    .await
+    .expect("upload should succeed");
 
     let entries = log.lock().unwrap();
     let link = entries
@@ -1292,9 +1309,17 @@ async fn upload_asset_project_uploads_missing_full_path_errors() {
     };
     let download_url = format!("http://{addr}");
 
-    let err = gitlab_upload_asset(&ctx, "v1.0.0", &asset, None, &download_url, false)
-        .await
-        .expect_err("missing full_path must error");
+    let err = gitlab_upload_asset(
+        &ctx,
+        "v1.0.0",
+        &asset,
+        None,
+        &download_url,
+        false,
+        &tokio::sync::OnceCell::new(),
+    )
+    .await
+    .expect_err("missing full_path must error");
     assert!(
         format!("{err:#}").contains("missing 'full_path' field"),
         "error must name the missing field, got: {err:#}"
@@ -1366,6 +1391,7 @@ async fn upload_asset_package_registry_puts_then_links() {
         Some(&pkg),
         "https://gitlab.com/myorg/myproj",
         false,
+        &tokio::sync::OnceCell::new(),
     )
     .await
     .expect("package-registry upload should succeed");
@@ -1456,9 +1482,17 @@ async fn upload_asset_package_registry_retries_5xx_on_put() {
         version: "1.0.0",
     };
 
-    gitlab_upload_asset(&ctx, "v1.0.0", &asset, Some(&pkg), "https://x", false)
-        .await
-        .expect("upload should succeed after 5xx retry");
+    gitlab_upload_asset(
+        &ctx,
+        "v1.0.0",
+        &asset,
+        Some(&pkg),
+        "https://x",
+        false,
+        &tokio::sync::OnceCell::new(),
+    )
+    .await
+    .expect("upload should succeed after 5xx retry");
     let entries = log.lock().unwrap();
     let puts = entries.iter().filter(|e| e.method == "PUT").count();
     assert_eq!(puts, 2, "503 registry PUT retried once, then 201");
@@ -1524,9 +1558,17 @@ async fn upload_asset_link_conflict_without_replace_bails() {
         version: "1.0.0",
     };
 
-    let err = gitlab_upload_asset(&ctx, "v1.0.0", &asset, Some(&pkg), "https://x", false)
-        .await
-        .expect_err("400 link with replace=false must bail");
+    let err = gitlab_upload_asset(
+        &ctx,
+        "v1.0.0",
+        &asset,
+        Some(&pkg),
+        "https://x",
+        false,
+        &tokio::sync::OnceCell::new(),
+    )
+    .await
+    .expect_err("400 link with replace=false must bail");
     let chain = format!("{err:#}");
     assert!(
         chain.contains("create release link for 'a.bin' failed (HTTP 400"),
@@ -1594,9 +1636,17 @@ async fn upload_asset_link_500_is_retried_then_bails_without_a_delete() {
         version: "1.0.0",
     };
 
-    let err = gitlab_upload_asset(&ctx, "v1.0.0", &asset, Some(&pkg), "https://x", true)
-        .await
-        .expect_err("500 link must bail even with replace=true");
+    let err = gitlab_upload_asset(
+        &ctx,
+        "v1.0.0",
+        &asset,
+        Some(&pkg),
+        "https://x",
+        true,
+        &tokio::sync::OnceCell::new(),
+    )
+    .await
+    .expect_err("500 link must bail even with replace=true");
     assert!(
         format!("{err:#}").contains("HTTP 500"),
         "error must carry the 500 status, got: {err:#}"
@@ -1651,7 +1701,7 @@ async fn upload_asset_replace_with_no_matching_link_reports_the_create_failure()
         },
         ScriptedRoute {
             method: "GET",
-            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=1&per_page=100",
             response: http_json("200 OK", "[]".to_string()),
             times: None,
         },
@@ -1677,9 +1727,17 @@ async fn upload_asset_replace_with_no_matching_link_reports_the_create_failure()
         version: "1.0.0",
     };
 
-    let err = gitlab_upload_asset(&ctx, "v1.0.0", &asset, Some(&pkg), "https://x", true)
-        .await
-        .expect_err("a 400 that is not a duplicate must surface");
+    let err = gitlab_upload_asset(
+        &ctx,
+        "v1.0.0",
+        &asset,
+        Some(&pkg),
+        "https://x",
+        true,
+        &tokio::sync::OnceCell::new(),
+    )
+    .await
+    .expect_err("a 400 that is not a duplicate must surface");
     let chain = format!("{err:#}");
     assert!(
         chain.contains("create release link for 'a.bin' failed (HTTP 400")
@@ -1723,6 +1781,198 @@ async fn detect_pre_v17_retries_a_transient_probe_failure() {
     let entries = log.lock().unwrap();
     assert_eq!(entries.len(), 2, "503 then 200 on /version");
     assert_eq!(VERSION_PROBE_RETRY.max_attempts, 3);
+}
+
+/// The existing-link lookup follows the listing's pages: a duplicate on the
+/// second page is found, deleted and the link created again.
+#[tokio::test]
+async fn upload_asset_replace_finds_the_existing_link_on_a_later_page() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("a.bin");
+    tokio::fs::write(&file, b"xyz")
+        .await
+        .expect("write fixture");
+
+    let first_page: Vec<serde_json::Value> = (0..100u64)
+        .map(|i| serde_json::json!({"id": 1000 + i, "name": format!("other-{i}"), "url": "https://x/o"}))
+        .collect();
+    let (addr, log) = spawn_scripted_responder(vec![
+        ScriptedRoute {
+            method: "PUT",
+            path_pattern: "/projects/o%2Fr/packages/generic/p/1.0.0/a.bin",
+            response: http_json("201 Created", "{}".to_string()),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/version",
+            response: http_json(
+                "200 OK",
+                serde_json::json!({"version": "17.0.0"}).to_string(),
+            ),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "POST",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+            response: http_json(
+                "400 Bad Request",
+                serde_json::json!({"message": {"name": ["has already been taken"]}}).to_string(),
+            ),
+            times: Some(1),
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=1&per_page=100",
+            response: http_json("200 OK", serde_json::Value::Array(first_page).to_string()),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=2&per_page=100",
+            response: http_json(
+                "200 OK",
+                serde_json::json!([{"id": 4242, "name": "a.bin", "url": "https://x/a.bin"}])
+                    .to_string(),
+            ),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "DELETE",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links/4242",
+            response: http_json("200 OK", "{}".to_string()),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "POST",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+            response: http_json("201 Created", "{}".to_string()),
+            times: None,
+        },
+    ]);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let ctx = GitlabCtx {
+        client: &client,
+        api_url: &api_url,
+        project_id: "o/r",
+        policy: &policy,
+        deadline: None,
+        log: tlog(),
+    };
+    let asset = GitlabAssetSpec {
+        file_path: &file,
+        file_name: "a.bin",
+    };
+    let pkg = GitlabPackageRegistrySpec {
+        project_name: "p",
+        version: "1.0.0",
+    };
+    gitlab_upload_asset(
+        &ctx,
+        "v1.0.0",
+        &asset,
+        Some(&pkg),
+        "https://x",
+        true,
+        &tokio::sync::OnceCell::new(),
+    )
+    .await
+    .expect("the duplicate on page two is replaced");
+    let entries = log.lock().unwrap();
+    let methods: Vec<&str> = entries.iter().map(|e| e.method.as_str()).collect();
+    assert_eq!(methods.iter().filter(|m| **m == "DELETE").count(), 1);
+    assert_eq!(methods.iter().filter(|m| **m == "POST").count(), 2);
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.path.ends_with("links?page=2&per_page=100")),
+        "the second page was read: {methods:?}"
+    );
+}
+
+/// The server-version probe is asked once per release run, however many
+/// assets the run uploads.
+#[tokio::test]
+async fn the_version_probe_is_asked_once_for_every_asset() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let a = dir.path().join("a.bin");
+    let b = dir.path().join("b.bin");
+    tokio::fs::write(&a, b"xyz").await.expect("write fixture");
+    tokio::fs::write(&b, b"xyz").await.expect("write fixture");
+
+    let (addr, log) = spawn_scripted_responder(vec![
+        ScriptedRoute {
+            method: "PUT",
+            path_pattern: "/projects/o%2Fr/packages/generic/p/1.0.0/a.bin",
+            response: http_json("201 Created", "{}".to_string()),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "PUT",
+            path_pattern: "/projects/o%2Fr/packages/generic/p/1.0.0/b.bin",
+            response: http_json("201 Created", "{}".to_string()),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/version",
+            response: http_json(
+                "200 OK",
+                serde_json::json!({"version": "17.0.0"}).to_string(),
+            ),
+            times: Some(1),
+        },
+        ScriptedRoute {
+            method: "POST",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+            response: http_json("201 Created", "{}".to_string()),
+            times: None,
+        },
+    ]);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let ctx = GitlabCtx {
+        client: &client,
+        api_url: &api_url,
+        project_id: "o/r",
+        policy: &policy,
+        deadline: None,
+        log: tlog(),
+    };
+    let pkg = GitlabPackageRegistrySpec {
+        project_name: "p",
+        version: "1.0.0",
+    };
+    let probe = tokio::sync::OnceCell::new();
+    for (path, name) in [(&a, "a.bin"), (&b, "b.bin")] {
+        let asset = GitlabAssetSpec {
+            file_path: path,
+            file_name: name,
+        };
+        gitlab_upload_asset(
+            &ctx,
+            "v1.0.0",
+            &asset,
+            Some(&pkg),
+            "https://x",
+            false,
+            &probe,
+        )
+        .await
+        .expect("upload ok");
+    }
+    let entries = log.lock().unwrap();
+    assert_eq!(
+        entries.iter().filter(|e| e.path == "/version").count(),
+        1,
+        "one probe for two assets"
+    );
+    assert_eq!(entries.iter().filter(|e| e.method == "POST").count(), 2);
 }
 
 // -- detect_pre_v17_gitlab_with_env -------------------------------------
@@ -1919,9 +2169,17 @@ async fn upload_asset_project_uploads_4xx_surfaces_error() {
     };
     let download_url = format!("http://{addr}");
 
-    let err = gitlab_upload_asset(&ctx, "v1.0.0", &asset, None, &download_url, false)
-        .await
-        .expect_err("413 project-uploads POST must surface");
+    let err = gitlab_upload_asset(
+        &ctx,
+        "v1.0.0",
+        &asset,
+        None,
+        &download_url,
+        false,
+        &tokio::sync::OnceCell::new(),
+    )
+    .await
+    .expect_err("413 project-uploads POST must surface");
     assert!(
         format!("{err:#}").contains("project upload 'a.bin' failed (HTTP 413"),
         "error must name the upload + status, got: {err:#}"
@@ -1976,7 +2234,7 @@ async fn upload_asset_replace_list_links_failure_bails_with_original_status() {
         // original 422 conflict.
         ScriptedRoute {
             method: "GET",
-            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=1&per_page=100",
             response: http_json(
                 "403 Forbidden",
                 serde_json::json!({"message": "no access"}).to_string(),
@@ -2005,9 +2263,17 @@ async fn upload_asset_replace_list_links_failure_bails_with_original_status() {
         version: "1.0.0",
     };
 
-    let err = gitlab_upload_asset(&ctx, "v1.0.0", &asset, Some(&pkg), "https://x", true)
-        .await
-        .expect_err("a failed link-list must bail");
+    let err = gitlab_upload_asset(
+        &ctx,
+        "v1.0.0",
+        &asset,
+        Some(&pkg),
+        "https://x",
+        true,
+        &tokio::sync::OnceCell::new(),
+    )
+    .await
+    .expect_err("a failed link-list must bail");
     assert!(
         format!("{err:#}").contains("create release link for 'a.bin' failed (HTTP 422"),
         "the bail reports the ORIGINAL conflict status, got: {err:#}"
@@ -2135,7 +2401,7 @@ fn run_backend_creates_release_and_uploads_one_asset() {
         // proceeds.
         ScriptedRoute {
             method: "GET",
-            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=1&per_page=100",
             response: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
             times: None,
         },
@@ -2269,7 +2535,7 @@ fn run_backend_rerun_with_identical_remote_asset_skips_upload() {
         // Pre-upload probe: the link inventory already carries the asset.
         ScriptedRoute {
             method: "GET",
-            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=1&per_page=100",
             response: links_json,
             times: None,
         },
@@ -2400,7 +2666,7 @@ fn run_backend_rerun_with_differing_remote_asset_replaces_when_opted_in() {
         },
         ScriptedRoute {
             method: "GET",
-            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=1&per_page=100",
             response: links_json,
             times: None,
         },
@@ -2579,7 +2845,7 @@ fn run_backend_draft_flags_warn_but_create_proceeds() {
         // proceeds.
         ScriptedRoute {
             method: "GET",
-            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=1&per_page=100",
             response: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
             times: None,
         },
