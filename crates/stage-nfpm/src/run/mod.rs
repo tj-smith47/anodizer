@@ -318,35 +318,17 @@ fn process_nfpm_format(
     let pkg_name: &str = pkg_name_owned.as_str();
     let ext = format_extension(format);
 
-    let yaml_content = render_and_generate_nfpm_yaml(
-        ctx,
-        nfpm_cfg,
-        crate_name,
-        target.as_deref(),
-        amd64_variant,
-        binary_paths,
-        lib_paths,
-        &os,
-        &arch,
-        format,
-        pkg_name,
-        dist,
-        version,
-        skip_sign,
-        dry_run,
-    )?;
-
     // msix is a Windows package; it is written next to the MSI/NSIS outputs.
     let output_dir = if format == "msix" {
         dist.join("windows")
     } else {
         dist.join("linux")
     };
-    if !dry_run {
-        fs::create_dir_all(&output_dir)
-            .with_context(|| format!("create nfpm output dir: {}", output_dir.display()))?;
-    }
 
+    // The output path is claimed before anything is rendered or written for
+    // this job, so a colliding job leaves no sidecar behind; the per-target
+    // variables the file name reads are seeded here and again by the render.
+    set_nfpm_per_target_template_vars(ctx, &os, &arch, target.as_deref(), amd64_variant);
     set_nfpm_per_pkg_template_vars(
         ctx,
         nfpm_cfg,
@@ -399,6 +381,29 @@ fn process_nfpm_format(
         },
         owner,
     )?;
+
+    let yaml_content = render_and_generate_nfpm_yaml(
+        ctx,
+        nfpm_cfg,
+        crate_name,
+        target.as_deref(),
+        amd64_variant,
+        binary_paths,
+        lib_paths,
+        &os,
+        &arch,
+        format,
+        pkg_name,
+        dist,
+        version,
+        skip_sign,
+        dry_run,
+    )?;
+
+    if !dry_run {
+        fs::create_dir_all(&output_dir)
+            .with_context(|| format!("create nfpm output dir: {}", output_dir.display()))?;
+    }
 
     let mut pkg_metadata = HashMap::from([("format".to_string(), format.to_string())]);
     // The generic extension parser reads `.pkg.tar.zst` as `.tar.zst`, so the

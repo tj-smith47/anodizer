@@ -111,8 +111,9 @@ pub(crate) fn setup_lintian_overrides(
 }
 
 /// Remove `overrides.<format>.deb.lintian_overrides` from the rendered config
-/// and return it. A `deb` map left empty by the removal is dropped too, so
-/// the emitted `overrides:` stays as the user would have written it.
+/// and return it. A map the removal leaves empty is dropped, `deb` first and
+/// then the `<format>` map holding it, so nfpm is handed only the overrides
+/// the user wrote for it.
 fn take_per_format_lintian_overrides(
     rendered_cfg: &mut anodizer_core::config::NfpmConfig,
     format: &str,
@@ -129,15 +130,19 @@ fn take_per_format_lintian_overrides(
     let Some(value) = deb.remove("lintian_overrides") else {
         return Ok(None);
     };
-    let drop_deb = deb.is_empty();
-    if drop_deb
-        && let Some(fmt) = rendered_cfg
-            .overrides
-            .as_mut()
-            .and_then(|m| m.get_mut(format))
-            .and_then(|v| v.as_object_mut())
+    if deb.is_empty()
+        && let Some(overrides) = rendered_cfg.overrides.as_mut()
     {
-        fmt.remove("deb");
+        let fmt_now_empty = overrides
+            .get_mut(format)
+            .and_then(|v| v.as_object_mut())
+            .map(|fmt| {
+                fmt.remove("deb");
+                fmt.is_empty()
+            });
+        if fmt_now_empty == Some(true) {
+            overrides.remove(format);
+        }
     }
     let list: Vec<String> = serde_json::from_value(value).with_context(|| {
         format!("nfpm: `overrides.{format}.deb.lintian_overrides` must be a list of strings")

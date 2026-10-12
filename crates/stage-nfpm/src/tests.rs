@@ -5841,7 +5841,13 @@ fn an_empty_per_format_lintian_list_keeps_the_top_level_one() {
     setup_lintian_overrides(&mut cfg, "deb", "myapp", "amd64", tmp.path(), false).unwrap();
 
     assert_eq!(lintian_body(tmp.path()), "myapp: statically-linked-binary");
-    assert_eq!(cfg.overrides.unwrap()["deb"], serde_json::json!({}));
+    assert!(
+        cfg.overrides
+            .as_ref()
+            .is_none_or(|m| !m.contains_key("deb")),
+        "an override map emptied by the removal is dropped: {:?}",
+        cfg.overrides
+    );
 }
 
 /// A per-format list that is not a list of strings is a config error that
@@ -5877,7 +5883,7 @@ fn two_crates_rendering_one_package_path_are_refused_before_packaging() {
     use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
     use anodizer_core::context::{Context, ContextOptions};
 
-    let run = |file_name_templates: [&str; 2]| {
+    let run = |file_name_templates: [&str; 2], dry_run: bool| {
         let tmp = TempDir::new().unwrap();
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
@@ -5902,9 +5908,7 @@ fn two_crates_rendering_one_package_path_are_refused_before_packaging() {
         let mut ctx = Context::new(
             config,
             ContextOptions {
-                // The refusal is planning-time: a dry run plans the same jobs
-                // and spawns nothing, so a live `nfpm` is not needed.
-                dry_run: true,
+                dry_run,
                 ..Default::default()
             },
         );
@@ -5925,7 +5929,7 @@ fn two_crates_rendering_one_package_path_are_refused_before_packaging() {
         (result, planned, tmp)
     };
 
-    let (result, planned, tmp) = run(["shared-{{ .Version }}", "shared-{{ .Version }}"]);
+    let (result, planned, tmp) = run(["shared-{{ .Version }}", "shared-{{ .Version }}"], true);
     let err = result.unwrap_err().to_string();
     let path = tmp
         .path()
@@ -5952,7 +5956,35 @@ fn two_crates_rendering_one_package_path_are_refused_before_packaging() {
         "nothing is written"
     );
 
-    let (result, planned, _tmp) = run(["alpha-{{ .Version }}", "beta-{{ .Version }}"]);
+    // A live run is refused while collecting jobs, before `nfpm` could be
+    // spawned: the claim precedes the render, so the colliding job writes no
+    // sidecar and no package exists anywhere under dist.
+    let (result, planned, tmp) = run(["shared-{{ .Version }}", "shared-{{ .Version }}"], false);
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("both writing"), "{err}");
+    assert_eq!(planned, 0);
+    fn files_under(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    files_under(&p, out);
+                } else {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    let mut written = Vec::new();
+    files_under(&tmp.path().join("dist"), &mut written);
+    assert!(
+        written
+            .iter()
+            .all(|p| p.extension().is_none_or(|e| e != "deb")),
+        "no package is written on a refused live run: {written:?}"
+    );
+
+    let (result, planned, _tmp) = run(["alpha-{{ .Version }}", "beta-{{ .Version }}"], true);
     result.unwrap();
     assert_eq!(planned, 2);
 }

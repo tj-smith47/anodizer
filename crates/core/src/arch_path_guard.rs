@@ -12,7 +12,8 @@
 //! the mistake impossible to ship silently.
 //!
 //! Construct one [`ArchPathGuard`] per guarded scope — per crate for the
-//! installer stages, per stage run for archives — and call
+//! installer stages, per stage run for archives and for nfpm packages (whose
+//! `PlannedOutputs` wraps one guard around every crate's jobs) — and call
 //! [`ArchPathGuard::check`] with one [`Claim`] per rendered output path.
 //! The first duplicate returns an error naming the offending template and
 //! crate, and a remedy naming the ONE template variable that separates the

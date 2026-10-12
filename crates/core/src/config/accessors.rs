@@ -700,8 +700,38 @@ mod tests {
         const NAMED_REGISTRARS: &[&str] = &["stage-templatefiles/src/lib.rs"];
         const DERIVATIONS: &[&str] = &["stage-sbom/src/expected.rs::expected_sbom_assets"];
         const OWNER: &str = "release_owner_crate_name(";
+        // Rehydration copies a recorded crate name through; the build stage
+        // registers binaries, which are crate-bound by construction.
+        const VARIABLE_KIND_OK: &[&str] = &[
+            "cli/src/commands/release/split.rs::load_split_contexts_into",
+            "stage-build/src/run_helpers.rs::add_artifact",
+        ];
+
+        /// A `kind` struct field whose value is not an `ArtifactKind::…`
+        /// literal: `kind: kind`, `kind: *kind`, `kind: a.kind`, or the
+        /// shorthand `kind,` / `kind }`. Only a field position counts (the
+        /// text before it is `{` or `,`), so a comment or a `by_kind:` label
+        /// is not read as one.
+        fn names_a_variable_kind(flat: &str) -> bool {
+            flat.match_indices("kind").any(|(i, _)| {
+                let field = i == 0 || matches!(&flat[i - 1..i], "{" | ",");
+                if !field {
+                    return false;
+                }
+                let rest = &flat[i + 4..];
+                if rest.starts_with(',') || rest.starts_with('}') {
+                    return true;
+                }
+                let Some(value) = rest.strip_prefix(':') else {
+                    return false;
+                };
+                let value = value.split([',', '}']).next().unwrap_or("");
+                !value.contains("ArtifactKind::")
+            })
+        }
 
         let mut registrars: Vec<String> = Vec::new();
+        let mut variable_kind_ok_seen: Vec<&str> = Vec::new();
         let mut derivations_seen: Vec<String> = Vec::new();
         let mut failures: Vec<String> = Vec::new();
         for source in workspace_production_sources() {
@@ -727,11 +757,24 @@ mod tests {
                 }
 
                 let registers = flat.contains(".artifacts.add(");
-                let repository_level = REPOSITORY_LEVEL_KINDS
-                    .iter()
-                    .any(|k| flat.contains(&format!("kind:{k}")))
+                if !registers {
+                    continue;
+                }
+                // A kind passed through a variable cannot be classified, so
+                // such a registrar is refused unless it is a rehydration that
+                // copies a recorded crate name through.
+                if let Some(ok) = VARIABLE_KIND_OK.iter().find(|f| here.ends_with(*f)) {
+                    variable_kind_ok_seen.push(ok);
+                } else if names_a_variable_kind(&flat) {
+                    failures.push(format!(
+                        "{here}: registers a kind the walk cannot read; spell the \
+                         ArtifactKind literal or name the body in VARIABLE_KIND_OK"
+                    ));
+                }
+                // Any path spelling of the kind ends in the bare one.
+                let repository_level = REPOSITORY_LEVEL_KINDS.iter().any(|k| flat.contains(k))
                     || NAMED_REGISTRARS.iter().any(|f| display.ends_with(f));
-                if !(registers && repository_level) {
+                if !repository_level {
                     continue;
                 }
                 registrars.push(here.clone());
@@ -747,6 +790,11 @@ mod tests {
         }
         registrars.sort();
         assert!(failures.is_empty(), "{failures:#?}");
+        variable_kind_ok_seen.sort();
+        assert_eq!(
+            variable_kind_ok_seen, VARIABLE_KIND_OK,
+            "every VARIABLE_KIND_OK entry must still match a live registrar"
+        );
         assert_eq!(
             derivations_seen.len(),
             DERIVATIONS.len(),
