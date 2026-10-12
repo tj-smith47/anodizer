@@ -675,6 +675,92 @@ mod tests {
     /// two polarities, so a change to what `--crate` selects had to be made
     /// fifty times. Every walk now asks [`Config::selected_crates`] or
     /// [`crate_is_selected`]; this walk fails the moment a new one does not.
+    /// The repository-level artifacts — the source archive, the SBOM
+    /// documents, the source RPM, the install scripts, the templated files —
+    /// are uploaded by whichever crate's release `release_owner_crate_name`
+    /// names, and the verify-release gate expects them there. Every
+    /// production function that registers one, and the one derivation that
+    /// predicts the SBOM asset names, must read that accessor; one that
+    /// registers under `project_name` instead puts the asset on a release
+    /// the gate does not look at (or on no release at all).
+    #[test]
+    fn every_repository_level_registration_uses_the_release_owner() {
+        use crate::test_helpers::test_sources::{
+            function_bodies, production_half, workspace_production_sources,
+        };
+
+        const REPOSITORY_LEVEL_KINDS: &[&str] = &[
+            "ArtifactKind::SourceArchive",
+            "ArtifactKind::Sbom",
+            "ArtifactKind::SourceRpm",
+            "ArtifactKind::InstallScript",
+        ];
+        // The templated-files stage registers `UploadableFile`, a kind other
+        // stages use for artifacts bound to a crate, so it is named here.
+        const NAMED_REGISTRARS: &[&str] = &["stage-templatefiles/src/lib.rs"];
+        const DERIVATIONS: &[&str] = &["stage-sbom/src/expected.rs::expected_sbom_assets"];
+        const OWNER: &str = "release_owner_crate_name(";
+
+        let mut registrars: Vec<String> = Vec::new();
+        let mut derivations_seen: Vec<String> = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
+        for source in workspace_production_sources() {
+            let display = source.display().to_string().replace('\\', "/");
+            let text = std::fs::read_to_string(&source).expect("read source");
+            for body in function_bodies(production_half(&text)) {
+                let flat: String = body.split_whitespace().collect();
+                let name = body
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split("fn ").nth(1))
+                    .and_then(|l| l.split(['(', '<']).next())
+                    .unwrap_or("?")
+                    .to_string();
+                let here = format!("{display}::{name}");
+
+                if let Some(derivation) = DERIVATIONS.iter().find(|d| here.ends_with(*d)) {
+                    derivations_seen.push((*derivation).to_string());
+                    if !flat.contains(OWNER) {
+                        failures.push(format!("{here}: the derivation does not ask {OWNER}"));
+                    }
+                    continue;
+                }
+
+                let registers = flat.contains(".artifacts.add(");
+                let repository_level = REPOSITORY_LEVEL_KINDS
+                    .iter()
+                    .any(|k| flat.contains(&format!("kind:{k}")))
+                    || NAMED_REGISTRARS.iter().any(|f| display.ends_with(f));
+                if !(registers && repository_level) {
+                    continue;
+                }
+                registrars.push(here.clone());
+                if !flat.contains(OWNER) {
+                    failures.push(format!("{here}: registers without {OWNER}"));
+                }
+                if flat.contains("crate_name:ctx.config.project_name")
+                    || flat.contains("crate_name:project_name")
+                {
+                    failures.push(format!("{here}: registers under project_name"));
+                }
+            }
+        }
+        registrars.sort();
+        assert!(failures.is_empty(), "{failures:#?}");
+        assert_eq!(
+            derivations_seen.len(),
+            DERIVATIONS.len(),
+            "every named derivation must still exist: {derivations_seen:?}"
+        );
+        assert_eq!(
+            registrars.len(),
+            6,
+            "the source, sbom (external and built-in), srpm, install-script and \
+             templatefiles registrations; a rename that empties the walk must \
+             fail here: {registrars:#?}"
+        );
+    }
+
     #[test]
     fn the_selection_predicate_is_spelled_once() {
         use crate::test_helpers::test_sources::{production_half, workspace_production_sources};
