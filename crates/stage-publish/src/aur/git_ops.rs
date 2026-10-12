@@ -132,6 +132,7 @@ pub(crate) fn aur_build_sources(
             wrap_in_directory: a.wrap_in_directory.clone(),
             binary: a.binary.clone(),
             is_binary: a.is_binary,
+            format: a.format.clone(),
         });
     }
 

@@ -86,6 +86,9 @@ pub(crate) struct OsArtifact {
     /// itself, so there is no archive to extract and the file keeps the name
     /// the package manager downloaded it under.
     pub is_binary: bool,
+    /// The archive format the archive stage recorded (`tar.gz`, `zip`, …),
+    /// from `metadata["format"]`; `None` for an artifact that records none.
+    pub format: Option<String>,
 }
 
 /// Convert a single `Artifact` reference into an `OsArtifact`, using the
@@ -179,6 +182,11 @@ fn artifact_to_os_artifact(
         wrap_in_directory,
         archive_files,
         is_binary: a.kind == ArtifactKind::UploadableBinary,
+        format: a
+            .metadata
+            .get(anodizer_core::artifact::FORMAT_META)
+            .cloned()
+            .filter(|s| !s.is_empty()),
     })
 }
 

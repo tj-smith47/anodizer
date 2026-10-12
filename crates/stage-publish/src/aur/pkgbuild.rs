@@ -66,6 +66,11 @@ pub(crate) struct AurSource {
     /// `true` when the download is the executable itself rather than an
     /// archive: makepkg then leaves it under the renamed download alias.
     pub(crate) is_binary: bool,
+    /// The archive format the archive stage recorded, when it did. The
+    /// download alias ends in it so makepkg extracts the file by that name;
+    /// a `url_template` may point at a URL whose last segment carries no
+    /// extension at all.
+    pub(crate) format: Option<String>,
 }
 
 impl AurSource {
@@ -79,6 +84,7 @@ impl AurSource {
             wrap_in_directory: None,
             binary: None,
             is_binary: false,
+            format: None,
         }
     }
 
@@ -91,7 +97,9 @@ impl AurSource {
         let format = if self.is_binary {
             ""
         } else {
-            extract_archive_extension(&self.url)
+            self.format
+                .as_deref()
+                .unwrap_or_else(|| extract_archive_extension(&self.url))
         };
         if format.is_empty() {
             format!("{name}_{version}_{}", self.arch)

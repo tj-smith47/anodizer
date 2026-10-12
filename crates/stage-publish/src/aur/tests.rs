@@ -2687,6 +2687,14 @@ fn srcinfo_aliases_every_source_and_names_the_install_file() {
         .as_mut()
         .unwrap()
         .install = Some("post_install() { :; }".to_string());
+    ctx.config.crates[0]
+        .publish
+        .as_mut()
+        .unwrap()
+        .aur
+        .as_mut()
+        .unwrap()
+        .backup = Some(vec!["etc/mytool/config.toml".to_string()]);
     let rendered = render_mytool(&ctx);
     assert!(
         rendered.pkgbuild.contains(
@@ -2707,6 +2715,7 @@ fn srcinfo_aliases_every_source_and_names_the_install_file() {
         "\tsource_aarch64 = mytool-bin_1.0.0_aarch64.tar.gz::https://example.com/v1.0.0/mytool-linux-arm64.tar.gz",
         "\tsha256sums_x86_64 = aaaa",
         "\tsha256sums_aarch64 = bbbb",
+        "\tbackup = etc/mytool/config.toml",
         "\tinstall = mytool.install",
     ] {
         assert!(
@@ -2715,6 +2724,44 @@ fn srcinfo_aliases_every_source_and_names_the_install_file() {
             rendered.srcinfo
         );
     }
+}
+
+/// The download alias ends in the format the archive stage recorded, so a
+/// `url_template` whose URL carries no file extension still gives makepkg a
+/// name it can extract; a URL is only read for the format when none was
+/// recorded.
+#[test]
+fn source_alias_takes_the_recorded_format_over_the_url_extension() {
+    let mut ctx = render_ctx(
+        "mytool",
+        AurConfig {
+            url_template: Some("https://dl.example.com/{{ Version }}/{{ Target }}".to_string()),
+            ..Default::default()
+        },
+        true,
+    );
+    ctx.artifacts = Default::default();
+    ctx.artifacts.add(linux_archive_with_metadata(
+        "x86_64-unknown-linux-gnu",
+        "https://example.com/v1.0.0/mytool-linux-amd64.tar.gz",
+        "aaaa",
+        &[("format", "tar.zst")],
+    ));
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    let rendered = render_mytool(&ctx);
+    assert!(
+        rendered.pkgbuild.contains(
+            "source_x86_64=(\"mytool-bin_${pkgver}_x86_64.tar.zst::https://dl.example.com/${pkgver}/x86_64-unknown-linux-gnu\")"
+        ),
+        "the alias carries the recorded format, not the URL's:\n{}",
+        rendered.pkgbuild
+    );
+    assert!(
+        rendered.srcinfo.lines().any(|l| l
+            == "\tsource_x86_64 = mytool-bin_1.0.0_x86_64.tar.zst::https://dl.example.com/1.0.0/x86_64-unknown-linux-gnu"),
+        "the .SRCINFO alias carries the recorded format:\n{}",
+        rendered.srcinfo
+    );
 }
 
 /// Archives that wrap their contents in a directory install the binary from
