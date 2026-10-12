@@ -107,9 +107,6 @@ pub(crate) fn full_changelog_element(
     else {
         return Ok(None);
     };
-    if repo.owner.is_empty() && repo.name.is_empty() {
-        return Ok(None);
-    }
     let base = anodizer_core::download_url::default_download_base(ctx);
     let url =
         crate::compose_compare_url(ctx.token_type, &base, &repo.owner, &repo.name, &prev, &tag);

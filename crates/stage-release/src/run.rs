@@ -462,9 +462,6 @@ fn ensure_release_url(
     let Some(repo) = resolve_release_repo(release_cfg, ctx.token_type, ctx)? else {
         return Ok(());
     };
-    if repo.owner.is_empty() && repo.name.is_empty() {
-        return Ok(());
-    }
     let download_base = dry_run_download_base(ctx);
     let url = compose_release_url(ctx.token_type, &download_base, &repo.owner, &repo.name, tag);
     ctx.set_release_url(&url);

@@ -223,7 +223,9 @@ pub fn default_download_base(ctx: &Context) -> String {
 /// 2. Active SCM token type with provider-side fallback (the historical
 ///    behaviour — preserved so existing configs don't change shape).
 ///
-/// Returns `Ok(None)` when no matching block is configured.
+/// Returns `Ok(None)` when no matching block is configured, or when the block
+/// is unfilled on a snapshot run. An unfilled block on any other run is an
+/// error naming the empty field.
 pub fn resolve_release_repo(
     release_cfg: &ReleaseConfig,
     token_type: ScmTokenType,
@@ -233,17 +235,20 @@ pub fn resolve_release_repo(
     // is the cross-platform publishing point: a project hosted on GitLab
     // (so `GITLAB_TOKEN` is the active token) can declare
     // `provider: github` to redirect publish output to GitHub.
+    let github = release_cfg.github.as_ref().map(|r| ("github", r));
+    let gitlab = release_cfg.gitlab.as_ref().map(|r| ("gitlab", r));
+    let gitea = release_cfg.gitea.as_ref().map(|r| ("gitea", r));
     let raw = match release_cfg.provider {
-        Some(ForceTokenKind::GitHub) => release_cfg.github.as_ref(),
-        Some(ForceTokenKind::GitLab) => release_cfg.gitlab.as_ref(),
-        Some(ForceTokenKind::Gitea) => release_cfg.gitea.as_ref(),
+        Some(ForceTokenKind::GitHub) => github,
+        Some(ForceTokenKind::GitLab) => gitlab,
+        Some(ForceTokenKind::Gitea) => gitea,
         None => match token_type {
-            ScmTokenType::GitLab => release_cfg.gitlab.as_ref().or(release_cfg.github.as_ref()),
-            ScmTokenType::Gitea => release_cfg.gitea.as_ref().or(release_cfg.github.as_ref()),
-            ScmTokenType::GitHub => release_cfg.github.as_ref(),
+            ScmTokenType::GitLab => gitlab.or(github),
+            ScmTokenType::Gitea => gitea.or(github),
+            ScmTokenType::GitHub => github,
         },
     };
-    let Some(repo) = raw else {
+    let Some((forge, repo)) = raw else {
         return Ok(None);
     };
     let owner = ctx
@@ -252,6 +257,20 @@ pub fn resolve_release_repo(
     let name = ctx
         .render_template(&repo.name)
         .with_context(|| format!("release: render repo.name '{}'", repo.name))?;
+    // A block the inference pass could not fill never reaches a URL: a
+    // snapshot publishes nothing and reads it as no block (the pass warned),
+    // every other run is refused naming the field.
+    for (field, value) in [("owner", &owner), ("name", &name)] {
+        if value.trim().is_empty() {
+            if ctx.is_snapshot() {
+                return Ok(None);
+            }
+            anyhow::bail!(
+                "release.{forge}.{field} is empty: set it or add an `origin` remote it can be \
+                 inferred from"
+            );
+        }
+    }
     Ok(Some(ScmRepoConfig {
         owner,
         name,
@@ -458,6 +477,75 @@ mod tests {
         assert!(
             arts.iter()
                 .all(|a| a.crate_name != "other" || !a.metadata.contains_key("url"))
+        );
+    }
+
+    /// A block whose owner or name is still empty after rendering never
+    /// yields a repository: a run that publishes is refused naming the empty
+    /// field, and a snapshot run reads it as no block at all.
+    #[test]
+    fn an_unfilled_block_is_refused_and_read_as_absent_on_a_snapshot() {
+        let block = |owner: &str, name: &str| ReleaseConfig {
+            github: Some(ScmRepoConfig {
+                owner: owner.to_string(),
+                name: name.to_string(),
+                token: Some("tok".to_string()),
+            }),
+            ..Default::default()
+        };
+        let live = Context::new(Config::default(), ContextOptions::default());
+        for (owner, name, field) in [
+            ("", "hello", "owner"),
+            ("octocat", "", "name"),
+            ("", "", "owner"),
+            ("{{ Owner }}", "hello", "owner"),
+        ] {
+            let mut ctx = Context::new(Config::default(), ContextOptions::default());
+            ctx.template_vars_mut().set("Owner", "");
+            let err =
+                resolve_release_repo(&block(owner, name), ScmTokenType::GitHub, &ctx).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "release.github.{field} is empty: set it or add an `origin` remote it can \
+                     be inferred from"
+                ),
+                "owner {owner:?} name {name:?}"
+            );
+        }
+        let filled = resolve_release_repo(&block("octocat", "hello"), ScmTokenType::GitHub, &live)
+            .unwrap()
+            .expect("a filled block resolves");
+        assert_eq!(
+            (filled.owner.as_str(), filled.name.as_str()),
+            ("octocat", "hello")
+        );
+
+        let snapshot = Context::new(
+            Config::default(),
+            ContextOptions {
+                snapshot: true,
+                ..Default::default()
+            },
+        );
+        assert!(
+            resolve_release_repo(&block("", ""), ScmTokenType::GitHub, &snapshot)
+                .unwrap()
+                .is_none(),
+            "a snapshot reads an unfilled block as absent"
+        );
+        let gitlab = ReleaseConfig {
+            gitlab: Some(ScmRepoConfig {
+                owner: String::new(),
+                name: "hello".to_string(),
+                token: None,
+            }),
+            ..Default::default()
+        };
+        let err = resolve_release_repo(&gitlab, ScmTokenType::GitLab, &live).unwrap_err();
+        assert!(
+            err.to_string().starts_with("release.gitlab.owner is empty"),
+            "the message names the forge the block was read from: {err}"
         );
     }
 

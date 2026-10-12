@@ -49,18 +49,7 @@ pub fn run(opts: PromoteOpts) -> Result<()> {
         Verbosity::from_flags(opts.quiet, opts.verbose, opts.debug),
     );
 
-    let config_path =
-        crate::pipeline::find_config_with_logger(opts.config_override.as_deref(), Some(&log))?;
-    let config = crate::pipeline::load_config(&config_path)?;
-
-    let ctx_opts = ContextOptions {
-        dry_run: opts.dry_run,
-        quiet: opts.quiet,
-        verbose: opts.verbose,
-        debug: opts.debug,
-        ..Default::default()
-    };
-    let ctx = Context::new(config, ctx_opts);
+    let ctx = load_context(&opts, &log)?;
 
     // Resolve the selector. `--version` and `--from-run` are mutually exclusive
     // (enforced by clap); default is the newest artifact in the from-track.
@@ -212,6 +201,28 @@ fn select_publishers(ctx: &Context, requested: &[String]) -> Result<Vec<Box<dyn 
         .into_iter()
         .filter(|p| keep.contains(p.name()))
         .collect())
+}
+
+/// Load the config and build the context the promotion reads its release
+/// repositories from, through the same inference the release pipeline runs:
+/// a `release.github` block naming only a token takes its owner and name
+/// from the `origin` remote here too, so the flip targets the real
+/// repository.
+fn load_context(opts: &PromoteOpts, log: &StageLogger) -> Result<Context> {
+    let config_path =
+        crate::pipeline::find_config_with_logger(opts.config_override.as_deref(), Some(log))?;
+    let mut config = crate::pipeline::load_config(&config_path)?;
+    crate::commands::helpers::infer_project_name(&mut config, log);
+    crate::commands::helpers::auto_detect_github(&mut config, log, false)?;
+
+    let ctx_opts = ContextOptions {
+        dry_run: opts.dry_run,
+        quiet: opts.quiet,
+        verbose: opts.verbose,
+        debug: opts.debug,
+        ..Default::default()
+    };
+    Ok(Context::new(config, ctx_opts))
 }
 
 #[cfg(test)]

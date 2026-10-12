@@ -33,18 +33,26 @@ pub fn infer_project_name(config: &mut Config, log: &StageLogger) {
 /// Fill the repository identity of every crate's `release:` block from the
 /// `origin` git remote.
 ///
-/// An absent `github:` block is created from a github.com remote. A
+/// An absent `github:` block is created from a github.com remote, or from
+/// any remote when `github_urls.api` names a GitHub Enterprise host. A
 /// `github:` / `gitlab:` / `gitea:` block that names only `token` (or leaves
 /// `owner` / `name` empty) has the empty fields filled from the remote and
 /// keeps its token. A block that still has an empty field after the remote
-/// could not be read is refused; under `snapshot` a `github:` block is
-/// tolerated with a warning so an offline snapshot build still runs.
+/// could not be read is refused; under `snapshot` nothing publishes, so the
+/// block is tolerated with a warning and an offline snapshot build still
+/// runs.
 pub fn auto_detect_github(config: &mut Config, log: &StageLogger, snapshot: bool) -> Result<()> {
-    // Resolved once each: the github.com-only parse for the `github:` block
-    // (what an absent block has always been filled from) and the host-agnostic
-    // parse for gitlab / gitea, which keeps a nested `group/subgroup` owner.
-    let github_slug = git::resolve_github_slug(None, None).ok();
+    // Resolved once each: the host-agnostic parse keeps a nested
+    // `group/subgroup` owner for gitlab / gitea and reads an Enterprise
+    // remote for a `github:` block whose API is not github.com; the
+    // github.com-only parse is what an absent `github:` block has always been
+    // filled from.
     let any_slug = git::resolve_repo_slug(None, None).ok();
+    let github_slug = if github_api_is_enterprise(config) {
+        any_slug.clone()
+    } else {
+        git::resolve_github_slug(None, None).ok()
+    };
     // Raw chained walk (not `crate_universe()`): this is a mutation pass and
     // the universe walker only hands out shared borrows. Filling every entry
     // as written (shadowed ones included) is also correct here since dedup
@@ -69,7 +77,10 @@ pub fn auto_detect_github(config: &mut Config, log: &StageLogger, snapshot: bool
                         token: None,
                     });
                 }
-                None => log.warn("could not auto-detect GitHub repo from git remote"),
+                None if release.gitlab.is_none() && release.gitea.is_none() => {
+                    log.warn("could not auto-detect GitHub repo from git remote");
+                }
+                None => {}
             }
         }
         for (forge, block, slug) in [
@@ -81,19 +92,12 @@ pub fn auto_detect_github(config: &mut Config, log: &StageLogger, snapshot: bool
                 continue;
             };
             fill_empty_repo_fields(block, slug);
-            let missing = match (block.owner.trim().is_empty(), block.name.trim().is_empty()) {
-                (false, false) => continue,
-                (true, true) => "owner and name",
-                (true, false) => "owner",
-                (false, true) => "name",
+            let Some(message) =
+                unfilled_block_refusal(&crate_cfg.name, forge, &block.owner, &block.name)
+            else {
+                continue;
             };
-            let message = format!(
-                "crate '{}': release.{forge} leaves {missing} empty and the `origin` remote \
-                 could not supply them. Set release.{forge}.owner and release.{forge}.name \
-                 or add an `origin` remote.",
-                crate_cfg.name
-            );
-            if snapshot && forge == "github" {
+            if snapshot {
                 log.warn(&message);
                 continue;
             }
@@ -101,6 +105,51 @@ pub fn auto_detect_github(config: &mut Config, log: &StageLogger, snapshot: bool
         }
     }
     Ok(())
+}
+
+/// The refusal for a block whose `owner` / `name` the remote could not fill,
+/// naming the field(s) that are empty; `None` when both are set.
+fn unfilled_block_refusal(
+    crate_name: &str,
+    forge: &str,
+    owner: &str,
+    name: &str,
+) -> Option<String> {
+    let (missing, pronoun, remedy) = match (owner.trim().is_empty(), name.trim().is_empty()) {
+        (false, false) => return None,
+        (true, true) => (
+            "owner and name",
+            "them",
+            format!("release.{forge}.owner and release.{forge}.name"),
+        ),
+        (true, false) => ("owner", "it", format!("release.{forge}.owner")),
+        (false, true) => ("name", "it", format!("release.{forge}.name")),
+    };
+    Some(format!(
+        "crate '{crate_name}': release.{forge} leaves {missing} empty and the `origin` remote \
+         could not supply {pronoun}: set {remedy} or add an `origin` remote"
+    ))
+}
+
+/// Whether `github_urls.api` names a host other than github.com, so the
+/// `github:` block is filled from an Enterprise remote the github.com-only
+/// parse would refuse.
+fn github_api_is_enterprise(config: &Config) -> bool {
+    let Some(api) = config.github_urls.as_ref().and_then(|u| u.api.as_deref()) else {
+        return false;
+    };
+    let host = api
+        .split("://")
+        .nth(1)
+        .unwrap_or(api)
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .rsplit('@')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    !host.is_empty() && host != "api.github.com" && host != "github.com"
 }
 
 fn fill_empty_repo_fields(block: &mut GitHubConfig, slug: Option<&git::RepoSlug>) {

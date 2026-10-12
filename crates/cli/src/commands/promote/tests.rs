@@ -253,3 +253,76 @@ fn the_abort_quoted_in_the_promote_docs_is_what_a_failed_run_produces() {
     assert_eq!(quoted.len(), 1, "the aborts the page quotes");
     assert_eq!(quoted[0], promote_failure_message(&report));
 }
+
+/// `anodizer promote` runs the same inference the release pipeline runs: a
+/// `release.github` block naming only a token takes its owner and name from
+/// the `origin` remote, so the flip targets the real repository and not
+/// `/repos///releases`.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(cwd)]
+fn promote_fills_a_token_only_release_block_from_the_origin_remote() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    for args in [
+        &["init", "-q"][..],
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/acme/widget.git",
+        ][..],
+    ] {
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = std::process::Command::new("git");
+                cmd.args(args).current_dir(dir);
+                cmd
+            },
+            "git",
+        );
+        assert!(out.status.success(), "git {args:?} must succeed");
+    }
+    let config_path = dir.join(".anodizer.yaml");
+    std::fs::write(
+        &config_path,
+        "project_name: app\ncrates:\n  - name: app\n    release:\n      github:\n        token: \"{{ .Env.RELEASE_TOKEN }}\"\n",
+    )
+    .unwrap();
+    let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
+    let opts = PromoteOpts {
+        to: "stable".to_string(),
+        from: None,
+        publishers: vec!["github".to_string()],
+        version: Some("v1.0.0".to_string()),
+        from_run: None,
+        dry_run: true,
+        config_override: Some(config_path),
+        verbose: false,
+        debug: false,
+        quiet: true,
+    };
+    let ctx = load_context(&opts, &StageLogger::new("promote", Verbosity::Quiet)).unwrap();
+    let gh = ctx.config.crates[0]
+        .release
+        .as_ref()
+        .unwrap()
+        .github
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        (gh.owner.as_str(), gh.name.as_str(), gh.token.as_deref()),
+        ("acme", "widget", Some("{{ .Env.RELEASE_TOKEN }}"))
+    );
+    let repo = anodizer_core::download_url::resolve_release_repo(
+        ctx.config.crates[0].release.as_ref().unwrap(),
+        anodizer_core::scm::ScmTokenType::GitHub,
+        &ctx,
+    )
+    .unwrap()
+    .expect("the filled block resolves");
+    assert_eq!(
+        (repo.owner.as_str(), repo.name.as_str()),
+        ("acme", "widget")
+    );
+}

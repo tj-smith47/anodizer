@@ -52,11 +52,13 @@ release:
     token: "{{ .Env.RELEASE_GITHUB_TOKEN }}"   # owner/name come from the origin remote
 ```
 
+A field written empty (`owner: ""`) counts as omitted and is inferred the same way. A GitHub Enterprise remote (`git@github.mycorp.com:acme/widget.git`) is read when the top-level `github_urls.api` names that host; without it only a github.com remote fills the block.
+
 With no `origin` remote to read, a block whose owner or name is still empty is refused:
 
 ```
 $ anodizer check config
-       Error crate 'myapp': release.github leaves owner and name empty and the `origin` remote could not supply them. Set release.github.owner and release.github.name or add an `origin` remote.
+       Error crate 'myapp': release.github leaves owner and name empty and the `origin` remote could not supply them: set release.github.owner and release.github.name or add an `origin` remote
 ```
 
 ## Release config fields

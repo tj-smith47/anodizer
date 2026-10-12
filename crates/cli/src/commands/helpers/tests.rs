@@ -2469,18 +2469,20 @@ fn auto_detect_github_keeps_an_explicit_block_and_its_token() {
 }
 
 /// With no remote to read, a block that still leaves owner or name empty is
-/// refused naming the crate, the forge and the empty field; a snapshot run
-/// tolerates the github block with a warning so an offline build still runs.
+/// refused naming the crate, the forge and the empty field(s) in one
+/// sentence, with the pronoun and the remedy matching what is empty; a
+/// snapshot run tolerates the block on every forge with a warning, since
+/// nothing publishes and an offline build still has to run.
 #[cfg(unix)]
 #[test]
 #[serial_test::serial(cwd)]
 fn auto_detect_github_refuses_an_unfilled_block_without_a_remote() {
     with_empty_git_repo_cwd(|| {
-        let build = |forge: &str| {
+        let build = |forge: &str, owner: &str, name: &str| {
             let mut r = anodizer_core::config::ReleaseConfig::default();
             let block = anodizer_core::config::GitHubConfig {
-                owner: String::new(),
-                name: "widget".to_string(),
+                owner: owner.to_string(),
+                name: name.to_string(),
                 token: Some("{{ .Env.RELEASE_TOKEN }}".to_string()),
             };
             match forge {
@@ -2499,20 +2501,166 @@ fn auto_detect_github_refuses_an_unfilled_block_without_a_remote() {
             }
         };
         for forge in ["github", "gitlab", "gitea"] {
-            let err = auto_detect_github(&mut build(forge), &quiet_log(), false).unwrap_err();
+            let err = auto_detect_github(&mut build(forge, "", "widget"), &quiet_log(), false)
+                .unwrap_err();
             assert_eq!(
                 err.to_string(),
                 format!(
                     "crate 'app': release.{forge} leaves owner empty and the `origin` remote \
-                     could not supply them. Set release.{forge}.owner and release.{forge}.name \
-                     or add an `origin` remote."
+                     could not supply it: set release.{forge}.owner or add an `origin` remote"
                 ),
             );
+            let err =
+                auto_detect_github(&mut build(forge, "acme", ""), &quiet_log(), false).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "crate 'app': release.{forge} leaves name empty and the `origin` remote \
+                     could not supply it: set release.{forge}.name or add an `origin` remote"
+                ),
+            );
+            let err =
+                auto_detect_github(&mut build(forge, "", ""), &quiet_log(), false).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "crate 'app': release.{forge} leaves owner and name empty and the `origin` \
+                     remote could not supply them: set release.{forge}.owner and \
+                     release.{forge}.name or add an `origin` remote"
+                ),
+            );
+            let (log, capture) =
+                StageLogger::with_capture("test", anodizer_core::log::Verbosity::Normal);
+            auto_detect_github(&mut build(forge, "", "widget"), &log, true)
+                .unwrap_or_else(|e| panic!("{forge}: a snapshot tolerates an unfilled block: {e}"));
+            assert_eq!(
+                capture.warn_count(),
+                1,
+                "{forge}: the snapshot warns once about the unfilled block"
+            );
         }
-        auto_detect_github(&mut build("github"), &quiet_log(), true)
-            .expect("a snapshot tolerates an unfilled github block");
-        auto_detect_github(&mut build("gitlab"), &quiet_log(), true)
-            .expect_err("a snapshot still refuses an unfilled gitlab block");
+    });
+}
+
+/// A `github:` block on a GitHub Enterprise remote is filled from that
+/// remote once `github_urls.api` names the Enterprise host; without the API
+/// override the github.com-only parse reads no remote and the block is
+/// refused.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(cwd)]
+fn auto_detect_github_fills_a_token_only_block_from_an_enterprise_remote() {
+    with_empty_git_repo_cwd(|| {
+        assert!(
+            std::process::Command::new("git")
+                .args([
+                    "remote",
+                    "add",
+                    "origin",
+                    "git@github.mycorp.com:acme/widget.git"
+                ])
+                .status()
+                .unwrap()
+                .success(),
+            "git remote add must succeed"
+        );
+        let build = |api: Option<&str>| Config {
+            project_name: "x".to_string(),
+            github_urls: api.map(|api| anodizer_core::config::GitHubUrlsConfig {
+                api: Some(api.to_string()),
+                ..Default::default()
+            }),
+            crates: vec![CrateConfig {
+                name: "app".to_string(),
+                release: Some(anodizer_core::config::ReleaseConfig {
+                    github: Some(anodizer_core::config::GitHubConfig {
+                        owner: String::new(),
+                        name: String::new(),
+                        token: Some("{{ .Env.RELEASE_TOKEN }}".to_string()),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut config = build(Some("https://github.mycorp.com/api/v3/"));
+        auto_detect_github(&mut config, &quiet_log(), false).unwrap();
+        let gh = config.crates[0]
+            .release
+            .as_ref()
+            .unwrap()
+            .github
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            (gh.owner.as_str(), gh.name.as_str(), gh.token.as_deref()),
+            ("acme", "widget", Some("{{ .Env.RELEASE_TOKEN }}"))
+        );
+        auto_detect_github(&mut build(None), &quiet_log(), false)
+            .expect_err("without github_urls.api an Enterprise remote fills no github block");
+        auto_detect_github(
+            &mut build(Some("https://api.github.com/")),
+            &quiet_log(),
+            false,
+        )
+        .expect_err("a github.com API host keeps the github.com-only parse");
+    });
+}
+
+/// The "could not auto-detect GitHub repo" warning is for a crate whose
+/// release block names NO forge: a GitLab project on a gitlab.com remote,
+/// with its `gitlab:` block filled, is not told about GitHub.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(cwd)]
+fn auto_detect_github_does_not_warn_about_github_on_a_gitlab_project() {
+    with_empty_git_repo_cwd(|| {
+        assert!(
+            std::process::Command::new("git")
+                .args([
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://gitlab.com/acme/widget.git"
+                ])
+                .status()
+                .unwrap()
+                .success(),
+            "git remote add must succeed"
+        );
+        let build = |gitlab: bool| Config {
+            project_name: "x".to_string(),
+            crates: vec![CrateConfig {
+                name: "app".to_string(),
+                release: Some(anodizer_core::config::ReleaseConfig {
+                    gitlab: gitlab.then(|| anodizer_core::config::GitHubConfig {
+                        owner: "acme".to_string(),
+                        name: "widget".to_string(),
+                        token: None,
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let (log, capture) =
+            StageLogger::with_capture("test", anodizer_core::log::Verbosity::Normal);
+        auto_detect_github(&mut build(true), &log, false).unwrap();
+        assert_eq!(
+            capture.warn_count(),
+            0,
+            "a configured gitlab block is not a missing github one"
+        );
+        let (log, capture) =
+            StageLogger::with_capture("test", anodizer_core::log::Verbosity::Normal);
+        auto_detect_github(&mut build(false), &log, false).unwrap();
+        assert_eq!(
+            capture.warn_count(),
+            1,
+            "a release block naming no forge still warns"
+        );
     });
 }
 
