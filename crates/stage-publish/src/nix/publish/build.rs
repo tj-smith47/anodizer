@@ -553,6 +553,7 @@ pub(super) fn finalize_publish(
                 branch: branch.clone(),
                 token_env_var: Some("NIX_PKGS_TOKEN".to_string()),
                 commit: Some(commit.clone()),
+                pr_url: None,
             },
         ]));
     }
@@ -604,7 +605,22 @@ pub(super) fn finalize_publish(
         }
     }
 
-    if let Some(pr_outcome) = pr_outcome {
+    if let (Some(commit), Some(url)) = (outcome.commit(), pr_outcome.url) {
+        // The push was recorded before the pull request existed, so its
+        // row is amended rather than recorded again.
+        ctx.amend_committed_work(|evidence| {
+            if let anodizer_core::PublishEvidenceExtra::Nix(x) = &mut evidence.extra {
+                for t in x
+                    .nix_targets
+                    .iter_mut()
+                    .filter(|t| t.commit.as_deref() == Some(commit))
+                {
+                    t.pr_url = Some(url.clone());
+                }
+            }
+        });
+    }
+    if let Some(pr_outcome) = pr_outcome.outcome {
         ctx.record_publisher_outcome(pr_outcome);
     }
 

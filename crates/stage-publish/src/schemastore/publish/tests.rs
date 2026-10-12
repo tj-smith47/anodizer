@@ -769,7 +769,8 @@ fn lockstep_mode_stamps_shared_version_regardless_of_named_crate() {
 
 #[test]
 fn schemastore_evidence_carries_pr_target_with_env_var_name_not_value() {
-    let ev = schemastore_evidence("tj-smith47", "schemastore-v0.4.2");
+    let url = "https://github.com/SchemaStore/schemastore/pull/4242";
+    let ev = schemastore_evidence("tj-smith47", "schemastore-v0.4.2", Some(url.to_string()));
     match ev.extra {
         anodizer_core::PublishEvidenceExtra::Schemastore(s) => {
             let t = &s.schemastore_targets[0];
@@ -778,6 +779,7 @@ fn schemastore_evidence_carries_pr_target_with_env_var_name_not_value() {
             assert_eq!(t.fork_owner, "tj-smith47");
             assert_eq!(t.branch, "schemastore-v0.4.2");
             assert_eq!(t.token_env_var.as_deref(), Some("SCHEMASTORE_TOKEN"));
+            assert_eq!(t.pr_url.as_deref(), Some(url));
         }
         other => panic!("expected Schemastore extra, got {other:?}"),
     }

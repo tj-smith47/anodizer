@@ -1857,10 +1857,16 @@ fn crate_has_krew_artifacts_reflects_artifact_presence() {
 fn publish_to_krew_pr_direct_pushes_branch_and_opens_pr() {
     let (_tools, _guard) = gh_absent();
     let (bare_url, bare) = init_bare_fork();
+    let pr_url = "https://github.com/fork-owner/krew-index/pull/21";
+    let body = format!("{{\"html_url\":\"{pr_url}\"}}");
     let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
         method: "POST",
         path_pattern: "/repos/fork-owner/krew-index/pulls",
-        response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+        response: format!(
+            "HTTP/1.1 201 Created\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .leak(),
         times: Some(1),
     }]);
     let c = pr_direct_crate("widget", "kubectl-widget", &bare_url);
@@ -1914,6 +1920,18 @@ fn publish_to_krew_pr_direct_pushes_branch_and_opens_pr() {
     );
     drop(entries);
     drop(bare);
+
+    // (3) The push's row, recorded before the PR existed, carries the URL
+    //     the API returned.
+    let evidence = ctx.take_pending_evidence().expect("the push was recorded");
+    match &evidence.extra {
+        anodizer_core::PublishEvidenceExtra::Krew(x) => {
+            assert_eq!(x.krew_targets.len(), 1);
+            assert_eq!(x.krew_targets[0].branch, "kubectl-widget-v1.0.0");
+            assert_eq!(x.krew_targets[0].pr_url.as_deref(), Some(pr_url));
+        }
+        other => panic!("expected krew evidence, got {other:?}"),
+    }
 }
 
 /// PrDirect publish when the upstream PR already exists: the API

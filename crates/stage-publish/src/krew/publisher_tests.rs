@@ -137,6 +137,7 @@ fn krew_rollback_warns_and_skips_target_when_no_token_resolvable() {
     evidence.extra =
         anodizer_core::PublishEvidenceExtra::Krew(anodizer_core::publish_evidence::KrewExtra {
             krew_targets: vec![KrewPrTarget {
+                pr_url: None,
                 target: "demo".into(),
                 upstream_owner: "kubernetes-sigs".into(),
                 upstream_repo: "krew-index".into(),
@@ -168,6 +169,7 @@ fn krew_rollback_warns_and_skips_target_when_no_token_resolvable() {
 #[test]
 fn krew_target_extra_roundtrips() {
     let original = vec![KrewPrTarget {
+        pr_url: None,
         target: "demo".into(),
         upstream_owner: "kubernetes-sigs".into(),
         upstream_repo: "krew-index".into(),
@@ -192,6 +194,7 @@ fn krew_target_extra_carries_no_secret_material() {
     e.extra =
         anodizer_core::PublishEvidenceExtra::Krew(anodizer_core::publish_evidence::KrewExtra {
             krew_targets: vec![KrewPrTarget {
+                pr_url: None,
                 target: "demo".into(),
                 upstream_owner: "kubernetes-sigs".into(),
                 upstream_repo: "krew-index".into(),
@@ -707,6 +710,7 @@ fn run_krew_rollback_over(
     evidence.extra =
         anodizer_core::PublishEvidenceExtra::Krew(anodizer_core::publish_evidence::KrewExtra {
             krew_targets: vec![KrewPrTarget {
+                pr_url: None,
                 target: "demo".into(),
                 upstream_owner: "kubernetes-sigs".into(),
                 upstream_repo: "krew-index".into(),

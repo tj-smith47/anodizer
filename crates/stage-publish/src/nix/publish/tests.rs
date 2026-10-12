@@ -1870,6 +1870,50 @@ mod subprocess {
         drop(bare);
     }
 
+    /// The pull request `gh pr create` opens is recorded on the push's own
+    /// row, which was recorded at the push, before the PR existed.
+    #[cfg(unix)]
+    #[test]
+    #[serial(path_env)]
+    fn publish_to_nix_pull_request_records_the_opened_pr_url() {
+        use anodizer_core::config::PullRequestConfig;
+        let tools = FakeToolDir::new();
+        tools
+            .tool("gh")
+            .stdout("https://github.com/upstream/nur/pull/5\n")
+            .exit(0)
+            .install();
+        let _path = tools.activate();
+        let (bare_url, bare) = make_bare_repo("main");
+        let mut nix = nix_cfg_local(&bare_url, "main");
+        if let Some(repo) = nix.repository.as_mut() {
+            repo.pull_request = Some(PullRequestConfig {
+                enabled: Some(true),
+                ..Default::default()
+            });
+        }
+        let mut ctx = ctx_for(nix, two_archives());
+        let pushed = publish_to_nix(&mut ctx, "mytool", &quiet_log()).expect("publish ok");
+        assert!(pushed);
+        assert!(
+            ctx.take_pending_outcome().is_none(),
+            "a PR gh opened is a clean success"
+        );
+        let evidence = ctx.take_pending_evidence().expect("the push was recorded");
+        match &evidence.extra {
+            anodizer_core::PublishEvidenceExtra::Nix(x) => {
+                assert_eq!(x.nix_targets.len(), 1);
+                assert!(x.nix_targets[0].commit.is_some());
+                assert_eq!(
+                    x.nix_targets[0].pr_url.as_deref(),
+                    Some("https://github.com/upstream/nur/pull/5")
+                );
+            }
+            other => panic!("expected nix evidence, got {other:?}"),
+        }
+        drop(bare);
+    }
+
     #[test]
     #[serial(path_env)]
     fn publish_to_nix_runs_configured_formatter_on_generated_file() {

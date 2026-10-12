@@ -66,6 +66,9 @@ pub fn summary_lines(report: Option<&PublishReport>, ctx: &Context) -> Vec<Strin
     for image in ctx.artifacts.pushed_images() {
         lines.push(format!("Pushed image `{}`", image.reference));
     }
+    for reference in ctx.artifacts.signed_images() {
+        lines.push(format!("Signed image `{reference}`"));
+    }
     for run in &ctx.stage_outputs.custom_publishers_run {
         lines.push(format!(
             "Ran custom publisher `{}` on {}",
@@ -125,30 +128,45 @@ fn evidence_lines(evidence: &PublishEvidence, ctx: &Context) -> Vec<String> {
         E::Homebrew(x) => x
             .homebrew_targets
             .iter()
-            .map(|t| format!("Updated homebrew `{}` in `{}`", t.target, t.repo_url))
+            .map(|t| {
+                tap_line(
+                    "homebrew formula",
+                    &t.target,
+                    &t.repo_url,
+                    t.pr_url.as_deref(),
+                )
+            })
             .collect(),
         E::Scoop(x) => x
             .scoop_targets
             .iter()
-            .map(|t| format!("Updated scoop manifest `{}` in `{}`", t.target, t.repo_url))
+            .map(|t| {
+                tap_line(
+                    "scoop manifest",
+                    &t.target,
+                    &t.repo_url,
+                    t.pr_url.as_deref(),
+                )
+            })
             .collect(),
         E::Nix(x) => x
             .nix_targets
             .iter()
-            .map(|t| format!("Updated nix package `{}` in `{}`", t.target, t.repo_url))
+            .map(|t| tap_line("nix package", &t.target, &t.repo_url, t.pr_url.as_deref()))
             .collect(),
         E::Winget(x) => x
             .winget_targets
             .iter()
             .map(|t| {
                 format!(
-                    "Opened pull request to `{}/{}` (winget package `{}` {}) from `{}:{}`",
+                    "Opened pull request to `{}/{}` (winget package `{}` {}) from `{}:{}`{}",
                     t.upstream_owner,
                     t.upstream_repo,
                     t.package_id,
                     t.version,
                     t.fork_owner,
-                    t.branch
+                    t.branch,
+                    url_tail(t.pr_url.as_deref())
                 )
             })
             .collect(),
@@ -162,8 +180,13 @@ fn evidence_lines(evidence: &PublishEvidence, ctx: &Context) -> Vec<String> {
             .iter()
             .map(|t| {
                 format!(
-                    "Opened pull request to `{}/{}` (krew plugin `{}`) from `{}:{}`",
-                    t.upstream_owner, t.upstream_repo, t.target, t.fork_owner, t.branch
+                    "Opened pull request to `{}/{}` (krew plugin `{}`) from `{}:{}`{}",
+                    t.upstream_owner,
+                    t.upstream_repo,
+                    t.target,
+                    t.fork_owner,
+                    t.branch,
+                    url_tail(t.pr_url.as_deref())
                 )
             })
             .collect(),
@@ -277,8 +300,12 @@ fn evidence_lines(evidence: &PublishEvidence, ctx: &Context) -> Vec<String> {
             .iter()
             .map(|t| {
                 format!(
-                    "Opened pull request to `{}/{}` (SchemaStore registration) from `{}:{}`",
-                    t.upstream_owner, t.upstream_repo, t.fork_owner, t.branch
+                    "Opened pull request to `{}/{}` (SchemaStore registration) from `{}:{}`{}",
+                    t.upstream_owner,
+                    t.upstream_repo,
+                    t.fork_owner,
+                    t.branch,
+                    url_tail(t.pr_url.as_deref())
                 )
             })
             .collect(),
@@ -314,6 +341,32 @@ fn evidence_lines(evidence: &PublishEvidence, ctx: &Context) -> Vec<String> {
             vec![format!("Published {what} via `{}`", evidence.publisher)]
         }
     }
+}
+
+/// `: <url>` when a pull request URL was recorded, nothing otherwise.
+fn url_tail(pr_url: Option<&str>) -> String {
+    pr_url.map(|u| format!(": {u}")).unwrap_or_default()
+}
+
+/// The line for a tap-style push (homebrew, scoop, nix). A push that opened
+/// a pull request names the repository the request was opened against,
+/// read off the URL, and the URL; a direct push names the repository pushed
+/// to.
+fn tap_line(kind: &str, target: &str, repo_url: &str, pr_url: Option<&str>) -> String {
+    match pr_url {
+        Some(url) => format!(
+            "Opened pull request to `{}` ({kind} `{target}`): {url}",
+            pull_request_repo(url).unwrap_or(repo_url)
+        ),
+        None => format!("Updated {kind} `{target}` in `{repo_url}`"),
+    }
+}
+
+/// `owner/repo` of a `https://<host>/owner/repo/pull/N` URL.
+fn pull_request_repo(url: &str) -> Option<&str> {
+    let (repo, _) = url.rsplit_once("/pull/")?;
+    let (_, slug) = repo.strip_prefix("https://")?.split_once('/')?;
+    (slug.matches('/').count() == 1).then_some(slug)
 }
 
 /// One line per release, joined to the stage's own record of what it wrote
@@ -568,6 +621,7 @@ mod tests {
                     fork_owner: s("acme"),
                     branch: s("app-schema"),
                     token_env_var: None,
+                    pr_url: None,
                 }],
             })),
             evidence(E::HomebrewCore(HomebrewCoreExtra {
@@ -753,6 +807,141 @@ mod tests {
             metadata,
             size: None,
         }
+    }
+
+    #[test]
+    fn a_tap_push_that_opened_a_pull_request_names_the_upstream_and_the_url() {
+        let ctx = TestContextBuilder::new().build();
+        let url = "https://github.com/acme/homebrew-tap/pull/12";
+        let r = report(vec![
+            row(
+                "homebrew",
+                PublisherOutcome::Succeeded,
+                PublishEvidenceExtra::Homebrew(HomebrewExtra {
+                    homebrew_targets: vec![HomebrewTargetSnapshot {
+                        target: "app".into(),
+                        repo_url: "https://github.com/me/homebrew-tap.git".into(),
+                        pr_url: Some(url.into()),
+                        ..Default::default()
+                    }],
+                }),
+            ),
+            row(
+                "scoop",
+                PublisherOutcome::Succeeded,
+                PublishEvidenceExtra::Scoop(ScoopExtra {
+                    scoop_targets: vec![ScoopTargetSnapshot {
+                        target: "app".into(),
+                        repo_url: "https://github.com/acme/scoop-bucket.git".into(),
+                        ..Default::default()
+                    }],
+                }),
+            ),
+            row(
+                "nix",
+                PublisherOutcome::Succeeded,
+                PublishEvidenceExtra::Nix(NixExtra {
+                    nix_targets: vec![NixTargetSnapshot {
+                        target: "app".into(),
+                        repo_url: "https://github.com/me/nur.git".into(),
+                        pr_url: Some("https://github.com/acme/nur/pull/3".into()),
+                        ..Default::default()
+                    }],
+                }),
+            ),
+        ]);
+        assert_eq!(
+            summary_lines(Some(&r), &ctx),
+            vec![
+                format!("Opened pull request to `acme/homebrew-tap` (homebrew formula `app`): {url}"),
+                "Updated scoop manifest `app` in `https://github.com/acme/scoop-bucket.git`".to_string(),
+                "Opened pull request to `acme/nur` (nix package `app`): https://github.com/acme/nur/pull/3"
+                    .to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn pull_request_publishers_append_the_url_when_one_was_recorded() {
+        let ctx = TestContextBuilder::new().build();
+        let s = |v: &str| v.to_string();
+        let r = report(vec![
+            row(
+                "winget",
+                PublisherOutcome::Succeeded,
+                PublishEvidenceExtra::Winget(WingetExtra {
+                    winget_targets: vec![WingetTargetSnapshot {
+                        target: s("app"),
+                        crate_name: s("app"),
+                        package_id: s("Acme.App"),
+                        version: s("1.2.3"),
+                        upstream_owner: s("microsoft"),
+                        upstream_repo: s("winget-pkgs"),
+                        fork_owner: s("acme"),
+                        branch: s("Acme.App-1.2.3"),
+                        pr_url: Some(s("https://github.com/microsoft/winget-pkgs/pull/9")),
+                    }],
+                }),
+            ),
+            row(
+                "krew",
+                PublisherOutcome::Succeeded,
+                PublishEvidenceExtra::Krew(KrewExtra {
+                    krew_targets: vec![KrewTargetSnapshot {
+                        target: s("app"),
+                        upstream_owner: s("kubernetes-sigs"),
+                        upstream_repo: s("krew-index"),
+                        fork_owner: s("acme"),
+                        branch: s("app-1.2.3"),
+                        token_env_var: None,
+                        pr_url: Some(s("https://github.com/kubernetes-sigs/krew-index/pull/5")),
+                    }],
+                }),
+            ),
+            row(
+                "schemastore",
+                PublisherOutcome::Succeeded,
+                PublishEvidenceExtra::Schemastore(SchemastoreExtra {
+                    schemastore_targets: vec![SchemastoreTargetSnapshot {
+                        upstream_owner: s("SchemaStore"),
+                        upstream_repo: s("schemastore"),
+                        fork_owner: s("acme"),
+                        branch: s("app-schema"),
+                        token_env_var: None,
+                        pr_url: None,
+                    }],
+                }),
+            ),
+        ]);
+        assert_eq!(
+            summary_lines(Some(&r), &ctx),
+            vec![
+                "Opened pull request to `microsoft/winget-pkgs` (winget package `Acme.App` 1.2.3) from `acme:Acme.App-1.2.3`: https://github.com/microsoft/winget-pkgs/pull/9",
+                "Opened pull request to `kubernetes-sigs/krew-index` (krew plugin `app`) from `acme:app-1.2.3`: https://github.com/kubernetes-sigs/krew-index/pull/5",
+                "Opened pull request to `SchemaStore/schemastore` (SchemaStore registration) from `acme:app-schema`",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_signed_image_is_listed_once_after_the_pushed_ones() {
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.artifacts
+            .add(pushed_image("ghcr.io/acme/app:1.2.3", true));
+        ctx.artifacts
+            .add(pushed_image("ghcr.io/acme/app:1.2.3-amd64", true));
+        ctx.artifacts
+            .add(pushed_image("ghcr.io/acme/app:1.2.3-amd64", true));
+        ctx.artifacts
+            .mark_image_signed(std::path::Path::new("ghcr.io/acme/app:1.2.3-amd64"));
+        assert_eq!(
+            summary_lines(None, &ctx),
+            vec![
+                "Pushed image `ghcr.io/acme/app:1.2.3`",
+                "Pushed image `ghcr.io/acme/app:1.2.3-amd64`",
+                "Signed image `ghcr.io/acme/app:1.2.3-amd64`",
+            ]
+        );
     }
 
     #[test]

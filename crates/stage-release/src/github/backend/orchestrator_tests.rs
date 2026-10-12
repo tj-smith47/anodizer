@@ -2145,6 +2145,81 @@ fn immutable_release_for_the_tag_fails_before_any_upload() {
     );
 }
 
+/// A `--publish-only` pass that re-touches a live release uploads nothing —
+/// an earlier run attached the assets — and the record still counts the
+/// assets planned, so the job summary describes the release as it stands
+/// rather than as "0 assets".
+#[test]
+fn a_retouched_live_release_is_recorded_with_its_planned_assets() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::stage::Stage;
+
+    let tmp = TempDir::new().expect("tempdir");
+    let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", b"already-attached");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+
+    let attached = asset_json(9, "demo.tar.gz", 16);
+    let mut live: serde_json::Value =
+        serde_json::from_str(&release_json(addr, 77, false, "v1.2.3")).unwrap();
+    live["published_at"] = serde_json::json!("2026-01-01T00:00:00Z");
+    live["assets"] =
+        serde_json::json!([serde_json::from_str::<serde_json::Value>(&attached).unwrap()]);
+    let live = live.to_string();
+    let routes = vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/o/r/releases/tags/v1.2.3",
+            response: http_ok(live.clone()),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "PATCH",
+            path_pattern: "/repos/o/r/releases/77",
+            response: http_ok(live.clone()),
+            times: None,
+        },
+    ];
+    let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+    let mut ctx = build_ctx_attempts_one(addr);
+    ctx.options.resume_release = true;
+    let mut crate_cfg = build_crate_cfg();
+    let release = crate_cfg.release.as_mut().unwrap();
+    release.mode = Some("keep-existing".to_string());
+    release.draft = Some(false);
+    ctx.config.crates = vec![crate_cfg];
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        name: "demo.tar.gz".to_string(),
+        path: artifact_path,
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "demo".to_string(),
+        metadata: Default::default(),
+        size: None,
+    });
+
+    crate::ReleaseStage
+        .run(&mut ctx)
+        .expect("re-touching a live release succeeds");
+
+    let uploads = log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| e.path.contains("/upload/"))
+        .count();
+    assert_eq!(uploads, 0, "a retouch of a live release re-uploads nothing");
+    assert_eq!(ctx.stage_outputs.releases_written.len(), 1);
+    let written = &ctx.stage_outputs.releases_written[0];
+    assert_eq!(written.tag, "v1.2.3");
+    assert!(!written.draft);
+    assert_eq!(
+        written.assets, 1,
+        "the record counts the asset the release carries, not the uploads this pass made"
+    );
+}
+
 /// The stage records each release as the forge call that wrote it returns,
 /// so a failure on a later crate leaves the earlier crate's release on
 /// record for a rollback and nothing for the crate whose create failed.

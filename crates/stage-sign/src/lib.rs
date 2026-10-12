@@ -698,6 +698,7 @@ impl Stage for DockerSignStage {
                         )?;
                         log.status(&log.redact(&format!("verified image signature {signed_ref}"))); // status-ok: per-image verification result
                     }
+                    ctx.artifacts.mark_image_signed(image_path);
                 }
             }
 

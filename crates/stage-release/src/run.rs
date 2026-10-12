@@ -329,7 +329,11 @@ fn release_one_crate(
                 repo: repo_name.clone(),
                 tag: tag.clone(),
                 url: release_url.clone(),
-                draft: flags.draft,
+                draft: recorded_as_draft(ctx.token_type, flags.draft),
+                // The planned count, whether this pass uploaded or found the
+                // assets already attached: a `--publish-only` pass re-touching
+                // a live release skips the uploads an earlier run made, and
+                // the line describes the release as it stands.
                 assets: if flags.skip_upload {
                     0
                 } else {
@@ -849,6 +853,13 @@ fn dispatch_to_scm_backend(
     }
 }
 
+/// Whether the release written is a draft nobody can download from yet.
+/// GitLab has no draft releases, so a `draft: true` there publishes a live
+/// release and is recorded as one.
+pub(crate) fn recorded_as_draft(token_type: ScmTokenType, draft: bool) -> bool {
+    draft && token_type != ScmTokenType::GitLab
+}
+
 /// Enumerate the release-upload candidate set for a single crate.
 ///
 /// Source of truth for which artifacts get uploaded to a GitHub/GitLab/Gitea
@@ -914,6 +925,17 @@ pub fn collect_release_upload_candidates(
 
 #[cfg(test)]
 mod tests {
+    /// GitLab publishes a `draft: true` release live, so its record says so;
+    /// GitHub and Gitea keep the flag.
+    #[test]
+    fn a_gitlab_release_is_never_recorded_as_a_draft() {
+        use anodizer_core::scm::ScmTokenType;
+        assert!(!super::recorded_as_draft(ScmTokenType::GitLab, true));
+        assert!(super::recorded_as_draft(ScmTokenType::GitHub, true));
+        assert!(super::recorded_as_draft(ScmTokenType::Gitea, true));
+        assert!(!super::recorded_as_draft(ScmTokenType::GitHub, false));
+    }
+
     use super::*;
     use anodizer_core::config::{NightlyConfig, ReleaseConfig};
     use anodizer_core::log::{StageLogger, Verbosity};

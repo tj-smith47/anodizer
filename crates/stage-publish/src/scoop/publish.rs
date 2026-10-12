@@ -200,6 +200,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
                 branch: branch.clone(),
                 token_env_var: Some("SCOOP_BUCKET_TOKEN".to_string()),
                 commit: Some(commit.clone()),
+                pr_url: None,
             }]));
             log.status(&format!(
                 "Scoop bucket {}/{} updated for '{}'",
@@ -249,8 +250,23 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         ctx.env_source(),
     )?;
 
+    if let (Some(commit), Some(url)) = (outcome.commit(), pr_outcome.url) {
+        // The push was recorded before the pull request existed, so its
+        // row is amended rather than recorded again.
+        ctx.amend_committed_work(|evidence| {
+            if let anodizer_core::PublishEvidenceExtra::Scoop(x) = &mut evidence.extra {
+                for t in x
+                    .scoop_targets
+                    .iter_mut()
+                    .filter(|t| t.commit.as_deref() == Some(commit))
+                {
+                    t.pr_url = Some(url.clone());
+                }
+            }
+        });
+    }
     // Surface PR-already-exists skips to the dispatch summary table.
-    if let Some(pr_outcome) = pr_outcome {
+    if let Some(pr_outcome) = pr_outcome.outcome {
         ctx.record_publisher_outcome(pr_outcome);
     }
 

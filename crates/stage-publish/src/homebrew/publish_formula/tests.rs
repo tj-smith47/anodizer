@@ -915,6 +915,53 @@ fn publish_to_homebrew_pr_enabled_still_pushes_formula() {
     drop(bare);
 }
 
+/// The pull request `gh pr create` opens is recorded on the push's own row:
+/// the row was recorded at the push, before the PR existed, and carries the
+/// URL afterwards.
+#[cfg(unix)]
+#[test]
+#[serial(path_env)]
+fn publish_to_homebrew_pr_records_the_opened_pr_url() {
+    let tools = FakeToolDir::new();
+    tools
+        .tool("gh")
+        .stdout("https://github.com/upstream/homebrew-tap/pull/17\n")
+        .exit(0)
+        .install();
+    let _guard = tools.activate();
+    let (bare_url, bare) = make_bare_tap("main");
+    let mut hb = hb_cfg_local(&bare_url, "main");
+    if let Some(repo) = hb.repository.as_mut() {
+        repo.pull_request = Some(PullRequestConfig {
+            enabled: Some(true),
+            ..Default::default()
+        });
+    }
+    let mut ctx = single_crate_ctx(
+        hb,
+        vec![archive(
+            "x86_64-unknown-linux-gnu",
+            "https://e/x.tar.gz",
+            "s",
+        )],
+    );
+    let pushed = publish_to_homebrew(&mut ctx, "mytool", &quiet_log()).expect("publish ok");
+    assert!(pushed);
+    let evidence = ctx.take_pending_evidence().expect("the push was recorded");
+    match &evidence.extra {
+        anodizer_core::PublishEvidenceExtra::Homebrew(x) => {
+            assert_eq!(x.homebrew_targets.len(), 1);
+            assert!(x.homebrew_targets[0].commit.is_some());
+            assert_eq!(
+                x.homebrew_targets[0].pr_url.as_deref(),
+                Some("https://github.com/upstream/homebrew-tap/pull/17")
+            );
+        }
+        other => panic!("expected homebrew evidence, got {other:?}"),
+    }
+    drop(bare);
+}
+
 /// Clone failure surfaces as an `Err`: pointing `git.url` at a path that
 /// is not a git repo makes the clone fail; the publisher must propagate
 /// the error (the tap was never touched), not silently report success.

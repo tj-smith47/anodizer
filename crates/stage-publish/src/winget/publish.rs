@@ -1,5 +1,12 @@
 use super::*;
 
+/// What one crate's WinGet publish submitted.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct WingetSubmission {
+    /// URL of the pull request opened, when the transport reported one.
+    pub pr_url: Option<String>,
+}
+
 /// Submit one crate's WinGet manifests, deriving its `publish.winget` block
 /// here. `Ok(false)` when nothing was submitted — the crate's `skip_upload:` /
 /// `if:` gate closed it, or the run is a dry-run.
@@ -19,25 +26,26 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
         .ok_or_else(|| anyhow::anyhow!("winget: no winget config for '{}'", crate_name))?
         .clone();
     let derived = super::identifier::derive_winget_config(ctx, log, &winget_cfg, crate_name)?;
-    publish_to_winget_with_config(ctx, crate_name, &derived, log)
+    Ok(publish_to_winget_with_config(ctx, crate_name, &derived, log)?.is_some())
 }
 
 /// As [`publish_to_winget`], for a caller that already derived the crate's
 /// `publish.winget` block through
-/// [`super::identifier::derive_winget_config`].
+/// [`super::identifier::derive_winget_config`]. `None` when nothing was
+/// submitted.
 pub(crate) fn publish_to_winget_with_config(
     ctx: &mut Context,
     crate_name: &str,
     derived: &anodizer_core::config::WingetConfig,
     log: &StageLogger,
-) -> Result<bool> {
+) -> Result<Option<WingetSubmission>> {
     // Resolve identity first so dry-run short-circuits BEFORE the full manifest
     // render (which requires short_description/license/installers): a dry-run
     // only reports the coordinates it would push. The identity carries the
     // locales, so a bad `additional_locales` entry skips the crate on a dry
     // run too.
     let Some(identity) = resolve_winget_identity(ctx, crate_name, derived, log)? else {
-        return Ok(false);
+        return Ok(None);
     };
     // An entry skip like the identity's own, absorbed by the publisher's run.
     let pr_token =
@@ -48,7 +56,7 @@ pub(crate) fn publish_to_winget_with_config(
             "(dry-run) would submit WinGet manifest for '{}' (pkg={}) to {}/{}",
             crate_name, identity.package_id, identity.repo_owner, identity.repo_name
         ));
-        return Ok(false);
+        return Ok(None);
     }
 
     // Reuse the identity already resolved above so the manifest render does not
@@ -56,8 +64,8 @@ pub(crate) fn publish_to_winget_with_config(
     // fallback-to-repo-owner warning a second time per publish).
     let rendered = render_winget_manifests_with_identity(ctx, crate_name, derived, &identity, log)?;
 
-    submit_winget_manifests(ctx, log, derived, &rendered, pr_token.as_deref())?;
-    Ok(true)
+    let pr_url = submit_winget_manifests(ctx, log, derived, &rendered, pr_token.as_deref())?;
+    Ok(Some(WingetSubmission { pr_url }))
 }
 
 /// Clone the package repo, write the pre-rendered manifests, commit, push, and
@@ -70,7 +78,7 @@ pub(crate) fn submit_winget_manifests(
     winget_cfg: &anodizer_core::config::WingetConfig,
     rendered: &RenderedWingetManifests,
     pr_token: Option<&str>,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let version = ctx.version();
     let repo_owner = rendered.repo_owner.as_str();
     let repo_name = rendered.repo_name.as_str();
@@ -184,11 +192,11 @@ pub(crate) fn submit_winget_manifests(
         ctx.env_source(),
     )?;
 
-    if let Some(outcome) = pr_outcome {
+    if let Some(outcome) = pr_outcome.outcome {
         ctx.record_publisher_outcome(outcome);
     }
 
-    Ok(())
+    Ok(pr_outcome.url)
 }
 
 // ---------------------------------------------------------------------------
@@ -312,6 +320,7 @@ pub(crate) fn collect_winget_target(
         upstream_repo,
         fork_owner,
         branch,
+        pr_url: None,
     })
 }
 
@@ -623,7 +632,10 @@ impl anodizer_core::Publisher for WingetPublisher {
                     // `if:`, a dry run) opened no PR, so recording its target
                     // would have a rollback tell the operator to close a pull
                     // request that does not exist.
-                    Ok(target.filter(|_| submitted))
+                    Ok(target.zip(submitted).map(|(mut t, s)| {
+                        t.pr_url = s.pr_url;
+                        t
+                    }))
                 },
             );
             let absorbed = crate::publisher_helpers::absorb_entry_skip(

@@ -293,8 +293,9 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         &|s| ctx.render_template(s),
     )?;
 
+    super::publisher::record_tap_pr_url(ctx, outcome.commit(), pr_outcome.url);
     // Surface PR-already-exists skips to the dispatch summary table.
-    if let Some(outcome) = pr_outcome {
+    if let Some(outcome) = pr_outcome.outcome {
         ctx.record_publisher_outcome(outcome);
     }
 

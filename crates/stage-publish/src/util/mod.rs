@@ -33,6 +33,7 @@ mod git_revert;
 mod github_pr;
 mod parallelism;
 mod pr;
+mod pr_submission;
 mod pr_token;
 mod template;
 
@@ -88,9 +89,9 @@ pub(crate) use parallelism::{
     run_revert_targets_parallel, run_token_revert_rollback,
 };
 pub(crate) use pr::{
-    PrOrigin, PrReconcileTarget, SubmitPrOpts, maybe_submit_pr, maybe_submit_pr_with_env,
-    reconcile_open_prs, resolve_upstream_coords, submit_pr_via_gh_with_opts,
-    submit_pr_via_gh_with_opts_with_env,
+    PrOrigin, PrReconcileTarget, PrSubmission, SubmitPrOpts, maybe_submit_pr,
+    maybe_submit_pr_with_env, reconcile_open_prs, resolve_upstream_coords,
+    submit_pr_via_gh_with_opts, submit_pr_via_gh_with_opts_with_env,
 };
 pub(crate) use pr_token::configured_pr_token;
 pub(crate) use template::{

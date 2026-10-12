@@ -1299,6 +1299,7 @@ fn winget_rollback_warns_per_target_when_evidence_present() {
         anodizer_core::PublishEvidenceExtra::Winget(anodizer_core::publish_evidence::WingetExtra {
             winget_targets: vec![
                 WingetTarget {
+                    pr_url: None,
                     target: "AcmeCo.demo".into(),
                     crate_name: "demo".into(),
                     package_id: "AcmeCo.demo".into(),
@@ -1309,6 +1310,7 @@ fn winget_rollback_warns_per_target_when_evidence_present() {
                     branch: "AcmeCo.demo-1.2.3".into(),
                 },
                 WingetTarget {
+                    pr_url: None,
                     target: "AcmeCo.widget".into(),
                     crate_name: "widget".into(),
                     package_id: "AcmeCo.widget".into(),
@@ -1328,6 +1330,7 @@ fn winget_rollback_warns_per_target_when_evidence_present() {
 #[test]
 fn winget_target_extra_roundtrips() {
     let original = vec![WingetTarget {
+        pr_url: None,
         target: "AcmeCo.demo".into(),
         crate_name: "demo".into(),
         package_id: "AcmeCo.demo".into(),
@@ -1354,6 +1357,7 @@ fn winget_target_extra_carries_no_secret_material() {
     e.extra =
         anodizer_core::PublishEvidenceExtra::Winget(anodizer_core::publish_evidence::WingetExtra {
             winget_targets: vec![WingetTarget {
+                pr_url: None,
                 target: "AcmeCo.demo".into(),
                 crate_name: "demo".into(),
                 package_id: "AcmeCo.demo".into(),

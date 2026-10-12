@@ -220,7 +220,6 @@ pub(crate) fn write_winget_manifests_to_disk(
 /// the optional outcome that must be forwarded to
 /// `Context::record_publisher_outcome`.
 #[allow(clippy::too_many_arguments)]
-#[must_use = "the returned outcome must be forwarded to Context::record_publisher_outcome"]
 pub(crate) fn submit_winget_pr(
     repo_path: &std::path::Path,
     repo_for_pr: Option<&anodizer_core::config::RepositoryConfig>,
@@ -234,7 +233,7 @@ pub(crate) fn submit_winget_pr(
     token: Option<&str>,
     render: &dyn Fn(&str) -> Result<String>,
     env: &dyn anodizer_core::EnvSource,
-) -> Result<Option<anodizer_core::PublisherOutcome>> {
+) -> Result<util::PrSubmission> {
     let has_pr_config = repo_for_pr
         .and_then(|r| r.pull_request.as_ref())
         .and_then(|pr| pr.enabled)

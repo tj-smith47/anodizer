@@ -3323,6 +3323,92 @@ fn test_docker_sign_signs_by_digest_not_tag() {
     }
 }
 
+/// Run the docker sign stage over one registered image against a stub
+/// `cosign` whose `verify` exits `verify_exit`; keyed and offline so no
+/// network and no host lock is touched. Returns the references the registry
+/// then reports as signed.
+#[cfg(unix)]
+fn docker_sign_signed_images(dry_run: bool, verify_exit: i32) -> Vec<String> {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::DockerSignConfig;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let stub = write_script(
+        tmp.path(),
+        "cosign",
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in\n  public-key) shift; while [ $# -gt 0 ]; do \
+             [ \"$1\" = --outfile ] && echo key > \"$2\"; shift; done; exit 0;;\n  \
+             verify) [ {verify_exit} -ne 0 ] && echo \"unknown flag: --fail\" >&2; exit {verify_exit};;\n  *) exit 0;;\nesac\n"
+        ),
+    );
+    let docker_signs = vec![DockerSignConfig {
+        verify: None,
+        id: Some("image-cosign".to_string()),
+        cmd: Some(stub.to_string_lossy().into_owned()),
+        args: Some(vec![
+            "sign".to_string(),
+            "--key=env://COSIGN_KEY".to_string(),
+            "--tlog-upload=false".to_string(),
+            "{{ .Artifact }}".to_string(),
+        ]),
+        artifacts: Some("all".to_string()),
+        ids: None,
+        stdin: None,
+        stdin_file: None,
+        env: None,
+        output: None,
+        if_condition: None,
+        signature: None,
+        certificate: None,
+    }];
+    let mut ctx = TestContextBuilder::new()
+        .dry_run(dry_run)
+        .env("COSIGN_KEY", "not-a-real-key")
+        .sealed_env()
+        .build();
+    ctx.config.docker_signs = Some(docker_signs);
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("tag".to_string(), "ghcr.io/acme/app:1.0.0".to_string());
+    metadata.insert("digest".to_string(), "sha256:feed".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::DockerImageV2,
+        name: "ghcr.io/acme/app:1.0.0".to_string(),
+        path: std::path::PathBuf::from("ghcr.io/acme/app:1.0.0"),
+        target: None,
+        crate_name: "app".to_string(),
+        metadata,
+        size: None,
+    });
+    let result = DockerSignStage.run(&mut ctx);
+    if verify_exit == 0 {
+        result.expect("sign and verify succeed");
+    } else {
+        result.expect_err("a failed verification fails the stage");
+    }
+    ctx.artifacts.signed_images()
+}
+
+/// The signed marker the job summary reads is written only once the image's
+/// signature was attached AND verified: a dry run spawns nothing and a failed
+/// verification leaves the image unmarked.
+#[cfg(unix)]
+#[test]
+fn a_docker_image_is_marked_signed_only_after_its_signature_verified() {
+    assert_eq!(
+        docker_sign_signed_images(false, 0),
+        vec!["ghcr.io/acme/app:1.0.0"]
+    );
+    assert!(
+        docker_sign_signed_images(true, 0).is_empty(),
+        "a dry run marks nothing"
+    );
+    assert!(
+        docker_sign_signed_images(false, 1).is_empty(),
+        "a failed verification marks nothing"
+    );
+}
+
 /// Missing-digest path (safety-critical): when the build stage recorded NO
 /// digest, the publisher must NOT fabricate one — it signs the bare tag
 /// loudly (and warns elsewhere). This captures the rendered cosign reference

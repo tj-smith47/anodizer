@@ -288,6 +288,7 @@ fn submit_homebrew_pr(
     cask_name: Option<&str>,
     pr_branch: &str,
     pr_token: Option<&str>,
+    pushed_commit: Option<&str>,
     log: &StageLogger,
 ) -> Result<()> {
     let formula_name = ident.formula_name;
@@ -337,7 +338,8 @@ fn submit_homebrew_pr(
         &|s| ctx.render_template(s),
     )?;
 
-    if let Some(pr_outcome) = pr_outcome {
+    super::super::publisher::record_tap_pr_url(ctx, pushed_commit, pr_outcome.url);
+    if let Some(pr_outcome) = pr_outcome.outcome {
         ctx.record_publisher_outcome(pr_outcome);
     }
     Ok(())
@@ -679,6 +681,7 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         cask.cask_name.as_deref(),
         pr_branch,
         pr_token.as_deref(),
+        outcome.commit(),
         log,
     )?;
 

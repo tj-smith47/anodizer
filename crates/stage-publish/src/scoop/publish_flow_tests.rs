@@ -1197,10 +1197,16 @@ mod e2e {
     fn publish_to_scoop_pushes_manifest_and_opens_pr() {
         let (_tools, _guard) = gh_absent();
         let (bucket_url, bare) = init_bare_bucket();
+        let pr_url = "https://github.com/acme/scoop-bucket/pull/8";
+        let body = format!("{{\"html_url\":\"{pr_url}\"}}");
         let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
             method: "POST",
             path_pattern: "/repos/acme/scoop-bucket/pulls",
-            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            response: format!(
+                "HTTP/1.1 201 Created\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .leak(),
             times: Some(1),
         }]);
 
@@ -1235,6 +1241,18 @@ mod e2e {
         assert_eq!(entries[0].path, "/repos/acme/scoop-bucket/pulls");
         drop(entries);
         drop(bare);
+
+        // The push's row, recorded before the PR existed, carries the URL
+        // the API returned.
+        let evidence = ctx.take_pending_evidence().expect("the push was recorded");
+        match &evidence.extra {
+            anodizer_core::PublishEvidenceExtra::Scoop(x) => {
+                assert_eq!(x.scoop_targets.len(), 1);
+                assert_eq!(x.scoop_targets[0].pr_url.as_deref(), Some(pr_url));
+                assert!(x.scoop_targets[0].commit.is_some());
+            }
+            other => panic!("expected scoop evidence, got {other:?}"),
+        }
     }
 
     /// With no `directory:` configured the manifest defaults into

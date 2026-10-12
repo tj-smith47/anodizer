@@ -119,6 +119,7 @@ pub(super) fn collect_krew_target(
         fork_owner,
         branch,
         token_env_var: Some("KREW_INDEX_TOKEN".to_string()),
+        pr_url: None,
     }))
 }
 

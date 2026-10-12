@@ -44,6 +44,10 @@ pub struct HomebrewTargetSnapshot {
     /// by then be someone else's commit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// URL of the pull request opened for this push, when one was opened and
+    /// the transport reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -67,6 +71,10 @@ pub struct ScoopTargetSnapshot {
     /// by then be someone else's commit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// URL of the pull request opened for this push, when one was opened and
+    /// the transport reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -90,6 +98,10 @@ pub struct NixTargetSnapshot {
     /// by then be someone else's commit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// URL of the pull request opened for this push, when one was opened and
+    /// the transport reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -109,6 +121,10 @@ pub struct WingetTargetSnapshot {
     pub upstream_repo: String,
     pub fork_owner: String,
     pub branch: String,
+    /// URL of the pull request opened for this push, when one was opened and
+    /// the transport reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -142,6 +158,10 @@ pub struct KrewTargetSnapshot {
     pub branch: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_env_var: Option<String>,
+    /// URL of the pull request opened for this push, when one was opened and
+    /// the transport reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
 }
 
 // NOTE: no `deny_unknown_fields` here (every sibling extra struct has it).
@@ -497,6 +517,10 @@ pub struct SchemastoreTargetSnapshot {
     /// NEVER the token VALUE.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_env_var: Option<String>,
+    /// URL of the pull request opened for this push, when one was opened and
+    /// the transport reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1014,6 +1038,7 @@ mod tests {
                 branch: Some("main".into()),
                 token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
                 commit: None,
+                pr_url: Some("https://github.com/acme/homebrew-tap/pull/4".into()),
             }],
         });
 
@@ -1152,6 +1177,7 @@ mod tests {
                 fork_owner: "acme".into(),
                 branch: "mytool-v1.2.3".into(),
                 token_env_var: Some("KREW_INDEX_TOKEN".into()),
+                pr_url: None,
             }],
         };
         let json = serde_json::to_string(&extra).expect("serialize");
@@ -1221,6 +1247,7 @@ mod tests {
                     branch: Some("anodizer-update".into()),
                     token_env_var: Some("ANODIZER_GITHUB_TOKEN".into()),
                     commit: None,
+                    pr_url: None,
                 }],
             }),
             ..PublishEvidence::new("homebrew")

@@ -195,6 +195,8 @@ pub(crate) struct Upstream<'a> {
     pub name: &'a str,
 }
 
+pub(crate) use super::pr_submission::{PrSubmission, pull_request_url_in};
+
 /// Submit a pull request via the GitHub CLI (`gh pr create`).
 ///
 /// Returns `Some(PublisherOutcome::PendingValidation)` when the call hit
@@ -214,7 +216,7 @@ fn create_pr_via_gh_cli(
     token: Option<&str>,
     label: &str,
     log: &StageLogger,
-) -> Option<PublisherOutcome> {
+) -> PrSubmission {
     let PrSpec {
         title,
         body,
@@ -273,7 +275,7 @@ fn create_pr_via_gh_cli(
         RetryLog::new(&desc, log),
         3,
         None,
-        |attempt| -> RetryStep<Option<PublisherOutcome>, PrCreateFailure> {
+        |attempt| -> RetryStep<PrSubmission, PrCreateFailure> {
             let mut gh_cmd = Command::new("gh");
             gh_cmd.current_dir(repo_path).args(&args);
             // `GH_TOKEN` outranks gh's own stored login and `GITHUB_TOKEN`, so
@@ -292,12 +294,15 @@ fn create_pr_via_gh_cli(
             match pr_result {
                 Ok(output) if output.status.success() => {
                     log.status(&format!("submitted {label} PR via gh CLI"));
-                    RetryStep::Done(None)
+                    RetryStep::Done(PrSubmission::opened(pull_request_url_in(
+                        &String::from_utf8_lossy(&output.stdout),
+                    )))
                 }
                 Ok(output) => {
                     let stderr = child_log.redact(&String::from_utf8_lossy(&output.stderr));
                     // An open PR with identical head/base already exists.
                     if stderr.contains("already exists") {
+                        let url = pull_request_url_in(&stderr);
                         if update_existing_pr {
                             // Force-push to the existing branch so the open PR
                             // picks up the new manifest without a new PR.
@@ -321,10 +326,13 @@ fn create_pr_via_gh_cli(
                             } else {
                                 log.status(&pr_exists_update_status_message(label, head));
                             }
-                            return RetryStep::Done(None);
+                            return RetryStep::Done(PrSubmission::opened(url));
                         }
                         log.warn(&pr_exists_skip_warn_message(label, head));
-                        return RetryStep::Done(Some(PublisherOutcome::PendingValidation));
+                        return RetryStep::Done(PrSubmission {
+                            outcome: Some(PublisherOutcome::PendingValidation),
+                            url,
+                        });
                     }
                     let transient = stderr.contains("No commits between")
                         || stderr.contains("Head sha can't be blank")
@@ -377,7 +385,7 @@ fn create_pr_via_gh_cli(
         Ok(v) => v,
         Err(PrCreateFailure::Spawn(msg)) => {
             log.warn(&msg);
-            Some(PublisherOutcome::Failed(msg))
+            PrSubmission::failed(msg)
         }
         Err(PrCreateFailure::Exited {
             stderr: last_stderr,
@@ -395,7 +403,7 @@ fn create_pr_via_gh_cli(
                 }
             );
             log.warn(&msg);
-            Some(PublisherOutcome::Failed(msg))
+            PrSubmission::failed(msg)
         }
     }
 }
@@ -428,7 +436,7 @@ fn create_pr_via_api_with_env<E: EnvSource + ?Sized>(
     label: &str,
     log: &StageLogger,
     env: &E,
-) -> Option<PublisherOutcome> {
+) -> PrSubmission {
     let Upstream { owner, name } = *upstream;
     let PrSpec {
         title,
@@ -449,7 +457,7 @@ fn create_pr_via_api_with_env<E: EnvSource + ?Sized>(
             let msg = format!("failed to build HTTP client for {label}: {e}");
             log.warn(&msg);
             // Silent-fail = dispatch records Succeeded; return Failed instead.
-            return Some(PublisherOutcome::Failed(msg));
+            return PrSubmission::failed(msg);
         }
     };
     let result = client
@@ -461,7 +469,12 @@ fn create_pr_via_api_with_env<E: EnvSource + ?Sized>(
     match result {
         Ok(resp) if resp.status().is_success() => {
             log.status(&format!("submitted {label} PR via GitHub API"));
-            None
+            let url = serde_json::from_str::<serde_json::Value>(
+                &anodizer_core::http::body_of_blocking(resp),
+            )
+            .ok()
+            .and_then(|v| v.get("html_url")?.as_str().map(str::to_string));
+            PrSubmission::opened(url)
         }
         Ok(resp) => {
             let status = resp.status();
@@ -480,20 +493,23 @@ fn create_pr_via_api_with_env<E: EnvSource + ?Sized>(
                 } else {
                     log.warn(&pr_exists_skip_warn_message(label, head));
                 }
-                return Some(PublisherOutcome::PendingValidation);
+                return PrSubmission {
+                    outcome: Some(PublisherOutcome::PendingValidation),
+                    url: None,
+                };
             }
             let msg = format!(
                 "GitHub API PR creation for {label} returned {status} -- you may need to create the PR manually\n{body_text}"
             );
             log.warn(&msg);
-            Some(PublisherOutcome::Failed(msg))
+            PrSubmission::failed(msg)
         }
         Err(e) => {
             let msg = format!(
                 "GitHub API PR creation for {label} failed: {e} -- you may need to create the PR manually"
             );
             log.warn(&msg);
-            Some(PublisherOutcome::Failed(msg))
+            PrSubmission::failed(msg)
         }
     }
 }
@@ -651,7 +667,7 @@ pub(crate) fn maybe_submit_pr(
     log: &StageLogger,
     token: Option<&str>,
     render: &dyn Fn(&str) -> anyhow::Result<String>,
-) -> anyhow::Result<Option<PublisherOutcome>> {
+) -> anyhow::Result<PrSubmission> {
     maybe_submit_pr_with_env(
         repo_path,
         repo,
@@ -686,7 +702,7 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
     token: Option<&str>,
     render: &dyn Fn(&str) -> anyhow::Result<String>,
     env: &E,
-) -> anyhow::Result<Option<PublisherOutcome>> {
+) -> anyhow::Result<PrSubmission> {
     let PrOrigin {
         repo_owner,
         repo_name,
@@ -695,7 +711,7 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
     } = *origin;
     let pr_cfg = match repo.and_then(|r| r.pull_request.as_ref()) {
         Some(pr) if pr.enabled == Some(true) => pr,
-        _ => return Ok(None),
+        _ => return Ok(PrSubmission::default()),
     };
     let render = |s: &str| render(s).unwrap_or_else(|_| s.to_string());
     let render = &render;
@@ -784,7 +800,7 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
                 log.warn(&msg);
                 // Silent-fail (returning None here) would let dispatch
                 // record Succeeded for a publisher that did no work.
-                Some(PublisherOutcome::Failed(msg))
+                PrSubmission::failed(msg)
             }
         },
     )
@@ -861,7 +877,7 @@ pub(crate) fn submit_pr_via_gh_with_opts(
     label: &str,
     log: &StageLogger,
     opts: SubmitPrOpts,
-) -> Option<PublisherOutcome> {
+) -> PrSubmission {
     submit_pr_via_gh_with_opts_with_env(
         repo_path,
         upstream_repo,
@@ -894,7 +910,7 @@ pub(crate) fn submit_pr_via_gh_with_opts_with_env<E: EnvSource + ?Sized>(
     log: &StageLogger,
     opts: SubmitPrOpts,
     env: &E,
-) -> Option<PublisherOutcome> {
+) -> PrSubmission {
     let token = anodizer_core::git::resolve_github_token_with_env(opts.token.as_deref(), &|key| {
         env.var(key)
     });
@@ -940,7 +956,7 @@ pub(crate) fn submit_pr_via_gh_with_opts_with_env<E: EnvSource + ?Sized>(
                     "cannot parse upstream repo slug '{upstream_repo}' for the {label} API fallback"
                 );
                 log.warn(&msg);
-                Some(PublisherOutcome::Failed(msg))
+                PrSubmission::failed(msg)
             }
         }
         PrTransport::NoneAvailable => {
@@ -950,7 +966,7 @@ pub(crate) fn submit_pr_via_gh_with_opts_with_env<E: EnvSource + ?Sized>(
             log.warn(&msg);
             // Silent-fail (returning None here) would let dispatch
             // record Succeeded for a publisher that did no work.
-            Some(PublisherOutcome::Failed(msg))
+            PrSubmission::failed(msg)
         }
     }
 }
@@ -958,12 +974,12 @@ pub(crate) fn submit_pr_via_gh_with_opts_with_env<E: EnvSource + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::super::pr_token::configured_pr_token;
-    #[cfg(unix)]
-    use super::maybe_submit_pr_with_env;
     use super::{
         PrOrigin, PrSpec, PrTransport, Upstream, classify_pr_transport, create_pr_via_api_with_env,
-        gh_is_available, maybe_submit_pr, sync_fork,
+        gh_is_available, maybe_submit_pr, pull_request_url_in, sync_fork,
     };
+    #[cfg(unix)]
+    use super::{create_pr_via_gh_cli, maybe_submit_pr_with_env};
     use anodizer_core::MapEnvSource;
     use anodizer_core::PublisherOutcome;
     #[cfg(unix)]
@@ -1140,7 +1156,8 @@ mod tests {
                 .as_deref(),
             &no_render,
         )
-        .expect("the PR token templates render");
+        .expect("the PR token templates render")
+        .outcome;
         assert!(
             outcome.is_none(),
             "repo=None must short-circuit before any git/gh/HTTP work"
@@ -1172,7 +1189,8 @@ mod tests {
                 .as_deref(),
             &no_render,
         )
-        .expect("the PR token templates render");
+        .expect("the PR token templates render")
+        .outcome;
         assert!(
             outcome.is_none(),
             "pull_request=None must short-circuit before any git/gh/HTTP work"
@@ -1207,7 +1225,8 @@ mod tests {
                 .as_deref(),
             &no_render,
         )
-        .expect("the PR token templates render");
+        .expect("the PR token templates render")
+        .outcome;
         assert!(
             outcome.is_none(),
             "pull_request.enabled=false must short-circuit before any git/gh/HTTP work"
@@ -1243,7 +1262,8 @@ mod tests {
                 .as_deref(),
             &no_render,
         )
-        .expect("the PR token templates render");
+        .expect("the PR token templates render")
+        .outcome;
         assert!(
             outcome.is_none(),
             "pull_request.enabled=None must short-circuit before any git/gh/HTTP work"
@@ -1287,9 +1307,120 @@ mod tests {
             owner: "o",
             name: "n",
         };
-        let outcome =
+        let submission =
             create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env);
-        assert!(outcome.is_none(), "201 must be the success path");
+        assert!(submission.outcome.is_none(), "201 must be the success path");
+        assert_eq!(
+            submission.url, None,
+            "a body naming no html_url yields no URL"
+        );
+    }
+
+    /// The 201 body is GitHub's pull request object; its `html_url` is the
+    /// URL the run summary names.
+    #[test]
+    fn create_pr_via_api_reads_the_pull_request_url_from_the_201_body() {
+        let body = "{\"number\":7,\"html_url\":\"https://github.com/o/n/pull/7\"}";
+        let response = format!(
+            "HTTP/1.1 201 Created\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![response.leak()]);
+        let env = env_with_base(&format!("http://{addr}"));
+        let log = quiet_log();
+        let upstream = Upstream {
+            owner: "o",
+            name: "n",
+        };
+        let submission =
+            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env);
+        assert!(submission.outcome.is_none(), "201 must be the success path");
+        assert_eq!(
+            submission.url.as_deref(),
+            Some("https://github.com/o/n/pull/7")
+        );
+    }
+
+    /// `gh pr create` prints the new pull request's URL as its last stdout
+    /// line; its "already exists" refusal names the open one on stderr. Any
+    /// other text yields no URL.
+    #[test]
+    fn the_pull_request_url_is_the_last_pull_link_in_the_output() {
+        assert_eq!(
+            pull_request_url_in(
+                "Creating pull request for o:b into main in o/n\n\nhttps://github.com/o/n/pull/12\n"
+            )
+            .as_deref(),
+            Some("https://github.com/o/n/pull/12")
+        );
+        assert_eq!(
+            pull_request_url_in(
+                "a pull request for branch \"o:b\" into branch \"main\" already exists:\n\
+                 https://github.com/o/n/pull/3\n"
+            )
+            .as_deref(),
+            Some("https://github.com/o/n/pull/3")
+        );
+        assert_eq!(
+            pull_request_url_in("1 uncommitted change on the branch\n"),
+            None
+        );
+        assert_eq!(
+            pull_request_url_in("https://github.com/o/n/pull/new/b\n"),
+            None,
+            "the compare page is not a pull request"
+        );
+    }
+
+    /// With gh on PATH, the URL `gh pr create` prints is the one returned,
+    /// and the "already exists" refusal still yields the open PR's URL beside
+    /// its PendingValidation outcome.
+    #[cfg(unix)]
+    #[test]
+    #[serial(path_env)]
+    fn gh_pr_create_returns_the_url_it_printed() {
+        let work = tempfile::tempdir().expect("tempdir");
+        let log = quiet_log();
+        let spec = spec(false);
+        {
+            let tools = FakeToolDir::new();
+            tools
+                .tool("gh")
+                .stdout("Creating pull request for f:b into main in o/n\n\nhttps://github.com/o/n/pull/44\n")
+                .exit(0)
+                .install();
+            let _guard = tools.activate();
+            let submission = create_pr_via_gh_cli(work.path(), "o/n", &spec, None, "label", &log);
+            assert!(submission.outcome.is_none(), "gh exit 0 is a success");
+            assert_eq!(
+                submission.url.as_deref(),
+                Some("https://github.com/o/n/pull/44")
+            );
+        }
+        {
+            let tools = FakeToolDir::new();
+            tools
+                .tool("gh")
+                .script(
+                    "printf '%s\\n%s\\n' 'a pull request for branch \"f:b\" into branch \"main\" already exists:' \
+                     'https://github.com/o/n/pull/2' >&2\nexit 1\n",
+                )
+                .install();
+            let _guard = tools.activate();
+            let submission = create_pr_via_gh_cli(work.path(), "o/n", &spec, None, "label", &log);
+            assert!(
+                matches!(
+                    submission.outcome,
+                    Some(PublisherOutcome::PendingValidation)
+                ),
+                "got {:?}",
+                submission.outcome
+            );
+            assert_eq!(
+                submission.url.as_deref(),
+                Some("https://github.com/o/n/pull/2")
+            );
+        }
     }
 
     /// 422 with "already exists" + `update_existing_pr=false` is the
@@ -1312,7 +1443,7 @@ mod tests {
             name: "n",
         };
         let outcome =
-            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env);
+            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env).outcome;
         assert!(
             matches!(outcome, Some(PublisherOutcome::PendingValidation)),
             "422 already-exists must map to PendingValidation; got {outcome:?}"
@@ -1340,7 +1471,7 @@ mod tests {
             name: "n",
         };
         let outcome =
-            create_pr_via_api_with_env(&upstream, &spec(true), "tok", "label", &log, &env);
+            create_pr_via_api_with_env(&upstream, &spec(true), "tok", "label", &log, &env).outcome;
         assert!(
             matches!(outcome, Some(PublisherOutcome::PendingValidation)),
             "API transport cannot force-push; update_existing_pr=true \
@@ -1366,7 +1497,7 @@ mod tests {
             name: "n",
         };
         let outcome =
-            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env);
+            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env).outcome;
         assert!(
             matches!(outcome, Some(PublisherOutcome::Failed(_))),
             "500 must map to Failed (silent-skip would let dispatch \
@@ -1392,7 +1523,7 @@ mod tests {
             name: "n",
         };
         let outcome =
-            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env);
+            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env).outcome;
         match outcome {
             Some(PublisherOutcome::Failed(msg)) => {
                 assert!(msg.contains("401"), "Failed msg must cite status: {msg}");
@@ -1416,7 +1547,7 @@ mod tests {
             name: "n",
         };
         let outcome =
-            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env);
+            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env).outcome;
         assert!(matches!(outcome, Some(PublisherOutcome::Failed(_))));
     }
 
@@ -1433,7 +1564,7 @@ mod tests {
             name: "n",
         };
         let outcome =
-            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env);
+            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env).outcome;
         assert!(outcome.is_none(), "any 2xx is success path");
     }
 
@@ -1458,7 +1589,7 @@ mod tests {
             name: "n",
         };
         let outcome =
-            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env);
+            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env).outcome;
         assert!(
             matches!(outcome, Some(PublisherOutcome::Failed(_))),
             "422 without 'already exists' phrase is Failed; got {outcome:?}"
@@ -1479,7 +1610,7 @@ mod tests {
             name: "n",
         };
         let outcome =
-            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env);
+            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env).outcome;
         assert!(
             matches!(outcome, Some(PublisherOutcome::Failed(_))),
             "transport failure must map to Failed; got {outcome:?}"
@@ -1523,7 +1654,8 @@ mod tests {
                 .as_deref(),
             &no_render,
         )
-        .expect("the PR token templates render");
+        .expect("the PR token templates render")
+        .outcome;
         assert!(outcome.is_none());
     }
 
@@ -1827,7 +1959,8 @@ mod tests {
             &no_render,
             &env,
         )
-        .expect("the PR token templates render");
+        .expect("the PR token templates render")
+        .outcome;
         // 201 from the responder is the success path.
         assert!(
             outcome.is_none(),
@@ -1918,7 +2051,8 @@ mod tests {
             &no_render,
             &env,
         )
-        .expect("the PR token templates render");
+        .expect("the PR token templates render")
+        .outcome;
         assert!(
             outcome.is_none(),
             "201 PR create is success; got {outcome:?}"
@@ -1995,7 +2129,8 @@ mod tests {
             &no_render,
             &env,
         )
-        .expect("the PR token templates render");
+        .expect("the PR token templates render")
+        .outcome;
         assert!(outcome.is_none(), "201 is success; got {outcome:?}");
 
         let entries = req_log.lock().unwrap();
@@ -2067,7 +2202,8 @@ mod tests {
             &no_render,
             &env,
         )
-        .expect("the PR token templates render");
+        .expect("the PR token templates render")
+        .outcome;
         assert!(
             outcome.is_none(),
             "env-resolved token must reach the API transport (201); got {outcome:?}"
@@ -2129,7 +2265,8 @@ mod tests {
             &no_render,
             &env,
         )
-        .expect("the PR token templates render");
+        .expect("the PR token templates render")
+        .outcome;
         match outcome {
             Some(PublisherOutcome::Failed(msg)) => {
                 assert!(
@@ -2204,7 +2341,8 @@ mod tests {
             &render,
             &env,
         )
-        .expect("the PR token templates render");
+        .expect("the PR token templates render")
+        .outcome;
         assert!(outcome.is_none(), "201 is a success; got {outcome:?}");
         let entries = req_log.lock().unwrap();
         assert_eq!(entries.len(), 1, "exactly one PR-create POST expected");
@@ -2271,7 +2409,8 @@ mod tests {
             &no_render,
             &env,
         )
-        .expect("the PR token templates render");
+        .expect("the PR token templates render")
+        .outcome;
         assert!(outcome.is_none(), "gh exit 0 is a success; got {outcome:?}");
         let calls = tools.calls("gh");
         assert!(
@@ -2314,7 +2453,7 @@ mod tests {
             update_existing_pr: false,
         };
         let outcome =
-            create_pr_via_api_with_env(&upstream, &pr_spec, "tok", "homebrew", &log, &env);
+            create_pr_via_api_with_env(&upstream, &pr_spec, "tok", "homebrew", &log, &env).outcome;
         assert!(outcome.is_none(), "201 is the success path");
 
         let entries = log_handle.lock().unwrap();
@@ -2357,7 +2496,8 @@ mod tests {
             draft: false,
             update_existing_pr: false,
         };
-        let outcome = create_pr_via_api_with_env(&upstream, &pr_spec, "tok", "label", &log, &env);
+        let outcome =
+            create_pr_via_api_with_env(&upstream, &pr_spec, "tok", "label", &log, &env).outcome;
         assert!(outcome.is_none());
         let entries = log_handle.lock().unwrap();
         let payload: serde_json::Value = serde_json::from_str(&entries[0].body).expect("JSON body");
@@ -2428,7 +2568,8 @@ mod tests {
             &render,
             &env,
         )
-        .expect("the PR token templates render");
+        .expect("the PR token templates render")
+        .outcome;
         assert!(
             outcome.is_none(),
             "201 is the success path; got {outcome:?}"

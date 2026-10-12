@@ -725,6 +725,7 @@ mod tests {
         let r1 = bare_with_one_commit();
         let targets = vec![
             ScoopTargetSnapshot {
+                pr_url: None,
                 target: "a".into(),
                 repo_url: r0.0.clone(),
                 branch: Some("master".into()),
@@ -732,6 +733,7 @@ mod tests {
                 commit: Some(head_of(&r0.0)),
             },
             ScoopTargetSnapshot {
+                pr_url: None,
                 target: "b".into(),
                 repo_url: r1.0.clone(),
                 branch: Some("master".into()),
@@ -849,6 +851,7 @@ mod tests {
         ctx.with_log_capture(cap.clone());
 
         let targets = vec![ScoopTargetSnapshot {
+            pr_url: None,
             target: "bad".into(),
             // Local path that does not exist — clone fails, surfacing a
             // per-target failure warn.

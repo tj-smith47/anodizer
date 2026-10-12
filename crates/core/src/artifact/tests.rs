@@ -1777,6 +1777,50 @@ fn a_single_crates_pushed_image_survives_the_manifest_round_trip() {
     assert_eq!(pushed[0].digest.as_deref(), Some("sha256:aaa"));
 }
 
+/// The signed marker is written by the docker sign stage after the image's
+/// signature was attached (and verified), and a `--publish-only` run reads
+/// it back from `artifacts.json`. Marking by reference reaches every image
+/// kind at that reference, an unmarked image is not reported, and a
+/// reference marked on two artifacts is reported once.
+#[test]
+fn a_signed_image_survives_the_manifest_round_trip() {
+    let mut reg = ArtifactRegistry::default();
+    reg.add(image_artifact(
+        ArtifactKind::DockerImageV2,
+        "ghcr.io/owner/app:1.0.0",
+        "app",
+        Some("sha256:aaa"),
+        true,
+    ));
+    reg.add(image_artifact(
+        ArtifactKind::DockerManifest,
+        "ghcr.io/owner/app:1.0.0",
+        "app",
+        None,
+        true,
+    ));
+    reg.add(image_artifact(
+        ArtifactKind::DockerImageV2,
+        "ghcr.io/owner/app:local",
+        "app",
+        None,
+        false,
+    ));
+    assert!(reg.signed_images().is_empty());
+    reg.mark_image_signed(std::path::Path::new("ghcr.io/owner/app:1.0.0"));
+    let reloaded = round_trip(&reg);
+    assert_eq!(reloaded.signed_images(), vec!["ghcr.io/owner/app:1.0.0"]);
+    let marked = reloaded
+        .all()
+        .iter()
+        .filter(|a| a.metadata.get(SIGNED_META).map(String::as_str) == Some(SIGNED_VALUE))
+        .count();
+    assert_eq!(
+        marked, 2,
+        "both artifacts at the reference carry the marker"
+    );
+}
+
 /// Lockstep config: several crates on one version, each with its own image,
 /// plus a multi-arch manifest list. Every pushed reference is reported once;
 /// an image whose build never pushed (a snapshot or dry run) is not.

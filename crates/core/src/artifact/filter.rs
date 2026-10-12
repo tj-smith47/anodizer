@@ -125,6 +125,19 @@ pub const PUSHED_META: &str = "pushed";
 /// The only value [`PUSHED_META`] is ever written with.
 pub const PUSHED_VALUE: &str = "true";
 
+/// Metadata key marking an image artifact whose registry signature was
+/// attached and, where the config verifies, verified.
+///
+/// The docker sign stage files no `publish_report` row either, so the image
+/// itself records that it was signed. Written after the sign (and the
+/// verification that follows it) returned, so a dry run, a failed sign and a
+/// failed verification leave the key unset, and it rides `artifacts.json`
+/// like [`PUSHED_META`]. Value: [`SIGNED_VALUE`].
+pub const SIGNED_META: &str = "signed";
+
+/// The only value [`SIGNED_META`] is ever written with.
+pub const SIGNED_VALUE: &str = "true";
+
 /// `true` when `artifact` is a packaging BUNDLE that lives on disk as a
 /// DIRECTORY rather than a single file — currently the macOS `.app` bundle
 /// (registered as [`ArtifactKind::Installer`] with `format = appbundle`).

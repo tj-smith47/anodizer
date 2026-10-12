@@ -44,6 +44,14 @@ pub(crate) enum CommitOutcome {
 }
 
 impl CommitOutcome {
+    /// The commit the push created, `None` when nothing was pushed.
+    pub(crate) fn commit(&self) -> Option<&str> {
+        match self {
+            CommitOutcome::Pushed { commit } => Some(commit),
+            CommitOutcome::NoChanges => None,
+        }
+    }
+
     pub(crate) fn is_pushed(&self) -> bool {
         matches!(self, Self::Pushed { .. })
     }

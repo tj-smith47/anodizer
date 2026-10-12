@@ -403,7 +403,14 @@ pub(super) fn run_real(
                  is already open (#{}) — treating as in-flight, not re-pushing",
                 nums[0]
             ));
-            return Ok(schemastore_evidence(&fork_owner, &branch));
+            return Ok(schemastore_evidence(
+                &fork_owner,
+                &branch,
+                Some(format!(
+                    "https://github.com/{UPSTREAM_OWNER}/{UPSTREAM_REPO}/pull/{}",
+                    nums[0]
+                )),
+            ));
         }
         Ok(_) => {}
         Err(e) => log.warn(&format!(
@@ -441,11 +448,11 @@ pub(super) fn run_real(
             token: pr_token,
         },
     );
-    if let Some(outcome) = pr_outcome {
+    if let Some(outcome) = pr_outcome.outcome {
         ctx.record_publisher_outcome(outcome);
     }
 
-    Ok(schemastore_evidence(&fork_owner, &branch))
+    Ok(schemastore_evidence(&fork_owner, &branch, pr_outcome.url))
 }
 
 /// Reset the cloned fork's work tree onto upstream `SchemaStore/schemastore`'s
@@ -658,7 +665,11 @@ pub(super) fn schemastore_branch(version: &str) -> String {
 }
 
 /// Build the PR-target evidence so a later `anodizer tag rollback` can close the PR.
-pub(super) fn schemastore_evidence(fork_owner: &str, branch: &str) -> PublishEvidence {
+pub(super) fn schemastore_evidence(
+    fork_owner: &str,
+    branch: &str,
+    pr_url: Option<String>,
+) -> PublishEvidence {
     let mut evidence = PublishEvidence::new("schemastore");
     evidence.extra = anodizer_core::PublishEvidenceExtra::Schemastore(
         anodizer_core::publish_evidence::SchemastoreExtra {
@@ -668,6 +679,7 @@ pub(super) fn schemastore_evidence(fork_owner: &str, branch: &str) -> PublishEvi
                 fork_owner: fork_owner.to_string(),
                 branch: branch.to_string(),
                 token_env_var: Some(TOKEN_ENV_VAR.to_string()),
+                pr_url,
             }],
         },
     );

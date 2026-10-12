@@ -2472,6 +2472,46 @@ mod live_pr {
         drop(bare);
     }
 
+    /// The URL `gh pr create` printed rides from the submission up to the
+    /// target the publisher records for the crate.
+    #[cfg(unix)]
+    #[test]
+    #[serial(path_env)]
+    fn publish_records_the_opened_pr_url_on_the_crates_target() {
+        use anodizer_core::Publisher;
+        let (_tools, _guard) = gh_present();
+        let (bare_url, bare) = init_bare_fork();
+        let (addr, _req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/microsoft/winget-pkgs",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 27\r\n\r\n{\"default_branch\":\"master\"}",
+            times: Some(1),
+        }]);
+        let mut c = live_winget_crate("widget", &bare_url);
+        if let Some(w) = c.publish.as_mut().and_then(|p| p.winget.as_mut())
+            && let Some(r) = w.repository.as_mut()
+        {
+            r.pull_request = None;
+        }
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        inject_api_base(&mut ctx, &addr);
+        add_windows_zip(&mut ctx, "widget", &"9".repeat(64));
+
+        let evidence = WingetPublisher::new().run(&mut ctx).expect("publish ok");
+        match &evidence.extra {
+            anodizer_core::PublishEvidenceExtra::Winget(x) => {
+                assert_eq!(x.winget_targets.len(), 1, "{:?}", x.winget_targets);
+                assert_eq!(x.winget_targets[0].package_id, "AcmeCo.widget");
+                assert_eq!(
+                    x.winget_targets[0].pr_url.as_deref(),
+                    Some("https://github.com/microsoft/winget-pkgs/pull/1")
+                );
+            }
+            other => panic!("expected winget evidence, got {other:?}"),
+        }
+        drop(bare);
+    }
+
     /// A configured `pull_request.base` overrides the canonical upstream:
     /// the `gh pr create` invocation must target the configured mirror
     /// slug (`acme/winget-mirror`), not `microsoft/winget-pkgs`. Exercises

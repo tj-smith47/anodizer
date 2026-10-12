@@ -786,6 +786,7 @@ mod publisher_tests {
         e.extra =
             anodizer_core::PublishEvidenceExtra::Nix(anodizer_core::publish_evidence::NixExtra {
                 nix_targets: vec![NixTarget {
+                    pr_url: None,
                     target: "demo".into(),
                     repo_url: "https://github.com/acme/nixpkgs-overlay.git".into(),
                     branch: Some("master".into()),
@@ -808,6 +809,7 @@ mod publisher_tests {
     #[test]
     fn nix_target_extra_roundtrips() {
         let original = vec![NixTarget {
+            pr_url: None,
             target: "demo".into(),
             repo_url: "https://github.com/acme/nixpkgs-overlay.git".into(),
             branch: Some("master".into()),
@@ -993,6 +995,7 @@ mod publisher_tests {
         // the second `git revert HEAD` doesn't undo the first.
         let targets = vec![
             NixTarget {
+                pr_url: None,
                 target: "alpha".into(),
                 repo_url: "https://github.com/acme/nixpkgs-overlay.git".into(),
                 branch: Some("master".into()),
@@ -1000,6 +1003,7 @@ mod publisher_tests {
                 commit: None,
             },
             NixTarget {
+                pr_url: None,
                 target: "beta".into(),
                 repo_url: "https://github.com/acme/nixpkgs-overlay.git".into(),
                 branch: Some("master".into()),

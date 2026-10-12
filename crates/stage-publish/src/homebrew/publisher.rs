@@ -99,7 +99,28 @@ pub(super) fn record_tap_push(
         branch: branch.map(str::to_string),
         token_env_var: Some("HOMEBREW_TAP_TOKEN".to_string()),
         commit: Some(commit.to_string()),
+        pr_url: None,
     }]));
+}
+
+/// Attach the pull request opened for the push recorded at `commit`. The
+/// push was recorded before the pull request existed, so its row is amended
+/// in place rather than recorded again.
+pub(super) fn record_tap_pr_url(ctx: &mut Context, commit: Option<&str>, url: Option<String>) {
+    let (Some(commit), Some(url)) = (commit, url) else {
+        return;
+    };
+    ctx.amend_committed_work(|evidence| {
+        if let PublishEvidenceExtra::Homebrew(x) = &mut evidence.extra {
+            for t in x
+                .homebrew_targets
+                .iter_mut()
+                .filter(|t| t.commit.as_deref() == Some(commit))
+            {
+                t.pr_url = Some(url.clone());
+            }
+        }
+    });
 }
 
 /// The evidence for the taps `targets` names.
@@ -803,6 +824,7 @@ mod publisher_tests {
         let mut e = PublishEvidence::new("homebrew");
         e.extra = PublishEvidenceExtra::Homebrew(HomebrewExtra {
             homebrew_targets: vec![HomebrewTarget {
+                pr_url: None,
                 target: "demo".into(),
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: Some("main".into()),
@@ -834,6 +856,7 @@ mod publisher_tests {
         // and check the decode path returns the same Vec.
         let original = vec![
             HomebrewTarget {
+                pr_url: None,
                 target: "demo".into(),
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: Some("main".into()),
@@ -841,6 +864,7 @@ mod publisher_tests {
                 commit: None,
             },
             HomebrewTarget {
+                pr_url: None,
                 target: "demo-cask".into(),
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: None,
@@ -903,6 +927,7 @@ mod publisher_tests {
         // remote (covered by `git_revert_and_push_*` tests).
         let targets = vec![
             HomebrewTarget {
+                pr_url: None,
                 target: "alpha".into(),
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: Some("main".into()),
@@ -910,6 +935,7 @@ mod publisher_tests {
                 commit: None,
             },
             HomebrewTarget {
+                pr_url: None,
                 target: "beta".into(),
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: Some("main".into()),
@@ -917,6 +943,7 @@ mod publisher_tests {
                 commit: None,
             },
             HomebrewTarget {
+                pr_url: None,
                 target: "gamma".into(),
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: Some("main".into()),
@@ -936,6 +963,7 @@ mod publisher_tests {
         // separate revert targets.
         let cross_branch = vec![
             HomebrewTarget {
+                pr_url: None,
                 target: "alpha".into(),
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: Some("main".into()),
@@ -943,6 +971,7 @@ mod publisher_tests {
                 commit: None,
             },
             HomebrewTarget {
+                pr_url: None,
                 target: "beta".into(),
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: Some("legacy".into()),
@@ -956,6 +985,7 @@ mod publisher_tests {
         // Two pushes to one branch are two commits, each reverted once.
         let two_commits = vec![
             HomebrewTarget {
+                pr_url: None,
                 target: "alpha".into(),
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: Some("main".into()),
@@ -963,6 +993,7 @@ mod publisher_tests {
                 commit: Some("aaa".into()),
             },
             HomebrewTarget {
+                pr_url: None,
                 target: "beta".into(),
                 repo_url: "https://github.com/acme/homebrew-tap.git".into(),
                 branch: Some("main".into()),

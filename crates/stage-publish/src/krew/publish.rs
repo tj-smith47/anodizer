@@ -346,8 +346,23 @@ pub fn publish_to_krew(
         )
     };
 
+    if let Some(url) = pr_outcome.url {
+        // The push was recorded before the pull request existed, so its
+        // row is amended rather than recorded again.
+        ctx.amend_committed_work(|evidence| {
+            if let anodizer_core::PublishEvidenceExtra::Krew(x) = &mut evidence.extra {
+                for t in x
+                    .krew_targets
+                    .iter_mut()
+                    .filter(|t| t.branch == branch_name)
+                {
+                    t.pr_url = Some(url.clone());
+                }
+            }
+        });
+    }
     // Surface PR-already-exists skips to the dispatch summary table.
-    if let Some(outcome) = pr_outcome {
+    if let Some(outcome) = pr_outcome.outcome {
         ctx.record_publisher_outcome(outcome);
     }
 

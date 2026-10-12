@@ -291,6 +291,44 @@ impl ArtifactRegistry {
             .collect()
     }
 
+    /// Mark every image artifact at `reference` as signed
+    /// ([`SIGNED_META`](super::SIGNED_META)). The docker sign stage selects
+    /// its images by path, which for an image is the reference it was pushed
+    /// under, so the same key finds them here.
+    pub fn mark_image_signed(&mut self, reference: &std::path::Path) {
+        for a in self.artifacts.iter_mut().filter(|a| {
+            matches!(
+                a.kind,
+                ArtifactKind::DockerImage
+                    | ArtifactKind::DockerImageV2
+                    | ArtifactKind::DockerManifest
+            ) && a.path == reference
+        }) {
+            a.metadata.insert(
+                super::SIGNED_META.to_string(),
+                super::SIGNED_VALUE.to_string(),
+            );
+        }
+    }
+
+    /// Every image reference this run SIGNED, in registration order and
+    /// de-duplicated — the images carrying
+    /// [`SIGNED_META`](super::SIGNED_META), which a dry run, a failed sign
+    /// and a failed verification never write.
+    pub fn signed_images(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for a in &self.artifacts {
+            if a.metadata.get(super::SIGNED_META).map(String::as_str) != Some(super::SIGNED_VALUE) {
+                continue;
+            }
+            let reference = a.path.to_string_lossy().into_owned();
+            if !out.contains(&reference) {
+                out.push(reference);
+            }
+        }
+        out
+    }
+
     pub fn by_kind(&self, kind: ArtifactKind) -> Vec<&Artifact> {
         self.artifacts.iter().filter(|a| a.kind == kind).collect()
     }

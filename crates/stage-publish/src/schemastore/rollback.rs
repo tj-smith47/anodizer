@@ -179,6 +179,7 @@ mod tests {
 
     fn target(branch: &str) -> SchemastoreTargetSnapshot {
         SchemastoreTargetSnapshot {
+            pr_url: None,
             upstream_owner: "SchemaStore".to_string(),
             upstream_repo: "schemastore".to_string(),
             fork_owner: "acme".to_string(),
@@ -202,6 +203,7 @@ mod tests {
         assert!(decode_schemastore_targets(&PublishEvidenceExtra::Empty).is_empty());
         let krew = PublishEvidenceExtra::Krew(KrewExtra {
             krew_targets: vec![KrewTargetSnapshot {
+                pr_url: None,
                 target: "foo".to_string(),
                 upstream_owner: "kubernetes-sigs".to_string(),
                 upstream_repo: "krew-index".to_string(),

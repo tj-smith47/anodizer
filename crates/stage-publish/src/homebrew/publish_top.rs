@@ -774,7 +774,8 @@ pub fn publish_top_level_homebrew_casks(
         // on the `Some(outcome)` arm; the `None` (success) arm leaves
         // the slot untouched. Iteration order across casks is
         // therefore irrelevant.
-        if let Some(outcome) = pr_outcome {
+        super::publisher::record_tap_pr_url(ctx, outcome.commit(), pr_outcome.url);
+        if let Some(outcome) = pr_outcome.outcome {
             ctx.record_publisher_outcome(outcome);
         }
     }

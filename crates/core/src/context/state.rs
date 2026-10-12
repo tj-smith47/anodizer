@@ -161,6 +161,15 @@ impl Context {
         }
     }
 
+    /// Amend the evidence recorded so far — the pull request URL a push
+    /// learned only after its record was taken, for one. A no-op when no
+    /// work has been recorded yet.
+    pub fn amend_committed_work(&mut self, amend: impl FnOnce(&mut crate::PublishEvidence)) {
+        if let Some(pending) = self.pending_evidence.as_mut() {
+            amend(pending);
+        }
+    }
+
     /// Dispatch-side consumer: take the partial evidence (if any) a
     /// publisher recorded before failing. Single-shot — empty after this
     /// call.

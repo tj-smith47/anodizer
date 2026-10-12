@@ -117,6 +117,7 @@ fn scoop_target_extra_carries_no_secret_material() {
     e.extra =
         anodizer_core::PublishEvidenceExtra::Scoop(anodizer_core::publish_evidence::ScoopExtra {
             scoop_targets: vec![ScoopTarget {
+                pr_url: None,
                 target: "demo".into(),
                 repo_url: "https://github.com/acme/scoop-bucket.git".into(),
                 branch: Some("main".into()),
@@ -150,6 +151,7 @@ fn commit_outcome_is_pushed() {
 #[test]
 fn scoop_target_extra_roundtrips() {
     let original = vec![ScoopTarget {
+        pr_url: None,
         target: "demo".into(),
         repo_url: "https://github.com/acme/scoop-bucket.git".into(),
         branch: Some("main".into()),
@@ -205,6 +207,7 @@ fn scoop_rollback_dedups_shared_bucket() {
     // is reverted once. Mirror of homebrew_rollback_dedups_shared_tap.
     let targets = vec![
         ScoopTarget {
+            pr_url: None,
             target: "alpha".into(),
             repo_url: "https://github.com/acme/scoop-bucket.git".into(),
             branch: Some("main".into()),
@@ -212,6 +215,7 @@ fn scoop_rollback_dedups_shared_bucket() {
             commit: None,
         },
         ScoopTarget {
+            pr_url: None,
             target: "beta".into(),
             repo_url: "https://github.com/acme/scoop-bucket.git".into(),
             branch: Some("main".into()),
