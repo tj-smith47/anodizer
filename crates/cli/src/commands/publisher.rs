@@ -316,10 +316,13 @@ pub fn run_publishers(
                 return Err(errs.remove(0));
             }
         }
-        ran.push(CustomPublisherRun {
-            name: label.to_string(),
-            artifacts: matching.len(),
-        });
+        // A dry run spawned nothing, so it ran no publisher.
+        if !dry_run {
+            ran.push(CustomPublisherRun {
+                name: label.to_string(),
+                artifacts: matching.len(),
+            });
+        }
     }
     Ok(ran)
 }
@@ -836,10 +839,10 @@ mod tests {
             1,
             None,
         );
+        let ran = result.unwrap_or_else(|e| panic!("dry-run should not execute commands: {e:?}"));
         assert!(
-            result.is_ok(),
-            "dry-run should not execute commands: {:?}",
-            result.err()
+            ran.is_empty(),
+            "a dry run spawned nothing, so it reports no publisher as run: {ran:?}"
         );
     }
 

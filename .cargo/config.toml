@@ -22,6 +22,10 @@ GIT_CONFIG_KEY_2 = { value = "core.hooksPath", force = true }
 GIT_CONFIG_VALUE_2 = { value = ".git/hooks", force = true }
 GIT_CONFIG_KEY_3 = { value = "init.defaultBranch", force = true }
 GIT_CONFIG_VALUE_3 = { value = "master", force = true }
+# An empty value is read as unset by the job-summary sink, so a test whose
+# fixture publishes something cannot append to the CI job's own summary
+# page. `force` because GitHub Actions sets the variable on every step.
+GITHUB_STEP_SUMMARY = { value = "", force = true }
 
 # Windows MSVC determinism. MSVC-only flags (`link-arg=/...`) must be
 # scoped per-target — `[build] rustflags` would forward them to lld /

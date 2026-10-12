@@ -1006,6 +1006,9 @@ mod summary_tests {
             ..Default::default()
         };
         let mut ctx = Context::new(config, opts);
+        // Sealed: a succeeded row renders a job-summary line, and the
+        // runner's own GITHUB_STEP_SUMMARY must never receive it.
+        ctx.set_env_source(anodizer_core::MapEnvSource::new());
         ctx.template_vars_mut().set("Tag", "v1.2.3");
         // A real-release version so the non-release guard (now wired into
         // AnnounceStage::run) passes and the summary/gate path under test runs.
