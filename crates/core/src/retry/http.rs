@@ -72,54 +72,82 @@ where
     M: Fn(reqwest::StatusCode, &str) -> String,
 {
     use anyhow::Context as _;
-    retry_sync_deadline(rlog, policy, deadline, |attempt| {
-        match send(attempt) {
-            Ok(resp) => {
-                let status = resp.status();
-                let succeeded = match success_class {
-                    SuccessClass::Strict => status.is_success(),
-                    SuccessClass::AllowRedirects => status.is_success() || status.is_redirection(),
-                };
-                let body = resp
-                    .text()
-                    .unwrap_or_else(|e| format!("<failed to read body: {e}>"));
-                if succeeded {
-                    Ok((status, body))
-                } else {
-                    let msg = error_msg(status, &body);
-                    let inner = anyhow::anyhow!("{msg}");
-                    let wrapped = anyhow::Error::new(HttpError::new(
-                        std::io::Error::other(inner.to_string()),
-                        status.as_u16(),
-                    ))
-                    .context(inner);
-                    // `as_ref()` is the head of the chain; `is_retriable` walks
-                    // `.source()` to reach `HttpError`. `root_cause()` would
-                    // unwrap past `HttpError` to the io::Error leaf and miss
-                    // the status. Pinned by
-                    // `classifier_5xx_via_anyhow_chain_uses_as_ref`.
-                    if is_retriable(wrapped.as_ref()) {
-                        Err(ControlFlow::Continue(wrapped))
+    retry_steps_sync(rlog, policy.max_attempts, deadline, |attempt| {
+        http_step(
+            policy,
+            attempt,
+            match send(attempt) {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let succeeded = match success_class {
+                        SuccessClass::Strict => status.is_success(),
+                        SuccessClass::AllowRedirects => {
+                            status.is_success() || status.is_redirection()
+                        }
+                    };
+                    let retry_after = rate_limit_retry_after(status.as_u16(), resp.headers());
+                    let body = resp
+                        .text()
+                        .unwrap_or_else(|e| format!("<failed to read body: {e}>"));
+                    if succeeded {
+                        Ok((status, body))
                     } else {
-                        Err(ControlFlow::Break(wrapped))
+                        let msg = error_msg(status, &body);
+                        let inner = anyhow::anyhow!("{msg}");
+                        let wrapped = anyhow::Error::new(
+                            HttpError::new(
+                                std::io::Error::other(inner.to_string()),
+                                status.as_u16(),
+                            )
+                            .with_retry_after(retry_after),
+                        )
+                        .context(inner);
+                        // `as_ref()` is the head of the chain; `is_retriable` walks
+                        // `.source()` to reach `HttpError`. `root_cause()` would
+                        // unwrap past `HttpError` to the io::Error leaf and miss
+                        // the status. Pinned by
+                        // `classifier_5xx_via_anyhow_chain_uses_as_ref`.
+                        if is_retriable(wrapped.as_ref()) {
+                            Err(ControlFlow::Continue(wrapped))
+                        } else {
+                            Err(ControlFlow::Break(wrapped))
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                // Transport-layer failure: always wrap in HttpError(status=0)
-                // so the chain-walking classifier can see network-error
-                // substrings via the inner io::Error message.
-                let err = anyhow::Error::new(HttpError::from_response(e, None))
-                    .context(format!("{}: HTTP transport error", rlog.desc()));
-                if is_retriable(err.as_ref()) {
-                    Err(ControlFlow::Continue(err))
-                } else {
-                    Err(ControlFlow::Break(err))
+                Err(e) => {
+                    // Transport-layer failure: always wrap in HttpError(status=0)
+                    // so the chain-walking classifier can see network-error
+                    // substrings via the inner io::Error message.
+                    let err = anyhow::Error::new(HttpError::from_response(e, None))
+                        .context(format!("{}: HTTP transport error", rlog.desc()));
+                    if is_retriable(err.as_ref()) {
+                        Err(ControlFlow::Continue(err))
+                    } else {
+                        Err(ControlFlow::Break(err))
+                    }
                 }
-            }
-        }
+            },
+        )
     })
     .with_context(|| format!("{}: exhausted retry attempts", rlog.desc()))
+}
+
+/// The HTTP wrappers' step: a retriable failure sleeps the wait the server
+/// asked for when the response carried one, else the policy's backoff.
+fn http_step<T>(
+    policy: &RetryPolicy,
+    attempt: u32,
+    result: Result<T, ControlFlow<anyhow::Error, anyhow::Error>>,
+) -> RetryStep<T, anyhow::Error> {
+    match result {
+        Ok(v) => RetryStep::Done(v),
+        Err(ControlFlow::Break(e)) => RetryStep::Fail(e),
+        Err(ControlFlow::Continue(e)) => RetryStep::Retry {
+            cause: e.to_string(),
+            delay: http_retry_after(&e).unwrap_or_else(|| policy.delay_for(attempt + 1)),
+            error: e,
+        },
+    }
 }
 
 /// Binary-body sibling of [`retry_http_blocking`] for endpoints whose success
@@ -165,44 +193,56 @@ where
     M: Fn(reqwest::StatusCode, &str) -> String,
 {
     use anyhow::Context as _;
-    retry_sync_deadline(rlog, policy, deadline, |attempt| match send(attempt) {
-        Ok(resp) => {
-            let status = resp.status();
-            let succeeded = match success_class {
-                SuccessClass::Strict => status.is_success(),
-                SuccessClass::AllowRedirects => status.is_success() || status.is_redirection(),
-            };
-            let bytes = resp
-                .bytes()
-                .map(|b| b.to_vec())
-                .unwrap_or_else(|e| format!("<failed to read body: {e}>").into_bytes());
-            if succeeded {
-                Ok((status, bytes))
-            } else {
-                let body_text = String::from_utf8_lossy(&bytes).into_owned();
-                let msg = error_msg(status, &body_text);
-                let inner = anyhow::anyhow!("{msg}");
-                let wrapped = anyhow::Error::new(HttpError::new(
-                    std::io::Error::other(inner.to_string()),
-                    status.as_u16(),
-                ))
-                .context(inner);
-                if is_retriable(wrapped.as_ref()) {
-                    Err(ControlFlow::Continue(wrapped))
-                } else {
-                    Err(ControlFlow::Break(wrapped))
+    retry_steps_sync(rlog, policy.max_attempts, deadline, |attempt| {
+        http_step(
+            policy,
+            attempt,
+            match send(attempt) {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let succeeded = match success_class {
+                        SuccessClass::Strict => status.is_success(),
+                        SuccessClass::AllowRedirects => {
+                            status.is_success() || status.is_redirection()
+                        }
+                    };
+                    let retry_after = rate_limit_retry_after(status.as_u16(), resp.headers());
+                    let bytes = resp
+                        .bytes()
+                        .map(|b| b.to_vec())
+                        .unwrap_or_else(|e| format!("<failed to read body: {e}>").into_bytes());
+                    if succeeded {
+                        Ok((status, bytes))
+                    } else {
+                        let body_text = String::from_utf8_lossy(&bytes).into_owned();
+                        let msg = error_msg(status, &body_text);
+                        let inner = anyhow::anyhow!("{msg}");
+                        let wrapped = anyhow::Error::new(
+                            HttpError::new(
+                                std::io::Error::other(inner.to_string()),
+                                status.as_u16(),
+                            )
+                            .with_retry_after(retry_after),
+                        )
+                        .context(inner);
+                        if is_retriable(wrapped.as_ref()) {
+                            Err(ControlFlow::Continue(wrapped))
+                        } else {
+                            Err(ControlFlow::Break(wrapped))
+                        }
+                    }
                 }
-            }
-        }
-        Err(e) => {
-            let err = anyhow::Error::new(HttpError::from_response(e, None))
-                .context(format!("{}: HTTP transport error", rlog.desc()));
-            if is_retriable(err.as_ref()) {
-                Err(ControlFlow::Continue(err))
-            } else {
-                Err(ControlFlow::Break(err))
-            }
-        }
+                Err(e) => {
+                    let err = anyhow::Error::new(HttpError::from_response(e, None))
+                        .context(format!("{}: HTTP transport error", rlog.desc()));
+                    if is_retriable(err.as_ref()) {
+                        Err(ControlFlow::Continue(err))
+                    } else {
+                        Err(ControlFlow::Break(err))
+                    }
+                }
+            },
+        )
     })
     .with_context(|| format!("{}: exhausted retry attempts", rlog.desc()))
 }
@@ -260,58 +300,67 @@ where
     M: Fn(reqwest::StatusCode, &str) -> String,
 {
     use anyhow::Context as _;
-    retry_async_deadline(rlog, policy, deadline, |attempt| {
+    retry_steps_async(rlog, policy.max_attempts, deadline, |attempt| {
         let fut = send(attempt);
         let error_msg = &error_msg;
         async move {
-            match fut.await {
-                Ok(resp) => {
-                    let status = resp.status();
-                    let succeeded = match success_class {
-                        SuccessClass::Strict => status.is_success(),
-                        SuccessClass::AllowRedirects => {
-                            status.is_success() || status.is_redirection()
-                        }
-                    };
-                    if succeeded {
-                        Ok(resp)
-                    } else {
-                        let body = resp
-                            .text()
-                            .await
-                            .unwrap_or_else(|e| format!("<failed to read body: {e}>"));
-                        let msg = error_msg(status, &body);
-                        let inner = anyhow::anyhow!("{msg}");
-                        let wrapped = anyhow::Error::new(HttpError::new(
-                            std::io::Error::other(inner.to_string()),
-                            status.as_u16(),
-                        ))
-                        .context(inner);
-                        // `as_ref()` is the head of the chain; `is_retriable`
-                        // walks `.source()` to reach `HttpError`. `root_cause()`
-                        // would unwrap past `HttpError` to the io::Error leaf
-                        // and miss the status. Pinned by
-                        // `classifier_5xx_via_anyhow_chain_uses_as_ref`.
-                        if is_retriable(wrapped.as_ref()) {
-                            Err(ControlFlow::Continue(wrapped))
+            http_step(
+                policy,
+                attempt,
+                match fut.await {
+                    Ok(resp) => {
+                        let status = resp.status();
+                        let succeeded = match success_class {
+                            SuccessClass::Strict => status.is_success(),
+                            SuccessClass::AllowRedirects => {
+                                status.is_success() || status.is_redirection()
+                            }
+                        };
+                        if succeeded {
+                            Ok(resp)
                         } else {
-                            Err(ControlFlow::Break(wrapped))
+                            let retry_after =
+                                rate_limit_retry_after(status.as_u16(), resp.headers());
+                            let body = resp
+                                .text()
+                                .await
+                                .unwrap_or_else(|e| format!("<failed to read body: {e}>"));
+                            let msg = error_msg(status, &body);
+                            let inner = anyhow::anyhow!("{msg}");
+                            let wrapped = anyhow::Error::new(
+                                HttpError::new(
+                                    std::io::Error::other(inner.to_string()),
+                                    status.as_u16(),
+                                )
+                                .with_retry_after(retry_after),
+                            )
+                            .context(inner);
+                            // `as_ref()` is the head of the chain; `is_retriable`
+                            // walks `.source()` to reach `HttpError`. `root_cause()`
+                            // would unwrap past `HttpError` to the io::Error leaf
+                            // and miss the status. Pinned by
+                            // `classifier_5xx_via_anyhow_chain_uses_as_ref`.
+                            if is_retriable(wrapped.as_ref()) {
+                                Err(ControlFlow::Continue(wrapped))
+                            } else {
+                                Err(ControlFlow::Break(wrapped))
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    // Transport-layer failure: wrap in HttpError(status=0) so
-                    // the chain-walking classifier can see network-error
-                    // substrings via the inner io::Error message.
-                    let err = anyhow::Error::new(HttpError::from_response(e, None))
-                        .context(format!("{}: HTTP transport error", rlog.desc()));
-                    if is_retriable(err.as_ref()) {
-                        Err(ControlFlow::Continue(err))
-                    } else {
-                        Err(ControlFlow::Break(err))
+                    Err(e) => {
+                        // Transport-layer failure: wrap in HttpError(status=0) so
+                        // the chain-walking classifier can see network-error
+                        // substrings via the inner io::Error message.
+                        let err = anyhow::Error::new(HttpError::from_response(e, None))
+                            .context(format!("{}: HTTP transport error", rlog.desc()));
+                        if is_retriable(err.as_ref()) {
+                            Err(ControlFlow::Continue(err))
+                        } else {
+                            Err(ControlFlow::Break(err))
+                        }
                     }
-                }
-            }
+                },
+            )
         }
     })
     .await

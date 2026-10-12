@@ -1833,3 +1833,84 @@ fn publisher_scope_anchor_does_not_leak_across_threads() {
     drop(outer);
     assert_eq!(current_budget_anchor(), None);
 }
+
+#[test]
+fn a_rate_limited_response_names_the_wait_its_headers_ask_for() {
+    use reqwest::header::HeaderMap;
+    let mut headers = HeaderMap::new();
+    headers.insert("Retry-After", "7".parse().unwrap());
+    assert_eq!(
+        rate_limit_retry_after(429, &headers),
+        Some(Duration::from_secs(7)),
+        "Retry-After is delta-seconds"
+    );
+    assert_eq!(
+        rate_limit_retry_after(503, &headers),
+        None,
+        "only a 429 is read, so no other status becomes retriable through a header"
+    );
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    headers.insert("RateLimit-Reset", (now + 120).to_string().parse().unwrap());
+    let wait = rate_limit_retry_after(429, &headers).expect("a reset in the future is a wait");
+    assert!(
+        (Duration::from_secs(118)..=Duration::from_secs(120)).contains(&wait),
+        "RateLimit-Reset is a unix timestamp and wins over Retry-After, got {wait:?}"
+    );
+
+    headers.insert("RateLimit-Reset", (now - 5).to_string().parse().unwrap());
+    assert_eq!(
+        rate_limit_retry_after(429, &headers),
+        Some(Duration::from_secs(7)),
+        "a reset in the past falls back to Retry-After"
+    );
+
+    let mut dated = HeaderMap::new();
+    dated.insert(
+        "Retry-After",
+        "Wed, 21 Oct 2026 07:28:00 GMT".parse().unwrap(),
+    );
+    assert_eq!(
+        rate_limit_retry_after(429, &dated),
+        None,
+        "an HTTP date is not read"
+    );
+    assert_eq!(rate_limit_retry_after(429, &HeaderMap::new()), None);
+}
+
+/// A 429 carrying `Retry-After` is retried after THAT wait, not the policy's
+/// backoff, and the retry succeeds.
+#[test]
+fn a_429_with_retry_after_sleeps_the_asked_wait_then_retries() {
+    use crate::test_helpers::responder::spawn_oneshot_http_responder;
+    let (addr, calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: 0\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+    ]);
+    let client = reqwest::blocking::Client::new();
+    let policy = RetryPolicy {
+        max_attempts: 2,
+        base_delay: Duration::from_secs(30),
+        max_delay: Duration::from_secs(30),
+    };
+    let started = std::time::Instant::now();
+    let (status, body) = retry_http_blocking(
+        RetryLog::new("probe", crate::test_helpers::test_logger()),
+        &policy,
+        SuccessClass::Strict,
+        |_| client.get(format!("http://{addr}/")).send(),
+        |status, body| format!("probe failed (HTTP {status}): {body}"),
+    )
+    .expect("the retry after the asked wait succeeds");
+    let elapsed = started.elapsed();
+    assert_eq!(status.as_u16(), 200);
+    assert_eq!(body, "ok");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(
+        elapsed >= Duration::from_secs(1) && elapsed < Duration::from_secs(10),
+        "slept the header's one second, not the policy's thirty: {elapsed:?}"
+    );
+}

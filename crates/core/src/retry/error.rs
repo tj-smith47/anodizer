@@ -25,6 +25,10 @@ pub struct HttpError {
     source: Box<dyn StdError + Send + Sync + 'static>,
     /// HTTP status code; `0` for transport-level failures.
     pub status: u16,
+    /// How long the server asked the client to wait before retrying, read
+    /// off a 429's `RateLimit-Reset` or `Retry-After` header. The retry
+    /// engine sleeps this instead of the policy's backoff when it is set.
+    pub retry_after: Option<Duration>,
 }
 
 impl HttpError {
@@ -37,7 +41,14 @@ impl HttpError {
         Self {
             source: Box::new(source),
             status,
+            retry_after: None,
         }
+    }
+
+    /// Attach the wait a rate-limited response asked for.
+    pub fn with_retry_after(mut self, retry_after: Option<Duration>) -> Self {
+        self.retry_after = retry_after;
+        self
     }
 
     /// Wrap a transport-layer error with the status code from the (possibly
@@ -60,6 +71,45 @@ pub fn http_status(err: &anyhow::Error) -> u16 {
     err.chain()
         .find_map(|e| e.downcast_ref::<HttpError>().map(|h| h.status))
         .unwrap_or(0)
+}
+
+/// The wait a rate-limited response asked for, read off an [`anyhow::Error`]
+/// chain the HTTP retry helpers produced; `None` when no [`HttpError`] in the
+/// chain carries one.
+pub fn http_retry_after(err: &anyhow::Error) -> Option<Duration> {
+    err.chain()
+        .find_map(|e| e.downcast_ref::<HttpError>().and_then(|h| h.retry_after))
+}
+
+/// How long a 429 asked the client to wait: `RateLimit-Reset` (a unix
+/// timestamp) when it is in the future, else `Retry-After` as delta-seconds.
+/// Read for a 429 only, since a wait on any other status would make every
+/// 4xx carrying one retriable. An HTTP-date `Retry-After` is not read:
+/// GitLab and GitHub answer with delta-seconds.
+pub fn rate_limit_retry_after(
+    status: u16,
+    headers: &reqwest::header::HeaderMap,
+) -> Option<Duration> {
+    if status != 429 {
+        return None;
+    }
+    let header_int = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|v| *v > 0)
+    };
+    if let Some(reset) = header_int("RateLimit-Reset") {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if reset > now {
+            return Some(Duration::from_secs(reset - now));
+        }
+    }
+    header_int("Retry-After").map(Duration::from_secs)
 }
 
 impl fmt::Display for HttpError {
