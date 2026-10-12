@@ -36,7 +36,8 @@ class {{ class_name }} < Formula
 {% endfor %}{% if depends_on_macos %}  depends_on :macos
 {% endif %}{% if depends_on_linux %}  depends_on :linux
 {% endif %}{% if has_macos %}  on_macos do
-{% if has_only_amd64_macos %}    url "{{ macos_entries[0].url | ruby_escape }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
+{% for dep in macos_deps %}    depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
+{% endfor %}{% if has_only_amd64_macos %}    url "{{ macos_entries[0].url | ruby_escape }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
       headers: [
 {% for header in url_headers %}        "{{ header | ruby_escape }}",
 {% endfor %}      ]{% endif %}
@@ -83,7 +84,8 @@ class {{ class_name }} < Formula
 {% endfor %}    end
 {% endfor %}{% endif %}  end
 {% endif %}{% if has_linux %}  on_linux do
-{% if linux_has_arch %}{% for entry in linux_entries %}    {{ entry.arch_block }}
+{% for dep in linux_deps %}    depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
+{% endfor %}{% if linux_has_arch %}{% for entry in linux_entries %}    {{ entry.arch_block }}
       url "{{ entry.url | ruby_escape }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
         headers: [
 {% for header in url_headers %}          "{{ header | ruby_escape }}",
@@ -110,11 +112,11 @@ class {{ class_name }} < Formula
 {% endfor %}{% endif %}  end
 {% endif %}{% for dep in global_deps %}
   depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
-{% endfor %}{% if macos_deps %}
+{% endfor %}{% if macos_deps and not has_macos %}
   on_macos do
 {% for dep in macos_deps %}    depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
 {% endfor %}  end
-{% endif %}{% if linux_deps %}
+{% endif %}{% if linux_deps and not has_linux %}
   on_linux do
 {% for dep in linux_deps %}    depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
 {% endfor %}  end

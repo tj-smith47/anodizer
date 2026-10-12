@@ -791,6 +791,79 @@ fn formula_dependencies_sort_by_type_then_name_without_regard_to_case() {
     );
 }
 
+/// A formula whose archives are already split per OS puts an OS-scoped
+/// dependency inside THAT `on_macos` / `on_linux` block: brew's audit refuses
+/// a formula holding two blocks of one OS.
+#[test]
+fn os_dependencies_join_the_existing_per_os_block() {
+    use anodizer_core::config::HomebrewDependency;
+    let dep_on = |name: &str, os: &str| HomebrewDependency {
+        name: name.to_string(),
+        os: Some(os.to_string()),
+        dep_type: None,
+        version: None,
+    };
+    let deps = vec![dep_on("mac-only", "mac"), dep_on("linux-only", "linux")];
+    let opts = FormulaOptions {
+        dependencies: Some(&deps),
+        ..Default::default()
+    };
+    let formula = generate_formula_with_opts(
+        &super::formula::FormulaCore {
+            name: "mytool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
+        &[
+            (
+                "darwin-amd64",
+                "https://example.com/mytool-darwin-amd64.tar.gz",
+                "aaaa",
+            ),
+            (
+                "darwin-arm64",
+                "https://example.com/mytool-darwin-arm64.tar.gz",
+                "bbbb",
+            ),
+            (
+                "linux-amd64",
+                "https://example.com/mytool-linux-amd64.tar.gz",
+                "cccc",
+            ),
+        ],
+        &super::formula::FormulaCode {
+            install: "bin.install \"mytool\"",
+            test: "system \"#{bin}/mytool\"",
+        },
+        &opts,
+    )
+    .unwrap();
+    assert_eq!(
+        formula.matches("on_macos do").count(),
+        1,
+        "formula:\n{formula}"
+    );
+    assert_eq!(
+        formula.matches("on_linux do").count(),
+        1,
+        "formula:\n{formula}"
+    );
+    let mac_block =
+        &formula[formula.find("on_macos do").unwrap()..formula.find("on_linux do").unwrap()];
+    assert!(
+        mac_block.contains("depends_on \"mac-only\""),
+        "formula:\n{formula}"
+    );
+    assert!(!mac_block.contains("linux-only"), "formula:\n{formula}");
+    let linux_block = &formula[formula.find("on_linux do").unwrap()..];
+    assert!(
+        linux_block.contains("depends_on \"linux-only\""),
+        "formula:\n{formula}"
+    );
+    assert!(!linux_block.contains("mac-only"), "formula:\n{formula}");
+}
+
 /// `type` renders as the Ruby symbol and wins over `version` on one entry.
 #[test]
 fn formula_dependency_type_takes_precedence_over_version() {
