@@ -12,9 +12,9 @@ use anodizer_core::template::ruby_escape_str;
 use anyhow::Result;
 
 use super::cask::{
-    CaskArchEntry, CaskBinaryEntry, CaskParams, CaskPlatformBlock, cask_name_for, generate_cask,
-    render_additional_url_params, render_alternative_names, render_generate_completions,
-    render_uninstall_block, render_zap_block, split_alternative_names,
+    CaskArchEntry, CaskBinaryEntry, CaskParams, CaskPlatformBlock, UNIVERSAL_ARCH_BLOCK,
+    cask_name_for, generate_cask, render_additional_url_params, render_alternative_names,
+    render_generate_completions, render_uninstall_block, render_zap_block, split_alternative_names,
 };
 
 // ---------------------------------------------------------------------------
@@ -130,6 +130,8 @@ pub(super) fn build_cask_platform_blocks(
                 "intel"
             } else if arch == "arm64" {
                 "arm"
+            } else if arch == "all" && os_block == "macos" {
+                UNIVERSAL_ARCH_BLOCK
             } else {
                 continue;
             };
@@ -189,6 +191,17 @@ pub(super) fn build_cask_platform_blocks(
                     url,
                     sha256,
                 });
+        }
+    }
+    // A universal artifact in the same scope as per-arch ones of its OS would
+    // need a flat `url` and `on_arm`/`on_intel` urls in one `on_macos` block,
+    // which gives Homebrew two downloads for one host. The per-arch entries
+    // are the ones used. (`universal_binaries.replace: false` marks its
+    // universal artifact `replaces: false`, which `artifacts_of_kind` already
+    // leaves out.)
+    for arches in os_map.values_mut() {
+        if arches.len() > 1 {
+            arches.retain(|e| e.arch_block != UNIVERSAL_ARCH_BLOCK);
         }
     }
     Ok(os_map
@@ -260,7 +273,8 @@ pub(super) fn generate_cask_from_context(
             )
         })?;
 
-    // Single-platform URL/SHA for backwards compatibility (used when no multi-platform blocks)
+    // The flat top-level `url`/`sha256`, used when the release has a single
+    // download: per-OS and per-arch blocks around one entry only add nesting.
     let url = if let Some(tmpl) = url_template {
         let target = primary_artifact.target.as_deref().unwrap_or("");
         let (os, arch) = anodizer_core::target::map_target(target);
@@ -333,9 +347,9 @@ pub(super) fn generate_cask_from_context(
     let cask_conflicts = super::cask::conflicting_casks(cask_cfg.conflicts.as_deref());
 
     // Each `uninstall` / `zap` sub-key (`launchctl`, `quit`, `login_item`,
-    // `delete`, `trash`) renders as its own keyed Ruby array. The prior
-    // shape hard-coded `zap trash: [...]` and shoved every sub-directive
-    // into that array, producing broken Ruby for non-trash directives.
+    // `delete`, `trash`) renders as its own keyed argument: Homebrew reads
+    // each key as a different removal method, so the entries of one key
+    // cannot be listed under another.
     let uninstall_block = render_uninstall_block(cask_cfg.uninstall.as_ref());
     let zap_block = render_zap_block(cask_cfg.zap.as_ref());
 

@@ -28,10 +28,15 @@ pub struct CaskBinaryEntry {
     pub target: Option<String>,
 }
 
+/// The `arch_block` of an entry built for every architecture of its OS (a
+/// `universal_binaries` macOS artifact).
+pub(super) const UNIVERSAL_ARCH_BLOCK: &str = "all";
+
 /// Multi-platform cask architecture entry (within an OS block).
 #[derive(serde::Serialize, Clone)]
 pub struct CaskArchEntry {
-    pub(super) arch_block: String, // "intel" or "arm"
+    /// `"intel"`, `"arm"`, or [`UNIVERSAL_ARCH_BLOCK`].
+    pub(super) arch_block: String,
     pub(super) url: String,
     pub(super) sha256: String,
 }
@@ -88,8 +93,9 @@ pub struct CaskParams<'a> {
     pub service: Option<&'a str>,
     /// Pre-rendered `livecheck do … end` block body (the lines *between*
     /// `livecheck do` and `end`, already trimmed — the template indents each).
-    /// `None` ⇒ the default `skip "Auto-generated on release."` line, matching
-    /// today's cask behaviour. Build via
+    /// `None` ⇒ the default `skip "Auto-generated on release."` line: a cask
+    /// the release rewrites on every tag has nothing for `brew livecheck` to
+    /// find. Build via
     /// [`render_livecheck`](super::formula::render_livecheck).
     pub livecheck: Option<String>,
     /// Manpage file paths.
@@ -572,10 +578,20 @@ fn arch_block_rank(arch_block: &str) -> u8 {
     }
 }
 
+/// `url` options laid out for a `url` one level shallower than `url_extras`
+/// was rendered for: every continuation line loses two leading spaces, which
+/// keeps the relative layout of multi-line arrays and hashes.
+fn outdent_continuations(url_extras: &str) -> String {
+    url_extras.replace("\n  ", "\n")
+}
+
 /// The `on_<os> do … end` blocks, in Homebrew's stanza order and with no
 /// blank line between them: they belong to one stanza group. `macos_only`
 /// holds stanzas (already indented for the block) placed in the `on_macos`
-/// block after its arch blocks.
+/// block after its arch blocks. An entry whose arch is
+/// [`UNIVERSAL_ARCH_BLOCK`] serves every architecture of its OS, so its
+/// `sha256` and `url` sit directly in the `on_<os>` block, one blank line
+/// apart.
 fn render_platform_blocks(
     platforms: &[CaskPlatformBlock],
     url_extras: &str,
@@ -589,6 +605,19 @@ fn render_platform_blocks(
         let mut arches: Vec<&CaskArchEntry> = plat.arches.iter().collect();
         arches.sort_by_key(|a| arch_block_rank(&a.arch_block));
         for arch in arches {
+            if arch.arch_block == UNIVERSAL_ARCH_BLOCK {
+                // Directly inside `on_<os>`, `Cask/StanzaGrouping` reads
+                // `sha256` as part of the `version` group and `url` as the
+                // start of the next one, so a blank line separates them.
+                lines.push(format!("    sha256 {}", ruby_string(&arch.sha256)));
+                lines.push(String::new());
+                lines.push(format!(
+                    "    url \"{}\"{}",
+                    arch.url,
+                    outdent_continuations(url_extras)
+                ));
+                continue;
+            }
             lines.push(format!("    on_{} do", arch.arch_block));
             lines.push(format!("      sha256 {}", ruby_string(&arch.sha256)));
             lines.push(format!("      url \"{}\"{url_extras}", arch.url));
@@ -601,6 +630,87 @@ fn render_platform_blocks(
         lines.push("  end".to_string());
     }
     lines.join("\n")
+}
+
+/// The stanzas `Homebrew/OSDependsOn` (`rubocops/os_depends_on.rb`) treats as
+/// installable on macOS only.
+const MACOS_ONLY_STANZAS: &[&str] = &[
+    "app",
+    "audio_unit_plugin",
+    "colorpicker",
+    "dictionary",
+    "input_method",
+    "internet_plugin",
+    "keyboard_layout",
+    "mdimporter",
+    "pkg",
+    "prefpane",
+    "qlplugin",
+    "screen_saver",
+    "service",
+    "suite",
+    "vst_plugin",
+    "vst3_plugin",
+];
+
+/// What a `custom_block` contributes to the `depends_on :macos` decision.
+#[derive(Default)]
+struct CustomBlockOsFacts {
+    /// A macOS-only stanza (or `installer manual:`) outside an `on_macos`
+    /// block.
+    macos_only_stanza: bool,
+    /// An `on_linux` or `on_system` block.
+    other_os_block: bool,
+    /// A `depends_on` naming `macos:`, `maximum_macos:`, `:macos`, `:linux`
+    /// or `linux:`.
+    os_dependency: bool,
+}
+
+/// Read a `custom_block` line by line for the stanzas `Homebrew/OSDependsOn`
+/// looks at. The text is the user's own Ruby, so the reading goes by each
+/// line's first word and skips the body of an `on_macos do` block.
+// ponytail: line-based, not a Ruby parser; a stanza split across lines or
+// written after `;` is not seen, which only costs a `brew style` notice.
+fn custom_block_os_facts(block: Option<&str>) -> CustomBlockOsFacts {
+    let mut facts = CustomBlockOsFacts::default();
+    let Some(block) = block else {
+        return facts;
+    };
+    let mut on_macos_indent: Option<usize> = None;
+    for line in block.lines() {
+        let text = line.trim_start();
+        if text.is_empty() || text.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - text.len();
+        if let Some(open) = on_macos_indent {
+            if indent == open && text.starts_with("end") {
+                on_macos_indent = None;
+            }
+            continue;
+        }
+        let word: &str = text
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .next()
+            .unwrap_or("");
+        match word {
+            "on_macos" => on_macos_indent = Some(indent),
+            "on_linux" | "on_system" => facts.other_os_block = true,
+            "depends_on" => {
+                let args = &text["depends_on".len()..];
+                if [":macos", ":linux", "macos:", "linux:"]
+                    .iter()
+                    .any(|token| args.contains(token))
+                {
+                    facts.os_dependency = true;
+                }
+            }
+            "installer" if text.contains("manual:") => facts.macos_only_stanza = true,
+            w if MACOS_ONLY_STANZAS.contains(&w) => facts.macos_only_stanza = true,
+            _ => {}
+        }
+    }
+    facts
 }
 
 /// A `<name> do … end` stanza around a user-supplied Ruby body.
@@ -620,17 +730,26 @@ fn render_do_block(name: &str, body: &str) -> String {
 /// `brew style` accepts.
 pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
     let has_platforms = !params.platforms.is_empty();
-    // A cask whose downloads include Linux spans both systems; any other
-    // cask downloads only macOS artifacts. `Homebrew/OSDependsOn` wants the
-    // first to keep macOS-only stanzas inside `on_macos` and the second to
-    // say `depends_on :macos`.
-    let cross_platform = params.platforms.iter().any(|p| p.os_block == "linux")
-        && params.platforms.iter().any(|p| p.os_block == "macos");
+    let custom = custom_block_os_facts(non_blank(params.custom_block));
+    let has_linux_block =
+        params.platforms.iter().any(|p| p.os_block == "linux") || custom.other_os_block;
+    // A cask with downloads for both systems keeps its macOS-only stanzas
+    // inside `on_macos`, as `Homebrew/OSDependsOn` asks of a cross-platform
+    // cask.
+    let cross_platform = has_linux_block && params.platforms.iter().any(|p| p.os_block == "macos");
     let app = params
         .app
         .filter(|a| !a.is_empty())
         .map(|a| format!("app {}", ruby_string(a)));
     let service = non_blank(params.service).map(|s| format!("service {}", ruby_string(s.trim())));
+    // `Homebrew/OSDependsOn` asks for `depends_on :macos` only where a
+    // macOS-only stanza sits outside `on_macos` in a cask with no Linux side,
+    // and calls a second OS dependency beside one the cask already declares
+    // redundant. A cask installing only binaries runs on either system and
+    // gets none.
+    let macos_only_outside_block =
+        !cross_platform && (app.is_some() || service.is_some() || custom.macos_only_stanza);
+    let depends_on_macos = macos_only_outside_block && !has_linux_block && !custom.os_dependency;
     let mut groups: Vec<String> = Vec::new();
 
     if let Some(block) = non_blank(params.custom_block) {
@@ -695,7 +814,7 @@ pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
     for dep in params.depends_on {
         relations.push(format!("  depends_on {dep}"));
     }
-    if !cross_platform {
+    if depends_on_macos {
         relations.push("  depends_on :macos".to_string());
     }
     if !relations.is_empty() {

@@ -221,6 +221,10 @@ jobs:
       - name: Tests
         run: task test
 
+      - name: Lint the rendered Homebrew casks with brew style
+        if: runner.os == 'macOS'
+        run: task test:brew-style
+
       - name: Build release binary
         if: env.RELEASE_BOOTSTRAP == 'true'
         run: task build

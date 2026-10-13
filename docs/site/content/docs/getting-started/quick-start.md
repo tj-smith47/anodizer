@@ -39,9 +39,9 @@ deprecation-warned at load so you can migrate at your own pace; `docker_v2` and
 `layouts` are accepted silently.
 
 The last line of `anodizer check config` is the verdict. A config with no
-errors ends with `Config is valid.`; if loading it logged any `DEPRECATION:`
-warning, the line reads `Config is valid, but uses deprecated properties.`
-instead. Both exit 0, so a deprecated field never fails CI on its own.
+errors ends with `Config is valid.`; if the config uses any deprecated
+property (shown as a `DEPRECATION:` warning), the line reads
+`Config is valid, but uses deprecated properties.` instead. Both exit 0, so a deprecated field never fails CI on its own.
 
 ## 4. Do a dry run
 

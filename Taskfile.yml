@@ -196,6 +196,18 @@ tasks:
     cmds:
       - cargo nextest run --workspace --no-fail-fast --lib
 
+  test:brew-style:
+    # `brew style` needs a working Homebrew with its style gems, which only
+    # the macOS hosts have; the Linux box runs brew as root, which brew
+    # refuses. The test itself is opt-in through the variable, so `task test`
+    # never depends on a brew install.
+    desc: "Run brew style over the rendered Homebrew casks (macOS only)."
+    platforms: [darwin]
+    env:
+      ANODIZER_BREW_STYLE: "1"
+    cmds:
+      - cargo test -p anodizer-stage-publish --lib rendered_casks_pass_brew_style_opt_in -- --nocapture
+
   test:os:
     # Ships HEAD as a git bundle, so it proves the un-pushed commit rather than
     # whatever origin holds. The local leg always runs; the Windows and macOS
@@ -512,6 +524,7 @@ tasks:
     desc: "Pre-push floor: every blocking CI job, mirrored locally. Slow."
     cmds:
       - task: ci                              # fmt:check, clippy, test, docs:check, package
+      - task: test:brew-style                 # test (the macOS leg's brew style step; no-ops elsewhere)
       - task: doc                             # rustdoc
       - task: audit:deps                      # cargo-audit
       - task: docs:validate-readme            # validate-readme

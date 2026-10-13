@@ -2971,10 +2971,10 @@ fn generate_cask_emits_alternative_names() {
     assert!(cask.contains("name \"alt-2\""));
 }
 
-/// An unset cask `livecheck` keeps today's behaviour: the cask emits
-/// `livecheck do\n  skip "Auto-generated on release."\nend` — a binary cask's
+/// An unset cask `livecheck` emits
+/// `livecheck do\n  skip "Auto-generated on release."\nend`: a binary cask's
 /// download URL/sha256 are rewritten every release, so there's nothing stable
-/// to poll. This must not regress when the configurable field is absent.
+/// to poll.
 #[test]
 fn generate_cask_unset_livecheck_emits_default_skip() {
     let params = empty_cask_params("mytool", "1.0.0");
@@ -3323,10 +3323,167 @@ fn generate_cask_emits_depends_and_conflicts() {
     let cask = super::cask::generate_cask(&params).unwrap();
     assert!(
         cask.contains(
-            "\n  conflicts_with cask: \"old-app\"\n  depends_on cask: \"other-app\"\n  depends_on :macos\n"
+            "\n  conflicts_with cask: \"old-app\"\n  depends_on cask: \"other-app\"\nend\n"
         ),
         "conflicts_with precedes depends_on in one group:\n{cask}"
     );
+}
+
+/// The `depends_on` lines of a rendered cask.
+fn depends_on_lines(cask: &str) -> Vec<&str> {
+    cask.lines()
+        .filter(|l| l.trim_start().starts_with("depends_on"))
+        .collect()
+}
+
+/// `depends_on :macos` follows `Homebrew/OSDependsOn`: a macOS-only stanza
+/// outside `on_macos`, no Linux side, and no OS dependency already declared.
+#[test]
+fn depends_on_macos_is_rendered_only_for_a_macos_only_stanza_without_a_linux_side() {
+    let bins = vec![super::cask::CaskBinaryEntry {
+        name: "mytool".to_string(),
+        target: None,
+    }];
+    let linux = |a: &str, c: char| CaskArchEntry {
+        arch_block: a.to_string(),
+        url: format!("https://e.com/mytool-linux-{a}.tar.gz"),
+        sha256: c.to_string().repeat(64),
+    };
+
+    let mut binary_only = empty_cask_params("mytool", "1.0.0");
+    binary_only.binaries = &bins;
+    let cask = generate_cask(&binary_only).unwrap();
+    assert!(depends_on_lines(&cask).is_empty(), "binary-only:\n{cask}");
+
+    let mut app_only = empty_cask_params("mytool", "1.0.0");
+    app_only.app = Some("MyTool.app");
+    let cask = generate_cask(&app_only).unwrap();
+    assert_eq!(
+        depends_on_lines(&cask),
+        ["  depends_on :macos"],
+        "app:\n{cask}"
+    );
+
+    let mut service_only = empty_cask_params("mytool", "1.0.0");
+    service_only.service = Some("MyTool.workflow");
+    let cask = generate_cask(&service_only).unwrap();
+    assert_eq!(
+        depends_on_lines(&cask),
+        ["  depends_on :macos"],
+        "service:\n{cask}"
+    );
+
+    let mut pkg_in_custom = empty_cask_params("mytool", "1.0.0");
+    pkg_in_custom.custom_block = Some("pkg \"MyTool.pkg\"");
+    let cask = generate_cask(&pkg_in_custom).unwrap();
+    assert_eq!(
+        depends_on_lines(&cask),
+        ["  depends_on :macos"],
+        "pkg:\n{cask}"
+    );
+
+    let mut own_dependency = empty_cask_params("mytool", "1.0.0");
+    own_dependency.app = Some("MyTool.app");
+    own_dependency.custom_block = Some("depends_on macos: :sonoma");
+    let cask = generate_cask(&own_dependency).unwrap();
+    assert_eq!(
+        depends_on_lines(&cask),
+        ["  depends_on macos: :sonoma"],
+        "custom_block depends_on:\n{cask}"
+    );
+
+    let mut linux_only = empty_cask_params("mytool", "1.0.0");
+    linux_only.app = Some("MyTool.app");
+    linux_only.binaries = &bins;
+    linux_only.platforms = vec![CaskPlatformBlock {
+        os_block: "linux".to_string(),
+        arches: vec![linux("intel", 'c'), linux("arm", 'd')],
+    }];
+    let cask = generate_cask(&linux_only).unwrap();
+    assert!(depends_on_lines(&cask).is_empty(), "linux-only:\n{cask}");
+
+    let mut app_inside_on_macos = empty_cask_params("mytool", "1.0.0");
+    app_inside_on_macos.custom_block = Some("on_macos do\n  app \"Other.app\"\nend");
+    let cask = generate_cask(&app_inside_on_macos).unwrap();
+    assert!(
+        depends_on_lines(&cask).is_empty(),
+        "a stanza inside on_macos:\n{cask}"
+    );
+}
+
+/// A `universal_binaries` (`replace: true`) macOS artifact beside Linux
+/// per-arch artifacts renders as a flat `sha256`/`url` inside `on_macos`,
+/// with `on_linux` keeping its two arch blocks.
+#[test]
+fn a_universal_macos_artifact_beside_linux_renders_flat_inside_on_macos() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let cask_cfg = HomebrewCaskConfig {
+        name: Some("mytool".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = top_cask_ctx(&cask_cfg);
+    ctx.artifacts = Default::default();
+    for (name, target, sha) in [
+        ("mytool-darwin-universal.tar.gz", "darwin-universal", "a"),
+        ("mytool-linux-amd64.tar.gz", "x86_64-unknown-linux-gnu", "c"),
+        (
+            "mytool-linux-arm64.tar.gz",
+            "aarch64-unknown-linux-gnu",
+            "d",
+        ),
+    ] {
+        ctx.artifacts.add(art_with_url_sha(
+            ArtifactKind::Archive,
+            name,
+            target,
+            &format!("https://e.com/v1.2.3/{name}"),
+            &sha.repeat(64),
+        ));
+    }
+    let c = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+        .expect("top-level cask render")
+        .expect("top-level cask applicable")
+        .content;
+    let expected = format!(
+        "  on_macos do\n    sha256 \"{a}\"\n\n    url \"https://e.com/v#{{version}}/mytool-darwin-universal.tar.gz\"\n  end\n  on_linux do\n    on_arm do\n      sha256 \"{d}\"\n      url \"https://e.com/v#{{version}}/mytool-linux-arm64.tar.gz\"\n    end\n    on_intel do\n      sha256 \"{c}\"\n      url \"https://e.com/v#{{version}}/mytool-linux-amd64.tar.gz\"\n    end\n  end\n",
+        a = "a".repeat(64),
+        c = "c".repeat(64),
+        d = "d".repeat(64),
+    );
+    assert!(c.contains(&expected), "{c}");
+}
+
+/// A universal macOS artifact in the same scope as per-arch macOS ones is
+/// left out, and the per-arch blocks render as they would without it.
+#[test]
+fn a_universal_artifact_beside_per_arch_ones_is_not_rendered() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let cask_cfg = HomebrewCaskConfig {
+        name: Some("mytool".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = top_cask_ctx(&cask_cfg);
+    for (name, target) in [
+        ("mytool-darwin-universal.tar.gz", "darwin-universal"),
+        ("mytool-darwin-arm64.tar.gz", "aarch64-apple-darwin"),
+    ] {
+        ctx.artifacts.add(art_with_url_sha(
+            ArtifactKind::Archive,
+            name,
+            target,
+            &format!("https://e.com/v1.2.3/{name}"),
+            &"b".repeat(64),
+        ));
+    }
+    let c = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+        .expect("top-level cask render")
+        .expect("top-level cask applicable")
+        .content;
+    assert!(
+        c.contains("    on_arm do\n") && c.contains("    on_intel do\n"),
+        "{c}"
+    );
+    assert!(!c.contains("universal"), "{c}");
 }
 
 /// `generate_cask` with `custom_block` injects raw Ruby into the cask.
@@ -5773,7 +5930,10 @@ fn publish_top_level_casks_with_an_unrenderable_pull_request_token_skip_before_a
 
 /// The casks the layout tests and the `brew style` check render: a
 /// macOS + Linux cask carrying every optional stanza, a macOS-only cask with
-/// per-arch downloads, a flat single-url cask, and a minimal one. Returned as `(file stem, rendered cask)`.
+/// per-arch downloads, a flat single-url cask, a minimal one, a universal
+/// macOS download beside Linux per-arch ones, and a cask whose `custom_block`
+/// declares its own macOS dependency. Returned as `(file stem, rendered
+/// cask)`.
 fn style_fixture_casks() -> Vec<(&'static str, String)> {
     use super::cask::{
         ARCH_URL_ARGS_INDENT, CaskBinaryEntry, URL_ARGS_INDENT, render_additional_url_params,
@@ -5917,11 +6077,46 @@ fn style_fixture_casks() -> Vec<(&'static str, String)> {
         ],
     }];
 
+    let mut universal = empty_cask_params("mytool", "1.2.3");
+    universal.homepage = Some("https://github.com/acme/mytool");
+    universal.app = Some("MyTool.app");
+    universal.binaries = &bins;
+    universal.url_extras_indented = &url_extras_arch;
+    universal.platforms = vec![
+        CaskPlatformBlock {
+            os_block: "linux".to_string(),
+            arches: vec![
+                arch("intel", "mytool-linux-amd64.tar.gz", 'c'),
+                arch("arm", "mytool-linux-arm64.tar.gz", 'd'),
+            ],
+        },
+        CaskPlatformBlock {
+            os_block: "macos".to_string(),
+            arches: vec![arch(
+                super::cask::UNIVERSAL_ARCH_BLOCK,
+                "mytool-darwin-universal.tar.gz",
+                'e',
+            )],
+        },
+    ];
+
+    let mut own_os_dependency = empty_cask_params("mytool", "1.2.3");
+    own_os_dependency.sha256 = &flat_sha;
+    own_os_dependency.url = &flat_url;
+    own_os_dependency.homepage = Some("https://github.com/acme/mytool");
+    own_os_dependency.app = Some("MyTool.app");
+    own_os_dependency.custom_block = Some("depends_on macos: :sonoma");
+
     vec![
         ("multi_platform", generate_cask(&full).unwrap()),
         ("macos_multi_arch", generate_cask(&macos).unwrap()),
         ("flat", generate_cask(&flat).unwrap()),
         ("minimal", generate_cask(&minimal).unwrap()),
+        ("universal_and_linux", generate_cask(&universal).unwrap()),
+        (
+            "custom_block_depends_on",
+            generate_cask(&own_os_dependency).unwrap(),
+        ),
     ]
 }
 
@@ -6101,22 +6296,79 @@ end
     );
 }
 
-/// Run `brew style` over every layout fixture when Homebrew can run its
-/// linter here (macOS, or Linux as a non-root user with the style gems
-/// installed), and skip with a note otherwise. `brew style` only lints a cask
-/// inside a tap, so each fixture is written into a throwaway tap that is
-/// removed afterwards.
-///
-/// The one offence allowed is `Cask/InstallSteps`: hook bodies are raw Ruby
-/// from the config, and Homebrew's `*_steps` replacement accepts only its own
-/// step calls, so a cask with hooks keeps the legacy `preflight do` blocks.
+/// The environment variable that turns on [`rendered_casks_pass_brew_style_opt_in`].
+const BREW_STYLE_OPT_IN: &str = "ANODIZER_BREW_STYLE";
+
+/// Removes a directory tree when dropped, on a panic as well as on return.
+struct RemoveTreeOnDrop(std::path::PathBuf);
+
+impl Drop for RemoveTreeOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The offence count from RuboCop's `1 file inspected, N offenses detected`
+/// summary, or `None` when the report carries no summary.
+fn rubocop_offence_count(report: &str) -> Option<usize> {
+    let tail = report.split("inspected, ").nth(1)?;
+    let count = tail.split_whitespace().next()?;
+    if count == "no" {
+        Some(0)
+    } else {
+        count.parse().ok()
+    }
+}
+
 #[test]
-fn rendered_casks_pass_brew_style() {
+fn rubocop_offence_count_reads_the_summary() {
+    assert_eq!(
+        rubocop_offence_count("1 file inspected, no offenses detected\n"),
+        Some(0)
+    );
+    assert_eq!(
+        rubocop_offence_count("x\n1 file inspected, 1 offense detected\n"),
+        Some(1)
+    );
+    assert_eq!(
+        rubocop_offence_count("1 file inspected, 4 offenses detected, 4 offenses autocorrectable"),
+        Some(4)
+    );
+    assert_eq!(rubocop_offence_count("no style gems installed"), None);
+}
+
+/// Run `brew style` over every layout fixture. Opt-in through
+/// `ANODIZER_BREW_STYLE=1`, because it needs a working Homebrew with its
+/// style gems (macOS, or Linux as a non-root user); once opted in, a brew
+/// that cannot lint fails the test. `brew style` only lints a cask inside a
+/// tap, so each fixture is written into a throwaway tap that is removed
+/// afterwards.
+///
+/// Two offences are allowed, each where its cause is the config's own Ruby:
+///
+/// - `Cask/InstallSteps` everywhere: hook bodies are raw Ruby from the
+///   config, and Homebrew's `*_steps` replacement accepts only its own step
+///   calls, so a cask with hooks keeps the legacy `preflight do` blocks.
+/// - `Cask/StanzaOrder` in the `custom_block_depends_on` cask only:
+///   `custom_block` is placed first in the body, so a stanza written there
+///   sits ahead of `version`. That fixture is there to show brew raises no
+///   `Homebrew/OSDependsOn` offence beside the block's own dependency.
+///
+/// Every offence in RuboCop's summary count must be one of those, so an
+/// offence of any severity (`C`, `W`, `E`, `F`, `R`) fails the test.
+#[test]
+fn rendered_casks_pass_brew_style_opt_in() {
     use anodizer_core::tool_detect::{ToolProbe, runs};
-    if !matches!(runs("brew"), ToolProbe::Available) {
-        eprintln!("SKIP rendered_casks_pass_brew_style: brew not on PATH");
+    if std::env::var(BREW_STYLE_OPT_IN).as_deref() != Ok("1") {
+        println!(
+            "skipped rendered_casks_pass_brew_style_opt_in: set {BREW_STYLE_OPT_IN}=1 to run brew style over the rendered casks"
+        );
         return;
     }
+    assert!(
+        matches!(runs("brew"), ToolProbe::Available),
+        "{BREW_STYLE_OPT_IN}=1 is set but brew is not runnable on PATH"
+    );
     let brew = |args: &[&str]| {
         std::process::Command::new("brew")
             .args(args)
@@ -6128,21 +6380,19 @@ fn rendered_casks_pass_brew_style() {
             .expect("run brew")
     };
     let repo = brew(&["--repository"]);
-    let taps = std::path::PathBuf::from(String::from_utf8_lossy(&repo.stdout).trim())
-        .join("Library/Taps/anodizer-style-check");
-    if std::fs::create_dir_all(&taps).is_err() {
-        eprintln!(
-            "SKIP rendered_casks_pass_brew_style: cannot write a tap under {}",
-            taps.display()
-        );
-        return;
-    }
-    let tap = tempfile::Builder::new()
-        .prefix("homebrew-check-")
-        .tempdir_in(&taps)
-        .expect("create a throwaway tap");
-    let casks = tap.path().join("Casks");
-    std::fs::create_dir_all(&casks).expect("create Casks/");
+    assert!(
+        repo.status.success(),
+        "brew --repository failed:\n{}",
+        String::from_utf8_lossy(&repo.stderr)
+    );
+    // A per-process tap owner keeps concurrent runs apart, and the guard
+    // takes the whole tap with it however the test ends.
+    let owner = std::path::PathBuf::from(String::from_utf8_lossy(&repo.stdout).trim())
+        .join("Library/Taps")
+        .join(format!("anodizer-style-check-{}", std::process::id()));
+    let casks = owner.join("homebrew-check/Casks");
+    std::fs::create_dir_all(&casks).expect("create the throwaway tap");
+    let _tap = RemoveTreeOnDrop(owner);
     let cask_path = casks.join("mytool.rb");
 
     for (stem, body) in style_fixture_casks() {
@@ -6153,24 +6403,145 @@ fn rendered_casks_pass_brew_style() {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        // RuboCop always ends with an `N file inspected` summary; without it
-        // brew stopped before linting (root on Linux, no style gems, no
-        // network to install them), which is an environment gap.
-        if !report.contains("inspected") {
-            eprintln!("SKIP rendered_casks_pass_brew_style: brew style did not run:\n{report}");
-            let _ = std::fs::remove_dir(&taps);
-            return;
-        }
-        let offences: Vec<&str> = report
+        println!("=== {stem}\n{report}");
+        let total = rubocop_offence_count(&report)
+            .unwrap_or_else(|| panic!("brew style did not lint the {stem} cask:\n{report}"));
+        let allowed: &[&str] = if stem == "custom_block_depends_on" {
+            &["Cask/InstallSteps:", "Cask/StanzaOrder:"]
+        } else {
+            &["Cask/InstallSteps:"]
+        };
+        let allowed_offences = report
             .lines()
-            .filter(|l| l.contains(": C: ") || l.contains(": W: ") || l.contains(": E: "))
-            .filter(|l| !l.contains("Cask/InstallSteps:"))
-            .collect();
-        assert!(
-            offences.is_empty(),
-            "brew style reported offences for the {stem} cask:\n{report}\n--- cask ---\n{body}"
+            .filter(|l| allowed.iter().any(|cop| l.contains(cop)))
+            .count();
+        assert_eq!(
+            total, allowed_offences,
+            "brew style reported offences other than {allowed:?} for the {stem} cask:\n{report}\n--- cask ---\n{body}"
         );
     }
-    drop(tap);
-    let _ = std::fs::remove_dir(&taps);
+}
+
+/// Every fenced block on a docs page as `(language, body)`, in page order.
+/// A fence indented under a list item is read too, with that indent taken
+/// off each body line.
+fn docs_fenced_blocks(page: &str) -> Vec<(String, String)> {
+    let mut blocks = Vec::new();
+    let mut open: Option<(String, usize, Vec<String>)> = None;
+    for line in page.lines() {
+        let text = line.trim_start();
+        let indent = line.len() - text.len();
+        match (text.strip_prefix("```"), open.take()) {
+            (Some(_), Some((language, _, body))) => {
+                let mut body = body.join("\n");
+                body.push('\n');
+                blocks.push((language, body));
+            }
+            (Some(language), None) => open = Some((language.to_string(), indent, Vec::new())),
+            (None, Some((language, fence_indent, mut body))) => {
+                body.push(line.get(fence_indent..).unwrap_or("").to_string());
+                open = Some((language, fence_indent, body));
+            }
+            (None, None) => {}
+        }
+    }
+    blocks
+}
+
+/// Every ```ruby block on the casks page is what the renderer produces for
+/// the nearest ```yaml block above it. A block opening with the generated
+/// header is a whole cask and must equal the render; any other block is a
+/// run of lines the render must contain. The release artifacts behind each
+/// render are listed per block in page order, so a new ```ruby block fails
+/// the count until it is given its own.
+#[test]
+fn every_ruby_example_in_the_cask_docs_is_what_the_renderer_produces() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/publish/homebrew-casks.md"
+    );
+    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let blocks = docs_fenced_blocks(&page);
+
+    let both_macs: &[&str] = &["x86_64-apple-darwin", "aarch64-apple-darwin"];
+    let apple_silicon: &[&str] = &["aarch64-apple-darwin"];
+    let universal_and_linux: &[&str] = &[
+        "darwin-universal",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+    ];
+    // The builds released beside each ```ruby block, in page order: the
+    // dependencies and livecheck fragments, the multi-arch cask, the
+    // single-arch cask, and the universal binary beside Linux.
+    let releases = [
+        both_macs,
+        both_macs,
+        both_macs,
+        apple_silicon,
+        universal_and_linux,
+    ];
+
+    let mut ruby_blocks = 0usize;
+    for (at, (language, ruby)) in blocks.iter().enumerate() {
+        if language != "ruby" {
+            continue;
+        }
+        let targets = releases
+            .get(ruby_blocks)
+            .unwrap_or_else(|| panic!("ruby block {at} has no release listed for it in this test"));
+        ruby_blocks += 1;
+        let (_, yaml) = blocks[..at]
+            .iter()
+            .rev()
+            .find(|(language, _)| language == "yaml")
+            .unwrap_or_else(|| panic!("ruby block {at} has no yaml block above it"));
+        let value: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(yaml).unwrap_or_else(|e| panic!("yaml above {at}: {e}"));
+        let entry = match value.get("homebrew_casks") {
+            Some(list) => list[0].clone(),
+            None => value,
+        };
+        let mut cask_cfg: HomebrewCaskConfig = serde_yaml_ng::from_value(entry)
+            .unwrap_or_else(|e| panic!("yaml above {at} is not a cask entry: {e}"));
+        cask_cfg.name.get_or_insert_with(|| "myapp".to_string());
+
+        let mut ctx = top_cask_ctx(&cask_cfg);
+        ctx.artifacts = Default::default();
+        for target in *targets {
+            let (sha, platform) = match *target {
+                "x86_64-apple-darwin" => ('1', "darwin-amd64"),
+                "aarch64-apple-darwin" => ('2', "darwin-arm64"),
+                "darwin-universal" => ('3', "darwin-universal"),
+                "x86_64-unknown-linux-gnu" => ('4', "linux-amd64"),
+                "aarch64-unknown-linux-gnu" => ('5', "linux-arm64"),
+                other => panic!("no artifact name for {other}"),
+            };
+            let name = format!("myapp-{platform}.tar.gz");
+            ctx.artifacts.add(art_with_url_sha(
+                ArtifactKind::Archive,
+                &name,
+                target,
+                &format!("https://github.com/myorg/myapp/releases/download/v1.2.3/{name}"),
+                &sha.to_string().repeat(64),
+            ));
+        }
+        let rendered =
+            super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+                .expect("top-level cask render")
+                .expect("top-level cask applicable")
+                .content;
+        if ruby.starts_with(crate::util::GENERATED_FILE_HEADER) {
+            assert!(
+                *ruby == rendered,
+                "ruby block {at} differs from the render of the yaml above it:\n{ruby}\n--- render ---\n{rendered}"
+            );
+        } else {
+            assert!(
+                rendered.contains(ruby.as_str()),
+                "ruby block {at} is not part of the render of the yaml above it:\n{ruby}\n--- render ---\n{rendered}"
+            );
+        }
+    }
+    assert_eq!(ruby_blocks, releases.len(), "the page's ruby blocks");
 }
