@@ -133,11 +133,11 @@ pub(crate) fn handle_dry_run(
     if let Some(keep_last) = s.retention_keep_last {
         if keep_last == 1 {
             log.status(
-                "(dry-run) would delete prior nightly release(s) before recreating (nightly retention keep_last=1 / keep_single_release)",
+                "(dry-run) would delete prior nightly releases before recreating (nightly retention keep_last=1 / keep_single_release)",
             );
         } else {
             log.status(&format!(
-                "(dry-run) would keep the {keep_last} newest nightly release(s) and delete the rest, incl. their tags (nightly retention)",
+                "(dry-run) would keep the {keep_last} newest nightly releases and delete the rest, incl. their tags (nightly retention)",
             ));
         }
     }

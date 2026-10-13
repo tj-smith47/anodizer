@@ -104,8 +104,8 @@ pub fn run(opts: PromoteOpts) -> Result<()> {
 /// how many failed, and which ones.
 pub(crate) fn promote_failure_message(report: &anodizer_core::promote::PromoteReport) -> String {
     format!(
-        "{} publisher(s) failed to promote: {}",
-        report.failure_names().len(),
+        "{} failed to promote: {}",
+        anodizer_core::text::count_noun(report.failure_names().len(), "publisher", "publishers"),
         report.failure_names().join(", ")
     )
 }

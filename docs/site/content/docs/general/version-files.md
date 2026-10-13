@@ -94,7 +94,7 @@ non-zero, so CI fails before a release goes out:
 ```text
 $ anodizer check version-files
        Error STALE: charts/myapp/Chart.yaml (expected 0.2.0, not found)
-       Error version_files check failed with 1 finding(s)
+       Error version_files check failed with 1 finding
 $ echo $?
 1
 ```
@@ -133,7 +133,7 @@ with `-y`, which selects every candidate) it reports what it enrolled:
 
 ```text
 $ anodizer init --version-files -y
-   • enrolled 2 file(s) under version_files in .anodizer.yaml
+   • enrolled 2 files under version_files in .anodizer.yaml
    •   + charts/myapp/Chart.yaml
    •   + docs/install.md
 ```

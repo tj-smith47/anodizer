@@ -44,7 +44,12 @@ pub(super) fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
                 let mut known: Vec<&str> = StageId::iter().map(StageId::as_str).collect();
                 known.push("installers");
                 return Err(format!(
-                    "--stages contained unknown stage(s): {}. Known stages: {}.",
+                    "--stages contained {}: {}. Known stages: {}.",
+                    if unknown.len() == 1 {
+                        "an unknown stage"
+                    } else {
+                        "unknown stages"
+                    },
                     unknown.join(", "),
                     known.join(", ")
                 ));

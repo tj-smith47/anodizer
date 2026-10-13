@@ -120,105 +120,6 @@ pub(crate) fn build_request_body(
     body
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The token is planted on the `gh` child only, so the logger the caller
-    /// passes does not know it; a failure that echoes it is still masked.
-    #[cfg(unix)]
-    #[test]
-    #[serial_test::serial(path_env)]
-    fn a_failed_generate_notes_call_redacts_the_token_it_was_given() {
-        let tools = anodizer_core::test_helpers::fake_tool::FakeToolDir::new();
-        tools
-            .tool("gh")
-            .script(
-                "cat >/dev/null\necho \"HTTP 401: bad credentials $GITHUB_TOKEN\" >&2\nexit 1\n",
-            )
-            .install();
-        let _path = tools.activate();
-        let log =
-            anodizer_core::log::StageLogger::new("changelog", anodizer_core::log::Verbosity::Quiet);
-        let err =
-            generate_release_notes("o", "r", "v1.0.0", None, Some("hunter2-notes-token"), &log)
-                .unwrap_err();
-        let text = format!("{err:#}");
-        assert!(
-            text.contains("bad credentials"),
-            "gh's diagnostic must still be embedded: {text}"
-        );
-        assert!(
-            !text.contains("hunter2-notes-token"),
-            "the token leaked into the error: {text}"
-        );
-    }
-
-    #[test]
-    fn request_body_includes_previous_tag_when_set() {
-        let body = build_request_body("v2.0.0", Some("v1.0.0"));
-        // When `previous_tag_name` is set, it is sent as a
-        // top-level string field. GitHub's `/releases/generate-notes`
-        // endpoint uses this as the "since" boundary for the commit range
-        // — which is the parity decision that matters over the
-        // create-release `generate_release_notes: true` flag (which uses
-        // the most-recent published release as the base).
-        assert_eq!(body["tag_name"], "v2.0.0");
-        assert_eq!(body["previous_tag_name"], "v1.0.0");
-    }
-
-    #[test]
-    fn request_body_omits_previous_tag_when_none() {
-        let body = build_request_body("v2.0.0", None);
-        // No previous_tag_name field — GitHub falls back to its default
-        // "previous release" heuristic when
-        // `ctx.Git.PreviousTag == ""` (first release).
-        assert_eq!(body["tag_name"], "v2.0.0");
-        assert!(body.get("previous_tag_name").is_none());
-    }
-
-    #[test]
-    fn request_body_handles_monorepo_tag_prefix() {
-        // Monorepo regression case: tag `service-a/v2.0.0` with previous
-        // tag `service-a/v1.0.0` must round-trip verbatim — GitHub
-        // accepts arbitrary tag strings, and the entire reason for using
-        // this endpoint over `generate_release_notes: true` is to pin
-        // such prefixed ranges reproducibly.
-        let body = build_request_body("service-a/v2.0.0", Some("service-a/v1.0.0"));
-        assert_eq!(body["tag_name"], "service-a/v2.0.0");
-        assert_eq!(body["previous_tag_name"], "service-a/v1.0.0");
-    }
-
-    #[test]
-    fn changelog_tag_name_empty_bails_with_actionable_error() {
-        // GitHub `POST /repos/{owner}/{repo}/releases/generate-notes`
-        // rejects empty `tag_name` with a 422 (`tag_name is too short`)
-        // that hides the real cause: the snapshot path leaves `Tag`
-        // unset in template vars. The helper must bail before spawning
-        // `gh` so the user sees an actionable error.
-        let log = anodizer_core::log::StageLogger::new("changelog", Default::default());
-        let err = generate_release_notes("myorg", "myrepo", "", None, None, &log)
-            .expect_err("empty tag_name must bail before spawning gh");
-        let chain = format!("{err:#}");
-        assert!(
-            chain.contains("changelog:"),
-            "error must carry the changelog: prefix, got: {chain}"
-        );
-        assert!(
-            chain.contains("tag_name"),
-            "error must name the rejected field, got: {chain}"
-        );
-        assert!(
-            chain.contains("myorg/myrepo"),
-            "error must name the owner/repo, got: {chain}"
-        );
-        assert!(
-            chain.contains("snapshot") || chain.contains("release.tag:"),
-            "error must include an actionable hint, got: {chain}"
-        );
-    }
-}
-
 /// Whether a github-native generate-notes body should be treated as empty
 /// (and therefore warned about, because the GitHub release will have no
 /// real release notes).
@@ -418,9 +319,9 @@ pub(crate) fn handle_github_native_changelog(
     if !missing_github.is_empty() {
         log.warn(&format!(
             "skipped github-native notes (use=github-native) for {} \
-             crate(s) without release.github: {} (if any should have a release, \
+             without release.github: {} (if any should have a release, \
              add release.github.owner and release.github.name)",
-            missing_github.len(),
+            anodizer_core::text::count_noun(missing_github.len(), "crate", "crates"),
             missing_github.join(", ")
         ));
     }
@@ -435,14 +336,19 @@ pub(crate) fn handle_github_native_changelog(
     // failure this surfaces.
     if !empty_github_body.is_empty() {
         log.warn(&format!(
-            "use=github-native produced an EMPTY release body for {} \
-             crate(s): {}. The GitHub release(s) will have NO release notes. \
+            "use=github-native produced an EMPTY release body for {}: {}. \
+             {} NO release notes. \
              github-native notes are PR-based, so the likely cause is no merged \
              PRs between previous_tag_name and tag_name (e.g. a direct-push \
              workflow). Set `changelog.use: git` (or github/gitlab/gitea) for \
              commit-based release notes instead.",
-            empty_github_body.len(),
-            empty_github_body.join(", ")
+            anodizer_core::text::count_noun(empty_github_body.len(), "crate", "crates"),
+            empty_github_body.join(", "),
+            if empty_github_body.len() == 1 {
+                "Its GitHub release will have"
+            } else {
+                "Their GitHub releases will have"
+            }
         ));
     }
 
@@ -526,6 +432,105 @@ mod github_native_empty_body_tests {
         assert!(
             !github_native_body_is_empty(body),
             "a body with actual notes must NOT be treated as empty"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The token is planted on the `gh` child only, so the logger the caller
+    /// passes does not know it; a failure that echoes it is still masked.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn a_failed_generate_notes_call_redacts_the_token_it_was_given() {
+        let tools = anodizer_core::test_helpers::fake_tool::FakeToolDir::new();
+        tools
+            .tool("gh")
+            .script(
+                "cat >/dev/null\necho \"HTTP 401: bad credentials $GITHUB_TOKEN\" >&2\nexit 1\n",
+            )
+            .install();
+        let _path = tools.activate();
+        let log =
+            anodizer_core::log::StageLogger::new("changelog", anodizer_core::log::Verbosity::Quiet);
+        let err =
+            generate_release_notes("o", "r", "v1.0.0", None, Some("hunter2-notes-token"), &log)
+                .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("bad credentials"),
+            "gh's diagnostic must still be embedded: {text}"
+        );
+        assert!(
+            !text.contains("hunter2-notes-token"),
+            "the token leaked into the error: {text}"
+        );
+    }
+
+    #[test]
+    fn request_body_includes_previous_tag_when_set() {
+        let body = build_request_body("v2.0.0", Some("v1.0.0"));
+        // When `previous_tag_name` is set, it is sent as a
+        // top-level string field. GitHub's `/releases/generate-notes`
+        // endpoint uses this as the "since" boundary for the commit range
+        // — which is the parity decision that matters over the
+        // create-release `generate_release_notes: true` flag (which uses
+        // the most-recent published release as the base).
+        assert_eq!(body["tag_name"], "v2.0.0");
+        assert_eq!(body["previous_tag_name"], "v1.0.0");
+    }
+
+    #[test]
+    fn request_body_omits_previous_tag_when_none() {
+        let body = build_request_body("v2.0.0", None);
+        // No previous_tag_name field — GitHub falls back to its default
+        // "previous release" heuristic when
+        // `ctx.Git.PreviousTag == ""` (first release).
+        assert_eq!(body["tag_name"], "v2.0.0");
+        assert!(body.get("previous_tag_name").is_none());
+    }
+
+    #[test]
+    fn request_body_handles_monorepo_tag_prefix() {
+        // Monorepo regression case: tag `service-a/v2.0.0` with previous
+        // tag `service-a/v1.0.0` must round-trip verbatim — GitHub
+        // accepts arbitrary tag strings, and the entire reason for using
+        // this endpoint over `generate_release_notes: true` is to pin
+        // such prefixed ranges reproducibly.
+        let body = build_request_body("service-a/v2.0.0", Some("service-a/v1.0.0"));
+        assert_eq!(body["tag_name"], "service-a/v2.0.0");
+        assert_eq!(body["previous_tag_name"], "service-a/v1.0.0");
+    }
+
+    #[test]
+    fn changelog_tag_name_empty_bails_with_actionable_error() {
+        // GitHub `POST /repos/{owner}/{repo}/releases/generate-notes`
+        // rejects empty `tag_name` with a 422 (`tag_name is too short`)
+        // that hides the real cause: the snapshot path leaves `Tag`
+        // unset in template vars. The helper must bail before spawning
+        // `gh` so the user sees an actionable error.
+        let log = anodizer_core::log::StageLogger::new("changelog", Default::default());
+        let err = generate_release_notes("myorg", "myrepo", "", None, None, &log)
+            .expect_err("empty tag_name must bail before spawning gh");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("changelog:"),
+            "error must carry the changelog: prefix, got: {chain}"
+        );
+        assert!(
+            chain.contains("tag_name"),
+            "error must name the rejected field, got: {chain}"
+        );
+        assert!(
+            chain.contains("myorg/myrepo"),
+            "error must name the owner/repo, got: {chain}"
+        );
+        assert!(
+            chain.contains("snapshot") || chain.contains("release.tag:"),
+            "error must include an actionable hint, got: {chain}"
         );
     }
 }

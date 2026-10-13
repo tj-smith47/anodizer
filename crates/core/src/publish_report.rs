@@ -430,10 +430,10 @@ pub fn gate_required_failures(
     let failed = report.required_failure_names();
     if !failed.is_empty() {
         anyhow::bail!(
-            "{} required publisher(s) failed: {}. {} Inspect dist/run-<id>/report.json \
+            "{} failed: {}. {} Inspect dist/run-<id>/report.json \
              for details; re-run the same release command to converge, or \
              `anodizer tag rollback` to withdraw the release deliberately.",
-            failed.len(),
+            crate::text::count_noun(failed.len(), "required publisher", "required publishers"),
             failed.join(", "),
             ran_context
         );
@@ -448,11 +448,15 @@ pub fn gate_required_failures(
     let blocked = report.required_gate_blocked_names();
     if !blocked.is_empty() {
         anyhow::bail!(
-            "{} required publisher(s) were blocked by the pre-submitter verify-release \
+            "{} blocked by the pre-submitter verify-release \
              gate and never attempted to publish: {}. {} The post-publish content check \
              did not clear before these one-way-door publishers could run; inspect the \
              verify-release stage log and re-run once the underlying issue is fixed.",
-            blocked.len(),
+            crate::text::count_noun(
+                blocked.len(),
+                "required publisher was",
+                "required publishers were"
+            ),
             blocked.join(", "),
             ran_context
         );

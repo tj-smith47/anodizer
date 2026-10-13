@@ -1,6 +1,7 @@
 //! Post-publish moderation polling: the shared chocolatey/winget eligibility
 //! ladder and the parallel poller runner.
 
+use crate::publisher_helpers::count_noun;
 use anodizer_core::config::{ChocolateyConfig, PostPublishPollConfig, PublishConfig, WingetConfig};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
@@ -290,8 +291,8 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
             return;
         }
         log.verbose(&format!(
-            "skipped post-publish polling — --no-post-publish-poll ({} publisher(s) recorded as NotPolled)",
-            skipped.len()
+            "skipped post-publish polling — --no-post-publish-poll ({} recorded as NotPolled)",
+            count_noun(skipped.len(), "publisher", "publishers")
         ));
         let mut rows: Vec<(usize, post_publish::PostPublishResult)> = skipped
             .into_iter()
@@ -326,8 +327,12 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
     }
     if !jobs.is_empty() {
         log.status(&format!(
-            "starting {} parallel post-publish poller(s)",
-            jobs.len()
+            "starting {}",
+            count_noun(
+                jobs.len(),
+                "parallel post-publish poller",
+                "parallel post-publish pollers"
+            )
         ));
     }
     // The runner returns its results in input order, so zipping the job

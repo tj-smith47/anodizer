@@ -125,8 +125,14 @@ impl Harness {
                             artifact: format!("{name} → {joined}"),
                             hashes,
                             differing_bytes_summary: Some(format!(
-                                "aggregate member(s) [{joined}] drifted and are not allow-listed; \
-                                 a gated artifact regressed (surfaced via the {name} aggregate)"
+                                "{} [{joined}] drifted and {} not allow-listed; \
+                                 a gated artifact regressed (surfaced via the {name} aggregate)",
+                                if members.len() == 1 {
+                                    "aggregate member"
+                                } else {
+                                    "aggregate members"
+                                },
+                                if members.len() == 1 { "is" } else { "are" }
                             )),
                         });
                         drift_count += 1;

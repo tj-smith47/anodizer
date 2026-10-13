@@ -2,6 +2,7 @@
 //! operator-visible run messages, and yank-target evidence encoding.
 
 use super::*;
+use crate::publisher_helpers::count_noun;
 
 // ---------------------------------------------------------------------------
 // CargoPublisher - Publisher trait adapter
@@ -33,8 +34,8 @@ simple_publisher!(
 /// block, so "scanning … for a cargo config block" would misdescribe it.
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
-        "starting cargo publish — processing {} selected crate(s)",
-        selected_total
+        "starting cargo publish — processing {}",
+        crate::publisher_helpers::count_noun(selected_total, "selected crate", "selected crates")
     )
 }
 
@@ -297,8 +298,8 @@ impl anodizer_core::Publisher for CargoPublisher {
         }
         Ok(ReconcileState::Complete {
             note: format!(
-                "all {} planned crate(s) already on crates.io with verified content",
-                published.len()
+                "{} already on crates.io with verified content",
+                count_noun(published.len(), "planned crate", "planned crates")
             ),
         })
     }
@@ -410,8 +411,14 @@ impl anodizer_core::Publisher for CargoPublisher {
         let mut failed = 0usize;
         if ctx.is_dry_run() {
             log.status(&format!(
-                "(dry-run) would yank {} crate(s) from their configured registries",
-                targets.len()
+                "(dry-run) would yank {} from {} configured {}",
+                count_noun(targets.len(), "crate", "crates"),
+                if targets.len() == 1 { "its" } else { "their" },
+                if targets.len() == 1 {
+                    "registry"
+                } else {
+                    "registries"
+                }
             ));
             return Ok(());
         }
@@ -453,8 +460,9 @@ impl anodizer_core::Publisher for CargoPublisher {
             }
         }
         log.status(&format!(
-            "cargo rollback yanked {} crate(s), {} failure(s)",
-            yanked, failed
+            "cargo rollback yanked {}, {}",
+            count_noun(yanked, "crate", "crates"),
+            count_noun(failed, "failure", "failures")
         ));
 
         // An issued OIDC token was kept live so this yank could run; revoke it

@@ -422,8 +422,8 @@ impl Stage for VerifyReleaseStage {
             issues: issues.clone(),
         });
         anyhow::bail!(
-            "verify-release: post-publish verification found {} issue(s); {}:\n  - {}",
-            issues.len(),
+            "verify-release: post-publish verification found {}; {}:\n  - {}",
+            anodizer_core::text::count_noun(issues.len(), "issue", "issues"),
             PUBLISHED_NOTE,
             issues.join("\n  - ")
         )

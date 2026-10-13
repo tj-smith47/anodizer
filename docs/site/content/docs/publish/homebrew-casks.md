@@ -233,52 +233,70 @@ dependencies:
 Homebrew installs a cask on Linux unless it depends on macOS, so without the
 line a cask of macOS `binaries` would install a Mach-O executable on a Linux
 host. A cask has a Linux side when the release ships Linux artifacts (an
-`on_linux` block) or its `custom_block` contains the word `on_linux`,
-`on_system` or `app_image` anywhere, as a whole word: `self.on_linux do`,
-`(on_linux do` and a one-line `on_arm do on_linux do … end end` all count.
-The line is also left out when a `depends_on` statement in the
-`custom_block` names an OS, since a second OS dependency is redundant: the
-word `depends_on` followed, before the next newline, `;` or `#`, by the key
-`macos:`, `maximum_macos:` or `linux:`, or the symbol `:macos` or `:linux`.
-A `depends_on(` call is read up to its closing `)`, across lines.
+`on_linux` block) or its `custom_block` gives it one. The line is also left
+out when the `custom_block` declares an OS dependency of its own, because
+Homebrew refuses a `depends_on :macos` beside a versioned
+`depends_on macos:`. anodizer reads the `custom_block` by these rules:
+
+- A line whose first non-blank character is `#` is ignored.
+- A Linux side is the word `on_linux`, `on_system` or `app_image` anywhere
+  on another line, as a whole word: `self.on_linux do`, `(on_linux do` and a
+  one-line `on_arm do on_linux do … end end` all count.
+- A `depends_on` statement starts where `depends_on` is the first word of a
+  line or of a `;`-separated statement.
+- The statement continues onto the next line while the current line ends
+  with `,`, `(` or `\`, or opens more `(` than it closes. Parentheses, `;`
+  and `#` count only outside `"…"` and `'…'` on that line.
+- Each line of the statement is cut at a trailing `# …` comment.
+- The statement is an OS dependency when it names the key `macos:`,
+  `maximum_macos:` or `linux:`, or the symbol `:macos` or `:linux`, as a
+  whole word.
 
 | `custom_block` text | An OS dependency |
 |---|---|
 | `depends_on macos: ">= :big_sur"` | yes |
-| `depends_on(` / `  macos: ">= :big_sur"` / `)` on three lines | yes |
+| `depends_on arch: :arm64,` / `  macos: ">= :ventura"` on two lines | yes |
+| `depends_on(formula: "a)b",` / `  macos: ">= :ventura")` on two lines | yes |
+| `depends_on formula: "x"; depends_on macos: :ventura` | yes |
 | `depends_on formula: "jq" # needs :macos 13` | no: the OS is in the comment |
+| `# depends_on macos: ">= :ventura"` | no: the line is a comment |
+| `caveats "this depends_on macos: newer"` | no: `depends_on` is not the first word |
 
 A flat single-download cask whose `custom_block` gives it a Linux side puts
 its `sha256` / `url` (and `app` / `service`) inside `on_macos`, so a Linux
 host never downloads the macOS archive.
 
-The `custom_block` is scanned as plain text, so a Linux-side word inside a
-string, a comment or a heredoc body counts as well, and so does an OS key
-or symbol inside a string in a `depends_on` statement. For a block that
-writes its stanzas literally, the scan can only find a Linux side or an OS
-dependency that Ruby would not; it misses only a stanza built at runtime. A wrong answer in either
-direction gives a cask that works on macOS and that Homebrew refuses on
-Linux. A download inside `on_macos` with no real Linux block and no
-`depends_on :macos` fails to load with `Missing Linux stanzas can leave Linux
-sha256 as nil. Add depends_on :macos`. A `depends_on :macos` beside a real
-Linux side the scan could not see (an `on_linux` built at runtime) loads, and
-a Linux install stops with `This cask requires macOS.` Set
-`depends_on_macos:` when the scan is wrong for your `custom_block`:
+Strings and heredoc bodies are read as code, so a Linux-side word inside
+one counts, and so does an OS key or symbol inside a string in a
+`depends_on` statement. A stanza built at runtime (an `on_linux` sent
+through `send`), or a `depends_on` that follows a `do` on the same line, is
+not seen. A wrong answer gives a cask that Homebrew refuses:
+
+- A download inside `on_macos` with no real Linux block and no
+  `depends_on :macos` fails to load on Linux with `Missing Linux stanzas can
+  leave Linux sha256 as nil. Add depends_on :macos`.
+- A `depends_on :macos` beside a real Linux side the scan could not see
+  loads, and a Linux install stops with `This cask requires macOS.`
+- A `depends_on :macos` beside a `depends_on macos:` the scan could not see
+  fails to load on every system with ``Calling combining `depends_on :macos`
+  with a versioned macOS dependency is disabled!``
+
+Set `depends_on_macos:` when the scan is wrong for your `custom_block`:
 
 ```yaml
 homebrew_casks:
   - name: mytool
     binaries: [mytool]
-    # The scan reads the word on_linux in this comment as a Linux side.
+    # The scan reads the word on_linux in this string as a Linux side.
     custom_block: |
-      # Linux users install the mytool formula; on_linux is not used here.
+      caveats "Linux users install the mytool formula; on_linux is not used here."
     depends_on_macos: true
 ```
 
 ```ruby
 # This file was generated by anodizer (https://github.com/tj-smith47/anodizer). DO NOT EDIT.
 cask "mytool" do
-  # Linux users install the mytool formula; on_linux is not used here.
+  caveats "Linux users install the mytool formula; on_linux is not used here."
 
   version "1.2.3"
   sha256 "2222222222222222222222222222222222222222222222222222222222222222"

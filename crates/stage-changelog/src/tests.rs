@@ -1079,7 +1079,7 @@ fn test_changelog_github_native_aggregates_missing_release_github_warnings() {
         );
     }
     assert!(
-        line.contains("3 crate(s)"),
+        line.contains("for 3 crates without release.github"),
         "aggregated warn must report the count: {line}"
     );
 }

@@ -388,7 +388,7 @@ pub enum Commands {
             long,
             value_delimiter = ',',
             requires = "version_files",
-            help = "Glob(s) to drop from discovered candidates (repeatable or comma-separated); only with --version-files"
+            help = "Globs to drop from discovered candidates (repeatable or comma-separated); only with --version-files"
         )]
         exclude: Vec<String>,
         #[arg(
@@ -415,7 +415,7 @@ pub enum Commands {
         format: ChangelogFormat,
         #[arg(
             long,
-            help = "Apply the regenerated [Unreleased] section to the configured CHANGELOG.md file(s) in place (keep-a-changelog only)"
+            help = "Apply the regenerated [Unreleased] section to the configured CHANGELOG.md files in place (keep-a-changelog only)"
         )]
         write: bool,
         #[arg(long = "crate", help = "Restrict to a specific crate in a workspace")]
@@ -486,7 +486,7 @@ pub enum Commands {
     Targets {
         #[arg(long, help = "Output as JSON (include-form matrix)")]
         json: bool,
-        #[arg(long = "crate", action = clap::ArgAction::Append, help = "Restrict to specific crate(s)")]
+        #[arg(long = "crate", action = clap::ArgAction::Append, help = "Restrict to specific crates")]
         crate_names: Vec<String>,
     },
     /// Emit the canonical `--skip` / `--publishers` token vocabulary.
@@ -553,13 +553,13 @@ pub enum Commands {
         #[arg(
             long,
             conflicts_with = "push",
-            help = "Do not push anything; the tag(s) and version-sync bump commit stay local"
+            help = "Do not push anything; the tags and version-sync bump commit stay local"
         )]
         no_push: bool,
         #[arg(
             long,
             conflicts_with_all = ["push", "no_push"],
-            help = "Push the tag(s) but not the version-sync bump commit (deferred-branch CI pattern; the branch must be advanced to the bump commit separately)"
+            help = "Push the tags but not the version-sync bump commit (deferred-branch CI pattern; the branch must be advanced to the bump commit separately)"
         )]
         push_tags_only: bool,
         #[arg(

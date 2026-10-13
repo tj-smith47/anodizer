@@ -2009,7 +2009,7 @@ fn duplicate_extras_are_reported_once_per_archive() {
             capture.all_messages()
         );
         assert!(
-            warns[0].starts_with("skipped 2 extra file(s) already in the archive"),
+            warns[0].starts_with("skipped 2 extra files already in the archive"),
             "{format}: {warns:?}"
         );
         let verbose: Vec<String> = capture

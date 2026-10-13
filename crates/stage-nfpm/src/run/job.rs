@@ -340,7 +340,14 @@ pub(crate) fn execute_nfpm_jobs(
         })
     };
 
-    anodizer_core::parallel::run_parallel_chunks(jobs, parallelism, "nfpm", "package", log, run_job)
+    anodizer_core::parallel::run_parallel_chunks(
+        jobs,
+        parallelism,
+        "nfpm",
+        ("package", "packages"),
+        log,
+        run_job,
+    )
 }
 
 /// One nfpm YAML config a build would feed to `nfpm pkg` for a single

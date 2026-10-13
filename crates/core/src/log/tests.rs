@@ -1093,7 +1093,7 @@ fn every_spawn_with_its_own_env_logs_through_the_child_env_redactor() {
         "whitelisted_with_env",
     ];
     // (file suffix, fn name, why no child table is needed)
-    const EXEMPT: [(&str, &str, &str); 8] = [
+    const EXEMPT: [(&str, &str, &str); 10] = [
         (
             "core/src/hooks.rs",
             "run_hooks_inner",
@@ -1133,6 +1133,16 @@ fn every_spawn_with_its_own_env_logs_through_the_child_env_redactor() {
             "stage-sign/src/verify.rs",
             "derive_cosign_public_key",
             "no logger; scrubs its bail! with `redact::string` over the job env plus the process env",
+        ),
+        (
+            "core/src/harness_signing.rs",
+            "provision_cosign",
+            "no logger; its one env value is the fixed public passphrase of a throwaway harness key",
+        ),
+        (
+            "core/src/harness_signing.rs",
+            "provision_gpg",
+            "no logger; its one env value is the path of the harness's temporary GNUPGHOME",
         ),
     ];
 

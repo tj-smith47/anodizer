@@ -121,8 +121,8 @@ pub(crate) fn run_with_ctx(
 
     if !errors.is_empty() {
         anyhow::bail!(
-            "notify: {} integration(s) failed:\n{}",
-            errors.len(),
+            "notify: {} failed:\n{}",
+            anodizer_core::text::count_noun(errors.len(), "integration", "integrations"),
             errors.join("\n")
         );
     }

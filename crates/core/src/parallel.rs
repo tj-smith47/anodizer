@@ -98,14 +98,15 @@ pub fn join_panic_to_err<T>(join_result: std::thread::Result<T>, label: &str) ->
 /// every additional failure in the chunk is logged as a warning (only the
 /// first error propagates), and a warn summarizes the partial progress —
 /// how many jobs in the batch succeeded before the failure and how many
-/// later jobs were never started. `noun` names one job in that line
-/// (`object`, `package`, `probe`); a batch of one job has no siblings and
+/// later jobs were never started. `nouns` names a job in that line as a
+/// `(singular, plural)` pair (`("object", "objects")`, `("binary",
+/// "binaries")`), so the count reads in plain words; a batch of one job has no siblings and
 /// gets the totals alone, and a single job gets no line at all.
 pub fn run_parallel_chunks<J, T, F>(
     jobs: &[J],
     parallelism: usize,
     stage_name: &'static str,
-    noun: &str,
+    nouns: (&str, &str),
     log: &StageLogger,
     run_job: F,
 ) -> Result<Vec<T>>
@@ -183,14 +184,16 @@ where
             let total = jobs.len();
             if total > 1 && chunk_len > 1 {
                 log.warn(&format!(
-                    "{stage_name}: {chunk_ok} of {chunk_len} {noun}(s) in this batch succeeded \
+                    "{stage_name}: {chunk_ok} of {} in this batch succeeded \
                      before the failure ({completed} of {total} total completed, \
                      {not_started} never started)",
+                    crate::text::count_noun(chunk_len, nouns.0, nouns.1),
                 ));
             } else if total > 1 {
                 log.warn(&format!(
-                    "{stage_name}: {completed} of {total} {noun}(s) completed before the \
+                    "{stage_name}: {completed} of {} completed before the \
                      failure, {not_started} never started",
+                    crate::text::count_noun(total, nouns.0, nouns.1),
                 ));
             }
             return Err(err);
@@ -211,8 +214,10 @@ mod tests {
         // the input slice order so downstream artifact registration is
         // deterministic across runs.
         let jobs: Vec<u32> = (0..20).collect();
-        let out = run_parallel_chunks(&jobs, 4, "test", "item", test_logger(), |job| Ok(*job * 10))
-            .unwrap();
+        let out = run_parallel_chunks(&jobs, 4, "test", ("item", "items"), test_logger(), |job| {
+            Ok(*job * 10)
+        })
+        .unwrap();
         assert_eq!(out, (0..20).map(|i| i * 10).collect::<Vec<_>>());
     }
 
@@ -226,7 +231,7 @@ mod tests {
         let in_flight = AtomicUsize::new(0);
         let peak = AtomicUsize::new(0);
 
-        run_parallel_chunks(&jobs, 2, "test", "item", test_logger(), |_| {
+        run_parallel_chunks(&jobs, 2, "test", ("item", "items"), test_logger(), |_| {
             let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             peak.fetch_max(now, Ordering::SeqCst);
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -247,13 +252,14 @@ mod tests {
         // in the error payload asserts the failing worker is the one the
         // caller receives (not silently swallowed by a later success).
         let jobs: Vec<u32> = (0..4).collect();
-        let result = run_parallel_chunks(&jobs, 2, "test", "item", test_logger(), |job| {
-            if *job == 2 {
-                Err(anyhow!("job 2 failed"))
-            } else {
-                Ok(*job)
-            }
-        });
+        let result =
+            run_parallel_chunks(&jobs, 2, "test", ("item", "items"), test_logger(), |job| {
+                if *job == 2 {
+                    Err(anyhow!("job 2 failed"))
+                } else {
+                    Ok(*job)
+                }
+            });
         let err = result.unwrap_err();
         assert!(
             err.to_string().contains("job 2 failed"),
@@ -274,15 +280,16 @@ mod tests {
 
         // parallelism=4 → chunk [0,1,2,3]: jobs 1 and 3 fail, 0 and 2 succeed;
         // chunks [4..] must never start.
-        let result = run_parallel_chunks(&jobs, 4, "partial-stage", "item", &log, |job| {
-            executed.fetch_add(1, Ordering::SeqCst);
-            if *job == 1 || *job == 3 {
-                Err(anyhow!("job {} failed", job)
-                    .context("POST https://uploads.example/secret-token failed"))
-            } else {
-                Ok(*job)
-            }
-        });
+        let result =
+            run_parallel_chunks(&jobs, 4, "partial-stage", ("item", "items"), &log, |job| {
+                executed.fetch_add(1, Ordering::SeqCst);
+                if *job == 1 || *job == 3 {
+                    Err(anyhow!("job {} failed", job)
+                        .context("POST https://uploads.example/secret-token failed"))
+                } else {
+                    Ok(*job)
+                }
+            });
 
         let err = result.unwrap_err();
         assert!(
@@ -320,7 +327,7 @@ mod tests {
         );
         assert!(
             warns.iter().any(|m| m.contains(
-                "partial-stage: 2 of 4 item(s) in this batch succeeded before the failure"
+                "partial-stage: 2 of 4 items in this batch succeeded before the failure"
             ) && m.contains("2 of 8 total completed")
                 && m.contains("4 never started")),
             "partial-progress summary must be warned: {warns:?}"
@@ -333,7 +340,7 @@ mod tests {
     fn a_batch_of_one_prints_the_totals_and_a_single_job_prints_nothing() {
         let jobs: Vec<u32> = (0..3).collect();
         let (log, cap) = StageLogger::with_capture("test", crate::log::Verbosity::Quiet);
-        run_parallel_chunks(&jobs, 1, "blob", "object", &log, |job| {
+        run_parallel_chunks(&jobs, 1, "blob", ("object", "objects"), &log, |job| {
             if *job == 1 {
                 anyhow::bail!("job 1 failed")
             }
@@ -343,14 +350,19 @@ mod tests {
         let warns = cap.warn_messages();
         assert_eq!(
             warns,
-            ["blob: 1 of 3 object(s) completed before the failure, 1 never started"]
+            ["blob: 1 of 3 objects completed before the failure, 1 never started"]
         );
 
         let jobs: Vec<u32> = vec![0];
         let (log, cap) = StageLogger::with_capture("test", crate::log::Verbosity::Quiet);
-        run_parallel_chunks(&jobs, 4, "blob", "object", &log, |_| -> Result<u32> {
-            anyhow::bail!("job 0 failed")
-        })
+        run_parallel_chunks(
+            &jobs,
+            4,
+            "blob",
+            ("object", "objects"),
+            &log,
+            |_| -> Result<u32> { anyhow::bail!("job 0 failed") },
+        )
         .unwrap_err();
         assert_eq!(cap.warn_count(), 0, "{:?}", cap.warn_messages());
     }
@@ -361,7 +373,8 @@ mod tests {
     fn successful_run_emits_no_warns() {
         let jobs: Vec<u32> = (0..6).collect();
         let (log, cap) = StageLogger::with_capture("test", crate::log::Verbosity::Quiet);
-        let out = run_parallel_chunks(&jobs, 3, "test", "item", &log, |job| Ok(*job)).unwrap();
+        let out =
+            run_parallel_chunks(&jobs, 3, "test", ("item", "items"), &log, |job| Ok(*job)).unwrap();
         assert_eq!(out.len(), 6);
         assert_eq!(cap.warn_count(), 0, "no warns on a clean run");
     }
@@ -375,7 +388,7 @@ mod tests {
         let jobs: Vec<u64> = vec![3_000_000_000, 3_000_000_001];
         {
             let _guard = crate::retry::RetryScope::enter(scope);
-            run_parallel_chunks(&jobs, 2, "test", "item", test_logger(), |job| {
+            run_parallel_chunks(&jobs, 2, "test", ("item", "items"), test_logger(), |job| {
                 crate::retry::record_retry_backoff(std::time::Duration::from_millis(*job));
                 Ok(*job)
             })
@@ -397,16 +410,24 @@ mod tests {
         // callers must not need to pre-clamp. Verify the helper runs
         // sequentially in that case rather than spawning 0 threads.
         let jobs: Vec<u32> = (0..3).collect();
-        let out = run_parallel_chunks(&jobs, 0, "test", "item", test_logger(), |job| Ok(*job + 1))
-            .unwrap();
+        let out = run_parallel_chunks(&jobs, 0, "test", ("item", "items"), test_logger(), |job| {
+            Ok(*job + 1)
+        })
+        .unwrap();
         assert_eq!(out, vec![1, 2, 3]);
     }
 
     #[test]
     fn empty_jobs_returns_empty() {
-        let out: Vec<u32> =
-            run_parallel_chunks::<u32, u32, _>(&[], 4, "test", "item", test_logger(), |_| Ok(0))
-                .unwrap();
+        let out: Vec<u32> = run_parallel_chunks::<u32, u32, _>(
+            &[],
+            4,
+            "test",
+            ("item", "items"),
+            test_logger(),
+            |_| Ok(0),
+        )
+        .unwrap();
         assert!(out.is_empty());
     }
 
@@ -419,7 +440,7 @@ mod tests {
             &jobs,
             2,
             "explode-stage",
-            "item",
+            ("item", "items"),
             test_logger(),
             |job| -> Result<u32> {
                 if *job == 2 {

@@ -390,7 +390,7 @@ pub(super) fn conflicting_casks(
     conflicts
         .unwrap_or_default()
         .iter()
-        .filter_map(|c| c.cask.clone())
+        .filter_map(|conflict| conflict.cask.clone())
         .filter(|c| !c.is_empty())
         .collect()
 }
@@ -608,91 +608,153 @@ fn render_platform_blocks(
 #[derive(Default, Debug, PartialEq, Eq)]
 pub(super) struct CustomBlockOsFacts {
     /// The word `on_linux`, `on_system` or the Linux-only `app_image`
-    /// appears in the block: the cask has a Linux side.
+    /// appears on a line of the block that is not a comment: the cask has a
+    /// Linux side.
     pub(super) other_os_block: bool,
-    /// A `depends_on` statement names an OS: the word `depends_on` is
-    /// followed, before the next newline, `;` or `#`, by the key `macos:`,
-    /// `maximum_macos:` or `linux:`, or the symbol `:macos` or `:linux`. A
-    /// `depends_on(` call reads up to its closing `)`, across lines.
+    /// A `depends_on` statement names an OS: the key `macos:`,
+    /// `maximum_macos:` or `linux:`, or the symbol `:macos` or `:linux`.
     pub(super) os_dependency: bool,
 }
 
 /// Read a `custom_block` for the facts `Homebrew/OSDependsOn` and
-/// `Cask#supports_linux?` look at. A Linux side holds when its word appears
-/// anywhere in the raw text as a whole word, so a receiver
-/// (`self.on_linux do`), a parenthesis or a one-line nesting still counts.
-/// An OS dependency holds when a `depends_on` statement names an OS key or
-/// symbol, so an OS word in a comment after the statement, or on a line of
-/// its own, does not count.
-// A wrong verdict in either direction renders a cask that Homebrew refuses
-// on Linux only. Without `depends_on :macos`, a cask whose downloads all sit
-// in `on_macos` and that has no real Linux block leaves the Linux `sha256`
-// nil and fails to load there; with it, a cask whose real `on_linux` the
-// scan missed loads everywhere and a Linux install stops at "This cask
-// requires macOS." Strings, comments and heredoc bodies are read as code,
-// so the scan over-matches a block that names its stanzas literally, and it
-// misses only a stanza built at runtime. `depends_on_macos:` overrides the
-// verdict for both cases.
+/// `Cask#supports_linux?` look at.
+///
+/// - A line whose first non-blank character is `#` is ignored.
+/// - A Linux side holds when `on_linux`, `on_system` or `app_image` appears
+///   as a whole word, so a receiver (`self.on_linux do`), a parenthesis or
+///   a one-line nesting still counts.
+/// - A `depends_on` statement starts where `depends_on` is the first word
+///   of a line or of a `;`-separated statement. It continues onto the next
+///   line while the current one ends with `,`, `(` or `\`, or opens more
+///   `(` than it closes, counting only parentheses and `;` outside `"…"`
+///   and `'…'` on that line. Each line is cut at a `#` outside quotes.
+/// - An OS dependency holds when the joined statement names an OS key or
+///   symbol as a whole word.
+// A wrong verdict renders a cask Homebrew refuses. A missed Linux side or a
+// missed OS dependency adds `depends_on :macos`: beside a real `on_linux` a
+// Linux install stops at "This cask requires macOS.", and beside the
+// block's own `depends_on macos: :ventura` Homebrew 7.0.8 refuses to load
+// the cask on every system (`brew readall --os=all --arch=all`: "Calling
+// combining `depends_on :macos` with a versioned macOS dependency is
+// disabled! Use only the versioned macOS dependency instead."; two
+// `depends_on macos:` lines fail the same way with "`depends_on macos:`
+// cannot be combined with another macOS `depends_on`"). A Linux side or OS
+// dependency read where there is none leaves `depends_on :macos` out, and a
+// cask whose downloads all sit in `on_macos` then has a nil Linux `sha256`
+// and fails to load on Linux. Strings and heredoc bodies are read as code,
+// so a stanza word inside one is an over-match; a stanza built at runtime,
+// or a `depends_on` after a `do` on the same line, is a miss.
+// `depends_on_macos:` overrides the verdict for every case.
 pub(super) fn custom_block_os_facts(block: Option<&str>) -> CustomBlockOsFacts {
     let Some(block) = block else {
         return CustomBlockOsFacts::default();
     };
-    let words = || {
-        block
-            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .filter(|w| !w.is_empty())
-    };
-    let other_os_block = words().any(|w| matches!(w, "on_linux" | "on_system" | "app_image"));
-    let os_dependency = depends_on_statements(block).any(names_an_os);
+    let code: Vec<&str> = block
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect();
+    let other_os_block = code
+        .iter()
+        .flat_map(|line| line.split(|c: char| !is_word_char(c)))
+        .any(|w| matches!(w, "on_linux" | "on_system" | "app_image"));
+    let os_dependency = depends_on_statements(&code)
+        .iter()
+        .any(|statement| names_an_os(statement));
     CustomBlockOsFacts {
         other_os_block,
         os_dependency,
     }
 }
 
-/// The argument text of every whole-word `depends_on` in `block`: up to the
-/// matching `)` for a `depends_on(` call, else up to the next newline or
-/// `;`, each line cut at its `#`.
-fn depends_on_statements(block: &str) -> impl Iterator<Item = String> + '_ {
-    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
-    block
-        .match_indices("depends_on")
-        .filter(move |(at, word)| {
-            let before = block[..*at].chars().next_back();
-            let after = block[at + word.len()..].chars().next();
-            !before.is_some_and(is_word) && !after.is_some_and(is_word)
-        })
-        .map(move |(at, word)| {
-            let rest = &block[at + word.len()..];
-            let trimmed = rest.trim_start_matches([' ', '\t']);
-            let args = match trimmed.strip_prefix('(') {
-                Some(call) => {
-                    let mut depth = 1usize;
-                    let end = call
-                        .char_indices()
-                        .find(|&(_, c)| {
-                            match c {
-                                '(' => depth += 1,
-                                ')' => depth -= 1,
-                                _ => {}
-                            }
-                            depth == 0
-                        })
-                        .map_or(call.len(), |(i, _)| i);
-                    &call[..end]
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Every statement among `lines` that opens with the word `depends_on`,
+/// joined across its continuation lines, comments cut.
+fn depends_on_statements(lines: &[&str]) -> Vec<String> {
+    let mut found = Vec::new();
+    // The statement the previous line left open, and whether it is a
+    // `depends_on`.
+    let mut open: Option<(bool, String)> = None;
+    for line in lines {
+        let segments = code_segments(line);
+        let last = segments.len() - 1;
+        for (i, (segment, paren_balance)) in segments.into_iter().enumerate() {
+            let (is_depends_on, mut text) = match open.take() {
+                Some((is_depends_on, mut text)) => {
+                    text.push('\n');
+                    (is_depends_on, text)
                 }
-                None => rest.split(['\n', ';']).next().unwrap_or(""),
+                None => (opens_with_depends_on(segment), String::new()),
             };
-            args.lines()
-                .map(|line| line.split('#').next().unwrap_or(""))
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
+            text.push_str(segment);
+            let tail = segment.trim_end();
+            let continues = tail.ends_with([',', '(', '\\']) || paren_balance > 0;
+            if i == last && continues {
+                open = Some((is_depends_on, text));
+            } else if is_depends_on {
+                found.push(text);
+            }
+        }
+    }
+    if let Some((true, text)) = open {
+        found.push(text);
+    }
+    found
+}
+
+fn opens_with_depends_on(statement: &str) -> bool {
+    statement
+        .trim_start()
+        .strip_prefix("depends_on")
+        .is_some_and(|rest| !rest.starts_with(is_word_char))
+}
+
+/// The `;`-separated statements of one line, cut at its comment, each with
+/// its count of `(` minus `)`. Quotes, `;`, `#` and parentheses are read
+/// only outside `"…"` and `'…'`, and a quote never runs past its line.
+fn code_segments(line: &str) -> Vec<(&str, i32)> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut balance = 0;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut end = line.len();
+    for (at, c) in line.char_indices() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => quote = Some(c),
+            '(' => balance += 1,
+            ')' => balance -= 1,
+            ';' => {
+                segments.push((&line[start..at], balance));
+                start = at + 1;
+                balance = 0;
+            }
+            '#' => {
+                end = at;
+                break;
+            }
+            _ => {}
+        }
+    }
+    segments.push((&line[start..end], balance));
+    segments
 }
 
 /// True when `args` names an OS as a whole word: the key `macos:`,
 /// `maximum_macos:` or `linux:`, or the symbol `:macos` or `:linux`.
-fn names_an_os(args: String) -> bool {
+fn names_an_os(args: &str) -> bool {
     let bytes = args.as_bytes();
     let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     let mut start = 0;

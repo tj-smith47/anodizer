@@ -32,12 +32,12 @@ The engine runs once, after the config and git context resolve and before the
 and the release aborts before any side effect:
 
 ```text
-       Error 4 of 24 preflight check(s) failed:
+       Error 4 of 24 preflight checks failed:
        Error   ✗ tool 'cosign' not found on PATH [needed by: stage:sign, stage:docker-sign]
-       Error   ✗ env var(s) missing or empty: COSIGN_KEY [needed by: stage:sign, stage:docker-sign]
+       Error   ✗ 1 env var missing or empty: COSIGN_KEY [needed by: stage:sign, stage:docker-sign]
        Error   ✗ env var AUR_SSH_KEY does not hold a usable SSH private key: missing '-----END ... PRIVATE KEY-----' footer [needed by: publish:aur]
        Error   ✗ endpoint 'http://minio.svc:9003' unreachable: connection refused [needed by: stage:blob]
-       Error preflight: 4 environment failure(s) across 24 check(s); fix the issues above before re-running
+       Error preflight: 4 environment failures across 24 checks; fix the issues above before re-running
 ```
 
 Secret **values** are never printed — only env-var names. Key material
@@ -73,7 +73,7 @@ probes its own credential and reports the rollback scope it would need:
    • chocolatey mycrate@1.2.3  in-moderation — package in moderation queue
    • winget mycrate@1.2.3      pr-pending — https://github.com/microsoft/winget-pkgs/pull/123
    • aur mycrate@1.2.3         unknown — AUR RPC returned 503
-   • preflight found 1 publisher(s) clean
+   • preflight found 1 publisher clean
 ```
 
 A row already live upstream renders under the success marker
@@ -101,7 +101,7 @@ run continue — a rollback scope missing in default mode, a credential probe
 that could not reach a verdict, a publisher that is optional. The
 [rollback scope preflight](@/docs/advanced/release-resilience.md#rollback-scope-preflight)
 lists what is asked of each publisher. A blocker aborts the run with a
-`preflight: N resilience blocker(s): …` line naming each one.
+`preflight: N resilience blockers: …` line naming each one.
 
 ## Reconcile sweep
 

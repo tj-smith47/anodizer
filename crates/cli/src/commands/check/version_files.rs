@@ -142,8 +142,8 @@ pub(crate) fn run_guard(config: &Config, repo_root: &Path, log: &StageLogger) ->
             log.error(f);
         }
         bail!(
-            "version_files check failed with {} finding(s)",
-            findings.len()
+            "version_files check failed with {}",
+            anodizer_core::text::count_noun(findings.len(), "finding", "findings")
         );
     }
 }

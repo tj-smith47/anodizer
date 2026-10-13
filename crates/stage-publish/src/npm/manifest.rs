@@ -10,6 +10,7 @@
 //! target triple, never hand-written, so `npm install` resolves the right
 //! package on the host.
 
+use crate::publisher_helpers::count_noun;
 use std::collections::BTreeMap;
 
 use anodizer_core::artifact::{Artifact, ArtifactKind, FORMAT_BINARY};
@@ -154,11 +155,12 @@ pub(crate) fn warn_excluded_targets(log: &StageLogger, excluded: &[String]) {
         .collect::<Vec<_>>()
         .join(", ");
     log.warn(&format!(
-        "{} target(s) have no npm os/cpu/libc mapping and were excluded from \
+        "{} no npm os/cpu/libc mapping and {} excluded from \
          npm packages: {}. Consumers on those platforms will not be able to \
          `npm install` this package (npm has no selector for them — e.g. macOS \
          universal binaries, or exotic arches).",
-        uniq.len(),
+        count_noun(uniq.len(), "target has", "targets have"),
+        if uniq.len() == 1 { "was" } else { "were" },
         list
     ));
 }

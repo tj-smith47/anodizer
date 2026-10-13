@@ -297,8 +297,8 @@ pub(super) fn run_split(
     })?;
 
     log.status(&format!(
-        "wrote {} artifact(s) + context to {}",
-        split_ctx.artifacts.len(),
+        "wrote {} + context to {}",
+        anodizer_core::text::count_noun(split_ctx.artifacts.len(), "artifact", "artifacts"),
         ctx_path.display()
     ));
 
@@ -434,14 +434,15 @@ fn check_split_worker_completeness(
 
     if !missing.is_empty() || !surplus.is_empty() {
         let mut msg = format!(
-            "merge: split-worker manifest mismatch (expected {} workers from {}, got {})",
-            expected.len(),
+            "merge: split-worker manifest mismatch (expected {} from {}, got {})",
+            anodizer_core::text::count_noun(expected.len(), "worker", "workers"),
             matrix_path.display(),
             got.len()
         );
         if !missing.is_empty() {
             msg.push_str(&format!(
-                ".\n  missing context.json from worker(s): {}",
+                ".\n  missing context.json from {}: {}",
+                anodizer_core::text::count_noun(missing.len(), "worker", "workers"),
                 missing
                     .iter()
                     .map(|s| s.as_str())
@@ -458,7 +459,8 @@ fn check_split_worker_completeness(
         }
         if !surplus.is_empty() {
             msg.push_str(&format!(
-                ".\n  unexpected context.json from worker(s) not in matrix: {}",
+                ".\n  unexpected context.json from {} not in matrix: {}",
+                anodizer_core::text::count_noun(surplus.len(), "worker", "workers"),
                 surplus
                     .iter()
                     .map(|s| s.as_str())
@@ -661,9 +663,9 @@ pub fn load_split_contexts_into(
     }
 
     log.status(&format!(
-        "loaded {} artifact(s) from {} context(s)",
-        total_loaded,
-        context_files.len()
+        "loaded {} from {}",
+        anodizer_core::text::count_noun(total_loaded, "artifact", "artifacts"),
+        anodizer_core::text::count_noun(context_files.len(), "context", "contexts")
     ));
 
     // Filesystem vs manifest cross-check. Every artifact path the merged
@@ -721,9 +723,13 @@ fn load_artifact_manifests(
     }
 
     log.status(&format!(
-        "loaded {} artifact(s) from {} artifacts.json manifest(s)",
-        total_loaded,
-        artifact_files.len()
+        "loaded {} from {}",
+        anodizer_core::text::count_noun(total_loaded, "artifact", "artifacts"),
+        anodizer_core::text::count_noun(
+            artifact_files.len(),
+            "artifacts.json manifest",
+            "artifacts.json manifests"
+        )
     ));
 
     Ok(total_loaded)
@@ -1490,7 +1496,7 @@ mod tests {
             .expect_err("incomplete worker set must error");
         let msg = err.to_string();
         assert!(
-            msg.contains("missing context.json from worker(s)"),
+            msg.contains("missing context.json from 2 workers"),
             "expected missing-worker diagnostic, got: {}",
             msg
         );

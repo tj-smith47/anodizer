@@ -35,10 +35,14 @@ pub(crate) fn rewrite_and_stage_version_files(
         let anchor_suffix = match &rewrite.anchor {
             Some(anchor) => {
                 log.verbose(&format!(
-                    "version_files: {} anchor {} matched {} region(s)",
+                    "version_files: {} anchor {} matched {}",
                     rewrite.path,
                     anchor,
-                    outcome.matched_regions.unwrap_or(0)
+                    anodizer_core::text::count_noun(
+                        outcome.matched_regions.unwrap_or(0),
+                        "region",
+                        "regions"
+                    )
                 ));
                 format!(" (match {anchor})")
             }
@@ -46,9 +50,9 @@ pub(crate) fn rewrite_and_stage_version_files(
         };
         if outcome.replacements > 0 {
             log.status(&format!(
-                "{}rewrote {} occurrence(s) of {} → {} in {}{}",
+                "{}rewrote {} of {} → {} in {}{}",
                 if dry_run { "(dry-run) " } else { "" },
-                outcome.replacements,
+                anodizer_core::text::count_noun(outcome.replacements, "occurrence", "occurrences"),
                 rewrite.old,
                 rewrite.new,
                 rewrite.path,

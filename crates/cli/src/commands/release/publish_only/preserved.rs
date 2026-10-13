@@ -55,7 +55,7 @@ pub(super) struct PreservedArtifact {
 pub(super) fn discover_sharded_manifests(dist: &Path, base: &str) -> Result<Vec<PathBuf>> {
     let entries = std::fs::read_dir(dist).with_context(|| {
         format!(
-            "publish-only: reading dist directory {} to discover {} manifest(s)",
+            "publish-only: reading dist directory {} to discover {} manifests",
             dist.display(),
             base,
         )
@@ -414,12 +414,12 @@ pub(super) fn hash_verify_preserved_dist(
                 .join(", ");
             anyhow::bail!(
                 "publish-only hash-verify: bytes on disk diverge from every shard's recorded \
-                 determinism state for {} (recorded across {} shard(s): [{}], on disk: {}). \
+                 determinism state for {} (recorded across {}: [{}], on disk: {}). \
                  The dist tree was modified between determinism check and publish, OR no \
                  shard's preserved bytes survived `download-artifact merge-multiple` — \
                  refusing to ship.",
                 path.display(),
-                expected_normalized.len(),
+                anodizer_core::text::count_noun(expected_normalized.len(), "shard", "shards"),
                 expected_list,
                 actual,
             );

@@ -184,19 +184,21 @@ pub(super) fn missing_tool_error(skipped: &[(StageId, String)], require_tools: b
         .map(|(stage, tool)| format!("`{}` (needs `{}`)", stage.as_str(), tool))
         .collect::<Vec<_>>()
         .join(", ");
-    let common = "The determinism gate cannot byte-verify the output of these stages, and a \
+    let stages = anodizer_core::text::count_noun(skipped.len(), "stage", "stages");
+    let have = if skipped.len() == 1 { "has" } else { "have" };
+    let common = "The determinism gate cannot byte-verify the output of a stage without its tool, and a \
                   silent skip would be false coverage (the exact failure mode that hid the \
                   macOS/Windows installers from every release).";
     if require_tools {
         format!(
-            "stage(s) selected by the host-OS default have no backing tool on PATH: {detail}. \
+            "{stages} selected by the host-OS default {have} no backing tool on PATH: {detail}. \
              {common} `--require-tools` forbids skipping a host-OS-native producer, so provision \
              the missing tool on this shard (e.g. choco install wixtoolset nsis on Windows, \
              the action's auto-install for linuxdeploy / flatpak-builder, or upx)."
         )
     } else {
         format!(
-            "stage(s) requested via --stages but their tool is not on PATH: {detail}. \
+            "{stages} requested via --stages {have} no tool on PATH: {detail}. \
              {common} Provision the missing tool on this shard (e.g. choco install wixtoolset \
              nsis on Windows) or remove the stage from --stages."
         )

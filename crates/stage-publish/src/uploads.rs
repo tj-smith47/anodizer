@@ -9,6 +9,7 @@
 //! is the absence of the JFrog Debian matrix-param append — a generic
 //! endpoint receives the rendered URL verbatim.
 
+use crate::publisher_helpers::count_noun;
 use anodizer_core::config::UploadConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
@@ -256,8 +257,8 @@ pub(crate) fn publish_uploads_recording(
             }
             if let Some(ref files) = entry.extra_files {
                 log.status(&format!(
-                    "(dry-run) would upload {} extra file(s)",
-                    files.len()
+                    "(dry-run) would upload {}",
+                    count_noun(files.len(), "extra file", "extra files")
                 ));
             }
             log.status(&format!(
@@ -349,10 +350,10 @@ pub(crate) fn publish_uploads_recording(
                     0,
                 ) {
                     log.warn(&format!(
-                        "exclude filter {:?} dropped all {} candidate artifact(s) for \
+                        "exclude filter {:?} dropped all {} for \
                          upload '{}'; check the globs match asset names, not full paths",
                         entry.exclude.as_deref().unwrap_or_default(),
-                        pre_exclude,
+                        count_noun(pre_exclude, "candidate artifact", "candidate artifacts"),
                         name
                     ));
                 }
@@ -694,8 +695,10 @@ impl anodizer_core::Publisher for UploadsPublisher {
             }
         }
         log.status(&format!(
-            "uploads rollback deleted {} artifact(s), {} already absent, {} failure(s)",
-            deleted, already_absent, failed
+            "uploads rollback deleted {}, {} already absent, {}",
+            count_noun(deleted, "artifact", "artifacts"),
+            already_absent,
+            count_noun(failed, "failure", "failures")
         ));
         Ok(())
     }

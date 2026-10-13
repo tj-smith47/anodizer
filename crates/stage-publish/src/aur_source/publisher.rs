@@ -1,3 +1,4 @@
+use crate::publisher_helpers::count_noun;
 use anodizer_core::config::AurSourceConfig;
 use anodizer_core::context::Context;
 
@@ -408,8 +409,8 @@ impl anodizer_core::Publisher for AurSourcePublisher {
             ));
         }
         log.status(&format!(
-            "upstream-aur recorded {} force-push(es); irreversible",
-            targets.len()
+            "upstream-aur recorded {}; irreversible",
+            count_noun(targets.len(), "force-push", "force-pushes")
         ));
         Ok(())
     }

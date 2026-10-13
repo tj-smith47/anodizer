@@ -2,6 +2,7 @@
 //! changelog-provenance and clean-tree preconditions.
 
 use super::*;
+use crate::publisher_helpers::count_noun;
 
 /// Whether the version-bump commit that LAST touched this crate's own
 /// `CHANGELOG.md` records that anodizer itself regenerated it for
@@ -140,7 +141,8 @@ pub(super) fn ensure_publish_tree_clean(ctx: &Context, log: &StageLogger) -> Res
     if residual.is_empty() {
         if !porcelain.trim().is_empty() {
             log.verbose(&format!(
-                "clean-tree check: ignoring anodizer's own in-run write(s): {}",
+                "clean-tree check: ignoring anodizer's own {}: {}",
+                count_noun(expected.len(), "in-run write", "in-run writes"),
                 expected.iter().cloned().collect::<Vec<_>>().join(", ")
             ));
         }

@@ -54,8 +54,30 @@ pub struct RepositoryConfig {
     pub pull_request: Option<PullRequestConfig>,
 }
 
+/// Two references name the same repository with the same settings. Owner
+/// and name compare without regard to case, as GitHub resolves them, unless
+/// either side is a template (`{{`), whose rendered value is unknown here;
+/// every other field compares exactly.
+impl PartialEq for RepositoryConfig {
+    fn eq(&self, other: &Self) -> bool {
+        let coordinate = |a: &Option<String>, b: &Option<String>| match (a, b) {
+            (Some(a), Some(b)) if !a.contains("{{") && !b.contains("{{") => {
+                a.eq_ignore_ascii_case(b)
+            }
+            _ => a == b,
+        };
+        coordinate(&self.owner, &other.owner)
+            && coordinate(&self.name, &other.name)
+            && self.token == other.token
+            && self.token_type == other.token_type
+            && self.branch == other.branch
+            && self.git == other.git
+            && self.pull_request == other.pull_request
+    }
+}
+
 /// Git-specific repository settings for SSH-based publishing.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct GitRepoConfig {
     /// Git URL (e.g. `ssh://git@github.com/owner/repo.git`).

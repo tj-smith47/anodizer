@@ -368,21 +368,31 @@ pub(crate) fn dispatch_release_modes(
                     .filter(|name| !with_subdir.iter().any(|s| s == *name))
                     .collect();
                 anyhow::bail!(
-                    "publish-only --crate: {} of {} requested crate(s) have no \
-                     preserved per-crate dist at {} (missing: {}). The remaining \
-                     crates ({}) do. Refusing to silently publish only the subset \
+                    "publish-only --crate: {} of {} {} no \
+                     preserved per-crate dist at {} (missing: {}). {} ({}) {}. Refusing to silently publish only the subset \
                      before an irreversible publish — re-run with only the crates \
                      that were preserved, or re-run the preserve step so every \
                      requested crate has a dist/<crate>/ subdir.",
                     missing.len(),
-                    opts.crate_names.len(),
+                    anodizer_core::text::count_noun(
+                        opts.crate_names.len(),
+                        "requested crate",
+                        "requested crates"
+                    ),
+                    if missing.len() == 1 { "has" } else { "have" },
                     dist.display(),
                     missing
                         .iter()
                         .map(|s| s.as_str())
                         .collect::<Vec<_>>()
                         .join(", "),
+                    if with_subdir.len() == 1 {
+                        "The remaining crate"
+                    } else {
+                        "The remaining crates"
+                    },
                     with_subdir.join(", "),
+                    if with_subdir.len() == 1 { "does" } else { "do" },
                 );
             }
             let all_known: Vec<CrateConfig> =

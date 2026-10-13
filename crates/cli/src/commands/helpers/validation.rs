@@ -61,11 +61,16 @@ where
         .collect::<Vec<_>>()
         .join(", ");
     anyhow::bail!(
-        "duplicate artifact path(s) after merging per-shard manifests: {summary}. \
+        "{} after merging per-shard manifests: {summary}. \
          Hypothesis: two shards overlapped on the same target, so both \
          emitted an artifact for the same path. Inspect the matrix in \
          `.github/workflows/release.yml` (or the equivalent dispatcher) \
-         to confirm the shards partition the target set."
+         to confirm the shards partition the target set.",
+        anodizer_core::text::count_noun(
+            duplicates.len(),
+            "duplicate artifact path",
+            "duplicate artifact paths"
+        ),
     );
 }
 
@@ -102,10 +107,11 @@ where
         .collect::<Vec<_>>()
         .join(", ");
     anyhow::bail!(
-        "artifacts manifest references file(s) not present under {}: {summary}. \
+        "artifacts manifest references {} not present under {}: {summary}. \
          The preserved dist is incomplete; re-run \
          `anodizer check determinism --preserve-dist=<dist>` to repopulate, or \
          remove the stale manifest entries before retrying.",
+        anodizer_core::text::count_noun(missing.len(), "file", "files"),
         dist.display(),
     );
 }

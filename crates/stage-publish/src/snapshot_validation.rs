@@ -21,6 +21,7 @@
 //! all four config modes: single-crate, workspace-lockstep, per-crate, and
 //! `--all`.
 
+use crate::publisher_helpers::count_noun;
 use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::config::{BinstallConfig, CrateConfig};
 use anodizer_core::context::Context;
@@ -950,9 +951,9 @@ fn validate_nix(ctx: &mut Context, crate_cfg: &CrateConfig, log: &StageLogger) -
     }
 
     log.verbose(&format!(
-        "crate '{}' nix snapshot emission validated ({} system(s) cross-checked)",
+        "crate '{}' nix snapshot emission validated ({} cross-checked)",
         crate_cfg.name,
-        render.archives.len()
+        count_noun(render.archives.len(), "system", "systems")
     ));
     Ok(())
 }

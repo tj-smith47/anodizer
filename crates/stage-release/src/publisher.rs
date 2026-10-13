@@ -692,10 +692,10 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
         }
 
         log.status(&format!(
-            "{} rollback deleted {} release(s), {} already-absent, {} failed \
+            "{} rollback deleted {}, {} already-absent, {} failed \
              (tag refs untouched — tag rollback owns them)",
             Self::PUBLISHER_NAME,
-            release_deleted,
+            anodizer_core::text::count_noun(release_deleted, "release", "releases"),
             release_already_absent,
             release_failed,
         ));

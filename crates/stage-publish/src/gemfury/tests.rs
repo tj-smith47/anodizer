@@ -1339,7 +1339,7 @@ fn gemfury_rollback_deletes_recorded_version_with_basic_auth() {
     );
     assert!(
         all.iter()
-            .any(|(_, m)| m.contains("1 deleted") && m.contains("0 failure(s)")),
+            .any(|(_, m)| m.contains("1 deleted") && m.contains("0 failures")),
         "summary must report one delete and zero failures; got: {all:?}"
     );
 }
@@ -1387,7 +1387,7 @@ fn gemfury_rollback_delete_http_error_is_warned_not_raised() {
     let all = capture.all_messages();
     assert!(
         all.iter()
-            .any(|(_, m)| m.contains("0 deleted") && m.contains("1 failure(s)")),
+            .any(|(_, m)| m.contains("0 deleted") && m.contains("1 failure")),
         "summary must report zero deletes and one failure; got: {all:?}"
     );
 }

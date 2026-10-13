@@ -1,4 +1,5 @@
 use super::*;
+use crate::publisher_helpers::count_noun;
 
 /// What one crate's WinGet publish submitted.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -701,8 +702,8 @@ impl anodizer_core::Publisher for WingetPublisher {
             ));
         }
         log.status(&format!(
-            "{} winget PR(s) require manual closure",
-            targets.len()
+            "{} manual closure",
+            count_noun(targets.len(), "winget PR requires", "winget PRs require")
         ));
         Ok(())
     }

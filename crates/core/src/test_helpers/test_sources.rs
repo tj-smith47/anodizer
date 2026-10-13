@@ -326,6 +326,8 @@ pub fn is_test_only_cfg(line: &str) -> bool {
 /// assert_eq!(production_half(inline), "fn a() {}\n");
 /// let sibling = "#[cfg(test)]\nmod tests;\nfn a() {}\n";
 /// assert_eq!(production_half(sibling), sibling);
+/// let helper = "#[cfg(test)]\nfn h() {\n}\nfn a() {}\n";
+/// assert_eq!(production_half(helper), helper);
 /// ```
 pub fn production_half(text: &str) -> &str {
     let mut offset = 0usize;
@@ -338,9 +340,12 @@ pub fn production_half(text: &str) -> &str {
             && !line.starts_with("//")
             && !line.trim().is_empty()
         {
-            // The gated item itself: a body opened in place is the inline test
-            // module; anything else (a declaration, a `use`) is not.
-            if line.trim_end().ends_with('{') {
+            // The gated item itself: a module body opened in place is the
+            // inline test module. Any other gated item (a `mod tests;`
+            // declaration, a test-only helper `fn`, `impl` or `use` group) is
+            // one item among the production ones, and cutting there would
+            // hide every production item written after it.
+            if is_inline_module_header(line) {
                 return &text[..start];
             }
             cfg_at = None;
@@ -348,6 +353,20 @@ pub fn production_half(text: &str) -> &str {
         offset += line.len();
     }
     text
+}
+
+/// `mod name {` or `pub(…) mod name {`: a module whose body is written in
+/// place.
+fn is_inline_module_header(line: &str) -> bool {
+    let item = line.trim();
+    let item = match item.strip_prefix("pub") {
+        Some(rest) if rest.starts_with('(') => rest.split_once(')').map_or(rest, |(_, r)| r),
+        Some(rest) => rest,
+        None => item,
+    };
+    item.trim_start()
+        .strip_prefix("mod ")
+        .is_some_and(|rest| rest.trim_end().ends_with('{'))
 }
 
 /// Split `rest` — the text after an opening `(` — at the `)` that closes it,
@@ -993,5 +1012,60 @@ unsafe impl Send for NotAFn {
         ] {
             assert!(!is_test_source_path(Path::new(path)), "{path}");
         }
+    }
+
+    /// `production_half` stops at the first inline test module, so a
+    /// production item written after one is invisible to every pin that
+    /// walks the production half. Each production source keeps its inline
+    /// test modules at the end, after the last production item.
+    #[test]
+    fn no_production_item_follows_an_inline_test_module() {
+        const ITEM_STARTS: &[&str] = &[
+            "pub ",
+            "pub(",
+            "fn ",
+            "async fn ",
+            "const ",
+            "static ",
+            "struct ",
+            "enum ",
+            "impl ",
+            "impl<",
+            "trait ",
+            "type ",
+            "unsafe ",
+            "macro_rules!",
+            "use ",
+            "mod ",
+        ];
+        let mut stranded = Vec::new();
+        for source in workspace_production_sources() {
+            let path = source.to_string_lossy().replace('\\', "/");
+            // The helpers are test code compiled under a feature, and their
+            // own fixtures hold column-0 items inside string literals.
+            if path.contains("/test_helpers/") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&source).expect("read source");
+            let tail = &text[production_half(&text).len()..];
+            let lines: Vec<&str> = tail.lines().collect();
+            for (index, line) in lines.iter().enumerate() {
+                if !ITEM_STARTS.iter().any(|start| line.starts_with(start)) {
+                    continue;
+                }
+                let gated = lines[..index]
+                    .iter()
+                    .rev()
+                    .take_while(|above| above.starts_with("#[") || above.starts_with("//"))
+                    .any(|above| is_test_only_cfg(above));
+                if !gated {
+                    stranded.push(format!("{path}: {line}"));
+                }
+            }
+        }
+        assert!(
+            stranded.is_empty(),
+            "move the inline test module above these items to the end of its file: {stranded:#?}"
+        );
     }
 }

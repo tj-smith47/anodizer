@@ -506,10 +506,17 @@ pub(crate) fn apply_host_targets_filter(
         // config skipped purely for lack of a Windows host.
         let reasons = anodizer_core::partial::host_targets_skip_reasons(host, &skipped);
         anyhow::bail!(
-            "--host-targets: none of the {} configured target(s) can be built on this host \
+            "--host-targets: {} on this host \
              ({}); all require a different native host: {}. Adjust build.targets, or run on \
              a host that satisfies the constraint above.",
-            configured.len(),
+            if configured.len() == 1 {
+                "the one configured target cannot be built".to_string()
+            } else {
+                format!(
+                    "none of the {} configured targets can be built",
+                    configured.len()
+                )
+            },
             host,
             reasons,
         );

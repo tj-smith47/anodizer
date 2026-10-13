@@ -132,10 +132,14 @@ pub(crate) fn verify_one_crate(
                     .partition(|name| produced_set.contains(name.as_str()));
                 if !missing_produced.is_empty() {
                     issues.push(format!(
-                        "{1} produced artifact(s) missing from the published \
+                        "{1} missing from the published \
                          release for crate '{0}': {2}",
                         crate_cfg.name,
-                        missing_produced.len(),
+                        anodizer_core::text::count_noun(
+                            missing_produced.len(),
+                            "produced artifact",
+                            "produced artifacts"
+                        ),
                         missing_produced
                             .iter()
                             .map(|s| s.as_str())
@@ -145,32 +149,45 @@ pub(crate) fn verify_one_crate(
                 }
                 if !missing_derived.is_empty() {
                     issues.push(format!(
-                        "{1} signature/SBOM asset(s) required by the resolved \
-                         signs/sboms config were never uploaded for crate '{0}' \
+                        "{1} required by the resolved \
+                         signs/sboms config {3} never uploaded for crate '{0}' \
                          (the producing stage registered no such artifact): {2}",
                         crate_cfg.name,
-                        missing_derived.len(),
+                        anodizer_core::text::count_noun(
+                            missing_derived.len(),
+                            "signature/SBOM asset",
+                            "signature/SBOM assets"
+                        ),
                         missing_derived
                             .iter()
                             .map(|s| s.as_str())
                             .collect::<Vec<_>>()
-                            .join(", ")
+                            .join(", "),
+                        if missing_derived.len() == 1 {
+                            "was"
+                        } else {
+                            "were"
+                        }
                     ));
                 }
                 if !diff.has_missing() {
                     log.verbose(&format!(
-                        "crate '{}' all {} asset(s) present \
+                        "crate '{}' all {} present \
                          ({} config-derived)",
                         crate_cfg.name,
-                        all_expected.len(),
+                        anodizer_core::text::count_noun(all_expected.len(), "asset", "assets"),
                         all_expected.len() - produced.len()
                     ));
                 }
                 if !diff.orphan.is_empty() {
                     log.verbose(&format!(
-                        "crate '{}' {} orphan asset(s) on release (advisory): {}",
+                        "crate '{}' {} on release (advisory): {}",
                         crate_cfg.name,
-                        diff.orphan.len(),
+                        anodizer_core::text::count_noun(
+                            diff.orphan.len(),
+                            "orphan asset",
+                            "orphan assets"
+                        ),
                         diff.orphan.join(", ")
                     ));
                 }
@@ -192,7 +209,10 @@ pub(crate) fn verify_one_crate(
                 if !diff.has_missing() && content.issue_count == 0 {
                     let digest_note = match content.digest_unverified {
                         0 => "sizes+digests match".to_string(),
-                        k => format!("sizes match ({k} digest(s) unverifiable)"),
+                        k => format!(
+                            "sizes match ({} unverifiable)",
+                            anodizer_core::text::count_noun(k, "digest", "digests")
+                        ),
                     };
                     log.status(&format!(
                         "github: crate '{}' {present}/{} assets present, {digest_note}",

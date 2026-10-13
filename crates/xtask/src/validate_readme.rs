@@ -10,6 +10,7 @@
 //! Run via `cargo xtask validate-readme` or `task docs:validate-readme`.
 
 use anodizer_core::config::Config;
+use anodizer_core::text::count_noun;
 use std::path::{Path, PathBuf};
 
 /// READMEs that ship with the workspace and may contain anodizer YAML
@@ -217,10 +218,14 @@ pub fn run(readme: Option<&Path>) -> Result<(), String> {
     }
 
     println!(
-        "validate-readme: {total_validated} anodizer config block(s) validated across {} file(s), \
-         {total_skipped} skipped, {} error(s)",
-        paths.len(),
-        all_errors.len()
+        "validate-readme: {} validated across {}, {total_skipped} skipped, {}",
+        count_noun(
+            total_validated,
+            "anodizer config block",
+            "anodizer config blocks"
+        ),
+        count_noun(paths.len(), "file", "files"),
+        count_noun(all_errors.len(), "error", "errors")
     );
 
     if !all_errors.is_empty() {
@@ -228,8 +233,8 @@ pub fn run(readme: Option<&Path>) -> Result<(), String> {
             eprintln!("error: {e}");
         }
         return Err(format!(
-            "{} README YAML block(s) failed validation — update the README(s) to match the current schema",
-            all_errors.len()
+            "{} failed validation — update the READMEs to match the current schema",
+            count_noun(all_errors.len(), "README YAML block", "README YAML blocks")
         ));
     }
 

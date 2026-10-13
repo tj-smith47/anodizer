@@ -176,7 +176,10 @@ fn report_results(log: &StageLogger, warnings: &[String], errors: &[String]) -> 
         for e in errors {
             log.error(e);
         }
-        bail!("config validation failed with {} error(s)", errors.len());
+        bail!(
+            "config validation failed with {}",
+            anodizer_core::text::count_noun(errors.len(), "error", "errors")
+        );
     }
 }
 

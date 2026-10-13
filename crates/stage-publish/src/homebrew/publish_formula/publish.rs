@@ -108,26 +108,48 @@ struct CaskInTapOutcome {
     update_existing_pr: bool,
 }
 
-/// When the crate's cask rides the formula's tap (see
-/// [`CrateCask::same_tap`](super::super::publish_cask::CrateCask::same_tap)),
-/// generate and write it into the same tap clone so the commit/push covers
-/// both files in a single round-trip.
+/// The crate's cask when it rides the formula's tap (see
+/// [`CrateCask::same_tap`](super::super::publish_cask::CrateCask::same_tap)).
+fn same_tap_cask<'a>(
+    ctx: &'a Context,
+    crate_name: &str,
+) -> Option<super::super::publish_cask::CrateCask<'a>> {
+    super::super::publish_cask::CrateCask::for_crate(ctx, crate_name)
+        .filter(|c| c.same_tap().is_some())
+}
+
+/// True when the crate has a same-tap cask and its gates leave it out,
+/// printing the skip line on `log`.
+fn same_tap_cask_gated(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
+    match same_tap_cask(ctx, crate_name) {
+        Some(crate_cask) => super::super::publish_cask::cask_skip_gates_trip(
+            ctx,
+            crate_cask.parent(),
+            crate_cask.cask,
+            crate_name,
+            log,
+            true,
+        ),
+        None => Ok(false),
+    }
+}
+
+/// When the crate's cask rides the formula's tap and `cask_gated` (the
+/// verdict of [`same_tap_cask_gated`]) is false, generate and write it into
+/// the same tap clone so the commit/push covers both files in a single
+/// round-trip.
 fn maybe_write_cask_into_tap(
     ctx: &Context,
     crate_name: &str,
     repo_path: &Path,
+    cask_gated: bool,
     log: &StageLogger,
 ) -> Result<CaskInTapOutcome> {
-    let Some(crate_cask) = super::super::publish_cask::CrateCask::for_crate(ctx, crate_name)
-        .filter(|c| c.same_tap().is_some())
-    else {
+    let Some(crate_cask) = same_tap_cask(ctx, crate_name).filter(|_| !cask_gated) else {
         return Ok(CaskInTapOutcome::default());
     };
     let cask_cfg = crate_cask.cask;
     let parent = crate_cask.parent();
-    if super::super::publish_cask::cask_skip_gates_trip(ctx, parent, cask_cfg, crate_name, log)? {
-        return Ok(CaskInTapOutcome::default());
-    }
     let cask_result = super::super::cask_scope::generate_cask_from_context(
         ctx,
         crate_name,
@@ -347,21 +369,32 @@ pub(crate) struct RenderedFormula {
 }
 
 /// True when the formula's `skip_upload:` or `if:` gate trips for
-/// `crate_name`, printing the skip line on `log`. The publisher passes the
-/// stage logger; the render-only [`render_homebrew_formula_for_crate`]
-/// passes a silenced one, so the line prints once per command.
+/// `crate_name`. The skip line prints on `log` only when `report_skip` is
+/// set, which the publisher does and the render-only
+/// [`render_homebrew_formula_for_crate`] does not, so it prints once per
+/// command. A `skip_upload` warning prints through the logger
+/// [`Context::claim_render_log`] hands the formula, so it prints once per
+/// command in every mode.
 fn formula_skip_gates_trip(
     ctx: &Context,
     hb_cfg: &HomebrewConfig,
     crate_name: &str,
     log: &StageLogger,
+    report_skip: bool,
 ) -> Result<bool> {
-    if crate::util::should_skip_upload(
-        hb_cfg.skip_upload.as_ref(),
-        ctx,
+    let warn_log = ctx.claim_render_log(
+        &format!(
+            "{} skip_upload",
+            super::super::formula_render_key(crate_name)
+        ),
         log,
-        Some(&format!("homebrew for '{crate_name}'")),
-    )? {
+    );
+    if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx, &warn_log, None)? {
+        if report_skip {
+            log.status(&crate::util::skip_upload_line(&format!(
+                "homebrew for '{crate_name}'"
+            )));
+        }
         return Ok(true);
     }
     let proceed = anodizer_core::config::evaluate_if_condition(
@@ -369,7 +402,7 @@ fn formula_skip_gates_trip(
         &format!("homebrew publisher for crate '{}'", crate_name),
         |t| ctx.render_template(t),
     )?;
-    if !proceed {
+    if !proceed && report_skip {
         log.status(&format!(
             "skipped homebrew for '{}' — `if` condition evaluated falsy",
             crate_name
@@ -402,7 +435,7 @@ pub(crate) fn render_homebrew_formula_for_crate(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("homebrew: no homebrew config for '{}'", crate_name))?;
 
-    if formula_skip_gates_trip(ctx, hb_cfg, crate_name, &super::super::silenced(log))? {
+    if formula_skip_gates_trip(ctx, hb_cfg, crate_name, log, false)? {
         return Ok(None);
     }
 
@@ -577,7 +610,7 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("homebrew: no homebrew config for '{}'", crate_name))?;
 
-    if formula_skip_gates_trip(ctx, hb_cfg, crate_name, log)? {
+    if formula_skip_gates_trip(ctx, hb_cfg, crate_name, log, true)? {
         let rides_formula = super::super::publish_cask::CrateCask::of(publish)
             .is_some_and(|c| c.same_tap().is_some());
         if rides_formula {
@@ -610,6 +643,10 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
     else {
         return Ok(false);
     };
+
+    // Evaluated ahead of the dry-run return so a dry run reports the cask's
+    // skip line as a release would.
+    let cask_gated = same_tap_cask_gated(ctx, crate_name, log)?;
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -659,7 +696,7 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
     let formula_path =
         clone_tap_and_write_formula(ctx, &hb_cfg_owned, &tap, formula_name, &formula, log)?;
 
-    let cask = maybe_write_cask_into_tap(ctx, crate_name, tap.repo_path, log)?;
+    let cask = maybe_write_cask_into_tap(ctx, crate_name, tap.repo_path, cask_gated, log)?;
 
     let branch = crate::util::resolve_branch_or_versioned(
         ctx,

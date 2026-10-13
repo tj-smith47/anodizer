@@ -55,8 +55,8 @@ impl DuplicateExtras {
     fn report(&self, log: &anodizer_core::log::StageLogger) {
         if self.count > 0 {
             log.warn(&format!(
-                "skipped {} extra file(s) already in the archive — git-tracked files need no `files:` entry (run with -v to list them)",
-                self.count
+                "skipped {} already in the archive — git-tracked files need no `files:` entry (run with -v to list them)",
+                anodizer_core::text::count_noun(self.count, "extra file", "extra files")
             ));
         }
     }

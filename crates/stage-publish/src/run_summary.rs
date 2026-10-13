@@ -10,6 +10,7 @@
 //! fails loudly if a future anodizer version adds a field they don't
 //! understand — preferable to silent shape drift.
 
+use crate::publisher_helpers::count_noun;
 use anodizer_core::context::Context;
 use anodizer_core::publish_evidence::PublishEvidence;
 use anodizer_core::publish_report::{PublisherGroup, PublisherOutcome, SkipReason};
@@ -707,8 +708,8 @@ pub fn status_table_rows(
             "passed".to_string()
         } else {
             format!(
-                "FAILED ({} issue(s)) — the release IS published; investigate",
-                vr.issue_count
+                "FAILED ({}) — the release IS published; investigate",
+                count_noun(vr.issue_count as usize, "issue", "issues")
             )
         };
         rows.push(("verify-release".to_string(), value));
@@ -964,7 +965,7 @@ mod tests {
             .find(|(k, _)| k == "verify-release")
             .expect("a verify-release row must be present");
         assert!(
-            verdict.1.contains("FAILED (1 issue(s))")
+            verdict.1.contains("FAILED (1 issue)")
                 && verdict.1.contains("the release IS published"),
             "FAILED verdict wording: {}",
             verdict.1

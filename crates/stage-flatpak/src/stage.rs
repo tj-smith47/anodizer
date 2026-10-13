@@ -364,7 +364,7 @@ impl Stage for FlatpakStage {
                 &jobs,
                 parallelism,
                 "flatpak",
-                "bundle",
+                ("bundle", "bundles"),
                 &log,
                 |job| run_flatpak_job(job, verbosity),
             )?;

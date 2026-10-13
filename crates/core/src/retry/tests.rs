@@ -365,7 +365,7 @@ fn steps_sync_retry_then_done_emits_succeeded() {
         cap.all_messages()
             .iter()
             .any(|(lvl, m)| *lvl == crate::log::LogLevel::Status
-                && m.contains("op succeeded after 3 attempt(s)")),
+                && m.contains("op succeeded after 3 attempts")),
         "recovery after retries must emit a succeeded status line: {:?}",
         cap.all_messages()
     );
@@ -548,7 +548,7 @@ fn steps_sync_exhaustion_emits_giving_up() {
     assert!(
         cap.warn_messages()
             .iter()
-            .any(|m| m.contains("op failed after 3 attempt(s), giving up")),
+            .any(|m| m.contains("op failed after 3 attempts, giving up")),
         "exhausting the ladder must emit a giving-up warn: {:?}",
         cap.warn_messages()
     );
@@ -600,7 +600,7 @@ async fn steps_async_retry_then_done_emits_succeeded() {
         cap.all_messages()
             .iter()
             .any(|(lvl, m)| *lvl == crate::log::LogLevel::Status
-                && m.contains("op succeeded after 2 attempt(s)"))
+                && m.contains("op succeeded after 2 attempts"))
     );
 }
 

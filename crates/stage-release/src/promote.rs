@@ -91,7 +91,11 @@ impl Promotable for GithubReleasePromoter {
                 self.name(),
                 from_label,
                 &req.to,
-                Some(format!("{} release(s)", repos.len())),
+                Some(anodizer_core::text::count_noun(
+                    repos.len(),
+                    "release",
+                    "releases",
+                )),
             ));
         }
 
@@ -136,7 +140,7 @@ impl Promotable for GithubReleasePromoter {
             self.name(),
             from_label,
             &req.to,
-            format!("{} release(s)", promoted.len()),
+            anodizer_core::text::count_noun(promoted.len(), "release", "releases"),
         ))
     }
 }
@@ -951,7 +955,7 @@ mod tests {
             "a Version selector labels `from` with the version, not the track"
         );
         assert_eq!(outcome.to, "stable");
-        assert_eq!(outcome.what.as_deref(), Some("1 release(s)"));
+        assert_eq!(outcome.what.as_deref(), Some("1 release"));
     }
 
     #[test]
@@ -984,7 +988,7 @@ mod tests {
         );
         assert_eq!(
             outcome.what.as_deref(),
-            Some("2 release(s)"),
+            Some("2 releases"),
             "two distinct repos deduplicate to two dry-run targets"
         );
     }
@@ -1122,7 +1126,7 @@ mod tests {
         assert_eq!(outcome.publisher, "github");
         assert_eq!(
             outcome.what.as_deref(),
-            Some("1 release(s)"),
+            Some("1 release"),
             "one repo flipped => one release counted"
         );
         assert_eq!(

@@ -231,8 +231,8 @@ impl anodizer_core::Publisher for BlobPublisher {
             log.warn(&blob_manual_cleanup_msg(&path.display().to_string()));
         }
         log.status(&format!(
-            "blob rollback emitted manual-cleanup checklist for {} object(s) (legacy evidence)",
-            evidence.artifact_paths.len()
+            "blob rollback emitted manual-cleanup checklist for {} (legacy evidence)",
+            anodizer_core::text::count_noun(evidence.artifact_paths.len(), "object", "objects")
         ));
         Ok(())
     }

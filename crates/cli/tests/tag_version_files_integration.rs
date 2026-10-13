@@ -363,7 +363,7 @@ crates:
 
     // The rewrite was previewed (count logged) but nothing was written.
     assert!(
-        stderr.contains("rewrote 1 occurrence(s) of 0.1.0 → 0.1.1 in Chart.yaml"),
+        stderr.contains("rewrote 1 occurrence of 0.1.0 → 0.1.1 in Chart.yaml"),
         "expected a dry-run version_files preview line: {stderr}"
     );
     assert_eq!(read(root, "Chart.yaml"), "appVersion: v0.1.0\n");
@@ -552,11 +552,11 @@ fn per_crate_distinct_old_versions_both_rewrite_in_dry_run() {
         "dry-run tag failed: {stdout}\n{stderr}"
     );
     assert!(
-        stderr.contains("rewrote 1 occurrence(s) of 0.9.0 → 0.10.0 in shared.md"),
+        stderr.contains("rewrote 1 occurrence of 0.9.0 → 0.10.0 in shared.md"),
         "expected the core preview line: {stderr}"
     );
     assert!(
-        stderr.contains("rewrote 1 occurrence(s) of 0.7.0 → 0.8.0 in shared.md"),
+        stderr.contains("rewrote 1 occurrence of 0.7.0 → 0.8.0 in shared.md"),
         "expected the cli preview line: {stderr}"
     );
     assert_eq!(read(root, "shared.md"), "core 0.9.0 and cli 0.7.0\n");
@@ -1169,11 +1169,11 @@ fn no_crates_block_rewrites_top_level_version_files() {
     let combined = format!("{stdout}{stderr}");
     assert!(out.status.success(), "tag failed: {combined}");
     assert!(
-        combined.contains("rewrote 1 occurrence(s) of 1.2.3 → 1.3.0 in README.md"),
+        combined.contains("rewrote 1 occurrence of 1.2.3 → 1.3.0 in README.md"),
         "bare top-level entry not planned: {combined}"
     );
     assert!(
-        combined.contains("rewrote 1 occurrence(s) of 1.2.3 → 1.3.0 in chart.yaml (match"),
+        combined.contains("rewrote 1 occurrence of 1.2.3 → 1.3.0 in chart.yaml (match"),
         "anchored top-level entry not planned: {combined}"
     );
     // Dry-run previews only.
@@ -1435,7 +1435,7 @@ fn one_declared_crate_rewrites_top_level_version_files() {
     );
     assert!(out.status.success(), "tag failed: {combined}");
     assert!(
-        combined.contains("rewrote 1 occurrence(s) of 0.1.0 → 0.1.1 in README.md"),
+        combined.contains("rewrote 1 occurrence of 0.1.0 → 0.1.1 in README.md"),
         "top-level entry not planned for the one declared crate: {combined}"
     );
     assert_eq!(read(root, "README.md"), "app is at 0.1.0\npin: v0.1.0\n");
@@ -1529,7 +1529,10 @@ fn tag_rewrote(root: &Path, mode: &str, tag_args: &[&str]) -> Vec<Validated> {
     let mut pairs: Vec<Validated> = combined
         .lines()
         .filter_map(|line| {
-            let rest = line.split_once(" occurrence(s) of ")?.1;
+            let rest = line
+                .split_once(" occurrence of ")
+                .or_else(|| line.split_once(" occurrences of "))?
+                .1;
             let (old, rest) = rest.split_once(' ')?;
             let target = rest.split_once(" in ")?.1.trim();
             let (file, anchor) = match target.split_once(" (match ") {

@@ -619,7 +619,7 @@ mod publisher_tests {
             .find(|m| m.starts_with("finished nix publish"))
             .expect("the publisher emits its done line");
         assert!(
-            done.contains("2 configured crate(s) considered"),
+            done.contains("2 configured crates considered"),
             "the counter names what the loop reached: {done}"
         );
         for claim in ["processed", "published —", "pushed"] {
@@ -1031,7 +1031,7 @@ mod publisher_tests {
     fn run_done_message_reports_considered_count() {
         let msg = crate::publisher_helpers::run_done_message("nix", 2);
         assert!(msg.starts_with("finished nix publish"), "{msg}");
-        assert!(msg.contains("2 configured crate(s) considered"), "{msg}");
+        assert!(msg.contains("2 configured crates considered"), "{msg}");
     }
 
     #[test]

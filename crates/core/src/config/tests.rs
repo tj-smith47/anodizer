@@ -11510,15 +11510,73 @@ fn every_crate_cask_read_goes_through_the_accessor() {
         }
         code
     }
+    // The other structs with a `cask` field: each named with the file that
+    // defines it and the receivers its reads use. `self` is exempt only in
+    // the defining file.
+    const OTHER_CASK_FIELDS: &[(&str, &str, &[&str])] = &[
+        (
+            "HomebrewCaskDependencyEntry",
+            "crates/core/src/config/publishers/homebrew.rs",
+            &["dep"],
+        ),
+        (
+            "HomebrewCaskConflictEntry",
+            "crates/core/src/config/publishers/homebrew.rs",
+            &["conflict"],
+        ),
+        (
+            "CrateCask",
+            "crates/stage-publish/src/homebrew/publish_cask.rs",
+            &["self", "crate_cask"],
+        ),
+    ];
+    // Where any `.cask` field read is the crate cask's unless its receiver is
+    // one named above: the modules that hold `HomebrewConfig`.
+    const CASK_SCOPE: &[&str] = &["crates/core/src/config/", "crates/stage-publish/src/"];
+
+    fn is_ident(c: char) -> bool {
+        c.is_ascii_alphanumeric() || c == '_'
+    }
+    fn workspace_path(path: &std::path::Path) -> String {
+        let path = path.to_string_lossy().replace('\\', "/");
+        match path.find("crates/") {
+            Some(at) => path[at..].to_string(),
+            None => path,
+        }
+    }
+    /// The identifier right before `at`, empty when another token precedes.
+    fn receiver_before(code: &str, at: usize) -> &str {
+        let before = &code[..at];
+        let start = before
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| is_ident(*c))
+            .last()
+            .map_or(at, |(i, _)| i);
+        &before[start..]
+    }
     // A field read: `.homebrew_cask` not called as the accessor, or a
-    // `.cask` reached from a `.homebrew` in the same statement, which is
-    // where the field path to the sub-block puts it.
+    // `.cask` reached from a `.homebrew` in the same statement, anywhere in
+    // the workspace; and inside `CASK_SCOPE`, any `.cask` not called as a
+    // method whose receiver is not one of `OTHER_CASK_FIELDS`.
     let canonical = regex::Regex::new(r"\.homebrew_cask\b(?:[^(_A-Za-z0-9]|$)").unwrap();
     let sub_block =
         regex::Regex::new(r"\.homebrew(\(\))?\s*\.\s*(as_ref\(\)\s*\.)?(.*\.)?\s*cask\b").unwrap();
-    let reads_field = |statement: &str| {
+    let field = regex::Regex::new(r"\.cask\b\s*([^(\s_A-Za-z0-9]|$)").unwrap();
+    let allowed_receiver = |receiver: &str, file: &str| {
+        OTHER_CASK_FIELDS.iter().any(|(_, defined_in, receivers)| {
+            receivers.contains(&receiver) && (receiver != "self" || file == *defined_in)
+        })
+    };
+    let reads_field = |statement: &str, file: &str| {
         let code = code_of(statement);
-        canonical.is_match(&code) || sub_block.is_match(&code)
+        if canonical.is_match(&code) || sub_block.is_match(&code) {
+            return true;
+        }
+        CASK_SCOPE.iter().any(|scope| file.starts_with(scope))
+            && field
+                .find_iter(&code)
+                .any(|m| !allowed_receiver(receiver_before(&code, m.start()), file))
     };
     /// A body as its `;`-separated statements, each flattened onto one line
     /// with strings and comments removed.
@@ -11530,27 +11588,49 @@ fn every_crate_cask_read_goes_through_the_accessor() {
         lines.join(" ").split(';').map(str::to_string).collect()
     }
 
-    for read in [
-        ".and_then(|p| p.homebrew.as_ref()?.cask.as_ref())",
-        "publish.homebrew.as_ref().and_then(|h| h.cask.clone())",
-        "if publish.homebrew_cask.is_some() {",
-        "let c = &p.homebrew_cask;",
-        "p.homebrew().cask",
-        "p.homebrew.cask = None",
+    let in_scope = "crates/stage-publish/src/homebrew/publisher.rs";
+    let out_of_scope = "crates/cli/src/commands/init.rs";
+    for (read, file) in [
+        ("let cask = hb_cfg.cask.as_ref();", in_scope),
+        ("h.cask = Some(cask);", in_scope),
+        ("let c = &self.cask;", in_scope),
+        ("x.map(|c| c.cask)", in_scope),
+        (
+            ".and_then(|p| p.homebrew.as_ref()?.cask.as_ref())",
+            out_of_scope,
+        ),
+        (
+            "publish.homebrew.as_ref().and_then(|h| h.cask.clone())",
+            out_of_scope,
+        ),
+        ("if publish.homebrew_cask.is_some() {", out_of_scope),
+        ("let c = &p.homebrew_cask;", out_of_scope),
+        ("p.homebrew().cask", out_of_scope),
+        ("p.homebrew.cask = None", out_of_scope),
     ] {
-        assert!(reads_field(read), "{read}");
+        assert!(reads_field(read, file), "{read} in {file}");
     }
-    for not_read in [
-        "publish.homebrew_cask()",
-        "dep.cask.as_deref()",
-        "c.cask.clone()",
-        "ctx.config.homebrew_casks.as_ref()",
-        "p.homebrew_cask_slots()",
-        "format!(\"{name}.publish.homebrew_cask\")",
-        "let x = 1; // hb_cfg.homebrew.cask",
-        "publish.homebrew.as_ref().map(|h| h.cask_name.clone())",
+    for (not_read, file) in [
+        ("publish.homebrew_cask()", in_scope),
+        ("dep.cask.as_deref()", in_scope),
+        ("conflict.cask.clone()", in_scope),
+        ("let cask = crate_cask.cask;", in_scope),
+        (
+            "match self.cask.repository.as_ref() {",
+            "crates/stage-publish/src/homebrew/publish_cask.rs",
+        ),
+        ("hb_cfg.cask_name()", in_scope),
+        ("ctx.config.homebrew_casks.as_ref()", in_scope),
+        ("p.homebrew_cask_slots()", in_scope),
+        ("format!(\"{name}.publish.homebrew_cask\")", in_scope),
+        ("let x = 1; // hb_cfg.homebrew.cask", in_scope),
+        (
+            "publish.homebrew.as_ref().map(|h| h.cask_name.clone())",
+            in_scope,
+        ),
+        ("let cask = hb_cfg.cask.as_ref();", out_of_scope),
     ] {
-        assert!(!reads_field(not_read), "{not_read}");
+        assert!(!reads_field(not_read, file), "{not_read} in {file}");
     }
     assert_eq!(
         statements(
@@ -11562,20 +11642,49 @@ fn every_crate_cask_read_goes_through_the_accessor() {
         ],
     );
 
+    let struct_head = regex::Regex::new(r"^\s*(?:pub(?:\([a-z]+\))?\s+)?struct\s+(\w+)").unwrap();
+    let cask_field = regex::Regex::new(r"^\s*(?:pub(?:\([a-z]+\))?\s+)?cask\s*:").unwrap();
+    let mut cask_structs = std::collections::BTreeSet::new();
+    let mut receivers_seen = std::collections::BTreeSet::new();
     let mut bodies = 0usize;
     let mut owners_found = std::collections::BTreeSet::new();
     let mut strays = Vec::new();
     for source in workspace_production_sources() {
+        let file = workspace_path(&source);
         let text = std::fs::read_to_string(&source).expect("read source");
-        for body in function_bodies(production_half(&text)) {
+        let production = production_half(&text);
+        if CASK_SCOPE.iter().any(|scope| file.starts_with(scope)) {
+            // The struct whose braced field list the line sits in.
+            let mut current = None;
+            for line in production.lines() {
+                if let Some(head) = struct_head.captures(line) {
+                    current = line.trim_end().ends_with('{').then(|| head[1].to_string());
+                } else if line.trim_start().starts_with('}') {
+                    current = None;
+                } else if cask_field.is_match(line)
+                    && let Some(name) = &current
+                {
+                    cask_structs.insert((name.clone(), file.clone()));
+                }
+            }
+        }
+        for body in function_bodies(production) {
             bodies += 1;
             let head = body.lines().next().unwrap_or("");
             if let Some(owner) = OWNERS.iter().find(|owner| head.contains(**owner)) {
                 owners_found.insert(*owner);
                 continue;
             }
-            for statement in statements(&body).iter().filter(|s| reads_field(s)) {
-                strays.push(format!("{}: {}", source.display(), statement.trim()));
+            for statement in statements(&body) {
+                for m in field.find_iter(&statement) {
+                    let receiver = receiver_before(&statement, m.start());
+                    if allowed_receiver(receiver, &file) {
+                        receivers_seen.insert(receiver.to_string());
+                    }
+                }
+                if reads_field(&statement, &file) {
+                    strays.push(format!("{file}: {}", statement.trim()));
+                }
             }
         }
     }
@@ -11591,6 +11700,26 @@ fn every_crate_cask_read_goes_through_the_accessor() {
             all
         },
         "every owner function is still in the tree"
+    );
+    let mut want_structs: std::collections::BTreeSet<(String, String)> = OTHER_CASK_FIELDS
+        .iter()
+        .map(|(name, file, _)| (name.to_string(), file.to_string()))
+        .collect();
+    want_structs.insert((
+        "HomebrewConfig".to_string(),
+        "crates/core/src/config/publishers/homebrew.rs".to_string(),
+    ));
+    assert_eq!(
+        cask_structs, want_structs,
+        "every struct with a `cask` field is the formula block or named in OTHER_CASK_FIELDS"
+    );
+    let want_receivers: std::collections::BTreeSet<String> = OTHER_CASK_FIELDS
+        .iter()
+        .flat_map(|(_, _, receivers)| receivers.iter().map(|r| r.to_string()))
+        .collect();
+    assert_eq!(
+        receivers_seen, want_receivers,
+        "every receiver OTHER_CASK_FIELDS exempts still reads a `cask` field"
     );
     assert!(
         strays.is_empty(),

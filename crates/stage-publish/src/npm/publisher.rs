@@ -23,6 +23,7 @@
 //! packages + the metapackage in optional-deps mode). Skip / dry-run /
 //! no-binaries paths produce no evidence.
 
+use crate::publisher_helpers::count_noun;
 use anodizer_core::context::Context;
 
 use super::publish::publish_to_npm;
@@ -298,7 +299,10 @@ impl anodizer_core::Publisher for NpmPublisher {
             }
         }
         Ok(ReconcileState::Complete {
-            note: format!("all {published} planned npm package(s) already published at {version}"),
+            note: format!(
+                "{} already published at {version}",
+                count_noun(published, "planned npm package", "planned npm packages")
+            ),
         })
     }
 
@@ -310,8 +314,8 @@ impl anodizer_core::Publisher for NpmPublisher {
             return Ok(anodizer_core::PublishEvidence::new("npm"));
         }
         log.status(&format!(
-            "starting npm publish for {} entry(ies)",
-            entries.len()
+            "starting npm publish for {}",
+            crate::publisher_helpers::count_noun(entries.len(), "entry", "entries")
         ));
 
         // Accumulate every package that publishes successfully BEFORE the
@@ -471,8 +475,9 @@ impl anodizer_core::Publisher for NpmPublisher {
             }
         }
         log.status(&format!(
-            "npm rollback complete — {} unpublished, {} failure(s)",
-            succeeded, failed
+            "npm rollback complete — {} unpublished, {}",
+            succeeded,
+            count_noun(failed, "failure", "failures")
         ));
         Ok(())
     }

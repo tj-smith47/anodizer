@@ -150,16 +150,18 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 ///
 /// Both surfaces count toward the unit total: a cask-only project (the
 /// recommended path, zero formula blocks) would otherwise report
-/// `0 unit(s) considered` even after pushing its cask, which reads as a
+/// `0 units considered` even after pushing its cask, which reads as a
 /// no-op to operators scanning the log.
 pub(crate) fn run_done_message(considered: usize, casks: usize) -> String {
-    let entries = if casks == 1 { "entry" } else { "entries" };
+    use crate::publisher_helpers::count_noun;
     crate::publisher_helpers::run_done_message_detailed(
         "homebrew",
         considered + casks,
         "unit",
         Some(&format!(
-            "{considered} crate(s), {casks} homebrew_casks {entries}"
+            "{}, {}",
+            count_noun(considered, "crate", "crates"),
+            count_noun(casks, "homebrew_casks entry", "homebrew_casks entries")
         )),
     )
 }
@@ -350,15 +352,11 @@ pub(crate) fn build_homebrew_crate_reconcile_target(
     // pushed to its own tap opens its own PR, probed separately.
     let same_tap_cask = super::CrateCask::for_crate(ctx, crate_name)
         .filter(|c| c.same_tap().is_some())
-        .map(|c| c.cask);
+        .map(|crate_cask| crate_cask.cask);
     let cask_name = match same_tap_cask {
         Some(cask_cfg)
             if !super::publish_cask::cask_skip_gates_trip(
-                ctx,
-                hb_cfg,
-                cask_cfg,
-                crate_name,
-                &super::silenced(log),
+                ctx, hb_cfg, cask_cfg, crate_name, log, false,
             )? =>
         {
             let raw = cask_cfg.name.as_deref().unwrap_or(crate_name);
@@ -1256,27 +1254,26 @@ mod publisher_tests {
     fn run_done_message_reports_considered_count() {
         let msg = run_done_message(2, 0);
         assert!(msg.starts_with("finished homebrew publish"), "{msg}");
-        // Two formula crates, no casks → total unit count is 2.
-        assert!(msg.contains("2 configured unit(s) considered"), "{msg}");
-        assert!(msg.contains("2 crate(s)"), "{msg}");
-        assert!(msg.contains("0 homebrew_casks entries)"), "{msg}");
+        assert_eq!(
+            msg,
+            "finished homebrew publish — 2 configured units considered (2 crates, 0 homebrew_casks entries)"
+        );
     }
 
-    /// A cask-only run (zero formula crates, one published cask) must report
-    /// a NON-zero processed count — the v0.9.1 log read "0 crate(s)
-    /// processed" even though the cask published, which looked like a no-op.
+    /// A cask-only run (zero formula crates, one published cask) reports a
+    /// non-zero count, so a run that published its cask never reads as a
+    /// no-op, and every count is spelled for its number.
     #[test]
     fn run_done_message_counts_published_casks() {
         let msg = run_done_message(0, 1);
-        assert!(
-            msg.contains("1 configured unit(s) considered"),
-            "cask-only run must report 1 unit, not 0; got: {msg}"
+        assert_eq!(
+            msg,
+            "finished homebrew publish — 1 configured unit considered (0 crates, 1 homebrew_casks entry)"
         );
-        assert!(msg.contains("1 homebrew_casks entry)"), "{msg}");
-        // Mixed: 1 formula + 2 casks → 3 units total.
-        let mixed = run_done_message(1, 2);
-        assert!(mixed.contains("3 configured unit(s) considered"), "{mixed}");
-        assert!(mixed.contains("2 homebrew_casks entries)"), "{mixed}");
+        assert_eq!(
+            run_done_message(1, 2),
+            "finished homebrew publish — 3 configured units considered (1 crate, 2 homebrew_casks entries)"
+        );
     }
 
     #[test]

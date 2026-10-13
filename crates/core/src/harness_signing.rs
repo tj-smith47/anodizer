@@ -212,41 +212,6 @@ fn gpg_on_path_is_msys() -> bool {
     })
 }
 
-#[cfg(test)]
-mod path_tests {
-    use super::{path_for_subprocess_env, to_msys_drive_form};
-    use std::path::Path;
-
-    #[test]
-    fn unix_path_passes_through() {
-        // Even compiled on a Windows host, /tmp-style input has no drive
-        // letter to transform and returns unchanged content.
-        let out = path_for_subprocess_env(Path::new("/tmp/foo/bar"));
-        assert_eq!(out, "/tmp/foo/bar");
-    }
-
-    #[test]
-    fn msys_drive_form_rewrites_drive_root() {
-        // Pure transform (flavor-independent): drive-letter forward-slash
-        // input becomes the MSYS2 `/c/...` root with a lowercased drive.
-        assert_eq!(
-            to_msys_drive_form("C:/Users/RUNNER~1/AppData/Local/Temp/agpg-x"),
-            "/c/Users/RUNNER~1/AppData/Local/Temp/agpg-x"
-        );
-        assert_eq!(to_msys_drive_form("D:/foo"), "/d/foo");
-    }
-
-    #[test]
-    fn msys_drive_form_passes_through_posix() {
-        // No `<drive>:/` prefix => returned unchanged (native gpg + cosign
-        // consume this drive-letter/POSIX form directly).
-        assert_eq!(
-            to_msys_drive_form("/already/posix/path"),
-            "/already/posix/path"
-        );
-    }
-}
-
 fn provision_cosign(tmpdir: &Path) -> Result<String> {
     if Command::new("cosign")
         .arg("version")
@@ -837,5 +802,40 @@ mod provision_tests {
         let err = provision_err(0);
         assert!(err.contains("gpg --export-secret-keys failed"), "{err}");
         assert!(err.contains("export denied"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::{path_for_subprocess_env, to_msys_drive_form};
+    use std::path::Path;
+
+    #[test]
+    fn unix_path_passes_through() {
+        // Even compiled on a Windows host, /tmp-style input has no drive
+        // letter to transform and returns unchanged content.
+        let out = path_for_subprocess_env(Path::new("/tmp/foo/bar"));
+        assert_eq!(out, "/tmp/foo/bar");
+    }
+
+    #[test]
+    fn msys_drive_form_rewrites_drive_root() {
+        // Pure transform (flavor-independent): drive-letter forward-slash
+        // input becomes the MSYS2 `/c/...` root with a lowercased drive.
+        assert_eq!(
+            to_msys_drive_form("C:/Users/RUNNER~1/AppData/Local/Temp/agpg-x"),
+            "/c/Users/RUNNER~1/AppData/Local/Temp/agpg-x"
+        );
+        assert_eq!(to_msys_drive_form("D:/foo"), "/d/foo");
+    }
+
+    #[test]
+    fn msys_drive_form_passes_through_posix() {
+        // No `<drive>:/` prefix => returned unchanged (native gpg + cosign
+        // consume this drive-letter/POSIX form directly).
+        assert_eq!(
+            to_msys_drive_form("/already/posix/path"),
+            "/already/posix/path"
+        );
     }
 }

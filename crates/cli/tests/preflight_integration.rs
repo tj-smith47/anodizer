@@ -1530,7 +1530,7 @@ fn reconcile_sweep_probes_end_to_end_and_diverged_exits_nonzero_at_the_tag() {
         "a required publisher's divergence must exit non-zero; stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("required publisher(s) diverged"),
+        stderr.contains("diverged — the version is already published"),
         "the divergence bail must be what failed the run, not the environment gate: {stderr}"
     );
     assert_eq!(
@@ -1569,7 +1569,7 @@ fn reconcile_sweep_probes_end_to_end_for_an_explicitly_declared_tag() {
         "a declared tag must be probed and its divergence must gate; stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("required publisher(s) diverged"),
+        stderr.contains("diverged — the version is already published"),
         "the divergence bail must be what failed the run: {stderr}"
     );
     assert_eq!(

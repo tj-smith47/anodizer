@@ -142,28 +142,32 @@ pub(crate) fn render_top_level_cask_entry(
     let project_name = &ctx.config.project_name;
     let cask_name = super::cask::cask_name_for(cask_cfg.name.as_deref().unwrap_or(project_name));
 
-    if top_cask_skip_gates_trip(ctx, cask_cfg, &cask_name, &super::silenced(log))? {
+    if top_cask_skip_gates_trip(ctx, cask_cfg, &cask_name, log, false)? {
         return Ok(None);
     }
     render_top_level_cask_inner(ctx, cask_cfg, &cask_name, log)
 }
 
-/// True when a `homebrew_casks:` entry's `skip_upload:` or `if:` gate trips,
-/// printing the skip line on `log`. The publish loop passes the stage
-/// logger; the render-only paths pass a silenced one, so the line prints
-/// once per command.
+/// True when a `homebrew_casks:` entry's `skip_upload:` or `if:` gate
+/// trips. The skip line prints on `log` only when `report_skip` is set,
+/// which the publish loop does and the render-only paths do not, so it
+/// prints once per command. A `skip_upload` warning prints through the
+/// logger [`Context::claim_render_log`] hands the entry, so it prints once
+/// per command in every mode.
 fn top_cask_skip_gates_trip(
     ctx: &Context,
     cask_cfg: &HomebrewCaskConfig,
     cask_name: &str,
     log: &StageLogger,
+    report_skip: bool,
 ) -> Result<bool> {
-    if crate::util::should_skip_upload(
-        cask_cfg.skip_upload.as_ref(),
-        ctx,
-        log,
-        Some(&format!("cask for '{cask_name}'")),
-    )? {
+    let warn_log = ctx.claim_render_log(&format!("homebrew_casks '{cask_name}' skip_upload"), log);
+    if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, &warn_log, None)? {
+        if report_skip {
+            log.status(&crate::util::skip_upload_line(&format!(
+                "cask for '{cask_name}'"
+            )));
+        }
         return Ok(true);
     }
     let proceed = anodizer_core::config::evaluate_if_condition(
@@ -171,7 +175,7 @@ fn top_cask_skip_gates_trip(
         &format!("homebrew_casks entry '{}'", cask_name),
         |t| ctx.render_template(t),
     )?;
-    if !proceed {
+    if !proceed && report_skip {
         log.status(&format!(
             "skipped cask '{}' — `if` condition evaluated falsy",
             cask_name
@@ -530,7 +534,7 @@ pub fn publish_top_level_homebrew_casks(
             super::cask::cask_name_for(cask_cfg.name.as_deref().unwrap_or(project_name));
         let version = ctx.version();
 
-        if top_cask_skip_gates_trip(ctx, cask_cfg, &cask_name, log)? {
+        if top_cask_skip_gates_trip(ctx, cask_cfg, &cask_name, log, true)? {
             continue;
         }
 

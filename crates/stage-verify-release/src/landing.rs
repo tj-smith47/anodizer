@@ -489,7 +489,8 @@ fn check_cargo_landing(
             ));
         } else {
             log.status(&format!(
-                "cargo: {probed}/{probed} published crate(s) visible on crates.io index{tail}"
+                "cargo: {probed}/{} visible on crates.io index{tail}",
+                anodizer_core::text::count_noun(probed, "published crate", "published crates")
             ));
         }
     }
@@ -570,8 +571,13 @@ fn check_npm_landing(
             log.status(&format!("npm: {} visible on {host}{tail}", visible[0]));
         } else {
             log.status(&format!(
-                "npm: {0}/{0} published package(s) visible on {host}{tail}",
-                targets.len()
+                "npm: {}/{} visible on {host}{tail}",
+                targets.len(),
+                anodizer_core::text::count_noun(
+                    targets.len(),
+                    "published package",
+                    "published packages"
+                )
             ));
         }
     }
@@ -645,8 +651,8 @@ fn check_pypi_landing(
             ));
         } else {
             log.status(&format!(
-                "pypi: {visible}/{} uploaded file(s) listed on {index}{tail}",
-                targets.len()
+                "pypi: {visible}/{} listed on {index}{tail}",
+                anodizer_core::text::count_noun(targets.len(), "uploaded file", "uploaded files")
             ));
         }
     }
@@ -719,8 +725,12 @@ fn check_blob_landing(
             ));
         } else {
             log.status(&format!(
-                "blob: {present}/{} uploaded object(s) visible in {buckets}{tail}",
-                targets.len()
+                "blob: {present}/{} visible in {buckets}{tail}",
+                anodizer_core::text::count_noun(
+                    targets.len(),
+                    "uploaded object",
+                    "uploaded objects"
+                )
             ));
         }
     }
@@ -821,8 +831,9 @@ fn check_snapcraft_landing(
             ));
         } else {
             log.status(&format!(
-                "snapcraft: {probed}/{probed} uploaded snap(s) live in the Snap Store \
-                 channel map{tail}"
+                "snapcraft: {probed}/{} live in the Snap Store \
+                 channel map{tail}",
+                anodizer_core::text::count_noun(probed, "uploaded snap", "uploaded snaps")
             ));
         }
     }
@@ -974,9 +985,9 @@ fn check_docker_landing(
             ));
         } else {
             log.status(&format!(
-                "docker: {}/{} pushed image(s) visible on {registries}{tail}",
+                "docker: {}/{} visible on {registries}{tail}",
                 visible.len(),
-                pushed.len()
+                anodizer_core::text::count_noun(pushed.len(), "pushed image", "pushed images")
             ));
         }
     }
@@ -2360,7 +2371,7 @@ mod tests {
         assert!(
             statuses(&capture)
                 .iter()
-                .any(|m| m == "pypi: 2/2 uploaded file(s) listed on pypi.org"),
+                .any(|m| m == "pypi: 2/2 uploaded files listed on pypi.org"),
             "{:?}",
             statuses(&capture)
         );
@@ -2414,7 +2425,7 @@ mod tests {
         run_landing_checks(&ctx, &log, &probes, &mut issues);
         assert!(
             statuses(&capture).iter().any(|m| m
-                == "npm: 2/2 published package(s) visible on npm.pkg.github.com, \
+                == "npm: 2/2 published packages visible on npm.pkg.github.com, \
                     registry.npmjs.org"),
             "{:?}",
             statuses(&capture)
@@ -2470,7 +2481,7 @@ mod tests {
         assert!(
             statuses(&capture)
                 .iter()
-                .any(|m| m == "blob: 2/2 uploaded object(s) visible in s3://bkt, s3://mirror"),
+                .any(|m| m == "blob: 2/2 uploaded objects visible in s3://bkt, s3://mirror"),
             "{:?}",
             statuses(&capture)
         );
@@ -2551,7 +2562,7 @@ mod tests {
         assert!(issues.is_empty(), "{issues:?}");
         assert!(
             statuses(&capture).iter().any(|m| m
-                == "docker: 1/2 pushed image(s) visible on ghcr.io, \
+                == "docker: 1/2 pushed images visible on ghcr.io, \
                     private.example.com (1 unverifiable)"),
             "{:?}",
             statuses(&capture)
@@ -2589,7 +2600,7 @@ mod tests {
         assert!(issues.is_empty(), "{issues:?}");
         assert!(
             statuses(&capture).iter().any(|m| m
-                == "docker: 1/2 pushed image(s) visible on ghcr.io, \
+                == "docker: 1/2 pushed images visible on ghcr.io, \
                     private.example.com (1/2 needed a propagation wait, 1 \
                     unverifiable)"),
             "{:?}",
@@ -2646,7 +2657,7 @@ mod tests {
         assert!(
             statuses(&capture)
                 .iter()
-                .any(|m| m == "pypi: 2/2 uploaded file(s) listed on pypi.org, test.pypi.org"),
+                .any(|m| m == "pypi: 2/2 uploaded files listed on pypi.org, test.pypi.org"),
             "{:?}",
             statuses(&capture)
         );
@@ -2992,7 +3003,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|m| m == "docker: 2/2 pushed image(s) visible on ghcr.io, registry.example"),
+                .any(|m| m == "docker: 2/2 pushed images visible on ghcr.io, registry.example"),
             "{lines:?}"
         );
     }

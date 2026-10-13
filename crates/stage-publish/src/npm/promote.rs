@@ -19,6 +19,7 @@
 //!
 //! [`PublishEvidence`]: anodizer_core::PublishEvidence
 
+use crate::publisher_helpers::count_noun;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -162,14 +163,16 @@ impl Promotable for NpmPromoter {
 
         let count = retag.applied.len();
         log.status(&format!(
-            "promoted {count} npm package(s) {}→{}",
-            req.from, req.to
+            "promoted {} {}→{}",
+            count_noun(count, "npm package", "npm packages"),
+            req.from,
+            req.to
         ));
         Ok(PromoteOutcome::promoted(
             self.name(),
             from_label,
             &req.to,
-            format!("{count} package(s)"),
+            count_noun(count, "package", "packages"),
         ))
     }
 }

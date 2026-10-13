@@ -578,11 +578,11 @@ pub(crate) fn assemble_artifact_entries(
         artifact_entries.len(),
     ) {
         log.warn(&format!(
-            "exclude filter {:?} dropped all {} candidate asset(s) for crate '{}' \
+            "exclude filter {:?} dropped all {} for crate '{}' \
              (the release will be created with no uploaded files; check the globs \
              match asset names, not full paths)",
             exclude_filter.map(Vec::as_slice).unwrap_or_default(),
-            pre_exclude,
+            anodizer_core::text::count_noun(pre_exclude, "candidate asset", "candidate assets"),
             crate_cfg.name
         ));
     }

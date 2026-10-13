@@ -47,9 +47,13 @@ pub(super) fn run(
     let run_id = anodizer_stage_publish::derive_run_id(ctx);
     let report = anodizer_stage_publish::load_prior_report(ctx, &run_id)?;
     log.status(&format!(
-        "loaded prior report (run_id={}, {} publisher result(s))",
+        "loaded prior report (run_id={}, {})",
         run_id,
-        report.results.len()
+        anodizer_core::text::count_noun(
+            report.results.len(),
+            "publisher result",
+            "publisher results"
+        )
     ));
     ctx.set_publish_report(report);
 

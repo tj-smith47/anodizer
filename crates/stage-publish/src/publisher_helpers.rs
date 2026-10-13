@@ -100,10 +100,12 @@ pub(crate) fn run_start_message(publisher: &str, selected_total: usize) -> Strin
         "a"
     };
     format!(
-        "starting {publisher} publish — scanning {selected_total} selected crate(s) \
-         for {article} {publisher} config block"
+        "starting {publisher} publish — scanning {} for {article} {publisher} config block",
+        count_noun(selected_total, "selected crate", "selected crates")
     )
 }
+
+pub(crate) use anodizer_core::text::count_noun;
 
 /// Final summary a per-crate publisher emits at exit. `considered` counts the
 /// crates whose configured predicate passed and whose publish call was
@@ -111,15 +113,16 @@ pub(crate) fn run_start_message(publisher: &str, selected_total: usize) -> Strin
 /// inside that call are still a successful run of the right code path.
 ///
 /// One format string for every publisher, for the same reason as
-/// [`run_start_message`]: per-file copies drifted (`selected crate(s)` in one,
-/// `configured crate(s)` in the other seven) while naming the same event.
+/// [`run_start_message`]: per-file copies drifted (`selected` in one,
+/// `configured` in the other seven) while naming the same event.
 pub(crate) fn run_done_message(publisher: &str, considered: usize) -> String {
     run_done_message_detailed(publisher, considered, "crate", None)
 }
 
 /// As [`run_done_message`], for a publisher that counts something other than
-/// crates (`unit_noun`) or breaks its count down (`detail`, rendered in
-/// parentheses) — homebrew counts formula crates and casks together.
+/// crates (`unit_noun`, a singular noun that takes an `s` plural) or breaks
+/// its count down (`detail`, rendered in parentheses) — homebrew counts
+/// formula crates and casks together.
 pub(crate) fn run_done_message_detailed(
     publisher: &str,
     considered: usize,
@@ -127,10 +130,12 @@ pub(crate) fn run_done_message_detailed(
     detail: Option<&str>,
 ) -> String {
     let breakdown = detail.map(|d| format!(" ({d})")).unwrap_or_default();
-    format!(
-        "finished {publisher} publish — {considered} configured {unit_noun}(s) \
-         considered{breakdown}"
-    )
+    let count = count_noun(
+        considered,
+        &format!("configured {unit_noun}"),
+        &format!("configured {unit_noun}s"),
+    );
+    format!("finished {publisher} publish — {count} considered{breakdown}")
 }
 
 /// Warning a per-crate publisher emits when it was registered (some crate
@@ -159,10 +164,11 @@ pub(crate) fn run_no_eligible_crates_warning_with(
     };
     let missing = also_missing.map(|m| format!(" {m}")).unwrap_or_default();
     let fix = also_fix.map(|f| format!(", {f}")).unwrap_or_default();
+    let total = count_noun(selected_total, "effective crate", "effective crates");
     format!(
-        "{publisher} publisher registered but 0 of {selected_total} effective crate(s) \
-         had {article} {publisher} config block{missing} — nothing pushed. Check that \
-         --crate / --all selects a crate whose publish.{publisher} block is set{fix}."
+        "{publisher} publisher registered but 0 of {total} had {article} {publisher} \
+         config block{missing} — nothing pushed. Check that --crate / --all selects a \
+         crate whose publish.{publisher} block is set{fix}."
     )
 }
 
@@ -1780,13 +1786,13 @@ mod tests {
     fn shared_operator_line_wording_is_stable() {
         assert_eq!(
             run_start_message("scoop", 3),
-            "starting scoop publish — scanning 3 selected crate(s) for a scoop config block"
+            "starting scoop publish — scanning 3 selected crates for a scoop config block"
         );
         // Vowel-initial publishers take "an" ("an aur", "an aur_source"),
         // matching aur's original hand-written entry line.
         assert_eq!(
             run_start_message("aur", 2),
-            "starting aur publish — scanning 2 selected crate(s) for an aur config block"
+            "starting aur publish — scanning 2 selected crates for an aur config block"
         );
         assert_eq!(
             no_config_block_message("krew", "demo"),

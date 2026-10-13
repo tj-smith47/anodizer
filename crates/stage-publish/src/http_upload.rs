@@ -5,6 +5,7 @@
 //! refusal pattern. The patterns used to be open-coded twice; this module
 //! is the single source of truth so a fix in one place reaches both.
 
+use crate::publisher_helpers::count_noun;
 use anodizer_core::artifact::Artifact;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
@@ -129,7 +130,10 @@ pub(crate) fn resolve_http_credentials(
 /// overwritten); `skipped` counts artifacts already present byte-identical (no
 /// request issued). `destination` is the entry name the bytes ended up under.
 pub(crate) fn upload_summary(uploaded: usize, skipped: usize, destination: &str) -> String {
-    format!("uploaded {uploaded} artifact(s), skipped {skipped} (already present) → {destination}")
+    format!(
+        "uploaded {}, skipped {skipped} (already present) → {destination}",
+        count_noun(uploaded, "artifact", "artifacts")
+    )
 }
 
 /// Tally of an HTTP upload-entry run, shared by Artifactory + generic uploads.
@@ -238,7 +242,7 @@ pub(crate) fn upload_artifact_set(
         &jobs,
         parallelism,
         "http upload",
-        "upload",
+        ("upload", "uploads"),
         log,
         |(artifact, url, rendered_headers)| {
             let outcome = crate::artifactory::upload_single_artifact_prepared(

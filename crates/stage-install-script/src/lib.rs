@@ -236,12 +236,17 @@ fn reject_single_file_format_with_several_binaries(
     }
     anyhow::bail!(
         "install-script: config '{id}' installs {} binaries ({}) but crate '{crate_name}' \
-         releases archive format(s) {} — those formats ship a single file, so the installer \
+         releases {} {} — those formats ship a single file, so the installer \
          has no way to tell which binary it holds. Give the crate a container format \
          (tar.gz, tar.xz, tar.zst, tar, zip) for the targets the installer serves, or set \
          `install_scripts[].binaries:` to the one binary the single-file asset carries.",
         binaries.len(),
         binaries.join(", "),
+        if offending.len() == 1 {
+            "archive format"
+        } else {
+            "archive formats"
+        },
         offending.join(", "),
     )
 }

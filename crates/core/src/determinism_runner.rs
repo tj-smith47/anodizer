@@ -386,7 +386,8 @@ fn prefetch_deps_with(
         }
     }
     anyhow::bail!(
-        "determinism prefetch `cargo fetch` failed after {attempts} attempt(s) in {}: {}",
+        "determinism prefetch `cargo fetch` failed after {} in {}: {}",
+        crate::text::count_noun(attempts as usize, "attempt", "attempts"),
         manifest_dir.display(),
         last.unwrap_or_default()
     )
@@ -998,7 +999,7 @@ mod tests {
     /// drift-injection integration test when `docker-sign`
     /// was present in [`SIDE_EFFECT_STAGES`] but missing from
     /// [`crate::context::VALID_RELEASE_SKIPS`] — the harness's child
-    /// subprocess bombed with `invalid --skip value(s): docker-sign`. This
+    /// subprocess bombed with `1 invalid --skip value: docker-sign`. This
     /// pure-cross-check unit test catches the drift in milliseconds so a
     /// future addition to either list flags the gap immediately.
     #[test]

@@ -371,7 +371,7 @@ flaking:
 
       $ anodizer release --verbose
            Signing artifacts
-           • cosign reads the sigstore TUF trust store: serializing 2 invocation(s) — concurrent invocations collide on it
+           • cosign reads the sigstore TUF trust store: serializing 2 invocations — concurrent invocations collide on it
            • signing 2 artifacts with parallelism=1
 
 - **Transient retry** — failed cosign invocations are retried up to 5 attempts

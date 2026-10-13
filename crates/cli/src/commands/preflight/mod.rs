@@ -694,15 +694,20 @@ impl PreflightOutcome {
             && !report.blockers.is_empty()
         {
             return format!(
-                "preflight: {} resilience blocker(s): {}",
-                report.blockers.len(),
+                "preflight: {}: {}",
+                anodizer_core::text::count_noun(
+                    report.blockers.len(),
+                    "resilience blocker",
+                    "resilience blockers"
+                ),
                 report.blockers.join("; "),
             );
         }
         let blocking = self.reconcile.blocking().len();
         format!(
-            "preflight: {blocking} required publisher(s) diverged — the version is already \
-             published with different content; bump the version"
+            "preflight: {} diverged — the version is already published with different \
+             content; bump the version",
+            anodizer_core::text::count_noun(blocking, "required publisher", "required publishers")
         )
     }
 }
@@ -711,10 +716,13 @@ impl PreflightOutcome {
 /// failed, out of how many that ran, and where to look.
 pub(crate) fn preflight_failure_message(report: &EnvPreflightReport) -> String {
     format!(
-        "preflight: {} environment failure(s) across {} check(s); \
-         fix the issues above before re-running",
-        report.failures.len(),
-        report.checks
+        "preflight: {} across {}; fix the issues above before re-running",
+        anodizer_core::text::count_noun(
+            report.failures.len(),
+            "environment failure",
+            "environment failures"
+        ),
+        anodizer_core::text::count_noun(report.checks, "check", "checks")
     )
 }
 
@@ -748,8 +756,8 @@ pub(crate) fn run_engine(
         }
         if report.blockers.is_empty() {
             log.status(&format!(
-                "preflight found {} publisher(s) clean",
-                report.clean_count()
+                "preflight found {} clean",
+                anodizer_core::text::count_noun(report.clean_count(), "publisher", "publishers")
             ));
         }
         Some(report)

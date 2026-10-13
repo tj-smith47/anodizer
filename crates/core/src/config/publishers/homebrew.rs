@@ -345,14 +345,17 @@ pub struct HomebrewCaskConfig {
     /// Whether the cask renders `depends_on :macos`. When unset, anodizer
     /// decides from the downloads and the `custom_block`: a cask with no
     /// Linux download gets `depends_on :macos` unless its `custom_block`
-    /// mentions `on_linux`, `on_system` or `app_image`, or holds a
-    /// `depends_on` statement that names an OS: the key `macos:`,
-    /// `maximum_macos:` or `linux:`, or the symbol `:macos` or `:linux`,
-    /// before the statement's newline, `;` or `#` (or its closing `)` for a
-    /// `depends_on(` call). The scan reads strings as code, and comments too
-    /// for the Linux-side words, so a `custom_block` that only mentions
-    /// `on_linux` in a caveat drops the dependency, and an `on_linux` built
-    /// at runtime (through `send`) is not seen.
+    /// gives it a Linux side or declares an OS dependency. Comment lines
+    /// (first non-blank character `#`) are ignored. A Linux side is the
+    /// word `on_linux`, `on_system` or `app_image` on any other line. An OS
+    /// dependency is a statement whose first word is `depends_on` (at the
+    /// start of a line or after a `;`) that names the key `macos:`,
+    /// `maximum_macos:` or `linux:`, or the symbol `:macos` or `:linux`; the
+    /// statement continues onto the next line while a line ends with `,`,
+    /// `(` or `\` or opens more `(` than it closes, and each line is cut at
+    /// a trailing `#` comment. Strings are read as code, so an `on_linux`
+    /// inside a caveat drops the dependency, and an `on_linux` built at
+    /// runtime (through `send`) is not seen.
     /// `true` renders `depends_on :macos` with a flat download; `false`
     /// renders no dependency and places a flat download inside `on_macos`.
     pub depends_on_macos: Option<bool>,

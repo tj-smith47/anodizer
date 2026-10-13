@@ -70,9 +70,9 @@ asset:
 ```
 $ anodizer release
 ...
-     Warning 1 produced artifact(s) missing from the published release for crate 'myapp': myapp_1.0.0_amd64.deb
-       Error verify-release: post-publish verification found 1 issue(s); the release IS published — investigate:
-  - 1 produced artifact(s) missing from the published release for crate 'myapp': myapp_1.0.0_amd64.deb
+     Warning 1 produced artifact missing from the published release for crate 'myapp': myapp_1.0.0_amd64.deb
+       Error verify-release: post-publish verification found 1 issue; the release IS published — investigate:
+  - 1 produced artifact missing from the published release for crate 'myapp': myapp_1.0.0_amd64.deb
 ```
 
 Extra assets on the release (orphans from a prior re-cut) are reported as an
@@ -118,7 +118,7 @@ No new config is required — the expectations come from what anodizer already
 knows. A release missing them fails with the exact names:
 
 ```
-- crate 'myapp': 2 signature/SBOM asset(s) required by the resolved signs/sboms
+- crate 'myapp': 2 signature/SBOM assets required by the resolved signs/sboms
   config were never uploaded (the producing stage registered no such artifact):
   myapp_1.0.0_checksums.txt.sig, myapp_1.0.0_linux_amd64.tar.gz.cdx.json
 ```
@@ -159,17 +159,17 @@ One result line per publisher:
 ```
      • cargo: anodizer-core@0.15.4 visible on crates.io index
      • npm: myapp@0.15.4 visible on registry.npmjs.org
-     • pypi: 9/9 uploaded file(s) listed on pypi.org
-     • blob: 22/22 uploaded object(s) visible in s3://my-bucket
+     • pypi: 9/9 uploaded files listed on pypi.org
+     • blob: 22/22 uploaded objects visible in s3://my-bucket
      • snapcraft: myapp 1.0.0 live in the Snap Store channel map
-     • docker: 4/4 pushed image(s) visible on ghcr.io
+     • docker: 4/4 pushed images visible on ghcr.io
 ```
 
 Every line names the host it asked, and a run that spread its uploads over
 several hosts names each once, sorted:
 
 ```
-     • blob: 2/2 uploaded object(s) visible in s3://my-bucket, s3://my-mirror
+     • blob: 2/2 uploaded objects visible in s3://my-bucket, s3://my-mirror
 ```
 
 A single object, package or image reads in the singular, with no counter:
@@ -182,7 +182,7 @@ Anything that qualifies the count arrives in ONE trailing clause — how many
 needed a propagation wait, and how many could not be reached at all:
 
 ```
-     • docker: 3/4 pushed image(s) visible on ghcr.io (1/4 needed a propagation wait, 1 unverifiable)
+     • docker: 3/4 pushed images visible on ghcr.io (1/4 needed a propagation wait, 1 unverifiable)
 ```
 
 ### Registry propagation
@@ -202,7 +202,7 @@ Waiting out propagation is the expected case, so it prints no warning. The
 publisher's own result line says how much of the publish arrived late:
 
 ```
-     • npm: 9/9 published package(s) visible on registry.npmjs.org (6/9 needed a propagation wait)
+     • npm: 9/9 published packages visible on registry.npmjs.org (6/9 needed a propagation wait)
 ```
 
 Run with `-v` to see each individual re-ask.
@@ -330,7 +330,7 @@ version exceeds your floor — catching the classic "built on a too-new builder,
 won't run on the target distro" regression:
 
 ```
-       Error verify-release: post-publish verification found 1 issue(s); the release IS published — investigate:
+       Error verify-release: post-publish verification found 1 issue; the release IS published — investigate:
   - crate 'myapp': usr/bin/myapp requires glibc 2.38, exceeding the configured ceiling 2.36
 ```
 

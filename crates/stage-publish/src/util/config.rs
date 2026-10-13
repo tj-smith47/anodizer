@@ -143,15 +143,12 @@ pub(crate) fn resolve_repo_owner_name(
 /// - `false` if `None`, or renders to "false"/"".
 /// - `false` with a warn if the value is an unrecognized string.
 ///
-/// When the decision is `true` and `label` is `Some`, this emits the single
-/// canonical operator-facing line `skipped <label> upload — skip_upload is
-/// set` (the same phrasing [`should_skip_publisher_with_if`] uses). The line
-/// lives here so every publisher's skip-upload wording is identical; callers
-/// pass `None` only on render/validation paths that must stay silent (the
-/// offline schema validators re-render the same artifact without logging).
-///
-/// Moved here so all publishers share a single implementation; previously
-/// homebrew.rs owned this and other crates reached across modules.
+/// When the decision is `true` and `label` is `Some`, this emits
+/// [`skip_upload_line`] (the same phrasing [`should_skip_publisher_with_if`]
+/// uses). Callers pass `None` on render and validation paths, which
+/// re-render the same artifact the publisher reports on and so must not
+/// print the skip line a second time; an unrecognized value still warns on
+/// `log`.
 pub(crate) fn should_skip_upload(
     skip_upload: Option<&anodizer_core::config::StringOrBool>,
     ctx: &Context,
@@ -182,17 +179,20 @@ pub(crate) fn should_skip_upload(
         }
     };
     if skip && let Some(label) = label {
-        log.status(&format!("skipped {label} upload — skip_upload is set"));
+        log.status(&skip_upload_line(label));
     }
     Ok(skip)
 }
 
+/// The status line a publisher prints for an entry its `skip_upload` skips.
+pub(crate) fn skip_upload_line(label: &str) -> String {
+    format!("skipped {label} upload — skip_upload is set")
+}
+
 /// Evaluate `skip` / `skip_upload` / `if:` fields for a publisher entry.
 ///
-/// Returns `Ok(true)` to skip; `Ok(false)` to proceed. Consolidates the
-/// per-publisher pattern of near-identical `if let Some(d) = ...` blocks
-/// that previously lived in aur_source.rs (per-crate AND top-level paths),
-/// extended to also evaluate the `if:` conditional gate.
+/// Returns `Ok(true)` to skip; `Ok(false)` to proceed, so every publisher
+/// entry reads its three gates in one order with one wording.
 /// `if_condition` is the resource's `if:` template (or `None` when the
 /// resource does not yet expose `if:`).
 pub(crate) fn should_skip_publisher_with_if(

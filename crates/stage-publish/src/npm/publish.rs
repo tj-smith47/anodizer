@@ -38,6 +38,7 @@
 //!   * `oidc`: always OIDC (errors if no OIDC context) — strict Trusted
 //!     Publishing, NO token fallback (a failed exchange fails the release loud).
 
+use crate::publisher_helpers::count_noun;
 use std::fs;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
@@ -278,17 +279,25 @@ fn publish_optional_deps(
     if ctx.is_dry_run() {
         if layout.metapackage_files.is_some() {
             log.status(&format!(
-                "(dry-run) would publish npm metapackage '{}@{}' + {} platform package(s) to {} (tag={})",
+                "(dry-run) would publish npm metapackage '{}@{}' + {} to {} (tag={})",
                 layout.metapackage,
                 version,
-                layout.platforms.len(),
+                count_noun(
+                    layout.platforms.len(),
+                    "platform package",
+                    "platform packages"
+                ),
                 registry,
                 dist_tag
             ));
         } else {
             log.status(&format!(
-                "(dry-run) would publish {} npm platform package(s) at {} to {} (tag={}) — metapackage '{}' skipped (skip_metapackage)",
-                layout.platforms.len(),
+                "(dry-run) would publish {} at {} to {} (tag={}) — metapackage '{}' skipped (skip_metapackage)",
+                count_noun(
+                    layout.platforms.len(),
+                    "npm platform package",
+                    "npm platform packages"
+                ),
                 version,
                 registry,
                 dist_tag,
@@ -449,10 +458,15 @@ fn gate_optional_deps_only_fields(ctx: &Context, cfg: &NpmConfig) -> Result<()> 
         .map(|(name, _, _)| *name)
         .collect();
     if !offending.is_empty() {
+        let (verb, field) = if offending.len() == 1 {
+            ("applies", "the field")
+        } else {
+            ("apply", "the fields")
+        };
         bail!(
-            "npm: `{}` only applies to optional-deps mode — postinstall mode \
+            "npm: `{}` only {verb} to optional-deps mode — postinstall mode \
              publishes one package named by `name:` with no metapackage; \
-             remove the field(s) or set mode: optional-deps",
+             remove {field} or set mode: optional-deps",
             offending.join("`, `")
         );
     }

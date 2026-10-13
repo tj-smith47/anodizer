@@ -2761,7 +2761,7 @@ fn probe_dep_on_index_returns_false_on_404() {
 fn run_start_and_done_messages_carry_counts() {
     assert_eq!(
         run_start_message(3),
-        "starting cargo publish — processing 3 selected crate(s)"
+        "starting cargo publish — processing 3 selected crates"
     );
     assert_eq!(
         run_per_crate_start_message("cfgd-core"),
@@ -2769,14 +2769,14 @@ fn run_start_and_done_messages_carry_counts() {
     );
     assert_eq!(
         crate::publisher_helpers::run_done_message("cargo", 2),
-        "finished cargo publish — 2 configured crate(s) considered"
+        "finished cargo publish — 2 configured crates considered"
     );
 }
 
 #[test]
 fn run_no_eligible_crates_warning_names_the_total() {
     let w = crate::publisher_helpers::run_no_eligible_crates_warning("cargo", 5);
-    assert!(w.starts_with("cargo publisher registered but 0 of 5 effective crate(s)"));
+    assert!(w.starts_with("cargo publisher registered but 0 of 5 effective crates"));
     assert!(w.contains("--crate / --all"));
 }
 

@@ -437,8 +437,13 @@ pub(crate) fn write_crate_archives(
                             .count();
                         if ignored > 0 {
                             log.verbose(&format!(
-                                "binary format ignores {ignored} extra file(s) \
-                                 for crate '{crate_name}' target '{target}'"
+                                "binary format ignores {} \
+                                 for crate '{crate_name}' target '{target}'",
+                                anodizer_core::text::count_noun(
+                                    ignored,
+                                    "extra file",
+                                    "extra files"
+                                )
                             ));
                         }
                     }

@@ -1188,11 +1188,11 @@ fn commit_msg_and_pr_title_name_every_applied_schema() {
     let applied = vec![a, b];
     assert_eq!(
         schemastore_commit_msg(&applied),
-        "Add Anodizer, cfgd-config schema(s)"
+        "Add Anodizer, cfgd-config schemas"
     );
     assert_eq!(
         schemastore_pr_title(&applied),
-        "Add Anodizer, cfgd-config schema(s)"
+        "Add Anodizer, cfgd-config schemas"
     );
 }
 

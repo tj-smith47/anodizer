@@ -250,8 +250,12 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
             // run-summary JSON expose the skip cleanly to CI.
             let gate_on = announce.gate_on;
             log.status(&format!(
-                "announce skipped via gate_on={gate_on:?}; publish_report has \
-                 {required_failures} required-failure(s)"
+                "announce skipped via gate_on={gate_on:?}; publish_report has {}",
+                anodizer_core::text::count_noun(
+                    required_failures,
+                    "required failure",
+                    "required failures"
+                )
             ));
             if let Some(report_mut) = ctx.publish_report.as_mut() {
                 report_mut.announce_gated = true;
@@ -299,9 +303,9 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     // at the right time.
     if !errors.is_empty() {
         log.warn(&format!(
-            "announce completed with {} failed channel(s) (release already \
+            "announce completed with {} (release already \
              published; not failing the run):\n{}",
-            errors.len(),
+            anodizer_core::text::count_noun(errors.len(), "failed channel", "failed channels"),
             errors.join("\n")
         ));
     }
@@ -1476,8 +1480,7 @@ mod summary_tests {
             .run(&mut ctx)
             .expect_err("an unmatched allowlist name must abort before dispatch");
         assert!(
-            err.to_string()
-                .contains("did not match any emitted artifact"),
+            err.to_string().contains("matched no emitted artifact"),
             "abort must come from the allowlist guard, not some other failure: {err:#}"
         );
         assert!(

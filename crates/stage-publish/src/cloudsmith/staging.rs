@@ -1,4 +1,5 @@
 use super::*;
+use crate::publisher_helpers::count_noun;
 
 /// Retry an HTTP request builder, threading classification through the
 /// shared [`retry_http_blocking`](anodizer_core::retry::retry_http_blocking) helper.
@@ -168,5 +169,8 @@ pub(crate) fn cloudsmith_upload_summary(
     org: &str,
     repo: &str,
 ) -> String {
-    format!("uploaded {uploaded} artifact(s), skipped {skipped} (already present) → {org}/{repo}")
+    format!(
+        "uploaded {}, skipped {skipped} (already present) → {org}/{repo}",
+        count_noun(uploaded, "artifact", "artifacts")
+    )
 }

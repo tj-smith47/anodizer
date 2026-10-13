@@ -11,6 +11,7 @@
 //! under `optionalDependencies` and ships a `bin` shim that resolves the
 //! installed one via `require.resolve`.
 
+use crate::publisher_helpers::count_noun;
 use std::collections::{BTreeMap, BTreeSet};
 
 use anodizer_core::artifact::ArtifactKind;
@@ -736,16 +737,17 @@ pub(crate) fn generate_layout(
             .collect::<Vec<_>>()
             .join(", ");
         bail!(
-            "npm: metapackage '{}' is missing per-platform package(s) for the configured \
-             target(s) {list} — no matching artifact found under {kind_searched:?}. Possible \
+            "npm: metapackage '{}' is missing a per-platform package for {} \
+             {list} — no matching artifact found under {kind_searched:?}. Possible \
              causes: a dist merge dropped the shard; the build never produced it; a variant \
              filter (upx/strip/etc.) excluded it; or the narrowing was intentional. If it was \
              intentional, self-service by narrowing this npm entry's own `targets:` allowlist \
-             (using the triple(s) shown in parentheses above) or `ids:` crate list to match; \
+             (using the triples shown in parentheses above) or `ids:` crate list to match; \
              refusing to publish a metapackage with incomplete optionalDependencies, since npm \
              versions are immutable and a partial platform set can never be repaired at this \
              version",
-            metapackage
+            metapackage,
+            count_noun(missing.len(), "configured target", "configured targets")
         );
     }
 

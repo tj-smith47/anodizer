@@ -2113,8 +2113,15 @@ fn an_empty_cask_if_keeps_the_formulas_gate() {
     };
     let ctx = hb_ctx(hb_cfg.clone(), false);
     assert!(
-        super::publish_cask::cask_skip_gates_trip(&ctx, &hb_cfg, &cask, "mytool", &quiet_log())
-            .expect("the gate must evaluate"),
+        super::publish_cask::cask_skip_gates_trip(
+            &ctx,
+            &hb_cfg,
+            &cask,
+            "mytool",
+            &quiet_log(),
+            true
+        )
+        .expect("the gate must evaluate"),
         "the formula's falsy `if` must still gate the cask"
     );
 
@@ -2129,7 +2136,8 @@ fn an_empty_cask_if_keeps_the_formulas_gate() {
             &hb_cfg,
             &opted_in,
             "mytool",
-            &quiet_log()
+            &quiet_log(),
+            true
         )
         .expect("the gate must evaluate"),
         "a truthy cask `if` overrides the formula's"
@@ -3553,16 +3561,13 @@ fn depends_on_macos_overrides_the_custom_block_scan() {
 }
 
 /// What `custom_block_os_facts` reads from a `custom_block`, case by case.
-/// A Linux side holds when its word appears anywhere as a whole word, so the
-/// raw text is scanned with strings, comments and heredoc bodies read as
-/// code. An OS dependency holds when a `depends_on` statement names an OS
-/// key or symbol before its newline, `;` or `#`, or before the `)` that
-/// closes a `depends_on(` call. The scan can only over-match a literal
-/// stanza word, and a stanza built at runtime is the one it misses. A wrong
-/// verdict in either direction renders a cask Homebrew refuses on Linux
-/// only, so the over-matches below are the cases `depends_on_macos: true`
-/// exists for and the runtime-built stanza is the case for
-/// `depends_on_macos: false`.
+/// Comment lines are ignored. A Linux side holds when its word appears as
+/// a whole word on any other line, strings and heredoc bodies included. An
+/// OS dependency holds when a statement that opens with `depends_on`, read
+/// across its continuation lines with trailing comments cut, names an OS
+/// key or symbol. A wrong verdict renders a cask Homebrew refuses, so the
+/// over-matches below are the cases `depends_on_macos: true` exists for and
+/// the misses are the cases for `depends_on_macos: false`.
 #[test]
 fn custom_block_os_facts_reads_whole_words_anywhere() {
     use super::cask::{CustomBlockOsFacts, custom_block_os_facts};
@@ -3622,6 +3627,66 @@ fn custom_block_os_facts_reads_whole_words_anywhere() {
             "an OS name in the statement after the depends_on",
             "depends_on formula: \"jq\"; caveats \":macos\"",
             facts(false, false),
+        ),
+        (
+            "a whole-line comment naming an OS dependency",
+            "  # depends_on macos: \">= :ventura\"",
+            facts(false, false),
+        ),
+        (
+            "a whole-line comment naming a Linux side",
+            "# on_linux do\n#   binary \"x\"\n# end",
+            facts(false, false),
+        ),
+        (
+            "depends_on inside a string",
+            "caveats \"this depends_on macos: newer\"",
+            facts(false, false),
+        ),
+        (
+            "a ; inside a string starts no statement",
+            "caveats \"a; depends_on macos: :ventura\"",
+            facts(false, false),
+        ),
+        (
+            "a ) inside a string does not close the call",
+            "depends_on(formula: \"a)b\",\n  macos: \">= :ventura\")",
+            facts(false, true),
+        ),
+        (
+            "a trailing comma continues the statement",
+            "depends_on arch: :arm64,\n  macos: \">= :ventura\"",
+            facts(false, true),
+        ),
+        (
+            "a comment line inside a continued statement",
+            "depends_on arch: :arm64,\n  # newer systems only\n  macos: :ventura",
+            facts(false, true),
+        ),
+        (
+            "a trailing backslash continues the statement",
+            "depends_on arch: :arm64 \\\n  , macos: :ventura",
+            facts(false, true),
+        ),
+        (
+            "a trailing comment is cut before the comma is read",
+            "depends_on arch: :arm64, # :macos below\n  formula: \"x\"",
+            facts(false, false),
+        ),
+        (
+            "depends_on as the last token of a line",
+            "x = depends_on\nmacos: :ventura",
+            facts(false, false),
+        ),
+        (
+            "a bare depends_on ends its statement",
+            "depends_on\nmacos: :ventura",
+            facts(false, false),
+        ),
+        (
+            "a second ;-statement opens with depends_on",
+            "depends_on formula: \"x\"; depends_on macos: :ventura",
+            facts(false, true),
         ),
         (
             "an OS key on a later line of a depends_on( call",
@@ -4041,12 +4106,25 @@ pub(super) enum RenderPass {
     Publisher,
 }
 
-/// The passes each command runs, in pipeline order: a release runs all
-/// three, `--publish-only`, `publish` and `continue` have no emission
-/// validation, and `--snapshot` / `--dry-run` publish nothing.
-pub(super) const COMMAND_PASSES: &[(&str, &[RenderPass])] = &[
+/// The passes each command runs, in pipeline order, and whether it runs
+/// them under `--dry-run`. A release runs all three; `--publish-only`,
+/// `publish` and `continue` have no emission validation; a dry run keeps
+/// every pass (the guard skips only a snapshot or nightly run, and the
+/// publish stage only a snapshot) and the publishers stop before their
+/// push; `--snapshot` skips the guard and the publish stage.
+pub(super) const COMMAND_PASSES: &[(&str, bool, &[RenderPass])] = &[
     (
         "release",
+        false,
+        &[
+            RenderPass::Emission,
+            RenderPass::Guard,
+            RenderPass::Publisher,
+        ],
+    ),
+    (
+        "release --dry-run",
+        true,
         &[
             RenderPass::Emission,
             RenderPass::Guard,
@@ -4055,9 +4133,15 @@ pub(super) const COMMAND_PASSES: &[(&str, &[RenderPass])] = &[
     ),
     (
         "release --publish-only / publish / continue",
+        false,
         &[RenderPass::Guard, RenderPass::Publisher],
     ),
-    ("release --snapshot / --dry-run", &[RenderPass::Emission]),
+    (
+        "release --publish-only / publish / continue, each with --dry-run",
+        true,
+        &[RenderPass::Guard, RenderPass::Publisher],
+    ),
+    ("release --snapshot", false, &[RenderPass::Emission]),
 ];
 
 /// Run `pass` the way its stage does: the guard flips strict rendering on
@@ -4088,9 +4172,10 @@ pub(super) fn run_render_pass(
 /// cask once, whichever of its passes renders the cask first.
 #[test]
 fn the_universal_skip_line_prints_once_per_command() {
-    for (command, passes) in COMMAND_PASSES {
+    for (command, dry_run, passes) in COMMAND_PASSES {
         let (bare_url, bare) = make_bare_cask_tap("main");
         let (mut ctx, _cask_cfg, cap) = universal_beside_both_arches_ctx();
+        ctx.options.dry_run = *dry_run;
         ctx.config.homebrew_casks.as_mut().unwrap()[0].repository =
             local_cask_cfg(&bare_url, "main").repository;
         ctx.template_vars_mut().set("RawVersion", "1.2.3");
@@ -4098,7 +4183,7 @@ fn the_universal_skip_line_prints_once_per_command() {
             run_render_pass(&mut ctx, *pass, &|ctx, log| {
                 let got =
                     super::publish_top_level_homebrew_casks(ctx, log).expect("the cask publishes");
-                assert!(got.pushed_any, "{got:?}");
+                assert_eq!(got.pushed_any, !ctx.is_dry_run(), "{got:?}");
             });
         }
         let printed: Vec<String> = cap
@@ -4117,7 +4202,7 @@ fn the_universal_skip_line_prints_once_per_command() {
 #[test]
 fn a_formula_render_warning_prints_once_per_command() {
     let dropped = "homebrew: crate 'mytool': ";
-    for (command, passes) in COMMAND_PASSES {
+    for (command, dry_run, passes) in COMMAND_PASSES {
         let (bare_url, bare) = make_bare_cask_tap("main");
         let mut hb = HomebrewConfig {
             repository: local_cask_cfg(&bare_url, "main").repository,
@@ -4186,12 +4271,14 @@ fn a_formula_render_warning_prints_once_per_command() {
                 .insert("format".to_string(), format.to_string());
             ctx.artifacts.add(art);
         }
+        ctx.options.dry_run = *dry_run;
         let cap = anodizer_core::log::LogCapture::new();
         ctx.with_log_capture(cap.clone());
         for pass in *passes {
             run_render_pass(&mut ctx, *pass, &|ctx, log| {
-                assert!(
-                    super::publish_to_homebrew(ctx, "mytool", log).expect("the formula publishes")
+                assert_eq!(
+                    super::publish_to_homebrew(ctx, "mytool", log).expect("the formula publishes"),
+                    !ctx.is_dry_run()
                 );
             });
         }

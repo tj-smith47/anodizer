@@ -159,13 +159,13 @@ where
 /// and one set of log lines.
 pub enum RetryStep<T, E> {
     /// Stop and succeed with this value. When at least one retry preceded it,
-    /// the engine emits the recovery ("succeeded after N attempt(s)") line —
+    /// the engine emits the recovery ("succeeded after N attempts") line —
     /// so reserve `Done` for a *clean* success the operator wants confirmed.
     Done(T),
     /// Stop and succeed with this value, but suppress the recovery line. For a
     /// terminal outcome that is success-valued yet carries its own narrative —
     /// an idempotent skip, a tolerated degraded disposition (a kept-stale
-    /// asset) — where a "succeeded after N attempt(s)" note would contradict
+    /// asset) — where a "succeeded after N attempts" note would contradict
     /// the closure's own log line rather than confirm a recovery.
     DoneQuiet(T),
     /// Stop and fail with this non-retriable error (a 4xx-style fast-fail).

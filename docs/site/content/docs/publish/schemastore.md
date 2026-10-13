@@ -308,7 +308,7 @@ $ anodizer release --dry-run
 schemastore: would register/refresh `Anodizer` (external) → url https://tj-smith47.github.io/anodizer/schema.json
 schemastore: would register/refresh `cfgd-config` (vendor) → url https://www.schemastore.org/cfgd-config.json, vendor file src/schemas/json/cfgd-config.json
 schemastore: would register/refresh `cfgd-module` (vendor, versioned) → url https://www.schemastore.org/cfgd-module-1.2.3.json, vendor file src/schemas/json/cfgd-module-1.2.3.json
-schemastore: (dry-run) planned 3 schema registration(s); no PR opened
+schemastore: (dry-run) planned 3 schemastore registrations; no PR opened
 ```
 
 ## Full end-to-end example

@@ -10,6 +10,7 @@
 //! See [`crate::util::git_revert`] for the per-target work the
 //! git-revert publishers drive through this primitive.
 
+use crate::publisher_helpers::count_noun;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::retry::RetryPolicy;
@@ -228,6 +229,9 @@ impl_token_revert_target!(anodizer_core::publish_evidence::HomebrewTargetSnapsho
 impl_token_revert_target!(anodizer_core::publish_evidence::NixTargetSnapshot);
 
 /// The one summary line every git-revert publisher prints.
+///
+/// `noun` is the singular unit (`tap`, `bucket`, `overlay`, `repo`); its
+/// plural is formed with a plain `s`, which every revert unit takes.
 pub(crate) fn revert_summary_line(
     publisher: &str,
     noun: &str,
@@ -236,7 +240,9 @@ pub(crate) fn revert_summary_line(
     failed: usize,
 ) -> String {
     format!(
-        "{publisher} rollback reverted {reverted} {noun}(s), {skipped} skipped, {failed} failure(s)"
+        "{publisher} rollback reverted {}, {skipped} skipped, {}",
+        count_noun(reverted, noun, &format!("{noun}s")),
+        count_noun(failed, "failure", "failures")
     )
 }
 
@@ -253,8 +259,9 @@ pub(crate) fn revert_summary_line(
 ///   target carries none (e.g. `HOMEBREW_TAP_TOKEN`).
 /// - `empty_evidence_noun` — what the empty-evidence warn calls the missing
 ///   targets (e.g. `tap clone targets`).
-/// - `reverted_noun` — the unit pluralized in the summary line (e.g. `tap`
-///   → `reverted N tap(s)`).
+/// - `reverted_noun` — the singular unit counted in the summary line (e.g.
+///   `tap` → `reverted 1 tap` / `reverted 2 taps`); it must take a plain `s`
+///   plural.
 pub(crate) fn run_token_revert_rollback<T: TokenRevertTarget>(
     ctx: &Context,
     deduped_targets: &[T],
@@ -323,8 +330,8 @@ pub(crate) fn run_token_revert_rollback<T: TokenRevertTarget>(
     // summary miscounts an unreverted index repo as a success.
     if failed > 0 {
         anyhow::bail!(
-            "{publisher} rollback: {failed} of {} {reverted_noun}(s) failed to revert (see per-target warnings above)",
-            prepared.len()
+            "{publisher} rollback: {failed} of {} failed to revert (see per-target warnings above)",
+            count_noun(prepared.len(), reverted_noun, &format!("{reverted_noun}s"))
         );
     }
     Ok(())
@@ -795,7 +802,7 @@ mod tests {
         assert!(
             status
                 .iter()
-                .any(|m| m == "scoop rollback reverted 2 bucket(s), 0 skipped, 0 failure(s)"),
+                .any(|m| m == "scoop rollback reverted 2 buckets, 0 skipped, 0 failures"),
             "expected the canonical summary line, got: {status:?}"
         );
     }

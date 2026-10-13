@@ -84,8 +84,8 @@ you always know what was dropped:
 
 ```bash
 $ anodizer release --snapshot --host-targets
-host-targets: skipping 2 target(s) not buildable on this linux host \
-  (apple targets require a macOS host): aarch64-apple-darwin, x86_64-apple-darwin
+skipped 2 targets — not buildable on this linux host (--host-targets): \
+  aarch64-apple-darwin, x86_64-apple-darwin (apple targets require a macOS host)
 ```
 
 It is mutually exclusive with `--single-target` and `--targets`, and is only
@@ -120,7 +120,7 @@ whose selected crates carry two producing `builds[]` entries is refused
 naming them, so nothing is compiled only to be left in `dist/`:
 
 ```text
-Error --output requires a single build: 2 builds across 1 crate(s) (myapp) would produce a binary; narrow the selection with --crate, or keep one builds[] entry
+Error --output requires a single build: 2 builds across 1 crate (myapp) would produce a binary; narrow the selection with --crate, or keep one builds[] entry
 ```
 
 A crate whose single build entry yields several binaries is only known after

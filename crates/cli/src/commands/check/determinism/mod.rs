@@ -348,8 +348,13 @@ pub(crate) fn run(
         eprintln!(
             "{}",
             render_error(&format!(
-                "drift detected: {} artifact(s) differed across {} runs",
-                report.drift_count, report.runs
+                "drift detected: {} differed across {}",
+                anodizer_core::text::count_noun(
+                    report.drift_count as usize,
+                    "artifact",
+                    "artifacts"
+                ),
+                anodizer_core::text::count_noun(report.runs as usize, "run", "runs")
             ))
         );
         for d in &report.drift {

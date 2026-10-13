@@ -1458,7 +1458,7 @@ fn test_build_output_is_refused_before_compiling_when_two_builds_would_run() {
     );
     assert!(
         stderr.contains(
-            "--output requires a single build: 2 builds across 1 crate(s) (myapp) would produce a binary; narrow the selection with --crate, or keep one builds[] entry"
+            "--output requires a single build: 2 builds across 1 crate (myapp) would produce a binary; narrow the selection with --crate, or keep one builds[] entry"
         ),
         "{stderr}"
     );
@@ -5792,7 +5792,7 @@ crates:
 ///    be dropped before the simulated cargo failure rides through to
 ///    exit 0 and this test fails.
 ///
-/// Both gates phrase the bail as `"... {N} required publisher(s)
+/// Both gates phrase the bail as `"... {N} required publishers
 /// failed: {names}. ..."` — so this test asserts both `"required
 /// publisher"` and `"cargo"` appear in stderr without pinning which
 /// layer fired. It also confirms `report.json` was persisted *before*
@@ -5921,7 +5921,8 @@ crates:
     // to `gate_required_failures` and would only show if the gate
     // mistakenly fired for a non-required publisher.
     assert!(
-        !stderr.contains("required publisher(s) failed"),
+        !stderr.contains("required publisher failed")
+            && !stderr.contains("required publishers failed"),
         "gate bail message must NOT appear for non-required failure; got: {stderr}"
     );
 }
@@ -5966,7 +5967,7 @@ crates:
         "release with an unsatisfiable preflight requirement must exit non-zero; stderr: {stderr}"
     );
     assert!(
-        stderr.contains("environment failure(s)"),
+        stderr.contains("environment failure"),
         "stderr must carry the preflight bail; got: {stderr}"
     );
     assert!(

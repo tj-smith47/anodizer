@@ -278,9 +278,13 @@ impl Stage for SnapcraftPublishStage {
         // store's channel map and fails the gate while the version is absent.
         if !held_for_review.is_empty() {
             log.warn(&format!(
-                "{} snap upload(s) HELD for Snap Store manual review — store release NOT \
+                "{} HELD for Snap Store manual review — store release NOT \
                  verified: {}",
-                held_for_review.len(),
+                anodizer_core::text::count_noun(
+                    held_for_review.len(),
+                    "snap upload",
+                    "snap uploads"
+                ),
                 held_for_review.join(", ")
             ));
         }

@@ -597,6 +597,32 @@ pub struct NfpmIpkAlternative {
     pub link_name: Option<String>,
 }
 
+/// Unified signature configuration shared by nFPM (deb/rpm/apk) and SRPM
+/// packages — SRPM's surface is a strict subset, so a single struct covers
+/// both. The legacy SRPM `passphrase:` key is accepted as a serde alias
+/// for `key_passphrase:` so both spellings parse.
+///
+/// There are three distinct signature types (`NFPMRPMSignature`,
+/// `NFPMDebSignature`, `NFPMAPKSignature`) with overlapping but slightly
+/// different fields. Anodizer's union here avoids the 3-struct cascade
+/// when 90% of fields overlap.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct NfpmSignatureConfig {
+    /// Path to the signing key file.
+    pub key_file: Option<String>,
+    /// Key ID to use for signing.
+    pub key_id: Option<String>,
+    /// Passphrase for the signing key. Falls back to `NFPM_PASSPHRASE` /
+    /// `SRPM_PASSPHRASE` env vars in their respective stages.
+    pub key_passphrase: Option<String>,
+    /// Public key name for APK signatures (defaults to `<maintainer email>.rsa.pub`).
+    pub key_name: Option<String>,
+    /// Signature type for deb packages: "origin", "maint", or "archive" (default: "origin").
+    #[serde(rename = "type")]
+    pub type_: Option<String>,
+}
+
 #[cfg(test)]
 mod is_empty_tests {
     use super::*;
@@ -680,30 +706,4 @@ mod is_empty_tests {
             "parse error must name the bad value and the valid set: {err}"
         );
     }
-}
-
-/// Unified signature configuration shared by nFPM (deb/rpm/apk) and SRPM
-/// packages — SRPM's surface is a strict subset, so a single struct covers
-/// both. The legacy SRPM `passphrase:` key is accepted as a serde alias
-/// for `key_passphrase:` so both spellings parse.
-///
-/// There are three distinct signature types (`NFPMRPMSignature`,
-/// `NFPMDebSignature`, `NFPMAPKSignature`) with overlapping but slightly
-/// different fields. Anodizer's union here avoids the 3-struct cascade
-/// when 90% of fields overlap.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct NfpmSignatureConfig {
-    /// Path to the signing key file.
-    pub key_file: Option<String>,
-    /// Key ID to use for signing.
-    pub key_id: Option<String>,
-    /// Passphrase for the signing key. Falls back to `NFPM_PASSPHRASE` /
-    /// `SRPM_PASSPHRASE` env vars in their respective stages.
-    pub key_passphrase: Option<String>,
-    /// Public key name for APK signatures (defaults to `<maintainer email>.rsa.pub`).
-    pub key_name: Option<String>,
-    /// Signature type for deb packages: "origin", "maint", or "archive" (default: "origin").
-    #[serde(rename = "type")]
-    pub type_: Option<String>,
 }

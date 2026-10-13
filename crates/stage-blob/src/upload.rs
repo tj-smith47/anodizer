@@ -203,10 +203,14 @@ pub(crate) fn collect_artifacts<'a>(
         kept.len(),
     ) {
         log.warn(&format!(
-            "exclude filter {:?} dropped all {} candidate artifact(s) for blob config on \
+            "exclude filter {:?} dropped all {} for blob config on \
              crate '{}'; check the globs match asset names, not full paths",
             config.exclude.as_deref().unwrap_or_default(),
-            pre_exclude,
+            anodizer_core::text::count_noun(
+                pre_exclude,
+                "candidate artifact",
+                "candidate artifacts"
+            ),
             crate_name
         ));
     }
@@ -875,7 +879,10 @@ pub(crate) fn format_remote_path(
 /// ended up under. Skips are objects already present byte-identical (no PUT
 /// issued); uploads are objects this run actually wrote.
 pub(crate) fn blob_upload_summary(uploaded: usize, skipped: usize, destination: &str) -> String {
-    format!("uploaded {uploaded} object(s), skipped {skipped} (identical) → {destination}")
+    format!(
+        "uploaded {}, skipped {skipped} (identical) → {destination}",
+        anodizer_core::text::count_noun(uploaded, "object", "objects")
+    )
 }
 
 pub(crate) fn handle_upload_error(
@@ -940,7 +947,7 @@ mod summary_tests {
         );
         assert_eq!(
             line,
-            "uploaded 5 object(s), skipped 2 (identical) → s3://my-bucket/demo/v1.0.0"
+            "uploaded 5 objects, skipped 2 (identical) → s3://my-bucket/demo/v1.0.0"
         );
     }
 
@@ -951,7 +958,7 @@ mod summary_tests {
         let line = blob_upload_summary(0, 3, "gs://bucket/demo/v2");
         assert_eq!(
             line,
-            "uploaded 0 object(s), skipped 3 (identical) → gs://bucket/demo/v2"
+            "uploaded 0 objects, skipped 3 (identical) → gs://bucket/demo/v2"
         );
     }
 }

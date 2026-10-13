@@ -18,6 +18,7 @@
 //! even though it does not live under `pkgs/`, and republishing one
 //! crate never drops the others.
 
+use crate::publisher_helpers::count_noun;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -292,8 +293,8 @@ pub(crate) fn nix_delimiters_balanced(text: &str) -> Result<()> {
     }
     if let Some(open) = stack.last() {
         anyhow::bail!(
-            "unbalanced delimiters: {} opener(s) never closed (innermost '{open}')",
-            stack.len()
+            "unbalanced delimiters: {} never closed (innermost '{open}')",
+            count_noun(stack.len(), "opener", "openers")
         );
     }
     Ok(())

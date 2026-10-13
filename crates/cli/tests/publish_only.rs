@@ -570,7 +570,7 @@ fn publish_only_preflight_credentials_required_in_non_dry_run() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains(
-            "none of the env var(s) [ANODIZER_GITHUB_TOKEN, GITHUB_TOKEN, GH_TOKEN] is set and non-empty"
+            "none of the 3 env vars [ANODIZER_GITHUB_TOKEN, GITHUB_TOKEN, GH_TOKEN] is set and non-empty"
         ),
         "env preflight must name every missing token env var; got:\n{stderr}"
     );
@@ -579,7 +579,7 @@ fn publish_only_preflight_credentials_required_in_non_dry_run() {
         "env preflight must attribute the requirement to its consumers; got:\n{stderr}"
     );
     assert!(
-        stderr.contains("environment failure(s)"),
+        stderr.contains("environment failure"),
         "env preflight must abort with its failure bail; got:\n{stderr}"
     );
     assert!(
@@ -666,7 +666,10 @@ fn publish_only_runs_publisher_state_preflight_by_default() {
         "publish-only must run the publisher-state preflight by default, exactly once; output was:\n{merged}"
     );
     assert_eq!(
-        merged.matches("preflight check(s) passed").count(),
+        merged
+            .lines()
+            .filter(|l| l.contains("preflight check") && l.contains(" passed"))
+            .count(),
         1,
         "the environment half must run exactly once; output was:\n{merged}"
     );
@@ -707,8 +710,10 @@ fn release_skip_preflight_skips_the_whole_engine() {
     let merged = format!("{stdout}\n{stderr}");
 
     for marker in [
-        "preflight check(s) passed",
-        "preflight check(s) failed",
+        "preflight check passed",
+        "preflight checks passed",
+        "preflight check failed",
+        "preflight checks failed",
         "skipped one-way-door preflight",
         "Pre-flight publisher check",
         "Reconcile state",
@@ -1137,7 +1142,7 @@ fn publish_only_unions_sha256_across_sharded_manifests() {
     // "1 artifacts manifest(s)" and fail this assertion before the
     // post-pipeline file even matters.
     assert!(
-        merged_log.contains("from 2 artifacts manifest(s)"),
+        merged_log.contains("from 2 artifacts manifests"),
         "publish-only must report loading exactly 2 shard manifests; output was:\n{merged_log}"
     );
 

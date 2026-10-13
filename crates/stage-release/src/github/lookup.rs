@@ -293,8 +293,9 @@ pub(super) async fn wait_for_release_readable(
                 Ok(_) => {
                     if attempt > 1 {
                         log.verbose(&format!(
-                            "release {release_id} became readable after {attempt} probe(s) \
-                             (GitHub post-create propagation lag)"
+                            "release {release_id} became readable after {} \
+                             (GitHub post-create propagation lag)",
+                            anodizer_core::text::count_noun(attempt as usize, "probe", "probes")
                         ));
                     }
                     return Ok(true);

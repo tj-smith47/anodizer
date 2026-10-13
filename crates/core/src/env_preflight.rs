@@ -173,22 +173,29 @@ impl std::fmt::Display for EnvPreflightReport {
         // caller's warning logger — this line only summarises the count.
         let warned = self.warnings.len();
         let advisory_note = if warned > 0 {
-            format!(" ({warned} advisory warning(s))")
+            format!(
+                " ({})",
+                crate::text::count_noun(warned, "advisory warning", "advisory warnings")
+            )
         } else {
             String::new()
         };
         if self.failures.is_empty() {
             return write!(
                 f,
-                "{} preflight check(s) passed{advisory_note}",
-                self.checks.saturating_sub(warned)
+                "{} passed{advisory_note}",
+                crate::text::count_noun(
+                    self.checks.saturating_sub(warned),
+                    "preflight check",
+                    "preflight checks"
+                )
             );
         }
         writeln!(
             f,
-            "{} of {} preflight check(s) failed{advisory_note}:",
+            "{} of {} failed{advisory_note}:",
             self.failures.len(),
-            self.checks
+            crate::text::count_noun(self.checks, "preflight check", "preflight checks")
         )?;
         for failure in &self.failures {
             writeln!(
@@ -303,7 +310,11 @@ fn check_one(
             (!any).then(|| {
                 (
                     FailureKind::MissingTool,
-                    format!("none of the tool(s) [{}] found on PATH", names.join(", ")),
+                    format!(
+                        "none of the {} [{}] found on PATH",
+                        crate::text::count_noun(names.len(), "tool", "tools"),
+                        names.join(", ")
+                    ),
                 )
             })
         }
@@ -316,7 +327,11 @@ fn check_one(
             (!missing.is_empty()).then(|| {
                 (
                     FailureKind::MissingEnv,
-                    format!("env var(s) missing or empty: {}", missing.join(", ")),
+                    format!(
+                        "{} missing or empty: {}",
+                        crate::text::count_noun(missing.len(), "env var", "env vars"),
+                        missing.join(", ")
+                    ),
                 )
             })
         }
@@ -326,7 +341,8 @@ fn check_one(
                 (
                     FailureKind::MissingEnv,
                     format!(
-                        "none of the env var(s) [{}] is set and non-empty",
+                        "none of the {} [{}] is set and non-empty",
+                        crate::text::count_noun(vars.len(), "env var", "env vars"),
                         vars.join(", ")
                     ),
                 )
@@ -348,7 +364,7 @@ fn check_one(
         EnvRequirement::KeyEnv { kind, var } => match env(var).filter(|v| !v.is_empty()) {
             None => Some((
                 FailureKind::MissingEnv,
-                format!("env var(s) missing or empty: {var}"),
+                format!("1 env var missing or empty: {var}"),
             )),
             Some(value) => validate_key_material(*kind, &value).err().map(|reason| {
                 (

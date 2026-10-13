@@ -125,9 +125,10 @@ pub(super) fn run_with_logger(
             Ok(config) => config,
             Err(e) => bail!(
                 "refusing to roll back — could not load the anodizer config: {e:#}\n\
-                 The published-state guard needs the config to map the tag(s) to crates \
-                 for the crates.io burn probe; without that mapping there is no proof the \
-                 version(s) are safe to destroy — a prior run may have burned them on a \
+                 The published-state guard needs the config to map each tag to its crates \
+                 for the crates.io burn probe; without that mapping there is no proof that \
+                 any version being rolled back is safe to destroy — a prior run may have \
+                 burned it on a \
                  one-way-door registry. Fix the config, or run from a checkout whose \
                  config parses (e.g. the directory that contains it). As a last resort, \
                  --force skips ALL published-state checks (run summaries, crates.io, \
@@ -241,8 +242,12 @@ pub(super) fn run_with_logger(
         }
         if !suspicious.is_empty() {
             let mut msg = format!(
-                "cannot rollback — {} non-bump commit(s) sit between HEAD and {}:\n",
-                suspicious.len(),
+                "cannot rollback — {} between HEAD and {}:\n",
+                anodizer_core::text::count_noun(
+                    suspicious.len(),
+                    "non-bump commit sits",
+                    "non-bump commits sit"
+                ),
                 short(&target_sha)
             );
             for (sha, subj) in &suspicious {

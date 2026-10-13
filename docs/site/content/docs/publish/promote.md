@@ -24,8 +24,8 @@ $ anodizer promote --to stable --dry-run
    • (dry-run) would flip github release newest on acme/app (prerelease→stable)
    • snapcraft: candidate→stable (dry-run)
    • npm: next→latest (dry-run)
-   • docker: 1 image(s) edge→latest (dry-run)
-   • github: 1 release(s) prerelease→stable (dry-run)
+   • docker: 1 image edge→latest (dry-run)
+   • github: 1 release prerelease→stable (dry-run)
 ```
 
 Every run prints two registers: one line per artifact the publisher acted on,
@@ -82,7 +82,7 @@ where a typo should surface. The form is `[<track>/]<risk>[/<branch>]`, with
 ```console
 $ anodizer promote --to lastest --publishers snapcraft --dry-run
    • snapcraft: candidate→lastest (failed: promote --to: invalid snapcraft channel 'lastest': expected [<track>/]<risk>[/<branch>] with <risk> one of stable, candidate, beta, edge (e.g. stable, latest/candidate, 2.x/stable, latest/stable/hotfix-1))
-       Error 1 publisher(s) failed to promote: snapcraft
+       Error 1 publisher failed to promote: snapcraft
 ```
 
 The same check runs on every rendered `snapcrafts[].channel_templates` entry
@@ -132,7 +132,7 @@ $ anodizer promote --to stable --version 9.9.9 --publishers snapcraft --dry-run
 The miss therefore appears on the live run, in the same two-part shape as the
 rejected-channel example above: a `• snapcraft: … (failed: …)` result line
 naming the version that matched no revision, then the aggregate
-`1 publisher(s) failed to promote: snapcraft` and a non-zero exit.
+`1 publisher failed to promote: snapcraft` and a non-zero exit.
 
 ```bash
 $ anodizer promote --to stable --version 1.4.0
@@ -199,8 +199,8 @@ $ anodizer promote --to stable --dry-run
    • (dry-run) would flip github release newest on acme/app (prerelease→stable)
    • snapcraft: candidate→stable (dry-run)
    • npm: next→latest (dry-run)
-   • docker: 1 image(s) edge→latest (dry-run)
-   • github: 1 release(s) prerelease→stable (dry-run)
+   • docker: 1 image edge→latest (dry-run)
+   • github: 1 release prerelease→stable (dry-run)
 ```
 
 The snapcraft dry-run names the **selector**, not a concrete revision:

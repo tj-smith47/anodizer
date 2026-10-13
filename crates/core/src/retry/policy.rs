@@ -58,8 +58,9 @@ impl<'a> RetryLog<'a> {
     /// retries themselves are spent so a watcher does not wait for more.
     pub(super) fn warn_giving_up(&self, attempts: u32) {
         self.log.warn(&self.log.redact(&format!(
-            "{} failed after {} attempt(s), giving up",
-            self.desc, attempts
+            "{} failed after {}, giving up",
+            self.desc,
+            crate::text::count_noun(attempts as usize, "attempt", "attempts")
         )));
     }
 
@@ -71,8 +72,9 @@ impl<'a> RetryLog<'a> {
         // result an operator wants at default verbosity, mirroring the
         // rollback/dry-run default events — not a command echo.
         self.log.status(&self.log.redact(&format!(
-            "{} succeeded after {} attempt(s)",
-            self.desc, attempts
+            "{} succeeded after {}",
+            self.desc,
+            crate::text::count_noun(attempts as usize, "attempt", "attempts")
         ))); // status-ok: recovered-after-retry is a per-operation result event
     }
 }

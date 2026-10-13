@@ -182,8 +182,8 @@ pub(super) fn run_per_crate(
     crate_order: Vec<String>,
 ) -> Result<()> {
     log.status(&format!(
-        "iterating {} crate(s) in per-crate publish-only mode — {}",
-        crate_order.len(),
+        "iterating {} in per-crate publish-only mode — {}",
+        anodizer_core::text::count_noun(crate_order.len(), "crate", "crates"),
         crate_order.join(", ")
     ));
 

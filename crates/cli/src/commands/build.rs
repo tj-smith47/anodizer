@@ -119,9 +119,9 @@ fn refuse_ambiguous_output(ctx: &Context, has_single_target: bool) -> Result<()>
     let builds: usize = per_crate.iter().map(|(_, n)| n).sum();
     if builds > 1 {
         anyhow::bail!(
-            "--output requires a single build: {builds} builds across {} crate(s) ({}) would \
+            "--output requires a single build: {builds} builds across {} ({}) would \
              produce a binary; narrow the selection with --crate, or keep one builds[] entry",
-            per_crate.len(),
+            anodizer_core::text::count_noun(per_crate.len(), "crate", "crates"),
             per_crate
                 .iter()
                 .map(|(name, _)| *name)
@@ -291,7 +291,7 @@ mod tests {
             .to_string();
         assert_eq!(
             msg,
-            "--output requires a single build: 3 builds across 2 crate(s) (a, b) would produce \
+            "--output requires a single build: 3 builds across 2 crates (a, b) would produce \
              a binary; narrow the selection with --crate, or keep one builds[] entry"
         );
 
@@ -299,7 +299,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            msg.starts_with("--output requires a single build: 2 builds across 1 crate(s) (b)"),
+            msg.starts_with("--output requires a single build: 2 builds across 1 crate (b)"),
             "{msg}"
         );
 

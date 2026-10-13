@@ -1,4 +1,5 @@
 use super::*;
+use crate::publisher_helpers::count_noun;
 
 // ---------------------------------------------------------------------------
 // AurOurPublisher — Publisher trait wrapper (git-revert rollback)
@@ -477,8 +478,8 @@ impl anodizer_core::Publisher for AurOurPublisher {
         // `rollback complete` summary's success count instead of `failed`.
         if failed > 0 {
             anyhow::bail!(
-                "aur rollback: {failed} of {} repo(s) failed to revert (see per-target warnings above)",
-                prepared.len()
+                "aur rollback: {failed} of {} failed to revert (see per-target warnings above)",
+                count_noun(prepared.len(), "repo", "repos")
             );
         }
         Ok(())

@@ -7371,7 +7371,7 @@ mod cosign_tuf_race {
             .expect("a transient cosign failure must be retried to success");
 
         let logged: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
-        for needle in ["attempt 1/5 failed", "succeeded after 2 attempt(s)"] {
+        for needle in ["attempt 1/5 failed", "succeeded after 2 attempts"] {
             assert!(
                 logged
                     .iter()

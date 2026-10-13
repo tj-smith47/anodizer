@@ -42,7 +42,7 @@ fn upload_summary_reflects_uploaded_and_skipped_counts() {
     let line = cloudsmith_upload_summary(4, 1, "acme", "stable");
     assert_eq!(
         line,
-        "uploaded 4 artifact(s), skipped 1 (already present) → acme/stable"
+        "uploaded 4 artifacts, skipped 1 (already present) → acme/stable"
     );
 }
 
@@ -53,7 +53,7 @@ fn upload_summary_handles_zero_uploads() {
     let line = cloudsmith_upload_summary(0, 3, "acme", "edge");
     assert_eq!(
         line,
-        "uploaded 0 artifact(s), skipped 3 (already present) → acme/edge"
+        "uploaded 0 artifacts, skipped 3 (already present) → acme/edge"
     );
 }
 

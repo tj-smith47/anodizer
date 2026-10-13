@@ -9,6 +9,7 @@
 //!     named by `api_secret_name` (default `FURY_API_TOKEN`). Used only
 //!     by rollback.
 
+use crate::publisher_helpers::count_noun;
 use std::ops::ControlFlow;
 use std::time::Duration;
 
@@ -595,10 +596,10 @@ pub fn publish_to_gemfury(
             artifacts.len(),
         ) {
             log.warn(&format!(
-                "exclude filter {:?} dropped all {} candidate package(s) for GemFury \
+                "exclude filter {:?} dropped all {} for GemFury \
                  account '{}'; check the globs match asset names, not full paths",
                 cfg.exclude.as_deref().unwrap_or_default(),
-                pre_exclude,
+                count_noun(pre_exclude, "candidate package", "candidate packages"),
                 account
             ));
         }
@@ -606,8 +607,8 @@ pub fn publish_to_gemfury(
         // ---- Dry-run logging ----
         if ctx.is_dry_run() {
             log.status(&format!(
-                "(dry-run) would push {} artifact(s) to GemFury account '{}'",
-                artifacts.len(),
+                "(dry-run) would push {} to GemFury account '{}'",
+                count_noun(artifacts.len(), "artifact", "artifacts"),
                 account
             ));
             for a in &artifacts {
@@ -763,9 +764,9 @@ pub fn publish_to_gemfury(
         }
 
         log.status(&format!(
-            "gemfury push complete for account '{}' ({} artifact(s))",
+            "gemfury push complete for account '{}' ({})",
             account,
-            artifacts.len()
+            count_noun(artifacts.len(), "artifact", "artifacts")
         ));
     }
 

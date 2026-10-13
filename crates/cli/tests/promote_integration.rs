@@ -156,7 +156,7 @@ fn promote_invalid_channel_fails_before_any_publisher_runs() {
         "the operator must see which channel was rejected; got:\n{out}"
     );
     assert!(
-        out.contains("1 publisher(s) failed to promote: snapcraft"),
+        out.contains("1 publisher failed to promote: snapcraft"),
         "the verb must aggregate the failure by publisher; got:\n{out}"
     );
 }

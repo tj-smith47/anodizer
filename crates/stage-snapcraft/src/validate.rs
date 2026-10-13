@@ -60,9 +60,13 @@ pub fn validate_snapcraft_templates(
         with_crate_scope(ctx, krate, resolve_tag, |ctx| {
             let yamls = snapcraft_snap_yamls_for_crate(ctx, &krate.name)?;
             log.verbose(&format!(
-                "snapcraft: crate '{}' rendered {} snap.yaml manifest(s) cleanly",
+                "snapcraft: crate '{}' rendered {} cleanly",
                 krate.name,
-                yamls.len()
+                anodizer_core::text::count_noun(
+                    yamls.len(),
+                    "snap.yaml manifest",
+                    "snap.yaml manifests"
+                )
             ));
             Ok(())
         })?;

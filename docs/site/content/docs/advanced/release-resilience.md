@@ -50,7 +50,7 @@ $ anodizer release
      • published release 'v0.2.1' (draft → live)
      • skipping cargo — gated by an earlier required failure (one-way-door protection)
      • wrote run-report to dist/run-v0.2.1/report.json
-       Error 1 required publisher(s) failed: homebrew. The release pipeline ran to completion, so rollback / announce-gating / summary all observed final state; this non-zero exit ensures CI and shell callers see the failure. Inspect dist/run-<id>/report.json for details; re-run the same release command to converge, or `anodizer tag rollback` to withdraw the release deliberately.
+       Error 1 required publisher failed: homebrew. The release pipeline ran to completion, so rollback / announce-gating / summary all observed final state; this non-zero exit ensures CI and shell callers see the failure. Inspect dist/run-<id>/report.json for details; re-run the same release command to converge, or `anodizer tag rollback` to withdraw the release deliberately.
 
 # fix the branch-protection rule, then run the EXACT SAME command:
 $ anodizer release
@@ -212,7 +212,7 @@ A `Complete` verdict prints one line and the publisher never runs:
 
 ```text
 $ anodizer release
-     • skipping cargo — already published for this version (all 3 planned crate(s) already on crates.io with verified content)
+     • skipping cargo — already published for this version (3 planned crates already on crates.io with verified content)
 ```
 
 `reconcile()` returns one of four states, and the dispatch loop reacts
@@ -523,9 +523,9 @@ when the version is burned (override with `--force`):
 
 ```bash
 $ anodizer tag rollback
-       Error refusing to roll back — one-way-door publisher(s) already accepted these version(s):
+       Error refusing to roll back — a one-way-door publisher already accepted each version listed below:
   v0.8.0: version burned at cargo, chocolatey
-Those registries never accept the same version twice, so deleting the tag(s) and reverting the bump cannot lead to a clean same-version re-cut — tags kept to protect the published state.
+Those registries never accept the same version twice, so deleting its tag and reverting the bump cannot lead to a clean same-version re-cut — every tag was kept to protect the published state.
 next step: fix the failure and cut the NEXT version (auto-tag creates it from the next push). To override anyway: `anodizer tag rollback --force`.
 ```
 
@@ -719,7 +719,7 @@ report.json  summary.json
 # The re-run consults it before any network probe:
 $ anodizer release --verbose
      • cargo: ledger fast-path — prior summary digests matched, skipping network reconcile probe
-     • skipping cargo — already published for this version (all 3 planned crate(s) already on crates.io with verified content)
+     • skipping cargo — already published for this version (3 planned crates already on crates.io with verified content)
 ```
 
 Reconciliation fails *toward* publishing: a publisher only skips on a
@@ -895,7 +895,7 @@ name their own run dirs — both layouts are swept, and there is no
 | Run dir present with recorded state | Publishers are unwound, and the pass rewrites `<dist>/run-<tag>/rollback.json` — re-running `tag rollback` resumes from it rather than re-reverting a publisher twice |
 | No run dir (fresh checkout, dist never preserved) | Nothing to unwind; the git half proceeds. The published-state guard still probes the registries and the GitHub Releases API, so an unattributed live release still refuses |
 | Run dir present but its state is unreadable | **Refusal.** The withdrawal cannot be completed, so the tag documenting the published state is not destroyed. Fix or delete the file, or pass `--force` |
-| `--dry-run` | Prints `(dry-run) would withdraw N publisher(s) for <tag>: …` and touches nothing — no `rollback()` call, no `rollback.json` |
+| `--dry-run` | Prints `(dry-run) would withdraw N publishers for <tag>: …` and touches nothing — no `rollback()` call, no `rollback.json` |
 | `--force` | Skips the published-state guard, and downgrades an unreadable-state refusal to a warning |
 
 The unwind runs **after** the published-state guard (a burned version must

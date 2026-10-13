@@ -395,10 +395,12 @@ fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
     );
     // Both env-preflight failure shapes: the bail error value keeps the
     // `preflight:` lead; the report header renders `N of M preflight
-    // check(s) failed:`. A bare `preflight` needle is too wide — the
+    // checks failed:`. A bare `preflight` needle is too wide — the
     // fixture crate name itself contains the word.
     assert!(
-        !stderr.contains("preflight:") && !stderr.contains("preflight check(s) failed"),
+        !stderr.contains("preflight:")
+            && !stderr.contains("preflight check failed")
+            && !stderr.contains("preflight checks failed"),
         "no env-preflight failure may surface from replica children: {stderr}"
     );
     // Guard against a vacuous pass: the children must have actually driven

@@ -105,10 +105,10 @@ with a loud error so a typo can never silently widen or narrow a release:
 
 ```bash
 $ anodizer release --skip brew
-       Error invalid --skip value(s): brew. Valid options: …, homebrew, …, chocolatey, …
+       Error 1 invalid --skip value: brew. Valid options: …, homebrew, …, chocolatey, …
 
 $ anodizer release --publishers crates
-       Error invalid --publishers value(s): crates. Valid publishers: cargo, …
+       Error 1 invalid --publishers value: crates. Valid publishers: cargo, …
 ```
 
 Use `homebrew`, `chocolatey`, and `cargo` (the canonical names from the table above).
@@ -241,7 +241,7 @@ The same loud error guards a typo here as on `release`/`publish`:
 
 ```bash
 $ anodizer check config --publishers crates
-       Error invalid --publishers value(s): crates. Valid publishers: cargo, …
+       Error 1 invalid --publishers value: crates. Valid publishers: cargo, …
 ```
 
 ## Typos fail loud — one-way-door safety
@@ -252,7 +252,7 @@ anodizer rejects any unknown token with a nonzero exit before dispatch begins:
 
 ```bash
 $ anodizer release --publishers homebrwe   # typo
-       Error invalid --publishers value(s): homebrwe. Valid publishers: cargo, …
+       Error 1 invalid --publishers value: homebrwe. Valid publishers: cargo, …
 $ echo $?
 1
 ```

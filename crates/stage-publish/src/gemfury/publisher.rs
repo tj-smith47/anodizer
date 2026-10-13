@@ -15,6 +15,7 @@
 //! per artifact actually pushed
 //! (skip / dry-run / `if` falsy / idempotent paths produce no entry).
 
+use crate::publisher_helpers::count_noun;
 use std::time::Duration;
 
 use anodizer_core::context::Context;
@@ -159,8 +160,10 @@ fn delete_recorded_targets(ctx: &mut Context, targets: &[GemFuryTarget]) {
         }
     }
     log.status(&format!(
-        "gemfury rollback complete — {} deleted, {} warn-only, {} failure(s)",
-        deleted, warn_only, failed
+        "gemfury rollback complete — {} deleted, {} warn-only, {}",
+        deleted,
+        warn_only,
+        count_noun(failed, "failure", "failures")
     ));
 }
 
@@ -232,9 +235,9 @@ impl anodizer_core::Publisher for GemFuryPublisher {
         if let Err(err) = publish_to_gemfury(ctx, &log, &mut pushed) {
             if !pushed.is_empty() {
                 log.warn(&format!(
-                    "gemfury push failed after {} artifact(s) landed — rolling back \
+                    "gemfury push failed after {} — rolling back \
                      the partial push before failing the release",
-                    pushed.len()
+                    count_noun(pushed.len(), "artifact landed", "artifacts landed")
                 ));
                 delete_recorded_targets(ctx, &pushed);
             }

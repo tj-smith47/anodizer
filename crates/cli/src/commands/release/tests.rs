@@ -648,7 +648,7 @@ fn host_targets_empty_result_bails_apple_only_names_macos() {
         .expect_err("apple-only config on a linux host must bail");
     let msg = err.to_string();
     assert!(
-        msg.contains("none of the") && msg.contains("macOS host"),
+        msg.contains("none of the 2 configured targets can be built") && msg.contains("macOS host"),
         "empty-result guard names the cause + macOS remedy: {msg}"
     );
 }
@@ -671,7 +671,8 @@ fn host_targets_empty_result_bails_msvc_only_names_windows_not_macos() {
         .expect_err("msvc-only config on a linux host must bail");
     let msg = err.to_string();
     assert!(
-        msg.contains("none of the") && msg.contains("windows-msvc targets require a Windows host"),
+        msg.contains("the one configured target cannot be built")
+            && msg.contains("windows-msvc targets require a Windows host"),
         "empty-result guard names the Windows-host constraint: {msg}"
     );
     assert!(

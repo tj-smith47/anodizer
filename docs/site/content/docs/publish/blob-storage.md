@@ -195,7 +195,7 @@ Files are uploaded independently, so a run can write some objects and fail on an
 
 ```text
 $ anodizer release
-     • uploaded 2 object(s), skipped 0 (identical) → s3://my-release-bucket/releases/v1.0.0
+     • uploaded 2 objects, skipped 0 (identical) → s3://my-release-bucket/releases/v1.0.0
      • blob upload failed: blobs: the multipart upload was aborted or expired part way through (releases/v1.0.0/app.tar.gz): uploading dist/app.tar.gz → releases/v1.0.0/app.tar.gz; run the release again to upload the file
 ```
 

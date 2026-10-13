@@ -56,11 +56,11 @@ by a plain `release --split`:
 ```console
 $ anodizer release --snapshot --split --single-target
    • building for x86_64-unknown-linux-gnu in split mode (dist/x86_64-unknown-linux-gnu)
-   • wrote 2 artifact(s) + context to ./dist/x86_64-unknown-linux-gnu/context.json
+   • wrote 2 artifacts + context to ./dist/x86_64-unknown-linux-gnu/context.json
    • wrote matrix to ./dist/matrix.json (1 entries, split by os)
 $ anodizer release --snapshot --merge
    • running in merge mode (post-build stages)...
-   • loaded 2 artifact(s) from 1 context(s)
+   • loaded 2 artifacts from 1 context
 ```
 
 ## CLI commands
@@ -87,7 +87,7 @@ stages without a split leg:
 $ anodizer release --snapshot                # writes dist/artifacts.json
 $ anodizer release --snapshot --merge
    • running in merge mode (post-build stages)...
-   • loaded 6 artifact(s) from 1 artifacts.json manifest(s)
+   • loaded 6 artifacts from 1 artifacts.json manifest
 ```
 
 ```

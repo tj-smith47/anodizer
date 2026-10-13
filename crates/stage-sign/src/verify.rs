@@ -502,7 +502,7 @@ fn run_verify_command_with_timeout(
 
 /// Execute one verification job: spawn, capture, redact, and fail on a
 /// non-zero verifier exit. The full argv is verbose-only detail; the
-/// default-level signal is the per-config `verified N signature(s)` result
+/// default-level signal is the per-config `verified N signatures` result
 /// the caller emits.
 pub(crate) fn execute_verify_job(job: &VerifyJob, log: &StageLogger) -> Result<()> {
     let redacted = run_verify_command_with_timeout(job, log, VERIFY_TIMEOUT)?;

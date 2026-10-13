@@ -6471,7 +6471,7 @@ mod archive_name_guard {
         let lines = cap.all_messages();
         assert!(
             lines.iter().any(|(l, m)| *l == LogLevel::Verbose
-                && m == "binary format ignores 1 extra file(s) for crate 'myapp' \
+                && m == "binary format ignores 1 extra file for crate 'myapp' \
                          target 'x86_64-unknown-linux-gnu'"),
             "{lines:?}"
         );

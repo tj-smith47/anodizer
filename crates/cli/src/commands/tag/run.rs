@@ -598,7 +598,10 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
         prev_tag.as_deref(),
         crate_path.as_deref(),
     )?;
-    log.verbose(&format!("scanned {} commit message(s)", messages.len()));
+    log.verbose(&format!(
+        "scanned {}",
+        anodizer_core::text::count_noun(messages.len(), "commit message", "commit messages")
+    ));
 
     // Detect bump (with pre-major demotion applied to inferred bumps).
     let bump = detect_bump_demoted(&messages, &cfg, prev_tag.as_deref());

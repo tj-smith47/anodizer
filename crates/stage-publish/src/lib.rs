@@ -61,6 +61,7 @@ pub use npm::{NpmPromoter, npm_promote_preflight};
 pub use registry::{configured_publishers, group_dispatch_order};
 pub use schema_validation::{TagResolver, validate_publisher_schemas};
 
+use crate::publisher_helpers::count_noun;
 use anodizer_core::config::PublishConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
@@ -188,8 +189,13 @@ fn validate_runtime_allowlist(ctx: &Context) -> Result<()> {
     }
     if !unmatched.is_empty() {
         anyhow::bail!(
-            "--allow-nondeterministic name(s) did not match any emitted artifact: {} \
+            "{} matched no emitted artifact: {} \
              (check spelling; use `*.ext` glob for suffix match)",
+            count_noun(
+                unmatched.len(),
+                "--allow-nondeterministic name",
+                "--allow-nondeterministic names"
+            ),
             unmatched.join(", ")
         );
     }

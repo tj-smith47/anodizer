@@ -145,7 +145,10 @@ pub(crate) fn run(opts: BumpOpts) -> Result<()> {
         )?;
     }
 
-    log.status(&format!("bumped {} crate(s)", rows.len()));
+    log.status(&format!(
+        "bumped {}",
+        anodizer_core::text::count_noun(rows.len(), "crate", "crates")
+    ));
     Ok(())
 }
 
@@ -436,7 +439,8 @@ fn enforce_version_pins(
     }
     if opts.strict {
         bail!(
-            "strict mode: refusing to bump pinned crate(s):\n  - {}",
+            "strict mode: refusing to bump {}:\n  - {}",
+            anodizer_core::text::count_noun(violations.len(), "pinned crate", "pinned crates"),
             violations.join("\n  - ")
         );
     }

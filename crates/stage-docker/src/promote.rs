@@ -95,7 +95,11 @@ impl Promotable for DockerPromoter {
                 self.name(),
                 from_label,
                 &req.to,
-                Some(format!("{} image(s)", repos.len())),
+                Some(anodizer_core::text::count_noun(
+                    repos.len(),
+                    "image",
+                    "images",
+                )),
             ));
         }
 
@@ -116,7 +120,7 @@ impl Promotable for DockerPromoter {
             self.name(),
             from_label,
             &req.to,
-            format!("{} image(s)", applied.len()),
+            anodizer_core::text::count_noun(applied.len(), "image", "images"),
         ))
     }
 }
@@ -498,7 +502,7 @@ mod tests {
         // Newest keeps the native from-track label.
         assert_eq!(out.from, "edge");
         assert_eq!(out.to, "latest");
-        assert_eq!(out.what.as_deref(), Some("2 image(s)"));
+        assert_eq!(out.what.as_deref(), Some("2 images"));
     }
 
     #[test]

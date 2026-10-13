@@ -1436,7 +1436,7 @@ fn run_per_crate_start_message_names_crate() {
 fn run_done_message_reports_considered_count() {
     let msg = crate::publisher_helpers::run_done_message("winget", 2);
     assert!(msg.starts_with("finished winget publish"), "{msg}");
-    assert!(msg.contains("2 configured crate(s) considered"), "{msg}");
+    assert!(msg.contains("2 configured crates considered"), "{msg}");
 }
 
 #[test]
@@ -1774,7 +1774,7 @@ fn a_skipped_crate_records_no_pull_request_target() {
     assert!(
         logged
             .iter()
-            .any(|m| m.contains("2 configured crate(s) considered")),
+            .any(|m| m.contains("2 configured crates considered")),
         "both crates were reached, so the no-eligible warning must not fire; \
          got: {logged:?}"
     );

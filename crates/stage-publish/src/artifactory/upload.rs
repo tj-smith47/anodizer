@@ -1,4 +1,5 @@
 use super::*;
+use crate::publisher_helpers::count_noun;
 
 // ---------------------------------------------------------------------------
 // upload_single_artifact
@@ -592,8 +593,8 @@ pub(crate) fn publish_to_artifactory_recording(
             }
             if let Some(ref files) = entry.extra_files {
                 log.status(&format!(
-                    "(dry-run) would upload {} extra file(s)",
-                    files.len()
+                    "(dry-run) would upload {}",
+                    count_noun(files.len(), "extra file", "extra files")
                 ));
             }
             log.status(&format!(
@@ -702,10 +703,10 @@ pub(crate) fn publish_to_artifactory_recording(
                     0,
                 ) {
                     log.warn(&format!(
-                        "exclude filter {:?} dropped all {} candidate artifact(s) for \
+                        "exclude filter {:?} dropped all {} for \
                          artifactory '{}'; check the globs match asset names, not full paths",
                         entry.exclude.as_deref().unwrap_or_default(),
-                        pre_exclude,
+                        count_noun(pre_exclude, "candidate artifact", "candidate artifacts"),
                         name
                     ));
                 }

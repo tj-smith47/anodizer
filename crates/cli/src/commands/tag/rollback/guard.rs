@@ -183,7 +183,7 @@ pub(super) fn check_not_burned_on_moderated_registries(
         &pending,
         MAX_PROBE_WORKERS,
         "moderated-registry burn probe",
-        "probe",
+        ("probe", "probes"),
         log,
         |probe| {
             Ok(match probe {
@@ -233,12 +233,12 @@ pub(super) fn check_not_burned_on_moderated_registries(
     if !burned.is_empty() {
         return Err(RollbackRefusal {
             reason: format!(
-                "these version(s) are already consumed at a moderated one-way-door registry \
+                "every version listed below is already consumed at a moderated one-way-door registry \
                  (submitted by a prior attempt, whatever this run's summaries say):\n{}\n\
                  Those registries never accept the same version twice — a pending \
-                 submission blocks a re-push just like an accepted one — so deleting the \
-                 tag(s) cannot lead to a clean same-version re-cut — tags kept to protect \
-                 the published state.",
+                 submission blocks a re-push just like an accepted one — so deleting its \
+                 tag cannot lead to a clean same-version re-cut — every tag was kept to \
+                 protect the published state.",
                 burned.join("\n")
             ),
             next_step: refusal_next_step(),
@@ -341,11 +341,11 @@ pub(super) fn check_not_irreversibly_published(
             .join("\n");
         return Err(RollbackRefusal {
             reason: format!(
-                "one-way-door publisher(s) already accepted these version(s):\n\
+                "a one-way-door publisher already accepted each version listed below:\n\
                  {detail}\n\
-                 Those registries never accept the same version twice, so deleting the \
-                 tag(s) and reverting the bump cannot lead to a clean same-version re-cut \
-                 — tags kept to protect the published state."
+                 Those registries never accept the same version twice, so deleting its \
+                 tag and reverting the bump cannot lead to a clean same-version re-cut \
+                 — every tag was kept to protect the published state."
             ),
             next_step: refusal_next_step(),
         }

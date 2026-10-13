@@ -465,12 +465,12 @@ pub(super) fn run_one_crate_dist(
     let shard_count = preserved_contexts.len();
 
     log.status(&format!(
-        "loaded {} context manifest(s) (version={}, commit={}, targets=[{}], {} artifact(s))",
-        shard_count,
+        "loaded {} (version={}, commit={}, targets=[{}], {})",
+        anodizer_core::text::count_noun(shard_count, "context manifest", "context manifests"),
         preserved.version,
         short_commit_str(&preserved.commit),
         preserved.targets.join(", "),
-        preserved.artifacts.len(),
+        anodizer_core::text::count_noun(preserved.artifacts.len(), "artifact", "artifacts"),
     ));
 
     // Pin the determinism-check → publish-only safety invariant: hash
@@ -536,9 +536,13 @@ pub(super) fn run_one_crate_dist(
     ctx.artifacts.dedupe_targetless_duplicates();
 
     log.status(&format!(
-        "rehydrated {} artifact(s) from {} artifacts manifest(s)",
-        ctx.artifacts.all().len(),
-        artifact_manifests.len(),
+        "rehydrated {} from {}",
+        anodizer_core::text::count_noun(ctx.artifacts.all().len(), "artifact", "artifacts"),
+        anodizer_core::text::count_noun(
+            artifact_manifests.len(),
+            "artifacts manifest",
+            "artifacts manifests"
+        ),
     ));
 
     // Fail closed on duplicate artifact paths across the merged
@@ -731,7 +735,12 @@ pub(super) fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
     }
     let count = stale_paths.len();
     log.status(&format!(
-        "stripping {count} ephemeral signature/certificate artifact(s) before re-sign"
+        "stripping {} before re-sign",
+        anodizer_core::text::count_noun(
+            count,
+            "ephemeral signature/certificate artifact",
+            "ephemeral signature/certificate artifacts"
+        )
     ));
     // Registry FIRST, then disk. If the process is signaled between
     // the two steps, a retry sees a consistent state: the registry
@@ -766,8 +775,12 @@ pub(super) fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
     // disk — registry entries can outlive their files when the
     // post-pipeline runs partial writes).
     log.status(&format!(
-        "stripped {count} ephemeral signature artifact(s) from registry \
-         ({disk_removed} also deleted from disk)"
+        "stripped {} from registry ({disk_removed} also deleted from disk)",
+        anodizer_core::text::count_noun(
+            count,
+            "ephemeral signature artifact",
+            "ephemeral signature artifacts"
+        )
     ));
 }
 

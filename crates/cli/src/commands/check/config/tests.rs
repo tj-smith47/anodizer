@@ -214,7 +214,7 @@ fn check_workspace_membership_lockstep_multi_crate_missing_dep_fails() {
     );
     let msg = result.unwrap_err().to_string();
     assert!(
-        msg.contains("2 error(s)"),
+        msg.contains("2 errors"),
         "expected one error per dependent crate referencing 'shared': {}",
         msg
     );
@@ -754,7 +754,7 @@ fn test_whitespace_only_crate_name_fails() {
     );
     let msg = result.unwrap_err().to_string();
     assert!(
-        msg.contains("1 error(s)"),
+        msg.contains("1 error"),
         "error should report 1 validation error, got: {msg}"
     );
 }
@@ -793,7 +793,7 @@ fn test_tag_template_missing_version_with_other_placeholder() {
     );
     let msg = result.unwrap_err().to_string();
     assert!(
-        msg.contains("1 error(s)"),
+        msg.contains("1 error"),
         "error should report 1 validation error, got: {msg}"
     );
 }
@@ -812,8 +812,8 @@ fn test_multiple_validation_errors_reported() {
     let msg = result.unwrap_err().to_string();
     // Should report exactly 3 errors: empty name, missing dep, bad tag_template
     assert!(
-        msg.contains("3 error(s)"),
-        "should report 3 error(s), got: {}",
+        msg.contains("3 errors"),
+        "should report 3 errors, got: {}",
         msg
     );
 }
@@ -958,7 +958,7 @@ fn test_workspace_duplicate_crate_name_fails() {
     );
     let msg = result.unwrap_err().to_string();
     assert!(
-        msg.contains("1 error(s)"),
+        msg.contains("1 error"),
         "should report 1 validation error for duplicate crate name: {}",
         msg
     );
@@ -983,7 +983,7 @@ fn test_workspace_depends_on_missing_fails() {
     );
     let msg = result.unwrap_err().to_string();
     assert!(
-        msg.contains("1 error(s)"),
+        msg.contains("1 error"),
         "should report 1 validation error for missing depends_on: {}",
         msg
     );

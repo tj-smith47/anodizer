@@ -19,6 +19,7 @@
 //! mode — snapshot, dry-run, nightly, and real releases), naming the
 //! publisher, the offending field, and what the schema expected.
 
+use crate::publisher_helpers::count_noun;
 use std::ffi::OsString;
 use std::fmt;
 
@@ -467,9 +468,13 @@ pub fn validate_publisher_schemas(
             crate::publisher_helpers::absorb_entry_skip(ctx, log, publisher, publisher, outcome)?
                 .unwrap_or_default();
         log.verbose(&format!(
-            "publisher '{}' produced {} schema-validation finding(s)",
+            "publisher '{}' produced {}",
             publisher,
-            result.len()
+            count_noun(
+                result.len(),
+                "schema-validation finding",
+                "schema-validation findings"
+            )
         ));
         findings.extend(result);
     }

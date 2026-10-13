@@ -211,7 +211,14 @@ pub(crate) fn process_sign_configs(
         // the verify-release expectation derivation reads the same memento, so
         // the run does not go on to demand assets it just decided not to make.
         if artifact_paths.is_empty() && absent_binaries > 0 {
-            let reason = format!("{absent_binaries} registered binary path(s) are not on disk");
+            let reason = format!(
+                "{} not on disk",
+                anodizer_core::text::count_noun(
+                    absent_binaries,
+                    "registered binary path is",
+                    "registered binary paths are"
+                )
+            );
             log.verbose(&format!(
                 "skipped {} config '{}' — {}",
                 label, sub_label, reason
@@ -695,9 +702,9 @@ pub(crate) fn process_sign_configs(
             .any(|job| contends_tuf_store(&job.cmd, &job.args));
         let tuf_init_locks = if keyless {
             log.verbose(&format!(
-                "cosign reads the sigstore TUF trust store: serializing {} invocation(s) — \
+                "cosign reads the sigstore TUF trust store: serializing {} — \
                  concurrent invocations collide on it",
-                sign_jobs.len()
+                anodizer_core::text::count_noun(sign_jobs.len(), "invocation", "invocations")
             ));
             // Each cache dir must be resolved from the env the cosign CHILD
             // sees: a config's rendered `env:` entries can set TUF_ROOT (or
@@ -771,7 +778,7 @@ pub(crate) fn process_sign_configs(
             &sign_jobs,
             effective_parallelism,
             stage_name,
-            "signature",
+            ("signature", "signatures"),
             log,
             run_job,
         )?;
@@ -781,7 +788,10 @@ pub(crate) fn process_sign_configs(
         if verified > 0 {
             // Reaching here means every verify job exited 0 (a failure
             // propagates out of the parallel runner above).
-            log.status(&format!("verified {verified} signature(s)")); // status-ok: per-config verification result
+            log.status(&format!(
+                "verified {}",
+                anodizer_core::text::count_noun(verified, "signature", "signatures")
+            )); // status-ok: per-config verification result
         }
         drop(pubkey_file);
 

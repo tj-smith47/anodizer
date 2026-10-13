@@ -83,7 +83,7 @@ $ anodizer release
      • built wheel my_tool-1.2.3-py3-none-macosx_11_0_arm64.whl (macosx_11_0_arm64)
      • uploaded my_tool-1.2.3-py3-none-manylinux_2_28_x86_64.whl → https://upload.pypi.org/legacy/
      • uploaded my_tool-1.2.3-py3-none-macosx_11_0_arm64.whl → https://upload.pypi.org/legacy/
-     • pypi publish complete for 'my-tool' (2 file(s))
+     • pypi publish complete for 'my-tool' (2 files)
 ```
 
 ## Configuration

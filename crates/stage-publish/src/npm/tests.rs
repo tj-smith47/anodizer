@@ -5822,7 +5822,7 @@ exit 0
     assert_eq!(outcome.status, PromoteStatus::Promoted);
     assert_eq!(
         outcome.what.as_deref(),
-        Some("1 package(s)"),
+        Some("1 package"),
         "one metapackage re-tagged"
     );
     let recorded = std::fs::read_to_string(&calls).unwrap_or_default();

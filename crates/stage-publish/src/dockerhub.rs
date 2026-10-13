@@ -1,3 +1,4 @@
+use crate::publisher_helpers::count_noun;
 use anodizer_core::config::DockerHubFullDescription;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
@@ -309,10 +310,12 @@ fn publish_to_dockerhub_into(
         // `library/` namespace requires Docker Inc permissions).
         for image in images {
             let segments: Vec<&str> = image.split('/').collect();
-            if segments.iter().any(|s| s.is_empty()) {
+            let empty = segments.iter().filter(|s| s.is_empty()).count();
+            if empty > 0 {
                 bail!(
-                    "dockerhub: image '{}' has empty path segment(s) (no leading/trailing slash, no consecutive slashes)",
-                    image
+                    "dockerhub: image '{}' has {} (no leading/trailing slash, no consecutive slashes)",
+                    image,
+                    count_noun(empty, "empty path segment", "empty path segments")
                 );
             }
             if segments.len() > 2 {
@@ -810,8 +813,8 @@ impl anodizer_core::Publisher for DockerhubPublisher {
                 // publishers.
                 log.warn(&format!(
                     "dockerhub rollback could not build HTTP client ({e:#}); \
-                     manual review required for {} repo(s)",
-                    targets.len()
+                     manual review required for {}",
+                    count_noun(targets.len(), "repo", "repos")
                 ));
                 for t in &targets {
                     log.warn(&format!(
@@ -848,8 +851,9 @@ impl anodizer_core::Publisher for DockerhubPublisher {
             }
         }
         log.status(&format!(
-            "dockerhub rollback restored {} description(s), {} failure(s)",
-            restored, failed
+            "dockerhub rollback restored {}, {}",
+            count_noun(restored, "description", "descriptions"),
+            count_noun(failed, "failure", "failures")
         ));
         Ok(())
     }
@@ -2762,7 +2766,7 @@ mod live_http_tests {
         assert!(
             statuses
                 .iter()
-                .any(|(_, m)| m.contains("0 description(s), 1 failure(s)")),
+                .any(|(_, m)| m.contains("0 descriptions, 1 failure")),
             "tally must report 1 failure: {statuses:?}"
         );
     }

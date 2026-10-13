@@ -502,7 +502,7 @@ pub fn host_buildable_targets(host: &str, configured: &[String]) -> (Vec<String>
 /// was skipped.
 ///
 /// Example:
-/// `skipped 3 target(s) — not buildable on this linux host (--host-targets):
+/// `skipped 3 targets — not buildable on this linux host (--host-targets):
 /// aarch64-apple-darwin, x86_64-apple-darwin (apple targets require a macOS
 /// host); x86_64-pc-windows-msvc (windows-msvc targets require a Windows host)`
 pub fn host_targets_skip_message(host: &str, skipped: &[String]) -> Option<String> {
@@ -511,8 +511,8 @@ pub fn host_targets_skip_message(host: &str, skipped: &[String]) -> Option<Strin
     }
     let (host_os, _) = crate::target::map_target(host);
     Some(format!(
-        "skipped {} target(s) — not buildable on this {} host (--host-targets): {}",
-        skipped.len(),
+        "skipped {} — not buildable on this {} host (--host-targets): {}",
+        crate::text::count_noun(skipped.len(), "target", "targets"),
         host_os,
         host_targets_skip_reasons(host, skipped),
     ))
@@ -1121,7 +1121,7 @@ mod tests {
             "x86_64-pc-windows-msvc".to_string(),
         ];
         let msg = host_targets_skip_message(LINUX_HOST, &skipped).unwrap();
-        assert!(msg.contains("3 target(s)"), "names the count: {msg}");
+        assert!(msg.contains("3 targets"), "names the count: {msg}");
         assert!(msg.contains("linux host"), "names the host OS: {msg}");
         assert!(
             msg.contains("apple targets require a macOS host"),

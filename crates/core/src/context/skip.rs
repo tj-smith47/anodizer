@@ -200,7 +200,12 @@ pub fn validate_skip_values(skip: &[String], valid: &[&str]) -> Result<(), Strin
         // (or the action's skip-token generator) reading "Valid options" should
         // see one clean vocabulary, not a confusing list with repeats.
         Err(format!(
-            "invalid --skip value(s): {}. Valid options: {}",
+            "{}: {}. Valid options: {}",
+            crate::text::count_noun(
+                invalid.len(),
+                "invalid --skip value",
+                "invalid --skip values"
+            ),
             invalid.join(", "),
             dedup_preserving_order(valid.iter().copied()).join(", "),
         ))

@@ -1,4 +1,5 @@
 use super::*;
+use crate::publisher_helpers::count_noun;
 
 /// List every version of a single CloudSmith package and DELETE those that
 /// rank beyond the `keep` most-recent releases (`cloudsmiths[].keep_versions`).
@@ -104,16 +105,19 @@ pub(crate) fn prune_cloudsmith_versions(
     let kept_versions = retained_version_summary(&entries, keep, current_version);
     if failed == 0 {
         log.status(&format!(
-            "pruned {} old artifact(s) of '{}' from cloudsmith (kept {} most-recent: {})",
-            deleted, package_name, keep, kept_versions
+            "pruned {} of '{}' from cloudsmith (kept {} most-recent: {})",
+            count_noun(deleted, "old artifact", "old artifacts"),
+            package_name,
+            keep,
+            kept_versions
         ));
     } else {
         log.warn(&format!(
-            "cloudsmith keep_versions: pruned {} artifact(s) of '{}' but {} delete(s) FAILED \
+            "cloudsmith keep_versions: pruned {} of '{}' but {} FAILED \
              (slugs: {}); those older versions remain and still consume storage",
-            deleted,
+            count_noun(deleted, "artifact", "artifacts"),
             package_name,
-            failed,
+            count_noun(failed, "delete", "deletes"),
             failed_slugs.join(", ")
         ));
     }

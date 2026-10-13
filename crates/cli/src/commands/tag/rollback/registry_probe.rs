@@ -161,7 +161,7 @@ pub(super) fn check_not_burned_on_crates_io(
         &pending,
         MAX_PROBE_WORKERS,
         "crates.io burn probe",
-        "probe",
+        ("probe", "probes"),
         log,
         |(_, name, version)| Ok(index_probe(name, version)),
     )?;
@@ -206,11 +206,11 @@ pub(super) fn check_not_burned_on_crates_io(
         };
         return Err(RollbackRefusal {
             reason: format!(
-                "these version(s) are live on the crates.io index (published by a prior \
-                 attempt, whatever this run's summaries say):\n{}\n\
-                 crates.io never accepts the same version twice, so deleting the tag(s) \
-                 cannot lead to a clean same-version re-cut — tags kept to protect the \
-                 published state.{squat_note}",
+                "every version listed below is live on the crates.io index (published by a \
+                 prior attempt, whatever this run's summaries say):\n{}\n\
+                 crates.io never accepts the same version twice, so deleting its tag \
+                 cannot lead to a clean same-version re-cut — every tag was kept to protect \
+                 the published state.{squat_note}",
                 burned.join("\n")
             ),
             next_step: refusal_next_step(),
@@ -220,22 +220,22 @@ pub(super) fn check_not_burned_on_crates_io(
     if !indeterminate.is_empty() {
         bail!(
             "refusing to roll back: the crates.io index could not be reached to verify \
-             whether these version(s) are already published:\n{}\n\
-             Without the index there is no proof the version(s) are safe to destroy — a \
-             prior run may have burned them on crates.io. Restore network access and \
+             whether each version listed below is already published:\n{}\n\
+             Without the index there is no proof that any listed version is safe to destroy \
+             — a prior run may have burned it on crates.io. Restore network access and \
              retry, or pass --force if you are certain nothing irreversible shipped.",
             indeterminate.join("\n")
         );
     }
     if !unmapped.is_empty() {
         bail!(
-            "refusing to roll back — could not map these tag(s) to any crate in the \
+            "refusing to roll back — each tag listed below maps to no crate in the \
              anodizer config:\n{}\n\
              The crates.io burn probe works by mapping each tag's family (from the crates' \
-             tag_template) to the crates it versions, and this config publishes crate(s) to \
+             tag_template) to the crates it versions, and this config publishes to \
              crates.io — a tag the probe cannot map might version a crate whose version is \
              already burned there, so proceeding blind is not safe. Check that the config's \
-             crates/tag_template families cover these tag(s), or pass --force if you are \
+             crates/tag_template families cover every listed tag, or pass --force if you are \
              certain nothing irreversible shipped.",
             unmapped.join("\n")
         );
@@ -373,7 +373,7 @@ pub(super) fn check_not_burned_on_npm_pypi(
         &pending,
         MAX_PROBE_WORKERS,
         "npm/pypi burn probe",
-        "probe",
+        ("probe", "probes"),
         log,
         |probe| {
             Ok(match probe {
@@ -436,11 +436,11 @@ pub(super) fn check_not_burned_on_npm_pypi(
     if !burned.is_empty() {
         return Err(RollbackRefusal {
             reason: format!(
-                "these version(s) are already live on an immutable registry (published by a \
-                 prior attempt, whatever this run's summaries say):\n{}\n\
+                "every version listed below is already live on an immutable registry (published \
+                 by a prior attempt, whatever this run's summaries say):\n{}\n\
                  npm never accepts the same version cleanly and a PyPI filename can never be \
-                 re-uploaded, so deleting the tag(s) cannot lead to a clean same-version \
-                 re-cut — tags kept to protect the published state.",
+                 re-uploaded, so deleting its tag cannot lead to a clean same-version \
+                 re-cut — every tag was kept to protect the published state.",
                 burned.join("\n")
             ),
             next_step: refusal_next_step(),
@@ -450,17 +450,17 @@ pub(super) fn check_not_burned_on_npm_pypi(
     if !indeterminate.is_empty() {
         bail!(
             "refusing to roll back: an immutable registry could not be reached to verify \
-             whether these version(s) are already published:\n{}\n\
-             Without the registry there is no proof the version(s) are safe to destroy — a \
-             prior run may have burned them on npm/pypi. Restore network access and retry, \
+             whether each version listed below is already published:\n{}\n\
+             Without the registry there is no proof that any listed version is safe to \
+             destroy — a prior run may have burned it on npm/pypi. Restore network access and retry, \
              or pass --force if you are certain nothing irreversible shipped.",
             indeterminate.join("\n")
         );
     }
     if !unresolvable.is_empty() {
         bail!(
-            "refusing to roll back — could not resolve the npm/pypi package name(s) for \
-             these tag(s) without a release template context:\n{}\n\
+            "refusing to roll back — could not resolve the npm/pypi package name for \
+             each tag listed below without a release template context:\n{}\n\
              This config publishes to npm/pypi, and an unresolvable package name might \
              version a package that IS burned there, so proceeding blind is not safe. \
              Roll back from a release checkout, or pass --force if you are certain nothing \

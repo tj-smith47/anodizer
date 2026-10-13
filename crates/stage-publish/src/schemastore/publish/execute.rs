@@ -1,3 +1,4 @@
+use crate::publisher_helpers::count_noun;
 use std::path::PathBuf;
 
 use anodizer_core::PublishEvidence;
@@ -37,8 +38,12 @@ pub(crate) fn run_publish(ctx: &mut Context) -> anyhow::Result<PublishEvidence> 
     // `run_real`, which re-derives from the synced clone.
     if probe_remote_all_noop(ctx, &cfg, &effective, &log) {
         log.status(&format!(
-            "all {} schemastore schema(s) already current upstream — nothing to publish (no clone)",
-            effective.len()
+            "{} already current upstream — nothing to publish (no clone)",
+            count_noun(
+                effective.len(),
+                "planned schemastore schema",
+                "planned schemastore schemas"
+            )
         ));
         return Ok(PublishEvidence::new("schemastore"));
     }
@@ -213,8 +218,12 @@ fn plan_dry_run(
         log.status(&plan.planned_line());
     }
     log.status(&format!(
-        "(dry-run) planned {} schemastore registration(s); no PR opened",
-        effective.len()
+        "(dry-run) planned {}; no PR opened",
+        count_noun(
+            effective.len(),
+            "schemastore registration",
+            "schemastore registrations"
+        )
     ));
     Ok(PublishEvidence::new("schemastore"))
 }
@@ -612,8 +621,14 @@ pub(super) fn write_vendor_schema(
         ));
     }
     if let Some(formats) = options.get("unknownFormat") {
+        let n = formats.as_array().map_or(1, Vec::len);
         log.status(&format!(
-            "declared unknown format(s) {formats} for schema `{allow_name}` in {DIALECT_ALLOWLIST_PATH}"
+            "declared {} {formats} for schema `{allow_name}` in {DIALECT_ALLOWLIST_PATH}",
+            if n == 1 {
+                "unknown format"
+            } else {
+                "unknown formats"
+            }
         ));
     }
     Ok(())
@@ -718,13 +733,22 @@ pub(super) fn schemastore_summary(applied: &[SchemaPlan]) -> String {
 /// Commit message naming the registered schemas, verb derived from each plan's
 /// verdict (add vs update).
 pub(super) fn schemastore_commit_msg(applied: &[SchemaPlan]) -> String {
-    format!("{} schema(s)", schemastore_summary(applied))
+    schemastore_summary_line(applied)
 }
 
 /// PR title naming the registered schemas, verb derived from each plan's
 /// verdict (add vs update).
 pub(super) fn schemastore_pr_title(applied: &[SchemaPlan]) -> String {
-    format!("{} schema(s)", schemastore_summary(applied))
+    schemastore_summary_line(applied)
+}
+
+fn schemastore_summary_line(applied: &[SchemaPlan]) -> String {
+    let noun = if applied.len() == 1 {
+        "schema"
+    } else {
+        "schemas"
+    };
+    format!("{} {noun}", schemastore_summary(applied))
 }
 
 /// PR body listing each registered schema's name, hosting mode, and url.

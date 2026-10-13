@@ -2,6 +2,7 @@
 //! waiting for deps to appear on the index, and publish-set completeness checks.
 
 use super::*;
+use crate::publisher_helpers::count_noun;
 
 /// Walk `depends_on` from each crate in `seed` to produce a de-duplicated
 /// list containing every seed crate plus every transitive dependency that
@@ -166,9 +167,9 @@ pub(crate) fn wait_for_workspace_deps_to_appear(
         .context("publish: wait_for_workspace_deps build HTTP client")?;
 
     log.status(&format!(
-        "gating publish of '{}' on {} workspace dep(s)",
+        "gating publish of '{}' on {}",
         crate_name,
-        deps.len()
+        count_noun(deps.len(), "workspace dep", "workspace deps")
     ));
 
     // Process deps sequentially — the typical fan-in is small (1–3 deps),

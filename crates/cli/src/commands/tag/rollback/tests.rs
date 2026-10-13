@@ -1304,7 +1304,7 @@ fn guard_refuses_on_a_v1_summary_carrying_failure_policy() {
     .expect_err("a v1 summary recording an irreversible publish must block the rollback");
     let msg = err.to_string();
     assert!(
-        msg.contains("one-way-door publisher(s) already accepted"),
+        msg.contains("a one-way-door publisher already accepted each version"),
         "the v1 summary must be READ, not skipped as unreadable: {msg}"
     );
     assert!(
@@ -1486,7 +1486,7 @@ fn guard_falls_back_to_release_probe_when_no_summary_matches_the_tag() {
     .expect_err("unsummarized tag must fall back to the release probe");
     assert!(
         err.to_string()
-            .contains("published GitHub release(s) exist")
+            .contains("a published GitHub release exists")
     );
 }
 
@@ -1795,7 +1795,7 @@ fn crates_io_probe_unreachable_index_fails_closed() {
         "must explain the index is unreachable: {msg}"
     );
     assert!(
-        msg.contains("no proof the version(s) are safe to destroy"),
+        msg.contains("no proof that any listed version is safe to destroy"),
         "must explain publication state is unverifiable: {msg}"
     );
     assert!(msg.contains("--force"), "must name the escape hatch: {msg}");
@@ -1826,7 +1826,7 @@ fn crates_io_probe_bails_when_tag_maps_to_no_crate() {
     .expect_err("an unmappable tag must fail closed");
     let msg = err.to_string();
     assert!(
-        msg.contains("could not map these tag(s) to any crate"),
+        msg.contains("each tag listed below maps to no crate"),
         "must name the mapping failure: {msg}"
     );
     assert!(msg.contains("v1.0.0"), "must name the tag: {msg}");
@@ -2122,7 +2122,7 @@ fn npm_pypi_unreachable_registry_fails_closed() {
         "must explain the registry is unreachable: {msg}"
     );
     assert!(
-        msg.contains("no proof the version(s) are safe to destroy"),
+        msg.contains("no proof that any listed version is safe to destroy"),
         "must explain publication state is unverifiable: {msg}"
     );
     assert!(msg.contains("--force"), "must name the escape hatch: {msg}");

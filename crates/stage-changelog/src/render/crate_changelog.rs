@@ -139,9 +139,9 @@ pub(crate) fn render_crate_changelog(
     if (use_gitlab || use_gitea) && !paths.is_empty() {
         log.warn(&format!(
             "{} API does not support path filtering; \
-             {} path(s) will be ignored. Use `use: git` for path-based filtering.",
+             {} will be ignored. Use `use: git` for path-based filtering.",
             if use_gitlab { "GitLab" } else { "Gitea" },
-            paths.len()
+            anodizer_core::text::count_noun(paths.len(), "path", "paths")
         ));
     }
     // A precise `changelog.paths` glob narrowing applies only to `use: git`
@@ -239,7 +239,10 @@ pub(crate) fn render_crate_changelog(
             if all_commit_infos.is_empty() {
                 "no commits touched the configured paths".to_string()
             } else {
-                format!("all {} commit(s) were filtered out", all_commit_infos.len())
+                match all_commit_infos.len() {
+                    1 => "the 1 commit was filtered out".to_string(),
+                    n => format!("all {n} commits were filtered out"),
+                }
             },
             describe_range(
                 prev_tag.as_deref(),

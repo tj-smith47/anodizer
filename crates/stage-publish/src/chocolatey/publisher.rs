@@ -23,6 +23,7 @@
 //! — so persisting it into evidence would only leak a credential with
 //! no operator benefit.
 
+use crate::publisher_helpers::count_noun;
 use anodizer_core::context::Context;
 
 simple_publisher!(
@@ -421,8 +422,12 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
             ));
         }
         log.status(&format!(
-            "{} chocolatey package(s) require manual withdrawal",
-            targets.len()
+            "{} manual withdrawal",
+            count_noun(
+                targets.len(),
+                "chocolatey package requires",
+                "chocolatey packages require"
+            )
         ));
         Ok(())
     }
@@ -1142,7 +1147,7 @@ mod publisher_tests {
     fn run_done_message_reports_considered_count() {
         let msg = crate::publisher_helpers::run_done_message("chocolatey", 2);
         assert!(msg.starts_with("finished chocolatey publish"), "{msg}");
-        assert!(msg.contains("2 configured crate(s) considered"), "{msg}");
+        assert!(msg.contains("2 configured crates considered"), "{msg}");
     }
 
     #[test]

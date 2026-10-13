@@ -56,6 +56,7 @@
 //! the tag writes a new `report.json`, which already holds what the
 //! replay left outstanding.
 
+use crate::publisher_helpers::count_noun;
 use anodizer_core::context::Context;
 use anodizer_core::{PublishReport, Publisher, PublisherGroup, PublisherOutcome};
 use anyhow::{Context as _, Result, anyhow};
@@ -126,8 +127,8 @@ pub(crate) fn run_with_publishers(
         log.warn("no rollback-eligible entries in prior report; nothing to do");
     } else {
         log.status(&format!(
-            "dispatching rollback for {} target(s)",
-            target_indices.len()
+            "dispatching rollback for {}",
+            count_noun(target_indices.len(), "target", "targets")
         ));
     }
 

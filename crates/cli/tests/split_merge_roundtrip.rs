@@ -40,7 +40,7 @@ fn split_then_merge(split_flags: &[&str], expected_subdir: &str) {
     split_then_merge_expecting(
         split_flags,
         expected_subdir,
-        "loaded 1 artifact(s) from 1 context(s)",
+        "loaded 1 artifact from 1 context",
     );
 }
 
@@ -108,9 +108,5 @@ fn split_then_merge_round_trips_a_single_target_shard() {
 #[test]
 fn split_then_merge_round_trips_a_shard_that_built_nothing() {
     let (os, _) = anodizer_core::target::map_target(&host_triple());
-    split_then_merge_expecting(
-        &["--skip=build"],
-        &os,
-        "loaded 0 artifact(s) from 1 context(s)",
-    );
+    split_then_merge_expecting(&["--skip=build"], &os, "loaded 0 artifacts from 1 context");
 }

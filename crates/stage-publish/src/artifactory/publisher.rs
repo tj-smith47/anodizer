@@ -1,4 +1,5 @@
 use super::*;
+use crate::publisher_helpers::count_noun;
 
 // ---------------------------------------------------------------------------
 // ArtifactoryPublisher (Publisher trait wrapper)
@@ -211,8 +212,10 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
 
         let (deleted, already_absent, failed) = parallel_delete(&client, &jobs, &log);
         log.status(&format!(
-            "artifactory rollback deleted {} artifact(s), {} already absent, {} failure(s)",
-            deleted, already_absent, failed
+            "artifactory rollback deleted {}, {} already absent, {}",
+            count_noun(deleted, "artifact", "artifacts"),
+            already_absent,
+            count_noun(failed, "failure", "failures")
         ));
         Ok(())
     }

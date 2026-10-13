@@ -43,26 +43,16 @@ impl<'a> CrateCask<'a> {
 
     /// The formula block whose tap commit carries this cask, or `None` when
     /// the cask is pushed on its own: the crate has no formula, or the
-    /// cask's `repository:` names a different tap. Owner and name compare
-    /// without regard to case, as GitHub resolves them; a cask that names the
-    /// formula's tap with another `branch:`, `token:` or `pull_request:`
-    /// block is pushed on its own, because one commit and one pull request
-    /// cannot honor two of those.
+    /// cask's `repository:` differs from the formula's in any field (see
+    /// `RepositoryConfig`'s `PartialEq`), because one commit and one pull
+    /// request cannot honor two branches, tokens, transports or
+    /// `pull_request:` blocks.
     pub(crate) fn same_tap(&self) -> Option<&'a HomebrewConfig> {
         let formula = self.formula?;
-        let Some(own) = self.cask.repository.as_ref() else {
-            return Some(formula);
-        };
-        let tap = formula.repository.as_ref();
-        let coords = |r: Option<&RepositoryConfig>| {
-            crate::util::resolve_repo_owner_name(r)
-                .map(|(o, n)| (o.to_ascii_lowercase(), n.to_ascii_lowercase()))
-        };
-        let same = coords(Some(own)) == coords(tap)
-            && own.branch == tap.and_then(|t| t.branch.clone())
-            && own.token == tap.and_then(|t| t.token.clone())
-            && own.pull_request == tap.and_then(|t| t.pull_request.clone());
-        same.then_some(formula)
+        match self.cask.repository.as_ref() {
+            None => Some(formula),
+            Some(own) => (formula.repository.as_ref() == Some(own)).then_some(formula),
+        }
     }
 
     /// The block the cask falls back to for unset gates, URL template,
@@ -84,26 +74,36 @@ impl<'a> CrateCask<'a> {
 /// True when the crate cask's effective skip gates trip for `crate_name`:
 /// the cask `skip_upload` (per-cask wins, else the formula's `skip_upload`) is
 /// truthy, or the effective `if:` (cask-level wins, else the formula's)
-/// evaluates falsy. Logs the reason on `log`. The publish paths pass the
-/// stage logger, so the skip line prints once, from the publisher; the
-/// render-only callers pass a silenced one.
+/// evaluates falsy. The skip line prints on `log` only when `report_skip`
+/// is set, which the publisher does and the render-only passes do not, so
+/// it prints once per command. A `skip_upload` warning prints through the
+/// logger [`Context::claim_render_log`] hands the value's owner, so it
+/// prints once per command in every mode.
 pub(super) fn cask_skip_gates_trip(
     ctx: &Context,
     hb_cfg: &anodizer_core::config::HomebrewConfig,
     cask_cfg: &anodizer_core::config::HomebrewCaskConfig,
     crate_name: &str,
     log: &StageLogger,
+    report_skip: bool,
 ) -> Result<bool> {
-    let effective_skip = cask_cfg
-        .skip_upload
-        .as_ref()
-        .or(hb_cfg.skip_upload.as_ref());
-    if crate::util::should_skip_upload(
-        effective_skip,
-        ctx,
-        log,
-        Some(&format!("homebrew cask for '{crate_name}'")),
-    )? {
+    // A cask that inherits the formula's `skip_upload` reads the formula's
+    // value, so it warns under the formula's key and the one bad value warns
+    // once.
+    let (effective_skip, owner_key) = match cask_cfg.skip_upload.as_ref() {
+        Some(own) => (Some(own), super::cask_render_key(crate_name)),
+        None => (
+            hb_cfg.skip_upload.as_ref(),
+            super::formula_render_key(crate_name),
+        ),
+    };
+    let warn_log = ctx.claim_render_log(&format!("{owner_key} skip_upload"), log);
+    if crate::util::should_skip_upload(effective_skip, ctx, &warn_log, None)? {
+        if report_skip {
+            log.status(&crate::util::skip_upload_line(&format!(
+                "homebrew cask for '{crate_name}'"
+            )));
+        }
         return Ok(true);
     }
 
@@ -119,14 +119,13 @@ pub(super) fn cask_skip_gates_trip(
         &format!("homebrew cask publisher for crate '{}'", crate_name),
         |t| ctx.render_template(t),
     )?;
-    if !proceed {
+    if !proceed && report_skip {
         log.status(&format!(
             "skipped homebrew cask for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
-        return Ok(true);
     }
-    Ok(false)
+    Ok(!proceed)
 }
 
 /// Render the Ruby cask a live publish would write for `crate_name`,
@@ -137,8 +136,8 @@ pub(super) fn cask_skip_gates_trip(
 /// Returns `Ok(None)` when no cask is configured or the publisher would skip
 /// it. The offline schema validator renders through this function and the
 /// push paths through the same [`generate_cask_from_context`], so the
-/// validated document is byte-for-byte what a release pushes. The gates are
-/// evaluated without printing: the skip line belongs to the publisher.
+/// validated document is byte-for-byte what a release pushes. The gates
+/// print no skip line: that line belongs to the publisher.
 pub(crate) fn render_homebrew_cask_for_crate(
     ctx: &Context,
     crate_name: &str,
@@ -148,13 +147,7 @@ pub(crate) fn render_homebrew_cask_for_crate(
         return Ok(None);
     };
     let parent = crate_cask.parent();
-    if cask_skip_gates_trip(
-        ctx,
-        parent,
-        crate_cask.cask,
-        crate_name,
-        &super::silenced(log),
-    )? {
+    if cask_skip_gates_trip(ctx, parent, crate_cask.cask, crate_name, log, false)? {
         return Ok(None);
     }
     let cask_result = generate_cask_from_context(ctx, crate_name, parent, crate_cask.cask, log)?;
@@ -185,7 +178,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
     // Evaluate the cask's effective skip gates (per-cask wins, else the
     // formula's) before resolving the tap repo so a skipped cask with no
     // `repository:` block returns quietly with nothing to resolve.
-    if cask_skip_gates_trip(ctx, hb_cfg, cask_cfg, crate_name, log)? {
+    if cask_skip_gates_trip(ctx, hb_cfg, cask_cfg, crate_name, log, true)? {
         return Ok(false);
     }
 

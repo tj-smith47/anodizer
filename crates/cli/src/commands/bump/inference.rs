@@ -135,7 +135,15 @@ fn format_reason(level: BumpLevel, c: &LevelCounts, last_tag: Option<&str>) -> S
             if total == 0 {
                 format!("no commits{}", scope)
             } else {
-                format!("{} non-bumping message(s){}", total, scope)
+                format!(
+                    "{}{}",
+                    anodizer_core::text::count_noun(
+                        total,
+                        "non-bumping message",
+                        "non-bumping messages"
+                    ),
+                    scope
+                )
             }
         }
         _ => String::new(),

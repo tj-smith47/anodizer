@@ -282,7 +282,7 @@ pub(crate) fn run_github_backend(
                 &asset_names,
             ) {
                 anyhow::bail!(
-                    "release: GitHub release for tag '{}' already exists with {} asset(s) ({}) \
+                    "release: GitHub release for tag '{}' already exists with {} ({}) \
                      left by a prior failed attempt. To recover, pass one of:\n\
                      \x20 • --resume-release  (continue into the existing release; assumes its \
                      assets are correct), or\n\
@@ -290,7 +290,7 @@ pub(crate) fn run_github_backend(
                      \x20 • set release.replace_existing_artifacts: true in config, or\n\
                      \x20 • delete the existing release manually and retry.",
                     tag,
-                    conflicting.len(),
+                    anodizer_core::text::count_noun(conflicting.len(), "asset", "assets"),
                     conflicting.join(", ")
                 );
             }
@@ -594,10 +594,14 @@ pub(crate) fn run_github_backend(
             };
             if family.scopes() {
                 log.verbose(&format!(
-                    "nightly retention scoped to tag family '{}' ({} of {} name-matched release(s) in family)",
+                    "nightly retention scoped to tag family '{}' ({} of {} in family)",
                     family.describe(),
                     family.scope(&existing).len(),
-                    existing.len()
+                    anodizer_core::text::count_noun(
+                        existing.len(),
+                        "name-matched release",
+                        "name-matched releases"
+                    )
                 ));
             }
             let to_prune =

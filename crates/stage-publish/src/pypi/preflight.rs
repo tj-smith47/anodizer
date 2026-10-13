@@ -326,9 +326,14 @@ pub(crate) fn platform_tag_collision_check(
     }
     collisions.sort();
     PreflightCheck::Warning(format!(
-        "pypi: multiple selected binaries build the same target triple(s) [{}] — each \
+        "pypi: multiple selected binaries build the same {} [{}] — each \
          derives the same wheel platform tag and would collide on one filename; narrow \
          this entry's `ids:` so it publishes one binary per platform",
+        if collisions.len() == 1 {
+            "target triple"
+        } else {
+            "target triples"
+        },
         collisions.join("; ")
     ))
 }

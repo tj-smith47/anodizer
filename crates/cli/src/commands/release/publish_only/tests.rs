@@ -527,7 +527,7 @@ fn hash_verify_preserved_dist_bails_when_no_shard_matches_disk() {
     let err = hash_verify_preserved_dist(&ctx, tmp.path()).unwrap_err();
     let msg = format!("{err:#}");
     assert!(
-        msg.contains("recorded across 2 shard(s)"),
+        msg.contains("recorded across 2 shards"),
         "error must surface the shard count; got: {msg}"
     );
     assert!(

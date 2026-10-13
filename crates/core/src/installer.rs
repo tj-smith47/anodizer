@@ -535,11 +535,12 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
         .collect();
     if !stranded.is_empty() {
         ctx.logger("templatefiles").warn(&format!(
-            "installer script cannot detect released target(s) {}: their uname \
+            "installer script cannot detect {} {}: their uname \
              tokens are ambiguous or unmapped (`uname -m` reports the same \
              token for both mips endiannesses; illumos reports `SunOS`), so \
              their asset arms are unreachable — matching hosts get the \
              unsupported-platform error",
+            crate::text::count_noun(stranded.len(), "released target", "released targets"),
             stranded.join(", ")
         ));
     }
@@ -558,10 +559,11 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
         .collect();
     if !libc_stranded.is_empty() {
         ctx.logger("templatefiles").warn(&format!(
-            "installer script cannot detect released target(s) {}: the platform \
+            "installer script cannot detect {} {}: the platform \
              ships more than one libc class, and the installer's libc probe \
              cannot select a build that links neither glibc nor musl — matching \
-             hosts get whichever build(s) the platform still lists",
+             hosts get whichever builds the platform still lists",
+            crate::text::count_noun(libc_stranded.len(), "released target", "released targets"),
             libc_stranded.join(", ")
         ));
     }
@@ -1704,7 +1706,7 @@ mod tests {
             capture
                 .warn_messages()
                 .iter()
-                .any(|m| m.contains("whichever build(s) the platform still lists")),
+                .any(|m| m.contains("whichever builds the platform still lists")),
             "warn must say what the script actually does: {:?}",
             capture.warn_messages()
         );

@@ -1,4 +1,5 @@
 use super::*;
+use crate::publisher_helpers::count_noun;
 
 /// Uploads every selected package, writing each uploaded package into `uploaded`
 /// as it is uploaded so a failure on a later artifact still leaves the caller the
@@ -151,10 +152,10 @@ pub(crate) fn publish_to_cloudsmith_into(
             artifacts.len(),
         ) {
             log.warn(&format!(
-                "exclude filter {:?} dropped all {} candidate package(s) for CloudSmith \
+                "exclude filter {:?} dropped all {} for CloudSmith \
                  repo '{}/{}'; check the globs match asset names, not full paths",
                 entry.exclude.as_deref().unwrap_or_default(),
-                pre_exclude,
+                count_noun(pre_exclude, "candidate package", "candidate packages"),
                 organization,
                 repository
             ));

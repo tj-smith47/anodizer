@@ -737,7 +737,7 @@ impl BlobStage {
             &jobs,
             global_parallelism,
             "blob",
-            "object",
+            ("object", "objects"),
             &log,
             run_job,
         );

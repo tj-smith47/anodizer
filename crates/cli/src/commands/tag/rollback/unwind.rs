@@ -98,8 +98,8 @@ pub(super) fn unwind_published_state(
                 ));
             } else {
                 log.status(&format!(
-                    "(dry-run) would withdraw {} publisher(s) for {}: {}",
-                    planned.len(),
+                    "(dry-run) would withdraw {} for {}: {}",
+                    anodizer_core::text::count_noun(planned.len(), "publisher", "publishers"),
                     target.tag,
                     planned.join(", ")
                 ));

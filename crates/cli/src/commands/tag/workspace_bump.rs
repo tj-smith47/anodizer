@@ -122,8 +122,12 @@ pub(crate) fn apply_workspace_bump(
 
     if dry_run {
         log.status(&format!(
-            "(dry-run) would bump {} workspace crate(s) → {}",
-            rows.iter().filter(|r| r.level != BumpLevel::Skip).count(),
+            "(dry-run) would bump {} → {}",
+            anodizer_core::text::count_noun(
+                rows.iter().filter(|r| r.level != BumpLevel::Skip).count(),
+                "workspace crate",
+                "workspace crates"
+            ),
             new_version
         ));
         if let Some(old) = vf.old {
@@ -253,8 +257,12 @@ pub(crate) fn apply_workspace_bump(
     )?;
 
     log.status(&format!(
-        "bumped {} workspace crate(s) → {}",
-        rows.iter().filter(|r| r.level != BumpLevel::Skip).count(),
+        "bumped {} → {}",
+        anodizer_core::text::count_noun(
+            rows.iter().filter(|r| r.level != BumpLevel::Skip).count(),
+            "workspace crate",
+            "workspace crates"
+        ),
         new_version
     ));
     Ok(true)

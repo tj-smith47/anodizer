@@ -389,7 +389,11 @@ pub fn enroll_version_files(
             "could not determine the current version to scan for (no readable [package].version or [workspace.package].version)"
         );
     }
-    log.verbose(&format!("scanning for version(s): {}", versions.join(", ")));
+    log.verbose(&format!(
+        "scanning for {}: {}",
+        anodizer_core::text::count_noun(versions.len(), "version", "versions"),
+        versions.join(", ")
+    ));
 
     let tracked = anodizer_core::git::list_tracked_files_in(Path::new("."))
         .context("listing tracked files via `git ls-files`")?;
@@ -436,8 +440,8 @@ pub fn enroll_version_files(
         .with_context(|| format!("failed to write {config_path}"))?;
 
     log.status(&format!(
-        "enrolled {} file(s) under version_files in {config_path}",
-        added.len()
+        "enrolled {} under version_files in {config_path}",
+        anodizer_core::text::count_noun(added.len(), "file", "files")
     ));
     for path in &added {
         log.status(&format!("  + {path}"));

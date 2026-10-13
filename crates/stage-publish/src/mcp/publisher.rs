@@ -19,6 +19,7 @@
 //! `auth_method` field captures which provider to use (enum, no secret);
 //! the actual credential lives only in the process environment.
 
+use crate::publisher_helpers::count_noun;
 use std::time::Duration;
 
 use anodizer_core::context::Context;
@@ -306,8 +307,10 @@ impl anodizer_core::Publisher for McpPublisher {
             }
         }
         log.status(&format!(
-            "mcp rollback marked {} version(s) as deleted, {} degraded-to-warn, {} failure(s)",
-            deleted, degraded, failed
+            "mcp rollback marked {} as deleted, {} degraded-to-warn, {}",
+            count_noun(deleted, "version", "versions"),
+            degraded,
+            count_noun(failed, "failure", "failures")
         ));
         Ok(())
     }

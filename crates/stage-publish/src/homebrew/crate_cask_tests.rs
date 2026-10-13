@@ -357,55 +357,79 @@ fn a_gated_off_formula_and_cask_push_nothing_and_print_both_skips() {
 }
 
 /// Run every command's passes over a fresh context and count how often
-/// `line` printed: once for a command that publishes, zero times for one
-/// that only validates.
-fn assert_skip_line_prints_once_per_command(
+/// `line` printed at `level`: a skip line once for a command whose passes
+/// include the publisher and zero times for one that only validates, a
+/// warning once in every command.
+fn assert_gate_line_prints_once_per_command(
     site: &str,
     make_ctx: &dyn Fn(&str) -> Context,
     publish: &dyn Fn(&mut Context, &StageLogger),
+    level: LogLevel,
     line: &str,
 ) {
-    for (command, passes) in COMMAND_PASSES {
+    for (command, dry_run, passes) in COMMAND_PASSES {
         let (bare_url, bare) = make_bare_cask_tap("main");
         let mut ctx = make_ctx(&bare_url);
+        ctx.options.dry_run = *dry_run;
         let cap = LogCapture::new();
         ctx.with_log_capture(cap.clone());
         for pass in *passes {
             run_render_pass(&mut ctx, *pass, publish);
         }
         let printed = cap
-            .printed_messages(LogLevel::Status)
+            .printed_messages(level)
             .into_iter()
             .filter(|m| m == line)
             .count();
-        let want = usize::from(passes.iter().any(|p| matches!(p, RenderPass::Publisher)));
+        let want = match level {
+            LogLevel::Warn => 1,
+            _ => usize::from(passes.iter().any(|p| matches!(p, RenderPass::Publisher))),
+        };
         assert_eq!(printed, want, "{site}, {command}: {line}");
+        if level == LogLevel::Warn {
+            let skipped: Vec<String> = cap
+                .printed_messages(LogLevel::Status)
+                .into_iter()
+                .filter(|m| m.contains("skip_upload is set") || m.contains("`if` condition"))
+                .collect();
+            assert!(skipped.is_empty(), "{site}, {command}: {skipped:?}");
+        }
         drop(bare);
     }
 }
 
-/// The skip line of each gated homebrew document prints once per command,
-/// from the publisher, for both gates: the same-tap cask beside a pushed
-/// formula, a cask on its own tap, the formula, and a top-level cask.
+/// Each gate of each homebrew document reports once per command: the skip
+/// line from the publisher only, and an unrecognized `skip_upload` value's
+/// warning from whichever pass reads it first, in every command including
+/// a snapshot and a dry run. The documents are the same-tap cask beside a
+/// pushed formula, a cask on its own tap, the formula, and a top-level
+/// cask.
 #[test]
 fn every_gate_skip_line_prints_once_per_command() {
-    for gate in ["skip_upload", "if"] {
+    const WARNING: &str = "unrecognized skip_upload value \"ture\" (expected \"true\", \"false\", or \"auto\"); treating as false";
+    for gate in ["skip_upload", "if", "warn"] {
         let gated = |skip_upload: &mut Option<StringOrBool>, if_condition: &mut Option<String>| {
-            if gate == "skip_upload" {
-                *skip_upload = Some(StringOrBool::Bool(true));
-            } else {
-                *if_condition = Some("false".to_string());
+            match gate {
+                "skip_upload" => *skip_upload = Some(StringOrBool::Bool(true)),
+                "if" => *if_condition = Some("false".to_string()),
+                _ => *skip_upload = Some(StringOrBool::String("ture".to_string())),
             }
         };
-        let skip_line = |label: &str| {
-            if gate == "skip_upload" {
-                format!("skipped {label} upload — skip_upload is set")
-            } else {
-                format!("skipped {label} — `if` condition evaluated falsy")
-            }
+        let (level, skip_line) = if gate == "warn" {
+            (LogLevel::Warn, None)
+        } else {
+            (LogLevel::Status, Some(gate))
         };
+        let expected = |upload_label: &str, if_line: &str| match skip_line {
+            Some("skip_upload") => format!("skipped {upload_label} upload — skip_upload is set"),
+            Some(_) => if_line.to_string(),
+            None => WARNING.to_string(),
+        };
+        // A gate that trips pushes nothing; a value that only warns leaves the
+        // document in, and a dry run pushes nothing either way.
+        let pushes = |ctx: &Context| gate == "warn" && !ctx.is_dry_run();
 
-        assert_skip_line_prints_once_per_command(
+        assert_gate_line_prints_once_per_command(
             "same-tap cask",
             &|bare_url| {
                 let mut publish = same_tap_publish(bare_url, "alpha", false);
@@ -414,12 +438,17 @@ fn every_gate_skip_line_prints_once_per_command() {
                 single_crate_ctx(publish)
             },
             &|ctx, log| {
-                assert!(super::publish_to_homebrew(ctx, "alpha", log).expect("formula pushes"));
+                let pushed = super::publish_to_homebrew(ctx, "alpha", log).expect("formula runs");
+                assert_eq!(pushed, !ctx.is_dry_run(), "the formula pushes");
             },
-            &skip_line("homebrew cask for 'alpha'"),
+            level,
+            &expected(
+                "homebrew cask for 'alpha'",
+                "skipped homebrew cask for 'alpha' — `if` condition evaluated falsy",
+            ),
         );
 
-        assert_skip_line_prints_once_per_command(
+        assert_gate_line_prints_once_per_command(
             "own-tap cask",
             &|bare_url| {
                 let mut publish = cask_only_publish(bare_url, "alpha");
@@ -428,12 +457,17 @@ fn every_gate_skip_line_prints_once_per_command() {
                 single_crate_ctx(publish)
             },
             &|ctx, log| {
-                assert!(!super::publish_cask(ctx, "alpha", log).expect("cask skips"));
+                let pushed = super::publish_cask(ctx, "alpha", log).expect("cask runs");
+                assert_eq!(pushed, pushes(ctx));
             },
-            &skip_line("homebrew cask for 'alpha'"),
+            level,
+            &expected(
+                "homebrew cask for 'alpha'",
+                "skipped homebrew cask for 'alpha' — `if` condition evaluated falsy",
+            ),
         );
 
-        assert_skip_line_prints_once_per_command(
+        assert_gate_line_prints_once_per_command(
             "formula",
             &|bare_url| {
                 let mut formula = HomebrewConfig {
@@ -447,16 +481,17 @@ fn every_gate_skip_line_prints_once_per_command() {
                 })
             },
             &|ctx, log| {
-                assert!(!super::publish_to_homebrew(ctx, "alpha", log).expect("formula skips"));
+                let pushed = super::publish_to_homebrew(ctx, "alpha", log).expect("formula runs");
+                assert_eq!(pushed, pushes(ctx));
             },
-            &if gate == "skip_upload" {
-                skip_line("homebrew for 'alpha'")
-            } else {
-                "skipped homebrew for 'alpha' — `if` condition evaluated falsy".to_string()
-            },
+            level,
+            &expected(
+                "homebrew for 'alpha'",
+                "skipped homebrew for 'alpha' — `if` condition evaluated falsy",
+            ),
         );
 
-        assert_skip_line_prints_once_per_command(
+        assert_gate_line_prints_once_per_command(
             "top-level cask",
             &|bare_url| {
                 let mut top = HomebrewCaskConfig {
@@ -476,13 +511,13 @@ fn every_gate_skip_line_prints_once_per_command() {
             },
             &|ctx, log| {
                 let got = super::publish_top_level_homebrew_casks(ctx, log).expect("casks run");
-                assert!(!got.pushed_any, "{got:?}");
+                assert_eq!(got.pushed_any, pushes(ctx), "{got:?}");
             },
-            &if gate == "skip_upload" {
-                skip_line("cask for 'mycask'")
-            } else {
-                "skipped cask 'mycask' — `if` condition evaluated falsy".to_string()
-            },
+            level,
+            &expected(
+                "cask for 'mycask'",
+                "skipped cask 'mycask' — `if` condition evaluated falsy",
+            ),
         );
     }
 }
@@ -623,11 +658,12 @@ fn a_cask_only_crate_requires_the_tap_token() {
     );
 }
 
-/// A cask names the formula's tap when owner and name match without regard
-/// to case and the branch, token and `pull_request:` agree; any of those
-/// three differing sends the cask to its own commit.
+/// A cask names the formula's tap when its whole `repository:` equals the
+/// formula's: owner and name match without regard to case unless either is
+/// a template, and every other field matches exactly. Any difference sends
+/// the cask to its own commit.
 #[test]
-fn a_cask_shares_the_formula_tap_only_on_the_same_branch_token_and_pull_request() {
+fn a_cask_shares_the_formula_tap_only_when_the_whole_repository_matches() {
     let formula_tap = github_tap("homebrew-tap", "TAP_TOKEN");
     let with_cask_repo = |repo: RepositoryConfig| PublishConfig {
         homebrew: Some(HomebrewConfig {
@@ -687,6 +723,25 @@ fn a_cask_shares_the_formula_tap_only_on_the_same_branch_token_and_pull_request(
             false,
         ),
         (
+            "another git url",
+            RepositoryConfig {
+                git: Some(anodizer_core::config::GitRepoConfig {
+                    url: Some("git@github.com:myorg/homebrew-tap.git".to_string()),
+                    ..Default::default()
+                }),
+                ..formula_tap.clone()
+            },
+            false,
+        ),
+        (
+            "another token_type",
+            RepositoryConfig {
+                token_type: Some("gitea".to_string()),
+                ..formula_tap.clone()
+            },
+            false,
+        ),
+        (
             "another tap",
             github_tap("homebrew-casks", "TAP_TOKEN"),
             false,
@@ -694,6 +749,38 @@ fn a_cask_shares_the_formula_tap_only_on_the_same_branch_token_and_pull_request(
     ];
     for (case, repo, shared) in cases {
         let publish = with_cask_repo(repo);
+        let crate_cask = super::CrateCask::of(&publish).expect("cask configured");
+        assert_eq!(crate_cask.same_tap().is_some(), shared, "{case}");
+    }
+
+    // A templated owner renders to a value unknown here, so case differences
+    // between two templates are kept apart.
+    let templated = |owner: &str| RepositoryConfig {
+        owner: Some(owner.to_string()),
+        ..formula_tap.clone()
+    };
+    for (case, formula_owner, cask_owner, shared) in [
+        (
+            "the same template",
+            "{{ .Env.OWNER }}",
+            "{{ .Env.OWNER }}",
+            true,
+        ),
+        (
+            "templates in another case",
+            "{{ .Env.OWNER }}",
+            "{{ .Env.Owner }}",
+            false,
+        ),
+        (
+            "a template and a literal",
+            "{{ .Env.OWNER }}",
+            "myorg",
+            false,
+        ),
+    ] {
+        let mut publish = with_cask_repo(templated(cask_owner));
+        publish.homebrew.as_mut().expect("formula").repository = Some(templated(formula_owner));
         let crate_cask = super::CrateCask::of(&publish).expect("cask configured");
         assert_eq!(crate_cask.same_tap().is_some(), shared, "{case}");
     }

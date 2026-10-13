@@ -4,6 +4,7 @@
 //! a `Box<dyn Publisher>` for each configured publisher. The returned slice
 //! is what [`crate::dispatch::dispatch`] iterates over.
 
+use crate::publisher_helpers::count_noun;
 use anodizer_core::config::{CrateConfig, PublisherGateOverrides};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
@@ -602,11 +603,17 @@ pub fn warn_release_optional_with_dependent_publisher(ctx: &Context, log: &Stage
         return;
     }
 
+    let verb = if dependents.len() == 1 {
+        "depends"
+    } else {
+        "depend"
+    };
     log.warn(&format!(
-        "release.required is false but release-URL-dependent publisher(s) [{}] are enabled: \
-         if the GitHub release upload fails it will not fail the run, yet these manifests will \
+        "release.required is false but {} [{}] {verb} on the release URL: \
+         if the GitHub release upload fails it will not fail the run, yet the manifests will \
          still ship pointing at a release URL that 404s. Set release.required: true (or verify \
          the release succeeds) before relying on those installers.",
+        count_noun(dependents.len(), "enabled publisher", "enabled publishers"),
         dependents.join(", ")
     ));
 }
@@ -714,7 +721,12 @@ pub fn validate_publisher_selection(allowlist: &[String], skip: &[String]) -> Re
         .collect();
     if !bad_allow.is_empty() {
         return Err(format!(
-            "invalid --publishers value(s): {}. Valid publishers: {}",
+            "{}: {}. Valid publishers: {}",
+            count_noun(
+                bad_allow.len(),
+                "invalid --publishers value",
+                "invalid --publishers values"
+            ),
             bad_allow.join(", "),
             publishers.join(", "),
         ));
@@ -758,7 +770,12 @@ pub fn validate_publisher_allowlist_configured(
         .collect();
     if !bad_allow.is_empty() {
         return Err(format!(
-            "invalid --publishers value(s): {}. Valid publishers: {}",
+            "{}: {}. Valid publishers: {}",
+            count_noun(
+                bad_allow.len(),
+                "invalid --publishers value",
+                "invalid --publishers values"
+            ),
             bad_allow.join(", "),
             known.join(", "),
         ));

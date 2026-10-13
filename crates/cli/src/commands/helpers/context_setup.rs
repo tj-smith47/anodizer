@@ -304,7 +304,7 @@ pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) {
 /// announce pipeline. `ctx_opts` is assembled by the caller so each
 /// command supplies its own `skip_stages` / `merge` / `token` overlay.
 ///
-/// Side effect: emits a `log.status("loaded N artifact(s) from <dist>")`
+/// Side effect: emits a `log.status("loaded N artifacts from <dist>")`
 /// line after rehydration so the operator sees the artifact count at
 /// the same point in every "resume from dist" command.
 pub fn init_publish_stage_ctx(
@@ -333,8 +333,8 @@ pub fn init_publish_stage_ctx(
     let dist = dist_override.unwrap_or(&config.dist).to_path_buf();
     load_artifacts_from_dist(&mut ctx, &dist)?;
     log.status(&format!(
-        "loaded {} artifact(s) from {}",
-        ctx.artifacts.all().len(),
+        "loaded {} from {}",
+        anodizer_core::text::count_noun(ctx.artifacts.all().len(), "artifact", "artifacts"),
         dist.display()
     ));
 

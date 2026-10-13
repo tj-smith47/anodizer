@@ -67,11 +67,3 @@ pub(crate) fn resolve_cask_directory(directory: Option<&str>, ctx: &Context) -> 
         )
     })
 }
-
-/// `log` with its status lines dropped, for evaluating a skip gate where the
-/// skip line must not print: a gate skip is reported once, by the publisher
-/// that skips, and the render-only passes (the schema validator, the
-/// pre-publish guard, the reconcile probe) run before it in the same command.
-pub(crate) fn silenced(log: &anodizer_core::log::StageLogger) -> anodizer_core::log::StageLogger {
-    log.capped_at(anodizer_core::log::Verbosity::Quiet)
-}

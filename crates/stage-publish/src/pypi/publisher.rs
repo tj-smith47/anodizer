@@ -22,6 +22,7 @@
 //! uploaded files and `skip_existing` idempotent skips both appear (the
 //! skip flagged), so the run report shows exactly what is live.
 
+use crate::publisher_helpers::count_noun;
 use std::time::Duration;
 
 use anodizer_core::artifact::ArtifactKind;
@@ -459,10 +460,11 @@ pub(crate) fn publish_to_pypi(
                 .collect();
             if !unknown.is_empty() {
                 bail!(
-                    "pypi: entry '{}' platform_tag_overrides names target(s) it never \
+                    "pypi: entry '{}' platform_tag_overrides names {} it never \
                      builds: {} — remove the stale key or add a build for it (this \
                      entry builds: {})",
                     name,
+                    count_noun(unknown.len(), "target", "targets"),
                     unknown.join(", "),
                     built.into_iter().collect::<Vec<_>>().join(", ")
                 );
@@ -565,8 +567,8 @@ pub(crate) fn publish_to_pypi(
 
         if ctx.is_dry_run() {
             log.status(&format!(
-                "(dry-run) would upload {} file(s) to {}",
-                binaries.len() + usize::from(cfg.sdist),
+                "(dry-run) would upload {} to {}",
+                count_noun(binaries.len() + usize::from(cfg.sdist), "file", "files"),
                 repository
             ));
             continue;
@@ -612,9 +614,9 @@ pub(crate) fn publish_to_pypi(
             });
         }
         log.status(&format!(
-            "pypi publish complete for '{}' ({} file(s))",
+            "pypi publish complete for '{}' ({})",
             name,
-            dist_files.len()
+            count_noun(dist_files.len(), "file", "files")
         ));
     }
     Ok(())
@@ -820,7 +822,10 @@ impl anodizer_core::Publisher for PypiPublisher {
             verified += expected.len();
         }
         Ok(ReconcileState::Complete {
-            note: format!("all {verified} planned wheel(s) already on the index"),
+            note: format!(
+                "{} already on the index",
+                count_noun(verified, "planned wheel", "planned wheels")
+            ),
         })
     }
 

@@ -523,7 +523,7 @@ fn run_snap_jobs(
         jobs,
         parallelism,
         "snapcraft",
-        "snap",
+        ("snap", "snaps"),
         log,
         run_job,
     )

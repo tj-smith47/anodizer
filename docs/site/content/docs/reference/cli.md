@@ -135,7 +135,7 @@ Generate starter config, or enroll version-bearing files
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--version-files` | — | — | Discover repo files that embed the current version and enroll the selection into version_files in .anodizer.yaml |
-| `--exclude` | — | — | Glob(s) to drop from discovered candidates (repeatable or comma-separated); only with --version-files |
+| `--exclude` | — | — | Globs to drop from discovered candidates (repeatable or comma-separated); only with --version-files |
 | `--yes` | `-y` | — | Non-interactive: enroll all discovered candidates without prompting |
 
 
@@ -148,7 +148,7 @@ Manage CHANGELOG.md: refresh the pending section, or render notes/JSON
 |------|-------|---------|-------------|
 | `<range>` | — | — | Commit range to render: a single tag (predecessor-resolved against its crate), an explicit `from..to` range, or omitted to refresh each crate's pending section against its last tag |
 | `--format` | — | `keep-a-changelog` | Output format: keep-a-changelog (refresh the [Unreleased] section), release-notes (grouped-bullet GitHub body to stdout), or json |
-| `--write` | — | — | Apply the regenerated [Unreleased] section to the configured CHANGELOG.md file(s) in place (keep-a-changelog only) |
+| `--write` | — | — | Apply the regenerated [Unreleased] section to the configured CHANGELOG.md files in place (keep-a-changelog only) |
 | `--crate` | — | — | Restrict to a specific crate in a workspace |
 | `--snapshot` | — | — | Preview as a snapshot release (release-notes format only) |
 
@@ -211,7 +211,7 @@ Emit the configured build targets as a GitHub Actions matrix
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--json` | — | — | Output as JSON (include-form matrix) |
-| `--crate` | — | — | Restrict to specific crate(s) |
+| `--crate` | — | — | Restrict to specific crates |
 
 
 ### `anodizer vocabulary`
@@ -250,8 +250,8 @@ Auto-tag based on commit message directives
 | `--default-bump` | — | — | Override default bump type (patch/minor/major) |
 | `--crate` | — | — | Tag a specific crate in a workspace |
 | `--push` | — | — | Push the version-sync bump commit to the release branch atomically with the tag |
-| `--no-push` | — | — | Do not push anything; the tag(s) and version-sync bump commit stay local |
-| `--push-tags-only` | — | — | Push the tag(s) but not the version-sync bump commit (deferred-branch CI pattern; the branch must be advanced to the bump commit separately) |
+| `--no-push` | — | — | Do not push anything; the tags and version-sync bump commit stay local |
+| `--push-tags-only` | — | — | Push the tags but not the version-sync bump commit (deferred-branch CI pattern; the branch must be advanced to the bump commit separately) |
 | `--sign` | — | — | Create a signed annotated tag (git tag -s), using the signing key/method from git config (user.signingkey, gpg.format) |
 | `--no-sign` | — | — | Create an unsigned annotated tag (git tag -a), overriding tag.sign = true in config |
 | `--push-remote` | — | — | Remote to push to (default: origin) |

@@ -272,7 +272,7 @@ pub(crate) fn process_authenticode_config(
         &jobs,
         parallelism,
         static_label,
-        "signature",
+        ("signature", "signatures"),
         log,
         |job| {
             let thread_log = log.with_stage(static_label);

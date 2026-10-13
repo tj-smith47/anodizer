@@ -534,7 +534,7 @@ fn unknown_skip_tokens_hard_error_instead_of_no_opping() {
             "{command} --skip={token} must fail, not silently no-op.\nstderr:\n{stderr}"
         );
         assert!(
-            stderr.contains("invalid --skip value(s)") && stderr.contains(token),
+            stderr.contains("invalid --skip value") && stderr.contains(token),
             "{command} --skip={token} must name the offending token.\nstderr:\n{stderr}"
         );
         assert!(
@@ -568,7 +568,7 @@ fn both_commands_accept_every_root_lane_token() {
             );
             let stderr = String::from_utf8_lossy(&out.stderr);
             assert!(
-                !stderr.contains("invalid --skip value(s)"),
+                !stderr.contains("invalid --skip value"),
                 "{command} must accept the root-lane token {token}.\nstderr:\n{stderr}"
             );
         }

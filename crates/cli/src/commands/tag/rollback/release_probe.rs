@@ -101,10 +101,15 @@ pub(super) fn check_no_published_releases(
             bail!(
                 "refusing to roll back: could not resolve the 'origin' remote to run the \
                  published-release guard ({e}).\n\
-                 No run summary covers these tag(s) and without a remote there is no \
-                 evidence the version(s) are safe to destroy. Configure the 'origin' \
-                 remote and retry, or pass --force if you are certain nothing \
-                 irreversible shipped.",
+                 No run summary covers {} and without a remote there is no evidence \
+                 that deleting {} is safe. Configure the 'origin' remote and retry, \
+                 or pass --force if you are certain nothing irreversible shipped.",
+                tags.join(", "),
+                if tags.len() == 1 {
+                    "that tag"
+                } else {
+                    "those tags"
+                },
             );
         }
     };
@@ -124,10 +129,10 @@ pub(super) fn check_no_published_releases(
             .collect::<Vec<_>>()
             .join("\n");
         bail!(
-            "refusing to roll back: could not determine whether published GitHub \
-             release(s) exist for:\n{detail}\n\
-             No run summary covers these tag(s) and the release probe is \
-             unanswerable, so there is no evidence the version(s) are safe to \
+            "refusing to roll back: could not determine whether a published GitHub \
+             release exists for each tag listed below:\n{detail}\n\
+             No run summary covers any listed tag and the release probe is \
+             unanswerable, so there is no evidence that any listed version is safe to \
              destroy. Restore gh / network access (or GITHUB_TOKEN auth) and retry, \
              or pass --force if you are certain nothing irreversible shipped.",
         );
@@ -140,12 +145,12 @@ pub(super) fn check_no_published_releases(
             .join("\n");
         return Err(RollbackRefusal {
             reason: format!(
-                "published GitHub release(s) exist for: {} \
+                "{} for: {} \
                  (and no run summary is available to prove nothing irreversible shipped).\n\
                  One-way-door publishers (crates.io, chocolatey, winget, snapcraft, ...) \
                  usually ship alongside a published release; if any did, the version is \
-                 burned and deleting the tag(s) only orphans live published state — \
-                 tags kept to protect it.\n\
+                 burned and deleting a tag only orphans live published state — \
+                 every tag was kept to protect it.\n\
                  The run summary is the evidence this guard wants. A release cut by the \
                  Release workflow uploaded it as a workflow artifact; fetch it into the \
                  dist directory and re-run the rollback:\n{}\n\
@@ -154,6 +159,11 @@ pub(super) fn check_no_published_releases(
                  real burn evidence — verify the release (and the one-way-door \
                  registries) before trusting it; if it is an orphan, delete it and \
                  re-run, or use --force.",
+                if published.len() == 1 {
+                    "a published GitHub release exists"
+                } else {
+                    "published GitHub releases exist"
+                },
                 published.join(", "),
                 fetch_summary
             ),

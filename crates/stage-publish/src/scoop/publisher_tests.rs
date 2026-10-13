@@ -243,7 +243,7 @@ fn run_per_crate_start_message_names_crate() {
 fn run_done_message_reports_considered_count() {
     let msg = crate::publisher_helpers::run_done_message("scoop", 2);
     assert!(msg.starts_with("finished scoop publish"), "{msg}");
-    assert!(msg.contains("2 configured crate(s) considered"), "{msg}");
+    assert!(msg.contains("2 configured crates considered"), "{msg}");
 }
 
 #[test]

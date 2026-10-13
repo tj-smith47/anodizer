@@ -2072,7 +2072,8 @@ fn v080_mirror_split_checksum_signing_demands_second_level_sigs_no_recursion() {
         .expect_err("the unsigned v0.8.0 asset set must fail the gate");
     let msg = format!("{err:#}");
     assert!(
-        msg.contains("signature/SBOM asset(s) required by the resolved signs/sboms config"),
+        msg.contains("signature/SBOM asset")
+            && msg.contains("required by the resolved signs/sboms config"),
         "the gate names the missing config-required signatures: {msg}"
     );
     assert!(
@@ -2120,7 +2121,7 @@ fn live_v080_real_release_fails_missing_signature_assets() {
     let msg = format!("{err:#}");
     eprintln!("live v0.8.0 verify-release output:\n{msg}");
     assert!(
-        msg.contains("42 signature/SBOM asset(s) required by the resolved signs/sboms config"),
+        msg.contains("42 signature/SBOM assets required by the resolved signs/sboms config"),
         "live release is missing exactly the 42 checksum signatures: {msg}"
     );
     assert!(
