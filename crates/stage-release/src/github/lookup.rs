@@ -678,9 +678,9 @@ mod get_by_tag_lookup_tests {
     //! fast-fail check here so the predicate's "404 only" invariant is
     //! pinned end-to-end against the helper.
     use super::*;
+    use crate::test_support::build_test_octocrab;
     use anodizer_core::retry::RetryPolicy;
     use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
-    use std::net::SocketAddr;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
@@ -832,18 +832,5 @@ mod get_by_tag_lookup_tests {
         })
         .to_string();
         crate::test_support::synth_github_error(status, &body).await
-    }
-
-    fn build_test_octocrab(addr: SocketAddr) -> octocrab::Octocrab {
-        // Pin rustls to `ring` before octocrab builds its reqwest client; the
-        // graph links two providers and nextest isolates each test in its own
-        // process. See `crate::test_support::build_test_octocrab`.
-        anodizer_core::tls::install_default_crypto_provider();
-        let builder = octocrab::OctocrabBuilder::new()
-            .base_uri(format!("http://{addr}/"))
-            .expect("OctocrabBuilder::base_uri accepts loopback URL");
-        builder
-            .build()
-            .expect("OctocrabBuilder::build succeeds on loopback URL")
     }
 }

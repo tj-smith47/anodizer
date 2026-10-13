@@ -327,6 +327,12 @@ pub(crate) async fn run_upload_loop<C: ForgeAssetClient>(
 /// between two reads of the same page. A page where any entry has no numeric
 /// id falls back to the text, since the ids it does yield would make two
 /// different pages of such entries compare equal.
+///
+/// The text comparison cannot see a repeat whose volatile field (a download
+/// count) changed between the two reads. Against a server that ignores the
+/// page parameter, sends no numeric ids and changes such a field, the sweep
+/// therefore keeps requesting pages until the retry deadline. Real Gitea and
+/// GitLab always send numeric ids, so they are compared by id.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ListingPageKey {
     Ids(Vec<u64>),
@@ -349,6 +355,35 @@ mod tests {
     use super::*;
     use anodizer_core::log::Verbosity;
     use std::sync::Mutex;
+
+    #[test]
+    fn listing_page_key_uses_ids_only_when_every_entry_has_one() {
+        let numeric = vec![serde_json::json!({"id": 1}), serde_json::json!({"id": 2})];
+        assert_eq!(
+            ListingPageKey::of(&numeric, "t".to_string()),
+            ListingPageKey::Ids(vec![1, 2])
+        );
+
+        let mixed = vec![serde_json::json!({"id": 1}), serde_json::json!({"id": "b"})];
+        assert_eq!(
+            ListingPageKey::of(&mixed, "mixed".to_string()),
+            ListingPageKey::Text("mixed".to_string())
+        );
+
+        let strings = vec![
+            serde_json::json!({"id": "a"}),
+            serde_json::json!({"id": "b"}),
+        ];
+        assert_eq!(
+            ListingPageKey::of(&strings, "strings".to_string()),
+            ListingPageKey::Text("strings".to_string())
+        );
+
+        assert_eq!(
+            ListingPageKey::of(&[], "[]".to_string()),
+            ListingPageKey::Ids(Vec::new())
+        );
+    }
 
     /// Scripted mock forge: records every call and replays a fixed
     /// [`AssetPresence`] per probe.

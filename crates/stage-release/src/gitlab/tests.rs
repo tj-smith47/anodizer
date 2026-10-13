@@ -2076,6 +2076,61 @@ async fn find_asset_link_stops_on_a_repeat_whose_counter_field_changed() {
     assert_eq!(log.lock().unwrap().len(), 2, "two listing pages, no third");
 }
 
+/// A server that ignores `page` and sends links with no numeric id serves one
+/// identical page twice: the text comparison sees the repeat and ends the
+/// sweep with the repeat error.
+#[tokio::test]
+async fn find_asset_link_stops_on_an_identical_page_without_numeric_ids() {
+    let page_body: String = serde_json::Value::Array(
+        (0..100u64)
+            .map(|i| {
+                serde_json::json!({
+                    "id": format!("link-{i}"),
+                    "name": format!("other-{i}"),
+                    "url": "https://x/o",
+                })
+            })
+            .collect(),
+    )
+    .to_string();
+    let (addr, log) = spawn_scripted_responder(vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=1&per_page=100",
+            response: http_json("200 OK", page_body.clone()),
+            times: Some(1),
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=2&per_page=100",
+            response: http_json("200 OK", page_body),
+            times: Some(1),
+        },
+    ]);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let ctx = GitlabCtx {
+        client: &client,
+        api_url: &api_url,
+        project_id: "o/r",
+        policy: &policy,
+        deadline: None,
+        log: tlog(),
+    };
+    let err = gitlab_find_asset_link(&ctx, "v1.0.0", "a.bin")
+        .await
+        .expect_err("a repeating listing is an error, not an absence");
+    assert_eq!(
+        format!("{err:#}"),
+        "gitlab: could not enumerate the release links of 'v1.0.0': the listing served \
+         the same page twice (page 2 repeats page 1), so the server is not honoring the \
+         page parameter"
+    );
+    assert_eq!(log.lock().unwrap().len(), 2, "two listing pages, no third");
+}
+
 /// Two full pages whose links carry no numeric id are compared by their text,
 /// so two different pages are not read as a repeat and the sweep goes on to
 /// the short third page.

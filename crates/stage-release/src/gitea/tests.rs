@@ -1218,6 +1218,64 @@ async fn find_release_stops_on_a_repeat_whose_download_count_changed() {
     assert_eq!(entries.len(), 3, "the by-tag probe and two listing pages");
 }
 
+/// A server that ignores `page` and sends releases with no numeric id serves
+/// one identical page twice: the text comparison sees the repeat and ends
+/// the sweep with the repeat error.
+#[tokio::test]
+async fn find_release_stops_on_an_identical_page_without_numeric_ids() {
+    let page_body: String = serde_json::Value::Array(
+        (0..50u64)
+            .map(|i| {
+                serde_json::json!({
+                    "id": format!("rel-{i}"),
+                    "tag_name": format!("p-{i}"),
+                })
+            })
+            .collect(),
+    )
+    .to_string();
+    let (addr, log) = spawn_scripted_responder(vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+            response: http_json("200 OK", page_body.clone()),
+            times: Some(1),
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/api/v1/repos/o/r/releases?page=2&limit=50",
+            response: http_json("200 OK", page_body),
+            times: Some(1),
+        },
+    ]);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let err = find_release_by_tag(
+        &GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+            deadline: None,
+            log: tlog(),
+        },
+        "v9.9.9",
+    )
+    .await
+    .expect_err("a repeating listing is an error, not an absence");
+    assert_eq!(
+        format!("{err:#}"),
+        "gitea: could not enumerate releases for tag 'v9.9.9': the listing served the \
+         same page twice (page 2 repeats page 1), so the server is not honoring the \
+         page parameter"
+    );
+    let entries = log.lock().unwrap();
+    assert_eq!(entries.len(), 3, "the by-tag probe and two listing pages");
+}
+
 /// Two full pages whose releases carry no numeric id are compared by their
 /// text, so two different pages are not read as a repeat and the sweep goes
 /// on to the short third page.
