@@ -1185,8 +1185,8 @@ fn a_percent_literal_delimited_by_the_end_of_its_line_holds_the_next() {
 
 /// In the body of a heredoc whose tag is not single-quoted, `#{…}` is code:
 /// a heredoc opened there has its body read from the next line, before the
-/// rest of the body around it. A body line that ends inside `#{…}` cannot
-/// be read on, and a single-quoted tag reads `#{` as text.
+/// rest of the body around it, and a `#{…}` left open at the end of a body
+/// line reads on into the next. A single-quoted tag reads `#{` as text.
 #[test]
 fn an_interpolation_in_a_heredoc_body_is_read_as_code() {
     let cases: &[(&str, bool, Option<Unreadable>)] = &[
@@ -1211,7 +1211,7 @@ fn an_interpolation_in_a_heredoc_body_is_read_as_code() {
         (
             "x = <<~EOS\n  #{a \\\n }\nEOS\non_linux do\nend",
             true,
-            unclosed(2, "heredoc"),
+            None,
         ),
     ];
     for (block, other_os_block, unread) in cases {
@@ -1406,4 +1406,105 @@ fn a_question_mark_after_a_method_name_and_a_slash_after_an_operator_open_litera
     ] {
         assert_facts(block, false, false, None);
     }
+}
+
+/// A `#{…}` that spans body lines of a heredoc is read on line after line,
+/// as one in a string is, so the tag inside it closes nothing and the code
+/// after the heredoc is read.
+#[test]
+fn an_interpolation_spanning_heredoc_body_lines_reads_on() {
+    for block in [
+        "x = <<~E\n  a #{b\n  }\nE\non_linux",
+        "x = <<~E\n  a #{b\n  } c\nE\non_linux",
+        "x = \"a #{b\n} c\"\non_linux",
+        "x = <<~E\n  a #{\n  b }\nE\non_linux",
+        "x = <<~E\n  #{\"\n  \"}\nE\non_linux",
+        "x = <<~E\n  a #{b\n  c}\nE\non_linux",
+        "x = <<~E\n  #{a\nE\n  }\nE\non_linux",
+        "x = <<~A\n  #{<<~B\n  inner\n  B\n  }\nA\non_linux",
+        "x = <<~A\n  #{y = 1\n  }\nA\ny %(on_linux)",
+    ] {
+        assert_facts(block, true, false, None);
+    }
+    assert_facts(
+        "x = <<~E\n  #{depends_on macos: :x,\n  linux: 1}\nE",
+        false,
+        true,
+        None,
+    );
+    assert_facts(
+        "x = <<~E\n  #{a\n  }\n",
+        false,
+        false,
+        unclosed(1, "heredoc"),
+    );
+}
+
+/// The code inside `#{…}` is read the way the code around a literal is:
+/// a name with a sigil, a symbol, a block or lambda parameter, a local
+/// first assigned in a block and a `def` body bind nothing in the scope
+/// around the literal.
+#[test]
+fn an_interpolation_binds_names_the_way_code_outside_a_literal_does() {
+    for block in [
+        "\"#{@a = 1}\"\na %(on_linux)",
+        "\"#{@a = 1}\"; a %(on_linux)",
+        "\"#{$a = 1}\"\na %(on_linux)",
+        "\"#{:a=}\"\na %(on_linux)",
+        "\"#{->(r) { s = r }}\"\ns %(on_linux)",
+        "\"#{def g(p = 1) = p}\"\np %(on_linux)",
+        "\"#{[1].map { |z| w = z; w }}\"\nw %(on_linux)",
+        "\"#{def f; v = 1; end}\"\nv %(on_linux)",
+        "\"#{x = 1 if (@q = 2)}\"\nq %(on_linux)",
+        "\"#{1.then { |m| m }}\"\nm %(on_linux)",
+        "x.then { |m| m }\nm %(on_linux)",
+        "x&.if { |m| m }\nm %(on_linux)",
+    ] {
+        assert_facts(block, false, false, None);
+    }
+}
+
+/// Every operator assignment binds its target, `<<=`, `>>=`, `^=` and
+/// `**=` included, inside an interpolation and outside one.
+#[test]
+fn every_operator_assignment_binds_its_target() {
+    for operator in ["<<=", ">>=", "^=", "**=", "+=", "||=", "&&="] {
+        assert_facts(&format!("a {operator} 1\na %(on_linux)"), true, false, None);
+        assert_facts(
+            &format!("\"#{{a {operator} 1}}\"\na %(on_linux)"),
+            true,
+            false,
+            None,
+        );
+    }
+    assert_facts("a <= 1\na %(on_linux)", false, false, None);
+}
+
+/// No local or parameter is spelled with a `?` or `!`, so a word ending in
+/// one is a method call and an operator after it and a space opens a
+/// literal; a `?` followed by a space is still a ternary.
+#[test]
+fn an_operator_after_a_name_ending_in_a_question_or_exclamation_mark_opens_a_literal() {
+    assert_facts("y = foo? <<E\non_linux\nE", false, false, None);
+    assert_facts("y = foo! %(on_linux)", false, false, None);
+    assert_facts("y = foo? /on_linux/", false, false, None);
+    assert_facts("y = x? ? 1 : 2\non_linux", true, false, None);
+}
+
+/// After `.`, `&.` or `::` a word is a method call whatever it spells, so
+/// a `?` written straight after it opens a character literal.
+#[test]
+fn a_question_mark_after_a_method_named_like_a_keyword_opens_a_literal() {
+    for block in [
+        "y = foo.nil?= %(on_linux)",
+        "y = foo.self?= %(on_linux)",
+        "y = foo.true?= %(on_linux)",
+        "y = foo&.end?= %(on_linux)",
+        "y = foo.__FILE__?= %(on_linux)",
+        "x = 1\ny = foo.x?= %(on_linux)",
+    ] {
+        assert_facts(block, true, false, None);
+    }
+    assert_facts("y = foo.end?=/ /on_linux/", false, false, None);
+    assert_facts("y = foo.end?=/ + \"on_linux\"", false, false, None);
 }

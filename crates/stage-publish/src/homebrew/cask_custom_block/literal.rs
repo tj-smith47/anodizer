@@ -21,14 +21,9 @@ pub(super) enum Frame {
         /// The text of a regex, kept for its named captures.
         body: Option<String>,
     },
-    /// `#{…}` code, ended by the `}` that matches no `{` opened inside it.
-    /// `code` holds what has been read of it, literals written as `""`,
-    /// and `start` where in `code` its current statement starts.
-    Interpolation {
-        braces: usize,
-        code: String,
-        start: usize,
-    },
+    /// `#{…}` code, ended by the `}` that matches no `{` opened inside it,
+    /// counted in `braces`.
+    Interpolation { braces: usize },
 }
 
 /// A literal delimited by `open` and `close`, opened on line `line`.

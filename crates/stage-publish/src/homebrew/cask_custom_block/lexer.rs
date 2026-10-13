@@ -4,10 +4,8 @@ use std::collections::{HashMap, VecDeque};
 
 use super::heredoc::{Heredoc, heredoc_opener, joins_next_line};
 use super::literal::{Frame, literal, percent_literal, regex};
-use super::names::{
-    LevelKind, Scopes, assigned_names, bind_interpolated, bind_statement, capture_names, for_names,
-    param_names,
-};
+use super::names::{LevelKind, Scopes, assigned_names, capture_names, for_names, param_names};
+use super::statement::{Statement, end_statement, keyword, open_block, read_params};
 use super::words::{
     HASH_AFTER, Position, char_literal_len, number_continues, operator_method_len, position,
     symbol_len,
@@ -25,7 +23,7 @@ pub(super) struct CodeLine {
     /// The code inside each `#{…}` that closes on the line, in the order
     /// they close, each its own list of statements. A `#{…}` that spans
     /// lines is one entry, on the line it closes on, its lines joined by
-    /// `\n`.
+    /// `\n` (by a space where a line is continued).
     pub(super) interpolations: Vec<String>,
 }
 
@@ -61,21 +59,34 @@ struct Carry {
     shifts: Vec<Heredoc>,
     /// The first line a guessed literal spans past.
     ambiguous: Option<Unreadable>,
-    /// The first heredoc body line that ends inside a `#{…}`.
-    open_interpolation: Option<Unreadable>,
+    /// The code around each open `#{…}`, outermost first, one per
+    /// interpolation frame on `stack`.
+    outer: Vec<Outer>,
+    /// The statement and parameter list the opener of each heredoc whose
+    /// body is being read in a `#{…}` left open, innermost last.
+    bodies: Vec<(Option<Continued>, Option<String>)>,
     /// Inside a `=begin` … `=end` comment, opened on this line.
     comment: Option<usize>,
     /// The statement a line ending in `\` continues onto the next line.
     continued: Option<Continued>,
 }
 
+/// The code around a `#{…}`, read on from where it stopped once the `}`
+/// closes it.
+struct Outer {
+    state: Continued,
+    param_list: Option<String>,
+    spaced: bool,
+    word_open: bool,
+}
+
 /// What a line hands to the next one when the statement reads on past its
 /// end: the line ends in a `\` continuation, in a `?\` character literal
 /// that holds the newline, or in a `.`, `&.` or `::` before the method
 /// name, or its last literal is closed by the newline (a `%r` closed that
-/// way takes the letters that start the next line as its options). The
-/// fields are the lexer's state at the end of the line, described where
-/// [`lex_line`] reads them.
+/// way takes the letters that start the next line as its options), or it
+/// ends inside a `#{…}`. The fields are the lexer's state at the end of
+/// the line, described where [`lex_line`] reads them.
 #[derive(Default)]
 struct Continued {
     /// The code of the statement so far, which the positions in `st`
@@ -124,12 +135,15 @@ pub(super) fn lex_block(block: &str) -> Lexed {
     for (n, line) in lines.iter().enumerate() {
         code_ends.push(None);
         if let Some(heredoc) = carry.heredocs.front_mut() {
-            let closes = heredoc.closes_on(line);
+            // A line read inside a `#{…}` of the body is code, so its text
+            // closes nothing.
+            let resumes = heredoc.interpolating.is_some();
+            let closes = heredoc.closes_on(line) && !resumes;
             starts.push(closes && heredoc.squiggly);
             if closes {
                 carry.heredocs.pop_front();
                 out.push(CodeLine::default());
-            } else if heredoc.interpolates && line.contains("#{") {
+            } else if resumes || heredoc.interpolates && line.contains("#{") {
                 out.push(lex_body_line(line, n + 1, &mut carry));
             } else {
                 out.push(CodeLine::default());
@@ -195,14 +209,7 @@ pub(super) fn lex_block(block: &str) -> Lexed {
             reason: UnreadReason::Ambiguous { operator: "<<" },
         });
     // On a tie the ambiguous reading names the cause of the open literal.
-    let found = [
-        carry.ambiguous,
-        shift,
-        carry.open_interpolation,
-        literal,
-        heredoc,
-        comment,
-    ];
+    let found = [carry.ambiguous, shift, literal, heredoc, comment];
     let unread = found
         .into_iter()
         .flatten()
@@ -217,136 +224,45 @@ pub(super) fn lex_block(block: &str) -> Lexed {
 
 /// Read the `#{…}` code of line `number`, a body line of an interpolating
 /// heredoc, and return it. A heredoc opened there has its body read from
-/// the next line, before the rest of the body around it, as Ruby reads it.
+/// the next line, before the rest of the body around it, as Ruby reads it,
+/// and a `#{…}` left open reads on into the next body line.
 fn lex_body_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
-    let depth = carry.stack.len();
+    let depth = match carry.heredocs[0].interpolating {
+        Some(depth) => {
+            // The body reads on past this line, so its end closes nothing.
+            if let Some(Frame::Literal { line, .. }) = carry.stack.get_mut(depth) {
+                *line = number;
+            }
+            depth
+        }
+        None => {
+            // The statement and parameter list the heredoc's opener left
+            // open go on after the body.
+            carry
+                .bodies
+                .push((carry.continued.take(), carry.param_list.take()));
+            // The body as a literal that closes nowhere on the line, so
+            // only its interpolations are read as code.
+            carry
+                .stack
+                .push(literal('\n', '\n', true, "heredoc", number));
+            carry.stack.len() - 1
+        }
+    };
     let queued = carry.heredocs.len();
-    // The statement and parameter list the heredoc's opener left open go on
-    // after the body.
-    let continued = carry.continued.take();
-    let param_list = carry.param_list.take();
-    // The body as a literal that closes nowhere on the line, so only its
-    // interpolations are read as code.
-    carry
-        .stack
-        .push(literal('\n', '\n', true, "heredoc", number));
     let (code, _) = lex_line(line, number, carry);
-    if carry.stack.len() > depth + 1 && carry.open_interpolation.is_none() {
-        carry.open_interpolation = Some(Unreadable {
-            line: number,
-            kind: "heredoc",
-            reason: UnreadReason::Unclosed,
-        });
+    let open = carry.stack.len() > depth + 1;
+    carry.heredocs[0].interpolating = open.then_some(depth);
+    if !open {
+        carry.stack.truncate(depth);
+        (carry.continued, carry.param_list) = carry.bodies.pop().unwrap_or_default();
     }
-    carry.stack.truncate(depth);
     let opened = carry.heredocs.len() - queued;
     carry.heredocs.rotate_right(opened);
-    carry.continued = continued;
-    carry.param_list = param_list;
-    CodeLine { open: true, ..code }
-}
-
-/// What the statement being read has opened so far.
-#[derive(Default)]
-struct Statement {
-    /// Where it starts in the code of the line.
-    start: usize,
-    /// Its first assignment has been read.
-    assigned: bool,
-    /// Its first `in` has been read.
-    read_in: bool,
-    /// A `while`, `until` or `for` in it waits for the `do` that belongs to
-    /// it, which opens no block.
-    loop_do: bool,
-    /// The level of the `def` it opened, and where the method's name starts
-    /// in the code.
-    def_level: Option<usize>,
-    def_at: usize,
-    /// The `=` after the method's name or parameter list has been read.
-    def_body: bool,
-    /// That `=` makes the method endless, so no `end` closes it.
-    endless: bool,
-    /// Where the parameter list of a `def` or `->` may start, whether it is
-    /// a lambda's, and the `(` that opened it with the depth of brackets
-    /// read inside it.
-    params_from: Option<usize>,
-    lambda: bool,
-    params_open: Option<(usize, usize)>,
-}
-
-/// Open a `do … end` or `{ … }` block, binding the parameters a lambda
-/// before it left `pending`.
-fn open_block(scopes: &mut Scopes, pending: &mut Vec<String>) {
-    scopes.push(LevelKind::Block);
-    for name in pending.drain(..) {
-        scopes.bind(&name, true);
-    }
-}
-
-/// Apply what the word `word` just read opens or closes. `before` is the
-/// code character before it, `prev_word` the word before it, `label`
-/// whether a `:` follows it as a hash key, and `at` where the code after
-/// it starts.
-#[allow(clippy::too_many_arguments)]
-fn keyword(
-    word: &str,
-    before: Option<char>,
-    prev_word: &str,
-    label: bool,
-    at: usize,
-    st: &mut Statement,
-    scopes: &mut Scopes,
-    pending: &mut Vec<String>,
-) {
-    // `x.end`, `:end` and `end:` name a method, a symbol and a key.
-    if label || matches!(before, Some('.' | ':')) {
-        return;
-    }
-    match word {
-        "do" if st.loop_do => st.loop_do = false,
-        "do" => open_block(scopes, pending),
-        "end" => scopes.pop(),
-        "def" => {
-            scopes.push(LevelKind::Gate);
-            st.def_level = Some(scopes.levels.len() - 1);
-            st.def_at = at;
-            st.def_body = false;
-            st.params_from = Some(at);
-            st.lambda = false;
-            st.params_open = None;
-        }
-        "class" | "module" => scopes.push(LevelKind::Gate),
-        "begin" | "case" => scopes.push(LevelKind::Plain),
-        "for" => {
-            scopes.push(LevelKind::Plain);
-            st.loop_do = true;
-        }
-        "if" | "unless" | "while" | "until" => {
-            // After a value the word is a modifier (`x if y`), which no
-            // `end` closes.
-            let modifier = match before {
-                None => false,
-                Some(c) if is_word_char(c) || matches!(c, '?' | '!') => !matches!(
-                    prev_word,
-                    "else" | "then" | "do" | "begin" | "ensure" | "and" | "or" | "not"
-                ),
-                Some(c) => matches!(c, ')' | ']' | '}' | '"'),
-            };
-            if !modifier {
-                scopes.push(LevelKind::Plain);
-                st.loop_do = matches!(word, "while" | "until");
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Close the statement `code`: bind the names it declares as a whole, and
-/// close an endless method it defined.
-fn end_statement(code: &str, st: &Statement, scopes: &mut Scopes) {
-    bind_statement(code, scopes);
-    if st.endless && st.def_level == Some(scopes.levels.len() - 1) {
-        scopes.pop();
+    CodeLine {
+        text: String::new(),
+        open: true,
+        interpolations: code.interpolations,
     }
 }
 
@@ -362,24 +278,27 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
         shifts,
         ambiguous,
         continued,
+        outer,
         ..
     } = carry;
     let chars: Vec<char> = line.chars().collect();
-    // `text` is the code of the statement, from the line a `\` continued
-    // when there is one; this line's code starts at `base`. `prev` is the
-    // last character of code read, ignoring whitespace, `None` at the start
-    // of a statement. `word` is the word or number the code read so far
-    // ends with, with a leading `@` or `$` and a trailing `?` or `!`, empty
-    // when it ends with anything else; `prev_word` the word before it, and
-    // `before_word` the code character before it, where a `.` makes it a
+    // `text` is the code of the statement, from the line a `\` continued when
+    // there is one, or of the `#{…}` being read, whose code around it waits
+    // in `outer`; this line's code starts at `base` in the outermost code.
+    // `prev` is the last character of code read, ignoring whitespace, `None`
+    // at the start of a statement. `word` is the word or number the code read
+    // so far ends with, with a leading `@` or `$` and a trailing `?` or `!`,
+    // empty when it ends with anything else; `prev_word` the word before it,
+    // and `before_word` the code character before it, where a `.` makes it a
     // method name. `word_colon` is whether the word follows a `:`:
     // `Some(false)` for a symbol (`:case`, `a:case`), `Some(true)` for a
     // constant path (`A::B`). `pending` holds the parameters of a lambda,
     // bound once its body opens, and `captures` the named captures of the
-    // regex literal that closed last. `method_next` is whether a `.`, `&.`
-    // or `::` came last, so the next token is a method name whatever it
-    // looks like (`x. %`, `&.!~`), and `after_operator_method` whether such
-    // a name spelled as an operator did.
+    // regex literal that closed last. `method_next` is whether a `.`, `&.` or
+    // `::` came last, so the next token is a method name whatever it looks
+    // like (`x. %`, `&.!~`), and `after_operator_method` whether such a name
+    // spelled as an operator did. `word_method` is whether the word was read
+    // as such a name.
     let Continued {
         mut text,
         mut st,
@@ -394,11 +313,13 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
         mut after_operator_method,
         regex_options,
     } = continued.take().unwrap_or_default();
-    let base = text.len();
+    let base = outer.first().map_or(text.len(), |o| o.state.text.len());
+    let mut word_method = false;
     // Whether the word is still being read, and whether whitespace
-    // followed it; the `\` that continued a line counts as whitespace.
+    // followed it; the `\` or newline that ended the line before counts as
+    // whitespace.
     let mut word_open = false;
-    let mut spaced = base > 0;
+    let mut spaced = !text.is_empty();
     // The statement reads on into the next line: this one ends in `\`, a
     // `?\`, a `.` before the method name, or a literal the newline closes.
     let mut continues_line = false;
@@ -447,13 +368,29 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                 }
                 i += 3;
             } else if *interpolates && c == '#' && chars.get(i + 1) == Some(&'{') {
-                stack.push(Frame::Interpolation {
-                    braces: 0,
-                    code: String::new(),
-                    start: 0,
+                // The code inside is read as code of its own, in the scopes
+                // around the literal.
+                stack.push(Frame::Interpolation { braces: 0 });
+                let state = Continued {
+                    text: std::mem::take(&mut text),
+                    st: std::mem::take(&mut st),
+                    prev: prev.take(),
+                    word: std::mem::take(&mut word),
+                    prev_word: std::mem::take(&mut prev_word),
+                    before_word: before_word.take(),
+                    word_colon: word_colon.take(),
+                    pending: std::mem::take(&mut pending),
+                    captures: std::mem::take(&mut captures),
+                    method_next: std::mem::take(&mut method_next),
+                    after_operator_method: std::mem::take(&mut after_operator_method),
+                    regex_options: false,
+                };
+                outer.push(Outer {
+                    state,
+                    param_list: param_list.take(),
+                    spaced: std::mem::take(&mut spaced),
+                    word_open: std::mem::take(&mut word_open),
                 });
-                prev = None;
-                word.clear();
                 i += 2;
             } else {
                 let mut closes = false;
@@ -473,8 +410,8 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                 if closes {
                     literal_end = i;
                     let frame = stack.pop();
-                    close_literal(stack, &mut text);
-                    if stack.is_empty() {
+                    text.push_str("\"\"");
+                    if in_code(stack) {
                         captures = match frame {
                             Some(Frame::Literal {
                                 body: Some(body), ..
@@ -515,7 +452,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             );
             prev_word.clone_from(&word);
         }
-        if c == '\\' && next.is_none() && stack.is_empty() {
+        if c == '\\' && next.is_none() {
             continues_line = true;
             break;
         }
@@ -523,7 +460,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
         let method_name = !c.is_whitespace() && c != '#' && std::mem::take(&mut method_next);
         let operator_method = !c.is_whitespace() && std::mem::take(&mut after_operator_method);
         if method_name && let Some(len) = operator_method_len(&chars[i..]) {
-            emit(stack, &mut text, &chars[i..i + len]);
+            text.extend(&chars[i..i + len]);
             prev = Some('"');
             word.clear();
             spaced = false;
@@ -544,7 +481,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             )
             && let Some(len) = symbol_len(&chars[i + 1..])
         {
-            emit(stack, &mut text, &chars[i..=i + len]);
+            text.extend(&chars[i..=i + len]);
             prev = Some('"');
             word.clear();
             spaced = false;
@@ -561,7 +498,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             let len = if name == '-' { 3 } else { 2 }.min(chars.len() - i);
             let mut spelled = vec!['_'; len];
             spelled[0] = '$';
-            emit(stack, &mut text, &spelled);
+            text.extend(&spelled);
             prev = Some('"');
             word.clear();
             i += len;
@@ -610,7 +547,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                 && found == Position::Value
                 && !spaced
                 && after_word
-                && names_a_call(&word, scopes)
+                && names_a_call(&word, word_method, scopes)
             {
                 Position::Operand
             } else {
@@ -669,133 +606,139 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                     stack.push(frame);
                 }
                 None => {
-                    close_literal(stack, &mut text);
-                    if stack.is_empty() {
-                        captures.clear();
-                    }
+                    text.push_str("\"\"");
+                    captures.clear();
                     prev = Some('"');
                     word.clear();
                 }
             }
             // `?\` at the end of a line holds the newline, and the
             // statement reads on.
-            if c == '?' && rest == ['?', '\\'] && stack.is_empty() {
+            if c == '?' && rest == ['?', '\\'] {
                 continues_line = true;
                 break;
             }
             continue;
         }
-        if let Some(Frame::Interpolation {
-            braces,
-            code,
-            start,
-        }) = stack.last_mut()
-        {
+        if let Some(Frame::Interpolation { braces }) = stack.last_mut() {
             match c {
                 '{' => *braces += 1,
                 '}' if *braces == 0 => {
-                    bind_interpolated(&code[*start..], scopes);
-                    interpolations.push(std::mem::take(code));
+                    end_statement(&text[st.start..], &st, scopes);
                     stack.pop();
+                    if let Some(o) = outer.pop() {
+                        interpolations.push(std::mem::replace(&mut text, o.state.text));
+                        Continued {
+                            st,
+                            prev,
+                            word,
+                            prev_word,
+                            before_word,
+                            word_colon,
+                            pending,
+                            captures,
+                            method_next,
+                            after_operator_method,
+                            ..
+                        } = o.state;
+                        (*param_list, spaced, word_open) = (o.param_list, o.spaced, o.word_open);
+                    }
                     i += 1;
                     continue;
                 }
                 '}' => *braces -= 1,
-                // Ruby binds the names a statement inside `#{…}` assigns
-                // in the scope around the literal.
-                ';' => {
-                    bind_interpolated(&code[*start..], scopes);
-                    *start = code.len() + 1;
-                }
                 _ => {}
             }
-            code.push(c);
-        } else {
-            text.push(c);
-            let code = &text[st.start..text.len() - c.len_utf8()];
-            if c == '='
-                && !matches!(next, Some('=' | '~' | '>'))
-                && !matches!(prev, Some('=' | '!' | '<' | '>'))
-            {
-                if st.def_level.is_some() && !st.def_body {
-                    // The `=` of a setter's name (`def name=(v)`) or of an
-                    // endless method (`def name(a) = a`) assigns nothing.
-                    let header = &text[st.def_at..text.len() - 1];
-                    if bracket_balance(header) == 0 {
-                        st.def_body = true;
-                        let name = header.trim();
-                        let one_word = !name.is_empty() && !name.contains(char::is_whitespace);
-                        let setter = !spaced && one_word && !name.contains('(');
-                        st.endless = !setter && (name.ends_with(')') || one_word);
-                    }
-                } else {
-                    if prev.is_some_and(is_word_char)
-                        && before_word != Some('.')
-                        && is_local_name(&word)
-                    {
-                        scopes.bind(&word, false);
-                    }
-                    if !st.assigned {
-                        for name in assigned_names(code) {
-                            scopes.bind(&name, false);
-                        }
-                    }
-                    st.assigned = true;
+        }
+        text.push(c);
+        let code = &text[st.start..text.len() - c.len_utf8()];
+        // `<<=` and `>>=` assign; `<=`, `>=`, `==` and `!=` compare.
+        if c == '='
+            && !matches!(next, Some('=' | '~' | '>'))
+            && (!matches!(prev, Some('=' | '!' | '<' | '>'))
+                || code.ends_with("<<")
+                || code.ends_with(">>"))
+        {
+            if st.def_level.is_some() && !st.def_body {
+                // The `=` of a setter's name (`def name=(v)`) or of an
+                // endless method (`def name(a) = a`) assigns nothing.
+                let header = &text[st.def_at..text.len() - 1];
+                if bracket_balance(header) == 0 {
+                    st.def_body = true;
+                    let name = header.trim();
+                    let one_word = !name.is_empty() && !name.contains(char::is_whitespace);
+                    let setter = !spaced && one_word && !name.contains('(');
+                    st.endless = !setter && (name.ends_with(')') || one_word);
                 }
-            } else if c == '=' && next == Some('~') && prev == Some('"') {
-                for name in captures.drain(..) {
-                    scopes.bind(&name, false);
+            } else {
+                if prev.is_some_and(is_word_char)
+                    && before_word != Some('.')
+                    && is_local_name(&word)
+                {
+                    scopes.bind(&word, false);
                 }
-            } else if c == '>' && prev == Some('-') {
-                st.params_from = Some(text.len());
-                st.lambda = true;
-                st.params_open = None;
-            } else if c == ';' {
-                end_statement(code, &st, scopes);
-                st = Statement {
-                    start: text.len(),
-                    ..Statement::default()
-                };
-            } else if c.is_whitespace() && word == "in" && !st.read_in {
-                for name in for_names(code) {
-                    scopes.bind(&name, false);
-                }
-                st.read_in = true;
-            } else if c == '{' {
-                // After a method name or a call's `)` the brace opens a
-                // block; anywhere else it opens a hash, whose names belong
-                // to the scope around it.
-                let block = match prev {
-                    Some(')') => true,
-                    // `-> { … }` is the body of a lambda.
-                    Some('>') => text[..text.len() - 1].trim_end().ends_with("->"),
-                    Some(p) if is_word_char(p) || matches!(p, '?' | '!') => {
-                        !HASH_AFTER.contains(&word.as_str())
+                if !st.assigned {
+                    for name in assigned_names(code) {
+                        scopes.bind(&name, false);
                     }
-                    _ => false,
-                };
-                if block {
-                    open_block(scopes, &mut pending);
-                } else {
-                    scopes.push(LevelKind::Plain);
                 }
-            } else if c == '}' {
-                scopes.pop();
+                st.assigned = true;
             }
-            if let Some(from) = st.params_from {
-                read_params(c, &text, from, &mut st, scopes, &mut pending);
+        } else if c == '=' && next == Some('~') && prev == Some('"') {
+            for name in captures.drain(..) {
+                scopes.bind(&name, false);
             }
-            if c == '|' {
-                if let Some(list) = param_list.take() {
-                    for name in param_names(&list) {
-                        scopes.bind(&name, true);
-                    }
-                } else if prev == Some('{') || word == "do" {
-                    *param_list = Some(String::new());
+        } else if c == '>' && prev == Some('-') {
+            st.params_from = Some(text.len());
+            st.lambda = true;
+            st.params_open = None;
+        } else if c == ';' {
+            end_statement(code, &st, scopes);
+            st = Statement {
+                start: text.len(),
+                ..Statement::default()
+            };
+        } else if c.is_whitespace() && word == "in" && !st.read_in {
+            for name in for_names(code) {
+                scopes.bind(&name, false);
+            }
+            st.read_in = true;
+        } else if c == '{' {
+            // After a method name or a call's `)` the brace opens a
+            // block; anywhere else it opens a hash, whose names belong
+            // to the scope around it.
+            let block = match prev {
+                Some(')') => true,
+                // `-> { … }` is the body of a lambda.
+                Some('>') => text[..text.len() - 1].trim_end().ends_with("->"),
+                // A keyword takes a hash, and a method named like one
+                // (`x.then {`) a block.
+                Some(p) if is_word_char(p) || matches!(p, '?' | '!') => {
+                    word_method || !HASH_AFTER.contains(&word.as_str())
                 }
-            } else if let Some(list) = param_list {
-                list.push(c);
+                _ => false,
+            };
+            if block {
+                open_block(scopes, &mut pending);
+            } else {
+                scopes.push(LevelKind::Plain);
             }
+        } else if c == '}' {
+            scopes.pop();
+        }
+        if let Some(from) = st.params_from {
+            read_params(c, &text, from, &mut st, scopes, &mut pending);
+        }
+        if c == '|' {
+            if let Some(list) = param_list.take() {
+                for name in param_names(&list) {
+                    scopes.bind(&name, true);
+                }
+            } else if prev == Some('{') || word == "do" {
+                *param_list = Some(String::new());
+            }
+        } else if let Some(list) = param_list {
+            list.push(c);
         }
         if c.is_whitespace() {
             spaced = true;
@@ -807,10 +750,11 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                 // space, makes a constant path too (`A::\nB`).
                 word_colon =
                     (prev == Some(':')).then(|| method_name || (i > 1 && chars[i - 2] == ':'));
+                word_method = method_name;
             }
             if matches!(c, '@' | '$') || is_word_char(c) || joins {
                 word.push(c);
-                word_open = stack.is_empty();
+                word_open = true;
             }
             spaced = false;
             method_next = (c == '.' && (i == 0 || chars[i - 1] != '.') && next != Some('.'))
@@ -847,8 +791,8 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
         regex_options = body.is_some();
         stack.pop();
         literal_end = chars.len();
-        close_literal(stack, &mut text);
-        if stack.is_empty() {
+        text.push_str("\"\"");
+        if in_code(stack) {
             prev = Some('"');
             word.clear();
             continues_line = true;
@@ -856,20 +800,21 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
     }
     // A line ending in `.`, `&.` or `::` names its method on a later line,
     // past any blank or comment line, so the statement reads on.
-    if stack.is_empty() && method_next {
+    if in_code(stack) && method_next {
         continues_line = true;
     }
-    // A `#{…}` open at the end of the line ends a statement there.
-    if let Some(Frame::Interpolation { code, start, .. }) = stack.last_mut() {
-        bind_interpolated(&code[*start..], scopes);
-        code.push('\n');
-        *start = code.len();
-    }
-    let mut code = text[base..].to_string();
+    let mut code = outer.first().map_or(&text, |o| &o.state.text)[base..].to_string();
+    // Inside a `#{…}` the code read so far waits for the next line, and a
+    // newline in its code ends a statement there.
+    let inside = !outer.is_empty();
     if continues_line {
-        code.push('\\');
+        if !inside {
+            code.push('\\');
+        }
         text.push(' ');
-        *continued = Some(Continued {
+    }
+    if inside || continues_line {
+        let mut state = Continued {
             text,
             st,
             prev,
@@ -882,7 +827,21 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             method_next,
             after_operator_method,
             regex_options,
-        });
+        };
+        if inside && in_code(stack) && !continues_line {
+            end_statement(&state.text[state.st.start..], &state.st, scopes);
+            state.text.push('\n');
+            let start = state.text.len();
+            state = Continued {
+                text: state.text,
+                st: Statement {
+                    start,
+                    ..Statement::default()
+                },
+                ..Continued::default()
+            };
+        }
+        *continued = Some(state);
     } else {
         end_statement(&text[st.start..], &st, scopes);
     }
@@ -914,78 +873,29 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
     (code, end)
 }
 
-/// True when the word `word` is a name Ruby reads as a method call: no
-/// number, variable with a sigil, local variable, parameter or keyword
-/// that ends a value.
-fn names_a_call(word: &str, scopes: &Scopes) -> bool {
-    !word.starts_with(|c: char| c.is_ascii_digit() || matches!(c, '@' | '$'))
-        && !matches!(
-            word,
-            "self" | "nil" | "true" | "false" | "end" | "__FILE__" | "__LINE__" | "__ENCODING__"
-        )
-        && scopes.lookup(word).is_none()
+/// True when the word `word` is a name Ruby reads as a method call: one
+/// read after `.`, `&.` or `::` (`method`), whatever it spells, or one
+/// that is no number, variable with a sigil, local variable, parameter or
+/// keyword that ends a value.
+fn names_a_call(word: &str, method: bool, scopes: &Scopes) -> bool {
+    method
+        || !word.starts_with(|c: char| c.is_ascii_digit() || matches!(c, '@' | '$'))
+            && !matches!(
+                word,
+                "self"
+                    | "nil"
+                    | "true"
+                    | "false"
+                    | "end"
+                    | "__FILE__"
+                    | "__LINE__"
+                    | "__ENCODING__"
+            )
+            && scopes.lookup(word).is_none()
 }
 
-/// Add the code `code` to `text`, or to the `#{…}` being read.
-fn emit(stack: &mut [Frame], text: &mut String, code: &[char]) {
-    match stack.last_mut() {
-        Some(Frame::Interpolation { code: inner, .. }) => inner.extend(code),
-        _ => text.extend(code),
-    }
-}
-
-/// Write a literal that just closed as `""`, in `text` when it was read in
-/// code or in the `#{…}` it was read in.
-fn close_literal(stack: &mut [Frame], text: &mut String) {
-    emit(stack, text, &['"', '"']);
-}
-
-/// Read the code character `c`, just added to `text`, into the parameter
-/// list of the `def` or `->` that may start at `from`, one character at a
-/// time. Once the list closes its names are bound, or left `pending` for
-/// the body of a lambda.
-fn read_params(
-    c: char,
-    text: &str,
-    from: usize,
-    st: &mut Statement,
-    scopes: &mut Scopes,
-    pending: &mut Vec<String>,
-) {
-    match st.params_open {
-        None if c == '(' => {
-            // `def name a, b = f(1)` has no parenthesized list.
-            if text[from..text.len() - 1]
-                .trim()
-                .contains(char::is_whitespace)
-            {
-                st.params_from = None;
-            } else {
-                st.params_open = Some((text.len(), 1));
-            }
-        }
-        None if c == ')' => st.params_from = None,
-        None => {}
-        Some((open, depth)) => {
-            let depth = match c {
-                '(' | '[' | '{' => depth + 1,
-                ')' | ']' | '}' => depth - 1,
-                _ => depth,
-            };
-            if depth > 0 {
-                st.params_open = Some((open, depth));
-                return;
-            }
-            let names = param_names(&text[open..text.len() - 1]);
-            if st.lambda {
-                pending.extend(names);
-            } else {
-                for name in names {
-                    scopes.bind(&name, true);
-                }
-            }
-            st.params_from = None;
-            st.params_open = None;
-        }
-    }
+/// True when the lexer is in code: outside every literal, or in the code
+/// of a `#{…}`.
+fn in_code(stack: &[Frame]) -> bool {
+    !matches!(stack.last(), Some(Frame::Literal { .. }))
 }

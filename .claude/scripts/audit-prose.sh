@@ -344,11 +344,12 @@ run_scanner plural_prose -v AWK_S_CALLS="$AWK_S_CALLS" -f - \
     # set `held`, kept across a continued line until a `-e` or `--source`
     # clears it: past one, only the program of a later `-e` or `--source`
     # is read, since gawk takes the two mixed (`gawk -f lib.awk -e '{…}'`)
-    # and any other operand is a data file. `-E` and `--exec` end the options, so the command holds no
-    # program in its text. A short option outside these sets takes no
-    # value, and a long one only after `=` (`--awk`, `--lint=fatal`). A
-    # line that ends in `\` before the program sets `expect`, to 2 when an
-    # option there waits for its value; with neither, `i` itself.
+    # and any other operand is a data file. `-E` and `--exec` end the
+    # options, so the command holds no program in its text. A short option
+    # outside these sets takes no value, and a long one only after `=`
+    # (`--awk`, `--lint=fatal`). A line that ends in `\` before the program
+    # sets `expect`, to 2 when an option there waits for its value; with
+    # neither, `i` itself.
     function program_start(line, i, pending,    body, cont, value, takes, rest) {
         body = line
         cont = sub(/[ \t]*\\$/, "", body)

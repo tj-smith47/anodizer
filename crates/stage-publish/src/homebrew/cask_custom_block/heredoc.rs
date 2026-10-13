@@ -20,6 +20,9 @@ pub(super) struct Heredoc {
     /// The body line before ended in an odd run of `\`, so the current line
     /// is joined to it and cannot close the heredoc.
     joined: bool,
+    /// The body line before ended inside a `#{…}`, whose code reads on into
+    /// the next line: the depth in the lexer's stack of the body's frame.
+    pub(super) interpolating: Option<usize>,
 }
 
 impl Heredoc {
@@ -71,6 +74,7 @@ pub(super) fn heredoc_opener(text: &[char], line: usize) -> Option<(usize, Hered
             guessed: false,
             interpolates: first != '\'',
             joined: false,
+            interpolating: None,
         },
     ))
 }

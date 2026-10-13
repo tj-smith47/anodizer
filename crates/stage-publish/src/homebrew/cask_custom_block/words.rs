@@ -261,8 +261,9 @@ pub(super) enum Position {
 /// too: `self`, `nil`, `true`, `false`, `end`, `class` (for `class <<self`),
 /// `def` (for `def /(other)`), a variable with a sigil (`@args`,
 /// `$stdout`), a local and a parameter. A word [`takes_operand`] accepts,
-/// an operator, `(`, `,` or the start of a statement leaves an operand
-/// position, and any other word followed by a space a guess.
+/// a name ending in `?` or `!` followed by a space, an operator, `(`, `,`
+/// or the start of a statement leaves an operand position, and any other
+/// word followed by a space a guess.
 pub(super) fn position(
     prev: Option<char>,
     word: &str,
@@ -274,6 +275,12 @@ pub(super) fn position(
         Some(')' | ']' | '}' | '"') => Position::Value,
         Some(c) if is_word_char(c) || (matches!(c, '?' | '!') && word.ends_with(c)) => {
             let number = word.starts_with(|c: char| c.is_ascii_digit());
+            // No local or parameter is spelled with a `?` or `!`, so the
+            // word is a method call and a space after it leaves its
+            // argument (`foo? <<E`).
+            if spaced && word.ends_with(['?', '!']) {
+                return Position::Operand;
+            }
             if method && spaced && !number {
                 return Position::Guess;
             }

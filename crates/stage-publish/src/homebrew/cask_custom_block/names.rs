@@ -114,7 +114,7 @@ impl Scopes {
 pub(super) fn assigned_names(code: &str) -> Vec<String> {
     let target = code
         .trim()
-        .trim_end_matches(['|', '&', '+', '-', '*', '/', '%'])
+        .trim_end_matches(['|', '&', '+', '-', '*', '/', '%', '<', '>', '^'])
         .trim();
     let mut names = Vec::new();
     if target_names(target, &mut names, 0) {
@@ -205,37 +205,6 @@ pub(super) fn for_names(code: &str) -> Vec<String> {
         .and_then(|rest| rest.trim_end().strip_suffix(" in"))
         .map(|names| assigned_names(names.trim()))
         .unwrap_or_default()
-}
-
-/// Bind the names the statement `code`, read inside a `#{…}`, assigns or
-/// declares: the target of its first `=` (`a, b =`, `a ||=`), the name
-/// written before each later one (`a = b = 1`, `f(c = 2)`), and what
-/// [`bind_statement`] binds.
-pub(super) fn bind_interpolated(code: &str, scopes: &mut Scopes) {
-    let mut first = true;
-    for (at, _) in code.match_indices('=') {
-        let before = code[..at].trim_end();
-        let next = code[at + 1..].chars().next();
-        // `==`, `=~`, `=>`, `!=`, `<=` and `>=` assign nothing.
-        if matches!(next, Some('=' | '~' | '>')) || before.ends_with(['=', '!', '<', '>']) {
-            continue;
-        }
-        if std::mem::take(&mut first) {
-            for name in assigned_names(before) {
-                scopes.bind(&name, false);
-            }
-        }
-        let word = before
-            .rsplit(|c: char| !is_word_char(c))
-            .next()
-            .unwrap_or("");
-        let receiver = &before[..before.len() - word.len()];
-        // `obj.name = 1` calls a setter.
-        if !word.is_empty() && is_local_name(word) && !receiver.ends_with('.') {
-            scopes.bind(word, false);
-        }
-    }
-    bind_statement(code, scopes);
 }
 
 /// Bind the names a whole statement `code` declares: the variable of a

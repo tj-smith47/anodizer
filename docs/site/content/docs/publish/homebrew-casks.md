@@ -251,9 +251,9 @@ into the following lines until it closes:
   line ending in an odd run of `\` joins the next line, so a tag on that
   line does not close the heredoc, and `#{…}` in a body line is read as
   code: a heredoc opened there (`#{<<~X}`) has its body read from the next
-  line, before the rest of the body around it. A body line that ends inside
-  `#{…}` cannot be read past. A `<<` followed by a space or a digit is a
-  shift.
+  line, before the rest of the body around it, and a `#{…}` left open at
+  the end of a body line reads on into the next. A `<<` followed by a space
+  or a digit is a shift.
 - A `%()`, `%q`, `%Q`, `%w`, `%W`, `%i`, `%I`, `%r`, `%s` or `%x` literal
   delimited by `()`, `[]`, `{}` or `<>` (which nest) or by one repeated
   punctuation character (`%q|…|`). A typed one also takes a space or the end
@@ -279,10 +279,12 @@ heredoc whose tag is not single-quoted, a `%()`, `%Q`, `%W`, `%I`, `%r` or
 `%x` literal and a `/…/` regex. Each `#{…}`, one line long or several, is
 read as statements of its own: its words count toward the Linux side, a
 `depends_on` that opens one of its statements counts toward the OS
-dependency, a `;` in it ends no statement around the literal, and the names
-it assigns are locals after it, as Ruby binds them. So `"#{on_linux}"` names
-a Linux side, `"#{depends_on macos: :ventura}"` an OS dependency, and
-`'#{on_linux}'` neither.
+dependency, and a `;` in it ends no statement around the literal. It is read
+in the scopes around the literal by the rules below, as Ruby reads it: the
+names it assigns are locals after it, and the parameters and locals of a
+block, lambda or `def` inside it end with that block, lambda or `def`. So
+`"#{on_linux}"` names a Linux side, `"#{depends_on macos: :ventura}"` an OS
+dependency, and `'#{on_linux}'` neither.
 
 None of these opens after a `:` that makes a symbol (`:%`, `` :` ``), in a
 special global (`$"`, `$/`), or where it names a method: after `.`, `&.` or
@@ -290,10 +292,12 @@ special global (`$"`, `$/`), or where it names a method: after `.`, `&.` or
 (`x.<<`, `x. %`, `a&.!~`), after `def` (`def /(other)`), and as the `?` or
 `!` of a method name (`then?"a"`). Written straight after a method name
 spelled as an operator, a `<<`, `%` or `/` is an operator (`a&.!~% b` is a
-modulo) and a `?` opens a character literal, and so does a `?` written
-straight after a name Ruby reads as a method call (`EOS!?"`, `foo?=`,
-`x&.def??"`): one that is no local variable, parameter, number or keyword
-below.
+modulo) and a `?` opens a character literal. Straight after a name Ruby
+reads as a method call, a `?` opens a character literal (`EOS!?"`, `foo?=`,
+`x&.def??"`, `foo.nil?=`). Ruby reads a name as a method call after `.`,
+`&.` or `::`, whatever it spells, and elsewhere unless it is a local
+variable, a parameter, a number, a variable with a sigil, or `self`, `nil`,
+`true`, `false`, `end`, `__FILE__`, `__LINE__` or `__ENCODING__`.
 
 A `<<`, `%`, `?` or `/` that follows a value is a shift, a modulo, a ternary
 or a division and opens nothing. The code before it ends with a value when,
@@ -307,7 +311,7 @@ or with one of these words:
 - an instance, class or global variable (`@args <<extra`, `$stdout <<x`);
 - a local variable, a name assigned earlier in its scope: `name =`,
   `name ||=` and the other operator assignments (`&&=`, `+=`, `-=`, `*=`,
-  `/=`), `a, b =`, `a, (b, c) =`, `(a, b) =`, `a, =`, `for a in`,
+  `/=`, `%=`, `**=`, `<<=`, `>>=`, `^=`), `a, b =`, `a, (b, c) =`, `(a, b) =`, `a, =`, `for a in`,
   `rescue => a`, a named group before `=~` (`/(?<a>\d+)/ =~ s`), a name in
   an `in` pattern (`in [a, 2]`, `x in {k: a}`) and the target of a rightward
   `=>` (`2 => a`). `==`, `=~`, `=>`, `!=`, `<=`, `>=` and `obj.name =`
@@ -342,8 +346,9 @@ continuation line (`puts "a" \` then `  if ready`) opens no block.
 
 The operator opens a literal after an operator, `(`, `,`, `;`, the start of
 a line, a Ruby keyword, any method of the cask DSL (`caveats <<~EOS`,
-`binary %w[a]`) or a common method that takes an argument (`puts %w[a]`).
-After any other word followed by a space, the scan cannot tell a method from
+`binary %w[a]`), a common method that takes an argument (`puts %w[a]`) or
+a name ending in `?` or `!` followed by a space (`y = foo? <<E`), since no
+local or parameter is spelled that way. After any other word followed by a space, the scan cannot tell a method from
 a local it did not see assigned, and it reads the operator as an opener; that
 is a guess.
 
