@@ -131,7 +131,10 @@ pub(crate) fn auto_oci_labels(
 
 /// Merge auto-derived OCI labels with user-rendered labels, where any key the
 /// user supplied wins (the auto value never clobbers an explicit user label).
-/// Returns a key-sorted vector for deterministic `--label` emission.
+/// The auto labels the user did not override come first, sorted by key, then
+/// the user labels in the order given, so `--label` pairs keep the user
+/// labels' template-key order and a key the user repeats passes its later
+/// value last.
 pub(crate) fn merge_oci_labels(
     auto: Vec<(String, String)>,
     user: Vec<(String, String)>,
@@ -141,8 +144,8 @@ pub(crate) fn merge_oci_labels(
         .into_iter()
         .filter(|(k, _)| !user_keys.contains(k.as_str()))
         .collect();
-    merged.extend(user);
     merged.sort_by(|a, b| a.0.cmp(&b.0));
+    merged.extend(user);
     merged
 }
 

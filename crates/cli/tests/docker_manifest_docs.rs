@@ -23,15 +23,28 @@ fn no_images_blocks() -> Vec<(String, Vec<String>)> {
         .skip(1)
         .take_while(|line| !line.starts_with("## "))
         .collect();
+    // A fence is a run of three or more backticks or tildes, indented or
+    // not; only a run of the same character at least as long, with nothing
+    // after it, closes it.
+    fn fence(line: &str) -> Option<(char, usize, &str)> {
+        let line = line.trim_start();
+        let c = line.chars().next().filter(|c| *c == '`' || *c == '~')?;
+        let len = line.len() - line.trim_start_matches(c).len();
+        (len >= 3).then(|| (c, len, line[len..].trim()))
+    }
     let mut blocks = Vec::new();
-    let mut open: Option<(String, Vec<String>)> = None;
+    let mut open: Option<(char, usize, String, Vec<String>)> = None;
     for line in section {
-        match (line.strip_prefix("```"), open.take()) {
-            (Some(_), Some(block)) => blocks.push(block),
-            (Some(language), None) => open = Some((language.to_string(), Vec::new())),
-            (None, Some((language, mut body))) => {
+        match (fence(line), open.take()) {
+            (Some((c, len, "")), Some((oc, olen, language, body))) if c == oc && len >= olen => {
+                blocks.push((language, body));
+            }
+            (_, Some((oc, olen, language, mut body))) => {
                 body.push(line.to_string());
-                open = Some((language, body));
+                open = Some((oc, olen, language, body));
+            }
+            (Some((c, len, language)), None) => {
+                open = Some((c, len, language.to_string(), Vec::new()));
             }
             (None, None) => {}
         }

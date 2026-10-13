@@ -8214,21 +8214,47 @@ fn docs_page(relative: &str) -> String {
 
 /// Every fenced block on `page` as `(language, body)`, in page order.
 fn fenced_blocks(page: &str) -> Vec<(String, String)> {
+    // A fence is a run of three or more backticks or tildes, indented or
+    // not; only a run of the same character at least as long, with nothing
+    // after it, closes it, so a shorter run inside the block is body text.
+    fn fence(line: &str) -> Option<(char, usize, &str)> {
+        let line = line.trim_start();
+        let c = line.chars().next().filter(|c| *c == '`' || *c == '~')?;
+        let len = line.len() - line.trim_start_matches(c).len();
+        (len >= 3).then(|| (c, len, line[len..].trim()))
+    }
     let mut blocks = Vec::new();
-    let mut open: Option<(String, String)> = None;
+    let mut open: Option<(char, usize, String, String)> = None;
     for line in page.lines() {
-        match (line.strip_prefix("```"), open.take()) {
-            (Some(_), Some(block)) => blocks.push(block),
-            (Some(language), None) => open = Some((language.trim().to_string(), String::new())),
-            (None, Some((language, mut body))) => {
+        match (fence(line), open.take()) {
+            (Some((c, len, "")), Some((oc, olen, language, body))) if c == oc && len >= olen => {
+                blocks.push((language, body));
+            }
+            (_, Some((oc, olen, language, mut body))) => {
                 body.push_str(line);
                 body.push('\n');
-                open = Some((language, body));
+                open = Some((oc, olen, language, body));
+            }
+            (Some((c, len, language)), None) => {
+                open = Some((c, len, language.to_string(), String::new()));
             }
             (None, None) => {}
         }
     }
     blocks
+}
+
+#[test]
+fn fenced_blocks_reads_indented_long_and_tilde_fences() {
+    let page = "  ```yaml\n  a: 1\n  ```\n````text\n```\n````\n~~~dockerfile\nFROM x\n~~~\n";
+    assert_eq!(
+        fenced_blocks(page),
+        [
+            ("yaml".to_string(), "  a: 1\n".to_string()),
+            ("text".to_string(), "```\n".to_string()),
+            ("dockerfile".to_string(), "FROM x\n".to_string()),
+        ]
+    );
 }
 
 /// The fenced blocks of one `## ` section of `page`.
@@ -8273,6 +8299,9 @@ fn every_config_block_on_the_docker_pages_loads_and_matches_the_schema() {
                 // config check unread.
                 other => failures.push(format!("{page}: unexpected fence tag `{other}`")),
             }
+        }
+        if blocks.is_empty() {
+            failures.push(format!("{page}: no yaml blocks found"));
         }
         for body in &blocks {
             if let Err(e) = serde_yaml_ng::from_str::<anodizer_core::config::Config>(body) {
@@ -8469,4 +8498,108 @@ fn the_last_of_two_build_args_rendering_one_key_picks_the_base_image() {
         crate::parse_base_image("ARG BASE=alpine:3.20\nFROM ${BASE}\n", &rendered),
         "debian:12"
     );
+}
+
+/// The dry-run build command for a config whose templated keys render out of
+/// order: `{{ .Version }}` sorts after `b` as a template but renders
+/// `1.0.0`, which sorts before it.
+fn dry_run_build_argv(oci_labels: bool) -> Vec<String> {
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let map = |prefix: &str| {
+        Some(HashMap::from([
+            ("b".to_string(), format!("{prefix}-literal")),
+            ("{{ .Version }}".to_string(), format!("{prefix}-templated")),
+        ]))
+    };
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, "FROM scratch\n").unwrap();
+    let mut config = Config::default();
+    config.project_name = "app".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "app".to_string(),
+        path: ".".to_string(),
+        dockers_v2: Some(vec![DockerV2Config {
+            images: vec!["ghcr.io/o/app".to_string()],
+            tags: vec!["latest".to_string()],
+            dockerfile: dockerfile.to_string_lossy().into_owned(),
+            platforms: Some(vec!["linux/amd64".to_string()]),
+            build_args: map("arg"),
+            labels: map("label"),
+            annotations: map("note"),
+            oci_labels: Some(StringOrBool::Bool(oci_labels)),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    }];
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+    DockerStage::new().run(&mut ctx).unwrap();
+    let lines: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+    let cmd = lines
+        .iter()
+        .find_map(|l| l.strip_prefix("(dry-run) would run: "))
+        .filter(|c| c.starts_with("docker buildx build"))
+        .unwrap_or_else(|| panic!("no dry-run build line: {lines:?}"))
+        .to_string();
+    cmd.split_whitespace().map(str::to_string).collect()
+}
+
+/// The values passed after each `flag` in the argv, in order.
+fn flag_values(argv: &[String], flag: &str) -> Vec<String> {
+    argv.windows(2)
+        .filter(|w| w[0] == flag)
+        .map(|w| w[1].clone())
+        .collect()
+}
+
+/// Build args, labels and annotations reach the build command in the order
+/// of their template keys, whatever the keys render to; with `oci_labels` on
+/// the auto labels come first, sorted, and the user labels follow in that
+/// same order.
+#[test]
+fn build_args_labels_and_annotations_reach_the_build_command_in_template_key_order() {
+    for oci_labels in [false, true] {
+        let argv = dry_run_build_argv(oci_labels);
+        assert_eq!(
+            flag_values(&argv, "--build-arg"),
+            ["b=arg-literal", "1.0.0=arg-templated"],
+            "{argv:?}"
+        );
+        assert_eq!(
+            flag_values(&argv, "--annotation"),
+            ["b=note-literal", "1.0.0=note-templated"],
+            "{argv:?}"
+        );
+        let labels = flag_values(&argv, "--label");
+        let (auto, user) = labels.split_at(labels.len() - 2);
+        assert_eq!(
+            user,
+            ["b=label-literal", "1.0.0=label-templated"],
+            "{argv:?}"
+        );
+        if oci_labels {
+            assert!(!auto.is_empty(), "{argv:?}");
+            assert!(
+                auto.iter()
+                    .all(|l| l.starts_with("org.opencontainers.image.")),
+                "{argv:?}"
+            );
+            assert!(auto.is_sorted(), "{argv:?}");
+        } else {
+            assert!(auto.is_empty(), "{argv:?}");
+        }
+    }
 }
