@@ -319,6 +319,31 @@ pub(crate) async fn run_upload_loop<C: ForgeAssetClient>(
     Ok(())
 }
 
+/// What two pages of a forge listing are compared by to tell a server that
+/// ignores the page parameter: the entries' numeric ids when every entry
+/// carries one, else the raw page text.
+///
+/// Ids come first because a field such as a download count can change
+/// between two reads of the same page. A page where any entry has no numeric
+/// id falls back to the text, since the ids it does yield would make two
+/// different pages of such entries compare equal.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ListingPageKey {
+    Ids(Vec<u64>),
+    Text(String),
+}
+
+impl ListingPageKey {
+    pub(crate) fn of(entries: &[serde_json::Value], page_text: String) -> Self {
+        let ids: Vec<u64> = entries.iter().filter_map(|e| e["id"].as_u64()).collect();
+        if ids.len() == entries.len() {
+            Self::Ids(ids)
+        } else {
+            Self::Text(page_text)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

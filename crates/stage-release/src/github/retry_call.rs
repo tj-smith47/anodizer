@@ -141,7 +141,7 @@ pub(crate) fn octocrab_retry_cause(status: u16) -> String {
 /// returned to the caller unchanged. Returns `(status_code, retriable)`
 /// where `status_code` is `0` for transport-layer failures with no HTTP
 /// response attached.
-fn classify_retriability(err: &octocrab::Error) -> (u16, bool) {
+pub(super) fn classify_retriability(err: &octocrab::Error) -> (u16, bool) {
     if let octocrab::Error::GitHub { source, .. } = err {
         let status = source.status_code.as_u16();
         (status, status_is_retriable(status))
@@ -179,10 +179,10 @@ pub(crate) fn is_octocrab_404(err: &octocrab::Error) -> bool {
 /// retriability is decided by HTTP status, not transport class.
 ///
 /// This is the one predicate every GitHub-backend retry site shares (the
-/// borrow-based probe in [`classify_retriability`], the upload-attempt
-/// classifier in [`super::upload_outcome`], and the test oracle in
-/// [`super::retry_classify`]) so a new upstream octocrab variant is
-/// classified identically everywhere instead of drifting per copy.
+/// borrow-based probe in [`classify_retriability`] and the upload-attempt
+/// classifier in [`super::upload_outcome`]) so a new upstream octocrab
+/// variant is classified identically everywhere instead of drifting per
+/// copy.
 pub(crate) fn is_octocrab_transport_error(err: &octocrab::Error) -> bool {
     matches!(
         err,

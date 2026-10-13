@@ -186,41 +186,7 @@ pub(crate) fn classify_upload_attempt<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
-
-    /// Synthesize an `octocrab::Error::GitHub` for a chosen status and body.
-    ///
-    /// octocrab's `*Snafu` builders are private, so the canonical path to
-    /// a typed `Error::GitHub { source, .. }` is to drive a real HTTP
-    /// response through the client and capture the `Err`. For 429 / 5xx
-    /// responses octocrab's tower retry middleware makes up to 3
-    /// additional attempts, so the responder must serve the response
-    /// 4 times for those statuses; for other 4xx statuses 1 is enough.
-    async fn synth_github_error(status: u16, body: &str) -> octocrab::Error {
-        let body_len = body.len();
-        let raw = format!(
-            "HTTP/1.1 {status} STATUS\r\n\
-             Content-Type: application/json\r\n\
-             Content-Length: {body_len}\r\n\
-             \r\n\
-             {body}"
-        );
-        let static_resp: &'static str = Box::leak(raw.into_boxed_str());
-        let serve_count: usize = if status == 429 || status >= 500 { 4 } else { 1 };
-        let (addr, _calls) = spawn_oneshot_http_responder(vec![static_resp; serve_count]);
-        // Pin rustls to `ring` before octocrab builds its reqwest client; the
-        // graph links two providers and nextest isolates each test in its own
-        // process. See `crate::test_support::build_test_octocrab`.
-        anodizer_core::tls::install_default_crypto_provider();
-        let octo = octocrab::OctocrabBuilder::new()
-            .base_uri(format!("http://{addr}/"))
-            .expect("base_uri")
-            .build()
-            .expect("build");
-        octo.get::<serde_json::Value, _, _>("/test", None::<&()>)
-            .await
-            .expect_err("synth_github_error: octocrab must surface Err for non-2xx status")
-    }
+    use crate::test_support::synth_github_error;
 
     fn ok_result() -> Result<serde_json::Value, octocrab::Error> {
         Ok(serde_json::json!({}))

@@ -74,10 +74,12 @@ pub(crate) async fn gitlab_upload_asset(
     let direct_asset_path = format!("/{}", file_name);
 
     // GitLab v17+ names the field `direct_asset_path`, older servers
-    // `filepath`. One probe answers for every asset of the run, and parallel
-    // uploads wait on the one probe in flight. A probe that failed is not an
-    // answer: the cell stays empty, that asset uses the legacy field, and the
-    // next asset probes again.
+    // `filepath`. Parallel uploads wait on the one probe in flight, and a
+    // probe that answered serves every asset of the run. A probe that failed
+    // is not an answer: the cell stays empty, that asset uses the legacy
+    // field, and each upload that was waiting probes again in turn, so N
+    // uploads against a failing `/version` run up to N probe ladders one
+    // after another.
     let use_legacy_file_path = legacy_path_probe
         .get_or_try_init(|| async {
             detect_pre_v17_gitlab(client, api_url, deadline, log)
@@ -196,7 +198,7 @@ pub(crate) async fn gitlab_find_asset_link(
     let links_api = gitlab_links_api(api_url, project_id, tag);
     // The listing is paged (20 per page by default); a release with more
     // links than one page holds keeps its duplicate on a later page.
-    let mut previous_ids: Option<Vec<u64>> = None;
+    let mut previous_key: Option<crate::forge::ListingPageKey> = None;
     // The range ends at `u32::MAX` so the overflow bail after the loop is
     // reachable in principle; no real listing has that many pages.
     for page in 1u32..=u32::MAX {
@@ -241,10 +243,8 @@ pub(crate) async fn gitlab_find_asset_link(
         if links.len() < LINKS_PAGE_SIZE as usize {
             return Ok(None);
         }
-        // Ids, not the page text: a field such as a download count can change
-        // between two reads of the same page.
-        let ids: Vec<u64> = links.iter().filter_map(|l| l["id"].as_u64()).collect();
-        if previous_ids.as_ref() == Some(&ids) {
+        let key = crate::forge::ListingPageKey::of(&links, page_text);
+        if previous_key.as_ref() == Some(&key) {
             bail!(
                 "gitlab: could not enumerate the release links of '{tag}': the listing \
                  served the same page twice (page {page} repeats page {}), so the server \
@@ -252,7 +252,7 @@ pub(crate) async fn gitlab_find_asset_link(
                 page - 1
             );
         }
-        previous_ids = Some(ids);
+        previous_key = Some(key);
     }
     bail!("gitlab: could not enumerate the release links of '{tag}': the page counter overflowed")
 }

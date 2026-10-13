@@ -2076,6 +2076,62 @@ async fn find_asset_link_stops_on_a_repeat_whose_counter_field_changed() {
     assert_eq!(log.lock().unwrap().len(), 2, "two listing pages, no third");
 }
 
+/// Two full pages whose links carry no numeric id are compared by their text,
+/// so two different pages are not read as a repeat and the sweep goes on to
+/// the short third page.
+#[tokio::test]
+async fn find_asset_link_compares_pages_without_numeric_ids_by_their_text() {
+    let page_body = |page: u64| {
+        let links: Vec<serde_json::Value> = (0..100u64)
+            .map(|i| {
+                serde_json::json!({
+                    "id": format!("link-{page}-{i}"),
+                    "name": format!("other-{page}-{i}"),
+                    "url": "https://x/o",
+                })
+            })
+            .collect();
+        serde_json::Value::Array(links).to_string()
+    };
+    let (addr, log) = spawn_scripted_responder(vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=1&per_page=100",
+            response: http_json("200 OK", page_body(1)),
+            times: Some(1),
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=2&per_page=100",
+            response: http_json("200 OK", page_body(2)),
+            times: Some(1),
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links?page=3&per_page=100",
+            response: http_json("200 OK", "[]".to_string()),
+            times: Some(1),
+        },
+    ]);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let ctx = GitlabCtx {
+        client: &client,
+        api_url: &api_url,
+        project_id: "o/r",
+        policy: &policy,
+        deadline: None,
+        log: tlog(),
+    };
+    let found = gitlab_find_asset_link(&ctx, "v1.0.0", "a.bin")
+        .await
+        .expect("two different pages are not a repeat");
+    assert_eq!(found, None);
+    assert_eq!(log.lock().unwrap().len(), 3, "three listing pages");
+}
+
 /// The link sweep stops at the run's retry deadline: page one is read, and
 /// page two is never requested once the deadline has passed.
 #[tokio::test]
@@ -2126,7 +2182,7 @@ async fn find_asset_link_stops_when_the_deadline_passes() {
 /// attempt), the error the upload returns names the create failure once,
 /// followed by the cleanup failure, and keeps the create failure's status.
 #[tokio::test]
-async fn a_failed_cleanup_reports_the_create_failure_with_the_cleanup_as_context() {
+async fn a_failed_cleanup_reports_the_create_failure_once_then_the_cleanup_failure() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file = dir.path().join("a.bin");
     tokio::fs::write(&file, b"xyz")

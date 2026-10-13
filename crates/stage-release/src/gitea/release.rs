@@ -216,7 +216,7 @@ pub(crate) async fn find_release_by_tag(
     // A server or proxy that ignores `page` serves the same full page for
     // every number; the sweep ends on the first repeat rather than looping
     // for ever, and a repeat is an answer the caller cannot act on.
-    let mut previous_ids: Option<Vec<u64>> = None;
+    let mut previous_key: Option<crate::forge::ListingPageKey> = None;
     // The range ends at `u32::MAX` so the overflow bail after the loop is
     // reachable in principle; no real listing has that many pages.
     for page in 1u32..=u32::MAX {
@@ -260,10 +260,8 @@ pub(crate) async fn find_release_by_tag(
             return Ok(Some(release_id_and_body(release)?));
         }
 
-        // Ids, not the page text: a field such as an asset's download count
-        // can change between two reads of the same page.
-        let ids: Vec<u64> = releases.iter().filter_map(|r| r["id"].as_u64()).collect();
-        if !releases.is_empty() && previous_ids.as_ref() == Some(&ids) {
+        let key = crate::forge::ListingPageKey::of(&releases, page_text);
+        if !releases.is_empty() && previous_key.as_ref() == Some(&key) {
             bail!(
                 "gitea: could not enumerate releases for tag '{tag}': the listing served \
                  the same page twice (page {page} repeats page {}), so the server is not \
@@ -271,7 +269,7 @@ pub(crate) async fn find_release_by_tag(
                 page - 1
             );
         }
-        previous_ids = Some(ids);
+        previous_key = Some(key);
 
         // Fewer results than the page size means there are no more pages.
         if releases.len() < PAGE_SIZE as usize {

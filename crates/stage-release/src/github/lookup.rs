@@ -825,28 +825,13 @@ mod get_by_tag_lookup_tests {
         );
     }
 
-    /// Synthesize an `octocrab::Error::GitHub` with a chosen status code by
-    /// round-tripping a minimal GitHub error body through the live API
-    /// envelope. octocrab's `*Snafu` builders are private, so the variant
-    /// cannot be constructed directly; the canonical path is to drive an
-    /// HTTP response through octocrab and capture the resulting `Err`.
     async fn synth_github_error(status: u16) -> octocrab::Error {
         let body = serde_json::json!({
             "message": "synthetic",
             "documentation_url": "https://example/synthetic"
         })
         .to_string();
-        let resp = format!(
-            "HTTP/1.1 {status} STATUS\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-            body.len(),
-            body,
-        );
-        let static_resp: &'static str = Box::leak(resp.into_boxed_str());
-        let (addr, _calls) = spawn_oneshot_http_responder(vec![static_resp]);
-        let octo = build_test_octocrab(addr);
-        octo.get::<serde_json::Value, _, _>("/synthetic", None::<&()>)
-            .await
-            .expect_err("synth_github_error: octocrab must surface Err for non-2xx status")
+        crate::test_support::synth_github_error(status, &body).await
     }
 
     fn build_test_octocrab(addr: SocketAddr) -> octocrab::Octocrab {

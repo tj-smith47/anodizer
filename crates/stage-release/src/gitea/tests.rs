@@ -1218,6 +1218,65 @@ async fn find_release_stops_on_a_repeat_whose_download_count_changed() {
     assert_eq!(entries.len(), 3, "the by-tag probe and two listing pages");
 }
 
+/// Two full pages whose releases carry no numeric id are compared by their
+/// text, so two different pages are not read as a repeat and the sweep goes
+/// on to the short third page.
+#[tokio::test]
+async fn find_release_compares_pages_without_numeric_ids_by_their_text() {
+    let page_body = |page: u64| {
+        let releases: Vec<serde_json::Value> = (0..50u64)
+            .map(|i| {
+                serde_json::json!({
+                    "id": format!("rel-{page}-{i}"),
+                    "tag_name": format!("p-{page}-{i}"),
+                })
+            })
+            .collect();
+        serde_json::Value::Array(releases).to_string()
+    };
+    let (addr, log) = spawn_scripted_responder(vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/api/v1/repos/o/r/releases?page=1&limit=50",
+            response: http_json("200 OK", page_body(1)),
+            times: Some(1),
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/api/v1/repos/o/r/releases?page=2&limit=50",
+            response: http_json("200 OK", page_body(2)),
+            times: Some(1),
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/api/v1/repos/o/r/releases?page=3&limit=50",
+            response: http_json("200 OK", "[]".to_string()),
+            times: Some(1),
+        },
+    ]);
+
+    let client = test_client();
+    let policy = fast_policy(2);
+    let api_url = format!("http://{addr}");
+    let found = find_release_by_tag(
+        &GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "o",
+            repo: "r",
+            policy: &policy,
+            deadline: None,
+            log: tlog(),
+        },
+        "v9.9.9",
+    )
+    .await
+    .expect("two different pages are not a repeat");
+    assert_eq!(found, None);
+    let entries = log.lock().unwrap();
+    assert_eq!(entries.len(), 4, "the by-tag probe and three listing pages");
+}
+
 /// The listing sweep stops at the run's retry deadline: a full first page
 /// without the tag is read, and the second page is never requested once the
 /// deadline has passed.
