@@ -632,82 +632,148 @@ fn render_platform_blocks(
     lines.join("\n")
 }
 
-/// The stanzas `Homebrew/OSDependsOn` (`rubocops/os_depends_on.rb`) treats as
-/// installable on macOS only.
-const MACOS_ONLY_STANZAS: &[&str] = &[
-    "app",
-    "audio_unit_plugin",
-    "colorpicker",
-    "dictionary",
-    "input_method",
-    "internet_plugin",
-    "keyboard_layout",
-    "mdimporter",
-    "pkg",
-    "prefpane",
-    "qlplugin",
-    "screen_saver",
-    "service",
-    "suite",
-    "vst_plugin",
-    "vst3_plugin",
-];
-
 /// What a `custom_block` contributes to the `depends_on :macos` decision.
-#[derive(Default)]
-struct CustomBlockOsFacts {
-    /// A macOS-only stanza (or `installer manual:`) outside an `on_macos`
-    /// block.
-    macos_only_stanza: bool,
-    /// An `on_linux` or `on_system` block.
-    other_os_block: bool,
-    /// A `depends_on` naming `macos:`, `maximum_macos:`, `:macos`, `:linux`
-    /// or `linux:`.
-    os_dependency: bool,
+#[derive(Default, Debug, PartialEq, Eq)]
+pub(super) struct CustomBlockOsFacts {
+    /// A top-level `on_linux` or `on_system` block, or the Linux-only
+    /// `app_image` stanza: the cask has a Linux side.
+    pub(super) other_os_block: bool,
+    /// A top-level `depends_on` naming `:macos`, `macos:`, `maximum_macos:`,
+    /// `:linux` or `linux:`.
+    pub(super) os_dependency: bool,
 }
 
-/// Read a `custom_block` line by line for the stanzas `Homebrew/OSDependsOn`
-/// looks at. The text is the user's own Ruby, so the reading goes by each
-/// line's first word and skips the body of an `on_macos do` block.
-// ponytail: line-based, not a Ruby parser; a stanza split across lines or
-// written after `;` is not seen, which only costs a `brew style` notice.
-fn custom_block_os_facts(block: Option<&str>) -> CustomBlockOsFacts {
+/// Keywords that open a block closed by `end` when they start a statement.
+/// `do` opens one wherever it appears.
+const BLOCK_OPENERS: &[&str] = &[
+    "begin", "case", "class", "def", "for", "if", "module", "unless", "until", "while",
+];
+
+/// One line of Ruby with the contents of its string literals blanked out and
+/// any trailing `#` comment removed, so a keyword, brace or `#` inside a
+/// string is never read as code. Heredoc openers (`<<~EOS`, `<<-EOS`,
+/// `<<EOS`, quoted or not) are pushed onto `heredocs` with whether their
+/// terminator may be indented.
+fn ruby_code_of(line: &str, heredocs: &mut Vec<(String, bool)>) -> String {
+    let mut code = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    let mut quote: Option<char> = None;
+    while let Some(c) = chars.next() {
+        if let Some(q) = quote {
+            if c == '\\' {
+                chars.next();
+                code.push_str("  ");
+            } else if c == q {
+                quote = None;
+                code.push(c);
+            } else {
+                code.push(' ');
+            }
+            continue;
+        }
+        match c {
+            '#' => break,
+            '"' | '\'' => {
+                quote = Some(c);
+                code.push(c);
+            }
+            '<' if chars.peek() == Some(&'<') => {
+                chars.next();
+                code.push_str("<<");
+                let indented = matches!(chars.peek(), Some('~' | '-'));
+                if indented {
+                    code.push(chars.next().unwrap_or('~'));
+                }
+                let quoted = matches!(chars.peek(), Some('"' | '\''));
+                let close = if quoted { chars.next() } else { None };
+                let mut tag = String::new();
+                while let Some(&t) = chars.peek() {
+                    if t.is_ascii_alphanumeric() || t == '_' {
+                        tag.push(t);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                if close.is_some() && chars.peek() == close.as_ref() {
+                    chars.next();
+                }
+                if tag.starts_with(|t: char| t.is_ascii_uppercase() || t == '_') {
+                    heredocs.push((tag, indented));
+                }
+            }
+            _ => code.push(c),
+        }
+    }
+    code
+}
+
+/// Read a `custom_block` for the facts `Homebrew/OSDependsOn` and
+/// `Cask#supports_linux?` look at. Only top-level statements count: the
+/// reader tracks `do`/`end` and `{`/`}` depth, splits a line at `;`, reads
+/// each statement by its first word, and skips heredoc bodies, string
+/// contents and comments.
+// ponytail: a line scanner over Ruby, so a stanza it misreads (one inside a
+// multi-line string, a `%w[]` literal or a `=begin` comment) adds or drops
+// `depends_on :macos`, which decides whether Homebrew installs the cask on
+// Linux or only on macOS. Reading the block with a Ruby parser removes that.
+pub(super) fn custom_block_os_facts(block: Option<&str>) -> CustomBlockOsFacts {
     let mut facts = CustomBlockOsFacts::default();
     let Some(block) = block else {
         return facts;
     };
-    let mut on_macos_indent: Option<usize> = None;
+    let mut depth = 0usize;
+    let mut heredocs: Vec<(String, bool)> = Vec::new();
+    let mut open_heredoc: Option<(String, bool)> = None;
     for line in block.lines() {
-        let text = line.trim_start();
-        if text.is_empty() || text.starts_with('#') {
-            continue;
-        }
-        let indent = line.len() - text.len();
-        if let Some(open) = on_macos_indent {
-            if indent == open && text.starts_with("end") {
-                on_macos_indent = None;
+        if let Some((tag, indented)) = &open_heredoc {
+            let end = if *indented { line.trim() } else { line };
+            if end == tag {
+                open_heredoc = (!heredocs.is_empty()).then(|| heredocs.remove(0));
             }
             continue;
         }
-        let word: &str = text
-            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .next()
-            .unwrap_or("");
-        match word {
-            "on_macos" => on_macos_indent = Some(indent),
-            "on_linux" | "on_system" => facts.other_os_block = true,
-            "depends_on" => {
-                let args = &text["depends_on".len()..];
-                if [":macos", ":linux", "macos:", "linux:"]
-                    .iter()
-                    .any(|token| args.contains(token))
-                {
-                    facts.os_dependency = true;
+        let code = ruby_code_of(line, &mut heredocs);
+        for statement in code.split(';') {
+            let words: Vec<&str> = statement
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+                .filter(|w| !w.is_empty())
+                .collect();
+            let first = words.first().copied().unwrap_or("");
+            if depth == 0 {
+                match first {
+                    "on_linux" | "on_system" | "app_image" => facts.other_os_block = true,
+                    "depends_on" => {
+                        facts.os_dependency |= words[1..].iter().any(|w| {
+                            matches!(
+                                *w,
+                                ":macos" | ":linux" | "macos:" | "maximum_macos:" | "linux:"
+                            )
+                        });
+                    }
+                    _ => {}
                 }
             }
-            "installer" if text.contains("manual:") => facts.macos_only_stanza = true,
-            w if MACOS_ONLY_STANZAS.contains(&w) => facts.macos_only_stanza = true,
-            _ => {}
+            if BLOCK_OPENERS.contains(&first) {
+                depth += 1;
+            }
+            for word in &words {
+                match *word {
+                    "do" => depth += 1,
+                    "end" => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
+            }
+            for c in statement.chars() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
+            }
+        }
+        if !heredocs.is_empty() {
+            open_heredoc = Some(heredocs.remove(0));
         }
     }
     facts
@@ -729,27 +795,39 @@ fn render_do_block(name: &str, body: &str) -> String {
 /// line, and nothing precedes the closing `end`. That is the layout
 /// `brew style` accepts.
 pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
-    let has_platforms = !params.platforms.is_empty();
     let custom = custom_block_os_facts(non_blank(params.custom_block));
-    let has_linux_block =
-        params.platforms.iter().any(|p| p.os_block == "linux") || custom.other_os_block;
+    // A flat download beside a Linux side the `custom_block` declares moves
+    // into `on_macos`, so a Linux host never downloads the macOS archive.
+    let flat_in_on_macos;
+    let platforms: &[CaskPlatformBlock] = if params.platforms.is_empty() && custom.other_os_block {
+        flat_in_on_macos = [CaskPlatformBlock {
+            os_block: "macos".to_string(),
+            arches: vec![CaskArchEntry {
+                arch_block: UNIVERSAL_ARCH_BLOCK.to_string(),
+                url: params.url.to_string(),
+                sha256: params.sha256.to_string(),
+            }],
+        }];
+        &flat_in_on_macos
+    } else {
+        &params.platforms
+    };
+    let has_platforms = !platforms.is_empty();
+    let has_linux_block = platforms.iter().any(|p| p.os_block == "linux") || custom.other_os_block;
     // A cask with downloads for both systems keeps its macOS-only stanzas
     // inside `on_macos`, as `Homebrew/OSDependsOn` asks of a cross-platform
     // cask.
-    let cross_platform = has_linux_block && params.platforms.iter().any(|p| p.os_block == "macos");
+    let cross_platform = has_linux_block && platforms.iter().any(|p| p.os_block == "macos");
     let app = params
         .app
         .filter(|a| !a.is_empty())
         .map(|a| format!("app {}", ruby_string(a)));
     let service = non_blank(params.service).map(|s| format!("service {}", ruby_string(s.trim())));
-    // `Homebrew/OSDependsOn` asks for `depends_on :macos` only where a
-    // macOS-only stanza sits outside `on_macos` in a cask with no Linux side,
-    // and calls a second OS dependency beside one the cask already declares
-    // redundant. A cask installing only binaries runs on either system and
-    // gets none.
-    let macos_only_outside_block =
-        !cross_platform && (app.is_some() || service.is_some() || custom.macos_only_stanza);
-    let depends_on_macos = macos_only_outside_block && !has_linux_block && !custom.os_dependency;
+    // Homebrew installs a cask on Linux unless it depends on macOS
+    // (`Cask#supports_linux?`), so a cask with no Linux side says so. Beside
+    // an OS dependency the `custom_block` already declares, a second one is
+    // redundant (`Homebrew/OSDependsOn`).
+    let depends_on_macos = !has_linux_block && !custom.os_dependency;
     let mut groups: Vec<String> = Vec::new();
 
     if let Some(block) = non_blank(params.custom_block) {
@@ -773,7 +851,7 @@ pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
             Vec::new()
         };
         groups.push(render_platform_blocks(
-            &params.platforms,
+            platforms,
             params.url_extras_indented,
             &nested,
         ));

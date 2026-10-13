@@ -1529,7 +1529,7 @@ fn taskfile_block_opt(taskfile: &str, target: &str) -> Option<String> {
 }
 
 /// The `cmds:` body of one top-level Taskfile target: from its key line to the
-/// next top-level key, mirroring `task_block` in `audit-gate-mirror.sh`.
+/// next top-level key.
 fn taskfile_block(taskfile: &str, target: &str) -> String {
     taskfile_block_opt(taskfile, target)
         .unwrap_or_else(|| panic!("no `  {target}:` in Taskfile.yml"))
@@ -2616,4 +2616,173 @@ fn every_script_the_taskfile_runs_is_neither_ignored_nor_missing() {
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// The local targets `audit-gate-mirror.sh` maps the ci.yml jobs to. The
+/// fixture Taskfile defines each so the job-level check holds and only the
+/// step-level one is under test.
+const GATE_MIRROR_TARGETS: &[&str] = &[
+    "audit:workflows",
+    "fmt:check",
+    "clippy",
+    "doc",
+    "audit:deps",
+    "test",
+    "package",
+    "snapshot",
+    "docs:validate-readme",
+    "check:config",
+    "check:msrv",
+    "docs:check",
+    "check:native-object-determinism",
+    "coverage:gate",
+];
+
+/// A repository whose ci.yml `test` job runs `task test` and
+/// `task test:brew-style`, and whose `task gate` reaches every mapped target
+/// plus `test:brew-style` when `wire_brew_style` is set. `test:brew-style` is
+/// reached through `ci`, a second hop, so the walk has to follow the graph.
+fn gate_mirror_fixture(wire_brew_style: bool) -> TempDir {
+    let dir = TempDir::new().expect("tempdir");
+    let workflows = dir.path().join(".github/workflows");
+    std::fs::create_dir_all(&workflows).expect("workflows dir");
+    std::fs::write(
+        workflows.join("ci.yml"),
+        "on: push\n\
+         jobs:\n  \
+           test:\n    \
+             runs-on: macos-latest\n    \
+             steps:\n      \
+               - run: task test\n      \
+               - if: runner.os == 'macOS'\n        \
+                 run: |\n          \
+                   set -eu\n          \
+                   task test:brew-style\n  \
+           snapshot:\n    \
+             runs-on: ubuntu-latest\n    \
+             steps:\n      \
+               - uses: ./.github/actions/anodizer\n        \
+                 with:\n          \
+                   args: release --snapshot --clean\n",
+    )
+    .expect("ci.yml");
+    let mut taskfile = String::from("version: '3'\ntasks:\n  gate:\n    cmds:\n      - task: ci\n");
+    for target in GATE_MIRROR_TARGETS {
+        taskfile.push_str(&format!("      - task: {target}\n"));
+    }
+    taskfile.push_str("  ci:\n    cmds:\n");
+    if wire_brew_style {
+        taskfile.push_str("      - task: test:brew-style\n");
+    } else {
+        taskfile.push_str("      - echo no brew style\n");
+    }
+    for target in GATE_MIRROR_TARGETS.iter().chain(&["test:brew-style"]) {
+        let cmd = if *target == "snapshot" {
+            "anodizer release --snapshot --clean"
+        } else {
+            "echo ok"
+        };
+        // An up-to-date target prints `Task "<name>" is up to date` in the dry
+        // run and no `[<name>]` line, so the brew-style target carries a
+        // passing `status:` to hold that form reachable too.
+        let status = if *target == "test:brew-style" {
+            "    status:\n      - \"true\"\n"
+        } else {
+            ""
+        };
+        taskfile.push_str(&format!("  {target}:\n{status}    cmds:\n      - {cmd}\n"));
+    }
+    std::fs::write(dir.path().join("Taskfile.yml"), taskfile).expect("Taskfile.yml");
+    dir
+}
+
+/// Run the gate-mirror audit over `root` with `PATH` set to `path`.
+fn run_gate_mirror(root: &Path, path: &str) -> (i32, String) {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".claude/scripts/audit-gate-mirror.sh");
+    let out = bash()
+        .arg(&script)
+        .arg(root)
+        .env("PATH", path)
+        .output()
+        .expect("run audit-gate-mirror.sh");
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    (out.status.code().unwrap_or(-1), text)
+}
+
+/// A `task <target>` a ci.yml step runs must be reachable from `task gate`,
+/// through the `task -n gate` dry-run and through the yq walk the audit falls
+/// back to where no `task` binary is installed (CI's actionlint job). A
+/// fixture whose gate reaches `test:brew-style` two hops down passes; the
+/// same fixture with that edge removed fails naming the step.
+#[test]
+fn the_gate_mirror_audit_requires_every_ci_step_target_in_the_gate() {
+    let which = |tool: &str| {
+        Command::new("sh")
+            .args(["-c", &format!("command -v {tool}")])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let Some(yq) = which("yq") else {
+        eprintln!(
+            "SKIP the_gate_mirror_audit_requires_every_ci_step_target_in_the_gate: yq missing"
+        );
+        return;
+    };
+    let inherited = std::env::var("PATH").unwrap_or_default();
+    // The fallback leg: only yq on top of the system directories, so
+    // `command -v task` fails inside the script.
+    let shim = TempDir::new().expect("shim dir");
+    std::os::unix::fs::symlink(&yq, shim.path().join("yq")).expect("yq symlink");
+    let without_task = format!("{}:/usr/bin:/bin", shim.path().display());
+    let task_hidden = !Command::new("sh")
+        .args(["-c", "command -v task"])
+        .env("PATH", &without_task)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(true);
+
+    let mut legs: Vec<(&str, &str)> = Vec::new();
+    if which("task").is_some() {
+        legs.push(("task -n gate", &inherited));
+    }
+    if task_hidden {
+        legs.push(("yq walk", &without_task));
+    }
+    assert!(
+        !legs.is_empty(),
+        "neither leg of the audit can run on this host"
+    );
+
+    for (leg, path) in legs {
+        let wired = gate_mirror_fixture(true);
+        let (code, out) = run_gate_mirror(wired.path(), path);
+        assert_eq!(
+            code, 0,
+            "{leg}: a gate reaching every step target passes:\n{out}"
+        );
+        assert!(
+            out.contains("2 `task` step target(s)"),
+            "{leg}: both step targets are read, the second from a multi-line run:\n{out}"
+        );
+
+        let unwired = gate_mirror_fixture(false);
+        let (code, out) = run_gate_mirror(unwired.path(), path);
+        assert_eq!(
+            code, 1,
+            "{leg}: a step target outside the gate fails:\n{out}"
+        );
+        assert!(
+            out.contains("a step runs 'task test:brew-style', which does not appear in"),
+            "{leg}: the finding names the step target:\n{out}"
+        );
+        assert!(
+            !out.contains("'task test'"),
+            "{leg}: a reachable step target is not reported:\n{out}"
+        );
+    }
 }

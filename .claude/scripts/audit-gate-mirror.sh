@@ -5,12 +5,12 @@
 # ci.yml job with no local equivalent reachable from `task gate` is a hole
 # through which a red CI slips past a local pre-push check. This audit fails
 # (exit 1) when a ci.yml job id has no registered local-mirror mapping, or
-# when a mapped local target is not actually reachable from `task gate`.
+# when a mapped local target, or a target a ci.yml step runs through
+# `task <target>`, is not actually reachable from `task gate`.
 set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
-source "$LIB_DIR/scan.sh"
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
@@ -78,12 +78,31 @@ if [[ -n "$unmapped" ]]; then
     exit 1
 fi
 
-# Reachability: does every mapped local target actually run as part of
-# `task gate`? Prefer `task -n gate` (a real dry-run of the composed task
-# graph); each leaf task prints as `task: [<name>] <cmd>`. CI's actionlint
-# job has no `task` binary on PATH, so fall back to grepping Taskfile.yml's
-# `gate:` cmds block + the `ci:` cmds block it composes — less precise, but
-# it doesn't require the binary.
+# Every `task <target>` a ci.yml step runs must be reachable from `task gate`
+# as well. JOB_MIRROR maps a whole job to one target, so a step added to an
+# already-mapped job (the macOS leg's `task test:brew-style`) would otherwise
+# run in CI and never in the local gate.
+if ! step_runs=$(yq -r '.jobs[] | .steps[]? | select(.run != null) | .run' "$CI_WORKFLOW"); then
+    echo "audit-gate-mirror: yq failed to read the ci.yml step commands — refusing to report a pass on unparsed input." >&2
+    exit 2
+fi
+declare -A STEP_TARGETS=()
+task_word='(^|[;&|[:space:]])task[[:space:]]+([A-Za-z][A-Za-z0-9:_.-]*)(.*)'
+while IFS= read -r line; do
+    rest="$line"
+    while [[ "$rest" =~ $task_word ]]; do
+        STEP_TARGETS[${BASH_REMATCH[2]}]=1
+        rest="${BASH_REMATCH[3]}"
+    done
+done <<< "$step_runs"
+
+# Reachability: does every mapped local target, and every target a ci.yml
+# step runs, actually run as part of `task gate`? Prefer `task -n gate` (a
+# real dry-run of the composed task graph); each leaf task prints as
+# `task: [<name>] <cmd>`. CI's actionlint job has no `task` binary on PATH, so
+# fall back to walking Taskfile.yml's `- task:` cmds and `deps:` from `gate`
+# with yq — it does not evaluate `platforms:` or vars, but it doesn't require
+# the binary.
 #
 # go-task evaluates `preconditions:` even under `-n`, so the host-resource
 # floors `task doc` declares would decide this walk. They gate running the
@@ -96,45 +115,49 @@ if command -v task >/dev/null 2>&1; then
         echo "$dryrun" >&2
         exit 2
     fi
-    for job in "${!JOB_MIRROR[@]}"; do
-        local_target="${JOB_MIRROR[$job]}"
-        if ! grep -qF -- "[${local_target}]" <<< "$dryrun"; then
-            unreachable+="  job '${job}' -> local target '${local_target}' does not appear in \`task -n gate\` output — wire it into task gate's cmds."$'\n'
-        fi
-    done
+    # A target whose sources and generates are current prints `Task "<name>" is
+    # up to date` in place of its `[<name>]` command lines, so either form
+    # means the gate reached it.
+    reachable() { grep -qF -e "[$1]" -e "Task \"$1\" is up to date" <<< "$dryrun"; }
+    where="\`task -n gate\` output"
 else
-    # No `task` binary (e.g. the actionlint CI job): grep Taskfile.yml directly.
-    # gate: composes ci: plus a fixed list of `task: <name>` cmds, so a target
-    # is reachable if it appears as a `task: <name>` line inside EITHER block.
     taskfile="Taskfile.yml"
     if [[ ! -f "$taskfile" ]]; then
-        echo "audit-gate-mirror: FAIL — no \`task\` binary on PATH and ${taskfile} not found for the grep fallback." >&2
+        echo "audit-gate-mirror: FAIL — no \`task\` binary on PATH and ${taskfile} not found for the static walk." >&2
         exit 2
     fi
-    # The `cmds:` body of one top-level Taskfile target, ended by the next
-    # target's key.
-    task_block() {
-        run_scanner "$1" -v target="$2" -f - "$3" <<'AWK'
-            $0 ~ "^  " target ":"                                { flag = 1 }
-            flag                                                 { print }
-            flag && /^  [A-Za-z_].*:$/ && $0 !~ "^  " target ":" { if (NR > 1) exit }
-AWK
-    }
-    task_block gate_block gate "$taskfile"
-    task_block ci_block ci "$taskfile"
-    combined="${gate_block}"$'\n'"${ci_block}"
-    for job in "${!JOB_MIRROR[@]}"; do
-        local_target="${JOB_MIRROR[$job]}"
-        # Anchor on "task: <name>" followed by whitespace/comment/EOL so e.g.
-        # target `test` doesn't false-match a substring like `test:os`.
-        if ! grep -qE -- "task: ${local_target}([[:space:]]|\$)" <<< "$combined"; then
-            unreachable+="  job '${job}' -> local target '${local_target}' does not appear in Taskfile.yml's gate:/ci: cmds — wire it into task gate's cmds."$'\n'
+    declare -A REACHED=()
+    queue=(gate)
+    while ((${#queue[@]})); do
+        current="${queue[0]}"
+        queue=("${queue[@]:1}")
+        [[ -n "${REACHED[$current]:-}" ]] && continue
+        REACHED[$current]=1
+        if ! children=$(T="$current" yq -r '(.tasks[strenv(T)] | ((.cmds // []) + (.deps // []))[] | select(tag == "!!map") | .task // ""), (.tasks[strenv(T)].deps // [] | .[] | select(tag == "!!str"))' "$taskfile"); then
+            echo "audit-gate-mirror: yq failed to read target '${current}' from ${taskfile} — refusing to report a pass on unparsed input." >&2
+            exit 2
         fi
+        while IFS= read -r child; do
+            [[ -n "$child" ]] && queue+=("$child")
+        done <<< "$children"
     done
+    reachable() { [[ -n "${REACHED[$1]:-}" ]]; }
+    where="the targets Taskfile.yml's gate: reaches"
 fi
+for job in "${!JOB_MIRROR[@]}"; do
+    local_target="${JOB_MIRROR[$job]}"
+    if ! reachable "$local_target"; then
+        unreachable+="  job '${job}' -> local target '${local_target}' does not appear in ${where} — wire it into task gate's cmds."$'\n'
+    fi
+done
+for step_target in "${!STEP_TARGETS[@]}"; do
+    if ! reachable "$step_target"; then
+        unreachable+="  ${CI_WORKFLOW}: a step runs 'task ${step_target}', which does not appear in ${where} — wire it into task gate's cmds."$'\n'
+    fi
+done
 
 if [[ -n "$unreachable" ]]; then
-    echo "audit-gate-mirror: FAIL — every mapped local target must be reachable from task gate." >&2
+    echo "audit-gate-mirror: FAIL — every mapped local target, and every target a ci.yml step runs, must be reachable from task gate." >&2
     echo "" >&2
     printf '%s' "$unreachable" >&2
     exit 1
@@ -189,4 +212,4 @@ if [[ "$ci_snapshot_args" != "$task_snapshot_args" ]]; then
     exit 1
 fi
 
-echo "audit-gate-mirror: OK — all ${job_count} ci.yml job(s) have a local mirror reachable from task gate; snapshot flag sets match."
+echo "audit-gate-mirror: OK — all ${job_count} ci.yml job(s) and ${#STEP_TARGETS[@]} \`task\` step target(s) are reachable from task gate; snapshot flag sets match."

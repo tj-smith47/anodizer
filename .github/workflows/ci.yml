@@ -223,6 +223,7 @@ jobs:
 
       - name: Lint the rendered Homebrew casks with brew style
         if: runner.os == 'macOS'
+        timeout-minutes: 10
         run: task test:brew-style
 
       - name: Build release binary

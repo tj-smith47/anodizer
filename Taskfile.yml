@@ -200,13 +200,20 @@ tasks:
     # `brew style` needs a working Homebrew with its style gems, which only
     # the macOS hosts have; the Linux box runs brew as root, which brew
     # refuses. The test itself is opt-in through the variable, so `task test`
-    # never depends on a brew install.
+    # never depends on a brew install. The host check sits in the command
+    # rather than in `platforms:`, which would hide the target from
+    # `task -n gate` and so from the gate-mirror audit.
     desc: "Run brew style over the rendered Homebrew casks (macOS only)."
-    platforms: [darwin]
     env:
       ANODIZER_BREW_STYLE: "1"
     cmds:
-      - cargo test -p anodizer-stage-publish --lib rendered_casks_pass_brew_style_opt_in -- --nocapture
+      - |
+        set -eu
+        if [ "{{OS}}" != "darwin" ]; then
+          echo "test:brew-style: skip — macOS-only check (this host is {{OS}})."
+          exit 0
+        fi
+        cargo test -p anodizer-stage-publish --lib rendered_casks_pass_brew_style_opt_in -- --nocapture
 
   test:os:
     # Ships HEAD as a git bundle, so it proves the un-pushed commit rather than

@@ -2635,7 +2635,8 @@ fn find_top_level_cask_artifact_prefers_disk_image_over_archive() {
         "https://e.com/mytool.dmg",
         "dmgsha",
     ));
-    let got = super::cask_scope::find_top_level_cask_artifact(&ctx, None).expect("artifact found");
+    let got =
+        super::cask_scope::find_top_level_cask_artifact(&ctx, None, &[]).expect("artifact found");
     assert_eq!(got.kind, ArtifactKind::DiskImage, "DiskImage preferred");
 }
 
@@ -2652,7 +2653,8 @@ fn find_top_level_cask_artifact_falls_back_to_archive() {
         "https://e.com/mytool.tar.gz",
         "archsha",
     ));
-    let got = super::cask_scope::find_top_level_cask_artifact(&ctx, None).expect("artifact found");
+    let got =
+        super::cask_scope::find_top_level_cask_artifact(&ctx, None, &[]).expect("artifact found");
     assert_eq!(got.kind, ArtifactKind::Archive);
 }
 
@@ -2668,7 +2670,7 @@ fn find_top_level_cask_artifact_returns_none_for_no_macos() {
         "https://e.com/mytool.tar.gz",
         "linuxsha",
     ));
-    assert!(super::cask_scope::find_top_level_cask_artifact(&ctx, None).is_none());
+    assert!(super::cask_scope::find_top_level_cask_artifact(&ctx, None, &[]).is_none());
 }
 
 /// `find_top_level_cask_artifact` excludes Apple-but-not-macOS archives
@@ -2692,7 +2694,7 @@ fn find_top_level_cask_artifact_excludes_apple_non_macos() {
         ));
     }
     assert!(
-        super::cask_scope::find_top_level_cask_artifact(&ctx, None).is_none(),
+        super::cask_scope::find_top_level_cask_artifact(&ctx, None, &[]).is_none(),
         "iOS/watchOS/tvOS archives must not be selected as a cask url"
     );
 }
@@ -2714,12 +2716,13 @@ fn find_top_level_cask_artifact_filters_by_id() {
     ctx.artifacts.add(a);
     // Only `nightly` IDs are wanted => returns None.
     assert!(
-        super::cask_scope::find_top_level_cask_artifact(&ctx, Some(&["nightly".to_string()]))
+        super::cask_scope::find_top_level_cask_artifact(&ctx, Some(&["nightly".to_string()]), &[])
             .is_none()
     );
     // `stable` IDs requested => the artifact is returned.
-    let got = super::cask_scope::find_top_level_cask_artifact(&ctx, Some(&["stable".to_string()]))
-        .expect("artifact must match");
+    let got =
+        super::cask_scope::find_top_level_cask_artifact(&ctx, Some(&["stable".to_string()]), &[])
+            .expect("artifact must match");
     assert_eq!(got.kind, ArtifactKind::DiskImage);
 }
 
@@ -3323,9 +3326,9 @@ fn generate_cask_emits_depends_and_conflicts() {
     let cask = super::cask::generate_cask(&params).unwrap();
     assert!(
         cask.contains(
-            "\n  conflicts_with cask: \"old-app\"\n  depends_on cask: \"other-app\"\nend\n"
+            "\n  conflicts_with cask: \"old-app\"\n  depends_on cask: \"other-app\"\n  depends_on :macos\nend\n"
         ),
-        "conflicts_with precedes depends_on in one group:\n{cask}"
+        "conflicts_with precedes depends_on in one group, and a cask with no Linux side depends on macOS:\n{cask}"
     );
 }
 
@@ -3336,10 +3339,14 @@ fn depends_on_lines(cask: &str) -> Vec<&str> {
         .collect()
 }
 
-/// `depends_on :macos` follows `Homebrew/OSDependsOn`: a macOS-only stanza
-/// outside `on_macos`, no Linux side, and no OS dependency already declared.
+/// `depends_on :macos` is rendered for every cask with no Linux side:
+/// Homebrew's `Cask#supports_linux?` is true for any cask without a macOS
+/// dependency, so a binaries-only darwin cask without the line would install
+/// a Mach-O binary on Linux. A Linux side (an `on_linux` download, or an
+/// `on_linux` / `on_system` block or `app_image` in `custom_block`) or an OS
+/// dependency the `custom_block` already declares leaves it out.
 #[test]
-fn depends_on_macos_is_rendered_only_for_a_macos_only_stanza_without_a_linux_side() {
+fn depends_on_macos_is_rendered_for_every_cask_without_a_linux_side() {
     let bins = vec![super::cask::CaskBinaryEntry {
         name: "mytool".to_string(),
         target: None,
@@ -3349,37 +3356,30 @@ fn depends_on_macos_is_rendered_only_for_a_macos_only_stanza_without_a_linux_sid
         url: format!("https://e.com/mytool-linux-{a}.tar.gz"),
         sha256: c.to_string().repeat(64),
     };
+    let macos_only = ["  depends_on :macos"];
 
     let mut binary_only = empty_cask_params("mytool", "1.0.0");
     binary_only.binaries = &bins;
     let cask = generate_cask(&binary_only).unwrap();
-    assert!(depends_on_lines(&cask).is_empty(), "binary-only:\n{cask}");
+    assert_eq!(depends_on_lines(&cask), macos_only, "binary-only:\n{cask}");
 
     let mut app_only = empty_cask_params("mytool", "1.0.0");
     app_only.app = Some("MyTool.app");
     let cask = generate_cask(&app_only).unwrap();
-    assert_eq!(
-        depends_on_lines(&cask),
-        ["  depends_on :macos"],
-        "app:\n{cask}"
-    );
-
-    let mut service_only = empty_cask_params("mytool", "1.0.0");
-    service_only.service = Some("MyTool.workflow");
-    let cask = generate_cask(&service_only).unwrap();
-    assert_eq!(
-        depends_on_lines(&cask),
-        ["  depends_on :macos"],
-        "service:\n{cask}"
-    );
+    assert_eq!(depends_on_lines(&cask), macos_only, "app:\n{cask}");
 
     let mut pkg_in_custom = empty_cask_params("mytool", "1.0.0");
     pkg_in_custom.custom_block = Some("pkg \"MyTool.pkg\"");
     let cask = generate_cask(&pkg_in_custom).unwrap();
+    assert_eq!(depends_on_lines(&cask), macos_only, "pkg:\n{cask}");
+
+    let mut app_inside_on_macos = empty_cask_params("mytool", "1.0.0");
+    app_inside_on_macos.custom_block = Some("on_macos do\n  app \"Other.app\"\nend");
+    let cask = generate_cask(&app_inside_on_macos).unwrap();
     assert_eq!(
         depends_on_lines(&cask),
-        ["  depends_on :macos"],
-        "pkg:\n{cask}"
+        macos_only,
+        "a stanza inside on_macos:\n{cask}"
     );
 
     let mut own_dependency = empty_cask_params("mytool", "1.0.0");
@@ -3402,13 +3402,149 @@ fn depends_on_macos_is_rendered_only_for_a_macos_only_stanza_without_a_linux_sid
     let cask = generate_cask(&linux_only).unwrap();
     assert!(depends_on_lines(&cask).is_empty(), "linux-only:\n{cask}");
 
-    let mut app_inside_on_macos = empty_cask_params("mytool", "1.0.0");
-    app_inside_on_macos.custom_block = Some("on_macos do\n  app \"Other.app\"\nend");
-    let cask = generate_cask(&app_inside_on_macos).unwrap();
-    assert!(
-        depends_on_lines(&cask).is_empty(),
-        "a stanza inside on_macos:\n{cask}"
-    );
+    let mut app_image = empty_cask_params("mytool", "1.0.0");
+    app_image.binaries = &bins;
+    app_image.custom_block = Some("app_image \"MyTool.AppImage\"");
+    let cask = generate_cask(&app_image).unwrap();
+    assert!(depends_on_lines(&cask).is_empty(), "app_image:\n{cask}");
+}
+
+/// A flat single-download cask whose `custom_block` declares a Linux side
+/// (`on_linux` or `on_system`) is cross-platform: the flat `sha256` / `url`
+/// and the macOS-only `app` / `service` move into `on_macos`, so a Linux host
+/// never downloads the macOS archive, and no `depends_on :macos` is added.
+#[test]
+fn a_flat_cask_beside_a_custom_linux_block_puts_its_download_inside_on_macos() {
+    let bins = vec![super::cask::CaskBinaryEntry {
+        name: "mytool".to_string(),
+        target: None,
+    }];
+    for custom in [
+        "on_linux do\n  binary \"mytool-linux\"\nend",
+        "on_system :linux, macos: :sonoma_or_newer do\n  binary \"mytool-linux\"\nend",
+    ] {
+        let mut params = empty_cask_params("mytool", "1.0.0");
+        params.sha256 = "deadbeef";
+        params.url = "https://e.com/v#{version}/mytool-darwin-universal.tar.gz";
+        params.app = Some("MyTool.app");
+        params.service = Some("MyTool.workflow");
+        params.binaries = &bins;
+        params.custom_block = Some(custom);
+        let cask = generate_cask(&params).unwrap();
+        assert!(
+            cask.contains(
+                "  version \"1.0.0\"\n\n  on_macos do\n    sha256 \"deadbeef\"\n\n    url \"https://e.com/v#{version}/mytool-darwin-universal.tar.gz\"\n\n    app \"MyTool.app\"\n    service \"MyTool.workflow\"\n  end\n\n  name \"mytool\"\n"
+            ),
+            "{custom}:\n{cask}"
+        );
+        assert_eq!(
+            cask.matches("sha256").count(),
+            1,
+            "the flat sha256 is written once:\n{cask}"
+        );
+        assert!(depends_on_lines(&cask).is_empty(), "{custom}:\n{cask}");
+        assert!(
+            cask.contains("\n  binary \"mytool\"\n"),
+            "binary stays top-level:\n{cask}"
+        );
+    }
+}
+
+/// What `custom_block_os_facts` reads from a `custom_block`, case by case:
+/// only top-level statements count, a one-line or `;`-separated `on_macos`
+/// block closes on its own `end` or `}`, `end_foo` closes nothing, comments
+/// and heredoc bodies are not code, and `app_image` is a Linux side.
+#[test]
+fn custom_block_os_facts_reads_only_top_level_statements() {
+    use super::cask::{CustomBlockOsFacts, custom_block_os_facts};
+    let facts = |other_os_block: bool, os_dependency: bool| CustomBlockOsFacts {
+        other_os_block,
+        os_dependency,
+    };
+    let cases: &[(&str, &str, CustomBlockOsFacts)] = &[
+        ("empty", "", facts(false, false)),
+        (
+            "top-level on_linux",
+            "on_linux do\n  binary \"x\"\nend",
+            facts(true, false),
+        ),
+        (
+            "top-level on_system",
+            "on_system :linux do\nend",
+            facts(true, false),
+        ),
+        ("app_image", "app_image \"X.AppImage\"", facts(true, false)),
+        (
+            "on_linux nested in on_macos",
+            "on_macos do\n  on_linux do\n  end\nend",
+            facts(false, false),
+        ),
+        (
+            "one-line on_macos braces, then a top-level on_linux",
+            "on_macos { depends_on macos: :sonoma }\non_linux do\nend",
+            facts(true, false),
+        ),
+        (
+            "on_macos do; …; end on one line",
+            "on_macos do; depends_on macos: :sonoma; end\ndepends_on :linux",
+            facts(false, true),
+        ),
+        (
+            "on_macos do; …; end hides its own dependency",
+            "on_macos do; depends_on macos: :sonoma; end",
+            facts(false, false),
+        ),
+        (
+            "end_foo does not close the block",
+            "on_macos do\n  end_foo\n  on_linux do\n  end\nend\n",
+            facts(false, false),
+        ),
+        (
+            "end_foo inside a block, dependency after it at top level",
+            "on_macos do\n  end_foo\nend\ndepends_on maximum_macos: :sonoma",
+            facts(false, true),
+        ),
+        (
+            "an OS name in a trailing comment",
+            "depends_on cask: \"x\" # :macos",
+            facts(false, false),
+        ),
+        (
+            "an OS name inside a string",
+            "depends_on cask: \":macos\"",
+            facts(false, false),
+        ),
+        ("bare :macos", "depends_on :macos", facts(false, true)),
+        ("linux: hash", "depends_on linux: :any", facts(false, true)),
+        (
+            "heredoc body starting with a stanza word",
+            "caveats <<~EOS\n  on_linux do\n  app_image \"x\"\n  depends_on :macos\nEOS\n",
+            facts(false, false),
+        ),
+        (
+            "statement after the heredoc terminator",
+            "caveats <<~EOS\n  on_linux\n  EOS\non_linux do\nend",
+            facts(true, false),
+        ),
+        (
+            "a def body",
+            "def helper\n  on_linux\nend",
+            facts(false, false),
+        ),
+        (
+            "an if body",
+            "if MacOS.version >= :sonoma\n  depends_on :linux\nend",
+            facts(false, false),
+        ),
+    ];
+    for (label, block, want) in cases {
+        assert_eq!(
+            custom_block_os_facts(Some(block)),
+            *want,
+            "{label}:\n{block}"
+        );
+    }
+    assert_eq!(custom_block_os_facts(None), facts(false, false));
 }
 
 /// A `universal_binaries` (`replace: true`) macOS artifact beside Linux
@@ -3453,15 +3589,17 @@ fn a_universal_macos_artifact_beside_linux_renders_flat_inside_on_macos() {
     assert!(c.contains(&expected), "{c}");
 }
 
-/// A universal macOS artifact in the same scope as per-arch macOS ones is
-/// left out, and the per-arch blocks render as they would without it.
+/// A universal macOS artifact beside per-arch macOS ones for both
+/// architectures is left out and logged at verbose, and the per-arch blocks
+/// render as they would without it.
 #[test]
-fn a_universal_artifact_beside_per_arch_ones_is_not_rendered() {
+fn a_universal_artifact_beside_both_per_arch_ones_is_dropped_and_logged() {
     use anodizer_core::config::HomebrewCaskConfig;
     let cask_cfg = HomebrewCaskConfig {
         name: Some("mytool".to_string()),
         ..Default::default()
     };
+    // `top_cask_ctx` already holds the darwin amd64 archive.
     let mut ctx = top_cask_ctx(&cask_cfg);
     for (name, target) in [
         ("mytool-darwin-universal.tar.gz", "darwin-universal"),
@@ -3475,7 +3613,8 @@ fn a_universal_artifact_beside_per_arch_ones_is_not_rendered() {
             &"b".repeat(64),
         ));
     }
-    let c = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+    let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
+    let c = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &log)
         .expect("top-level cask render")
         .expect("top-level cask applicable")
         .content;
@@ -3484,6 +3623,111 @@ fn a_universal_artifact_beside_per_arch_ones_is_not_rendered() {
         "{c}"
     );
     assert!(!c.contains("universal"), "{c}");
+    let verbose: Vec<String> = cap
+        .all_messages()
+        .into_iter()
+        .filter(|(level, _)| *level == anodizer_core::log::LogLevel::Verbose)
+        .map(|(_, m)| m)
+        .collect();
+    assert_eq!(
+        verbose,
+        [
+            "skipped universal artifact mytool-darwin-universal.tar.gz: both macOS architectures have their own download"
+        ],
+        "{c}"
+    );
+}
+
+/// A universal macOS artifact beside a per-arch one for one architecture
+/// fills the other architecture's slot: `on_arm` downloads the arm64 build
+/// and `on_intel` the universal one.
+#[test]
+fn a_universal_artifact_fills_the_architecture_no_per_arch_build_covers() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let cask_cfg = HomebrewCaskConfig {
+        name: Some("mytool".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = top_cask_ctx(&cask_cfg);
+    ctx.artifacts = Default::default();
+    for (name, target, sha) in [
+        ("mytool-darwin-universal.tar.gz", "darwin-universal", 'a'),
+        ("mytool-darwin-arm64.tar.gz", "aarch64-apple-darwin", 'b'),
+    ] {
+        ctx.artifacts.add(art_with_url_sha(
+            ArtifactKind::Archive,
+            name,
+            target,
+            &format!("https://e.com/v1.2.3/{name}"),
+            &sha.to_string().repeat(64),
+        ));
+    }
+    let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
+    let c = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &log)
+        .expect("top-level cask render")
+        .expect("top-level cask applicable")
+        .content;
+    let expected = format!(
+        "  on_macos do\n    on_arm do\n      sha256 \"{b}\"\n      url \"https://e.com/v#{{version}}/mytool-darwin-arm64.tar.gz\"\n    end\n    on_intel do\n      sha256 \"{a}\"\n      url \"https://e.com/v#{{version}}/mytool-darwin-universal.tar.gz\"\n    end\n  end\n",
+        a = "a".repeat(64),
+        b = "b".repeat(64),
+    );
+    assert!(c.contains(&expected), "{c}");
+    assert_eq!(cap.verbose_count(), 0, "nothing was skipped");
+}
+
+/// The universal `url` written directly inside `on_macos` carries every
+/// `url:` option, with each continuation line two columns left of where the
+/// nested per-arch `url` would put it: the arguments line up under the first
+/// one, and the multi-line array and hash keep their shape. `verified:` is
+/// never written.
+#[test]
+fn a_universal_url_inside_on_macos_lays_out_its_options_byte_for_byte() {
+    use super::cask::{ARCH_URL_ARGS_INDENT, render_additional_url_params};
+    let url_cfg = HomebrewCaskURL {
+        verified: Some("e.com/".to_string()),
+        using: Some(":homebrew_curl".to_string()),
+        cookies: Some(HashMap::from([
+            ("session".to_string(), "abc".to_string()),
+            ("license".to_string(), "accepted".to_string()),
+        ])),
+        headers: Some(vec![
+            "Accept: application/octet-stream".to_string(),
+            "X-Client: anodizer".to_string(),
+        ]),
+        user_agent: Some("anodizer/1.0".to_string()),
+        ..Default::default()
+    };
+    let url_extras_arch = render_additional_url_params(&url_cfg, ARCH_URL_ARGS_INDENT);
+    let mut params = empty_cask_params("mytool", "1.0.0");
+    params.url_extras_indented = &url_extras_arch;
+    params.platforms = vec![CaskPlatformBlock {
+        os_block: "macos".to_string(),
+        arches: vec![CaskArchEntry {
+            arch_block: super::cask::UNIVERSAL_ARCH_BLOCK.to_string(),
+            url: "https://e.com/v#{version}/mytool-darwin-universal.tar.gz".to_string(),
+            sha256: "a".repeat(64),
+        }],
+    }];
+    let cask = generate_cask(&params).unwrap();
+    let expected = r##"  on_macos do
+    sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+    url "https://e.com/v#{version}/mytool-darwin-universal.tar.gz",
+        using:      :homebrew_curl,
+        cookies:    {
+          "license" => "accepted",
+          "session" => "abc",
+        },
+        header:     [
+          "Accept: application/octet-stream",
+          "X-Client: anodizer",
+        ],
+        user_agent: "anodizer/1.0"
+  end
+"##;
+    assert!(cask.contains(expected), "{cask}");
+    assert!(!cask.contains("verified"), "{cask}");
 }
 
 /// `generate_cask` with `custom_block` injects raw Ruby into the cask.
@@ -5931,9 +6175,9 @@ fn publish_top_level_casks_with_an_unrenderable_pull_request_token_skip_before_a
 /// The casks the layout tests and the `brew style` check render: a
 /// macOS + Linux cask carrying every optional stanza, a macOS-only cask with
 /// per-arch downloads, a flat single-url cask, a minimal one, a universal
-/// macOS download beside Linux per-arch ones, and a cask whose `custom_block`
-/// declares its own macOS dependency. Returned as `(file stem, rendered
-/// cask)`.
+/// macOS download beside Linux per-arch ones, a cask whose `custom_block`
+/// declares its own macOS dependency, and a flat cask whose `custom_block`
+/// holds an `on_linux` block. Returned as `(file stem, rendered cask)`.
 fn style_fixture_casks() -> Vec<(&'static str, String)> {
     use super::cask::{
         ARCH_URL_ARGS_INDENT, CaskBinaryEntry, URL_ARGS_INDENT, render_additional_url_params,
@@ -6107,6 +6351,16 @@ fn style_fixture_casks() -> Vec<(&'static str, String)> {
     own_os_dependency.app = Some("MyTool.app");
     own_os_dependency.custom_block = Some("depends_on macos: :sonoma");
 
+    let mut custom_linux = empty_cask_params("mytool", "1.2.3");
+    custom_linux.sha256 = &flat_sha;
+    custom_linux.url = &flat_url;
+    custom_linux.url_extras = &url_extras;
+    custom_linux.url_extras_indented = &url_extras_arch;
+    custom_linux.homepage = Some("https://github.com/acme/mytool");
+    custom_linux.app = Some("MyTool.app");
+    custom_linux.binaries = &bins;
+    custom_linux.custom_block = Some("on_linux do\n  depends_on formula: \"jq\"\nend");
+
     vec![
         ("multi_platform", generate_cask(&full).unwrap()),
         ("macos_multi_arch", generate_cask(&macos).unwrap()),
@@ -6116,6 +6370,10 @@ fn style_fixture_casks() -> Vec<(&'static str, String)> {
         (
             "custom_block_depends_on",
             generate_cask(&own_os_dependency).unwrap(),
+        ),
+        (
+            "custom_block_on_linux",
+            generate_cask(&custom_linux).unwrap(),
         ),
     ]
 }
@@ -6308,33 +6566,49 @@ impl Drop for RemoveTreeOnDrop {
     }
 }
 
-/// The offence count from RuboCop's `1 file inspected, N offenses detected`
-/// summary, or `None` when the report carries no summary.
-fn rubocop_offence_count(report: &str) -> Option<usize> {
-    let tail = report.split("inspected, ").nth(1)?;
-    let count = tail.split_whitespace().next()?;
-    if count == "no" {
-        Some(0)
+/// The file and offence counts from RuboCop's `1 file inspected, N offenses
+/// detected` summary, or `None` when the report carries no summary.
+fn rubocop_summary(report: &str) -> Option<(usize, usize)> {
+    let line = report.lines().rev().find(|l| l.contains(" inspected, "))?;
+    let (files, tail) = line.split_once(" inspected, ")?;
+    let files = files.split_whitespace().next()?;
+    let files = if files == "no" {
+        0
     } else {
-        count.parse().ok()
-    }
+        files.parse().ok()?
+    };
+    let count = tail.split_whitespace().next()?;
+    let offences = if count == "no" {
+        0
+    } else {
+        count.parse().ok()?
+    };
+    Some((files, offences))
 }
 
 #[test]
-fn rubocop_offence_count_reads_the_summary() {
+fn rubocop_summary_reads_the_file_and_offence_counts() {
     assert_eq!(
-        rubocop_offence_count("1 file inspected, no offenses detected\n"),
-        Some(0)
+        rubocop_summary("1 file inspected, no offenses detected\n"),
+        Some((1, 0))
     );
     assert_eq!(
-        rubocop_offence_count("x\n1 file inspected, 1 offense detected\n"),
-        Some(1)
+        rubocop_summary("x\n1 file inspected, 1 offense detected\n"),
+        Some((1, 1))
     );
     assert_eq!(
-        rubocop_offence_count("1 file inspected, 4 offenses detected, 4 offenses autocorrectable"),
-        Some(4)
+        rubocop_summary("1 file inspected, 4 offenses detected, 4 offenses autocorrectable"),
+        Some((1, 4))
     );
-    assert_eq!(rubocop_offence_count("no style gems installed"), None);
+    assert_eq!(
+        rubocop_summary("0 files inspected, no offenses detected\n"),
+        Some((0, 0))
+    );
+    assert_eq!(
+        rubocop_summary("no files inspected, no offenses detected\n"),
+        Some((0, 0))
+    );
+    assert_eq!(rubocop_summary("no style gems installed"), None);
 }
 
 /// Run `brew style` over every layout fixture. Opt-in through
@@ -6349,10 +6623,11 @@ fn rubocop_offence_count_reads_the_summary() {
 /// - `Cask/InstallSteps` everywhere: hook bodies are raw Ruby from the
 ///   config, and Homebrew's `*_steps` replacement accepts only its own step
 ///   calls, so a cask with hooks keeps the legacy `preflight do` blocks.
-/// - `Cask/StanzaOrder` in the `custom_block_depends_on` cask only:
-///   `custom_block` is placed first in the body, so a stanza written there
-///   sits ahead of `version`. That fixture is there to show brew raises no
-///   `Homebrew/OSDependsOn` offence beside the block's own dependency.
+/// - `Cask/StanzaOrder` in the `custom_block_*` casks only: `custom_block`
+///   is placed first in the body, so a stanza written there sits ahead of
+///   `version`. Those fixtures are there to show brew raises no
+///   `Homebrew/OSDependsOn` offence beside the block's own dependency or
+///   Linux block.
 ///
 /// Every offence in RuboCop's summary count must be one of those, so an
 /// offence of any severity (`C`, `W`, `E`, `F`, `R`) fails the test.
@@ -6385,14 +6660,23 @@ fn rendered_casks_pass_brew_style_opt_in() {
         "brew --repository failed:\n{}",
         String::from_utf8_lossy(&repo.stderr)
     );
-    // A per-process tap owner keeps concurrent runs apart, and the guard
-    // takes the whole tap with it however the test ends.
-    let owner = std::path::PathBuf::from(String::from_utf8_lossy(&repo.stdout).trim())
+    // The guard below removes a tree under this path, so a blank or
+    // relative answer must never reach it: it would resolve against the
+    // working directory.
+    let brew_repo = std::path::PathBuf::from(String::from_utf8_lossy(&repo.stdout).trim());
+    assert!(
+        !brew_repo.as_os_str().is_empty() && brew_repo.is_absolute(),
+        "brew --repository printed {brew_repo:?}, which is not an absolute path"
+    );
+    // A per-process tap owner keeps concurrent runs apart. The guard exists
+    // before the first directory does, so a partly created tap is removed
+    // too, however the test ends.
+    let owner = brew_repo
         .join("Library/Taps")
         .join(format!("anodizer-style-check-{}", std::process::id()));
+    let _tap = RemoveTreeOnDrop(owner.clone());
     let casks = owner.join("homebrew-check/Casks");
     std::fs::create_dir_all(&casks).expect("create the throwaway tap");
-    let _tap = RemoveTreeOnDrop(owner);
     let cask_path = casks.join("mytool.rb");
 
     for (stem, body) in style_fixture_casks() {
@@ -6404,9 +6688,13 @@ fn rendered_casks_pass_brew_style_opt_in() {
             String::from_utf8_lossy(&out.stderr)
         );
         println!("=== {stem}\n{report}");
-        let total = rubocop_offence_count(&report)
+        let (files, total) = rubocop_summary(&report)
             .unwrap_or_else(|| panic!("brew style did not lint the {stem} cask:\n{report}"));
-        let allowed: &[&str] = if stem == "custom_block_depends_on" {
+        assert_eq!(
+            files, 1,
+            "brew style inspected {files} files for the {stem} cask:\n{report}"
+        );
+        let allowed: &[&str] = if stem.starts_with("custom_block_") {
             &["Cask/InstallSteps:", "Cask/StanzaOrder:"]
         } else {
             &["Cask/InstallSteps:"]
@@ -6425,7 +6713,7 @@ fn rendered_casks_pass_brew_style_opt_in() {
 /// Every fenced block on a docs page as `(language, body)`, in page order.
 /// A fence indented under a list item is read too, with that indent taken
 /// off each body line.
-fn docs_fenced_blocks(page: &str) -> Vec<(String, String)> {
+pub(super) fn docs_fenced_blocks(page: &str) -> Vec<(String, String)> {
     let mut blocks = Vec::new();
     let mut open: Option<(String, usize, Vec<String>)> = None;
     for line in page.lines() {

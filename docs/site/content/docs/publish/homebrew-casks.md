@@ -7,7 +7,7 @@ template = "docs.html"
 
 Anodizer generates Homebrew Cask `.rb` files for your macOS artifacts and pushes them to your tap repository. A cask is the canonical Homebrew channel for **pre-compiled binaries** — both GUI `.app` bundles (via the `app` stanza) and CLI tools (via a `binary` stanza that symlinks an executable onto the user's `PATH`). The [Homebrew Formula](/docs/publish/homebrew/) path — which compiles from source — is deprecated upstream for pre-built release binaries; use a cask. Set `binaries:` to ship a CLI; set `app:` to ship a GUI application; set both when a bundle also exposes a CLI.
 
-Generated casks pass `brew style`: stanzas come in Homebrew's order and grouping, arguments and arrays use Homebrew's alignment, macOS-only stanzas (`app`, `service`) sit inside `on_macos` when the cask also supports Linux, and a cask whose macOS-only stanzas sit outside `on_macos` with no Linux side carries `depends_on :macos` unless its `custom_block` already declares an OS dependency (see [Dependencies](#dependencies-dependencies)). A cask with `hooks` is the one exception; see [Hooks](#hooks).
+Generated casks pass `brew style`: stanzas come in Homebrew's order and grouping, arguments and arrays use Homebrew's alignment, macOS-only stanzas (`app`, `service`) sit inside `on_macos` when the cask also supports Linux, and a cask with no Linux side carries `depends_on :macos` unless its `custom_block` already declares an OS dependency (see [Dependencies](#dependencies-dependencies)). A cask with `hooks` is the one exception; see [Hooks](#hooks).
 
 ## Classification
 
@@ -224,15 +224,22 @@ dependencies:
   depends_on cask: "Example/tap/app"
   depends_on cask: "xquartz"
   depends_on formula: "cmake"
+  depends_on :macos
 ```
 
-`depends_on :macos` joins the group only when the cask renders a macOS-only
-stanza (`app`, `service`, or one such as `pkg` in `custom_block`) outside
-`on_macos`, has no `on_linux` block, and its `custom_block` declares no OS
-dependency of its own (`depends_on macos: …`, `maximum_macos: …`, `:macos`
-or `:linux`). That is the case Homebrew's `Homebrew/OSDependsOn` check asks
-for; a cask that installs only `binaries` runs on either system and gets
-none.
+`depends_on :macos` joins the group whenever the cask has no Linux side.
+Homebrew installs a cask on Linux unless it depends on macOS, so without the
+line a cask of macOS `binaries` would install a Mach-O executable on a Linux
+host. A cask has a Linux side when the release ships Linux artifacts (an
+`on_linux` block) or its `custom_block` holds a top-level `on_linux` or
+`on_system` block or an `app_image` stanza. The line is also left out when
+the `custom_block` declares an OS dependency of its own (`depends_on macos: …`,
+`maximum_macos: …`, `:macos`, `:linux` or `linux: …`), since a second one is
+redundant.
+
+A flat single-download cask whose `custom_block` gives it a Linux side puts
+its `sha256` / `url` (and `app` / `service`) inside `on_macos`, so a Linux
+host never downloads the macOS archive.
 
 ### Conflicts (`conflicts`)
 
@@ -330,6 +337,8 @@ cask "myapp" do
     skip "Auto-generated on release."
   end
 
+  depends_on :macos
+
   binary "myapp"
 end
 ```
@@ -361,6 +370,8 @@ shape from the artifacts present in the release:
       skip "Auto-generated on release."
     end
 
+    depends_on :macos
+
     binary "myapp"
   end
   ```
@@ -380,8 +391,13 @@ hard error rather than a degraded cask.
 ### Interaction with `universal_binaries`
 
 A lipo'd universal binary has the synthetic `darwin-universal` target
-(architecture `all`) and serves every Mac, so it never fills an `on_intel` or
-`on_arm` slot. Which shape the cask takes depends on `universal_binaries.replace`:
+(architecture `all`) and serves every Mac. In the cask it fills whichever of
+the `on_arm` / `on_intel` slots no per-arch macOS artifact fills: beside an
+`arm64` build alone, `on_arm` downloads the `arm64` build and `on_intel` the
+universal one. When both slots are filled the universal artifact is left out,
+and `-v` prints
+`skipped universal artifact <name>: both macOS architectures have their own download`.
+Which shape the cask takes depends on `universal_binaries.replace`:
 
 - **`replace: false`** (or unset) → the per-arch `amd64` and `arm64` artifacts
   stay in the catalog and the universal one is marked as not replacing them,
@@ -433,7 +449,7 @@ while the cask serves each Mac its native slice.
 
 - Looks for macOS artifacts (`disk_image` or `archive` kind)
 - Requires SHA256 checksum metadata on the artifact
-- Emits per-arch `on_intel` / `on_arm` blocks for multi-arch macOS releases; a single macOS arch, or a universal binary, renders a flat `url` / `sha256` (inside `on_macos` when the release also ships Linux artifacts)
+- Emits per-arch `on_intel` / `on_arm` blocks for multi-arch macOS releases, with a universal binary filling a slot no per-arch build covers; a single macOS arch, or a universal binary alone, renders a flat `url` / `sha256` (inside `on_macos` when the cask also has a Linux side)
 - Clones the tap repository, writes the cask file, commits, and pushes
 - Default commit message: `"Brew cask update for {{ ProjectName }} version {{ Tag }}"`
 

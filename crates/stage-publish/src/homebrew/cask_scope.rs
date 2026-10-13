@@ -97,13 +97,20 @@ impl CaskArtifactScope<'_> {
 /// used. The version substring in each url is rewritten to `#{version}` for
 /// Homebrew auto-update. A multi-platform block with an empty `sha256 ""` line
 /// fails `brew install`, so a missing sha256 is a hard error.
+///
+/// A universal macOS artifact (`darwin-universal`, arch `all`) fills whichever
+/// of the `on_arm` / `on_intel` slots no per-arch artifact filled, and stands
+/// alone as a flat `sha256` / `url` in `on_macos` when neither is. When both
+/// are filled it is left out, logged at verbose, and named in
+/// [`CaskPlatforms::skipped_universal`] so the flat fallback leaves it out too.
 pub(super) fn build_cask_platform_blocks(
     ctx: &Context,
     scope: &CaskArtifactScope<'_>,
     version: &str,
     url_template: Option<&str>,
     error_scope_label: &str,
-) -> Result<Vec<CaskPlatformBlock>> {
+    log: &anodizer_core::log::StageLogger,
+) -> Result<CaskPlatforms> {
     use std::collections::BTreeMap;
     let kinds = [
         anodizer_core::artifact::ArtifactKind::DiskImage,
@@ -111,6 +118,9 @@ pub(super) fn build_cask_platform_blocks(
         anodizer_core::artifact::ArtifactKind::UploadableBinary,
     ];
     let mut os_map: BTreeMap<String, Vec<CaskArchEntry>> = BTreeMap::new();
+    // The first universal artifact per OS with its name, placed once every
+    // per-arch slot is known.
+    let mut universal: BTreeMap<String, (String, CaskArchEntry)> = BTreeMap::new();
     for kind in &kinds {
         for art in scope.artifacts_of_kind(ctx, *kind) {
             let target = art.target.as_deref().unwrap_or("");
@@ -139,10 +149,14 @@ pub(super) fn build_cask_platform_blocks(
             // linux `intel` entry. Only skip when THIS os_block already
             // holds an entry for THIS arch_block (the first-kind-wins
             // precedence: DiskImage > Archive > UploadableBinary).
-            if os_map
-                .get(os_block)
-                .is_some_and(|arches| arches.iter().any(|e| e.arch_block == arch_block))
-            {
+            let taken = if arch_block == UNIVERSAL_ARCH_BLOCK {
+                universal.contains_key(os_block)
+            } else {
+                os_map
+                    .get(os_block)
+                    .is_some_and(|arches| arches.iter().any(|e| e.arch_block == arch_block))
+            };
+            if taken {
                 continue;
             }
             let url = if let Some(tmpl) = url_template {
@@ -183,33 +197,63 @@ pub(super) fn build_cask_platform_blocks(
                         error_scope_label,
                     )
                 })?;
-            os_map
-                .entry(os_block.to_string())
-                .or_default()
-                .push(CaskArchEntry {
-                    arch_block: arch_block.to_string(),
-                    url,
-                    sha256,
-                });
+            let entry = CaskArchEntry {
+                arch_block: arch_block.to_string(),
+                url,
+                sha256,
+            };
+            if arch_block == UNIVERSAL_ARCH_BLOCK {
+                universal.insert(os_block.to_string(), (art.name().to_string(), entry));
+            } else {
+                os_map.entry(os_block.to_string()).or_default().push(entry);
+            }
         }
     }
-    // A universal artifact in the same scope as per-arch ones of its OS would
-    // need a flat `url` and `on_arm`/`on_intel` urls in one `on_macos` block,
-    // which gives Homebrew two downloads for one host. The per-arch entries
-    // are the ones used. (`universal_binaries.replace: false` marks its
-    // universal artifact `replaces: false`, which `artifacts_of_kind` already
-    // leaves out.)
-    for arches in os_map.values_mut() {
-        if arches.len() > 1 {
-            arches.retain(|e| e.arch_block != UNIVERSAL_ARCH_BLOCK);
+    // A flat `url` beside `on_arm`/`on_intel` urls in one `on_macos` block
+    // would give Homebrew two downloads for one host, so the universal
+    // artifact only ever stands in for a slot nothing else filled.
+    // (`universal_binaries.replace: false` marks its universal artifact
+    // `replaces: false`, which `artifacts_of_kind` already leaves out.)
+    let mut skipped_universal = Vec::new();
+    for (os_block, (name, entry)) in universal {
+        let arches = os_map.entry(os_block).or_default();
+        let missing: Vec<&str> = ["arm", "intel"]
+            .into_iter()
+            .filter(|slot| !arches.iter().any(|e| e.arch_block == *slot))
+            .collect();
+        match missing.as_slice() {
+            [_, _] => arches.push(entry),
+            [slot] => arches.push(CaskArchEntry {
+                arch_block: (*slot).to_string(),
+                ..entry
+            }),
+            _ => {
+                log.verbose(&format!(
+                    "skipped universal artifact {name}: both macOS architectures have their own download"
+                ));
+                skipped_universal.push(name);
+            }
         }
     }
-    Ok(os_map
-        .into_iter()
-        // The emitted order of OS and arch blocks is decided where the cask
-        // is rendered (`cask::generate_cask`), so it holds for every caller.
-        .map(|(os_block, arches)| CaskPlatformBlock { os_block, arches })
-        .collect())
+    Ok(CaskPlatforms {
+        blocks: os_map
+            .into_iter()
+            // The emitted order of OS and arch blocks is decided where the
+            // cask is rendered (`cask::generate_cask`), so it holds for every
+            // caller.
+            .map(|(os_block, arches)| CaskPlatformBlock { os_block, arches })
+            .collect(),
+        skipped_universal,
+    })
+}
+
+/// The per-OS blocks [`build_cask_platform_blocks`] built, and the universal
+/// artifacts it left out.
+pub(super) struct CaskPlatforms {
+    pub(super) blocks: Vec<CaskPlatformBlock>,
+    /// Names of the universal artifacts whose OS had both per-arch slots
+    /// filled. The flat single-artifact lookups skip them.
+    pub(super) skipped_universal: Vec<String>,
 }
 
 /// Generate a Homebrew Cask `.rb` file string from the project context.
@@ -234,20 +278,27 @@ pub(super) fn generate_cask_from_context(
 
     // Build per-platform `on_macos` / `on_linux` blocks, each carrying one
     // `on_arm` / `on_intel` entry per architecture present in the release.
-    let platform_blocks = build_cask_platform_blocks(
+    let CaskPlatforms {
+        blocks: platform_blocks,
+        skipped_universal,
+    } = build_cask_platform_blocks(
         ctx,
         &CaskArtifactScope::Crate { crate_name },
         &version,
         url_template,
         &format!("crate '{}'", crate_name),
+        log,
     )?;
+    let in_flat_scope = |a: &&anodizer_core::artifact::Artifact| {
+        a.only_replacing_unibins() && !skipped_universal.iter().any(|n| n == a.name())
+    };
 
     // Find primary artifact for fallback single-platform behavior
     let primary_artifact = ctx
         .artifacts
         .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::DiskImage, crate_name)
         .into_iter()
-        .filter(|a| a.only_replacing_unibins())
+        .filter(in_flat_scope)
         .find(|a| {
             a.target
                 .as_deref()
@@ -258,7 +309,7 @@ pub(super) fn generate_cask_from_context(
             ctx.artifacts
                 .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::Archive, crate_name)
                 .into_iter()
-                .filter(|a| a.only_replacing_unibins())
+                .filter(in_flat_scope)
                 .find(|a| {
                     a.target
                         .as_deref()
@@ -555,13 +606,18 @@ pub(super) fn clone_cask_params<'a>(p: &'a CaskParams<'a>) -> CaskParams<'a> {
     }
 }
 /// Find a macOS artifact for top-level cask config.
-/// Searches all artifacts (not per-crate) with optional ID filtering.
+/// Searches all artifacts (not per-crate) with optional ID filtering, leaving
+/// out the artifacts named in `skipped` (the universal ones
+/// [`build_cask_platform_blocks`] left out).
 pub(super) fn find_top_level_cask_artifact<'a>(
     ctx: &'a Context,
     ids: Option<&[String]>,
+    skipped: &[String],
 ) -> Option<&'a anodizer_core::artifact::Artifact> {
     let filter = |a: &&anodizer_core::artifact::Artifact| {
-        if !anodizer_core::artifact::matches_id_filter(a, ids) {
+        if !anodizer_core::artifact::matches_id_filter(a, ids)
+            || skipped.iter().any(|n| n == a.name())
+        {
             return false;
         }
         // `is_macos` (genuine `*-apple-darwin` only), NOT the broad

@@ -188,7 +188,9 @@ fn render_top_level_cask_inner(
     // name, so it carries the spelling the user wrote.
     let display_name = cask_cfg.name.as_deref().unwrap_or(&ctx.config.project_name);
 
-    let Some(macos_artifact) = find_top_level_cask_artifact(ctx, cask_cfg.ids.as_deref()) else {
+    let Some(first_macos_artifact) =
+        find_top_level_cask_artifact(ctx, cask_cfg.ids.as_deref(), &[])
+    else {
         // Distinguish "no darwin build exists at all" (a genuine
         // NotApplicable skip — e.g. a Linux-only pipeline or a per-crate
         // publish-only pass over a library workspace) from "an `ids:` filter
@@ -198,7 +200,7 @@ fn render_top_level_cask_inner(
         // typo is caught at release time rather than when `brew install`
         // 404s.
         let ids_set = cask_cfg.ids.as_deref().is_some_and(|ids| !ids.is_empty());
-        if ids_set && find_top_level_cask_artifact(ctx, None).is_some() {
+        if ids_set && find_top_level_cask_artifact(ctx, None, &[]).is_some() {
             anyhow::bail!(
                 "homebrew_casks: cask '{}' has `ids: {:?}` but no macOS artifact \
                  matches those ids, even though other macOS artifacts exist. This is \
@@ -217,6 +219,34 @@ fn render_top_level_cask_inner(
         );
         return Ok(None);
     };
+
+    // Build per-platform `on_macos` / `on_linux` blocks across the whole
+    // release (scoped by the same `ids:` filter as the single-artifact
+    // lookup above), each carrying one `on_arm` / `on_intel` entry per
+    // architecture. A release that builds both `darwin/amd64` and
+    // `darwin/arm64` must emit a per-arch body so each Mac downloads the
+    // binary built for its architecture; a single flat `url` would ship one
+    // architecture's binary to every Mac. The single-arch flat `url`/`sha256`
+    // below stays the fallback for genuinely single-platform projects.
+    let url_template = cask_cfg.url.as_ref().and_then(|u| u.template.as_deref());
+    let super::cask_scope::CaskPlatforms {
+        blocks: platform_blocks,
+        skipped_universal,
+    } = super::cask_scope::build_cask_platform_blocks(
+        ctx,
+        &super::cask_scope::CaskArtifactScope::TopLevel {
+            ids: cask_cfg.ids.as_deref(),
+        },
+        &version,
+        url_template,
+        &format!("cask '{}'", cask_name),
+        log,
+    )?;
+    // The flat fallback leaves out a universal artifact the blocks left out.
+    // Something is always left when one is skipped: both per-arch artifacts.
+    let macos_artifact =
+        find_top_level_cask_artifact(ctx, cask_cfg.ids.as_deref(), &skipped_universal)
+            .unwrap_or(first_macos_artifact);
 
     // Build URL.
     let url = if let Some(ref url_cfg) = cask_cfg.url {
@@ -271,24 +301,6 @@ fn render_top_level_cask_inner(
             )
         })?;
 
-    // Build per-platform `on_macos` / `on_linux` blocks across the whole
-    // release (scoped by the same `ids:` filter as the single-artifact
-    // lookup above), each carrying one `on_arm` / `on_intel` entry per
-    // architecture. A release that builds both `darwin/amd64` and
-    // `darwin/arm64` must emit a per-arch body so each Mac downloads the
-    // binary built for its architecture; a single flat `url` would ship one
-    // architecture's binary to every Mac. The single-arch flat `url`/`sha256`
-    // above stays the fallback for genuinely single-platform projects.
-    let url_template = cask_cfg.url.as_ref().and_then(|u| u.template.as_deref());
-    let platform_blocks = super::cask_scope::build_cask_platform_blocks(
-        ctx,
-        &super::cask_scope::CaskArtifactScope::TopLevel {
-            ids: cask_cfg.ids.as_deref(),
-        },
-        &version,
-        url_template,
-        &format!("cask '{}'", cask_name),
-    )?;
     // Use the per-arch blocks only when more than one OS×arch slot is present;
     // a single slot keeps the flat single-`url` body so single-arch projects
     // don't get pointless `on_arm` / `on_intel` wrappers.

@@ -110,8 +110,8 @@ class {{ class_name }} < Formula
 {% endfor %}{% for line in extra_install_lines %}      {{ line }}
 {% endfor %}    end
 {% endfor %}{% endif %}  end
-{% endif %}{% for dep in global_deps %}
-  depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
+{% endif %}{% if global_deps %}
+{% endif %}{% for dep in global_deps %}  depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
 {% endfor %}{% if macos_deps and not has_macos %}
   on_macos do
 {% for dep in macos_deps %}    depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
@@ -120,8 +120,8 @@ class {{ class_name }} < Formula
   on_linux do
 {% for dep in linux_deps %}    depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
 {% endfor %}  end
-{% endif %}{% for c in conflicts %}
-  conflicts_with "{{ c.name | ruby_escape }}"{% if c.because %}, because: "{{ c.because | ruby_escape }}"{% endif %}
+{% endif %}{% if conflicts %}
+{% endif %}{% for c in conflicts %}  conflicts_with "{{ c.name | ruby_escape }}"{% if c.because %}, because: "{{ c.because | ruby_escape }}"{% endif %}
 {% endfor %}{% if custom_block %}
 {{ custom_block }}
 {% endif %}{% if single_archive or not has_platform_blocks %}

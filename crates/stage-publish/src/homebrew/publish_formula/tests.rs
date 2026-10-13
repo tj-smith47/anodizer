@@ -1501,3 +1501,59 @@ fn an_unrenderable_pull_request_token_skips_the_entry_before_any_push() {
     drop(broken_bare);
     drop(good_bare);
 }
+
+/// Every ```ruby block on the formula page is part of what the formula
+/// renderer produces for the nearest ```yaml block above it, read as a crate
+/// entry's `publish.homebrew` block or as a bare `homebrew` fragment, for a
+/// release with a darwin arm64 and a linux amd64 archive. The count is
+/// pinned, so a new ```ruby block is held to the renderer as soon as it is
+/// added.
+#[test]
+fn every_ruby_example_in_the_formula_docs_is_part_of_the_render() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/publish/homebrew.md"
+    );
+    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let blocks = super::super::tests::docs_fenced_blocks(&page);
+    let mut ruby_blocks = 0usize;
+    for (at, (language, ruby)) in blocks.iter().enumerate() {
+        if language != "ruby" {
+            continue;
+        }
+        ruby_blocks += 1;
+        let (_, yaml) = blocks[..at]
+            .iter()
+            .rev()
+            .find(|(language, _)| language == "yaml")
+            .unwrap_or_else(|| panic!("ruby block {at} has no yaml block above it"));
+        let value: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(yaml).unwrap_or_else(|e| panic!("yaml above {at}: {e}"));
+        let entry = match value.get("crates") {
+            Some(crates) => crates[0]["publish"]["homebrew"].clone(),
+            None => value,
+        };
+        let hb: HomebrewConfig = serde_yaml_ng::from_value(entry)
+            .unwrap_or_else(|e| panic!("yaml above {at} is not a homebrew block: {e}"));
+        let ctx = single_crate_ctx(
+            hb,
+            vec![
+                archive("aarch64-apple-darwin", "https://e/arm.tar.gz", "shaarm"),
+                archive(
+                    "x86_64-unknown-linux-gnu",
+                    "https://e/linux.tar.gz",
+                    "shalin",
+                ),
+            ],
+        );
+        let rendered = render_homebrew_formula_for_crate(&ctx, "mytool", &quiet_log())
+            .expect("render ok")
+            .expect("not skipped")
+            .formula;
+        assert!(
+            rendered.contains(ruby.as_str()),
+            "ruby block {at} is not part of the render of the yaml above it:\n{ruby}\n--- render ---\n{rendered}"
+        );
+    }
+    assert_eq!(ruby_blocks, 2, "the page's ruby blocks");
+}
