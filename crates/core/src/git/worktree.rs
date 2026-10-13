@@ -90,9 +90,8 @@ impl Drop for Worktree {
         // path was deleted externally), surface the failure via
         // `tracing::warn!` with the captured stderr so the operator can
         // run `git worktree prune` in the parent repo to reap the
-        // stale administrative entry. Silent swallowing (the previous
-        // behavior) left operators with no signal that a leak had
-        // happened.
+        // stale administrative entry; without the warning a leaked
+        // worktree entry gives the operator no signal.
         match crate::git::git_command()
             .arg("-C")
             .arg(&self.repo_root)

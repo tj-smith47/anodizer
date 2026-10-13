@@ -123,12 +123,16 @@ pub(crate) const COLOR_UI_NEVER: [&str; 2] = ["-c", "color.ui=never"];
 /// - `-c column.ui=never` and `-c color.ui=never` ahead of the caller's own
 ///   arguments, so a user's `column.ui = always` or `color.ui = always`
 ///   cannot reshape output a caller parses;
-/// - `GIT_TERMINAL_PROMPT=0`, so a credential helper or an `https` remote
-///   with no stored credential fails at once instead of waiting for input
-///   on an unattended host;
+/// - `GIT_TERMINAL_PROMPT=0`, so git exits with an error when an `https`
+///   remote asks for a credential that no helper supplies, which keeps an
+///   unattended host from hanging;
 /// - `LC_ALL=C`, so git's messages stay in English and the substring
 ///   matches callers make on stderr (`not found`, `remote ref does not
 ///   exist`, `unknown revision`) hold under any locale.
+///
+/// Both variables are set in the environment git hands to every process it
+/// starts: the `ssh` named by `GIT_SSH_COMMAND` or `core.sshCommand`, a
+/// credential helper, and `gpg` when a commit or tag is signed.
 ///
 /// The caller adds its subcommand and anything particular to the call
 /// (`-C <dir>`, a per-call `-c`, `GIT_SSH_COMMAND`, an author identity) on
