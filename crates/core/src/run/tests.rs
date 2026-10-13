@@ -1028,4 +1028,68 @@ fn the_unterminated_last_line_read_before_the_cut_off_is_captured() {
         1,
         "the call must end at the cut-off, with the grandchild still holding the pipe"
     );
+    let printed: String = cap
+        .all_messages()
+        .into_iter()
+        .map(|(_, m)| m)
+        .collect::<Vec<_>>()
+        .join("|");
+    assert!(
+        !printed.contains("tail-no-nl"),
+        "an unterminated line still held back at the cut-off must not be printed: {printed}"
+    );
+}
+
+/// Hands out at most 1 KiB per read, the way a pipe often delivers a chatty
+/// child's output, so a reader that rescans what it holds per read does so
+/// thousands of times.
+struct Trickle<'a> {
+    data: &'a [u8],
+}
+
+impl std::io::Read for Trickle<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.data.len().min(buf.len()).min(1024);
+        buf[..n].copy_from_slice(&self.data[..n]);
+        self.data = &self.data[n..];
+        Ok(n)
+    }
+}
+
+/// A multi-megabyte line with no terminator (single-line JSON at `-v`) is
+/// captured byte for byte and printed once, in time linear in its length.
+/// The bound is loose so a slow machine passes; rescanning everything held
+/// back on every read took far longer than it on this input.
+#[test]
+fn tee_stream_handles_a_long_unterminated_line_in_linear_time() {
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+    let line: String = (0..4 * 1024 * 1024)
+        .map(|i| char::from(b'a' + (i % 26) as u8))
+        .collect();
+    let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+    let capture = Mutex::new(Vec::new());
+    let started = Instant::now();
+    tee_stream(
+        Trickle {
+            data: line.as_bytes(),
+        },
+        &log,
+        false,
+        true,
+        &capture,
+        &AtomicBool::new(false),
+    );
+    let elapsed = started.elapsed();
+    assert_eq!(capture.into_inner().unwrap(), line.as_bytes());
+    let printed = cap
+        .all_messages()
+        .into_iter()
+        .filter(|(_, m)| m.contains(&line))
+        .count();
+    assert_eq!(printed, 1, "the line must be printed exactly once");
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "teeing one 4 MiB line took {elapsed:?}"
+    );
 }

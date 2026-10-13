@@ -766,11 +766,12 @@ fn await_readers(
 /// Keeps whatever was captured even if a mid-stream read errors, so a
 /// transient pipe hiccup never loses the bytes already read (the buffer
 /// still drives the failure embed). Once `abandon` is set it captures and
-/// prints nothing more, including a redacter tail it was still holding back:
-/// the check is made under the capture lock, which the calling thread takes
-/// before it prints the cut-off line. Bytes are captured per read rather than
-/// per line, so an unterminated last line read before the cut-off is still in
-/// the buffer the calling thread takes.
+/// prints nothing more: neither a redacter tail nor an unterminated line it
+/// was still holding back is printed after the cut-off. The check is made
+/// under the capture lock, which the calling thread takes before it prints the
+/// cut-off line. Bytes are captured per read rather than per line, so an
+/// unterminated last line read before the cut-off is still in the buffer the
+/// calling thread takes.
 pub(super) fn tee_stream<R: Read>(
     reader: R,
     log: &StageLogger,
@@ -804,14 +805,20 @@ pub(super) fn tee_stream<R: Read>(
             }
             captured.extend_from_slice(chunk);
             if let Some(r) = redacter.as_mut() {
+                // Only the new bytes can hold a terminator: what was held back
+                // already had none, and rescanning it per read is quadratic in
+                // the length of one long line.
+                let scan_from = pending.len();
                 pending.extend_from_slice(chunk);
-                // The child's REAL bytes, terminator included: a secret whose
-                // value carries `\r\n` is only recognisable to a redacter that
-                // receives what the child actually wrote.
-                while let Some(end) = pending.iter().position(|&b| b == b'\n') {
-                    let line: Vec<u8> = pending.drain(..=end).collect();
-                    let released = r.push(&String::from_utf8_lossy(&line));
-                    emit_released(&released, log, is_stderr, &mut open_line);
+                if let Some(last) = pending[scan_from..].iter().rposition(|&b| b == b'\n') {
+                    let whole: Vec<u8> = pending.drain(..=scan_from + last).collect();
+                    // The child's REAL bytes, terminator included: a secret whose
+                    // value carries `\r\n` is only recognisable to a redacter
+                    // that receives what the child actually wrote.
+                    for line in whole.split_inclusive(|&b| b == b'\n') {
+                        let released = r.push(&String::from_utf8_lossy(line));
+                        emit_released(&released, log, is_stderr, &mut open_line);
+                    }
                 }
             }
         }
