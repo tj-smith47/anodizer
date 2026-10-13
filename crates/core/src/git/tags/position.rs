@@ -9,7 +9,6 @@
 
 use anyhow::Result;
 use std::path::Path;
-use std::process::Command;
 
 use super::git_output_in;
 
@@ -74,11 +73,9 @@ pub fn tag_position_in(cwd: &Path, tag: &str) -> Result<TagPosition> {
     if tag_sha == head_sha {
         return Ok(TagPosition::AtHead);
     }
-    let out = Command::new("git")
+    let out = crate::git::git_command()
         .current_dir(cwd)
         .args(["merge-base", "--is-ancestor", &tag_sha, "HEAD"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
         .output()
         .map_err(|e| anyhow::anyhow!("failed to invoke git merge-base --is-ancestor: {e}"))?;
     if out.status.success() {
@@ -103,11 +100,9 @@ pub fn tag_position_in(cwd: &Path, tag: &str) -> Result<TagPosition> {
 /// --quiet` is what separates the two: an unknown revision exits non-zero with
 /// empty output instead of printing to stderr.
 pub(super) fn rev_parse_verify_in(cwd: &Path, rev: &str) -> Result<Option<String>> {
-    let out = Command::new("git")
+    let out = crate::git::git_command()
         .current_dir(cwd)
         .args(["rev-parse", "--verify", "--quiet", rev])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
         .output()
         .map_err(|e| anyhow::anyhow!("failed to invoke git rev-parse {rev}: {e}"))?;
     if !out.status.success() {
@@ -149,12 +144,10 @@ pub fn tag_points_at_head_in(cwd: &Path, tag: &str) -> Result<bool> {
 /// HEAD-with-no-tag is the common case for development branches and
 /// must not error; only inability to invoke git at all does.
 pub fn head_is_at_tag(repo: &std::path::Path) -> Result<bool> {
-    let out = Command::new("git")
+    let out = crate::git::git_command()
         .arg("-C")
         .arg(repo)
         .args(["describe", "--tags", "--exact-match", "HEAD"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
         .output()
         .map_err(|e| {
             anyhow::anyhow!("failed to invoke git describe --tags --exact-match HEAD: {e}")
@@ -213,12 +206,9 @@ fn redacted_git_detail(stderr: &str) -> String {
 /// error instead, because an empty list would misreport it as "nothing to
 /// release".
 pub fn get_tags_at_sha_in(cwd: &Path, sha: &str) -> Result<Vec<String>> {
-    let out = Command::new("git")
+    let out = crate::git::git_command()
         .current_dir(cwd)
-        .args(crate::git::COLUMN_UI_NEVER)
         .args(["tag", "--points-at", sha])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
         .output()
         .map_err(|e| anyhow::anyhow!("failed to invoke git tag --points-at {sha}: {e}"))?;
     if !out.status.success() {

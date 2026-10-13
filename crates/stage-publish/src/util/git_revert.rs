@@ -26,11 +26,10 @@
 
 use anyhow::{Context as _, Result};
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use super::clone::{clone_repo_ssh, clone_repo_with_auth};
-use super::cmd::{PushLadder, run_cmd_in, run_cmd_in_timeout, run_git_push_retrying};
+use super::cmd::{PushLadder, run_git_in, run_git_in_timeout, run_git_push_retrying};
 use super::commit::GIT_FETCH_TIMEOUT;
 use anodizer_core::log::StageLogger;
 use anodizer_core::retry::RetryPolicy;
@@ -189,9 +188,8 @@ fn check_out_branch_with_history(
     log: &StageLogger,
 ) -> Result<()> {
     if git_stdout(repo_path, &["rev-parse", "--is-shallow-repository"])?.trim() == "true" {
-        run_cmd_in_timeout(
+        run_git_in_timeout(
             repo_path,
-            "git",
             &["fetch", "--unshallow", "origin"],
             "git_revert: git fetch --unshallow",
             None,
@@ -201,18 +199,16 @@ fn check_out_branch_with_history(
     }
     if let Some(branch) = branch {
         let refspec = format!("+refs/heads/{branch}:refs/remotes/origin/{branch}");
-        run_cmd_in_timeout(
+        run_git_in_timeout(
             repo_path,
-            "git",
             &["fetch", "origin", &refspec],
             &format!("git_revert: git fetch origin {branch}"),
             None,
             log,
             GIT_FETCH_TIMEOUT,
         )?;
-        run_cmd_in(
+        run_git_in(
             repo_path,
-            "git",
             &[
                 "checkout",
                 "-B",
@@ -247,7 +243,7 @@ fn existing_revert_of(repo_path: &Path, commit: &str) -> Result<Option<String>> 
 }
 
 fn git_succeeds(repo_path: &Path, args: &[&str]) -> Result<bool> {
-    let status = Command::new("git")
+    let status = anodizer_core::git::git_command()
         .args(args)
         .current_dir(repo_path)
         .output()
@@ -262,7 +258,7 @@ fn git_succeeds(repo_path: &Path, args: &[&str]) -> Result<bool> {
 }
 
 fn git_stdout(repo_path: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let output = anodizer_core::git::git_command()
         .args(args)
         .current_dir(repo_path)
         .output()
@@ -303,7 +299,7 @@ fn revert_commit_in(path: &Path, commit: &str) -> Result<()> {
     // "your local changes would be overwritten" message. The dirty-tree
     // condition is surfaced explicitly so the warn line a caller logs
     // points at the right cause.
-    let status = Command::new("git")
+    let status = anodizer_core::git::git_command()
         .args(["status", "--porcelain"])
         .current_dir(path)
         .output()
@@ -325,7 +321,7 @@ fn revert_commit_in(path: &Path, commit: &str) -> Result<()> {
     }
 
     let (author_name, author_email) = super::commit::resolved_commit_identity();
-    let output = Command::new("git")
+    let output = anodizer_core::git::git_command()
         .args(["revert", commit, "--no-edit"])
         .current_dir(path)
         .env("GIT_AUTHOR_NAME", &author_name)
@@ -337,7 +333,7 @@ fn revert_commit_in(path: &Path, commit: &str) -> Result<()> {
     if !output.status.success() {
         // Best effort: a conflicted revert leaves the clone mid-revert, and
         // the temp dir is removed anyway.
-        let _ = Command::new("git")
+        let _ = anodizer_core::git::git_command()
             .args(["revert", "--abort"])
             .current_dir(path)
             .output();

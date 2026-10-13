@@ -1121,7 +1121,7 @@ fn every_spawn_with_its_own_env_logs_through_the_child_env_redactor() {
         ),
         (
             "stage-publish/src/util/cmd.rs",
-            "run_cmd_in_envs",
+            "run_git_in_envs",
             "no logger; its one env-carrying caller passes a git author identity from config, never a secret",
         ),
         (

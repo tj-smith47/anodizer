@@ -1,6 +1,5 @@
 use anyhow::{Context as _, Result, bail};
 use std::path::Path;
-use std::process::Command;
 
 /// Subject prefix anodizer stamps on its own release-machinery commits
 /// (version-sync bumps, rollback reverts). The matchers that must recognise
@@ -65,7 +64,7 @@ pub fn changelog_regenerated_recorded_in(
     changelog_rel_path: &str,
 ) -> Result<bool> {
     let marker = changelog_regenerated_marker(crate_name, version);
-    let out = Command::new("git")
+    let out = crate::git::git_command()
         .arg("-C")
         .arg(workspace_root)
         .args([
@@ -77,8 +76,6 @@ pub fn changelog_regenerated_recorded_in(
             "--",
             changelog_rel_path,
         ])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
         .output()
         .context("failed to invoke git log for the changelog provenance marker")?;
     if !out.status.success() {

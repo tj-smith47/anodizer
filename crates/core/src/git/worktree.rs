@@ -16,7 +16,6 @@
 
 use anyhow::{Context as _, Result};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub struct Worktree {
     repo_root: PathBuf,
@@ -56,7 +55,7 @@ impl Worktree {
                 path.display()
             );
         }
-        let out = Command::new("git")
+        let out = crate::git::git_command()
             .arg("-C")
             .arg(repo_root)
             .args(["worktree", "add", "--detach"])
@@ -94,7 +93,7 @@ impl Drop for Worktree {
         // stale administrative entry. Silent swallowing (the previous
         // behavior) left operators with no signal that a leak had
         // happened.
-        match Command::new("git")
+        match crate::git::git_command()
             .arg("-C")
             .arg(&self.repo_root)
             .args(["worktree", "remove", "--force"])

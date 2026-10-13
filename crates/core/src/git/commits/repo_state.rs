@@ -1,7 +1,6 @@
 use super::*;
 use anyhow::{Context as _, Result, bail};
 use std::path::Path;
-use std::process::Command;
 
 /// Get the current branch name.
 pub fn get_current_branch() -> Result<String> {
@@ -352,12 +351,10 @@ pub fn stage_and_commit_in(cwd: &Path, files: &[&str], message: &str) -> Result<
     // after would fail with "nothing to commit" (printed to stdout, not
     // stderr) and surface a confusing empty-stderr error. Detect the
     // no-diff case here so callers can re-run safely.
-    let diff = Command::new("git")
+    let diff = crate::git::git_command()
         .current_dir(cwd)
         .args(["diff", "--cached", "--quiet", "--"])
         .args(files)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
         .status()?;
     if diff.success() {
         return Ok(false);
@@ -386,7 +383,7 @@ pub fn log_subjects_for_range(
     rel_path: &str,
     expand_squash_merges: bool,
 ) -> Result<Vec<String>> {
-    let out = Command::new("git")
+    let out = crate::git::git_command()
         .arg("-C")
         .arg(workspace_root)
         .args([
@@ -398,8 +395,6 @@ pub fn log_subjects_for_range(
             "--",
             rel_path,
         ])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
         .output()?;
     if !out.status.success() {
         // A range whose base doesn't exist yet (no prior tag, empty repo)
@@ -430,13 +425,11 @@ pub fn log_subjects_for_range(
 
 /// `git -C <workspace_root> add <rel>` — stage a single relative path.
 pub fn add_path_in(workspace_root: &std::path::Path, rel: &std::path::Path) -> Result<()> {
-    let out = Command::new("git")
+    let out = crate::git::git_command()
         .arg("-C")
         .arg(workspace_root)
         .arg("add")
         .arg(rel)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
         .output()
         .context("failed to invoke git add")?;
     if !out.status.success() {
@@ -450,15 +443,12 @@ pub fn add_path_in(workspace_root: &std::path::Path, rel: &std::path::Path) -> R
 /// `git -C <workspace_root> commit [-S] -m <message>` — create a commit
 /// with the given message, optionally GPG-signed.
 pub fn commit_in(workspace_root: &std::path::Path, message: &str, sign: bool) -> Result<()> {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::git::git_command();
     cmd.arg("-C").arg(workspace_root).arg("commit");
     if sign {
         cmd.arg("-S");
     }
-    cmd.arg("-m")
-        .arg(message)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C");
+    cmd.arg("-m").arg(message);
     let out = cmd.output().context("failed to invoke git commit")?;
     if !out.status.success() {
         let stderr_raw = String::from_utf8_lossy(&out.stderr);
@@ -488,11 +478,9 @@ pub fn paths_changed_since_tag_in(cwd: &Path, tag: &str, paths: &[&str]) -> Resu
         args.push((*p).to_string());
     }
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = Command::new("git")
+    let output = crate::git::git_command()
         .current_dir(cwd)
         .args(&arg_refs)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
         .output()?;
     if output.status.success() {
         Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())

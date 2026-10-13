@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use super::cmd::{redact_output_token, run_cmd_in, run_cmd_in_redacted};
+use super::cmd::{redact_output_token, run_git_in, run_git_in_redacted};
 use super::template::render_or_warn;
 
 /// Wall-clock bound on `git clone` of a publisher index repo (a tap, AUR,
@@ -68,11 +68,10 @@ pub(crate) fn clone_repo_with_auth(
     let clone_args: Vec<&str> = vec!["clone", "--depth=1", &effective_url];
     let repo_path_str = tmp_dir.to_string_lossy();
 
-    let mut cmd = Command::new("git");
+    let mut cmd = anodizer_core::git::git_command();
     cmd.args(&clone_args)
         .arg(repo_path_str.as_ref())
-        .current_dir(clone_cwd(tmp_dir))
-        .env("GIT_TERMINAL_PROMPT", "0");
+        .current_dir(clone_cwd(tmp_dir));
     // Bounded: the clone hits the remote, so a stalled host must not hang the
     // release with no deadline. A deadline kill surfaces as a Retriable error.
     let output = run_capture_timeout(
@@ -94,9 +93,8 @@ pub(crate) fn clone_repo_with_auth(
     // `_redacted` variant so failures don't leak it via the error message.
     if let Some(tok) = token {
         let push_url = inject_token_in_url(repo_url, tok);
-        run_cmd_in_redacted(
+        run_git_in_redacted(
             tmp_dir,
-            "git",
             &["remote", "set-url", "origin", &push_url],
             &format!("{label}: git set push URL"),
             Some(tok),
@@ -128,7 +126,7 @@ pub(crate) fn clone_repo_ssh(
     label: &str,
     log: &StageLogger,
 ) -> Result<()> {
-    let mut cmd = Command::new("git");
+    let mut cmd = anodizer_core::git::git_command();
     cmd.args(["clone", "--depth=1", git_url]);
     let repo_path_str = tmp_dir.to_string_lossy();
     cmd.arg(repo_path_str.as_ref());
@@ -195,9 +193,8 @@ pub(crate) fn clone_repo_ssh(
     // Configure core.sshCommand in the cloned repo so that subsequent push
     // operations use the same SSH credentials.
     if let Some(ref ssh_cfg) = ssh_cmd_for_config {
-        run_cmd_in(
+        run_git_in(
             tmp_dir,
-            "git",
             &["config", "core.sshCommand", ssh_cfg],
             &format!("{label}: git config sshCommand"),
         )?;

@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
 
@@ -246,7 +245,7 @@ pub fn find_cargo_lock(start_dir: &Path) -> Result<PathBuf> {
 /// Get the repository root via `git rev-parse --show-toplevel`.
 pub(crate) fn get_repo_root(log: &anodizer_core::log::StageLogger) -> Result<PathBuf> {
     log.debug("running git rev-parse --show-toplevel");
-    let output = Command::new("git")
+    let output = anodizer_core::git::git_command()
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .context("sbom: failed to run git rev-parse")?;

@@ -13,7 +13,6 @@
 //! the absence of a mailmap as a no-op.
 
 use std::path::Path;
-use std::process::Command;
 
 /// Canonicalize an author identity to its `.mailmap` email in `cwd`'s repo.
 ///
@@ -29,14 +28,10 @@ pub fn canonical_author_email_in(cwd: &Path, name: &str, email: &str) -> Option<
     }
     // `git check-mailmap --stdin` reads `Name <email>` lines and writes the
     // canonical `Name <email>` per the repo's `.mailmap`. Feeding via stdin
-    // avoids any argv quoting of the contact line. `LC_ALL=C` keeps any
-    // diagnostic locale-stable; `GIT_TERMINAL_PROMPT=0` prevents a credential
-    // helper from blocking an unattended run.
-    let mut child = Command::new("git")
+    // avoids any argv quoting of the contact line.
+    let mut child = crate::git::git_command()
         .current_dir(cwd)
         .args(["check-mailmap", "--stdin"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())

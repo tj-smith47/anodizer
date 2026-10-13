@@ -469,9 +469,8 @@ pub(super) fn sync_to_upstream(
 ) -> anyhow::Result<()> {
     let upstream_url = format!("https://github.com/{UPSTREAM_OWNER}/{UPSTREAM_REPO}.git");
     // Add the upstream remote (ignore "already exists").
-    let _ = crate::util::run_cmd_in(
+    let _ = crate::util::run_git_in(
         repo_path,
-        "git",
         &["remote", "add", "upstream", &upstream_url],
         "schemastore: git remote add upstream",
     );
@@ -479,9 +478,8 @@ pub(super) fn sync_to_upstream(
     // shared fetch deadline and non-interactive prompt handling so a wedged
     // remote or an unexpected credential prompt fails instead of hanging the
     // release.
-    crate::util::run_cmd_in_timeout(
+    crate::util::run_git_in_timeout(
         repo_path,
-        "git",
         &["fetch", "--depth=1", "upstream", UPSTREAM_DEFAULT_BRANCH],
         "schemastore: git fetch upstream",
         None,
@@ -492,9 +490,8 @@ pub(super) fn sync_to_upstream(
     // correct here because no local commits exist yet — the working tree is a
     // bare clone of the fork's default branch; pointing it at upstream is the
     // intent, and a rebase would be a no-op with extra failure surface.
-    crate::util::run_cmd_in(
+    crate::util::run_git_in(
         repo_path,
-        "git",
         &[
             "reset",
             "--hard",

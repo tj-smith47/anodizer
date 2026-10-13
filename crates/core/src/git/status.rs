@@ -1,6 +1,5 @@
 use anyhow::{Result, bail};
 use std::path::Path;
-use std::process::Command;
 
 use super::git_output_in;
 
@@ -60,7 +59,7 @@ pub fn local_git_user_email_in(cwd: &Path) -> Option<String> {
 /// spawn is pinned to a guaranteed-existing dir so the probe survives an
 /// inherited cwd that was removed (see `path_util::probe_dir`).
 pub fn check_git_available() -> Result<()> {
-    let output = Command::new("git")
+    let output = crate::git::git_command()
         .arg("--version")
         .current_dir(crate::path_util::probe_dir())
         .output();

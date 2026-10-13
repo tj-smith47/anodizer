@@ -91,7 +91,7 @@ embedded in a remote URL leaks through a subprocess error message.
   review-blocker. The current audited count is 71 files / 228 call sites, all
   inside the allow-list.
 - **Token redaction in error output.** `crates/stage-publish/src/util/cmd.rs`
-  (`run_cmd_in_redacted` / `redact_output_token`) scrubs a secret from any
+  (`run_git_in_redacted` / `redact_output_token`) scrubs a secret from any
   captured argv, stdout, and stderr before it is embedded in an error message —
   so a git remote URL of the form
   `https://x-access-token:<TOKEN>@github.com/...` cannot leak through a failed

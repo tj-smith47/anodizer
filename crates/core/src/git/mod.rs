@@ -102,10 +102,67 @@ pub use worktree::Worktree;
 /// `~/.gitconfig` makes `git tag` pad its output into columns even when
 /// stdout is a pipe, so two tags on one commit arrive as
 /// `"v1.0.0      v1.0.0-rc1"` on a single line and an annotated tag's
-/// `--format=%(contents)` body is flattened into padded columns. Every
-/// listing spawn whose stdout is parsed passes this; `-c` is applied after
-/// all config files, so it overrides a repository-level `column.tag` too.
+/// `--format=%(contents)` body is flattened into padded columns. `-c` is
+/// applied after all config files, so it overrides a repository-level
+/// `column.tag` too. [`git_command`] passes it on every spawn.
 pub(crate) const COLUMN_UI_NEVER: [&str; 2] = ["-c", "column.ui=never"];
+
+/// Config override that keeps escape codes out of git's output.
+///
+/// `color.ui = always` in a user's config colours `git log`, `git status`
+/// and `git branch` output even when stdout is a pipe, which puts escape
+/// sequences into text a caller parses. [`git_command`] passes it on every
+/// spawn.
+pub(crate) const COLOR_UI_NEVER: [&str; 2] = ["-c", "color.ui=never"];
+
+/// A `git` command with the settings every spawn in this workspace needs.
+///
+/// Every production git spawn is built here, so a setting each one needs is
+/// written once. The command carries:
+///
+/// - `-c column.ui=never` and `-c color.ui=never` ahead of the caller's own
+///   arguments, so a user's `column.ui = always` or `color.ui = always`
+///   cannot reshape output a caller parses;
+/// - `GIT_TERMINAL_PROMPT=0`, so a credential helper or an `https` remote
+///   with no stored credential fails at once instead of waiting for input
+///   on an unattended host;
+/// - `LC_ALL=C`, so git's messages stay in English and the substring
+///   matches callers make on stderr (`not found`, `remote ref does not
+///   exist`, `unknown revision`) hold under any locale.
+///
+/// The caller adds its subcommand and anything particular to the call
+/// (`-C <dir>`, a per-call `-c`, `GIT_SSH_COMMAND`, an author identity) on
+/// top; an `.env(…)` the caller sets for one of the variables above replaces
+/// the value set here.
+///
+/// ```no_run
+/// let out = anodizer_core::git::git_command()
+///     .args(["rev-parse", "--show-toplevel"])
+///     .output()?;
+/// # Ok::<(), std::io::Error>(())
+/// ```
+pub fn git_command() -> Command {
+    let mut cmd = Command::new("git");
+    cmd.args(COLUMN_UI_NEVER)
+        .args(COLOR_UI_NEVER)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C");
+    cmd
+}
+
+/// [`git_command`] with its working directory set to `dir`.
+///
+/// ```no_run
+/// let out = anodizer_core::git::git_command_in(std::path::Path::new("."))
+///     .args(["status", "--porcelain"])
+///     .output()?;
+/// # Ok::<(), std::io::Error>(())
+/// ```
+pub fn git_command_in(dir: &Path) -> Command {
+    let mut cmd = git_command();
+    cmd.current_dir(dir);
+    cmd
+}
 
 /// Run `git` in `cwd` and return stdout, trimmed.
 ///
@@ -121,19 +178,7 @@ pub(crate) const COLUMN_UI_NEVER: [&str; 2] = ["-c", "column.ui=never"];
 /// `https://ghp_xxx@github.com/...` produced by an `extraHeader` config
 /// leak) is scrubbed in the bail message.
 pub(crate) fn git_output_in(cwd: &Path, args: &[&str]) -> Result<String> {
-    // `GIT_TERMINAL_PROMPT=0` + `LC_ALL=C` pinned on every spawn so:
-    //   - a credential helper / nested config can't hang the wrapper
-    //     waiting for interactive input (unattended CI hosts),
-    //   - locale-sensitive stderr / stdout messages (e.g. "not found",
-    //     "remote ref does not exist") stay in English so substring
-    //     matching in caller code is stable.
-    let output = Command::new("git")
-        .current_dir(cwd)
-        .args(COLUMN_UI_NEVER)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
-        .output()?;
+    let output = git_command_in(cwd).args(args).output()?;
     if !output.status.success() {
         let stderr_raw = String::from_utf8_lossy(&output.stderr);
         let stderr_trim = stderr_raw.trim();

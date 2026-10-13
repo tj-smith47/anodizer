@@ -1,7 +1,6 @@
 //! Source archive generation via `git archive`, with optional extra-files staging.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
 
@@ -137,7 +136,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
         output_path.clone()
     };
 
-    let mut cmd = Command::new("git");
+    let mut cmd = anodizer_core::git::git_command();
     cmd.current_dir(repo_root);
     cmd.arg("archive").arg("--format").arg(initial_format);
 
@@ -523,7 +522,7 @@ pub(crate) fn get_repo_root(cwd: &Path, log: &anodizer_core::log::StageLogger) -
         "running git rev-parse --show-toplevel (cwd: {})",
         cwd.display()
     ));
-    let output = Command::new("git")
+    let output = anodizer_core::git::git_command()
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(cwd)
         .output()

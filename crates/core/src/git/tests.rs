@@ -2876,13 +2876,17 @@ mod column_ui {
     /// Every `git tag` listing spawn pins `column.ui=never` — itself, or by
     /// going through a wrapper that does.
     ///
-    /// The flag is hand-applied per spawn site (there is no single git
-    /// constructor in this workspace), so nothing but this walk stops the
-    /// next listing spawn from inheriting a user's `column.ui = always` and
-    /// parsing a padded line as a tag name.
+    /// Every spawn is built by `git_command`, which passes the flag; this
+    /// walk also fails a listing spawn that names neither the helper nor the
+    /// flag, so a user's `column.ui = always` cannot reach a parsed tag name.
     #[test]
     fn every_git_tag_listing_spawn_pins_column_ui() {
-        const WRAPPERS: [&str; 2] = ["git_output_in(", "collect_semver_tags_in("];
+        const WRAPPERS: [&str; 4] = [
+            "git_command(",
+            "git_command_in(",
+            "git_output_in(",
+            "collect_semver_tags_in(",
+        ];
         let mut checked = 0usize;
         let mut offenders = Vec::new();
         for source in crate::test_helpers::test_sources::workspace_production_sources() {
@@ -2922,13 +2926,259 @@ mod column_ui {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/git/mod.rs"),
         )
         .expect("read git/mod.rs");
-        let body = crate::test_helpers::test_sources::function_bodies(&wrapper)
-            .into_iter()
-            .find(|b| b.contains("fn git_output_in("))
-            .expect("git_output_in body");
+        let bodies = crate::test_helpers::test_sources::function_bodies(&wrapper);
+        let body_of = |name: &str| {
+            bodies
+                .iter()
+                .find(|b| b.contains(&format!("fn {name}(")))
+                .unwrap_or_else(|| panic!("{name} body"))
+                .clone()
+        };
         assert!(
-            body.contains("COLUMN_UI_NEVER"),
-            "git_output_in must pin column.ui=never for every caller that routes through it"
+            body_of("git_command").contains("COLUMN_UI_NEVER"),
+            "git_command must pin column.ui=never for every caller that routes through it"
+        );
+        assert!(
+            body_of("git_command_in").contains("git_command()"),
+            "git_command_in must build on git_command"
+        );
+        assert!(
+            body_of("git_output_in").contains("git_command_in("),
+            "git_output_in must build on git_command_in"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// git_command: the one constructor of a git spawn
+// -----------------------------------------------------------------------
+
+mod git_command_one_home {
+    use crate::git::{git_command, git_command_in};
+    use std::ffi::OsStr;
+
+    /// The helpers' own definitions, the one place `Command::new("git")`
+    /// may stand.
+    const HOME: &str = "core/src/git/mod.rs";
+
+    fn env_of(cmd: &std::process::Command, key: &str) -> Option<String> {
+        cmd.get_envs()
+            .find(|(k, _)| *k == OsStr::new(key))
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_string_lossy().into_owned())
+    }
+
+    /// The constructor carries every setting the rule names, ahead of any
+    /// argument a caller adds.
+    #[test]
+    fn git_command_sets_every_invariant() {
+        let mut cmd = git_command();
+        cmd.arg("status");
+        let args: Vec<&OsStr> = cmd.get_args().collect();
+        assert_eq!(
+            args,
+            ["-c", "column.ui=never", "-c", "color.ui=never", "status"]
+                .map(OsStr::new)
+                .to_vec()
+        );
+        assert_eq!(cmd.get_program(), OsStr::new("git"));
+        assert_eq!(env_of(&cmd, "GIT_TERMINAL_PROMPT").as_deref(), Some("0"));
+        assert_eq!(env_of(&cmd, "LC_ALL").as_deref(), Some("C"));
+        assert_eq!(cmd.get_current_dir(), None);
+
+        let dir = std::path::Path::new("some/repo");
+        let cmd = git_command_in(dir);
+        assert_eq!(cmd.get_current_dir(), Some(dir));
+        assert_eq!(env_of(&cmd, "LC_ALL").as_deref(), Some("C"));
+    }
+
+    /// A caller's own env sits on top of the constructor's, and a value it
+    /// sets for one of the constructor's variables replaces it.
+    #[test]
+    fn a_caller_env_overrides_the_constructor_env() {
+        let mut cmd = git_command();
+        cmd.env("GIT_SSH_COMMAND", "ssh -i key")
+            .env("GIT_TERMINAL_PROMPT", "1");
+        assert_eq!(
+            env_of(&cmd, "GIT_SSH_COMMAND").as_deref(),
+            Some("ssh -i key")
+        );
+        assert_eq!(env_of(&cmd, "GIT_TERMINAL_PROMPT").as_deref(), Some("1"));
+        assert_eq!(env_of(&cmd, "LC_ALL").as_deref(), Some("C"));
+    }
+
+    /// The calls in `body` of a function whose name starts with `run_` that
+    /// hand the literal `"git"` as one of their top-level arguments: a
+    /// generic runner that would build `Command::new(program)` for git.
+    fn runner_calls_with_git_program(body: &str) -> Vec<String> {
+        let bytes = body.as_bytes();
+        let mut found = Vec::new();
+        for (at, _) in body.match_indices("run_") {
+            if at > 0 && (bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_') {
+                continue;
+            }
+            let name_end = at
+                + body[at..]
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(body.len() - at);
+            if bytes.get(name_end) != Some(&b'(') {
+                continue;
+            }
+            let (mut depth, mut in_str, mut escaped) = (0usize, false, false);
+            let mut args = Vec::new();
+            let mut start = name_end + 1;
+            for (i, c) in body[name_end..].char_indices() {
+                let i = name_end + i;
+                if in_str {
+                    match (escaped, c) {
+                        (true, _) => escaped = false,
+                        (false, '\\') => escaped = true,
+                        (false, '"') => in_str = false,
+                        _ => {}
+                    }
+                    continue;
+                }
+                match c {
+                    '"' => in_str = true,
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            args.push(body[start..i].trim());
+                            break;
+                        }
+                    }
+                    ',' if depth == 1 => {
+                        args.push(body[start..i].trim());
+                        start = i + 1;
+                    }
+                    _ => {}
+                }
+            }
+            if args.contains(&"\"git\"") {
+                found.push(body[at..name_end].to_string());
+            }
+        }
+        found
+    }
+
+    /// The names a production text binds to the literal `"git"`
+    /// (`let x = "git";`, `const X: &str = "git";`).
+    fn names_bound_to_git(text: &str) -> Vec<String> {
+        text.lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let rest = line
+                    .strip_prefix("let ")
+                    .or_else(|| line.strip_prefix("const "))
+                    .or_else(|| line.strip_prefix("pub const "))
+                    .or_else(|| line.strip_prefix("pub(crate) const "))?;
+                let (lhs, rhs) = rest.split_once('=')?;
+                (rhs.trim() == "\"git\";").then(|| {
+                    let lhs = lhs.split(':').next().unwrap_or_default();
+                    lhs.trim().trim_start_matches("mut ").trim().to_string()
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_runner_handed_the_git_program_is_found() {
+        let body = "fn f() {\n    run_cmd_in(\n        dir,\n        \"git\",\n        &[\"push\"],\n    )?;\n    run_tool(dir, \"cargo\", &[\"git\"]);\n    run_git_in(dir, &[\"add\"], \"label\");\n}";
+        assert_eq!(runner_calls_with_git_program(body), ["run_cmd_in"]);
+        assert_eq!(
+            names_bound_to_git(
+                "    let program = \"git\";\nconst GIT: &str = \"git\";\nlet x = \"gitx\";"
+            ),
+            ["program", "GIT"]
+        );
+    }
+
+    /// No production code spawns `git` except through `git_command`.
+    ///
+    /// The settings every git spawn needs (`GIT_TERMINAL_PROMPT=0`,
+    /// `LC_ALL=C`, `column.ui=never`, `color.ui=never`) live in one
+    /// constructor; a raw `Command::new("git")` anywhere else, a
+    /// `Command::new(name)` whose `name` is bound to `"git"`, or a generic
+    /// `run_…` runner handed the program `"git"` would spawn without them.
+    /// Both call-site counts are held exactly, so a rename that empties the
+    /// scan, or a new site, fails until the counts and
+    /// `.claude/rules/git-command-one-home.md` are updated.
+    #[test]
+    fn every_production_git_spawn_is_built_by_git_command() {
+        use crate::test_helpers::test_sources::{
+            function_bodies, production_half, workspace_production_sources,
+        };
+        const CALL_SITES: usize = 49;
+        const RUNNER_CALL_SITES: usize = 17;
+        const RUNNERS: [&str; 4] = [
+            "run_git_in(",
+            "run_git_in_envs(",
+            "run_git_in_timeout(",
+            "run_git_in_redacted(",
+        ];
+
+        let mut offenders = Vec::new();
+        let mut home_spawns = 0usize;
+        let mut call_sites = 0usize;
+        let mut runner_call_sites = 0usize;
+        for source in workspace_production_sources() {
+            let text = std::fs::read_to_string(&source).expect("read source");
+            let path = source.to_string_lossy().replace('\\', "/");
+            let production = production_half(&text);
+            let raw = production.matches("Command::new(\"git\")").count();
+            if path.ends_with(HOME) {
+                home_spawns += raw;
+            } else if raw > 0 {
+                offenders.push(format!("{path}: {raw} `Command::new(\"git\")`"));
+            }
+            let git_names = names_bound_to_git(production);
+            for body in function_bodies(production) {
+                let head = body.lines().next().unwrap_or_default();
+                let name = head.trim();
+                for runner in runner_calls_with_git_program(&body) {
+                    offenders.push(format!("{path}: {name}: `{runner}` handed \"git\""));
+                }
+                for var in &git_names {
+                    if body.contains(&format!("Command::new({var})")) {
+                        offenders.push(format!("{path}: {name}: `Command::new({var})`"));
+                    }
+                }
+                if !RUNNERS.iter().any(|r| head.contains(&format!("fn {r}"))) {
+                    runner_call_sites += RUNNERS
+                        .iter()
+                        .map(|r| body.matches(r).count())
+                        .sum::<usize>();
+                }
+                if path.ends_with(HOME)
+                    && (head.contains("fn git_command(") || head.contains("fn git_command_in("))
+                {
+                    continue;
+                }
+                call_sites += body.matches("git_command()").count();
+                call_sites += body.matches("git_command_in(").count();
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these spawn git without `anodizer_core::git::git_command`:\n{}",
+            offenders.join("\n")
+        );
+        assert_eq!(
+            home_spawns, 1,
+            "`{HOME}` holds the one `Command::new(\"git\")`, inside `git_command`"
+        );
+        assert_eq!(
+            call_sites, CALL_SITES,
+            "the number of production call sites of git_command / git_command_in \
+             changed; update CALL_SITES and the population table in \
+             .claude/rules/git-command-one-home.md"
+        );
+        assert_eq!(
+            runner_call_sites, RUNNER_CALL_SITES,
+            "the number of production calls of the run_git_in runners changed; \
+             update RUNNER_CALL_SITES and the population table in \
+             .claude/rules/git-command-one-home.md"
         );
     }
 }

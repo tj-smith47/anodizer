@@ -57,11 +57,9 @@ impl CommitterIdentity {
 /// committer env fallback must fire.
 pub(super) fn read_git_identity(cwd: &Path) -> (Option<String>, Option<String>) {
     let one = |key: &str| -> Option<String> {
-        let out = Command::new("git")
+        let out = crate::git::git_command()
             .current_dir(cwd)
             .args(["config", "--get", key])
-            .env("LC_ALL", "C")
-            .env("GIT_TERMINAL_PROMPT", "0")
             .output()
             .ok()?;
         if !out.status.success() {
@@ -125,11 +123,9 @@ pub fn revert_commit_in(
     message: Option<&str>,
     identity: &CommitterIdentity,
 ) -> Result<()> {
-    let status = Command::new("git")
+    let status = crate::git::git_command()
         .args(["status", "--porcelain", "--untracked-files=no"])
         .current_dir(cwd)
-        .env("LC_ALL", "C")
-        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .with_context(|| format!("revert_commit_in: git status in {}", cwd.display()))?;
     if !status.status.success() {
@@ -145,12 +141,10 @@ pub fn revert_commit_in(
         );
     }
 
-    let mut revert_cmd = Command::new("git");
+    let mut revert_cmd = crate::git::git_command();
     revert_cmd
         .current_dir(cwd)
-        .args(["revert", "--no-edit", sha])
-        .env("LC_ALL", "C")
-        .env("GIT_TERMINAL_PROMPT", "0");
+        .args(["revert", "--no-edit", sha]);
     identity.apply_to(&mut revert_cmd);
     let out = revert_cmd
         .output()
@@ -159,11 +153,9 @@ pub fn revert_commit_in(
         let stderr_raw = String::from_utf8_lossy(&out.stderr);
         // Restore the working tree before bubbling — otherwise the dirty-tree
         // guard above traps a subsequent rollback retry forever.
-        let _ = Command::new("git")
+        let _ = crate::git::git_command()
             .current_dir(cwd)
             .args(["revert", "--abort"])
-            .env("LC_ALL", "C")
-            .env("GIT_TERMINAL_PROMPT", "0")
             .output();
         let raw = format!(
             "git revert {sha} hit conflicts and was aborted (working tree restored). \
@@ -174,12 +166,10 @@ pub fn revert_commit_in(
         bail!("{}", crate::redact::redact_process_env(&raw));
     }
     if let Some(msg) = message {
-        let mut amend_cmd = Command::new("git");
+        let mut amend_cmd = crate::git::git_command();
         amend_cmd
             .current_dir(cwd)
-            .args(["commit", "--amend", "-m", msg])
-            .env("LC_ALL", "C")
-            .env("GIT_TERMINAL_PROMPT", "0");
+            .args(["commit", "--amend", "-m", msg]);
         identity.apply_to(&mut amend_cmd);
         let out = amend_cmd.output().with_context(|| {
             format!("revert_commit_in: git commit --amend in {}", cwd.display())
@@ -209,11 +199,9 @@ pub fn push_branch_in(cwd: &Path, branch: &str) -> Result<()> {
         bail!("no 'origin' remote configured, cannot push branch '{branch}'");
     }
     let refspec = format!("HEAD:refs/heads/{}", branch);
-    let out = Command::new("git")
+    let out = crate::git::git_command()
         .current_dir(cwd)
         .args(["push", "origin", &refspec])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
         .output()
         .with_context(|| format!("push_branch_in: git push origin {refspec}"))?;
     if !out.status.success() {
@@ -228,12 +216,10 @@ pub fn push_branch_in(cwd: &Path, branch: &str) -> Result<()> {
 /// timestamp (seconds since UNIX epoch) for the given repository. Used by
 /// the determinism harness as the non-snapshot SDE seed.
 pub fn head_commit_timestamp_in(repo: &std::path::Path) -> Result<i64> {
-    let out = Command::new("git")
+    let out = crate::git::git_command()
         .arg("-C")
         .arg(repo)
         .args(["log", "-1", "--format=%ct", "HEAD"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
         .output()
         .context("failed to invoke git log -1 --format=%ct HEAD")?;
     if !out.status.success() {

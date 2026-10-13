@@ -556,7 +556,7 @@ pub(crate) fn default_sign_cmd() -> String {
     static CACHED: OnceLock<String> = OnceLock::new();
     CACHED
         .get_or_init(|| {
-            if let Ok(output) = std::process::Command::new("git")
+            if let Ok(output) = anodizer_core::git::git_command()
                 .args(["config", "gpg.program"])
                 .output()
             {

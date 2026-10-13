@@ -236,16 +236,15 @@ pub fn output_with_spawn_retry(
 /// returning the raw [`std::process::Output`].
 ///
 /// The identity, signing and hook settings come from [`isolate_git_config`]
-/// (applied by [`output_with_spawn_retry`]); `GIT_TERMINAL_PROMPT=0` is
-/// child-only env — never process-global `std::env::set_var`, which would
-/// race any parallel test that guards the same `GIT_*` variables.
+/// (applied by [`output_with_spawn_retry`]); the command is built by
+/// [`crate::git::git_command`], whose `GIT_TERMINAL_PROMPT=0` is child-only
+/// env — never process-global `std::env::set_var`, which would race any
+/// parallel test that guards the same `GIT_*` variables.
 pub fn git_test_output(dir: &Path, args: &[&str]) -> std::process::Output {
     output_with_spawn_retry(
         || {
-            let mut cmd = Command::new("git");
-            cmd.args(args)
-                .current_dir(dir)
-                .env("GIT_TERMINAL_PROMPT", "0");
+            let mut cmd = crate::git::git_command();
+            cmd.args(args).current_dir(dir);
             cmd
         },
         "git",

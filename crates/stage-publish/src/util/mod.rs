@@ -4,7 +4,7 @@
 //!
 //! - [`config`] — config / context lookups & resolution helpers.
 //! - [`formats`] — package-format defaults + filename matching.
-//! - [`cmd`] — the `run_cmd_in` subprocess helper.
+//! - [`cmd`] — the `run_git_in` git subprocess helpers.
 //! - [`clone`] — repo cloning (HTTPS-token + SSH variants + dispatcher).
 //! - [`commit`] — `CommitOptions` + `commit_and_push_with_opts`.
 //! - [`branch`] — branch resolution + GitHub default-branch lookup.
@@ -60,7 +60,7 @@ pub(crate) use clone::{
     aur_push_git_url, aur_push_git_url_or_else, clone_repo, clone_repo_ssh, clone_repo_with_auth,
     ssh_auth_probe,
 };
-pub(crate) use cmd::{run_cmd_in, run_cmd_in_timeout};
+pub(crate) use cmd::{run_git_in, run_git_in_timeout};
 pub(crate) use commit::{
     CommitOutcome, GIT_FETCH_TIMEOUT, commit_and_push_with_opts, resolve_commit_opts,
 };

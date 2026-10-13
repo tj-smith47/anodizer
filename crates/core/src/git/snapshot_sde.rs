@@ -14,7 +14,6 @@
 use anyhow::{Context as _, Result};
 use sha2::{Digest, Sha256};
 use std::path::Path;
-use std::process::Command;
 
 use crate::EnvSource;
 
@@ -58,7 +57,7 @@ pub fn resolve_snapshot_sde_with_env<E: EnvSource + ?Sized>(repo: &Path, env: &E
 }
 
 fn head_commit_timestamp(repo: &Path) -> Result<i64> {
-    let out = Command::new("git")
+    let out = crate::git::git_command()
         .arg("-C")
         .arg(repo)
         .args(["log", "-1", "--format=%ct"])
@@ -79,7 +78,7 @@ fn head_commit_timestamp(repo: &Path) -> Result<i64> {
 }
 
 fn git_status_porcelain_v2(repo: &Path) -> Result<Vec<u8>> {
-    let out = Command::new("git")
+    let out = crate::git::git_command()
         .arg("-C")
         .arg(repo)
         .args(["status", "--porcelain=v2", "-z"])

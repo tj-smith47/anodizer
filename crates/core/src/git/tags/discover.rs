@@ -8,7 +8,6 @@
 use anyhow::Result;
 use regex::Regex;
 use std::path::Path;
-use std::process::Command;
 
 use crate::config::GitConfig;
 use crate::git::semver::{SemVer, parse_semver_tag};
@@ -322,14 +321,11 @@ pub fn list_tags_with_prefix(
     workspace_root: &std::path::Path,
     prefix: &str,
 ) -> Result<Vec<String>> {
-    let out = Command::new("git")
-        .args(crate::git::COLUMN_UI_NEVER)
+    let out = crate::git::git_command()
         .arg("-C")
         .arg(workspace_root)
         .args(["tag", "--list", "--sort=-v:refname"])
         .arg(format!("{prefix}*"))
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
         .output()?;
     if !out.status.success() {
         return Ok(Vec::new());

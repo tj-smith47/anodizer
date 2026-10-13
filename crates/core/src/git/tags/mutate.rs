@@ -10,7 +10,6 @@
 
 use anyhow::Result;
 use std::path::Path;
-use std::process::Command;
 
 use super::git_output_in;
 use super::position::tag_points_at_head_in;
@@ -162,11 +161,9 @@ pub fn create_tag_local_only(
 /// match is locale-stable; a non-C locale would translate the message
 /// and the idempotency check would silently degrade to bail-on-rerun.
 pub fn delete_local_tag_in(cwd: &Path, tag: &str) -> Result<()> {
-    let out = Command::new("git")
+    let out = crate::git::git_command()
         .current_dir(cwd)
         .args(["tag", "-d", tag])
-        .env("LC_ALL", "C")
-        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .map_err(|e| anyhow::anyhow!("failed to invoke git tag -d {tag}: {e}"))?;
     if !out.status.success() {
@@ -193,11 +190,9 @@ pub fn delete_local_tag_in(cwd: &Path, tag: &str) -> Result<()> {
 /// locale-stable.
 pub fn delete_remote_tag_in(cwd: &Path, tag: &str) -> Result<()> {
     let refspec = format!(":refs/tags/{}", tag);
-    let out = Command::new("git")
+    let out = crate::git::git_command()
         .current_dir(cwd)
         .args(["push", "origin", &refspec])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
         .output()
         .map_err(|e| anyhow::anyhow!("failed to invoke git push origin {refspec}: {e}"))?;
     if !out.status.success() {

@@ -7,11 +7,10 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::retry::RetryPolicy;
 use anyhow::{Context as _, Result};
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use super::cmd::{
-    PushLadder, run_cmd_in, run_cmd_in_envs, run_cmd_in_timeout, run_git_push_retrying,
+    PushLadder, run_git_in, run_git_in_envs, run_git_in_timeout, run_git_push_retrying,
 };
 
 /// Wall-clock bound on `git push` to a publisher's remote repo (a tap, AUR,
@@ -283,16 +282,15 @@ pub(crate) fn commit_and_push_with_opts(
         // Bounded: the fetch hits the remote, so a stalled connection must not
         // hang here with no deadline. Failure (incl. a deadline kill) is ignored
         // — the branch genuinely may not exist remotely.
-        let _ = run_cmd_in_timeout(
+        let _ = run_git_in_timeout(
             repo_path,
-            "git",
             &["fetch", "--depth=1", "origin", &refspec],
             &format!("{label}: git fetch origin {branch_name}"),
             None,
             log,
             GIT_FETCH_TIMEOUT,
         );
-        Command::new("git")
+        anodizer_core::git::git_command()
             .args([
                 "rev-parse",
                 "--verify",
@@ -310,34 +308,28 @@ pub(crate) fn commit_and_push_with_opts(
 
     // Create/reset local branch at current HEAD (default branch tip).
     if let Some(branch_name) = branch {
-        run_cmd_in(
+        run_git_in(
             repo_path,
-            "git",
             &["checkout", "-B", branch_name],
             &format!("{label}: git checkout -B {}", branch_name),
         )?;
     }
 
     for file in files {
-        run_cmd_in(
-            repo_path,
-            "git",
-            &["add", file],
-            &format!("{label}: git add"),
-        )?;
+        run_git_in(repo_path, &["add", file], &format!("{label}: git add"))?;
     }
 
     // Idempotent no-op: if the remote branch's tree matches the freshly
     // staged tree, there's nothing to push.
     if let Some(ref sha) = remote_sha {
-        let remote_tree = Command::new("git")
+        let remote_tree = anodizer_core::git::git_command()
             .args(["rev-parse", &format!("{}^{{tree}}", sha)])
             .current_dir(repo_path)
             .output()
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-        let staged_tree = Command::new("git")
+        let staged_tree = anodizer_core::git::git_command()
             .args(["write-tree"])
             .current_dir(repo_path)
             .output()
@@ -353,7 +345,7 @@ pub(crate) fn commit_and_push_with_opts(
 
     // No diff vs. current HEAD means the caller's writes were redundant —
     // nothing to commit.
-    let diff_output = Command::new("git")
+    let diff_output = anodizer_core::git::git_command()
         .args(["diff", "--cached", "--quiet"])
         .current_dir(repo_path)
         .status();
@@ -428,9 +420,8 @@ pub(crate) fn commit_and_push_with_opts(
     }
     commit_args.extend_from_slice(&["commit", "-m", message]);
 
-    run_cmd_in_envs(
+    run_git_in_envs(
         repo_path,
-        "git",
         &commit_args,
         &format!("{label}: git commit"),
         &commit_envs,
@@ -469,7 +460,7 @@ pub(crate) fn commit_and_push_with_opts(
             deadline: opts.push_deadline,
         },
     )?;
-    let head = Command::new("git")
+    let head = anodizer_core::git::git_command()
         .args(["rev-parse", "HEAD"])
         .current_dir(repo_path)
         .output()

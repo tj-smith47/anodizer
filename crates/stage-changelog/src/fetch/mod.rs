@@ -90,8 +90,7 @@ fn git_log_args(
 /// Run the shared `git log`, mapping a bad-revision exit to a fail-loud error
 /// and any other non-zero exit to "no commits". Returns the raw stdout.
 fn run_git_log(args: &[String], range: &str) -> Result<Option<String>> {
-    use std::process::Command;
-    let out = Command::new("git")
+    let out = anodizer_core::git::git_command()
         .args(args.iter().map(|s| s.as_str()))
         .output()
         .with_context(|| "failed to invoke git log".to_string())?;

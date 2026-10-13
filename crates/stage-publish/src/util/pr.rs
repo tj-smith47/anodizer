@@ -21,7 +21,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use super::branch::fetch_default_branch_with_env;
-use super::cmd::{PushLadder, run_cmd_in, run_cmd_in_timeout, run_git_push_retrying};
+use super::cmd::{PushLadder, run_git_in, run_git_in_timeout, run_git_push_retrying};
 use anodizer_core::http::github_api_base;
 
 /// Wall-clock bound on `gh pr create` — a lightweight PR submission against the
@@ -73,9 +73,8 @@ fn sync_fork(
     log: &StageLogger,
 ) {
     // Add the upstream remote (ignore error if it already exists).
-    let _ = run_cmd_in(
+    let _ = run_git_in(
         repo_path,
-        "git",
         &["remote", "add", "upstream", upstream_url],
         &format!("{label}: git remote add upstream"),
     );
@@ -83,9 +82,8 @@ fn sync_fork(
     // Fetch the upstream base branch. Bounded: it hits the upstream remote, so
     // a stalled fetch must not hang the release; a deadline kill warns like any
     // other sync failure and proceeds.
-    if let Err(e) = run_cmd_in_timeout(
+    if let Err(e) = run_git_in_timeout(
         repo_path,
-        "git",
         &["fetch", "upstream", base_branch],
         &format!("{label}: git fetch upstream"),
         None,
@@ -100,9 +98,8 @@ fn sync_fork(
 
     // Rebase local work on top of the upstream base branch.
     let upstream_ref = format!("upstream/{}", base_branch);
-    if let Err(e) = run_cmd_in(
+    if let Err(e) = run_git_in(
         repo_path,
-        "git",
         &["rebase", &upstream_ref],
         &format!("{label}: git rebase upstream"),
     ) {
@@ -110,9 +107,8 @@ fn sync_fork(
             "failed to rebase {label} fork onto upstream; aborting rebase and continuing: {e}"
         ));
         // Abort the failed rebase so the repo is in a clean state.
-        let _ = run_cmd_in(
+        let _ = run_git_in(
             repo_path,
-            "git",
             &["rebase", "--abort"],
             &format!("{label}: git rebase --abort"),
         );

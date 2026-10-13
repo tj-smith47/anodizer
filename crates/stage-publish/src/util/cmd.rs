@@ -2,11 +2,12 @@
 //!
 //! Also exposes byte-level token-redaction helpers (`redact_output_token`
 //! and `replace_bytes`) used by [`clone`](super::clone) and by the
-//! `_redacted` variant of [`run_cmd_in`] below. It lives here — rather
+//! `_redacted` variant of [`run_git_in`] below. It lives here — rather
 //! than reaching for `core::redact::string` — because the scrubbed values
 //! are raw `Vec<u8>` from `std::process::Output` and the secret
 //! is passed in directly (no env-driven heuristic, no key/value mapping).
 
+use anodizer_core::git::git_command_in;
 use anodizer_core::log::StageLogger;
 use anodizer_core::retry::{RetryLog, RetryPolicy, is_retriable, retry_sync_deadline};
 use anodizer_core::run::run_capture_timeout;
@@ -19,14 +20,15 @@ use std::time::{Duration, Instant};
 /// Replacement marker used in place of redacted secret bytes.
 pub(crate) const REDACTED_TOKEN_MARKER: &[u8] = b"<REDACTED_TOKEN>";
 
-/// Run a command in a specific working directory, failing with `label`
-/// on spawn failure or non-zero exit. Captures stdout/stderr so that
-/// diagnostics are included in the error message.
-pub(crate) fn run_cmd_in(dir: &Path, program: &str, args: &[&str], label: &str) -> Result<()> {
-    run_cmd_in_envs(dir, program, args, label, &[])
+/// Run `git <args>` in `dir`, failing with `label` on spawn failure or
+/// non-zero exit. Captures stdout/stderr so that diagnostics are included in
+/// the error message. The command is built by
+/// [`anodizer_core::git::git_command_in`].
+pub(crate) fn run_git_in(dir: &Path, args: &[&str], label: &str) -> Result<()> {
+    run_git_in_envs(dir, args, label, &[])
 }
 
-/// Variant of [`run_cmd_in`] that sets additional environment variables on
+/// Variant of [`run_git_in`] that sets additional environment variables on
 /// the spawned child before running it. Used by the commit step to make a
 /// configured author/committer identity authoritative: passing
 /// `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` (and the committer pair) as child
@@ -34,28 +36,26 @@ pub(crate) fn run_cmd_in(dir: &Path, program: &str, args: &[&str], label: &str) 
 /// repo's `user.name` / `user.email` config — `-c user.name=` does neither,
 /// since git's identity precedence is `--author` > `GIT_AUTHOR_*` env >
 /// `user.*` config.
-pub(crate) fn run_cmd_in_envs(
+pub(crate) fn run_git_in_envs(
     dir: &Path,
-    program: &str,
     args: &[&str],
     label: &str,
     envs: &[(&str, &str)],
 ) -> Result<()> {
-    let mut cmd = Command::new(program);
-    cmd.args(args).current_dir(dir);
+    let mut cmd = git_command_in(dir);
+    cmd.args(args);
     for (k, v) in envs {
         cmd.env(k, v);
     }
     let output = cmd
         .output()
-        .with_context(|| format!("{label}: failed to run {program} {}", args.join(" ")))?;
+        .with_context(|| format!("{label}: failed to run git {}", args.join(" ")))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         anyhow::bail!(
-            "{}: {} {} failed (exit {})\nstderr: {}\nstdout: {}",
+            "{}: git {} failed (exit {})\nstderr: {}\nstdout: {}",
             label,
-            program,
             args.join(" "),
             output.status.code().unwrap_or(-1),
             stderr,
@@ -65,7 +65,7 @@ pub(crate) fn run_cmd_in_envs(
     Ok(())
 }
 
-/// Timeout-bounded variant of [`run_cmd_in`] for network-touching git ops
+/// Timeout-bounded variant of [`run_git_in`] for network-touching git ops
 /// (`git push` / `git fetch` to a remote). A remote that accepts the
 /// connection then never drains — a wedged TLS handshake, a half-open
 /// connection to AUR/a tap repo — would otherwise hang the release forever
@@ -75,22 +75,35 @@ pub(crate) fn run_cmd_in_envs(
 /// non-looping caller surfaces a clear timeout instead of hanging.
 ///
 /// `secret` is scrubbed from `argv`/`stderr`/`stdout` in the error embed
-/// exactly as [`run_cmd_in_redacted`] does (pass `None` when no element of
+/// exactly as [`run_git_in_redacted`] does (pass `None` when no element of
 /// `args` can carry a token).
-pub(crate) fn run_cmd_in_timeout(
+pub(crate) fn run_git_in_timeout(
     dir: &Path,
-    program: &str,
     args: &[&str],
     label: &str,
     secret: Option<&str>,
     log: &StageLogger,
     timeout: Duration,
 ) -> Result<()> {
-    let mut cmd = Command::new(program);
-    cmd.args(args)
-        .current_dir(dir)
-        .env("GIT_TERMINAL_PROMPT", "0");
-    let output = run_capture_timeout(&mut cmd, log, label, timeout).with_context(|| {
+    let mut cmd = git_command_in(dir);
+    cmd.args(args);
+    run_bounded(&mut cmd, args, label, secret, log, timeout)
+}
+
+/// Run an already-built `cmd` under `timeout`, naming it `<program> <args>`
+/// in any error, with `secret` scrubbed from the argv and the captured
+/// output. `args` are the caller's own arguments, without any the command
+/// was built with.
+fn run_bounded(
+    cmd: &mut Command,
+    args: &[&str],
+    label: &str,
+    secret: Option<&str>,
+    log: &StageLogger,
+    timeout: Duration,
+) -> Result<()> {
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    let output = run_capture_timeout(cmd, log, label, timeout).with_context(|| {
         let joined = redact_str(&args.join(" "), secret);
         format!("{label}: failed to run {program} {joined}")
     })?;
@@ -112,7 +125,7 @@ pub(crate) fn run_cmd_in_timeout(
     Ok(())
 }
 
-/// Variant of [`run_cmd_in`] that scrubs `secret` from any captured
+/// Variant of [`run_git_in`] that scrubs `secret` from any captured
 /// `argv`, `stderr`, and `stdout` before they enter the error message.
 ///
 /// Use this whenever any element of `args` may contain a secret (for
@@ -120,30 +133,24 @@ pub(crate) fn run_cmd_in_timeout(
 /// `https://x-access-token:<TOKEN>@github.com/owner/repo.git`). The
 /// success path is unaffected — redaction only kicks in when an error
 /// surface is being constructed.
-pub(crate) fn run_cmd_in_redacted(
+pub(crate) fn run_git_in_redacted(
     dir: &Path,
-    program: &str,
     args: &[&str],
     label: &str,
     secret: Option<&str>,
 ) -> Result<()> {
-    let output = Command::new(program)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .with_context(|| {
-            let joined = redact_str(&args.join(" "), secret);
-            format!("{label}: failed to run {program} {joined}")
-        })?;
+    let output = git_command_in(dir).args(args).output().with_context(|| {
+        let joined = redact_str(&args.join(" "), secret);
+        format!("{label}: failed to run git {joined}")
+    })?;
     if !output.status.success() {
         let output = redact_output_token(output, secret);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         let joined = redact_str(&args.join(" "), secret);
         anyhow::bail!(
-            "{}: {} {} failed (exit {})\nstderr: {}\nstdout: {}",
+            "{}: git {} failed (exit {})\nstderr: {}\nstdout: {}",
             label,
-            program,
             joined,
             output.status.code().unwrap_or(-1),
             stderr,
@@ -258,7 +265,7 @@ pub(crate) fn run_git_push_retrying(
         ladder.policy,
         ladder.deadline,
         |_attempt| {
-            run_cmd_in_timeout(dir, "git", args, label, secret, log, timeout).map_err(|e| {
+            run_git_in_timeout(dir, args, label, secret, log, timeout).map_err(|e| {
                 if is_retriable(e.as_ref()) {
                     ControlFlow::Continue(e)
                 } else {
@@ -279,17 +286,19 @@ mod tests {
     /// remote must be killed at the deadline and surface a retriable timeout —
     /// never hang the release. This is the publisher-stage analogue of
     /// `core::run`'s `run_capture_timeout_kills_hung_child`, exercised through
-    /// the shared `run_cmd_in_timeout` bound that every git remote site uses.
+    /// the shared `run_bounded` bound under `run_git_in_timeout`, which every
+    /// git remote site uses.
     #[test]
-    fn run_cmd_in_timeout_kills_hung_child() {
+    fn run_bounded_kills_hung_child() {
         let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
         let dir = tempfile::tempdir().expect("tempdir");
         let start = Instant::now();
         // A real `git push` to a dead remote can block indefinitely; `sleep`
         // is the deterministic stand-in for that wedge.
-        let err = run_cmd_in_timeout(
-            dir.path(),
-            "sleep",
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30").current_dir(dir.path());
+        let err = run_bounded(
+            &mut cmd,
             &["30"],
             "hung git push",
             None,
@@ -310,15 +319,16 @@ mod tests {
 
     /// The bound must be transparent on the fast path: a child that exits well
     /// inside the deadline returns success exactly like the unbounded
-    /// `run_cmd_in`, so wrapping a remote git op in the timeout changes nothing
+    /// `run_git_in`, so wrapping a remote git op in the timeout changes nothing
     /// when the remote responds.
     #[test]
-    fn run_cmd_in_timeout_succeeds_within_deadline() {
+    fn run_bounded_succeeds_within_deadline() {
         let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
         let dir = tempfile::tempdir().expect("tempdir");
-        run_cmd_in_timeout(
-            dir.path(),
-            "true",
+        let mut cmd = Command::new("true");
+        cmd.current_dir(dir.path());
+        run_bounded(
+            &mut cmd,
             &[],
             "fast op",
             None,
