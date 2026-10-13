@@ -24,6 +24,7 @@ set -euo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
 source "$LIB_DIR/scan.sh"
+source "$LIB_DIR/plural.sh"
 
 MODE="scan"
 if [[ "${1:-}" == "--groups" ]]; then
@@ -102,12 +103,11 @@ if [[ -n "$stale" ]]; then
 fi
 
 if [[ -n "$violations" ]]; then
-    count="$(printf '%s\n' "$violations" | wc -l | tr -d ' ')"
     echo "UNKEYED #[serial] — does not serialise against any keyed group."
     echo
     printf '%s\n' "$violations"
     echo
-    echo "$count attribute(s) above take the UNKEYED serial_test lock, which is"
+    echo "Each attribute above takes the UNKEYED serial_test lock, which is"
     echo "independent of every keyed group. A test holding it runs concurrently"
     echo "with #[serial(cwd)], #[serial(path_env)] and every other keyed test —"
     echo "so it is not protected from any of them, only from other unkeyed ones."
@@ -132,6 +132,6 @@ total_keyed=${#KEYED_ATTRS[@]}
 n_groups="$(serial_keys | sort -u | wc -l | tr -d ' ')"
 echo "audit-serial-groups: all $total_keyed #[serial] attributes name a group ($n_groups distinct groups)."
 if [[ ${#SERIAL_PENDING[@]} -gt 0 ]]; then
-    echo "audit-serial-groups: ${#SERIAL_PENDING[@]} site(s) still unkeyed and pinned for conversion:"
+    echo "audit-serial-groups: $(plural "${#SERIAL_PENDING[@]}" site sites) still unkeyed and pinned for conversion:"
     printf '  %s\n' "${SERIAL_PENDING[@]}"
 fi

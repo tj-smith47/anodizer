@@ -401,7 +401,7 @@ tasks:
       - .claude/scripts/audit-test-live-host.sh
 
   audit:prose:
-    desc: "Guard: no comment speaks in the first person, and the tool is spelled anodizer."
+    desc: "Guard: no comment speaks in the first person, the tool is spelled anodizer, and no script count puts its plural in parentheses."
     cmds:
       - .claude/scripts/audit-prose.sh
 

@@ -316,7 +316,8 @@ pub fn is_test_only_cfg(line: &str) -> bool {
 /// test module. That module starts at the run of attribute and comment lines
 /// above an item written out in place (`mod tests {` …) when one attribute of
 /// the run is a top-level test-only `#[cfg(…)]` ([`is_test_only_cfg`]). The
-/// attributes may share the item's line (`#[cfg(test)] mod tests {`), a
+/// attributes may share the item's line (`#[cfg(test)] mod tests {`) or
+/// spread over several lines (`#[cfg(all(` … `))]`), a
 /// `// …` or `/* … */` comment may follow the `{` or sit between attribute and
 /// item, and an attribute such as `#[cfg_attr(test, …)]` in the run is cut
 /// with the module. A `mod tests;` declaration does not start one — its body
@@ -342,9 +343,29 @@ pub fn production_half(text: &str) -> &str {
     let mut run_start: Option<usize> = None;
     let mut gated = false;
     let mut in_block_comment = false;
+    // An attribute spread over several lines, joined until its brackets
+    // close, and the offset of its first line.
+    let mut attribute: Option<(usize, String)> = None;
     for line in text.split_inclusive('\n') {
-        let at = offset;
+        let line_at = offset;
         offset += line.len();
+        let joined;
+        let (at, line) = match attribute.take() {
+            Some((start, mut text)) => {
+                text.push_str(line);
+                if !brackets_close(&text) {
+                    attribute = Some((start, text));
+                    continue;
+                }
+                joined = text;
+                (start, joined.as_str())
+            }
+            None if !in_block_comment && line.starts_with("#[") && !brackets_close(line) => {
+                attribute = Some((line_at, line.to_string()));
+                continue;
+            }
+            None => (line_at, line),
+        };
         if in_block_comment {
             in_block_comment = !line.contains("*/");
             continue;
@@ -434,7 +455,8 @@ fn strip_trailing_comment(line: &str) -> &str {
 }
 
 /// `mod name {` or `pub(…) mod name {`, a trailing comment allowed: a module
-/// whose body is written in place.
+/// whose body is written in place. `mod a; mod b {` is the declaration `mod
+/// a;` first, so it is not one.
 fn is_inline_module_header(line: &str) -> bool {
     let item = strip_trailing_comment(line).trim();
     let item = match item.strip_prefix("pub") {
@@ -444,7 +466,17 @@ fn is_inline_module_header(line: &str) -> bool {
     };
     item.trim_start()
         .strip_prefix("mod ")
-        .is_some_and(|rest| rest.trim_end().ends_with('{'))
+        .and_then(|rest| rest.trim_end().strip_suffix('{'))
+        .is_some_and(|name| {
+            let name = name.trim();
+            !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+        })
+}
+
+/// Whether every `[` in `text` has its `]`, so an attribute that opens in
+/// it has ended.
+fn brackets_close(text: &str) -> bool {
+    text.matches('[').count() <= text.matches(']').count()
 }
 
 /// Split `rest` — the text after an opening `(` — at the `)` that closes it,
@@ -1061,8 +1093,10 @@ unsafe impl Send for NotAFn {
 
     /// The inline test module is found in each of the shapes it is written
     /// in: attribute and header on one line, a comment after the `{`, a
-    /// block comment between attribute and header, and a `cfg_attr(test, …)`
-    /// attribute in the run, which is cut with the module.
+    /// block comment between attribute and header, a `cfg_attr(test, …)`
+    /// attribute in the run, which is cut with the module, and an attribute
+    /// spread over several lines. A declaration that shares the line with a
+    /// production module is not one.
     #[test]
     fn production_half_finds_every_shape_of_the_inline_test_module() {
         let prod = "fn a() {}\n\n";
@@ -1076,11 +1110,14 @@ unsafe impl Send for NotAFn {
             "#[cfg(test)]\n#[cfg_attr(test, allow(dead_code))]\nmod tests {\n}\n",
             "#[allow(dead_code)] #[cfg(all(test, unix))] pub(crate) mod tests {\n}\n",
             "#[cfg(test)]\n\nmod tests {\n}\n",
+            "#[cfg(all(\n    test,\n    unix\n))]\nmod tests {\n}\n",
+            "#[cfg(all(\n    test,\n    unix\n))] mod tests {\n}\n",
         ] {
             let src = format!("{prod}{module}");
             assert_eq!(production_half(&src), prod, "{module}");
         }
         for not_a_module in [
+            "#[cfg(test)] mod a; mod prod {\n}\n",
             "#[cfg_attr(test, allow(dead_code))]\nmod prod {\n}\n",
             "#[cfg(test)] mod tests;\nfn later() {}\n",
             "#[cfg(test)] fn helper() {}\nmod later {\n}\n",

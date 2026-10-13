@@ -17,6 +17,7 @@
 #                                       listed, before the gate spends
 #                                       any time
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/plural.sh"
 
 remote="origin"
 branch="$(git rev-parse --abbrev-ref HEAD)"
@@ -52,7 +53,7 @@ if [ "${filter_status}" -gt 1 ]; then
 fi
 
 if [ -n "${non_release}" ]; then
-  echo "push-preflight: ${branch} is behind ${upstream} by ${behind} commit(s)," >&2
+  echo "push-preflight: ${branch} is behind ${upstream} by $(plural "${behind}" commit commits)," >&2
   echo "and not all of them are anodizer release-machinery commits:" >&2
   git log --format='  %h %s' "HEAD..${upstream}" >&2
   echo >&2
@@ -61,7 +62,7 @@ if [ -n "${non_release}" ]; then
   exit 1
 fi
 
-echo "push-preflight: behind ${upstream} by ${behind} release-machinery commit(s):"
+echo "push-preflight: behind ${upstream} by $(plural "${behind}" "release-machinery commit" "release-machinery commits"):"
 git log --format='  %h %s' "HEAD..${upstream}"
 echo "push-preflight: rebasing onto ${upstream}..."
 if ! git rebase "${upstream}"; then

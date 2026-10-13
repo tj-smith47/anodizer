@@ -2072,16 +2072,20 @@ fn a_429_without_a_wait_header_falls_back_to_the_policy_backoff() {
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
-/// The bytes variant reads the same headers: a `RateLimit-Reset` one second
-/// ahead is the wait, and the binary success body comes back untouched.
+/// The bytes variant reads the same headers: a `RateLimit-Reset` a few
+/// seconds ahead is the wait, and the binary success body comes back
+/// untouched.
 #[test]
 fn a_rate_limit_reset_is_the_wait_on_the_bytes_variant() {
     use crate::test_helpers::responder::spawn_oneshot_http_responder_bytes;
+    // The header is whole seconds and `now` is truncated, so one second
+    // ahead can already be in the past when a loaded host reads the 429,
+    // and the wait then falls back to the policy's thirty seconds.
     let reset = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock after the epoch")
         .as_secs()
-        + 1;
+        + 3;
     let mut ok = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n".to_vec();
     ok.extend_from_slice(&[0xff, 0xfe]);
     let (addr, calls) = spawn_oneshot_http_responder_bytes(vec![

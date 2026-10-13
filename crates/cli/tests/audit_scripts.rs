@@ -124,6 +124,7 @@ const PROSE_VOICE_RS: &str = include_str!("fixtures/audit_scripts/prose_voice.rs
 const PROSE_VOICE_SH: &str = include_str!("fixtures/audit_scripts/prose_voice.sh.txt");
 const PROSE_VOICE_YML: &str = include_str!("fixtures/audit_scripts/prose_voice.yml.txt");
 const PROSE_NAME_RS: &str = include_str!("fixtures/audit_scripts/prose_name.rs.txt");
+const PROSE_PLURAL_SH: &str = include_str!("fixtures/audit_scripts/prose_plural.sh.txt");
 
 /// `audit-prose.sh` reports both counts in one run, so each pin gets a tree
 /// carrying only its own shapes; a shared tree would make either failure block
@@ -206,6 +207,64 @@ fn the_misspelled_tool_name_is_reported_and_the_config_alias_is_not() {
         "the config alias spells the old name as DATA: {out}"
     );
     assert_eq!(code, 1, "{out}");
+}
+
+/// A script or Taskfile count spells its noun for the number, so `file(s)`,
+/// `match(es)`, `entr(y|ies)` and `director(ies)` are reported wherever they
+/// sit on the line. A count printed through `plural`, and an awk function
+/// parameter in an embedded program (`trim(s) {`, `length(s);`,
+/// `trim(s) }`), are not.
+#[test]
+fn a_plural_in_parentheses_in_a_script_or_the_taskfile_is_reported() {
+    let taskfile = "tasks:\n  demo:\n    desc: \"Guard: every categor(ies) entry is read.\"\n";
+    let dir = prose_tree(&[
+        (".claude/scripts/demo.sh", PROSE_PLURAL_SH),
+        ("Taskfile.yml", taskfile),
+    ]);
+    let (code, out) = run_audit("audit-prose.sh", dir.path());
+
+    let mut want: Vec<String> = ["3 file(s)", "match(es)", "entr(y|ies)", "director(ies)"]
+        .iter()
+        .map(|needle| {
+            let (line, text) = at(PROSE_PLURAL_SH, needle);
+            format!(".claude/scripts/demo.sh:{line}: {}", text.trim_start())
+        })
+        .collect();
+    want.push("Taskfile.yml:3: desc: \"Guard: every categor(ies) entry is read.\"".to_string());
+    let mut found: Vec<String> = out
+        .lines()
+        .filter(|l| l.starts_with(".claude/scripts/") || l.starts_with("Taskfile.yml:"))
+        .map(str::to_string)
+        .collect();
+    found.sort();
+    want.sort();
+    assert_eq!(found, want, "{out}");
+    assert!(
+        out.contains("A COUNT WITH ITS PLURAL IN PARENTHESES"),
+        "{out}"
+    );
+    assert_eq!(code, 1, "{out}");
+}
+
+/// The same tree with every count spelled through `plural` is clean.
+#[test]
+fn a_script_whose_counts_go_through_plural_passes_the_plural_scan() {
+    let clean: String = PROSE_PLURAL_SH
+        .lines()
+        .filter(|l| {
+            !["file(s)", "match(es)", "entr(y|ies)", "director(ies)"]
+                .iter()
+                .any(|f| l.contains(f))
+        })
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let dir = prose_tree(&[(".claude/scripts/demo.sh", clean.as_str())]);
+    let (code, out) = run_audit("audit-prose.sh", dir.path());
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("every script count is spelled for its number"),
+        "{out}"
+    );
 }
 
 /// The bash the scanners run under. Every scanner asserts the 4.4 floor
@@ -917,7 +976,7 @@ fn path_stub_serial_audit_passes_a_tree_whose_mutators_are_all_keyed() {
     assert_eq!(code, 0, "{out}");
     assert!(
         out.contains(
-            "all 18 PATH-swapping tests in 1 crate(s) take #[serial(path_env)] (3 helper(s) derived)"
+            "all 18 PATH-swapping tests in 1 crate take #[serial(path_env)] (3 helpers derived)"
         ),
         "{out}"
     );
@@ -1058,11 +1117,11 @@ fn path_stub_readers_audit_passes_once_the_readers_are_keyed() {
     let (code, out) = run_path_stub_readers(dir.path());
     assert_eq!(code, 0, "{out}");
     assert!(
-        out.contains("6 tests in 1 binaries of 1 crate(s) run alone"),
+        out.contains("6 tests in 1 binary of 1 crate run alone"),
         "{out}"
     );
     assert!(
-        out.contains("note — 1 spawn(s) of a stubbed tool were made by another tool"),
+        out.contains("note — another tool, not a test, made 1 spawn of a stubbed tool"),
         "{out}"
     );
 }
@@ -1240,12 +1299,13 @@ fn a_scanner_that_cannot_load_its_awk_library_fails_loudly() {
     std::fs::create_dir(&lib).expect("lib dir");
     // Only the awk sources are withheld: the shared bash libraries still have
     // to load, or the scripts would die before ever reaching a scanner.
-    for shared in ["require-bash.sh", "scan.sh"] {
-        std::fs::copy(
-            repo.join(".claude/scripts/lib").join(shared),
-            lib.join(shared),
-        )
-        .unwrap_or_else(|e| panic!("copy lib/{shared}: {e}"));
+    for entry in std::fs::read_dir(repo.join(".claude/scripts/lib")).expect("lib dir") {
+        let shared = entry.expect("lib entry").path();
+        if shared.extension().is_some_and(|ext| ext == "sh") {
+            let name = shared.file_name().expect("lib file name");
+            std::fs::copy(&shared, lib.join(name))
+                .unwrap_or_else(|e| panic!("copy {}: {e}", shared.display()));
+        }
     }
 
     let mut checked = 0usize;
@@ -2826,7 +2886,7 @@ fn the_gate_mirror_audit_requires_every_ci_step_target_in_the_gate() {
             "{leg}: a gate reaching every step target passes:\n{out}"
         );
         assert!(
-            out.contains("19 `task` step target(s)"),
+            out.contains("19 `task` step targets"),
             "{leg}: test, test:brew-style (from a multi-line run), quiet, bundle, \
              flagged, apostrophe, quoted, continued, redirected, piped, the six \
              wrapped calls, a backtick, a brace group and a substitution inside a \

@@ -3497,15 +3497,16 @@ fn depends_on_macos_overrides_the_custom_block_scan() {
         (None, None, true, flat_top_level),
         (None, Some(false), false, flat_in_on_macos),
         (None, Some(true), true, flat_top_level),
-        // The scan reads `on_linux` on a heredoc body line as a Linux side.
+        // The scan reads a regex after `when` as code, so its `on_linux`
+        // counts as a Linux side.
         (
-            Some("caveats <<~EOS\n  on_linux\nEOS"),
+            Some("case x\nwhen /on_linux/ then 1\nend"),
             None,
             false,
             flat_in_on_macos,
         ),
         (
-            Some("caveats <<~EOS\n  on_linux\nEOS"),
+            Some("case x\nwhen /on_linux/ then 1\nend"),
             Some(true),
             true,
             flat_top_level,

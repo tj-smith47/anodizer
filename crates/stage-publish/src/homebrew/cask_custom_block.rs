@@ -16,14 +16,23 @@ pub(super) struct CustomBlockOsFacts {
 /// Read a `custom_block` for the facts `Homebrew/OSDependsOn` and
 /// `Cask#supports_linux?` look at.
 ///
-/// Each line is first reduced to its code, and both facts read only that:
+/// The block is first reduced to its code, line by line, and both facts
+/// read only that. These are set aside, and a literal that does not close
+/// on its line carries on into the following lines until it closes:
 ///
-/// - The contents of a `"…"` or `'…'` string, and of a `%q`, `%Q`, `%w`,
-///   `%W`, `%i`, `%I` or `%r` literal delimited by `()`, `[]`, `{}`, `<>`
-///   or one repeated punctuation character, are left out when the literal
-///   closes on the same line.
-/// - A `#` outside those literals cuts the rest of the line, so a comment
-///   line reads as blank.
+/// - a `"…"` or `'…'` string; inside a `"…"` string, `#{…}` is read as code
+///   with its own braces and strings, so the string closes at its own `"`;
+/// - a heredoc body, opened by `<<~TAG`, `<<-TAG` or `<<TAG` with the tag
+///   bare or quoted and closed by a line holding the tag alone (indented
+///   for `<<~` and `<<-`), case-sensitive; `<<` followed by a space or a
+///   digit, or written straight after a value (`1<<FLAGS`), is a shift;
+/// - a `%(…)`, `%q`, `%Q`, `%w`, `%W`, `%i`, `%I`, `%r`, `%s` or `%x`
+///   literal delimited by `()`, `[]`, `{}`, `<>` or one repeated
+///   punctuation character, unless the `%` follows a value (`a%(b)`);
+/// - a `?x` character literal (`?#`, `?"`, `?'`);
+/// - a `/…/` regex where the `/` follows `=~`, `!~`, `(`, `,` or `=`, or
+///   starts a line or a `;` statement;
+/// - a `#` comment, which cuts the rest of the line.
 ///
 /// Then:
 ///
@@ -31,11 +40,12 @@ pub(super) struct CustomBlockOsFacts {
 ///   as a whole word, so a receiver (`self.on_linux do`), a parenthesis or
 ///   a one-line nesting still counts.
 /// - A `depends_on` statement starts where `depends_on` is the first word
-///   of a line or of a `;`-separated statement. It continues onto the next
-///   line while the current one ends with `,`, `(`, `[`, `{`, `|`, `.`,
-///   `&&`, `||` or `\`, or while the statement has opened more `(`, `[`
-///   and `{` than it has closed. A blank line inside it is passed over, and
-///   a line that opens with `depends_on` starts a new statement.
+///   of a line or of a `;`-separated statement, after any opening `(`. It
+///   continues onto the next line while the current one ends with `,`,
+///   `(`, `[`, `{`, `|`, `.`, `&&`, `||`, `=>` or `\`, ends inside an open
+///   literal, or while the statement has opened more `(`, `[` and `{` than
+///   it has closed. A blank line inside it is passed over, and a line that
+///   opens with `depends_on` starts a new statement.
 /// - An OS dependency holds when the joined statement names an OS key or
 ///   symbol as a whole word.
 // A wrong verdict renders a cask Homebrew refuses. A missed Linux side or a
@@ -49,18 +59,18 @@ pub(super) struct CustomBlockOsFacts {
 // cannot be combined with another macOS `depends_on`"). A Linux side or OS
 // dependency read where there is none leaves `depends_on :macos` out, and a
 // cask whose downloads all sit in `on_macos` then has a nil Linux `sha256`
-// and fails to load on Linux. Heredoc bodies and literals that span lines
-// are read as code, so a stanza word inside one is an over-match; a stanza
-// built at runtime, or a `depends_on` after a `do` on the same line, is a
-// miss. `depends_on_macos:` overrides the verdict for every case.
+// and fails to load on Linux. A stanza built at runtime (through `send` or
+// `define_method`), or a `depends_on` after a `do` on the same line, is a
+// miss, and a regex after any other token is read as code.
+// `depends_on_macos:` overrides the verdict for every case.
 pub(super) fn custom_block_os_facts(block: Option<&str>) -> CustomBlockOsFacts {
     let Some(block) = block else {
         return CustomBlockOsFacts::default();
     };
-    let code: Vec<String> = block.lines().map(code_text).collect();
+    let code = code_lines(block);
     let other_os_block = code
         .iter()
-        .flat_map(|line| line.split(|c: char| !is_word_char(c)))
+        .flat_map(|line| line.text.split(|c: char| !is_word_char(c)))
         .any(|w| matches!(w, "on_linux" | "on_system" | "app_image"));
     let os_dependency = depends_on_statements(&code)
         .iter()
@@ -75,98 +85,250 @@ fn is_word_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
-/// The code of one line: every string and percent literal that closes on
-/// the line written as an empty `""`, and the line cut at the first `#`
-/// outside them. A quote left open runs to the end of the line, and that
-/// rest is dropped.
-fn code_text(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut at = 0;
-    while let Some(c) = line[at..].chars().next() {
-        match c {
-            '#' => break,
-            '"' | '\'' => {
-                let Some(len) = literal_body_len(&line[at + 1..], c, c) else {
-                    break;
-                };
-                out.push_str("\"\"");
-                at += 1 + len;
-            }
-            '%' => match percent_literal_len(&line[at..]) {
-                Some(len) => {
-                    out.push_str("\"\"");
-                    at += len;
-                }
-                None => {
-                    out.push('%');
-                    at += 1;
-                }
-            },
-            _ => {
-                out.push(c);
-                at += c.len_utf8();
-            }
+/// The code of one line of a `custom_block`.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct CodeLine {
+    /// The line with each literal that closes on it written as `""`, the
+    /// part of a literal that stays open left out, and a comment cut.
+    text: String,
+    /// The line ends inside a literal that closes on a later line.
+    open: bool,
+}
+
+/// A literal, or the code of an interpolation inside one, that the lexer
+/// is in.
+#[derive(Debug)]
+enum Frame {
+    /// A string, percent literal or regex, read up to `close`. A bracket
+    /// pair nests, counted in `depth`.
+    Literal {
+        open: char,
+        close: char,
+        depth: usize,
+        interpolates: bool,
+    },
+    /// `#{…}` code, ended by the `}` that matches no `{` opened inside it.
+    Interpolation { braces: usize },
+}
+
+/// A heredoc whose body begins on the line after its opener.
+struct Heredoc {
+    tag: String,
+    indented: bool,
+}
+
+impl Heredoc {
+    fn closes_on(&self, line: &str) -> bool {
+        if self.indented {
+            line.trim_start() == self.tag
+        } else {
+            line == self.tag
         }
+    }
+}
+
+/// The code of every line of `block`. Only the open literals and the
+/// pending heredocs carry from one line to the next.
+fn code_lines(block: &str) -> Vec<CodeLine> {
+    let mut stack = Vec::new();
+    let mut heredocs: Vec<Heredoc> = Vec::new();
+    let mut out = Vec::new();
+    for line in block.lines() {
+        if let Some(heredoc) = heredocs.first() {
+            if heredoc.closes_on(line) {
+                heredocs.remove(0);
+            }
+            out.push(CodeLine::default());
+            continue;
+        }
+        out.push(lex_line(line, &mut stack, &mut heredocs));
     }
     out
 }
 
-/// The length of `%<type><open>…<close>` at the start of `text`, closing
-/// delimiter included, or `None` when `text` opens no such literal or it
-/// does not close on the line.
-fn percent_literal_len(text: &str) -> Option<usize> {
-    let mut chars = text.chars();
-    chars.next();
-    if !matches!(chars.next()?, 'q' | 'Q' | 'w' | 'W' | 'i' | 'I' | 'r') {
-        return None;
+/// Read one line on top of the literals `stack` left open, queueing the
+/// heredocs it opens in `heredocs`.
+fn lex_line(line: &str, stack: &mut Vec<Frame>, heredocs: &mut Vec<Heredoc>) -> CodeLine {
+    let chars: Vec<char> = line.chars().collect();
+    let mut text = String::new();
+    // The last two characters of code read, ignoring whitespace; `None`
+    // at the start of a statement.
+    let mut prev: Option<char> = None;
+    let mut before_prev: Option<char> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some(Frame::Literal {
+            open,
+            close,
+            depth,
+            interpolates,
+        }) = stack.last_mut()
+        {
+            if c == '\\' {
+                i += 2;
+            } else if *interpolates && c == '#' && chars.get(i + 1) == Some(&'{') {
+                stack.push(Frame::Interpolation { braces: 0 });
+                prev = None;
+                i += 2;
+            } else {
+                if c == *close {
+                    if *depth == 0 {
+                        stack.pop();
+                        if stack.is_empty() {
+                            text.push_str("\"\"");
+                        }
+                        (before_prev, prev) = (prev, Some('"'));
+                    } else {
+                        *depth -= 1;
+                    }
+                } else if c == *open {
+                    *depth += 1;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        let after_value =
+            i > 0 && (is_word_char(chars[i - 1]) || matches!(chars[i - 1], ')' | ']' | '}'));
+        let rest = &chars[i..];
+        let opened = match c {
+            '#' => break,
+            '"' | '\'' => Some((1, Some(literal(c, c, c == '"')))),
+            '%' if !after_value => percent_literal(rest).map(|(len, frame)| (len, Some(frame))),
+            '?' if !after_value => char_literal_len(rest).map(|len| (len, None)),
+            '/' if prev.is_none()
+                || matches!(prev, Some('(' | ',' | '='))
+                || (prev == Some('~') && matches!(before_prev, Some('=' | '!'))) =>
+            {
+                Some((1, Some(literal('/', '/', true))))
+            }
+            '<' if !after_value && rest.get(1) == Some(&'<') => {
+                heredoc_opener(&rest[2..]).map(|(len, heredoc)| {
+                    heredocs.push(heredoc);
+                    (2 + len, None)
+                })
+            }
+            _ => None,
+        };
+        if let Some((len, frame)) = opened {
+            i += len;
+            match frame {
+                Some(frame) => stack.push(frame),
+                None => {
+                    if stack.is_empty() {
+                        text.push_str("\"\"");
+                    }
+                    (before_prev, prev) = (prev, Some('"'));
+                }
+            }
+            continue;
+        }
+        if let Some(Frame::Interpolation { braces }) = stack.last_mut() {
+            match c {
+                '{' => *braces += 1,
+                '}' if *braces == 0 => {
+                    stack.pop();
+                    i += 1;
+                    continue;
+                }
+                '}' => *braces -= 1,
+                _ => {}
+            }
+        } else {
+            text.push(c);
+        }
+        if c == ';' {
+            (before_prev, prev) = (None, None);
+        } else if !c.is_whitespace() {
+            (before_prev, prev) = (prev, Some(c));
+        }
+        i += 1;
     }
-    let open = chars.next()?;
+    CodeLine {
+        text,
+        open: !stack.is_empty(),
+    }
+}
+
+fn literal(open: char, close: char, interpolates: bool) -> Frame {
+    Frame::Literal {
+        open,
+        close,
+        depth: 0,
+        interpolates,
+    }
+}
+
+/// The opener of a percent literal at the start of `text`: its length and
+/// the literal it opens, or `None` when `text` opens none.
+fn percent_literal(text: &[char]) -> Option<(usize, Frame)> {
+    let (kind, at) = match text.get(1)? {
+        c @ ('q' | 'Q' | 'w' | 'W' | 'i' | 'I' | 'r' | 's' | 'x') => (Some(*c), 2),
+        _ => (None, 1),
+    };
+    let open = *text.get(at)?;
     let close = match open {
         '(' => ')',
         '[' => ']',
         '{' => '}',
         '<' => '>',
+        // A bare `%` before `=` or a space is the modulo operator.
+        '=' if kind.is_none() => return None,
         c if c.is_ascii_punctuation() => c,
         _ => return None,
     };
-    literal_body_len(&text[3..], open, close).map(|len| 3 + len)
+    let interpolates = !matches!(kind, Some('q' | 'w' | 'i' | 's'));
+    Some((at + 1, literal(open, close, interpolates)))
 }
 
-/// The length of a literal body up to and including its `close`, read
-/// with backslash escapes and, for a bracket pair, nesting. `None` when it
-/// never closes.
-fn literal_body_len(body: &str, open: char, close: char) -> Option<usize> {
-    let mut depth = 0usize;
-    let mut escaped = false;
-    for (at, c) in body.char_indices() {
-        if escaped {
-            escaped = false;
-        } else if c == '\\' {
-            escaped = true;
-        } else if c == close {
-            if depth == 0 {
-                return Some(at + c.len_utf8());
-            }
-            depth -= 1;
-        } else if c == open {
-            depth += 1;
-        }
+/// The length of a `?x` character literal at the start of `text`, or
+/// `None` when the `?` is not one (`a ? b : c`, `?ab`).
+fn char_literal_len(text: &[char]) -> Option<usize> {
+    let c = *text.get(1).filter(|c| !c.is_whitespace())?;
+    let len = if c == '\\' { 3 } else { 2 };
+    if is_word_char(c) && text.get(2).is_some_and(|&next| is_word_char(next)) {
+        return None;
     }
-    None
+    Some(len.min(text.len()))
+}
+
+/// The heredoc opened by the text after a `<<`: the length of that text
+/// and the heredoc, or `None` when the `<<` is a shift.
+fn heredoc_opener(text: &[char]) -> Option<(usize, Heredoc)> {
+    let indented = matches!(text.first(), Some('~' | '-'));
+    let at = usize::from(indented);
+    let first = *text.get(at)?;
+    let (tag, end) = if matches!(first, '\'' | '"' | '`') {
+        let len = text[at + 1..].iter().position(|&c| c == first)?;
+        (&text[at + 1..at + 1 + len], at + len + 2)
+    } else if first.is_ascii_alphabetic() || first == '_' {
+        let len = text[at..].iter().take_while(|&&c| is_word_char(c)).count();
+        (&text[at..at + len], at + len)
+    } else {
+        return None;
+    };
+    Some((
+        end,
+        Heredoc {
+            tag: tag.iter().collect(),
+            indented,
+        },
+    ))
 }
 
 /// Every statement among the code lines `lines` that opens with the word
 /// `depends_on`, joined across its continuation lines.
-fn depends_on_statements(lines: &[String]) -> Vec<String> {
+fn depends_on_statements(lines: &[CodeLine]) -> Vec<String> {
     let mut found = Vec::new();
     // The statement the previous line left open, whether it is a
     // `depends_on`, and how many brackets it has left open.
     let mut open: Option<(bool, String, i32)> = None;
     for line in lines {
-        if line.trim().is_empty() {
+        if line.text.trim().is_empty() {
             continue;
         }
-        let segments: Vec<&str> = line.split(';').collect();
+        let segments: Vec<&str> = line.text.split(';').collect();
         let last = segments.len() - 1;
         for (i, segment) in segments.into_iter().enumerate() {
             let opens = opens_with_depends_on(segment);
@@ -187,8 +349,10 @@ fn depends_on_statements(lines: &[String]) -> Vec<String> {
             balance += bracket_balance(segment);
             let tail = segment.trim_end();
             let continues = balance > 0
+                || line.open
                 || tail.ends_with([',', '(', '[', '{', '|', '.', '\\'])
-                || tail.ends_with("&&");
+                || tail.ends_with("&&")
+                || tail.ends_with("=>");
             if i == last && continues {
                 open = Some((is_depends_on, text, balance));
             } else if is_depends_on {
@@ -204,7 +368,7 @@ fn depends_on_statements(lines: &[String]) -> Vec<String> {
 
 fn opens_with_depends_on(statement: &str) -> bool {
     statement
-        .trim_start()
+        .trim_start_matches(|c: char| c == '(' || c.is_whitespace())
         .strip_prefix("depends_on")
         .is_some_and(|rest| !rest.starts_with(is_word_char))
 }
@@ -253,7 +417,7 @@ fn names_an_os(args: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{CustomBlockOsFacts, code_text, custom_block_os_facts};
+    use super::{CodeLine, CustomBlockOsFacts, code_lines, custom_block_os_facts};
 
     fn facts(other_os_block: bool, os_dependency: bool) -> CustomBlockOsFacts {
         CustomBlockOsFacts {
@@ -263,10 +427,10 @@ mod tests {
     }
 
     /// The code of a line keeps everything outside its literals, writes
-    /// each literal that closes on the line as `""`, and stops at a `#`
-    /// outside them.
+    /// each literal that closes on the line as `""`, leaves out the part of
+    /// one that stays open, and stops at a `#` outside them.
     #[test]
-    fn code_text_blanks_literals_and_cuts_the_comment() {
+    fn code_lines_blank_literals_and_cut_the_comment() {
         let cases = [
             (r#"url "x" # on_linux later"#, r#"url "" "#),
             ("caveats \"a # b\"", "caveats \"\""),
@@ -277,12 +441,78 @@ mod tests {
                 "x %w[a b] %i{c} %r<d> %Q|e#| %W!f! %I/g/",
                 "x \"\" \"\" \"\" \"\" \"\" \"\"",
             ),
-            ("x %w[ unclosed", "x %w[ unclosed"),
+            ("x %(a#b) %x(c) %s(d) y", "x \"\" \"\" \"\" y"),
             ("a % b # c", "a % b "),
-            ("x \"open # never closed", "x "),
+            ("n = a%(b) # c", "n = a%(b) "),
+            ("x ?# y ?\" z ?' w", "x \"\" y \"\" z \"\" w"),
+            ("empty?(x) # c", "empty?(x) "),
+            ("a ? b : c # d", "a ? b : c "),
+            ("x =~ /#/ # c", "x =~ \"\" "),
+            ("y = a / b # c", "y = a / b "),
+            ("f(/#/, /#/) # c", "f(\"\", \"\") "),
+            ("\"a#{\"}\"}b\" # c", "\"\" "),
+            ("\"a#{'\"'}b\" # c", "\"\" "),
+            ("\"#{{a: 1}[:a]}\" x", "\"\" x"),
+            ("caveats <<~EOS # c", "caveats \"\" "),
+            ("m = 1<<FLAGS # c", "m = 1<<FLAGS "),
+            ("m = a << 1 <<2 # c", "m = a << 1 <<2 "),
         ];
         for (line, want) in cases {
-            assert_eq!(code_text(line), want, "{line}");
+            assert_eq!(
+                code_lines(line),
+                [CodeLine {
+                    text: want.to_string(),
+                    open: false
+                }],
+                "{line}"
+            );
+        }
+    }
+
+    /// A literal or heredoc that does not close on its line carries on into
+    /// the following lines; its content is left out until it closes.
+    #[test]
+    fn an_open_literal_carries_into_the_next_lines() {
+        let line = |text: &str, open: bool| CodeLine {
+            text: text.to_string(),
+            open,
+        };
+        let cases: &[(&str, &[CodeLine])] = &[
+            (
+                "x \"open # not a comment\non_linux\" y",
+                &[line("x ", true), line("\"\" y", false)],
+            ),
+            (
+                "x %w[\n on_linux\n] y",
+                &[line("x ", true), line("", true), line("\"\" y", false)],
+            ),
+            (
+                "\"#{\n x \"}\" \n}\" y",
+                &[line("", true), line("", true), line("\"\" y", false)],
+            ),
+            (
+                "caveats <<~EOS, <<-'B'\n on_linux\n  EOS\n  B\nz",
+                &[
+                    line("caveats \"\", \"\"", false),
+                    line("", false),
+                    line("", false),
+                    line("", false),
+                    line("z", false),
+                ],
+            ),
+            (
+                "x <<EOS\n  EOS\neos\nEOS\nz",
+                &[
+                    line("x \"\"", false),
+                    line("", false),
+                    line("", false),
+                    line("", false),
+                    line("z", false),
+                ],
+            ),
+        ];
+        for (block, want) in cases {
+            assert_eq!(code_lines(block), *want, "{block}");
         }
     }
 
@@ -291,9 +521,9 @@ mod tests {
     /// its word appears there as a whole word. An OS dependency holds when
     /// a statement that opens with `depends_on`, read across its
     /// continuation lines, names an OS key or symbol. A wrong verdict
-    /// renders a cask Homebrew refuses, so the over-matches below are the
-    /// cases `depends_on_macos: true` exists for and the misses are the
-    /// cases for `depends_on_macos: false`.
+    /// renders a cask Homebrew refuses, so the over-match below is the case
+    /// `depends_on_macos: true` exists for and the misses are the cases for
+    /// `depends_on_macos: false`.
     #[test]
     fn custom_block_os_facts_reads_whole_words_in_the_code() {
         let cases: &[(&str, &str, CustomBlockOsFacts)] = &[
@@ -526,29 +756,108 @@ mod tests {
                 "on_arm do on_linux do binary \"x\" end end",
                 facts(true, false),
             ),
-            // Over-matches: no Linux side in Ruby, so the rendered cask
-            // loads on macOS and fails on Linux until `depends_on_macos:
-            // true` is set.
             (
                 "on_linux inside a %w[] list over several lines",
                 "%w[\n on_linux\n]",
-                facts(true, false),
+                facts(false, false),
             ),
             (
                 "on_linux on a heredoc body line",
                 "caveats <<~EOS\n  on_linux\nEOS\n",
+                facts(false, false),
+            ),
+            (
+                "a heredoc body, then a depends_on",
+                "caveats <<~EOS\non_linux\nEOS\ndepends_on macos: :big_sur",
+                facts(false, true),
+            ),
+            (
+                "a string over two lines, then a depends_on",
+                "caveats \"a\nb\"; depends_on macos: :ventura",
+                facts(false, true),
+            ),
+            (
+                "a string over two lines, then on_linux",
+                "caveats \"a\nb\"; on_linux do\nend",
                 facts(true, false),
+            ),
+            (
+                "on_linux in a string inside an interpolation",
+                "\"#{\"on_linux\"}\"",
+                facts(false, false),
+            ),
+            (
+                "a quote inside an interpolation does not close the string",
+                "\"a#{'\"'}b\"; on_linux do\nend",
+                facts(true, false),
+            ),
+            (
+                "on_linux in a bare %() literal",
+                "caveats %(on_linux)",
+                facts(false, false),
+            ),
+            (
+                "a # inside a bare %() literal cuts nothing",
+                "depends_on formula: %(a#b), macos: :ventura",
+                facts(false, true),
+            ),
+            (
+                "a # in a regex after =~ cuts nothing",
+                "x =~ /#/; on_linux do\nend",
+                facts(true, false),
+            ),
+            (
+                "a # in a char literal cuts nothing",
+                "x = ?#; on_linux do\nend",
+                facts(true, false),
+            ),
+            (
+                "a trailing => continues the statement",
+                "depends_on :formula =>\n \"x\", :macos => :ventura",
+                facts(false, true),
+            ),
+            (
+                "a depends_on statement inside parentheses",
+                "(depends_on macos: :ventura)",
+                facts(false, true),
+            ),
+            (
+                "a string spanning lines inside a depends_on",
+                "depends_on formula: \"a\nb\", macos: :ventura",
+                facts(false, true),
+            ),
+            (
+                "a string spanning lines holding an OS key",
+                "depends_on formula: \"a\nmacos: b\"",
+                facts(false, false),
             ),
             (
                 "a longer word holding on_linux or depends_on",
                 "end_foo\non_linux_helper\nmy_on_system\ndepends_on_x :macos\n",
                 facts(false, false),
             ),
-            // A miss: a Linux side built at runtime, which `depends_on_macos:
+            // An over-match: a regex after a token not in the list is read
+            // as code, which `depends_on_macos: true` exists for.
+            (
+                "on_linux in a regex after when",
+                "case x\nwhen /on_linux/ then 1\nend",
+                facts(true, false),
+            ),
+            // Misses: a Linux side built at runtime, which `depends_on_macos:
             // false` exists for.
             (
                 "an on_linux built at runtime",
                 "send(:\"on_#{\"lin\"}ux\") do\n  url \"https://e.com/l.tar.gz\"\nend\n",
+                facts(false, false),
+            ),
+            (
+                "a depends_on after a do on the same line",
+                "on_macos do depends_on macos: :ventura end",
+                facts(false, false),
+            ),
+            (
+                "an on_linux defined at runtime",
+                "define_method(:x) { send(\"on_\" + \"linux\") { } }",
                 facts(false, false),
             ),
         ];
@@ -566,7 +875,7 @@ mod tests {
     /// line, so an OS key there is read as part of it.
     #[test]
     fn every_continuation_ending_joins_the_next_line() {
-        for ending in [",", "(", "[", "{", "|", ".", "&&", "||", "\\"] {
+        for ending in [",", "(", "[", "{", "|", ".", "&&", "||", "=>", "\\"] {
             let block = format!("depends_on formula: \"x\" {ending}\n  macos: :ventura");
             assert_eq!(
                 custom_block_os_facts(Some(&block)),

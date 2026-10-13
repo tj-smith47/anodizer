@@ -238,14 +238,25 @@ out when the `custom_block` declares an OS dependency of its own, because
 Homebrew refuses a `depends_on :macos` beside a versioned
 `depends_on macos:`. anodizer reads the `custom_block` by these rules.
 
-Each line is first reduced to its code, and the rules below read only that:
+The block is first reduced to its code, and the rules below read only that.
+These are set aside, and each one that does not close on its line carries on
+into the following lines until it closes:
 
-- The contents of a `"…"` or `'…'` string, and of a `%q`, `%Q`, `%w`, `%W`,
-  `%i`, `%I` or `%r` literal delimited by `()`, `[]`, `{}`, `<>` or one
-  repeated punctuation character (`%q|…|`), are left out when the literal
-  closes on the same line.
-- A `#` outside those literals cuts the rest of the line, so a comment line
-  reads as blank.
+- A `"…"` or `'…'` string. Inside a `"…"` string, `#{…}` is read as code with
+  its own braces and strings, so `"a#{'"'}b"` ends at its last `"`.
+- A heredoc body, opened by `<<~TAG`, `<<-TAG` or `<<TAG` (the tag bare or
+  quoted) and closed by a line holding the tag alone, indented for `<<~` and
+  `<<-`, matched case-sensitively. A `<<` followed by a space or a digit, or
+  written straight after a value (`1<<FLAGS`), is a shift.
+- A `%()`, `%q`, `%Q`, `%w`, `%W`, `%i`, `%I`, `%r`, `%s` or `%x` literal
+  delimited by `()`, `[]`, `{}`, `<>` or one repeated punctuation character
+  (`%q|…|`). A `%` written straight after a value (`a%(b)`) is the modulo
+  operator.
+- A `?x` character literal, such as `?#`, `?"` or `?'`.
+- A `/…/` regex where the `/` follows `=~`, `!~`, `(`, `,` or `=`, or starts
+  a line or a `;` statement.
+- A `#` comment, which cuts the rest of the line, so a comment line reads as
+  blank.
 
 Then:
 
@@ -253,12 +264,13 @@ Then:
   code, as a whole word: `self.on_linux do`, `(on_linux do` and a one-line
   `on_arm do on_linux do … end end` all count.
 - A `depends_on` statement starts where `depends_on` is the first word of a
-  line or of a `;`-separated statement.
+  line or of a `;`-separated statement, after any opening `(`, so
+  `(depends_on macos: :ventura)` counts.
 - The statement continues onto the next line while the current line ends
-  with `,`, `(`, `[`, `{`, `|`, `.`, `&&`, `||` or `\`, or while the
-  statement has opened more `(`, `[` and `{` than it has closed. A blank
-  line inside it is passed over, and a line that opens with `depends_on`
-  starts a new statement.
+  with `,`, `(`, `[`, `{`, `|`, `.`, `&&`, `||`, `=>` or `\`, while the line
+  ends inside an open string or literal, or while the statement has opened
+  more `(`, `[` and `{` than it has closed. A blank line inside it is passed
+  over, and a line that opens with `depends_on` starts a new statement.
 - The statement is an OS dependency when it names the key `macos:`,
   `maximum_macos:` or `linux:`, or the symbol `:macos` or `:linux`, as a
   whole word.
@@ -271,6 +283,9 @@ Then:
 | `depends_on cask: [` / `  "a",` / `], macos: :ventura` on three lines | yes |
 | `depends_on formula: %q(a#b), macos: :ventura` | yes |
 | `depends_on formula: "x"; depends_on macos: :ventura` | yes |
+| `depends_on :formula =>` / `  "x", :macos => :ventura` on two lines | yes |
+| `caveats "a` / `b"; depends_on macos: :ventura` on two lines | yes |
+| `(depends_on macos: :ventura)` | yes |
 | `depends_on formula: "jq" # needs :macos 13` | no: the OS is in the comment |
 | `depends_on cask: ":macos"` | no: the OS is in a string |
 | `# depends_on macos: ">= :ventura"` | no: the line is a comment |
@@ -280,11 +295,13 @@ A flat single-download cask whose `custom_block` gives it a Linux side puts
 its `sha256` / `url` (and `app` / `service`) inside `on_macos`, so a Linux
 host never downloads the macOS archive.
 
-Heredoc bodies and literals that span several lines are read as code, so a
-Linux-side word inside one counts, and so does an OS key or symbol inside
-one in a `depends_on` statement. A stanza built at runtime (an `on_linux`
-sent through `send`), or a `depends_on` that follows a `do` on the same
-line, is not seen. A wrong answer gives a cask that Homebrew refuses:
+Three shapes are not read correctly. A stanza built at runtime (an
+`on_linux` sent through `send`, or a method made with `define_method`) is not
+seen, nor is a `depends_on` that follows a `do` on the same line
+(`on_macos do depends_on macos: :ventura end`). A regex after any token not
+listed above (`when /on_linux/`) is read as code, so a Linux-side word inside
+it counts. A wrong answer gives a cask that
+Homebrew refuses:
 
 - A download inside `on_macos` with no real Linux block and no
   `depends_on :macos` fails to load on Linux with `Missing Linux stanzas can
@@ -301,20 +318,24 @@ Set `depends_on_macos:` when the scan is wrong for your `custom_block`:
 homebrew_casks:
   - name: mytool
     binaries: [mytool]
-    # The scan reads the word on_linux in this heredoc as a Linux side.
+    # The scan reads the regex after `when` as code, so it sees on_linux.
     custom_block: |
-      caveats <<~EOS
-        Linux users install the mytool formula; on_linux is not used here.
-      EOS
+      caveats do
+        case ENV.fetch("MYTOOL_PROFILE", "")
+        when /on_linux/ then "Linux profiles are ignored on macOS."
+        end
+      end
     depends_on_macos: true
 ```
 
 ```ruby
 # This file was generated by anodizer (https://github.com/tj-smith47/anodizer). DO NOT EDIT.
 cask "mytool" do
-  caveats <<~EOS
-    Linux users install the mytool formula; on_linux is not used here.
-  EOS
+  caveats do
+    case ENV.fetch("MYTOOL_PROFILE", "")
+    when /on_linux/ then "Linux profiles are ignored on macOS."
+    end
+  end
 
   version "1.2.3"
   sha256 "2222222222222222222222222222222222222222222222222222222222222222"

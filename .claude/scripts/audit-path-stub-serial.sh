@@ -55,6 +55,7 @@ set -euo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
 source "$LIB_DIR/scan.sh"
+source "$LIB_DIR/plural.sh"
 
 MODE="scan"
 case "${1:-}" in
@@ -423,4 +424,4 @@ n_crates=0
 [[ -n "$crates" ]] && n_crates="$(printf '%s\n' "$crates" | wc -l | tr -d ' ')"
 n_helpers=0
 [[ -n "$helpers" ]] && n_helpers="$(printf '%s\n' $helpers | wc -l | tr -d ' ')"
-echo "audit-path-stub-serial: all $n_mutators PATH-swapping tests in $n_crates crate(s) take #[serial(path_env)] ($n_helpers helper(s) derived)."
+echo "audit-path-stub-serial: all $(plural "$n_mutators" "PATH-swapping test" "PATH-swapping tests") in $(plural "$n_crates" crate crates) take #[serial(path_env)] ($(plural "$n_helpers" helper helpers) derived)."

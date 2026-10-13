@@ -268,7 +268,7 @@ done < <(yqr -r '.tasks.test.cmds[]' "$TASKFILE")
 
 # --- 8. skip_publishers prose vs hosted set --------------------------------
 # The skip_publishers input DESCRIPTION is static (a GHA inputs.*.description
-# cannot read env), so it names the always-skipped hosted publisher(s) as prose.
+# cannot read env), so it names the always-skipped hosted publishers as prose.
 # Assert every HOSTED_PUBLISHERS token still appears in that prose, so a change
 # to the hosted set fails CI here instead of leaving stale operator-facing docs.
 # Presence-only — reworded prose still passes; only a dropped/renamed publisher

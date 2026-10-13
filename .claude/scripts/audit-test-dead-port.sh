@@ -241,12 +241,11 @@ fi
 violations="$(printf '%s\n' "$records" | sed -n 's/^V //p')"
 
 if [[ -n "$violations" ]]; then
-    count="$(printf '%s\n' "$violations" | wc -l | tr -d ' ')"
     echo "LISTENER BOUND AND RELEASED FOR ITS PORT — the freed port is not a dead one."
     echo
     printf '%s\n' "$violations"
     echo
-    echo "$count function(s) above bind 127.0.0.1:0, read the address and let the"
+    echo "Each function above binds 127.0.0.1:0, reads the address and lets the"
     echo "listener close. The port goes back to the ephemeral pool, and a test"
     echo "running in parallel can bind it before the connect that was meant to be"
     echo "refused — which then succeeds against that test's server."

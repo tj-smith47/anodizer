@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "audit-demo: 3 file(s) scanned"
+echo "audit-demo: $n match(es) found"
+# Reads every entr(y|ies) of the list.
+printf '%s\n' "$n director(ies) left"
+echo "audit-demo: $(plural "$n" file files) scanned"
+awk 'function trim(s) { return s } { n = length(s); print trim(s) }' /dev/null
+echo "the scheme is http or https"

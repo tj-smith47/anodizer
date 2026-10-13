@@ -27,6 +27,7 @@ set -euo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
 source "$LIB_DIR/scan.sh"
+source "$LIB_DIR/plural.sh"
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
 
@@ -96,4 +97,4 @@ if [[ -n "$violations" ]]; then
     exit 1
 fi
 
-echo "audit-binary-name: ${#FILES[@]} file(s) scanned; every binary-name read goes through binary_name_of."
+echo "audit-binary-name: $(plural "${#FILES[@]}" file files) scanned; every binary-name read goes through binary_name_of."

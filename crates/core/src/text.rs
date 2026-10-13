@@ -223,6 +223,77 @@ mod tests {
         );
     }
 
+    /// The lines of `text` that spell a plural in parentheses. A doc
+    /// comment's backtick code spans are removed first: `Some(s)` in one
+    /// is code, and the prose beside it is still read.
+    fn plural_lines(text: &str, is_doc: bool) -> Vec<String> {
+        text.lines()
+            .map(|line| {
+                if is_doc {
+                    without_code_spans(line)
+                } else {
+                    line.to_string()
+                }
+            })
+            .filter(|line| {
+                ["(s)", "(es)", "(y|ies)", "(ies)"]
+                    .iter()
+                    .any(|form| line.contains(form))
+            })
+            .collect()
+    }
+
+    /// `line` with each Markdown code span removed: a run of backticks up
+    /// to the next run of the same length. An unmatched run is kept.
+    fn without_code_spans(line: &str) -> String {
+        let mut out = String::new();
+        let mut rest = line;
+        while let Some(start) = rest.find('`') {
+            out.push_str(&rest[..start]);
+            let ticks = rest[start..].len() - rest[start..].trim_start_matches('`').len();
+            let after = &rest[start + ticks..];
+            let fence = &rest[start..start + ticks];
+            let mut search = 0;
+            let close = loop {
+                let Some(at) = after[search..].find(fence) else {
+                    break None;
+                };
+                let at = search + at;
+                let run = after[at..].len() - after[at..].trim_start_matches('`').len();
+                if run == ticks {
+                    break Some(at);
+                }
+                search = at + run;
+            };
+            match close {
+                Some(at) => rest = &after[at + ticks..],
+                None => {
+                    out.push_str(&rest[start..]);
+                    return out;
+                }
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// A code span is removed from a doc line before the match, and the
+    /// prose beside it is still read; a string literal is read whole.
+    #[test]
+    fn a_code_span_hides_only_itself() {
+        assert!(plural_lines("binds `Glob(s)` and `Some(ref s)`", true).is_empty());
+        assert!(plural_lines("binds ``Ok(Some(`s`))`` here", true).is_empty());
+        assert_eq!(
+            plural_lines("binds `Glob(s)`\nreads the file(s) beside `Glob(s)`", true),
+            ["reads the file(s) beside "]
+        );
+        assert_eq!(
+            plural_lines("an unmatched ` before file(s)", true),
+            ["an unmatched ` before file(s)"]
+        );
+        assert_eq!(plural_lines("`Glob(s)`", false), ["`Glob(s)`"]);
+    }
+
     /// A count in an operator line is spelled for its number through
     /// [`count_noun`]. `item(s)` reads as a hedge, and every other line
     /// already says `1 crate` / `2 crates`, so one spelled the old way
@@ -254,31 +325,6 @@ mod tests {
                 "required flag(s)",
                 "cosign's own error text, matched to classify a failure",
             ),
-            (
-                "crates/stage-sign/src/process/mod.rs",
-                "accepts at most 1 arg(s)",
-                "cosign's own error text, quoted in the doc of its classifier",
-            ),
-            (
-                "crates/core/src/git/remote.rs",
-                "http(s)://",
-                "a URL scheme, http or https",
-            ),
-            (
-                "crates/stage-appbundle/src/lib.rs",
-                "`Glob(s)`",
-                "an enum variant binding `s`",
-            ),
-            (
-                "crates/stage-blob/src/preflight.rs",
-                "`Ok(Some(Some(s)))`",
-                "a pattern binding `s`",
-            ),
-            (
-                "crates/stage-nfpm/src/run/mod.rs",
-                "Some(ref s)",
-                "a pattern binding `s`",
-            ),
         ];
         let mut offenders = Vec::new();
         let mut allowed_seen = vec![false; NOT_A_COUNT.len()];
@@ -288,19 +334,17 @@ mod tests {
             let text = std::fs::read_to_string(&source).expect("read source");
             sources += 1;
             let (literals, docs) = literals_and_docs(production_half(&text));
-            for literal in literals.into_iter().chain(docs) {
-                if !["(s)", "(es)", "(y|ies)", "(ies)"]
-                    .iter()
-                    .any(|form| literal.contains(form))
-                {
-                    continue;
-                }
+            let lines = literals
+                .iter()
+                .flat_map(|literal| plural_lines(literal, false))
+                .chain(docs.iter().flat_map(|doc| plural_lines(doc, true)));
+            for line in lines {
                 let allowed = NOT_A_COUNT
                     .iter()
-                    .position(|(file, needle, _)| path.ends_with(file) && literal.contains(needle));
+                    .position(|(file, needle, _)| path.ends_with(file) && line.contains(needle));
                 match allowed {
                     Some(index) => allowed_seen[index] = true,
-                    None => offenders.push(format!("{path}: {literal:?}")),
+                    None => offenders.push(format!("{path}: {line:?}")),
                 }
             }
         }

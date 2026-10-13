@@ -26,6 +26,7 @@ set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
+source "$LIB_DIR/plural.sh"
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
@@ -103,9 +104,9 @@ done
 
 # Every real workflow declares at least one job; zero parsed jobs means yq
 # emitted nothing across the board (a silent parse/format regression), not a
-# clean tree. Treat it as a failure rather than print "OK — all 0 job(s)".
+# clean tree. Treat it as a failure; a clean line would read "OK — all 0 jobs".
 if [[ "$checked" -eq 0 ]]; then
-    echo "audit-job-timeouts: FAIL — parsed 0 jobs across ${#FILES[@]} workflow file(s); yq produced no rows." >&2
+    echo "audit-job-timeouts: FAIL — parsed 0 jobs across $(plural "${#FILES[@]}" "workflow file" "workflow files"); yq produced no rows." >&2
     exit 2
 fi
 
@@ -119,4 +120,4 @@ if [[ -n "$offenders" ]]; then
     exit 1
 fi
 
-echo "audit-job-timeouts: OK — all ${checked} job(s) across ${#FILES[@]} workflow file(s) declare a positive timeout-minutes."
+echo "audit-job-timeouts: OK — all $(plural "${checked}" job jobs) across $(plural "${#FILES[@]}" "workflow file" "workflow files") declare a positive timeout-minutes."

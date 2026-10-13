@@ -12,6 +12,7 @@ set -euo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
 source "$LIB_DIR/scan.sh"
+source "$LIB_DIR/plural.sh"
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
@@ -361,4 +362,4 @@ if [[ "$ci_snapshot_args" != "$task_snapshot_args" ]]; then
     exit 1
 fi
 
-echo "audit-gate-mirror: OK — all ${job_count} ci.yml job(s) and ${#STEP_TARGETS[@]} \`task\` step target(s) are reachable from task gate; snapshot flag sets match."
+echo "audit-gate-mirror: OK — all $(plural "${job_count}" "ci.yml job" "ci.yml jobs") and $(plural "${#STEP_TARGETS[@]}" "\`task\` step target" "\`task\` step targets") are reachable from task gate; snapshot flag sets match."

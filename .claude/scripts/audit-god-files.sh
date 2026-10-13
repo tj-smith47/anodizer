@@ -56,6 +56,7 @@ set -euo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
 source "$LIB_DIR/scan.sh"
+source "$LIB_DIR/plural.sh"
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
 
@@ -366,10 +367,10 @@ fi
 
 echo "audit-god-files: ${#PROD_FILES[@]} production files scanned (${#IS_TEST_FILE[@]} test files excluded); largest unpinned is $largest_path at $largest_count production lines, ceiling $GOD_FILE_LIMIT."
 if [[ -n "$exempt_seen" ]]; then
-    echo "audit-god-files: ${#GOD_FILE_EXEMPT[@]} named exemption(s) — deliberate, not going to shrink:"
+    echo "audit-god-files: $(plural "${#GOD_FILE_EXEMPT[@]}" "named exemption" "named exemptions") — deliberate, not going to shrink:"
     printf '%s' "$exempt_seen"
 fi
 if [[ -n "$debt_seen" ]]; then
-    echo "audit-god-files: ${#GOD_FILE_DEBT[@]} recorded debt file(s) — OVER the ceiling and still owed a split:"
+    echo "audit-god-files: $(plural "${#GOD_FILE_DEBT[@]}" "recorded debt file" "recorded debt files") — OVER the ceiling and still owed a split:"
     printf '%s' "$debt_seen"
 fi

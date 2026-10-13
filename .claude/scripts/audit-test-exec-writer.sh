@@ -49,6 +49,7 @@ set -euo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
 source "$LIB_DIR/scan.sh"
+source "$LIB_DIR/plural.sh"
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
 
@@ -144,7 +145,7 @@ fi
 
 echo "audit-test-exec-writer: all ${#FILES[@]} executable-mode files route test writes through write_executable_script (or mark // exec-writer-ok:)."
 if [[ ${#UNROUTED[@]} -gt 0 ]]; then
-    echo "audit-test-exec-writer: ${#UNROUTED[@]} listed writer(s) still hand-rolled:"
+    echo "audit-test-exec-writer: $(plural "${#UNROUTED[@]}" "listed writer" "listed writers") still hand-rolled:"
     for entry in "${UNROUTED[@]}"; do
         echo "  ${entry%%|*} — ${entry#*|}"
     done

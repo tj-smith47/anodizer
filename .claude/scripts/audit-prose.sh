@@ -22,6 +22,11 @@
 #   3. A figurative metaphor from the banned list (`load-bearing`, `blast
 #      radius`, `bolted on`, `keystone`, `seam`, `mint`, `drain`, `green`,
 #      `land`), in a comment or a doc page.
+#   4. A count whose plural sits in parentheses (`file` + `(s)`, `(es)`,
+#      `(ies)`, `(y|ies)`) in a dev script or the Taskfile. The Rust side of
+#      the same rule is `no_production_string_spells_a_plural_in_parentheses`
+#      (crates/core/src/text.rs); a script spells the count through
+#      `plural` from lib/plural.sh.
 #
 # Prose in markdown is NOT scanned: the contract above governs comments, and the docsite's
 # first person is deliberate project voice.
@@ -236,6 +241,23 @@ AWK
 
 jargon_violations+="$jargon_prose"
 
+# Scan 4, a plural in parentheses in a dev script or the Taskfile. Every line
+# is read, since an `echo` and a `desc:` are exactly what the operator sees.
+# An awk function parameter in a program a script embeds (`trim(s) {`,
+# `length(s);`) is code, told apart by the `{`, `}`, `;` or `)` that follows
+# it.
+collect_files PLURAL_SH -rl --include='*.sh' -- '(' .claude/scripts
+collect_files PLURAL_TASKFILE -l -- '(' Taskfile.yml
+run_scanner plural_prose -f - "${PLURAL_SH[@]}" "${PLURAL_TASKFILE[@]}" /dev/null <<'AWK'
+    {
+        text = $0
+        gsub(/[A-Za-z]\((s|es|ies|y\|ies)\)[ \t]*[{};)]/, " ", text)
+        if (text ~ /[A-Za-z]\((s|es|ies|y\|ies)\)/) printf("%s:%d: %s\n", FILENAME, FNR, trim($0))
+    }
+
+    function trim(l) { sub(/^[ \t]+/, "", l); return l }
+AWK
+
 status=0
 
 if [[ -n "$rust_voice$shell_voice" ]]; then
@@ -278,8 +300,19 @@ if [[ -n "$jargon_violations" ]]; then
     status=1
 fi
 
+if [[ -n "$plural_prose" ]]; then
+    [[ $status -eq 1 ]] && echo
+    echo "A COUNT WITH ITS PLURAL IN PARENTHESES — spell the noun for the number."
+    echo
+    echo "$plural_prose"
+    echo
+    echo "Print the count through plural from .claude/scripts/lib/plural.sh, which"
+    echo "writes 1 file and 2 files, or write the plural where no count is printed."
+    status=1
+fi
+
 if [[ $status -eq 1 ]]; then
     exit 1
 fi
 
-echo "audit-prose: every comment speaks in the third person, in plain words; the tool is spelled anodizer."
+echo "audit-prose: every comment speaks in the third person, in plain words; the tool is spelled anodizer; every script count is spelled for its number."

@@ -57,6 +57,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/lib"
 source "$LIB_DIR/require-bash.sh"
 source "$LIB_DIR/scan.sh"
+source "$LIB_DIR/plural.sh"
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
@@ -282,12 +283,11 @@ if ((binaries == 0 || measured == 0)); then
 fi
 
 if [[ -n "$violations" ]]; then
-    count="$(printf '%s' "$violations" | wc -l | tr -d ' ')"
     echo "UNKEYED PATH READER — spawns a tool that a parallel test replaces with a stub."
     echo
     printf '%s' "$violations" | sort
     echo
-    echo "$count test(s) above spawn a tool by name while other tests in the same"
+    echo "Each test above spawns a tool by name while other tests in the same"
     echo "binary prepend a stub of that tool to the process PATH. Run in parallel,"
     echo "the reader executes the stub: a canned answer, or a file already deleted."
     echo
@@ -298,7 +298,7 @@ if [[ -n "$violations" ]]; then
     exit 1
 fi
 
-echo "audit-path-stub-readers: $measured tests in $binaries binaries of ${#CRATES[@]} crate(s) run alone; every test that spawns a tool its binary stubs takes #[serial(path_env)]."
+echo "audit-path-stub-readers: $(plural "$measured" test tests) in $(plural "$binaries" binary binaries) of $(plural "${#CRATES[@]}" crate crates) run alone; every test that spawns a tool its binary stubs takes #[serial(path_env)]."
 if ((indirect > 0)); then
-    echo "audit-path-stub-readers: note — $indirect spawn(s) of a stubbed tool were made by another tool, not by a test (host configuration, such as a git config that signs commits)."
+    echo "audit-path-stub-readers: note — another tool, not a test, made $(plural "$indirect" spawn spawns) of a stubbed tool (host configuration, such as a git config that signs commits)."
 fi
