@@ -23,10 +23,12 @@
 #      radius`, `bolted on`, `keystone`, `seam`, `mint`, `drain`, `green`,
 #      `land`), in a comment or a doc page.
 #   4. A count whose plural sits in parentheses (`file` + `(s)`, `(es)`,
-#      `(ies)`, `(y|ies)`) in a dev script or the Taskfile. The Rust side of
-#      the same rule is `no_production_string_spells_a_plural_in_parentheses`
-#      (crates/core/src/text.rs); a script spells the count through
-#      `plural` from lib/plural.sh.
+#      `(ies)`, `(y|ies)`) in a shell script, a workflow, an action or the
+#      Taskfile. The Rust side of the same rule is
+#      `no_production_string_spells_a_plural_in_parentheses`
+#      (crates/core/src/text.rs); a script spells the count through `plural`
+#      from lib/plural.sh, and a workflow `run:` block chooses the noun with
+#      `$([ "$n" = 1 ] && echo file || echo files)`.
 #
 # Prose in markdown is NOT scanned: the contract above governs comments, and the docsite's
 # first person is deliberate project voice.
@@ -241,17 +243,22 @@ AWK
 
 jargon_violations+="$jargon_prose"
 
-# Scan 4, a plural in parentheses in a dev script or the Taskfile. Every line
-# is read, since an `echo` and a `desc:` are exactly what the operator sees.
-# An awk function parameter in a program a script embeds (`trim(s) {`,
-# `length(s);`) is code, told apart by the `{`, `}`, `;` or `)` that follows
-# it.
-collect_files PLURAL_SH -rl --include='*.sh' -- '(' .claude/scripts
-collect_files PLURAL_TASKFILE -l -- '(' Taskfile.yml
-run_scanner plural_prose -f - "${PLURAL_SH[@]}" "${PLURAL_TASKFILE[@]}" /dev/null <<'AWK'
+# Scan 4, a plural in parentheses in a shell script, workflow, action or the
+# Taskfile. Every line is read, since an `echo`, a `printf` and a `desc:` are
+# exactly what the operator sees. An awk program a script embeds names a
+# parameter `s`, so `function <name>(s)` and a call to one of the helpers in
+# AWK_S_CALLS (`trim(s)`, `length(s)`) are code; any other word before `(s)`
+# is a count.
+AWK_S_CALLS='trim|ltrim|rtrim|length|tolower|toupper'
+collect_files PLURAL_SH -rl --include='*.sh' --include='*.sh.tpl' -- '(' .claude/scripts scripts
+collect_files PLURAL_YML -l -- '(' Taskfile.yml .github/workflows/*.yml .github/workflows/*.yaml
+collect_files PLURAL_ACTIONS -rl --include='*.yml' --include='*.yaml' --include='*.sh' -- '(' .github/actions
+run_scanner plural_prose -v AWK_S_CALLS="$AWK_S_CALLS" -f - \
+    "${PLURAL_SH[@]}" "${PLURAL_YML[@]}" "${PLURAL_ACTIONS[@]}" /dev/null <<'AWK'
+    BEGIN { awk_call = "(^|[^A-Za-z0-9_])(function +[A-Za-z_][A-Za-z0-9_]*|" AWK_S_CALLS ")\\(s\\)" }
     {
         text = $0
-        gsub(/[A-Za-z]\((s|es|ies|y\|ies)\)[ \t]*[{};)]/, " ", text)
+        gsub(awk_call, " ", text)
         if (text ~ /[A-Za-z]\((s|es|ies|y\|ies)\)/) printf("%s:%d: %s\n", FILENAME, FNR, trim($0))
     }
 
@@ -307,7 +314,9 @@ if [[ -n "$plural_prose" ]]; then
     echo "$plural_prose"
     echo
     echo "Print the count through plural from .claude/scripts/lib/plural.sh, which"
-    echo "writes 1 file and 2 files, or write the plural where no count is printed."
+    echo "writes 1 file and 2 files; in a workflow run: block choose the noun with"
+    echo "\$([ \"\$n\" = 1 ] && echo file || echo files); or write the plural where no"
+    echo "count is printed."
     status=1
 fi
 

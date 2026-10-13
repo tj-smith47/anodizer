@@ -302,7 +302,8 @@ jobs:
             echo "::error::No preserved-dist context manifests found in dist/"
             exit 1
           fi
-          printf 'Found %d preserved-dist context manifest(s):\n' "${#files[@]}"
+          n=${#files[@]}
+          printf 'Found %d preserved-dist context %s:\n' "$n" "$([ "$n" = 1 ] && echo manifest || echo manifests)"
           printf '  %s\n' "${files[@]}"
 
       - name: Assert all shards present

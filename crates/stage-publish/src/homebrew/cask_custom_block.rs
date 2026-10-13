@@ -25,14 +25,24 @@ pub(super) struct CustomBlockOsFacts {
 /// - a heredoc body, opened by `<<~TAG`, `<<-TAG` or `<<TAG` with the tag
 ///   bare or quoted and closed by a line holding the tag alone (indented
 ///   for `<<~` and `<<-`), case-sensitive; `<<` followed by a space or a
-///   digit, or written straight after a value (`1<<FLAGS`), is a shift;
+///   digit is a shift;
 /// - a `%(…)`, `%q`, `%Q`, `%w`, `%W`, `%i`, `%I`, `%r`, `%s` or `%x`
 ///   literal delimited by `()`, `[]`, `{}`, `<>` or one repeated
-///   punctuation character, unless the `%` follows a value (`a%(b)`);
-/// - a `?x` character literal (`?#`, `?"`, `?'`);
+///   punctuation character;
+/// - a `?x` character literal (`?#`, `?"`, `?'`) that no word follows
+///   straight away;
 /// - a `/…/` regex where the `/` follows `=~`, `!~`, `(`, `,` or `=`, or
 ///   starts a line or a `;` statement;
 /// - a `#` comment, which cuts the rest of the line.
+///
+/// A `<<`, `%` or `?` that follows a value is a shift, a modulo or a
+/// ternary and opens nothing. The code before it ends with a value when,
+/// whitespace aside, it ends with `)`, `]`, `}`, a number or a closed
+/// literal, with the word `class` (`class <<self`), or with a word written
+/// straight against the operator (`a%(b)`, `1<<FLAGS`). It does not after
+/// an operator, `(`, `,`, `;`, the start of a line, or a word followed by a
+/// space, which is a method or keyword taking an argument
+/// (`caveats <<~EOS`, `puts %w[a]`).
 ///
 /// Then:
 ///
@@ -155,6 +165,10 @@ fn lex_line(line: &str, stack: &mut Vec<Frame>, heredocs: &mut Vec<Heredoc>) -> 
     // at the start of a statement.
     let mut prev: Option<char> = None;
     let mut before_prev: Option<char> = None;
+    // The word or number the code read so far ends with, empty when it ends
+    // with anything else, and whether whitespace followed it.
+    let mut word = String::new();
+    let mut spaced = false;
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
@@ -170,6 +184,7 @@ fn lex_line(line: &str, stack: &mut Vec<Frame>, heredocs: &mut Vec<Heredoc>) -> 
             } else if *interpolates && c == '#' && chars.get(i + 1) == Some(&'{') {
                 stack.push(Frame::Interpolation { braces: 0 });
                 prev = None;
+                word.clear();
                 i += 2;
             } else {
                 if c == *close {
@@ -179,6 +194,7 @@ fn lex_line(line: &str, stack: &mut Vec<Frame>, heredocs: &mut Vec<Heredoc>) -> 
                             text.push_str("\"\"");
                         }
                         (before_prev, prev) = (prev, Some('"'));
+                        word.clear();
                     } else {
                         *depth -= 1;
                     }
@@ -189,8 +205,7 @@ fn lex_line(line: &str, stack: &mut Vec<Frame>, heredocs: &mut Vec<Heredoc>) -> 
             }
             continue;
         }
-        let after_value =
-            i > 0 && (is_word_char(chars[i - 1]) || matches!(chars[i - 1], ')' | ']' | '}'));
+        let after_value = after_value(prev, &word, spaced);
         let rest = &chars[i..];
         let opened = match c {
             '#' => break,
@@ -220,6 +235,7 @@ fn lex_line(line: &str, stack: &mut Vec<Frame>, heredocs: &mut Vec<Heredoc>) -> 
                         text.push_str("\"\"");
                     }
                     (before_prev, prev) = (prev, Some('"'));
+                    word.clear();
                 }
             }
             continue;
@@ -238,16 +254,47 @@ fn lex_line(line: &str, stack: &mut Vec<Frame>, heredocs: &mut Vec<Heredoc>) -> 
         } else {
             text.push(c);
         }
-        if c == ';' {
-            (before_prev, prev) = (None, None);
-        } else if !c.is_whitespace() {
-            (before_prev, prev) = (prev, Some(c));
+        if c.is_whitespace() {
+            spaced = true;
+        } else {
+            if !is_word_char(c) || spaced || !prev.is_some_and(is_word_char) {
+                word.clear();
+            }
+            if is_word_char(c) {
+                word.push(c);
+            }
+            spaced = false;
+            (before_prev, prev) = if c == ';' {
+                (None, None)
+            } else {
+                (prev, Some(c))
+            };
         }
         i += 1;
     }
     CodeLine {
         text,
         open: !stack.is_empty(),
+    }
+}
+
+/// True when the code before a `<<`, `?` or `%` ends with a value, which
+/// makes it a shift, a ternary or a modulo. `prev` is the last code
+/// character (`"` for a literal that closed), `word` the word or number the
+/// code ends with, and `spaced` whether whitespace followed it.
+///
+/// A value ends with `)`, `]`, `}`, a closed literal or a number, or is a
+/// word written straight against the operator (`a%(b)`). The word `class`
+/// counts too, for `class <<self`. Any other word is a method or keyword
+/// taking an argument (`caveats <<~EOS`, `puts %w[a]`), and an operator,
+/// `(`, `,` or the start of a statement leaves no value.
+fn after_value(prev: Option<char>, word: &str, spaced: bool) -> bool {
+    match prev {
+        Some(')' | ']' | '}' | '"') => true,
+        Some(c) if is_word_char(c) => {
+            !spaced || word == "class" || word.starts_with(|c: char| c.is_ascii_digit())
+        }
+        _ => false,
     }
 }
 
@@ -287,7 +334,9 @@ fn percent_literal(text: &[char]) -> Option<(usize, Frame)> {
 fn char_literal_len(text: &[char]) -> Option<usize> {
     let c = *text.get(1).filter(|c| !c.is_whitespace())?;
     let len = if c == '\\' { 3 } else { 2 };
-    if is_word_char(c) && text.get(2).is_some_and(|&next| is_word_char(next)) {
+    // A character literal followed straight by a word is no literal: `?ab`
+    // is a method name, and `?"a"` a ternary before a string.
+    if text.get(len).is_some_and(|&next| is_word_char(next)) {
         return None;
     }
     Some(len.min(text.len()))
@@ -438,10 +487,11 @@ mod tests {
             (r##"x "a\"#b" y"##, r#"x "" y"#),
             ("x %q(a(b)#c) y", "x \"\" y"),
             (
-                "x %w[a b] %i{c} %r<d> %Q|e#| %W!f! %I/g/",
-                "x \"\" \"\" \"\" \"\" \"\" \"\"",
+                "x %w[a b], %i{c}, %r<d>, %Q|e#|, %W!f!, %I/g/",
+                "x \"\", \"\", \"\", \"\", \"\", \"\"",
             ),
-            ("x %(a#b) %x(c) %s(d) y", "x \"\" \"\" \"\" y"),
+            ("x %(a#b), %x(c), %s(d) y", "x \"\", \"\", \"\" y"),
+            ("x = \"a\" %(b) # c", "x = \"\" %(b) "),
             ("a % b # c", "a % b "),
             ("n = a%(b) # c", "n = a%(b) "),
             ("x ?# y ?\" z ?' w", "x \"\" y \"\" z \"\" w"),
@@ -730,6 +780,46 @@ mod tests {
                 "a << shift, then on_linux",
                 "m = 1<<FLAGS\non_linux do\nend",
                 facts(true, false),
+            ),
+            (
+                "a << after a call is a shift, then on_linux",
+                "x = foo() <<x\non_linux do\nend",
+                facts(true, false),
+            ),
+            (
+                "a << after an index is a shift, then on_linux",
+                "x = list[0] <<y\non_linux do\nend",
+                facts(true, false),
+            ),
+            (
+                "class <<self is a shift, then on_linux",
+                "class <<self\nend\non_linux do\nend",
+                facts(true, false),
+            ),
+            (
+                "a ? after a call is a ternary, then on_linux",
+                "x = foo() ?\"a\" : \"b\"\non_linux do\nend",
+                facts(true, false),
+            ),
+            (
+                "a ? before a quote and a word is a ternary, then on_linux",
+                "x = c ?\"a\" : \"b\"\non_linux do\nend",
+                facts(true, false),
+            ),
+            (
+                "a % after a parenthesis is a modulo, then on_linux",
+                "n = (a) %-2\non_linux do\nend",
+                facts(true, false),
+            ),
+            (
+                "a heredoc after a method name hides on_linux",
+                "caveats <<~EOS\n  on_linux\nEOS\n",
+                facts(false, false),
+            ),
+            (
+                "two heredocs as arguments hide on_linux",
+                "puts(<<~A, <<~B)\n on_linux\nA\n on_linux\nB\n",
+                facts(false, false),
             ),
             (
                 "a quoted heredoc tag with a dash, then on_linux",

@@ -209,31 +209,57 @@ fn the_misspelled_tool_name_is_reported_and_the_config_alias_is_not() {
     assert_eq!(code, 1, "{out}");
 }
 
-/// A script or Taskfile count spells its noun for the number, so `file(s)`,
+/// A count in a script, a workflow, an action or the Taskfile spells its noun
+/// for the number, so `file(s)`,
 /// `match(es)`, `entr(y|ies)` and `director(ies)` are reported wherever they
-/// sit on the line. A count printed through `plural`, and an awk function
-/// parameter in an embedded program (`trim(s) {`, `length(s);`,
-/// `trim(s) }`), are not.
+/// sit on the line, whatever follows them (`file(s);`, `leg(s))`,
+/// `crate(s) {`). A count printed through `plural`, and an awk parameter
+/// `s` in an embedded program (`function trim(s)`, `length(s)`,
+/// `print trim(s)`), are not.
 #[test]
-fn a_plural_in_parentheses_in_a_script_or_the_taskfile_is_reported() {
+fn a_plural_in_parentheses_in_a_script_a_workflow_or_the_taskfile_is_reported() {
     let taskfile = "tasks:\n  demo:\n    desc: \"Guard: every categor(ies) entry is read.\"\n";
+    let workflow =
+        "jobs:\n  demo:\n    steps:\n      - run: printf 'Found %d manifest(s)\\n' \"$n\"\n";
+    let action = "runs:\n  steps:\n    - run: echo \"$n shard(s) merged\"\n";
     let dir = prose_tree(&[
         (".claude/scripts/demo.sh", PROSE_PLURAL_SH),
         ("Taskfile.yml", taskfile),
+        ("scripts/demo.sh", "echo \"$n object(s) compared\"\n"),
+        (".github/workflows/demo.yml", workflow),
+        (".github/actions/demo/action.yml", action),
+        (".github/actions/demo/run.sh", "echo \"$n file(s) moved\"\n"),
     ]);
     let (code, out) = run_audit("audit-prose.sh", dir.path());
 
-    let mut want: Vec<String> = ["3 file(s)", "match(es)", "entr(y|ies)", "director(ies)"]
-        .iter()
-        .map(|needle| {
-            let (line, text) = at(PROSE_PLURAL_SH, needle);
-            format!(".claude/scripts/demo.sh:{line}: {}", text.trim_start())
-        })
-        .collect();
-    want.push("Taskfile.yml:3: desc: \"Guard: every categor(ies) entry is read.\"".to_string());
+    let mut want: Vec<String> = [
+        "3 file(s)",
+        "match(es)",
+        "entr(y|ies)",
+        "director(ies)",
+        "the file(s);",
+        "leg(s))",
+        "crate(s) {",
+    ]
+    .iter()
+    .map(|needle| {
+        let (line, text) = at(PROSE_PLURAL_SH, needle);
+        format!(".claude/scripts/demo.sh:{line}: {}", text.trim_start())
+    })
+    .collect();
+    want.extend(
+        [
+            "Taskfile.yml:3: desc: \"Guard: every categor(ies) entry is read.\"",
+            "scripts/demo.sh:1: echo \"$n object(s) compared\"",
+            ".github/workflows/demo.yml:4: - run: printf 'Found %d manifest(s)\\n' \"$n\"",
+            ".github/actions/demo/action.yml:3: - run: echo \"$n shard(s) merged\"",
+            ".github/actions/demo/run.sh:1: echo \"$n file(s) moved\"",
+        ]
+        .map(String::from),
+    );
     let mut found: Vec<String> = out
         .lines()
-        .filter(|l| l.starts_with(".claude/scripts/") || l.starts_with("Taskfile.yml:"))
+        .filter(|l| l.contains(".sh:") || l.contains(".yml:"))
         .map(str::to_string)
         .collect();
     found.sort();
@@ -252,9 +278,16 @@ fn a_script_whose_counts_go_through_plural_passes_the_plural_scan() {
     let clean: String = PROSE_PLURAL_SH
         .lines()
         .filter(|l| {
-            !["file(s)", "match(es)", "entr(y|ies)", "director(ies)"]
-                .iter()
-                .any(|f| l.contains(f))
+            ![
+                "file(s)",
+                "match(es)",
+                "entr(y|ies)",
+                "director(ies)",
+                "leg(s)",
+                "crate(s)",
+            ]
+            .iter()
+            .any(|f| l.contains(f))
         })
         .map(|l| format!("{l}\n"))
         .collect();
@@ -1121,7 +1154,9 @@ fn path_stub_readers_audit_passes_once_the_readers_are_keyed() {
         "{out}"
     );
     assert!(
-        out.contains("note — another tool, not a test, made 1 spawn of a stubbed tool"),
+        out.contains(
+            "note — 1 spawn of a stubbed tool was made by another tool, such as git signing commits."
+        ),
         "{out}"
     );
 }

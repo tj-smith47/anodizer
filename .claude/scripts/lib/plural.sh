@@ -1,4 +1,4 @@
-# Spell a count with the noun for its number. Sourced, not executed:
+# Spell a count with the noun for its number. Meant to be sourced:
 #
 #   LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 #   source "$LIB_DIR/plural.sh"

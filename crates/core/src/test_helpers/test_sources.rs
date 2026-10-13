@@ -317,10 +317,11 @@ pub fn is_test_only_cfg(line: &str) -> bool {
 /// above an item written out in place (`mod tests {` …) when one attribute of
 /// the run is a top-level test-only `#[cfg(…)]` ([`is_test_only_cfg`]). The
 /// attributes may share the item's line (`#[cfg(test)] mod tests {`) or
-/// spread over several lines (`#[cfg(all(` … `))]`), a
-/// `// …` or `/* … */` comment may follow the `{` or sit between attribute and
-/// item, and an attribute such as `#[cfg_attr(test, …)]` in the run is cut
-/// with the module. A `mod tests;` declaration does not start one — its body
+/// spread over several lines (`#[cfg(all(` … `))]`), where a bracket inside a
+/// string or a `//` comment is text. The module may have a raw name
+/// (`mod r#tests {`), a `// …` or `/* … */` comment may follow the `{` or sit
+/// between attribute and item, and an attribute such as
+/// `#[cfg_attr(test, …)]` in the run is cut with the module. A `mod tests;` declaration does not start one — its body
 /// is a file the name rules already classify, and production items follow the
 /// declaration — and neither does a `cfg` nested inside another item. A file
 /// with no inline test module is returned whole.
@@ -422,7 +423,7 @@ fn leading_attributes(line: &str) -> (bool, &str) {
     while rest.starts_with("#[") {
         let mut depth = 0usize;
         let mut close = None;
-        for (index, ch) in rest.char_indices().skip(1) {
+        for (index, ch) in attribute_code(rest).skip(1) {
             match ch {
                 '[' => depth += 1,
                 ']' => {
@@ -454,9 +455,9 @@ fn strip_trailing_comment(line: &str) -> &str {
     &line[..cut]
 }
 
-/// `mod name {` or `pub(…) mod name {`, a trailing comment allowed: a module
-/// whose body is written in place. `mod a; mod b {` is the declaration `mod
-/// a;` first, so it is not one.
+/// `mod name {`, `mod r#name {` or `pub(…) mod name {`, a trailing comment
+/// allowed: a module whose body is written in place. `mod a; mod b {` is the
+/// declaration `mod a;` first, so it is not one.
 fn is_inline_module_header(line: &str) -> bool {
     let item = strip_trailing_comment(line).trim();
     let item = match item.strip_prefix("pub") {
@@ -469,14 +470,53 @@ fn is_inline_module_header(line: &str) -> bool {
         .and_then(|rest| rest.trim_end().strip_suffix('{'))
         .is_some_and(|name| {
             let name = name.trim();
+            let name = name.strip_prefix("r#").unwrap_or(name);
             !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
         })
 }
 
 /// Whether every `[` in `text` has its `]`, so an attribute that opens in
-/// it has ended.
+/// it has ended. Brackets inside a string or a `//` comment are text.
 fn brackets_close(text: &str) -> bool {
-    text.matches('[').count() <= text.matches(']').count()
+    attribute_code(text)
+        .map(|(_, ch)| match ch {
+            '[' => 1,
+            ']' => -1,
+            _ => 0,
+        })
+        .sum::<i32>()
+        <= 0
+}
+
+/// The characters of attribute text, with their offsets, leaving out the
+/// contents of each `"…"` string and each `//` comment up to its line's end.
+fn attribute_code(text: &str) -> impl Iterator<Item = (usize, char)> + '_ {
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut in_comment = false;
+    let mut chars = text.char_indices().peekable();
+    std::iter::from_fn(move || {
+        while let Some((index, ch)) = chars.next() {
+            if in_comment {
+                in_comment = ch != '\n';
+            } else if in_string {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+            } else if ch == '"' {
+                in_string = true;
+            } else if ch == '/' && chars.peek().is_some_and(|&(_, next)| next == '/') {
+                in_comment = true;
+            } else {
+                return Some((index, ch));
+            }
+        }
+        None
+    })
 }
 
 /// Split `rest` — the text after an opening `(` — at the `)` that closes it,
@@ -1112,6 +1152,10 @@ unsafe impl Send for NotAFn {
             "#[cfg(test)]\n\nmod tests {\n}\n",
             "#[cfg(all(\n    test,\n    unix\n))]\nmod tests {\n}\n",
             "#[cfg(all(\n    test,\n    unix\n))] mod tests {\n}\n",
+            "#[allow(dead_code)] // ranges like [a, b)\n#[cfg(test)]\nmod tests {\n}\n",
+            "#[cfg_attr(test, doc = \"[\")]\n#[cfg(test)]\nmod tests {\n}\n",
+            "#[cfg(all(\n    feature = \"a]\",\n    test\n))]\nmod tests {\n}\n",
+            "#[cfg(test)]\nmod r#tests {\n}\n",
         ] {
             let src = format!("{prod}{module}");
             assert_eq!(production_half(&src), prod, "{module}");
@@ -1122,6 +1166,7 @@ unsafe impl Send for NotAFn {
             "#[cfg(test)] mod tests;\nfn later() {}\n",
             "#[cfg(test)] fn helper() {}\nmod later {\n}\n",
             "// #[cfg(test)]\nmod prod {\n}\n",
+            "#[cfg_attr(test, doc = \"[\")]\nfn prod() {}\n#[cfg(test)]\nmod r#a b {\n}\n",
         ] {
             let src = format!("{prod}{not_a_module}");
             assert_eq!(production_half(&src), src, "{not_a_module}");

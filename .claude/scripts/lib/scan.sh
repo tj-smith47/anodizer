@@ -1,4 +1,4 @@
-# The one way an audit scanner runs awk. Sourced, not executed:
+# The one way an audit scanner runs awk. Meant to be sourced:
 #
 #   LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 #   source "$LIB_DIR/scan.sh"

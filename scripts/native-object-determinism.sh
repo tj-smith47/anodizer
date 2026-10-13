@@ -15,6 +15,8 @@
 # skipped entirely: ar member timestamps are archive metadata, not codegen.
 set -euo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../.claude/scripts/lib/plural.sh"
+
 DEPS=(aws-lc-sys ring zstd-sys lzma-sys blake3)
 TARGET_TRIPLE=x86_64-pc-windows-msvc
 
@@ -91,7 +93,7 @@ build
 second_snapshot=$(snapshot second)
 
 if diff_out=$(diff "$first_snapshot" "$second_snapshot"); then
-    echo "native-object-determinism: ${object_count} C object(s) byte-stable across 2 clang-cl rebuilds."
+    echo "native-object-determinism: $(plural "$object_count" "C object" "C objects") byte-stable across 2 clang-cl rebuilds."
 else
     echo "native-object-determinism: FAIL — normalized .obj/.o hash drift between clang-cl rebuilds (TimeDateStamp already excluded):" >&2
     echo "$diff_out" >&2

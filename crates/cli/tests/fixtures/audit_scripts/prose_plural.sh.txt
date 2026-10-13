@@ -7,4 +7,7 @@ echo "audit-demo: $n match(es) found"
 printf '%s\n' "$n director(ies) left"
 echo "audit-demo: $(plural "$n" file files) scanned"
 awk 'function trim(s) { return s } { n = length(s); print trim(s) }' /dev/null
+echo "audit-demo: scanned the file(s); done"
+printf '%s\n' "(checked every leg(s))"
+echo "for each crate(s) { read it }"
 echo "the scheme is http or https"

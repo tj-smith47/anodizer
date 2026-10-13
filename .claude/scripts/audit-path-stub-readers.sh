@@ -300,5 +300,6 @@ fi
 
 echo "audit-path-stub-readers: $(plural "$measured" test tests) in $(plural "$binaries" binary binaries) of $(plural "${#CRATES[@]}" crate crates) run alone; every test that spawns a tool its binary stubs takes #[serial(path_env)]."
 if ((indirect > 0)); then
-    echo "audit-path-stub-readers: note — another tool, not a test, made $(plural "$indirect" spawn spawns) of a stubbed tool (host configuration, such as a git config that signs commits)."
+    if ((indirect == 1)); then were=was; else were=were; fi
+    echo "audit-path-stub-readers: note — $(plural "$indirect" spawn spawns) of a stubbed tool $were made by another tool, such as git signing commits."
 fi
