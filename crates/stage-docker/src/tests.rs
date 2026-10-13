@@ -8007,6 +8007,13 @@ fn a_multi_platform_annotation_keeps_its_own_buildx_scope() {
             &[("index,bogus:foo", "bar")],
             &["index:index,bogus:foo=bar"],
         ),
+        (&[("index,:foo", "bar")], &["index:index,:foo=bar"]),
+        (&[(":foo", "bar")], &["index::foo=bar"]),
+        (&[("manifest", "bar")], &["index:manifest=bar"]),
+        (
+            &[("manifest[a=b]:foo", "bar")],
+            &["index:manifest[a=b]:foo=bar"],
+        ),
     ];
     for (annotations, expect) in cases {
         assert_eq!(
@@ -8184,5 +8191,281 @@ fn manifest_push_flags_are_rendered_onto_the_push_command() {
             "--annotation=tag=v1.2.3",
         ])),
         "{calls:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// docker pages: config blocks and quoted output
+// ---------------------------------------------------------------------------
+
+/// A docs page under `docs/site/content/docs/`.
+fn docs_page(relative: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/site/content/docs")
+        .join(relative);
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// Every fenced block on `page` as `(language, body)`, in page order.
+fn fenced_blocks(page: &str) -> Vec<(String, String)> {
+    let mut blocks = Vec::new();
+    let mut open: Option<(String, String)> = None;
+    for line in page.lines() {
+        match (line.strip_prefix("```"), open.take()) {
+            (Some(_), Some(block)) => blocks.push(block),
+            (Some(language), None) => open = Some((language.trim().to_string(), String::new())),
+            (None, Some((language, mut body))) => {
+                body.push_str(line);
+                body.push('\n');
+                open = Some((language, body));
+            }
+            (None, None) => {}
+        }
+    }
+    blocks
+}
+
+/// The fenced blocks of one `## ` section of `page`.
+fn section_blocks(page: &str, heading: &str) -> Vec<(String, String)> {
+    let start = page
+        .find(&format!("\n{heading}\n"))
+        .unwrap_or_else(|| panic!("no `{heading}` heading"));
+    let rest = &page[start + heading.len() + 2..];
+    let end = rest.find("\n## ").unwrap_or(rest.len());
+    fenced_blocks(&rest[..end])
+}
+
+/// The one crate block of a page's config example.
+fn docs_crate(body: &str) -> anodizer_core::config::CrateConfig {
+    let config: anodizer_core::config::Config =
+        serde_yaml_ng::from_str(body).unwrap_or_else(|e| panic!("{e}\n{body}"));
+    assert_eq!(config.crates.len(), 1, "{body}");
+    config.crates.into_iter().next().unwrap()
+}
+
+/// Every ```yaml block on the two docker pages is a whole config: it loads
+/// through the strict `Config` deserializer and validates against the
+/// published `schema.json`, so a reader who copies one never meets
+/// `unknown field`.
+#[test]
+fn every_config_block_on_the_docker_pages_loads_and_matches_the_schema() {
+    let schema_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/static/schema.json"
+    );
+    let schema: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(schema_path).unwrap()).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let mut failures: Vec<String> = Vec::new();
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for page in ["packages/docker.md", "packages/docker-manifests.md"] {
+        let blocks: Vec<String> = fenced_blocks(&docs_page(page))
+            .into_iter()
+            .filter(|(language, _)| language == "yaml")
+            .map(|(_, body)| body)
+            .collect();
+        for body in &blocks {
+            if let Err(e) = serde_yaml_ng::from_str::<anodizer_core::config::Config>(body) {
+                failures.push(format!("{page}: does not load: {e}\n{body}"));
+                continue;
+            }
+            let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(body).unwrap();
+            let instance = serde_json::to_value(value).unwrap();
+            for e in validator.iter_errors(&instance) {
+                failures.push(format!(
+                    "{page}: {}: {e}\n{body}",
+                    e.instance_path().as_str()
+                ));
+            }
+        }
+        counts.push((page, blocks.len()));
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n---\n"));
+    assert_eq!(
+        counts,
+        [
+            ("packages/docker.md", 11),
+            ("packages/docker-manifests.md", 6)
+        ],
+        "the config blocks on each page"
+    );
+}
+
+/// The push command quoted under "Push flags" is the argv the stage gives
+/// `docker` for the config block above it.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(path_env)]
+fn the_push_command_quoted_in_the_docker_manifests_docs_is_what_the_stage_runs() {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+    let blocks = section_blocks(&docs_page("packages/docker-manifests.md"), "## Push flags");
+    assert_eq!(blocks.len(), 2, "{blocks:?}");
+    assert_eq!(
+        (blocks[0].0.as_str(), blocks[1].0.as_str()),
+        ("yaml", "text")
+    );
+    let krate = docs_crate(&blocks[0].1);
+    let manifest_cfg = krate.docker_manifests.clone().unwrap().remove(0);
+
+    let tools = FakeToolDir::new();
+    tools.tool("docker").install();
+    let _path = tools.activate();
+    let mut config = Config::default();
+    config.project_name = krate.name.clone();
+    config.crates = vec![krate.clone()];
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Version", "1.2.3");
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    let log = ctx.logger("docker");
+    super::run::process_docker_manifest(
+        &mut ctx,
+        &log,
+        &krate,
+        0,
+        &manifest_cfg,
+        &std::collections::HashSet::new(),
+        &HashMap::new(),
+        false,
+        &mut Vec::new(),
+    )
+    .expect("manifest run");
+
+    let pushed: Vec<String> = tools
+        .calls("docker")
+        .into_iter()
+        .filter(|argv| argv.get(1).map(String::as_str) == Some("push"))
+        .map(|argv| format!("docker {}", argv.join(" ")))
+        .collect();
+    let quoted: Vec<String> = blocks[1].1.lines().map(str::to_string).collect();
+    assert_eq!(pushed, quoted);
+}
+
+/// The `--annotation` values quoted under "Annotation scopes" are the ones
+/// the dry-run build command carries for the config block above them.
+#[test]
+fn the_annotations_quoted_in_the_docker_docs_are_what_the_build_command_carries() {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let blocks = section_blocks(&docs_page("packages/docker.md"), "## Annotation scopes");
+    assert_eq!(blocks.len(), 2, "{blocks:?}");
+    assert_eq!(
+        (blocks[0].0.as_str(), blocks[1].0.as_str()),
+        ("yaml", "text")
+    );
+    let mut krate = docs_crate(&blocks[0].1);
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, "FROM scratch\n").unwrap();
+    krate.path = ".".to_string();
+    krate.dockers_v2.as_mut().unwrap()[0].dockerfile = dockerfile.to_string_lossy().into_owned();
+
+    let mut config = Config::default();
+    config.project_name = krate.name.clone();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![krate];
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut()
+        .set("FullCommit", "4f1c2e9a7b3d5c8e0f6a1b2c3d4e5f6a7b8c9d0e");
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+    DockerStage::new().run(&mut ctx).unwrap();
+
+    let lines: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+    let cmd = lines
+        .iter()
+        .find(|l| l.starts_with("(dry-run) would run: docker buildx build"))
+        .unwrap_or_else(|| panic!("no dry-run build line: {lines:?}"));
+    // Each value runs up to the next flag; no documented value holds ` --`.
+    let carried: Vec<String> = cmd
+        .split(" --annotation ")
+        .skip(1)
+        .map(|rest| format!("--annotation {}", rest.split(" --").next().unwrap()))
+        .collect();
+    let quoted: Vec<String> = blocks[1].1.lines().map(str::to_string).collect();
+    assert_eq!(carried, quoted);
+}
+
+/// Build args render before `images` and `tags`, so a build arg that fails
+/// to render stops the run even when every image renders empty and the
+/// config would otherwise be skipped.
+#[test]
+fn a_build_arg_that_fails_to_render_stops_a_config_with_no_images() {
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, "FROM alpine:3.20\n").unwrap();
+    let mut config = Config::default();
+    config.project_name = "app".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "app".to_string(),
+        path: ".".to_string(),
+        dockers_v2: Some(vec![DockerV2Config {
+            images: vec!["{{ .Empty }}".to_string()],
+            tags: vec!["latest".to_string()],
+            dockerfile: dockerfile.to_string_lossy().into_owned(),
+            platforms: Some(vec!["linux/amd64".to_string()]),
+            build_args: Some(HashMap::from([(
+                "BASE".to_string(),
+                "{{ .NoSuchVariable }}".to_string(),
+            )])),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    }];
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Empty", "");
+    let err = DockerStage::new()
+        .run(&mut ctx)
+        .expect_err("the build arg cannot render");
+    assert!(
+        format!("{err:#}").contains("render build_arg value for 'BASE'"),
+        "{err:#}"
+    );
+}
+
+/// Two build-arg templates rendering one key are passed in template-key
+/// order, and the base image takes the last of them, as docker does.
+#[test]
+fn the_last_of_two_build_args_rendering_one_key_picks_the_base_image() {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+    let mut ctx = Context::new(Config::default(), ContextOptions::default());
+    ctx.template_vars_mut().set("Name", "BASE");
+    let map = HashMap::from([
+        ("BASE".to_string(), "alpine:3.21".to_string()),
+        ("{{ .Name }}".to_string(), "debian:12".to_string()),
+    ]);
+    let rendered = render_v2_kv_map(&mut ctx, Some(&map), "build_arg").unwrap();
+    assert_eq!(
+        rendered,
+        [
+            ("BASE".to_string(), "alpine:3.21".to_string()),
+            ("BASE".to_string(), "debian:12".to_string()),
+        ]
+    );
+    assert_eq!(
+        crate::parse_base_image("ARG BASE=alpine:3.20\nFROM ${BASE}\n", &rendered),
+        "debian:12"
     );
 }

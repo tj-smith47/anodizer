@@ -1,9 +1,10 @@
 use super::*;
 
 /// Render a `key: value` template map (build_args / annotations / labels)
-/// through the engine. Empty rendered keys or values are dropped. Output is
-/// sorted by rendered key for deterministic emission.
-/// `tplMapFlags`.
+/// through the engine. A pair whose rendered key or value is empty or only
+/// whitespace is dropped. Output is sorted by rendered key for deterministic
+/// emission; two templates rendering the same key keep the order of their
+/// template keys, so the later one is passed last and wins in docker.
 pub fn render_v2_kv_map(
     ctx: &mut Context,
     map: Option<&HashMap<String, String>>,
@@ -11,6 +12,8 @@ pub fn render_v2_kv_map(
 ) -> Result<Vec<(String, String)>> {
     let mut out: Vec<(String, String)> = Vec::new();
     if let Some(entries) = map {
+        let mut entries: Vec<(&String, &String)> = entries.iter().collect();
+        entries.sort();
         for (key_tmpl, value_tmpl) in entries {
             let rendered_key = ctx
                 .render_template(key_tmpl)
@@ -18,7 +21,7 @@ pub fn render_v2_kv_map(
             let rendered_value = ctx.render_template(value_tmpl).with_context(|| {
                 format!("dockers_v2: render {} value for '{}'", label, key_tmpl)
             })?;
-            if !rendered_key.is_empty() && !rendered_value.is_empty() {
+            if !rendered_key.trim().is_empty() && !rendered_value.trim().is_empty() {
                 out.push((rendered_key, rendered_value));
             }
         }

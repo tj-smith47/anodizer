@@ -304,6 +304,7 @@ version = "0.29.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
+ "jsonschema",
  "regex",
  "serde_json",
  "serde_yaml_ng",

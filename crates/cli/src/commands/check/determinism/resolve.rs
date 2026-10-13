@@ -268,17 +268,9 @@ pub(super) fn resolve_docker_configs(
             }
             // Propagate build_arg render errors (never default to empty args,
             // which would build a DIFFERENT image than the release and still
-            // report byte-stability).
-            //
-            // Boundary: build_args referencing `.BaseImage` / `.BaseImageDigest`
-            // are NOT rendered here. Production seeds those into the Context
-            // post-inspect (a networked `get_base_image` docker inspect) before
-            // rendering build_args; the harness deliberately does not run that
-            // inspect — it is networked and itself non-deterministic, wrong for
-            // a determinism probe. Such args render empty and drop here. This is
-            // still a strict improvement over the prior zero-build-args harness,
-            // and run-to-run determinism holds because args are resolved once
-            // and reused across every rebuild.
+            // report byte-stability). Build args render here the way the
+            // docker stage renders them, before the base image resolves, so
+            // `BaseImage` / `BaseImageDigest` are undefined for them in both.
             let build_args = anodizer_stage_docker::render_v2_kv_map(
                 &mut ctx,
                 entry.build_args.as_ref(),

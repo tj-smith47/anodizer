@@ -87,8 +87,10 @@ static SHA256_HEX_RE: LazyLock<Regex> =
 /// - Global `ARG NAME[=DEFAULT]` directives (those appearing before any
 ///   `FROM`) populate a substitution table consulted by every subsequent
 ///   `FROM`. A non-empty value for the same name in `build_args` replaces the
-///   default, as `docker build --build-arg NAME=VALUE` does; a build arg the
-///   Dockerfile never declares globally does not reach a `FROM`.
+///   default, as `docker build --build-arg NAME=VALUE` does; when the name
+///   appears more than once the last value wins, as it does for docker. A
+///   build arg the Dockerfile never declares globally does not reach a
+///   `FROM`.
 /// - `FROM` keyword is case-insensitive, as are any `AS <alias>` clauses
 ///   and the alias-chain resolution that follows.
 /// - `--platform=...` / `--foo=bar` flags between `FROM` and the image
@@ -117,7 +119,11 @@ pub fn parse_base_image(content: &str, build_args: &[(String, String)]) -> Strin
         {
             let Some(name_m) = caps.get(1) else { continue };
             let name = name_m.as_str().to_string();
-            let value = match build_args.iter().find(|(k, v)| *k == name && !v.is_empty()) {
+            let value = match build_args
+                .iter()
+                .rev()
+                .find(|(k, v)| *k == name && !v.is_empty())
+            {
                 Some((_, v)) => v.clone(),
                 None => caps
                     .get(2)
@@ -693,6 +699,55 @@ mod tests {
         .expect("a base image");
         assert_eq!(got.name, "debian:12");
         assert_eq!(got.digest, "");
+    }
+
+    #[test]
+    fn parse_base_image_takes_the_last_of_repeated_build_args() {
+        let args = build_args(&[("BASE", "debian:12"), ("BASE", "busybox:1"), ("BASE", "")]);
+        assert_eq!(
+            parse_base_image("ARG BASE=alpine:3.20\nFROM ${BASE}\n", &args),
+            "busybox:1"
+        );
+    }
+
+    /// With no digest in the reference, the overridden base image is the one
+    /// `docker buildx imagetools inspect` is asked about, and its answer
+    /// becomes the digest.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn get_base_image_resolves_the_digest_of_the_overridden_image() {
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        const DIGEST: &str =
+            "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+        let tools = FakeToolDir::new();
+        tools.tool("docker").stdout(format!("{DIGEST}\n")).install();
+        let _path = tools.activate();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dockerfile = dir.path().join("Dockerfile");
+        std::fs::write(&dockerfile, "ARG BASE=alpine:3.20\nFROM ${BASE}\n").unwrap();
+        let got = get_base_image(
+            &dockerfile,
+            &build_args(&[("BASE", "busybox:1.36")]),
+            false,
+            &test_logger(),
+        )
+        .unwrap()
+        .expect("a base image");
+        assert_eq!(got.name, "busybox:1.36");
+        assert_eq!(got.digest, DIGEST);
+        assert_eq!(
+            tools.calls("docker"),
+            [[
+                "buildx",
+                "imagetools",
+                "inspect",
+                "busybox:1.36",
+                "--format",
+                "{{.Manifest.Digest}}"
+            ]]
+        );
     }
 
     #[test]

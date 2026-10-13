@@ -286,7 +286,9 @@ single-platform build passes every key as written.
 image reference takes its value from `build_args` when the build arg renders
 non-empty, as `docker build --build-arg` does, and from the `ARG` default
 otherwise. Build args render before the base image resolves, so they cannot
-reference `{{ BaseImage }}` themselves.
+reference `{{ BaseImage }}` themselves. They also render before `images` and
+`tags`, so a build arg that fails to render stops the run even for a config
+whose images all render empty, which would otherwise be skipped.
 
 ```dockerfile
 ARG BASE=gcr.io/distroless/static-debian12
@@ -368,13 +370,15 @@ this image.
 Pass additional flags to `docker buildx build`:
 
 ```yaml
-dockers_v2:
-  - dockerfile: Dockerfile
-    images: ["ghcr.io/myorg/myapp"]
-    tags: ["{{ Version }}"]
-    flags:
-      - --provenance=false
-      - "--label=org.opencontainers.image.version={{ Version }}"
+crates:
+  - name: myapp
+    dockers_v2:
+      - dockerfile: Dockerfile
+        images: ["ghcr.io/myorg/myapp"]
+        tags: ["{{ Version }}"]
+        flags:
+          - --provenance=false
+          - "--label=org.opencontainers.image.version={{ Version }}"
 ```
 
 Prefer the `labels:` / `annotations:` / `build_args:` maps over inline

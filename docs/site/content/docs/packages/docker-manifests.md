@@ -94,11 +94,13 @@ Not applicable as a config flag — the stage removes any existing manifest befo
 the push command:
 
 ```yaml
-docker_manifests:
-  - name_template: "ghcr.io/myorg/myapp:{{ Version }}"
-    image_templates:
-      - "ghcr.io/myorg/myapp:{{ Version }}-amd64"
-    push_flags: ["--purge", "--annotation=tag={{ .Tag }}"]
+crates:
+  - name: myapp
+    docker_manifests:
+      - name_template: "ghcr.io/myorg/myapp:{{ Version }}"
+        image_templates:
+          - "ghcr.io/myorg/myapp:{{ Version }}-amd64"
+        push_flags: ["--purge", "--annotation=tag={{ .Tag }}"]
 ```
 
 For tag `v1.2.3` this runs:
@@ -109,28 +111,41 @@ docker manifest push ghcr.io/myorg/myapp:1.2.3 --purge --annotation=tag=v1.2.3
 
 ## Manifests with no images
 
-An `image_templates` entry that renders empty (a conditional template, for
-example) is left out of the manifest, with a warning naming the template:
+An `image_templates` entry that renders empty is left out of the manifest.
+When every entry renders empty, or the list itself is empty, the manifest is
+skipped: no `manifest create` or `manifest push` runs, no artifact is
+registered, the docker/podman binary is not needed, and the release
+continues. For example, this manifest has no images outside a snapshot:
 
-```text
-skipped image_template '{{ if .IsSnapshot }}ghcr.io/myorg/myapp:snap{{ end }}' for manifest 'ghcr.io/myorg/myapp:1.2.3' — rendered empty
+```yaml
+crates:
+  - name: myapp
+    docker_manifests:
+      - id: multi-arch
+        name_template: "ghcr.io/myorg/myapp:{{ Version }}"
+        image_templates:
+          - "{{ if .IsSnapshot }}ghcr.io/myorg/myapp:snap{{ end }}"
 ```
 
-When every entry renders empty, or the
-list itself is empty, the manifest is skipped: no `manifest create` or
-`manifest push` runs, no artifact is registered, the docker/podman binary is
-not needed, and the release continues. The skip is listed in the end-of-run
-summary, under the manifest's `id` (or `index <N>` when it has none):
+Releasing version `1.2.3` (tag `myapp-v1.2.3`), the docker stage warns about
+each blank entry:
 
 ```text
-1 intentional skip:
-  ↳ [docker-manifest] multi-arch — manifest has no images
+     Warning skipped image_template '{{ if .IsSnapshot }}ghcr.io/myorg/myapp:snap{{ end }}' for manifest 'ghcr.io/myorg/myapp:1.2.3' — rendered empty
 ```
 
-Under `--show-skipped` the stage prints the skip as it happens as well:
+and the skip is listed in the end-of-run summary, under the manifest's `id`
+(or `index <N>` when it has none):
 
 ```text
-skipped docker manifest 'multi-arch' — manifest has no images
+   • 1 intentional skip:
+   •   ↳ [docker-manifest] multi-arch — manifest has no images
+```
+
+Under `--show-skipped` the docker stage also prints the skip as it happens:
+
+```text
+     • skipped docker manifest 'multi-arch' — manifest has no images
 ```
 
 ## Skip push
@@ -138,12 +153,14 @@ skipped docker manifest 'multi-arch' — manifest has no images
 Control when manifests are pushed:
 
 ```yaml
-docker_manifests:
-  - name_template: "ghcr.io/myorg/myapp:{{ Version }}"
-    image_templates:
-      - "ghcr.io/myorg/myapp:{{ Version }}-amd64"
-      - "ghcr.io/myorg/myapp:{{ Version }}-arm64"
-    skip_push: auto  # skip push for pre-release versions
+crates:
+  - name: myapp
+    docker_manifests:
+      - name_template: "ghcr.io/myorg/myapp:{{ Version }}"
+        image_templates:
+          - "ghcr.io/myorg/myapp:{{ Version }}-amd64"
+          - "ghcr.io/myorg/myapp:{{ Version }}-arm64"
+        skip_push: auto  # skip push for pre-release versions
 ```
 
 ## Full example

@@ -502,13 +502,16 @@ const ANNOTATION_SCOPES: &[&str] = &[
 
 /// Whether an annotation key already carries a buildx scope prefix.
 ///
-/// buildx reads `--annotation` as `[types:]key=value`, cutting at the first
-/// `:`, where `types` is a comma-separated list of [`ANNOTATION_SCOPES`],
-/// each optionally qualified with a platform (`manifest[linux/amd64]`). A
-/// key whose prefix holds any other entry (`bogus:foo`) has no scope, and is
+/// buildx reads `--annotation` as `[types:]key=value`, where `types` is a
+/// comma-separated list of [`ANNOTATION_SCOPES`], each optionally qualified
+/// with a platform (`manifest[linux/amd64]`). The flag is cut at its first
+/// `=` and then at the first `:`, so an `=` anywhere in the key ends it
+/// there (`manifest[a=b]:k` has no scope). A key whose prefix holds any other
+/// entry (`bogus:foo`, `index,:foo`, `:foo`) has no scope either, and is
 /// scoped to the index like an unscoped key, since buildx rejects an unknown
 /// annotation type.
 pub(crate) fn has_annotation_scope(key: &str) -> bool {
+    let key = key.split_once('=').map_or(key, |(key, _)| key);
     let Some((scopes, _)) = key.split_once(':') else {
         return false;
     };
