@@ -339,7 +339,8 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
     // `#{…}`.
     let mut heads_statement = !*reads_on;
     // Where in `text` the `|` that closed a block's parameters ends, after
-    // which the statement reads on no further (`{ |y|`).
+    // which the statement reads on no further (`{ |y|`). It is cleared when
+    // a `#{…}` opens or closes, since `text` is then another buffer.
     let mut params_closed_at = usize::MAX;
     // Whether the word is still being read, and whether whitespace
     // followed it; the `\` or newline that ended the line before counts as
@@ -399,6 +400,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                 // around the literal.
                 *interpolated = true;
                 heads_statement = true;
+                params_closed_at = usize::MAX;
                 stack.push(Frame::Interpolation { braces: 0 });
                 let state = Continued {
                     text: std::mem::take(&mut text),
@@ -690,6 +692,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                             ..
                         } = o.state;
                         (*param_list, spaced, word_open) = (o.param_list, o.spaced, o.word_open);
+                        params_closed_at = usize::MAX;
                     }
                     i += 1;
                     continue;

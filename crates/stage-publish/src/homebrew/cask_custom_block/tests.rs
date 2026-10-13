@@ -1723,6 +1723,21 @@ fn a_line_ending_in_an_open_interpolation_starts_a_statement_in_it() {
     }
 }
 
+/// The `|` that closed a block's parameters ends a line only in the code
+/// it was read in, so a `#{…}` that opens or closes after it leaves a line
+/// ending in `,` reading on, whatever the lengths of the two codes.
+#[test]
+fn block_parameters_closed_in_other_code_leave_a_trailing_comma_reading_on() {
+    for block in [
+        "f abcd, \"#{x.map { |y| y }}\",\nfoo:%w[on_linux]",
+        "f abcde, \"#{x.map { |y| y }}\",\nfoo:%w[on_linux]",
+        "x.each { |y| \"#{f(1, 2, 3,4,\nfoo:%w[on_linux])}\" }",
+        "x.each { |y| \"#{f(1, 2, 3, 4,\nfoo:%w[on_linux])}\" }",
+    ] {
+        assert_facts(block, false, false, None);
+    }
+}
+
 /// A `;` starts a statement on a line that goes on with the expression of
 /// the line before it.
 #[test]
