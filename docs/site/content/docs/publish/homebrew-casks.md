@@ -7,6 +7,8 @@ template = "docs.html"
 
 Anodizer generates Homebrew Cask `.rb` files for your macOS artifacts and pushes them to your tap repository. A cask is the canonical Homebrew channel for **pre-compiled binaries** — both GUI `.app` bundles (via the `app` stanza) and CLI tools (via a `binary` stanza that symlinks an executable onto the user's `PATH`). The [Homebrew Formula](/docs/publish/homebrew/) path — which compiles from source — is deprecated upstream for pre-built release binaries; use a cask. Set `binaries:` to ship a CLI; set `app:` to ship a GUI application; set both when a bundle also exposes a CLI.
 
+Generated casks pass `brew style`: stanzas come in Homebrew's order and grouping, arguments and arrays use Homebrew's alignment, macOS-only stanzas (`app`, `service`) sit inside `on_macos` when the cask also supports Linux, and a macOS-only cask carries `depends_on :macos`. A cask with `hooks` is the one exception; see [Hooks](#hooks).
+
 ## Classification
 
 | Group | Required (default) | Rollback | Token scope |
@@ -64,7 +66,7 @@ homebrew_casks:
     binaries: []                     # optional; binaries to symlink
     manpages: []                     # optional
     caveats: ""                      # optional; post-install message
-    service: ""                      # optional; service definition
+    service: ""                      # optional; Services bundle (.workflow) to install
     custom_block: ""                 # optional; raw Ruby inserted into cask
     livecheck:                       # optional; version polling (default: skip)
       strategy: github_latest        # optional; livecheck strategy symbol
@@ -136,7 +138,7 @@ Cask files are updated in-place on each release; no recovery flag is required fo
 | `binaries` | list | none | Binaries to symlink |
 | `manpages` | list | none | Man pages to install |
 | `caveats` | string | none | Post-install caveats message |
-| `service` | string | none | Service definition |
+| `service` | string | none | Path of a macOS Services bundle (for example `MyTool.workflow`) inside the download, written as `service "<path>"` |
 | `custom_block` | string | none | Raw Ruby inserted into the cask |
 | `livecheck` | object | skip | `livecheck do … end` stanza for version polling. See [Livecheck](#livecheck). |
 | `alternative_names` | list | none | Alternative cask names |
@@ -176,7 +178,7 @@ Cask files are updated in-place on each release; no recovery flag is required fo
 | `delete` | list | File paths to delete |
 | `trash` | list | File paths to trash (preserves app state) |
 
-### Hooks (`hooks`)
+### Hooks (`hooks`) {#hooks}
 
 ```yaml
 hooks:
@@ -187,6 +189,13 @@ hooks:
     install: "system_command '/usr/bin/post-setup'"
     uninstall: "system_command '/usr/bin/post-cleanup'"
 ```
+
+Each hook is written as a `preflight do` / `postflight do` /
+`uninstall_preflight do` / `uninstall_postflight do` block holding the Ruby
+as given. Homebrew 7 deprecates these blocks in favour of `preflight_steps`
+and its siblings, which accept only Homebrew's own step calls rather than
+arbitrary Ruby, so `brew style` reports `Cask/InstallSteps` for each hook. The
+cask still installs; Homebrew prints a deprecation warning when it loads it.
 
 ### Generated completions (`generate_completions_from_executable`)
 
@@ -215,11 +224,17 @@ dependencies:
   depends_on cask: "Example/tap/app"
   depends_on cask: "xquartz"
   depends_on formula: "cmake"
+  depends_on :macos
 ```
+
+`depends_on :macos` follows when the cask installs only on macOS, which
+`brew style` requires for a cask with no `on_linux` block.
 
 ### Conflicts (`conflicts`)
 
-Each entry can specify either `cask` or `formula`:
+Homebrew casks can only conflict with other casks, so set `cask` on each
+entry. A `formula` entry is dropped with a deprecation warning, because
+`conflicts_with formula:` makes the cask fail to load:
 
 ```yaml
 conflicts:

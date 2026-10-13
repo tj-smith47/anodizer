@@ -193,14 +193,9 @@ pub(super) fn build_cask_platform_blocks(
     }
     Ok(os_map
         .into_iter()
-        .map(|(os_block, mut arches)| {
-            // Pin per-arch order by `arch_block` so emission is byte-stable
-            // regardless of the upstream artifact catalog's insertion order
-            // (BTreeMap groups Archive targets but DiskImage / UploadableBinary
-            // kinds carry no such guarantee). Ascending: "arm" precedes "intel".
-            arches.sort_by(|a, b| a.arch_block.cmp(&b.arch_block));
-            CaskPlatformBlock { os_block, arches }
-        })
+        // The emitted order of OS and arch blocks is decided where the cask
+        // is rendered (`cask::generate_cask`), so it holds for every caller.
+        .map(|(os_block, arches)| CaskPlatformBlock { os_block, arches })
         .collect())
 }
 
@@ -333,24 +328,9 @@ pub(super) fn generate_cask_from_context(
         });
     }
 
-    // Build dependency and conflict directive strings for the template
+    // Build dependency directives and the conflicting cask names
     let cask_depends = super::formula::build_depends_directives(cask_cfg.dependencies.as_deref());
-    let cask_conflicts: Vec<String> = cask_cfg
-        .conflicts
-        .as_deref()
-        .unwrap_or(&[])
-        .iter()
-        .map(|c| {
-            if let Some(ref cask) = c.cask {
-                format!("cask: \"{}\"", ruby_escape_str(cask))
-            } else if let Some(ref formula) = c.formula {
-                format!("formula: \"{}\"", ruby_escape_str(formula))
-            } else {
-                String::new()
-            }
-        })
-        .filter(|s| !s.is_empty())
-        .collect();
+    let cask_conflicts = super::cask::conflicting_casks(cask_cfg.conflicts.as_deref());
 
     // Each `uninstall` / `zap` sub-key (`launchctl`, `quit`, `login_item`,
     // `delete`, `trash`) renders as its own keyed Ruby array. The prior
@@ -366,12 +346,12 @@ pub(super) fn generate_cask_from_context(
     let url_extras_top = cask_cfg
         .url
         .as_ref()
-        .map(|u| render_additional_url_params(u, "      "))
+        .map(|u| render_additional_url_params(u, super::cask::URL_ARGS_INDENT))
         .unwrap_or_default();
     let url_extras_arch = cask_cfg
         .url
         .as_ref()
-        .map(|u| render_additional_url_params(u, "        "))
+        .map(|u| render_additional_url_params(u, super::cask::ARCH_URL_ARGS_INDENT))
         .unwrap_or_default();
 
     // Pre-render every `alternative_names` entry through the user's

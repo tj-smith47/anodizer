@@ -11284,6 +11284,38 @@ crates:
     );
 }
 
+/// A formula conflict is reported once per cask, naming every formula, since
+/// the cask renderer leaves it out.
+#[test]
+fn cask_formula_conflict_notice_names_the_formulae() {
+    let yaml = r#"
+project_name: test
+crates: []
+homebrew_casks:
+  - name: mycask
+    repository:
+      owner: o
+      name: tap
+    conflicts:
+      - cask: old-app
+      - formula: mytool
+      - formula: mytool-legacy
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::homebrew_cask_legacy_warnings(&mut config);
+    let hits: Vec<&String> = warnings
+        .iter()
+        .filter(|w| w.contains("`conflicts[].formula`"))
+        .collect();
+    assert_eq!(hits.len(), 1, "exactly one notice, got: {warnings:?}");
+    assert!(
+        hits[0].starts_with("DEPRECATION: homebrew_casks[0]: ")
+            && hits[0].contains("(mytool, mytool-legacy)"),
+        "the notice must name the scope and every formula: {}",
+        hits[0]
+    );
+}
+
 /// GoReleaser removed `mcpb`: it cannot build `.mcpb` files, the registry
 /// needs a SHA-256 only a local file can supply, and the registry has been
 /// rejecting the type. A config naming it fails at load, listing what is

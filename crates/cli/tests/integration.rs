@@ -4559,6 +4559,63 @@ crates:
     );
 }
 
+/// `check config` on a config with no errors ends with "Config is valid."
+/// unless loading it logged a deprecation, in which case the verdict says the
+/// config uses deprecated properties. Both exit 0.
+#[test]
+fn test_e2e_check_config_verdict_names_deprecated_properties() {
+    let check = |cask_url: &str| {
+        let tmp = TempDir::new().unwrap();
+        create_test_project(tmp.path());
+        fs::write(
+            tmp.path().join(".anodizer.yaml"),
+            format!(
+                r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{{{ .Version }}}}"
+homebrew_casks:
+  - name: test-project
+    repository:
+      owner: o
+      name: homebrew-tap
+{cask_url}"#
+            ),
+        )
+        .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+            .args(["check", "config"])
+            .current_dir(tmp.path())
+            .env_remove("RUST_LOG")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(
+            output.status.success(),
+            "check config must exit 0.\nstderr:\n{stderr}"
+        );
+        stderr
+    };
+
+    let deprecated = check("    url:\n      verified: \"example.com/\"\n");
+    assert!(
+        deprecated.contains("`url.verified:` is deprecated"),
+        "the deprecation warning must be printed, got:\n{deprecated}"
+    );
+    assert!(
+        deprecated.contains("Config is valid, but uses deprecated properties."),
+        "the verdict must name the deprecated properties, got:\n{deprecated}"
+    );
+
+    let clean = check("");
+    assert!(
+        clean.contains("Config is valid.") && !clean.contains("deprecated properties"),
+        "a config with no deprecations keeps the plain verdict, got:\n{clean}"
+    );
+}
+
 /// E2E #13: Init generates valid YAML that round-trips through Config struct.
 /// Goes beyond parse validity — checks that Config-level fields survive serialization.
 #[test]

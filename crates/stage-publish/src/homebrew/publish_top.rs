@@ -7,7 +7,7 @@ use super::cask::{
 };
 use super::cask_scope::find_top_level_cask_artifact;
 use super::commit_msg::render_commit_msg;
-use super::formula::{build_conflicts_directives, build_depends_directives};
+use super::formula::build_depends_directives;
 use anodizer_core::config::HomebrewCaskConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
@@ -307,12 +307,12 @@ fn render_top_level_cask_inner(
     let url_extras_top = cask_cfg
         .url
         .as_ref()
-        .map(|u| render_additional_url_params(u, "      "))
+        .map(|u| render_additional_url_params(u, super::cask::URL_ARGS_INDENT))
         .unwrap_or_default();
     let url_extras_arch = cask_cfg
         .url
         .as_ref()
-        .map(|u| render_additional_url_params(u, "        "))
+        .map(|u| render_additional_url_params(u, super::cask::ARCH_URL_ARGS_INDENT))
         .unwrap_or_default();
 
     let empty_vec: Vec<String> = Vec::new();
@@ -348,7 +348,7 @@ fn render_top_level_cask_inner(
 
     // Build depends_on directives from structured config
     let depends_directives = build_depends_directives(cask_cfg.dependencies.as_deref());
-    let conflicts_directives = build_conflicts_directives(cask_cfg.conflicts.as_deref());
+    let conflicts_directives = super::cask::conflicting_casks(cask_cfg.conflicts.as_deref());
 
     // Extract hooks
     let preflight = cask_cfg

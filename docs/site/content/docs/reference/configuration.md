@@ -516,7 +516,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `repository` | RepositoryConfig | — | Unified repository config for the Homebrew tap. |
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
-| `service` | string | — | Homebrew service definition. |
+| `service` | string | — | Path of a macOS Services bundle (for example `MyTool.workflow`) inside the download, written as `service "<path>"`. |
 | `skip_upload` | StringOrBool | — | Skip publishing the cask. `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
 | `uninstall` | HomebrewCaskUninstall | — | Structured uninstall stanza configuration. |
 | `update_existing_pr` | StringOrBool | — | When true, force-push the updated cask file to the existing PR branch when a PR for the same head branch already exists. The PR content is updated in place rather than creating a duplicate. When false (default), the push is skipped and a warning is emitted so the operator sees that the publisher did not update the PR. |
@@ -1256,7 +1256,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `repository` | RepositoryConfig | — | Unified repository config for the Homebrew tap. |
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
-| `service` | string | — | Homebrew service definition. |
+| `service` | string | — | Path of a macOS Services bundle (for example `MyTool.workflow`) inside the download, written as `service "<path>"`. |
 | `skip_upload` | StringOrBool | — | Skip publishing the cask. `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
 | `uninstall` | HomebrewCaskUninstall | — | Structured uninstall stanza configuration. |
 | `update_existing_pr` | StringOrBool | — | When true, force-push the updated cask file to the existing PR branch when a PR for the same head branch already exists. The PR content is updated in place rather than creating a duplicate. When false (default), the push is skipped and a warning is emitted so the operator sees that the publisher did not update the PR. |

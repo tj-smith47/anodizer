@@ -1197,8 +1197,9 @@ fn test_cask_per_arch_emits_sha256_before_url() {
     }
 }
 
-/// Q1.2 — `render_generate_completions` formats the directive exactly the
-/// way upstream `generateCompletionsString` does (commit bb9062f).
+/// `render_generate_completions` lines its keyword arguments up under the
+/// first positional argument, with their values in one column, which is the
+/// layout `Layout/ArgumentAlignment` and `Layout/HashAlignment` accept.
 #[test]
 fn test_render_generate_completions_full() {
     let g = HomebrewCaskGeneratedCompletions {
@@ -1216,10 +1217,13 @@ fn test_render_generate_completions_full() {
     let rendered = render_generate_completions(&g).unwrap();
     assert_eq!(
         rendered,
-        "generate_completions_from_executable \"bin/myapp\", \"completions\",\n    \
-             base_name: \"myapp\",\n    \
-             shell_parameter_format: :cobra,\n    \
-             shells: [:bash, :zsh, :fish, :pwsh]"
+        format!(
+            "generate_completions_from_executable \"bin/myapp\", \"completions\",\n\
+             {pad}base_name:              \"myapp\",\n\
+             {pad}shell_parameter_format: :cobra,\n\
+             {pad}shells:                 [:bash, :zsh, :fish, :pwsh]",
+            pad = " ".repeat(39)
+        )
     );
 }
 
@@ -1252,7 +1256,10 @@ fn test_render_generate_completions_executable_only_with_format() {
     let rendered = render_generate_completions(&g).unwrap();
     assert_eq!(
         rendered,
-        "generate_completions_from_executable \"myapp\",\n    shell_parameter_format: :cobra"
+        format!(
+            "generate_completions_from_executable \"myapp\",\n{}shell_parameter_format: :cobra",
+            " ".repeat(39)
+        )
     );
 }
 
@@ -1280,82 +1287,75 @@ fn test_render_generate_completions_empty_executable_returns_none() {
     assert!(render_generate_completions(&g).is_none());
 }
 
-/// Q1.2 — the `generate_completions_from_executable` directive must render
-/// AFTER the `postflight` stanza.
+/// The `generate_completions_from_executable` stanza belongs to Homebrew's
+/// artifact group, so it follows the completion files and precedes
+/// `postflight`. Homebrew runs artifacts in a fixed order by kind, so this
+/// placement does not change when the completions are generated.
 #[test]
-fn test_cask_generate_completions_renders_after_postflight() {
+fn test_cask_generate_completions_renders_with_the_artifacts() {
     let mut params = empty_cask_params("test", "0.1.0");
+    params.completions_fish = Some("test.fish");
     params.postflight = Some("system_command \"chmod\", args: [\"+x\", \"#{bin}/test\"]");
-    params.generate_completions = Some(
-        "generate_completions_from_executable \"bin/myapp\",\n    shell_parameter_format: :cobra"
-            .to_string(),
-    );
+    params.generate_completions = render_generate_completions(&HomebrewCaskGeneratedCompletions {
+        executable: Some("bin/myapp".to_string()),
+        shell_parameter_format: Some("cobra".to_string()),
+        ..Default::default()
+    });
     let cask = generate_cask(&params).unwrap();
-    let post_idx = cask
-        .find("postflight do")
-        .expect("postflight stanza missing");
-    let comp_idx = cask
-        .find("generate_completions_from_executable")
-        .expect("generate_completions missing");
-    assert!(
-        comp_idx > post_idx,
-        "generate_completions must render after postflight\n{cask}"
+    let expected = format!(
+        "  fish_completion \"test.fish\"\n\
+         \x20 generate_completions_from_executable \"bin/myapp\",\n\
+         {}shell_parameter_format: :cobra\n\
+         \n\
+         \x20 postflight do\n",
+        " ".repeat(39)
     );
+    assert!(cask.contains(&expected), "{cask}");
 }
 
 // ---------------------------------------------------------------------------
-// C6 — cask `zap` stanza emits per-key arrays (not hard-coded `trash:`).
+// cask `uninstall` / `zap` stanzas: one key per directive.
 // ---------------------------------------------------------------------------
 
 use anodizer_core::config::HomebrewCaskUninstall;
 
+/// Every directive gets its own key, the keys line up under the first and
+/// their values in one column, a one-element list renders as a bare string,
+/// and a longer list is sorted the way `Cask/ArrayAlphabetization` checks.
 #[test]
 fn test_cask_zap_block_emits_each_directive_as_separate_key() {
     let zap_cfg = HomebrewCaskUninstall {
         launchctl: Some(vec!["com.example.daemon".to_string()]),
         quit: Some(vec!["com.example.app".to_string()]),
         login_item: Some(vec!["MyApp".to_string()]),
-        delete: Some(vec!["/tmp/foo".to_string()]),
+        delete: Some(vec!["/tmp/foo".to_string(), "/tmp/Bar".to_string()]),
         trash: Some(vec!["~/Library/MyApp".to_string()]),
     };
-    let block = super::cask::render_zap_block(Some(&zap_cfg));
-    // Each sub-key gets its own Ruby array — the prior code wedged every
-    // directive into `zap trash: [...]` as a quoted string, producing
-    // syntactically broken Ruby.
-    assert!(
-        block.contains("zap launchctl: ["),
-        "missing launchctl key\n{block}"
-    );
-    assert!(block.contains("\"com.example.daemon\""));
-    assert!(block.contains("quit: ["), "missing quit key\n{block}");
-    assert!(block.contains("\"com.example.app\""));
-    assert!(
-        block.contains("login_item: ["),
-        "missing login_item key\n{block}"
-    );
-    assert!(block.contains("delete: ["), "missing delete key\n{block}");
-    assert!(block.contains("trash: ["), "missing trash key\n{block}");
-    assert!(block.contains("\"~/Library/MyApp\""));
-    // The prior bug wrote `"launchctl: \"...\""` (a quoted string inside a
-    // `trash:` array). That shape must never be emitted again.
-    assert!(
-        !block.contains("\"launchctl:"),
-        "regression: launchctl directive must not be a quoted string inside trash:\n{block}"
+    assert_eq!(
+        super::cask::render_zap_block(Some(&zap_cfg)),
+        "zap launchctl:  \"com.example.daemon\",\n\
+         \x20     quit:       \"com.example.app\",\n\
+         \x20     login_item: \"MyApp\",\n\
+         \x20     delete:     [\n\
+         \x20       \"/tmp/Bar\",\n\
+         \x20       \"/tmp/foo\",\n\
+         \x20     ],\n\
+         \x20     trash:      \"~/Library/MyApp\""
     );
 }
 
+/// A lone key shares the stanza's line, so its array elements are indented
+/// from the start of that line, as RuboCop measures them.
 #[test]
 fn test_cask_zap_block_only_trash() {
     let zap_cfg = HomebrewCaskUninstall {
-        trash: Some(vec!["~/Library/Foo".to_string()]),
+        trash: Some(vec!["~/Library/Foo".to_string(), "~/.foo".to_string()]),
         ..Default::default()
     };
-    let block = super::cask::render_zap_block(Some(&zap_cfg));
-    assert!(
-        block.starts_with("zap trash: ["),
-        "block should start with `zap trash:` when only trash is set\n{block}"
+    assert_eq!(
+        super::cask::render_zap_block(Some(&zap_cfg)),
+        "zap trash: [\n    \"~/.foo\",\n    \"~/Library/Foo\",\n  ]"
     );
-    assert!(block.contains("\"~/Library/Foo\""));
 }
 
 #[test]
@@ -1368,19 +1368,19 @@ fn test_cask_zap_block_empty_returns_empty_string() {
 }
 
 #[test]
-fn test_cask_uninstall_block_uses_array_per_key() {
+fn test_cask_uninstall_block_uses_one_key_per_directive() {
     let u_cfg = HomebrewCaskUninstall {
         launchctl: Some(vec!["com.example.daemon".to_string()]),
         quit: Some(vec!["com.example.app".to_string()]),
         ..Default::default()
     };
-    let block = super::cask::render_uninstall_block(Some(&u_cfg));
-    // Canonical shape: `uninstall launchctl: [...], quit: [...]` with
-    // arrays — not `uninstall launchctl: "name", quit: "name"`.
-    assert!(block.starts_with("uninstall launchctl: ["));
-    assert!(block.contains("quit: ["));
-    assert!(block.contains("\"com.example.daemon\""));
-    assert!(block.contains("\"com.example.app\""));
+    assert_eq!(
+        super::cask::render_uninstall_block(Some(&u_cfg)),
+        format!(
+            "uninstall launchctl: \"com.example.daemon\",\n{}quit:      \"com.example.app\"",
+            " ".repeat(12)
+        )
+    );
 }
 
 #[test]
@@ -1393,17 +1393,17 @@ fn test_cask_template_renders_multi_key_zap() {
     }));
     params.zap_block = &zap_block;
     let cask = generate_cask(&params).unwrap();
-    // Both keys should appear (multi-key emission, not folded into trash).
     assert!(
-        cask.contains("zap launchctl: ["),
-        "zap launchctl key missing\n{cask}"
+        cask.contains(
+            "\n  zap launchctl: \"com.example.daemon\",\n      trash:     \"~/Library/MyApp\"\nend\n"
+        ),
+        "zap must be the last stanza, both keys aligned:\n{cask}"
     );
-    assert!(cask.contains("trash: ["), "trash key missing\n{cask}");
 }
 
 // ---------------------------------------------------------------------------
-// M4 — cask `additional_url_params` (using, cookies, referer, headers,
-//      user_agent, data) renders on the `url` line.
+// cask `additional_url_params` (using, cookies, referer, headers,
+// user_agent, data) renders on the `url` line.
 // ---------------------------------------------------------------------------
 
 use anodizer_core::config::HomebrewCaskURL;
@@ -1426,23 +1426,22 @@ fn test_render_additional_url_params_full() {
         data: Some(data),
     };
     let extras = super::cask::render_additional_url_params(&url_cfg, "      ");
-    // Splices directly after the closing `"` of `url "..."`.
-    assert!(
-        extras.starts_with(",\n      using: :homebrew_curl"),
-        "extras must start with `,\\n      using:` — got:\n{extras}"
+    // Splices directly after the closing `"` of `url "..."`; the removed
+    // `verified` stanza is never written.
+    assert_eq!(
+        extras,
+        ",\n\
+         \x20     using:      :homebrew_curl,\n\
+         \x20     cookies:    {\n\
+         \x20       \"session\" => \"deadbeef\",\n\
+         \x20     },\n\
+         \x20     referer:    \"https://example.com/\",\n\
+         \x20     header:     [\"X-Auth: Bearer xyz\"],\n\
+         \x20     user_agent: \"Mozilla/5.0\",\n\
+         \x20     data:       {\n\
+         \x20       \"user\" => \"alice\",\n\
+         \x20     }"
     );
-    assert!(
-        !extras.contains("verified"),
-        "Homebrew removed the verified stanza — got:\n{extras}"
-    );
-    assert!(extras.contains("cookies: {"));
-    assert!(extras.contains("\"session\" => \"deadbeef\","));
-    assert!(extras.contains("referer: \"https://example.com/\""));
-    assert!(extras.contains("header: ["));
-    assert!(extras.contains("\"X-Auth: Bearer xyz\""));
-    assert!(extras.contains("user_agent: \"Mozilla/5.0\""));
-    assert!(extras.contains("data: {"));
-    assert!(extras.contains("\"user\" => \"alice\","));
 }
 
 #[test]
@@ -3236,9 +3235,11 @@ fn generate_cask_emits_all_hooks() {
     assert!(cask.contains("'unpost'"));
 }
 
-/// `generate_cask` with `service` field emits the service block.
+/// `generate_cask` renders `service` as the cask artifact stanza that names a
+/// Services-menu bundle in the download. A `service do … end` block is the
+/// formula DSL, and a cask carrying one fails to load.
 #[test]
-fn generate_cask_emits_service_block() {
+fn generate_cask_emits_service_stanza() {
     use super::cask::CaskParams;
     let params = CaskParams {
         name: "mytool",
@@ -3257,7 +3258,7 @@ fn generate_cask_emits_service_block() {
         zap_block: "",
         uninstall_block: "",
         custom_block: None,
-        service: Some("    run [opt_bin/\"mytool\", \"--daemon\"]"),
+        service: Some("MyTool.workflow"),
         livecheck: None,
         manpages: &[],
         completions_bash: None,
@@ -3273,8 +3274,11 @@ fn generate_cask_emits_service_block() {
         generate_completions: None,
     };
     let cask = super::cask::generate_cask(&params).unwrap();
-    assert!(cask.contains("service do"));
-    assert!(cask.contains("--daemon"));
+    assert!(
+        cask.contains("\n  service \"MyTool.workflow\"\nend\n"),
+        "{cask}"
+    );
+    assert!(!cask.contains("service do"), "{cask}");
 }
 
 /// `generate_cask` emits `depends_on` and `conflicts_with` directives
@@ -3283,7 +3287,7 @@ fn generate_cask_emits_service_block() {
 fn generate_cask_emits_depends_and_conflicts() {
     use super::cask::CaskParams;
     let deps = vec!["cask: \"other-app\"".to_string()];
-    let cfs = vec!["cask: \"old-app\"".to_string()];
+    let cfs = vec!["old-app".to_string()];
     let params = CaskParams {
         name: "mytool",
         display_name: "mytool",
@@ -3317,8 +3321,12 @@ fn generate_cask_emits_depends_and_conflicts() {
         generate_completions: None,
     };
     let cask = super::cask::generate_cask(&params).unwrap();
-    assert!(cask.contains("depends_on cask: \"other-app\""));
-    assert!(cask.contains("conflicts_with cask: \"old-app\""));
+    assert!(
+        cask.contains(
+            "\n  conflicts_with cask: \"old-app\"\n  depends_on cask: \"other-app\"\n  depends_on :macos\n"
+        ),
+        "conflicts_with precedes depends_on in one group:\n{cask}"
+    );
 }
 
 /// `generate_cask` with `custom_block` injects raw Ruby into the cask.
@@ -4279,7 +4287,7 @@ fn url_params_ruby_escape_passes_ruby_c() {
 
     // Embedded quote/backslash are escaped inside each string literal.
     assert!(
-        extras.contains(r#"referer: "https://r\"ef\\er""#),
+        extras.contains(r#"referer:    "https://r\"ef\\er""#),
         "referer should be ruby-escaped; got:\n{extras}"
     );
     assert!(
@@ -4300,7 +4308,7 @@ fn url_params_ruby_escape_passes_ruby_c() {
     );
     // The `using:` symbol is raw Ruby — passes through verbatim.
     assert!(
-        extras.contains("using: :homebrew_curl"),
+        extras.contains("using:      :homebrew_curl"),
         "using symbol must stay raw; got:\n{extras}"
     );
 
@@ -4337,7 +4345,7 @@ fn generate_completions_ruby_escape_passes_ruby_c() {
         "arg should be ruby-escaped; got:\n{directive}"
     );
     assert!(
-        directive.contains(r#"base_name: "my\"app\\x""#),
+        directive.contains(r#"base_name:              "my\"app\\x""#),
         "base_name should be ruby-escaped; got:\n{directive}"
     );
     // Known shell_parameter_format renders as a symbol — raw, not escaped.
@@ -4350,9 +4358,10 @@ fn generate_completions_ruby_escape_passes_ruby_c() {
     assert_ruby_syntax_ok("generate_completions", &source);
 }
 
-/// `build_depends_directives` / `build_conflicts_directives` escape the
-/// package-name string literals inside `cask: "…"` / `formula: "…"`; the
-/// resulting `depends_on` / `conflicts_with` lines render to valid Ruby.
+/// `build_depends_directives` escapes the package-name string literals inside
+/// `cask: "…"` / `formula: "…"`, the cask renderer escapes the conflicting
+/// cask names, and the resulting cask is valid Ruby. A `formula:` conflict is
+/// left out, because Homebrew's cask `conflicts_with` accepts only `cask:`.
 #[test]
 fn depends_conflicts_ruby_escape_passes_ruby_c() {
     use anodizer_core::config::{HomebrewCaskConflictEntry, HomebrewCaskDependencyEntry};
@@ -4361,21 +4370,32 @@ fn depends_conflicts_ruby_escape_passes_ruby_c() {
         cask: Some(r#"oth"er\app"#.to_string()),
         formula: None,
     }];
-    let conflicts = vec![HomebrewCaskConflictEntry {
-        cask: None,
-        formula: Some(r#"old"f\m"#.to_string()),
-    }];
+    let conflicts = vec![
+        HomebrewCaskConflictEntry {
+            cask: Some(r#"old"c\k"#.to_string()),
+            formula: None,
+        },
+        HomebrewCaskConflictEntry {
+            cask: None,
+            formula: Some("old-formula".to_string()),
+        },
+    ];
     let dep_dirs = super::formula::build_depends_directives(Some(&deps));
-    let conf_dirs = super::formula::build_conflicts_directives(Some(&conflicts));
+    let conflicting = super::cask::conflicting_casks(Some(&conflicts));
 
     assert_eq!(dep_dirs, vec![r#"cask: "oth\"er\\app""#.to_string()]);
-    assert_eq!(conf_dirs, vec![r#"formula: "old\"f\\m""#.to_string()]);
+    assert_eq!(conflicting, vec![r#"old"c\k"#.to_string()]);
 
-    let source = format!(
-        "cask \"x\" do\n  version \"1.0\"\n  depends_on {}\n  conflicts_with {}\n  name \"X\"\nend\n",
-        dep_dirs[0], conf_dirs[0]
+    let mut params = empty_cask_params("x", "1.0");
+    params.depends_on = &dep_dirs;
+    params.conflicts_with = &conflicting;
+    let cask = generate_cask(&params).unwrap();
+    assert!(
+        cask.contains(r#"  conflicts_with cask: "old\"c\\k""#),
+        "conflict name must be escaped once:\n{cask}"
     );
-    assert_ruby_syntax_ok("depends_conflicts", &source);
+    assert!(!cask.contains("old-formula"), "{cask}");
+    assert_ruby_syntax_ok("depends_conflicts", &cask);
 }
 
 /// The `uninstall`/`zap` array renderer formats each entry with Rust's `{:?}`
@@ -5292,10 +5312,9 @@ fn top_level_cask_universal_replace_falls_back_to_flat_url() {
 
 /// A release carrying BOTH darwin (amd64 + arm64) AND linux (amd64 + arm64)
 /// archives renders an `on_macos` block and an `on_linux` block, each with its
-/// own `on_arm` / `on_intel` sub-blocks carrying per-arch url + sha256. The OS
-/// block order is deterministic (`on_linux` before `on_macos`, BTreeMap key
-/// order) and the per-arch order matches the `arch_block` sort (`on_arm`
-/// before `on_intel`).
+/// own `on_arm` / `on_intel` sub-blocks carrying per-arch url + sha256. The
+/// blocks come out in Homebrew's stanza order: `on_macos` before `on_linux`,
+/// and `on_arm` before `on_intel` inside each.
 #[test]
 fn top_level_cask_darwin_and_linux_coexist_with_deterministic_order() {
     use anodizer_core::config::HomebrewCaskConfig;
@@ -5381,25 +5400,30 @@ fn top_level_cask_darwin_and_linux_coexist_with_deterministic_order() {
         assert!(c.contains(sha), "cask dropped the {sha} arch entry:\n{c}");
     }
 
-    // OS-block order is deterministic: on_linux precedes on_macos (BTreeMap
-    // key order over "linux" < "macos").
-    let linux_pos = c.find("on_linux do").expect("on_linux present");
-    let macos_pos = c.find("on_macos do").expect("on_macos present");
+    let macos_pos = c.find("  on_macos do").expect("on_macos present");
+    let linux_pos = c.find("  on_linux do").expect("on_linux present");
     assert!(
-        linux_pos < macos_pos,
-        "on_linux must precede on_macos (deterministic OS order):\n{c}"
+        macos_pos < linux_pos,
+        "on_macos must precede on_linux (Homebrew stanza order):\n{c}"
+    );
+    // The two OS blocks form one stanza group, so no blank line parts them.
+    assert!(
+        c.contains("    end\n  end\n  on_linux do\n"),
+        "on_linux must follow on_macos with no blank line:\n{c}"
     );
 
-    // Within each OS block, per-arch order matches the arch_block sort:
-    // on_arm precedes on_intel ("arm" < "intel"). The on_macos block is the
-    // tail (it follows on_linux), so its arch sub-blocks live after macos_pos.
-    let macos_block = &c[macos_pos..];
-    let arm_in_macos = macos_block.find("on_arm do").expect("on_arm in macos");
-    let intel_in_macos = macos_block.find("on_intel do").expect("on_intel in macos");
-    assert!(
-        arm_in_macos < intel_in_macos,
-        "within on_macos, on_arm must precede on_intel (arch_block sort):\n{c}"
-    );
+    for (block, start, end) in [
+        ("on_macos", macos_pos, linux_pos),
+        ("on_linux", linux_pos, c.len()),
+    ] {
+        let body = &c[start..end];
+        let arm = body.find("on_arm do").expect("on_arm present");
+        let intel = body.find("on_intel do").expect("on_intel present");
+        assert!(
+            arm < intel,
+            "within {block}, on_arm must precede on_intel:\n{c}"
+        );
+    }
 }
 
 /// A watchOS archive (os="darwin" via map_target's broad apple rule) must NOT
@@ -5741,4 +5765,412 @@ fn publish_top_level_casks_with_an_unrenderable_pull_request_token_skip_before_a
     assert!(landed.contains("cask \"healthy\""), "{landed}");
     drop(broken_bare);
     drop(good_bare);
+}
+
+// -----------------------------------------------------------------------
+// Rendered cask layouts checked by `brew style`
+// -----------------------------------------------------------------------
+
+/// The casks the layout tests and the `brew style` check render: a
+/// macOS + Linux cask carrying every optional stanza, a macOS-only cask with
+/// per-arch downloads, a flat single-url cask, and a minimal one. Returned as `(file stem, rendered cask)`.
+fn style_fixture_casks() -> Vec<(&'static str, String)> {
+    use super::cask::{
+        ARCH_URL_ARGS_INDENT, CaskBinaryEntry, URL_ARGS_INDENT, render_additional_url_params,
+        render_uninstall_block, render_zap_block,
+    };
+    let sha = |c: char| c.to_string().repeat(64);
+    let release = "https://github.com/acme/mytool/releases/download/v#{version}";
+    let arch = |a: &str, file: &str, c: char| CaskArchEntry {
+        arch_block: a.to_string(),
+        url: format!("{release}/{file}"),
+        sha256: sha(c),
+    };
+    let url_cfg = HomebrewCaskURL {
+        using: Some(":homebrew_curl".to_string()),
+        headers: Some(vec![
+            "Accept: application/octet-stream".to_string(),
+            "X-Client: anodizer".to_string(),
+        ]),
+        ..Default::default()
+    };
+    let url_extras = render_additional_url_params(&url_cfg, URL_ARGS_INDENT);
+    let url_extras_arch = render_additional_url_params(&url_cfg, ARCH_URL_ARGS_INDENT);
+    let bins = vec![CaskBinaryEntry {
+        name: "mytool".to_string(),
+        target: None,
+    }];
+    let mans = vec!["mytool.1".to_string()];
+    let alts = vec!["My Tool".to_string()];
+    let deps = vec![
+        "cask: \"other-app\"".to_string(),
+        "formula: \"jq\"".to_string(),
+    ];
+    let conflicts = vec!["older-app".to_string(), "Old-App".to_string()];
+    let uninstall = render_uninstall_block(Some(&HomebrewCaskUninstall {
+        launchctl: Some(vec![
+            "com.acme.mytool.helper".to_string(),
+            "com.acme.mytool.agent".to_string(),
+        ]),
+        quit: Some(vec!["com.acme.mytool".to_string()]),
+        ..Default::default()
+    }));
+    let zap = render_zap_block(Some(&HomebrewCaskUninstall {
+        trash: Some(vec![
+            "~/Library/Preferences/com.acme.mytool.plist".to_string(),
+            "~/.mytool".to_string(),
+        ]),
+        ..Default::default()
+    }));
+    let completions = render_generate_completions(&HomebrewCaskGeneratedCompletions {
+        executable: Some("mytool".to_string()),
+        args: Some(vec!["completions".to_string()]),
+        base_name: Some("mytool".to_string()),
+        shell_parameter_format: Some("clap".to_string()),
+        shells: Some(vec![
+            "bash".to_string(),
+            "zsh".to_string(),
+            "fish".to_string(),
+        ]),
+    });
+
+    let mut full = empty_cask_params("mytool", "1.2.3");
+    full.alternative_names = &alts;
+    full.homepage = Some("https://github.com/acme/mytool");
+    full.description = Some("Release automation for Rust projects");
+    full.app = Some("MyTool.app");
+    full.service = Some("MyTool.workflow");
+    full.binaries = &bins;
+    full.manpages = &mans;
+    full.caveats = Some("Run `mytool init` once.\n  Then `mytool release`.\n");
+    full.zap_block = &zap;
+    full.uninstall_block = &uninstall;
+    full.livecheck = Some("url :url\nstrategy :github_latest".to_string());
+    full.completions_bash = Some("completions/mytool.bash");
+    full.completions_zsh = Some("completions/_mytool");
+    full.completions_fish = Some("completions/mytool.fish");
+    full.depends_on = &deps;
+    full.conflicts_with = &conflicts;
+    full.preflight = Some("system_command \"/usr/bin/true\"\n");
+    full.postflight = Some(
+        "if OS.mac?\n  system_command \"/usr/bin/xattr\", args: [\"-dr\", \"com.apple.quarantine\", \"#{staged_path}/mytool\"]\nend\n",
+    );
+    full.uninstall_preflight = Some("    system_command \"/usr/bin/true\"");
+    full.uninstall_postflight = Some("system_command \"/usr/bin/true\"");
+    full.generate_completions = completions;
+    full.url_extras_indented = &url_extras_arch;
+    // Supplied linux-first and intel-first, the order the artifact catalog
+    // yields them, so the fixture shows the renderer reordering them.
+    full.platforms = vec![
+        CaskPlatformBlock {
+            os_block: "linux".to_string(),
+            arches: vec![
+                arch("intel", "mytool-linux-amd64.tar.gz", 'c'),
+                arch("arm", "mytool-linux-arm64.tar.gz", 'd'),
+            ],
+        },
+        CaskPlatformBlock {
+            os_block: "macos".to_string(),
+            arches: vec![
+                arch("intel", "mytool-darwin-amd64.tar.gz", 'a'),
+                arch("arm", "mytool-darwin-arm64.tar.gz", 'b'),
+            ],
+        },
+    ];
+
+    let flat_uninstall = render_uninstall_block(Some(&HomebrewCaskUninstall {
+        quit: Some(vec!["com.acme.mytool".to_string()]),
+        ..Default::default()
+    }));
+    let flat_sha = sha('e');
+    let flat_url = format!("{release}/mytool-darwin-universal.tar.gz");
+    let mut flat = empty_cask_params("mytool", "1.2.3");
+    flat.sha256 = &flat_sha;
+    flat.url = &flat_url;
+    flat.url_extras = &url_extras;
+    flat.homepage = Some("https://github.com/acme/mytool");
+    flat.description = Some("Release automation for Rust projects");
+    flat.app = Some("MyTool.app");
+    flat.binaries = &bins;
+    flat.custom_block = Some("# Helpers for the hooks below.\n");
+    flat.service = Some("MyTool.workflow");
+    flat.caveats = Some("Run `mytool init` once.");
+    flat.depends_on = &deps[..1];
+    flat.conflicts_with = &conflicts[..1];
+    flat.uninstall_block = &flat_uninstall;
+
+    let min_sha = sha('f');
+    let min_url = format!("{release}/mytool.tar.gz");
+    let mut minimal = empty_cask_params("mytool", "1.2.3");
+    minimal.sha256 = &min_sha;
+    minimal.url = &min_url;
+    minimal.binaries = &bins;
+
+    let mut macos = empty_cask_params("mytool", "1.2.3");
+    macos.homepage = Some("https://github.com/acme/mytool");
+    macos.binaries = &bins;
+    macos.platforms = vec![CaskPlatformBlock {
+        os_block: "macos".to_string(),
+        arches: vec![
+            arch("intel", "mytool-darwin-amd64.tar.gz", 'a'),
+            arch("arm", "mytool-darwin-arm64.tar.gz", 'b'),
+        ],
+    }];
+
+    vec![
+        ("multi_platform", generate_cask(&full).unwrap()),
+        ("macos_multi_arch", generate_cask(&macos).unwrap()),
+        ("flat", generate_cask(&flat).unwrap()),
+        ("minimal", generate_cask(&minimal).unwrap()),
+    ]
+}
+
+fn style_fixture(stem: &str) -> String {
+    style_fixture_casks()
+        .into_iter()
+        .find(|(name, _)| *name == stem)
+        .map(|(_, body)| body)
+        .unwrap_or_else(|| panic!("no style fixture named {stem}"))
+}
+
+/// The full macOS + Linux layout, byte for byte: `on_macos` before
+/// `on_linux` and `on_arm` before `on_intel` whatever order the blocks
+/// arrive in, the macOS-only `app` and `service` inside `on_macos`, one blank
+/// line between stanza groups and none inside one, and `caveats` last with no
+/// blank line before the closing `end`.
+#[test]
+fn multi_platform_cask_renders_in_homebrew_stanza_order() {
+    assert_eq!(
+        style_fixture("multi_platform"),
+        r##"# This file was generated by anodizer (https://github.com/tj-smith47/anodizer). DO NOT EDIT.
+cask "mytool" do
+  version "1.2.3"
+
+  on_macos do
+    on_arm do
+      sha256 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      url "https://github.com/acme/mytool/releases/download/v#{version}/mytool-darwin-arm64.tar.gz",
+          using:  :homebrew_curl,
+          header: [
+            "Accept: application/octet-stream",
+            "X-Client: anodizer",
+          ]
+    end
+    on_intel do
+      sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      url "https://github.com/acme/mytool/releases/download/v#{version}/mytool-darwin-amd64.tar.gz",
+          using:  :homebrew_curl,
+          header: [
+            "Accept: application/octet-stream",
+            "X-Client: anodizer",
+          ]
+    end
+
+    app "MyTool.app"
+    service "MyTool.workflow"
+  end
+  on_linux do
+    on_arm do
+      sha256 "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      url "https://github.com/acme/mytool/releases/download/v#{version}/mytool-linux-arm64.tar.gz",
+          using:  :homebrew_curl,
+          header: [
+            "Accept: application/octet-stream",
+            "X-Client: anodizer",
+          ]
+    end
+    on_intel do
+      sha256 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      url "https://github.com/acme/mytool/releases/download/v#{version}/mytool-linux-amd64.tar.gz",
+          using:  :homebrew_curl,
+          header: [
+            "Accept: application/octet-stream",
+            "X-Client: anodizer",
+          ]
+    end
+  end
+
+  name "mytool"
+  name "My Tool"
+  desc "Release automation for Rust projects"
+  homepage "https://github.com/acme/mytool"
+
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+
+  conflicts_with cask: [
+    "Old-App",
+    "older-app",
+  ]
+  depends_on cask: "other-app"
+  depends_on formula: "jq"
+
+  binary "mytool"
+  manpage "mytool.1"
+  bash_completion "completions/mytool.bash"
+  zsh_completion "completions/_mytool"
+  fish_completion "completions/mytool.fish"
+  generate_completions_from_executable "mytool", "completions",
+                                       base_name:              "mytool",
+                                       shell_parameter_format: :clap,
+                                       shells:                 [:bash, :zsh, :fish]
+
+  preflight do
+    system_command "/usr/bin/true"
+  end
+
+  postflight do
+    if OS.mac?
+      system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/mytool"]
+    end
+  end
+
+  uninstall_preflight do
+    system_command "/usr/bin/true"
+  end
+
+  uninstall_postflight do
+    system_command "/usr/bin/true"
+  end
+
+  uninstall launchctl: [
+              "com.acme.mytool.agent",
+              "com.acme.mytool.helper",
+            ],
+            quit:      "com.acme.mytool"
+
+  zap trash: [
+    "~/.mytool",
+    "~/Library/Preferences/com.acme.mytool.plist",
+  ]
+
+  caveats <<~EOS
+    Run `mytool init` once.
+      Then `mytool release`.
+  EOS
+end
+"##
+    );
+}
+
+/// The flat single-url layout, byte for byte: the custom block first, `url`
+/// in the same group as `name`, `desc` and `homepage`, and `depends_on
+/// :macos` because the only download is a macOS one.
+#[test]
+fn flat_cask_renders_in_homebrew_stanza_order() {
+    assert_eq!(
+        style_fixture("flat"),
+        r##"# This file was generated by anodizer (https://github.com/tj-smith47/anodizer). DO NOT EDIT.
+cask "mytool" do
+  # Helpers for the hooks below.
+
+  version "1.2.3"
+  sha256 "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+
+  url "https://github.com/acme/mytool/releases/download/v#{version}/mytool-darwin-universal.tar.gz",
+      using:  :homebrew_curl,
+      header: [
+        "Accept: application/octet-stream",
+        "X-Client: anodizer",
+      ]
+  name "mytool"
+  desc "Release automation for Rust projects"
+  homepage "https://github.com/acme/mytool"
+
+  livecheck do
+    skip "Auto-generated on release."
+  end
+
+  conflicts_with cask: "older-app"
+  depends_on cask: "other-app"
+  depends_on :macos
+
+  app "MyTool.app"
+  binary "mytool"
+  service "MyTool.workflow"
+
+  uninstall quit: "com.acme.mytool"
+
+  caveats <<~EOS
+    Run `mytool init` once.
+  EOS
+end
+"##
+    );
+}
+
+/// Run `brew style` over every layout fixture when Homebrew can run its
+/// linter here (macOS, or Linux as a non-root user with the style gems
+/// installed), and skip with a note otherwise. `brew style` only lints a cask
+/// inside a tap, so each fixture is written into a throwaway tap that is
+/// removed afterwards.
+///
+/// The one offence allowed is `Cask/InstallSteps`: hook bodies are raw Ruby
+/// from the config, and Homebrew's `*_steps` replacement accepts only its own
+/// step calls, so a cask with hooks keeps the legacy `preflight do` blocks.
+#[test]
+fn rendered_casks_pass_brew_style() {
+    use anodizer_core::tool_detect::{ToolProbe, runs};
+    if !matches!(runs("brew"), ToolProbe::Available) {
+        eprintln!("SKIP rendered_casks_pass_brew_style: brew not on PATH");
+        return;
+    }
+    let brew = |args: &[&str]| {
+        std::process::Command::new("brew")
+            .args(args)
+            .env("HOMEBREW_NO_AUTO_UPDATE", "1")
+            .env("HOMEBREW_NO_INSTALL_FROM_API", "1")
+            .env("HOMEBREW_NO_ENV_HINTS", "1")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run brew")
+    };
+    let repo = brew(&["--repository"]);
+    let taps = std::path::PathBuf::from(String::from_utf8_lossy(&repo.stdout).trim())
+        .join("Library/Taps/anodizer-style-check");
+    if std::fs::create_dir_all(&taps).is_err() {
+        eprintln!(
+            "SKIP rendered_casks_pass_brew_style: cannot write a tap under {}",
+            taps.display()
+        );
+        return;
+    }
+    let tap = tempfile::Builder::new()
+        .prefix("homebrew-check-")
+        .tempdir_in(&taps)
+        .expect("create a throwaway tap");
+    let casks = tap.path().join("Casks");
+    std::fs::create_dir_all(&casks).expect("create Casks/");
+    let cask_path = casks.join("mytool.rb");
+
+    for (stem, body) in style_fixture_casks() {
+        std::fs::write(&cask_path, &body).expect("write cask");
+        let out = brew(&["style", "--cask", cask_path.to_str().expect("utf-8 path")]);
+        let report = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // RuboCop always ends with an `N file inspected` summary; without it
+        // brew stopped before linting (root on Linux, no style gems, no
+        // network to install them), which is an environment gap.
+        if !report.contains("inspected") {
+            eprintln!("SKIP rendered_casks_pass_brew_style: brew style did not run:\n{report}");
+            let _ = std::fs::remove_dir(&taps);
+            return;
+        }
+        let offences: Vec<&str> = report
+            .lines()
+            .filter(|l| l.contains(": C: ") || l.contains(": W: ") || l.contains(": E: "))
+            .filter(|l| !l.contains("Cask/InstallSteps:"))
+            .collect();
+        assert!(
+            offences.is_empty(),
+            "brew style reported offences for the {stem} cask:\n{report}\n--- cask ---\n{body}"
+        );
+    }
+    drop(tap);
+    let _ = std::fs::remove_dir(&taps);
 }

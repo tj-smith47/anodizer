@@ -7117,7 +7117,7 @@
           ]
         },
         "service": {
-          "description": "Homebrew service definition.",
+          "description": "Path of a macOS Services bundle (for example `MyTool.workflow`) inside the download, written as `service \"<path>\"`.",
           "default": null,
           "type": [
             "string",
@@ -7208,7 +7208,7 @@
           ]
         },
         "formula": {
-          "description": "Conflicting formula name (deprecated by Homebrew).",
+          "description": "Deprecated: Homebrew casks can only conflict with casks, so this is left out of the rendered cask and a deprecation warning is logged.",
           "default": null,
           "type": [
             "string",

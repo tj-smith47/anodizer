@@ -235,13 +235,50 @@ where
 /// timestamps, in `StageLogger` visual style, so library warnings match the
 /// pipeline's own logger output (one output authority).
 fn init_tracing() {
-    use tracing_subscriber::{EnvFilter, fmt};
+    use tracing_subscriber::filter::LevelFilter;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::{EnvFilter, Layer, fmt};
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
-    let _ = fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .event_format(StageStyleFormat)
+    // The counter carries its own WARN filter so `RUST_LOG=error` can hide
+    // deprecation lines from stderr without changing the `check config`
+    // verdict.
+    let _ = tracing_subscriber::registry()
+        .with(
+            fmt::layer()
+                .with_writer(std::io::stderr)
+                .event_format(StageStyleFormat)
+                .with_filter(filter),
+        )
+        .with(DeprecationCounter.with_filter(LevelFilter::WARN))
         .try_init();
+}
+
+/// Number of `DEPRECATION:` warnings logged so far in this process. `check
+/// config` reads it to say the config is valid but uses deprecated
+/// properties.
+pub(crate) static DEPRECATION_WARNINGS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Tracing layer that counts `DEPRECATION:` warnings into
+/// [`DEPRECATION_WARNINGS`].
+struct DeprecationCounter;
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for DeprecationCounter {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if *event.metadata().level() != tracing::Level::WARN {
+            return;
+        }
+        let mut visitor = MessageVisitor::default();
+        event.record(&mut visitor);
+        if visitor.message.starts_with("DEPRECATION:") {
+            DEPRECATION_WARNINGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 
 fn main() {

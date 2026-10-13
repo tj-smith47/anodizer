@@ -479,6 +479,9 @@ pub(crate) fn legacy_docker_retry_warnings(config: &Config) -> Vec<String> {
 /// - `url.verified: <host>` — nothing to fold: Homebrew removed the stanza,
 ///   so anodizer drops it from the rendered cask and warns that it is dead
 ///   config.
+/// - `conflicts[].formula: <name>` — nothing to fold: a cask can only
+///   conflict with casks, so the entry is left out of the rendered cask with
+///   a warning.
 ///
 /// anodizer accepts both spellings so imported configs keep parsing.
 /// The captured values are moved out of [`HomebrewCaskConfig::legacy_binary`]
@@ -507,7 +510,8 @@ pub fn apply_homebrew_cask_legacy_singulars(config: &mut Config) {
 pub fn homebrew_cask_legacy_warnings(config: &mut Config) -> Vec<String> {
     /// Fold the deprecated singular fields (`binary:` → `binaries`,
     /// `manpage:` → `manpages`) on one cask and warn on the removed
-    /// `url.verified:` stanza, returning one warning per tripped field. The
+    /// `url.verified:` stanza and on formula conflicts, returning one warning
+    /// per tripped field. The
     /// singular `binary` is prepended to `binaries` so an explicit
     /// `binaries[0]` ordering is preserved at the tail; the singular `manpage`
     /// is appended to `manpages`; `url.verified:` folds nothing.
@@ -546,6 +550,22 @@ pub fn homebrew_cask_legacy_warnings(config: &mut Config) -> Vec<String> {
                 "DEPRECATION: {location}: `url.verified:` is deprecated; Homebrew removed \
                  it (Homebrew/brew#23280) and now uses the default URL verification \
                  behavior. anodizer no longer writes it into the cask; remove the field."
+            ));
+        }
+        let formula_conflicts: Vec<&str> = cask
+            .conflicts
+            .iter()
+            .flatten()
+            .filter_map(|c| c.formula.as_deref())
+            .filter(|f| !f.is_empty())
+            .collect();
+        if !formula_conflicts.is_empty() {
+            warnings.push(format!(
+                "DEPRECATION: {location}: `conflicts[].formula` ({}) is deprecated; Homebrew \
+                 casks can only conflict with casks, and `conflicts_with formula:` stops the \
+                 cask from loading. anodizer no longer writes it into the cask; remove the \
+                 entry or name a cask instead.",
+                formula_conflicts.join(", ")
             ));
         }
         warnings

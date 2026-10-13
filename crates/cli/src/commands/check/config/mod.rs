@@ -166,7 +166,11 @@ fn report_results(log: &StageLogger, warnings: &[String], errors: &[String]) -> 
     }
 
     if errors.is_empty() {
-        log.status("Config is valid.");
+        if crate::DEPRECATION_WARNINGS.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+            log.status("Config is valid, but uses deprecated properties.");
+        } else {
+            log.status("Config is valid.");
+        }
         Ok(())
     } else {
         for e in errors {

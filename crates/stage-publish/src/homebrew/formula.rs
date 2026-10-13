@@ -648,25 +648,6 @@ fn dependency_type_priority(dep_type: Option<&str>) -> u8 {
     }
 }
 
-/// Build conflicts_with directives from structured cask conflict config.
-pub(super) fn build_conflicts_directives(
-    conflicts: Option<&[anodizer_core::config::HomebrewCaskConflictEntry]>,
-) -> Vec<String> {
-    let c = match conflicts {
-        Some(c) if !c.is_empty() => c,
-        _ => return Vec::new(),
-    };
-    let mut directives = Vec::new();
-    for conflict in c {
-        if let Some(ref cask) = conflict.cask {
-            directives.push(format!("cask: \"{}\"", ruby_escape_str(cask)));
-        } else if let Some(ref formula) = conflict.formula {
-            directives.push(format!("formula: \"{}\"", ruby_escape_str(formula)));
-        }
-    }
-    directives
-}
-
 /// Render the formula's `license` stanza from a parsed SPDX expression.
 ///
 /// - single id → `license "MIT"`

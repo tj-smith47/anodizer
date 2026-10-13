@@ -298,7 +298,8 @@ pub struct HomebrewCaskConfig {
     // ----- Ruby block -----
     /// Arbitrary Ruby code inserted into the cask block.
     pub custom_block: Option<String>,
-    /// Homebrew service definition.
+    /// Path of a macOS Services bundle (for example `MyTool.workflow`) inside
+    /// the download, written as `service "<path>"`.
     pub service: Option<String>,
 
     // ----- Livecheck -----
@@ -510,7 +511,8 @@ pub struct HomebrewCaskDependencyEntry {
 pub struct HomebrewCaskConflictEntry {
     /// Conflicting cask name.
     pub cask: Option<String>,
-    /// Conflicting formula name (deprecated by Homebrew).
+    /// Deprecated: Homebrew casks can only conflict with casks, so this is
+    /// left out of the rendered cask and a deprecation warning is logged.
     pub formula: Option<String>,
 }
 

@@ -193,16 +193,16 @@ homebrew_casks:
 | Formula field (`publish.homebrew`) | Cask field (`homebrew_casks[]` / `publish.homebrew_cask`) | Notes |
 |---|---|---|
 | `repository`, `commit_author`, `commit_msg_template`, `directory`, `name` | Same names | Identical semantics |
-| `description`, `homepage`, `license`, `caveats`, `custom_block`, `service`, `skip_upload` | Same names | Identical semantics |
+| `description`, `homepage`, `license`, `caveats`, `custom_block`, `skip_upload` | Same names | Identical semantics |
 | `ids` | `ids` | Same — artifact-id filter |
-| `url_template` | `url_template` (or structured `url:` with `verified`, `using`, `headers`, etc.) | Cask gives a richer structured `url:` block |
+| `url_template` | `url_template` (or structured `url:` with `using`, `headers`, etc.) | Cask gives a richer structured `url:` block |
 | `url_headers` | `url.headers` | Cask uses the structured form |
 | `download_strategy` | `url.using` | Cask uses the structured form |
 | `dependencies[].name` | `dependencies[].cask` or `dependencies[].formula` | Cask requires the dependency kind |
 | `dependencies[].os`, `dependencies[].type`, `dependencies[].version` | not yet on Cask | Upstream HomebrewCask omits these — see [Homebrew Cask Cookbook depends_on](https://docs.brew.sh/Cask-Cookbook#stanza-depends_on) |
-| `conflicts[]` (string or `{name, because}`) | `conflicts[].cask` / `conflicts[].formula` | Cask conflicts use the structured form |
+| `conflicts[]` (string or `{name, because}`) | `conflicts[].cask` | Casks can only conflict with casks; `conflicts[].formula` is deprecated and dropped |
 | `install`, `extra_install`, `post_install`, `test` | `hooks.pre.install`, `hooks.post.install` (preflight / postflight) + `generate_completions_from_executable` | Cask uses Ruby DSL hooks instead of formula install/test blocks |
-| `plist`, `service` | `service` | Cask has no `plist` directive; use `service` |
+| `plist`, `service` | _(no equivalent)_ | A cask `service` installs a macOS Services bundle (`service "MyTool.workflow"`), not a launchd service |
 | `amd64_variant`, `arm_variant` | _(no upstream equivalent on `homebrew_casks`)_ | Variant filters were Formula-only on GoReleaser |
 | `custom_require` | _(not applicable)_ | Custom Ruby `require` is a Formula download-strategy concern; Casks use `url.using` instead |
 | `cask:` (sub-block under `publish.homebrew`) | _(top-level field — promote the sub-block to its own entry)_ | The legacy `publish.homebrew.cask:` sub-block was a transitional shape; write `homebrew_casks:` or `publish.homebrew_cask:` directly |
