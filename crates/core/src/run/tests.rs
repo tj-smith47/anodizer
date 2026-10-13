@@ -950,3 +950,51 @@ fn a_grandchild_holding_the_pipes_ends_the_drain_after_the_window_windows() {
         )]
     );
 }
+
+/// A reader that hands out `data` and then fails, as a pipe can mid-stream.
+struct FailsAfter {
+    data: &'static [u8],
+}
+
+impl std::io::Read for FailsAfter {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.data.is_empty() {
+            return Err(std::io::Error::other("pipe broke"));
+        }
+        let n = self.data.len().min(buf.len());
+        buf[..n].copy_from_slice(&self.data[..n]);
+        self.data = &self.data[n..];
+        Ok(n)
+    }
+}
+
+/// A read error mid-line keeps and prints the partial line read before it,
+/// alongside the complete lines.
+#[test]
+fn tee_stream_keeps_the_partial_line_read_before_an_error() {
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+    let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+    let capture = Mutex::new(Vec::new());
+    tee_stream(
+        FailsAfter {
+            data: b"whole\npartial",
+        },
+        &log,
+        false,
+        true,
+        &capture,
+        &AtomicBool::new(false),
+    );
+    assert_eq!(capture.into_inner().unwrap(), b"whole\npartial");
+    let printed: String = cap
+        .all_messages()
+        .into_iter()
+        .map(|(_, m)| m)
+        .collect::<Vec<_>>()
+        .join("|");
+    assert!(
+        printed.contains("partial"),
+        "tee lost the partial line: {printed}"
+    );
+}

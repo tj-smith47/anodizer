@@ -145,7 +145,7 @@ fn split_scp_url(url: &str) -> Option<(&str, &str)> {
 
 /// The host a remote or API URL names, lower-cased, with any userinfo and
 /// any port dropped and the port-443 SSH names mapped through
-/// [`ssh_web_host`], so a remote and an API base on one machine compare
+/// `ssh_web_host`, so a remote and an API base on one machine compare
 /// equal whatever port each uses. The path is not required, so
 /// `https://api.github.com/` names `api.github.com`. `None` for a URL with
 /// no host: a local path, a Windows drive, an empty string.

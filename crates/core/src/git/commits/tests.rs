@@ -1819,9 +1819,9 @@ fn a_message_holding_the_old_record_markers_decodes_beside_its_neighbours() {
     assert_eq!(pair_subjects, subjects);
 }
 
-/// A touched file is reported with the name git holds: a leading or trailing
-/// space is kept, a non-ASCII name is not octal-escaped, and a commit with no
-/// message is still one message for the release signal.
+/// A touched file is reported with the name git holds: a leading, internal or
+/// (on Unix) trailing space is kept, a non-ASCII name is not octal-escaped,
+/// and a commit with no message is still one message for the release signal.
 #[test]
 fn file_names_and_empty_messages_survive_the_commit_record_read() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1850,7 +1850,12 @@ fn file_names_and_empty_messages_survive_the_commit_record_read() {
     run(&["add", "."]);
     run(&["commit", "-m", "initial"]);
     let base = get_head_commit_in(dir).unwrap();
-    for name in [" lead", "trail ", "mid space", "\u{e9}.rs"] {
+    let mut names = vec![" lead", "mid space", "\u{e9} x.rs"];
+    // NTFS strips a trailing space from a file name, so the file would reach
+    // git as `trail`.
+    #[cfg(unix)]
+    names.push("trail ");
+    for name in &names {
         std::fs::write(dir.join(name), name).unwrap();
     }
     run(&["add", "."]);
@@ -1862,7 +1867,8 @@ fn file_names_and_empty_messages_survive_the_commit_record_read() {
     assert!(with_files[0].files.is_empty());
     let mut files = with_files[1].files.clone();
     files.sort();
-    assert_eq!(files, [" lead", "mid space", "trail ", "\u{e9}.rs"]);
+    names.sort();
+    assert_eq!(files, names);
 
     let messages = get_commit_messages_between_in(dir, &base, "HEAD", false).unwrap();
     assert_eq!(messages, ["", "feat: odd names"]);

@@ -95,17 +95,11 @@ pub(crate) const POST_EXIT_DRAIN_WINDOW: Duration = Duration::from_secs(5);
 /// arrives. Use [`run_checked_with_stdin`] to feed bytes to the child's stdin.
 pub fn run_checked(cmd: &mut Command, log: &StageLogger, label: &str) -> Result<Output> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    // Route BOTH verbosities through the shared `capture_inner` loop (via
-    // `run_inner`), which runs the liveness heartbeat ticker: a slow silent
-    // child (`cargo publish`, a registry push) is now narrated at DEFAULT
-    // verbosity too, not only under `-v`. Matches the former non-verbose
-    // `cmd.output()` fast-path byte-for-byte on capture and `check_output`
-    // decision; the single deliberate drift is that the verbose path's stdin is
-    // now null instead of inherited (see the stdin note in `capture_inner`), so
-    // stdin semantics no longer vary by verbosity. A single code path is worth
-    // the two reader-thread spawns per call — every production caller is a
-    // heavyweight subprocess (cargo, docker, notarytool) where thread setup is
-    // noise, and the deleted dual path is exactly where the stdin drift hid.
+    // Both verbosities share the `capture_inner` loop, which runs the liveness
+    // heartbeat ticker, so a slow silent child (`cargo publish`, a registry
+    // push) is narrated at default verbosity too, and stdin is null at every
+    // verbosity. The two reader threads per call cost nothing next to the
+    // heavyweight tools that run here (cargo, docker, notarytool).
     run_inner(cmd, None, log, label, None)
 }
 
@@ -287,13 +281,10 @@ fn capture_inner(
     if timeout.is_some() {
         set_own_process_group(cmd);
     }
-    // With no stdin payload, detach the child's stdin — deliberately for EVERY
-    // no-payload path, not just the former non-verbose `cmd.output()` sites
-    // (which nulled stdin implicitly). The verbose and `*_timeout` paths used
-    // to inherit the parent's stdin; that let a tool that reads fd 0 (a stray
-    // `cargo login`, a git credential helper honoring piped input) block
-    // forever on input that never arrives, and made stdin semantics differ by
-    // verbosity. Tools that genuinely prompt interactively (gpg pinentry, ssh
+    // With no stdin payload, detach the child's stdin on every path: an
+    // inherited stdin lets a tool that reads fd 0 (a stray `cargo login`, a git
+    // credential helper honoring piped input) block forever on input that never
+    // arrives. Tools that genuinely prompt interactively (gpg pinentry, ssh
     // passphrases) read `/dev/tty`, not fd 0, so they are unaffected. When
     // `stdin` is Some the caller already set `Stdio::piped()`.
     if stdin.is_none() {
@@ -389,9 +380,11 @@ fn capture_inner(
     let readers_done = Arc::new(AtomicUsize::new(0));
     let readers_done_ref: &AtomicUsize = &readers_done;
     // The readers and the stdin writer are detached threads rather than scoped
-    // ones: a thread blocked on a pipe that a leftover grandchild holds cannot
-    // be interrupted, and a scope would wait for it. Setting `abandon` tells
-    // each of them to stop at its next read or write, which drops its end of
+    // ones, so the call returns at the cut-off without waiting for them: a
+    // reader can take up to `PIPE_POLL_INTERVAL` to notice `abandon`, and the
+    // Windows stdin writer, blocked in a write the leftover process never
+    // reads, may not notice it at all. Once `abandon` is set each reader, and
+    // the Unix writer, stops within `PIPE_POLL_INTERVAL` and drops its end of
     // the pipe.
     let abandon = Arc::new(AtomicBool::new(false));
     let (reader_tx, reader_rx) = std::sync::mpsc::channel::<()>();
@@ -777,7 +770,7 @@ fn await_readers(
 /// prints nothing more, including a redacter tail it was still holding back:
 /// the check is made under the capture lock, which the calling thread takes
 /// before it prints the cut-off line.
-fn tee_stream<R: Read>(
+pub(super) fn tee_stream<R: Read>(
     reader: R,
     log: &StageLogger,
     is_stderr: bool,
@@ -790,27 +783,32 @@ fn tee_stream<R: Read>(
     // One redacter for the whole stream: a secret split across two reads is
     // only recognisable to something that remembers the first half.
     let mut redacter = tee.then(|| log.stream_redacter());
-    // A child that ends without a terminator used to have one appended per
-    // line; the terminating newline is now added once, after the last release.
+    // Tracks whether the printed stream is mid-line, so a child that ends
+    // without a terminator gets exactly one newline, after the redacter's
+    // final release.
     let mut open_line = false;
     loop {
         line.clear();
-        match buf.read_until(b'\n', &mut line) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {
-                let mut captured = capture.lock().unwrap_or_else(|p| p.into_inner());
-                if abandon.load(Ordering::Acquire) {
-                    return;
-                }
-                captured.extend_from_slice(&line);
-                if let Some(r) = redacter.as_mut() {
-                    // The child's REAL bytes, terminator included: a secret
-                    // whose value carries `\r\n` is only recognisable to a
-                    // redacter that receives what the child actually wrote.
-                    let released = r.push(&String::from_utf8_lossy(&line));
-                    emit_released(&released, log, is_stderr, &mut open_line);
-                }
+        // On a read error `read_until` has already appended the bytes it read
+        // before failing; they are kept like any other line, then the loop
+        // ends.
+        let read = buf.read_until(b'\n', &mut line);
+        if !line.is_empty() {
+            let mut captured = capture.lock().unwrap_or_else(|p| p.into_inner());
+            if abandon.load(Ordering::Acquire) {
+                return;
             }
+            captured.extend_from_slice(&line);
+            if let Some(r) = redacter.as_mut() {
+                // The child's REAL bytes, terminator included: a secret
+                // whose value carries `\r\n` is only recognisable to a
+                // redacter that receives what the child actually wrote.
+                let released = r.push(&String::from_utf8_lossy(&line));
+                emit_released(&released, log, is_stderr, &mut open_line);
+            }
+        }
+        if !matches!(read, Ok(n) if n > 0) {
+            break;
         }
     }
     // Runs on the read-error path too, so a mid-stream failure cannot strand a
