@@ -373,10 +373,15 @@ pub struct HomebrewCaskConfig {
     /// rightward `=>`), a parameter of a block (`|a, b; c|`, also over
     /// several lines), method (`def name(a, b = 1)`, with or without
     /// parentheses; a setter `def name=(v)` binds `v` alone) or lambda
-    /// (`->(x)`), or a word other than a keyword written straight against
-    /// it. A `def` body sees none of the locals outside it; a block sees
-    /// them, and its parameters and the locals first assigned in it end at
-    /// its `end` or `}`; `if`, `while`, `case` and `begin` open no scope.
+    /// (`->(x)`, `-> (x)`), or a word other than a keyword written straight
+    /// against it. A `def` body sees none of the locals outside it; a
+    /// block, a lambda body (`-> { … }`) included, sees them, and its
+    /// parameters and the locals first assigned in it end at its `end` or
+    /// `}`; `if`, `while`, `case` and `begin` open no scope. A statement
+    /// continued with a `\` at the end of a line, or with a `?\` character
+    /// literal holding the newline, is read as one statement, so the code
+    /// before the break decides what the operator, `if` or `until` after
+    /// it is.
     /// After a word, a `/` followed by a space or `=` divides. After an
     /// operator, `(`, `,`, `;`, the start of a line, a Ruby keyword, any
     /// method of the cask DSL or a common method such as `puts` the

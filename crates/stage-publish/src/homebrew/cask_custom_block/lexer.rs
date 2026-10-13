@@ -26,6 +26,9 @@ pub(super) struct Lexed {
     /// body and `=begin` comment. The closing line of a `<<~` heredoc
     /// counts as code, since its indentation is free.
     pub(super) starts: Vec<bool>,
+    /// Per line, whether it ends in code: outside every literal, heredoc
+    /// body and `=begin` comment.
+    pub(super) ends: Vec<bool>,
     /// The first place the block cannot be read with confidence.
     pub(super) unread: Option<Unreadable>,
 }
@@ -108,6 +111,25 @@ struct Carry {
     ambiguous: Option<Unreadable>,
     /// Inside a `=begin` … `=end` comment, opened on this line.
     comment: Option<usize>,
+    /// The statement a line ending in `\` continues onto the next line.
+    continued: Option<Continued>,
+}
+
+/// What a line that ends in `\` hands to the next one, which reads on as
+/// part of the same statement.
+#[derive(Default)]
+struct Continued {
+    /// The code of the statement so far, which the positions in `st`
+    /// index.
+    text: String,
+    st: Statement,
+    prev: Option<char>,
+    word: String,
+    prev_word: String,
+    before_word: Option<char>,
+    word_colon: Option<bool>,
+    pending: Vec<String>,
+    captures: Vec<String>,
 }
 
 /// The code of every line of `block`, and the first place it cannot be
@@ -130,7 +152,9 @@ pub(super) fn lex_block(block: &str) -> Lexed {
     let mut carry = Carry::default();
     let mut out = Vec::with_capacity(lines.len());
     let mut starts = Vec::with_capacity(lines.len());
+    let mut ends = Vec::with_capacity(lines.len());
     for (n, line) in lines.iter().enumerate() {
+        ends.push(false);
         if let Some(heredoc) = carry.heredocs.front() {
             let closes = heredoc.closes_on(line);
             starts.push(closes && heredoc.squiggly);
@@ -155,7 +179,9 @@ pub(super) fn lex_block(block: &str) -> Lexed {
             continue;
         }
         starts.push(carry.stack.is_empty());
-        out.push(lex_line(line, n + 1, &mut carry));
+        let code = lex_line(line, n + 1, &mut carry);
+        ends[n] = !code.open;
+        out.push(code);
     }
     let unclosed = |line: usize, kind| Unreadable {
         line,
@@ -201,6 +227,7 @@ pub(super) fn lex_block(block: &str) -> Lexed {
     Lexed {
         lines: out,
         starts,
+        ends,
         unread,
     }
 }
@@ -319,34 +346,43 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
         param_list,
         shifts,
         ambiguous,
+        continued,
         ..
     } = carry;
     let chars: Vec<char> = line.chars().collect();
-    let mut text = String::new();
-    let mut st = Statement::default();
-    // The last character of code read, ignoring whitespace; `None` at the
-    // start of a statement.
-    let mut prev: Option<char> = None;
-    // The word or number the code read so far ends with, with a leading
-    // `@` or `$` and a trailing `?` or `!`, empty when it ends with
-    // anything else; whether it is still being read; the word before it;
-    // whether whitespace followed it; and the code character before it,
-    // where a `.` makes it a method name.
-    let mut word = String::new();
+    // `text` is the code of the statement, from the line a `\` continued
+    // when there is one; this line's code starts at `base`. `prev` is the
+    // last character of code read, ignoring whitespace, `None` at the start
+    // of a statement. `word` is the word or number the code read so far
+    // ends with, with a leading `@` or `$` and a trailing `?` or `!`, empty
+    // when it ends with anything else; `prev_word` the word before it, and
+    // `before_word` the code character before it, where a `.` makes it a
+    // method name. `word_colon` is whether the word follows a `:`:
+    // `Some(false)` for a symbol (`:case`, `a:case`), `Some(true)` for a
+    // constant path (`A::B`). `pending` holds the parameters of a lambda,
+    // bound once its body opens, and `captures` the named captures of the
+    // regex literal that closed last.
+    let Continued {
+        mut text,
+        mut st,
+        mut prev,
+        mut word,
+        mut prev_word,
+        mut before_word,
+        mut word_colon,
+        mut pending,
+        mut captures,
+    } = continued.take().unwrap_or_default();
+    let base = text.len();
+    // Whether the word is still being read, and whether whitespace
+    // followed it; the `\` that continued a line counts as whitespace.
     let mut word_open = false;
-    let mut prev_word = String::new();
-    let mut spaced = false;
-    let mut before_word: Option<char> = None;
-    // Whether the word follows a `:`: `Some(false)` for a symbol (`:case`,
-    // `a:case`), `Some(true)` for a constant path (`A::B`).
-    let mut word_colon: Option<bool> = None;
+    let mut spaced = base > 0;
+    // The line ends in a `\` that continues its statement.
+    let mut continues_line = false;
     // The first ambiguous opener on this line: its operator and the kind
     // of literal it opened. Every literal opened after it is guessed.
     let mut guess: Option<(&'static str, &'static str)> = None;
-    // The parameters of a lambda, bound once its body opens.
-    let mut pending: Vec<String> = Vec::new();
-    // The named captures of the regex literal that closed last.
-    let mut captures: Vec<String> = Vec::new();
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
@@ -438,6 +474,10 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
                 &mut pending,
             );
             prev_word.clone_from(&word);
+        }
+        if c == '\\' && next.is_none() && stack.is_empty() {
+            continues_line = true;
+            break;
         }
         // A special global (`$"`, `$/`, `$;`, `$-w`) is a value whose
         // punctuation opens nothing.
@@ -542,6 +582,12 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
                     word.clear();
                 }
             }
+            // `?\` at the end of a line holds the newline, and the
+            // statement reads on.
+            if c == '?' && rest == ['?', '\\'] && stack.is_empty() {
+                continues_line = true;
+                break;
+            }
             continue;
         }
         if let Some(Frame::Interpolation { braces }) = stack.last_mut() {
@@ -612,6 +658,8 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
                 // to the scope around it.
                 let block = match prev {
                     Some(')') => true,
+                    // `-> { … }` is the body of a lambda.
+                    Some('>') => text[..text.len() - 1].trim_end().ends_with("->"),
                     Some(p) if is_word_char(p) || matches!(p, '?' | '!') => {
                         !HASH_AFTER.contains(&word.as_str())
                     }
@@ -681,7 +729,24 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
             text.push_str("\"\"");
         }
     }
-    end_statement(&text[st.start..], &st, scopes);
+    let mut code = text[base..].to_string();
+    if continues_line {
+        code.push('\\');
+        text.push(' ');
+        *continued = Some(Continued {
+            text,
+            st,
+            prev,
+            word,
+            prev_word,
+            before_word,
+            word_colon,
+            pending,
+            captures,
+        });
+    } else {
+        end_statement(&text[st.start..], &st, scopes);
+    }
     if let Some(list) = param_list {
         list.push('\n');
     }
@@ -699,7 +764,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
         }
     }
     CodeLine {
-        text,
+        text: code,
         open: !stack.is_empty(),
     }
 }

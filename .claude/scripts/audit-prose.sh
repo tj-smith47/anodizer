@@ -249,12 +249,16 @@ jargon_violations+="$jargon_prose"
 # an awk program the parameter `s` is code: `function <name>(s)` and a call to
 # one of the helpers in AWK_S_CALLS on `s` (`trim`, `length`). An awk program is
 # a whole `.awk` file, a heredoc tagged AWK, or the text a line scan finds
-# between a quote and the quote that matches it: the opening quote is the first
-# one after an `awk` word (its `-v name=value` and `-F x` options skipped), or
-# the one before a `BEGIN {`, and a bare `BEGIN {` opens one on a `'`. Inside a
-# `"` program `\"` is skipped. A quote outside a program is not counted, and
-# an `awk -f file` names a program held elsewhere and opens none. Outside a
-# program, only a line that defines `function <name>(s) {` is exempt.
+# between a quote and the quote that matches it. The opening quote is the first
+# one after an `awk`, `gawk`, `mawk` or `nawk` word, its `-v name=value` and
+# `-F x` options skipped (a quoted value may hold spaces), on the same line or,
+# when the line ends in `\`, on the next one. A quote before a `BEGIN {` opens
+# one too on a line that names awk or already holds a program, and a bare
+# `BEGIN {` opens one on a `'`. Inside a `"` program `\"` is skipped. A quote
+# outside a program is not counted, and an `awk -f file` names a program held
+# elsewhere and opens none. The line that opens a heredoc tagged AWK is
+# scanned like any other up to the heredoc. Outside a program, only a line that
+# defines `function <name>(s) {` is exempt.
 AWK_S_CALLS='trim|ltrim|rtrim|length|tolower|toupper'
 collect_files PLURAL_SH -rl --include='*.sh' --include='*.sh.tpl' -- '(' .claude/scripts scripts packaging
 collect_files PLURAL_AWK -l -- '(' .claude/scripts/lib/*.awk
@@ -266,27 +270,32 @@ run_scanner plural_prose -v AWK_S_CALLS="$AWK_S_CALLS" -f - \
         awk_call = "(^|[^A-Za-z0-9_])(function +[A-Za-z_][A-Za-z0-9_]*|" AWK_S_CALLS ")\\(s\\)"
         defines = "^[ \t]*function +[A-Za-z_][A-Za-z0-9_]*\\(s\\) *\\{"
     }
-    FNR == 1 { whole = FILENAME ~ /\.awk$/; heredoc = 0; q = "" }
+    FNR == 1 { whole = FILENAME ~ /\.awk$/; heredoc = 0; q = ""; expect = 0 }
     {
         if (whole || heredoc) {
             if (heredoc && $0 ~ /^[ \t]*AWK[ \t]*$/) heredoc = 0
             text = $0
             gsub(awk_call, " ", text)
-        } else if (q == "" && $0 ~ /<<-?["']?AWK["']?/) {
-            heredoc = 1
-            text = $0
         } else {
             text = scan($0)
-            if (!touched && text ~ defines) next
+            if (q == "" && $0 ~ /<<-?["']?AWK["']?/) heredoc = 1
+            else if (!touched && text ~ defines) next
         }
         if (text ~ /[A-Za-z]\((s|es|ies|y\|ies)\)/) printf("%s:%d: %s\n", FILENAME, FNR, trim($0))
     }
 
     # The line with every awk program span in it cleared of its `(s)` code.
-    # `q` is the quote of a program still open at the end of the line, and
-    # `touched` says whether the line holds any program text.
-    function scan(line,    out, i, n, c, start, rest) {
+    # `q` is the quote of a program still open at the end of the line,
+    # `touched` says whether the line holds any program text, and `expect`
+    # that an awk command continued with `\` still waits for its program.
+    function scan(line,    out, i, n, c, start, rest, named) {
         out = ""; i = 1; n = length(line); touched = 0
+        named = line ~ /(^|[^.A-Za-z0-9_])[gmn]?awk([ \t]|$)/
+        if (expect) {
+            expect = 0
+            i = program_start(line, 1)
+            out = substr(line, 1, i - 1)
+        }
         while (i <= n) {
             if (q != "") {
                 touched = 1
@@ -304,16 +313,12 @@ run_scanner plural_prose -v AWK_S_CALLS="$AWK_S_CALLS" -f - \
             c = substr(line, i, 1)
             rest = substr(line, i)
             if (c == "'" || c == "\"") {
-                if (substr(rest, 2) ~ /^[ \t]*BEGIN *\{/) { q = c; out = out c; i++; continue }
-            } else if (rest ~ /^awk[ \t]/ && (i == 1 || substr(line, i - 1, 1) !~ /[.A-Za-z0-9_]/)) {
-                out = out "awk"; i += 3
-                while (match(substr(line, i), /^[ \t]+(-v[ \t]*[^ \t]+|-F[ \t]*[^ \t]+)/)) {
-                    out = out substr(line, i, RLENGTH); i += RLENGTH
+                if ((named || touched) && substr(rest, 2) ~ /^[ \t]*BEGIN *\{/) {
+                    q = c; out = out c; i++; continue
                 }
-                if (match(substr(line, i), /^[ \t]+['"]/)) {
-                    out = out substr(line, i, RLENGTH); i += RLENGTH
-                    q = substr(line, i - 1, 1)
-                }
+            } else if (match(rest, /^[gmn]?awk[ \t]/) && (i == 1 || substr(line, i - 1, 1) !~ /[.A-Za-z0-9_]/)) {
+                start = program_start(line, i + RLENGTH - 1)
+                out = out substr(line, i, start - i); i = start
                 continue
             } else if (rest ~ /^BEGIN *\{/ && out ~ /^[ \t]*$/) {
                 q = "'"
@@ -322,6 +327,23 @@ run_scanner plural_prose -v AWK_S_CALLS="$AWK_S_CALLS" -f - \
             out = out c; i++
         }
         return out
+    }
+
+    # Where the program of an awk command starts in `line`, from `i` just
+    # after the command word or at the start of a continued line: past its
+    # `-v` and `-F` options and the opening quote, which sets `q`. A line
+    # that ends in `\` there sets `expect`; with neither, `i` itself.
+    function program_start(line, i,    value) {
+        value = "([^ \t\"']|\"[^\"]*\"|'[^']*')+"
+        while (match(substr(line, i), "^[ \t]*-[vF][ \t]*" value)) i += RLENGTH
+        if (match(substr(line, i), /^[ \t]*['"]/)) {
+            i += RLENGTH
+            q = substr(line, i - 1, 1)
+        } else if (substr(line, i) ~ /^[ \t]*\\$/) {
+            expect = 1
+            i = length(line) + 1
+        }
+        return i
     }
 
     function clear(t) { gsub(awk_call, " ", t); return t }

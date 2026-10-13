@@ -217,10 +217,15 @@ fn the_misspelled_tool_name_is_reported_and_the_config_alias_is_not() {
 /// an awk parameter `s` inside an awk program (`function trim(s)`,
 /// `length(s)`, `print trim(s)`): a one-line `awk '…'`, one spread over
 /// several lines in single or double quotes, a heredoc tagged AWK or a whole
-/// `.awk` library. An `awk -f lib.awk` line opens no program, so an
-/// apostrophe in its comment hides no later line. Outside a program only a
-/// line defining `function <name>(s) {` is code, so
-/// `the function file(s) are missing` and `length(s) of the files` are counts.
+/// `.awk` library. `gawk`, `mawk` and `nawk` open a program as `awk` does,
+/// past a `-v` value quoted with a space in it and onto the next line after
+/// a `\`, and the line that opens an AWK heredoc has its own program read
+/// first. An `awk -f lib.awk` line opens no program, so an apostrophe in its
+/// comment hides no later line, and a quote before `BEGIN {` opens one only
+/// on a line that names awk, so `echo "BEGIN { length(s) of the rows }"` is a
+/// count. Outside a program only a line defining `function <name>(s) {` is
+/// code, so `the function file(s) are missing` and `length(s) of the files`
+/// are counts.
 #[test]
 fn a_plural_in_parentheses_in_a_script_a_workflow_or_the_taskfile_is_reported() {
     let taskfile = "tasks:\n  demo:\n    desc: \"Guard: every categor(ies) entry is read.\"\n";
@@ -256,6 +261,7 @@ fn a_plural_in_parentheses_in_a_script_a_workflow_or_the_taskfile_is_reported() 
         "tolower(s) is prose",
         "the length(s) after a grep",
         "the length(s) after a column",
+        "BEGIN { length(s) of the rows",
     ]
     .iter()
     .map(|needle| {

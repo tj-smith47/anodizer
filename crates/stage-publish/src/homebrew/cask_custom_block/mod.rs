@@ -107,10 +107,14 @@ pub(super) enum UnreadReason {
 /// - any word other than a keyword written straight against the operator
 ///   (`a%(b)`, `1<<FLAGS`); `if%w[a]` opens a literal.
 ///
-/// A `def` body sees none of the locals outside it. A block sees them, and
-/// its parameters and the locals first assigned in it end at its `end` or
-/// `}`. `if`, `while`, `case` and `begin` open no scope. After a word, a
-/// `/` followed by a space or `=` divides.
+/// A `def` body sees none of the locals outside it. A block, the body of a
+/// lambda (`-> { … }`, `->(x) do … end`) included, sees them, and its
+/// parameters and the locals first assigned in it end at its `end` or `}`.
+/// `if`, `while`, `case` and `begin` open no scope. After a word, a `/`
+/// followed by a space or `=` divides. A statement continued with a `\` at
+/// the end of a line, or with a `?\` character literal that holds the
+/// newline, reads on as one statement: the code before the break decides
+/// what a `%`, `<<`, `?`, `/`, `if` or `until` after it is.
 ///
 /// The operator opens a literal after an operator, `(`, `,`, `;`, the start
 /// of a line, a Ruby keyword, any method of the cask DSL (`caveats <<~EOS`,
@@ -189,18 +193,21 @@ pub(super) fn custom_block_os_facts(block: Option<&str>) -> CustomBlockOsFacts {
 }
 
 /// Per line of `block`, whether the line begins in code, so it may be
-/// re-indented without changing what it means. A line that begins inside a
-/// string, percent literal, regex, heredoc body or `=begin` comment, the
-/// closing tag of a `<<` or `<<-` heredoc, and every line after the place
-/// the block cannot be read past, are kept as written.
-pub(super) fn line_starts_in_code(block: &str) -> Vec<bool> {
+/// re-indented without changing what it means, and whether it ends in
+/// code, so its trailing whitespace may be dropped. A line that begins
+/// inside a string, percent literal, regex, heredoc body or `=begin`
+/// comment, and the closing tag of a `<<` or `<<-` heredoc, does not begin
+/// in code; a line that ends inside one of them does not end in code.
+/// Every line after the place the block cannot be read past is neither.
+pub(super) fn line_code_edges(block: &str) -> Vec<(bool, bool)> {
     let lexed = lex_block(block);
     let readable = lexed.unread.map_or(usize::MAX, |u| u.line);
     lexed
         .starts
         .into_iter()
+        .zip(lexed.ends)
         .enumerate()
-        .map(|(n, code)| code && n < readable)
+        .map(|(n, (starts, ends))| (starts && n < readable, ends && n < readable))
         .collect()
 }
 

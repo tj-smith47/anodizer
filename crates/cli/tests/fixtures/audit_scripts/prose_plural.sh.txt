@@ -36,3 +36,14 @@ echo "the length(s) after a column"
 awk "BEGIN { x = \"a\" }
 { print length(s) }" /dev/null
 awk -f x.awk 'BEGIN{ print length(s) }'
+gawk '{ print length(s) }' /dev/null
+mawk 'function m(s) { return s }' /dev/null
+nawk -F: '{ print toupper(s) }' /dev/null
+awk '{ print tolower(s) }' /dev/null && awk -f - /dev/null <<'AWK'
+{ print trim(s) }
+AWK
+awk -v x="a b" -F ' ' '{ print length(s) }' /dev/null
+awk -v n=1 \
+  '{ print length(s) }' /dev/null
+echo "BEGIN { length(s) of the rows }"
+x=$(awk -v n=1 "BEGIN { print length(s) }")

@@ -689,42 +689,38 @@ pub(super) fn reindent(text: &str, indent: &str) -> String {
 /// string, percent literal, regex, heredoc body or `=begin` comment, and
 /// the closing tag of a `<<` or `<<-` heredoc, is kept byte for byte:
 /// indenting it would change the literal, and a `<<` heredoc closes only on
-/// a tag at the start of a line. Past a line the lexer cannot read, every
-/// line is kept as written.
+/// a tag at the start of a line. Trailing whitespace is dropped only from a
+/// line that ends in code, so a line that opens a multi-line string keeps
+/// the spaces inside it. Past a line the lexer cannot read, every line is
+/// kept as written.
 pub(super) fn reindent_code(text: &str, indent: &str) -> String {
-    let starts = super::cask_custom_block::line_starts_in_code(text);
-    let lines: Vec<(&str, bool)> = text
-        .lines()
-        .zip(starts)
-        .map(|(l, code)| {
-            if code {
-                (l.trim_end(), true)
-            } else {
-                (l, false)
-            }
-        })
-        .collect();
-    reindent_lines(&lines, indent)
+    reindent_lines(&ruby_lines(text), indent)
 }
 
-/// Put `indent` before each line of Ruby `text` that begins in code (see
-/// [`reindent_code`]) and keep every other line as written, for a template
-/// that lays out a stanza's body one line at a time. A blank code line
-/// stays empty, since an indent alone is trailing whitespace to `brew
-/// style`.
+/// Put `indent` before each line of Ruby `text` that begins in code and
+/// keep every other line as written, trimmed the way [`reindent_code`]
+/// trims it, for a template that lays out a stanza's body one line at a
+/// time. A blank code line stays empty, since an indent alone is trailing
+/// whitespace to `brew style`.
 pub(super) fn indent_code_lines(text: &str, indent: &str) -> Vec<String> {
-    let starts = super::cask_custom_block::line_starts_in_code(text);
-    text.lines()
-        .zip(starts)
+    ruby_lines(text)
+        .into_iter()
         .map(|(l, code)| {
-            if code && l.trim().is_empty() {
-                String::new()
-            } else if code {
+            if code && !l.is_empty() {
                 format!("{indent}{l}")
             } else {
                 l.to_string()
             }
         })
+        .collect()
+}
+
+/// Each line of Ruby `text` paired with whether it begins in code and may
+/// move, with its trailing whitespace dropped when it ends in code.
+fn ruby_lines(text: &str) -> Vec<(&str, bool)> {
+    text.lines()
+        .zip(super::cask_custom_block::line_code_edges(text))
+        .map(|(l, (starts, ends))| (if ends { l.trim_end() } else { l }, starts))
         .collect()
 }
 

@@ -290,9 +290,17 @@ with one of these words:
   (`a%(b)`, `1<<FLAGS`); `if%w[a]` opens a literal.
 
 A `def` body sees none of the locals outside it. A block sees them, and its
-parameters and the locals first assigned in it end at its `end` or `}`.
+parameters and the locals first assigned in it end at its `end` or `}`. The
+body of a lambda is a block too, so after `f = -> { w = 1 }` the name `w` is
+gone and `r = w %w[on_linux]` passes `%w[on_linux]` to a method `w`.
 `if`, `while`, `case` and `begin` open no scope. After a word, a `/` followed
 by a space or `=` divides.
+
+A statement continued with a `\` at the end of a line, or with a `?\`
+character literal that holds the newline, is read as one statement, so the
+code before the break decides what comes after it: after `n = 7`, the lines
+`m = n \` and `  % 2` are a modulo, and a modifier `if` or `until` on a
+continuation line (`puts "a" \` then `  if ready`) opens no block.
 
 The operator opens a literal after an operator, `(`, `,`, `;`, the start of
 a line, a Ruby keyword, any method of the cask DSL (`caveats <<~EOS`,

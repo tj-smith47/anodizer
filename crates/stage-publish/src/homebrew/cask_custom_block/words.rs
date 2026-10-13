@@ -56,9 +56,13 @@ const OPERAND_WORDS: &[&str] = &[
     "yield",
 ];
 
-/// Every method the cask DSL defines: `Cask::DSL::DSL_METHODS`, which holds
-/// the `dsl_key` of each class in `Cask::DSL::ORDINARY_ARTIFACT_CLASSES`,
-/// in Homebrew 7.0.8 (`Library/Homebrew/cask/dsl.rb`). A stanza takes an
+/// Every method the cask DSL defines, as `Cask::DSL::DSL_METHODS` lists
+/// them in Homebrew 7.0.8 (`Library/Homebrew/cask/dsl.rb`): the 42 names
+/// written out in `DSL_METHODS`, the `dsl_key` of each of the 32
+/// `ORDINARY_ARTIFACT_CLASSES`, the `dsl_key` and `uninstall_dsl_key` of
+/// the 2 `ARTIFACT_BLOCK_CLASSES` (`preflight`, `uninstall_preflight`,
+/// `postflight`, `uninstall_postflight`) and the `dsl_key` of the 4
+/// `INSTALL_STEP_ARTIFACT_CLASSES`, 82 names in all. A stanza takes an
 /// argument, so a literal opener after one opens a literal.
 pub(super) const CASK_DSL_WORDS: &[&str] = &[
     "app",

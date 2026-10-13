@@ -8168,6 +8168,27 @@ fn reindent_code_moves_only_the_lines_that_begin_in_code() {
     }
 }
 
+/// A line that opens a multi-line string keeps the spaces inside it, and a
+/// line that ends in code loses its trailing whitespace, through both
+/// re-indenting helpers. After a `-> { … }` body the names bound in it are
+/// gone, so the literal a later line opens keeps its bytes.
+#[test]
+fn only_a_line_that_ends_in_code_is_trimmed() {
+    let block = "desc \"trailing   \n  two\"\nurl \"x\"   ";
+    assert_eq!(
+        super::formula::reindent_code(block, "  "),
+        "  desc \"trailing   \n  two\"\n  url \"x\""
+    );
+    assert_eq!(
+        super::formula::indent_code_lines(block, "    "),
+        ["    desc \"trailing   ", "  two\"", "    url \"x\""]
+    );
+    assert_eq!(
+        super::formula::reindent_code("f = -> { w = 1 }\nr = w %(first\n  second)", "  "),
+        "  f = -> { w = 1 }\n  r = w %(first\n  second)"
+    );
+}
+
 /// `indent_code_lines` indents a code line, keeps a heredoc line as
 /// written and leaves a blank line empty.
 #[test]

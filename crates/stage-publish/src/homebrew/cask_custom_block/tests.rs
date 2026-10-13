@@ -1037,3 +1037,56 @@ fn a_heredoc_after_every_cask_stanza_is_read_as_one() {
         );
     }
 }
+
+/// The cask DSL list holds the 82 distinct names of Homebrew 7.0.8's
+/// `DSL_METHODS`: 42 written out, 32 ordinary artifacts, 4 from the 2 block
+/// artifacts and 4 install steps.
+#[test]
+fn the_cask_dsl_list_holds_every_dsl_method_once() {
+    let words = super::words::CASK_DSL_WORDS;
+    let distinct: std::collections::BTreeSet<_> = words.iter().collect();
+    assert_eq!(distinct.len(), words.len(), "a name is listed twice");
+    assert_eq!(words.len(), 42 + 32 + 2 * 2 + 4);
+}
+
+/// A line that ends in `\` continues its statement onto the next line, and
+/// so does a `?\` character literal, which holds the newline: the code
+/// before the break still decides what the next line's `%`, `if` or
+/// `until` is.
+#[test]
+fn a_statement_continued_with_a_backslash_reads_on_into_the_next_line() {
+    assert_facts(
+        "n = 7\nm = n \\\n  % 2\non_linux do\nend",
+        true,
+        false,
+        None,
+    );
+    assert_facts(
+        "n = 7\nm = n \\\n  % 2\ndepends_on macos: \">= :ventura\"",
+        false,
+        true,
+        None,
+    );
+    assert_facts("x = ?\\\n% on_linux do\nend", true, false, None);
+    assert_facts(
+        "w = 1\ndef m\n  puts \"a\" \\\n    if true\nend\nr = w %(on_linux)",
+        true,
+        false,
+        None,
+    );
+    assert_facts(
+        "w = 1\ndef m\n  x = 1 \\\n    until true\nend\nr = w %(on_linux)",
+        true,
+        false,
+        None,
+    );
+}
+
+/// `-> { … }` is the body of a lambda, so a name first assigned inside it
+/// is gone after its `}`.
+#[test]
+fn a_lambda_brace_body_keeps_its_names() {
+    assert_facts("f = -> { w = 1 }\nr = w %w[on_linux]", false, false, None);
+    assert_facts("f = ->{ w = 1 }\nr = w %w[on_linux]", false, false, None);
+    assert_facts("w = 1\nf = -> { w }\nr = w %(on_linux)", true, false, None);
+}
