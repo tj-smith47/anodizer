@@ -156,6 +156,19 @@ impl StageLogger {
         }
     }
 
+    /// Derive a clone of this logger whose verbosity is at most `ceiling`,
+    /// keeping the stage, the redaction env and any capture sink.
+    ///
+    /// For a second pass over work another pass already reports, such as a
+    /// validation render of what a publisher renders again, so its
+    /// `-v` lines are printed once.
+    pub fn capped_at(&self, ceiling: Verbosity) -> Self {
+        Self {
+            verbosity: self.verbosity.min(ceiling),
+            ..self.with_stage(self.stage)
+        }
+    }
+
     /// Redact secret values from `s` using this logger's attached env,
     /// re-read from the cell at call time (see `Self::with_shared_env`) —
     /// a secret added to a live cell after this logger was constructed is

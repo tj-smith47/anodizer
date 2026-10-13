@@ -1421,3 +1421,17 @@ fn the_command_env_trigger_tells_a_literal_value_from_a_variable() {
     assert!(sets_command_env("cmd.envs(pairs)"));
     assert!(sets_command_env("cmd.env_clear()"));
 }
+
+#[test]
+fn a_capped_logger_lowers_the_verbosity_and_never_raises_it() {
+    let verbose = StageLogger::new("publish", Verbosity::Verbose);
+    assert_eq!(
+        verbose.capped_at(Verbosity::Normal).verbosity(),
+        Verbosity::Normal
+    );
+    let quiet = StageLogger::new("publish", Verbosity::Quiet);
+    assert_eq!(
+        quiet.capped_at(Verbosity::Normal).verbosity(),
+        Verbosity::Quiet
+    );
+}

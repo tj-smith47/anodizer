@@ -52,6 +52,9 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
         // `strict` leaves a missing `ruby` a warn+skip — wired uniformly.
         let strict = ctx.render_is_strict();
         let mut findings = Vec::new();
+        // The publisher renders each cask again and prints its `-v` lines
+        // then; the validation render keeps its warnings and status lines.
+        let render_log = log.capped_at(anodizer_core::log::Verbosity::Normal);
 
         // Walk exactly the crate set the live homebrew publisher's `run`
         // iterates (honoring `--crate` selection, else every
@@ -128,8 +131,12 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
                         // not-applicable skip.
                         if hb_cfg.cask.is_some()
                             && crate_has_macos_cask_artifact(ctx, crate_name)
-                            && let Some(cask) =
-                                render_same_tap_cask_for_crate(ctx, hb_cfg, crate_name, &log)?
+                            && let Some(cask) = render_same_tap_cask_for_crate(
+                                ctx,
+                                hb_cfg,
+                                crate_name,
+                                &render_log,
+                            )?
                         {
                             validate_cask_and_versioned(&mut findings, &cask, strict, &log)?;
                         }
@@ -139,7 +146,8 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
                     // whose `Err` propagates: a present-but-broken macOS artifact
                     // must surface, only true absence skips.
                     if crate_has_macos_cask_artifact(ctx, crate_name)
-                        && let Some(cask) = render_homebrew_cask_for_crate(ctx, crate_name, &log)?
+                        && let Some(cask) =
+                            render_homebrew_cask_for_crate(ctx, crate_name, &render_log)?
                     {
                         validate_cask_and_versioned(&mut findings, &cask, strict, &log)?;
                     }
@@ -150,7 +158,7 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
 
         // Top-level `homebrew_casks:` (not per-crate). Empty when unconfigured
         // or no entry is applicable in this shard.
-        for ruby in render_top_level_homebrew_casks(ctx, &log)? {
+        for ruby in render_top_level_homebrew_casks(ctx, &render_log)? {
             findings.extend(validate_ruby_structural(RubyKind::Cask, &ruby));
             findings.extend(validate_ruby_syntax(&ruby, strict, &log)?);
         }

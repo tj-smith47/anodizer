@@ -2635,8 +2635,7 @@ fn find_top_level_cask_artifact_prefers_disk_image_over_archive() {
         "https://e.com/mytool.dmg",
         "dmgsha",
     ));
-    let got =
-        super::cask_scope::find_top_level_cask_artifact(&ctx, None, &[]).expect("artifact found");
+    let got = super::cask_scope::find_top_level_cask_artifact(&ctx, None).expect("artifact found");
     assert_eq!(got.kind, ArtifactKind::DiskImage, "DiskImage preferred");
 }
 
@@ -2653,8 +2652,7 @@ fn find_top_level_cask_artifact_falls_back_to_archive() {
         "https://e.com/mytool.tar.gz",
         "archsha",
     ));
-    let got =
-        super::cask_scope::find_top_level_cask_artifact(&ctx, None, &[]).expect("artifact found");
+    let got = super::cask_scope::find_top_level_cask_artifact(&ctx, None).expect("artifact found");
     assert_eq!(got.kind, ArtifactKind::Archive);
 }
 
@@ -2670,7 +2668,7 @@ fn find_top_level_cask_artifact_returns_none_for_no_macos() {
         "https://e.com/mytool.tar.gz",
         "linuxsha",
     ));
-    assert!(super::cask_scope::find_top_level_cask_artifact(&ctx, None, &[]).is_none());
+    assert!(super::cask_scope::find_top_level_cask_artifact(&ctx, None).is_none());
 }
 
 /// `find_top_level_cask_artifact` excludes Apple-but-not-macOS archives
@@ -2694,7 +2692,7 @@ fn find_top_level_cask_artifact_excludes_apple_non_macos() {
         ));
     }
     assert!(
-        super::cask_scope::find_top_level_cask_artifact(&ctx, None, &[]).is_none(),
+        super::cask_scope::find_top_level_cask_artifact(&ctx, None).is_none(),
         "iOS/watchOS/tvOS archives must not be selected as a cask url"
     );
 }
@@ -2716,13 +2714,12 @@ fn find_top_level_cask_artifact_filters_by_id() {
     ctx.artifacts.add(a);
     // Only `nightly` IDs are wanted => returns None.
     assert!(
-        super::cask_scope::find_top_level_cask_artifact(&ctx, Some(&["nightly".to_string()]), &[])
+        super::cask_scope::find_top_level_cask_artifact(&ctx, Some(&["nightly".to_string()]))
             .is_none()
     );
     // `stable` IDs requested => the artifact is returned.
-    let got =
-        super::cask_scope::find_top_level_cask_artifact(&ctx, Some(&["stable".to_string()]), &[])
-            .expect("artifact must match");
+    let got = super::cask_scope::find_top_level_cask_artifact(&ctx, Some(&["stable".to_string()]))
+        .expect("artifact must match");
     assert_eq!(got.kind, ArtifactKind::DiskImage);
 }
 
@@ -3450,12 +3447,11 @@ fn a_flat_cask_beside_a_custom_linux_block_puts_its_download_inside_on_macos() {
     }
 }
 
-/// What `custom_block_os_facts` reads from a `custom_block`, case by case:
-/// only top-level statements count, a one-line or `;`-separated `on_macos`
-/// block closes on its own `end` or `}`, `end_foo` closes nothing, comments
-/// and heredoc bodies are not code, and `app_image` is a Linux side.
+/// What `custom_block_os_facts` reads from a `custom_block`, case by case: a
+/// statement counts at any depth, a word inside a string, comment or heredoc
+/// body is not code, and only a statement's first word decides what it is.
 #[test]
-fn custom_block_os_facts_reads_only_top_level_statements() {
+fn custom_block_os_facts_reads_statements_at_any_depth() {
     use super::cask::{CustomBlockOsFacts, custom_block_os_facts};
     let facts = |other_os_block: bool, os_dependency: bool| CustomBlockOsFacts {
         other_os_block,
@@ -3477,32 +3473,67 @@ fn custom_block_os_facts_reads_only_top_level_statements() {
         (
             "on_linux nested in on_macos",
             "on_macos do\n  on_linux do\n  end\nend",
-            facts(false, false),
-        ),
-        (
-            "one-line on_macos braces, then a top-level on_linux",
-            "on_macos { depends_on macos: :sonoma }\non_linux do\nend",
             facts(true, false),
         ),
         (
-            "on_macos do; …; end on one line",
-            "on_macos do; depends_on macos: :sonoma; end\ndepends_on :linux",
+            "depends_on macos: nested in on_macos",
+            "on_macos do\n  depends_on macos: \">= :sonoma\"\nend",
             facts(false, true),
         ),
         (
-            "on_macos do; …; end hides its own dependency",
+            "depends_on after ; in a one-line block",
             "on_macos do; depends_on macos: :sonoma; end",
+            facts(false, true),
+        ),
+        (
+            "while x do … end, then on_linux",
+            "while x do\n  y\nend\non_linux do\nend",
+            facts(true, false),
+        ),
+        (
+            "until and for … do, then on_linux",
+            "until x do\n  y\nend\nfor a in b do\n  c\nend\non_linux do\nend",
+            facts(true, false),
+        ),
+        (
+            "lowercase heredoc tag with do in the body, then on_linux",
+            "caveats <<~eos\n  please do this\n  on_linux\n  depends_on :macos\neos\non_linux do\nend",
+            facts(true, false),
+        ),
+        (
+            "heredoc body alone",
+            "caveats <<-EOS\n  on_linux do\n  app_image \"x\"\n  depends_on :macos\n  EOS\n",
             facts(false, false),
         ),
         (
-            "end_foo does not close the block",
-            "on_macos do\n  end_foo\n  on_linux do\n  end\nend\n",
+            "quoted heredoc tag",
+            "caveats <<'EOS'\non_linux\nEOS\n",
             facts(false, false),
         ),
         (
-            "end_foo inside a block, dependency after it at top level",
+            "endless def, then on_linux",
+            "def foo = 1\non_linux do\nend",
+            facts(true, false),
+        ),
+        (
+            "if … then … else … end expression, then on_linux",
+            "v = if a then 1 else 2 end\non_linux do\nend",
+            facts(true, false),
+        ),
+        (
+            "(1..2).end, then on_linux",
+            "(1..2).end\non_linux do\nend",
+            facts(true, false),
+        ),
+        (
+            "end_foo, then a dependency",
             "on_macos do\n  end_foo\nend\ndepends_on maximum_macos: :sonoma",
             facts(false, true),
+        ),
+        (
+            "end_foo is not on_linux",
+            "end_foo\non_linux_helper\n",
+            facts(false, false),
         ),
         (
             "an OS name in a trailing comment",
@@ -3514,26 +3545,31 @@ fn custom_block_os_facts_reads_only_top_level_statements() {
             "depends_on cask: \":macos\"",
             facts(false, false),
         ),
-        ("bare :macos", "depends_on :macos", facts(false, true)),
-        ("linux: hash", "depends_on linux: :any", facts(false, true)),
         (
-            "heredoc body starting with a stanza word",
-            "caveats <<~EOS\n  on_linux do\n  app_image \"x\"\n  depends_on :macos\nEOS\n",
+            "on_linux inside a string",
+            "caveats \"on_linux\"\n\"on_linux\"\n'on_linux'",
             facts(false, false),
         ),
         (
-            "statement after the heredoc terminator",
-            "caveats <<~EOS\n  on_linux\n  EOS\non_linux do\nend",
+            "on_linux after a string with a ; inside it",
+            "caveats \"a; on_linux\"; on_linux do\nend",
             facts(true, false),
         ),
         (
-            "a def body",
-            "def helper\n  on_linux\nend",
+            "a commented-out stanza",
+            "# on_linux do\n# depends_on :macos",
+            facts(false, false),
+        ),
+        ("bare :macos", "depends_on :macos", facts(false, true)),
+        ("linux: hash", "depends_on linux: :any", facts(false, true)),
+        (
+            "a depends_on without an OS",
+            "depends_on formula: \"x\"",
             facts(false, false),
         ),
         (
-            "an if body",
-            "if MacOS.version >= :sonoma\n  depends_on :linux\nend",
+            "on_linux not leading its statement",
+            "x.on_linux\nfoo on_linux",
             facts(false, false),
         ),
     ];
@@ -3632,7 +3668,7 @@ fn a_universal_artifact_beside_both_per_arch_ones_is_dropped_and_logged() {
     assert_eq!(
         verbose,
         [
-            "skipped universal artifact mytool-darwin-universal.tar.gz: both macOS architectures have their own download"
+            "skipped universal artifact 'mytool-darwin-universal.tar.gz' — both macOS architectures have their own download"
         ],
         "{c}"
     );
@@ -3674,6 +3710,186 @@ fn a_universal_artifact_fills_the_architecture_no_per_arch_build_covers() {
     );
     assert!(c.contains(&expected), "{c}");
     assert_eq!(cap.verbose_count(), 0, "nothing was skipped");
+}
+
+/// An `Archive` carrying `url`, `sha256` and a build `id`.
+fn art_with_id(kind: ArtifactKind, name: &str, target: &str, id: &str) -> Artifact {
+    let mut art = art_with_url_sha(
+        kind,
+        name,
+        target,
+        &format!("https://e.com/v1.2.3/{name}"),
+        &"c".repeat(64),
+    );
+    art.metadata.insert("id".to_string(), id.to_string());
+    art
+}
+
+/// A universal macOS artifact fills the empty slot only beside a per-arch
+/// artifact of the same build id. Of another build it is left out with a
+/// verbose line naming both ids, and the one per-arch download renders flat.
+#[test]
+fn a_universal_artifact_fills_a_slot_only_beside_its_own_build() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let cask_cfg = HomebrewCaskConfig {
+        name: Some("mytool".to_string()),
+        ..Default::default()
+    };
+    for (universal_id, filled) in [("cli", true), ("gui", false)] {
+        let mut ctx = top_cask_ctx(&cask_cfg);
+        ctx.artifacts = Default::default();
+        ctx.artifacts.add(art_with_id(
+            ArtifactKind::Archive,
+            "mytool-darwin-universal.tar.gz",
+            "darwin-universal",
+            universal_id,
+        ));
+        ctx.artifacts.add(art_with_id(
+            ArtifactKind::Archive,
+            "mytool-darwin-arm64.tar.gz",
+            "aarch64-apple-darwin",
+            "cli",
+        ));
+        let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
+        let c = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &log)
+            .expect("top-level cask render")
+            .expect("top-level cask applicable")
+            .content;
+        let verbose: Vec<String> = cap
+            .all_messages()
+            .into_iter()
+            .filter(|(level, _)| *level == anodizer_core::log::LogLevel::Verbose)
+            .map(|(_, m)| m)
+            .collect();
+        if filled {
+            assert!(c.contains("    on_intel do\n"), "{c}");
+            assert!(c.contains("mytool-darwin-universal.tar.gz"), "{c}");
+            assert!(verbose.is_empty(), "{verbose:?}");
+        } else {
+            assert!(!c.contains("on_intel"), "{c}");
+            assert!(!c.contains("universal"), "{c}");
+            assert!(
+                c.contains("\n  url \"https://e.com/v#{version}/mytool-darwin-arm64.tar.gz\""),
+                "{c}"
+            );
+            assert_eq!(
+                verbose,
+                [
+                    "skipped universal artifact 'mytool-darwin-universal.tar.gz' — build id 'gui' does not match 'cli', the build of the macOS arm download"
+                ],
+                "{c}"
+            );
+        }
+    }
+}
+
+/// A universal disk image beside per-arch `UploadableBinary` artifacts for
+/// both architectures is left out, and the per-arch blocks render from the
+/// binaries, in the per-crate cask and the top-level one alike.
+#[test]
+fn a_universal_dmg_beside_per_arch_binaries_renders_the_per_arch_blocks() {
+    use anodizer_core::config::{HomebrewCaskConfig, HomebrewConfig};
+    let cask_cfg = HomebrewCaskConfig {
+        name: Some("mytool".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = top_cask_ctx(&cask_cfg);
+    ctx.artifacts = Default::default();
+    for (kind, name, target) in [
+        (
+            ArtifactKind::DiskImage,
+            "mytool-darwin-universal.dmg",
+            "darwin-universal",
+        ),
+        (
+            ArtifactKind::UploadableBinary,
+            "mytool-darwin-arm64",
+            "aarch64-apple-darwin",
+        ),
+        (
+            ArtifactKind::UploadableBinary,
+            "mytool-darwin-amd64",
+            "x86_64-apple-darwin",
+        ),
+    ] {
+        ctx.artifacts.add(art_with_url_sha(
+            kind,
+            name,
+            target,
+            &format!("https://e.com/v1.2.3/{name}"),
+            &"d".repeat(64),
+        ));
+    }
+    let per_crate = super::cask_scope::generate_cask_from_context(
+        &ctx,
+        "mytool",
+        &HomebrewConfig::default(),
+        &cask_cfg,
+        &test_log(),
+    )
+    .expect("per-crate cask render")
+    .content;
+    let top = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+        .expect("top-level cask render")
+        .expect("top-level cask applicable")
+        .content;
+    for c in [per_crate, top] {
+        assert!(
+            c.contains("url \"https://e.com/v#{version}/mytool-darwin-arm64\"")
+                && c.contains("url \"https://e.com/v#{version}/mytool-darwin-amd64\""),
+            "{c}"
+        );
+        assert!(!c.contains(".dmg"), "{c}");
+    }
+}
+
+/// The skip line `publish/homebrew-casks.md` quotes is the one the renderer
+/// logs for a universal artifact beside both per-arch ones.
+#[test]
+fn the_universal_skip_line_quoted_in_the_cask_docs_is_what_the_renderer_logs() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let page = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/publish/homebrew-casks.md"
+    ))
+    .expect("read the cask docs page");
+    let quoted: Vec<&str> = page
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| line.starts_with("skipped universal artifact"))
+        .collect();
+    assert_eq!(quoted.len(), 1, "{quoted:?}");
+
+    let cask_cfg = HomebrewCaskConfig {
+        name: Some("myapp".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = top_cask_ctx(&cask_cfg);
+    ctx.artifacts = Default::default();
+    for (name, target) in [
+        ("myapp-darwin-universal.tar.gz", "darwin-universal"),
+        ("myapp-darwin-arm64.tar.gz", "aarch64-apple-darwin"),
+        ("myapp-darwin-amd64.tar.gz", "x86_64-apple-darwin"),
+    ] {
+        ctx.artifacts.add(art_with_url_sha(
+            ArtifactKind::Archive,
+            name,
+            target,
+            &format!("https://e.com/v1.2.3/{name}"),
+            &"e".repeat(64),
+        ));
+    }
+    let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
+    super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &log)
+        .expect("top-level cask render")
+        .expect("top-level cask applicable");
+    let produced: Vec<String> = cap
+        .all_messages()
+        .into_iter()
+        .filter(|(level, _)| *level == anodizer_core::log::LogLevel::Verbose)
+        .map(|(_, m)| m)
+        .collect();
+    assert_eq!(produced, quoted);
 }
 
 /// The universal `url` written directly inside `on_macos` carries every

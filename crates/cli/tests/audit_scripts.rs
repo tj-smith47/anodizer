@@ -2638,10 +2638,14 @@ const GATE_MIRROR_TARGETS: &[&str] = &[
     "coverage:gate",
 ];
 
-/// A repository whose ci.yml `test` job runs `task test` and
-/// `task test:brew-style`, and whose `task gate` reaches every mapped target
-/// plus `test:brew-style` when `wire_brew_style` is set. `test:brew-style` is
-/// reached through `ci`, a second hop, so the walk has to follow the graph.
+/// A repository whose ci.yml `test` job runs `task test`,
+/// `task test:brew-style`, a silent target, a target whose cmds only call
+/// another target, and a target named after go-task flags, and whose
+/// `task gate` reaches every mapped target plus those, `test:brew-style` only
+/// when `wire_brew_style` is set. `test:brew-style` is reached through `ci`, a
+/// second hop, so the walk has to follow the graph. A commented-out
+/// `task` call and one inside a quoted string name targets nothing defines,
+/// so reading either fails the audit.
 fn gate_mirror_fixture(wire_brew_style: bool) -> TempDir {
     let dir = TempDir::new().expect("tempdir");
     let workflows = dir.path().join(".github/workflows");
@@ -2657,7 +2661,10 @@ fn gate_mirror_fixture(wire_brew_style: bool) -> TempDir {
                - if: runner.os == 'macOS'\n        \
                  run: |\n          \
                    set -eu\n          \
-                   task test:brew-style\n  \
+                   task test:brew-style\n      \
+               - run: task quiet  # task commented-out\n      \
+               - run: echo \"task quoted-out\" && task bundle\n      \
+               - run: task -n --taskfile Taskfile.yml flagged -- --extra\n  \
            snapshot:\n    \
              runs-on: ubuntu-latest\n    \
              steps:\n      \
@@ -2666,7 +2673,10 @@ fn gate_mirror_fixture(wire_brew_style: bool) -> TempDir {
                    args: release --snapshot --clean\n",
     )
     .expect("ci.yml");
-    let mut taskfile = String::from("version: '3'\ntasks:\n  gate:\n    cmds:\n      - task: ci\n");
+    let mut taskfile = String::from(
+        "version: '3'\ntasks:\n  gate:\n    cmds:\n      - task: ci\n      \
+         - task: quiet\n      - task: bundle\n      - task: flagged\n",
+    );
     for target in GATE_MIRROR_TARGETS {
         taskfile.push_str(&format!("      - task: {target}\n"));
     }
@@ -2676,7 +2686,17 @@ fn gate_mirror_fixture(wire_brew_style: bool) -> TempDir {
     } else {
         taskfile.push_str("      - echo no brew style\n");
     }
-    for target in GATE_MIRROR_TARGETS.iter().chain(&["test:brew-style"]) {
+    // A silent target prints no command line under `-n`, and one whose cmds
+    // only call another target prints none of its own.
+    taskfile.push_str(
+        "  quiet:\n    silent: true\n    cmds:\n      - echo quiet\n  \
+         bundle:\n    cmds:\n      - task: leaf\n  \
+         leaf:\n    cmds:\n      - echo leaf\n",
+    );
+    for target in GATE_MIRROR_TARGETS
+        .iter()
+        .chain(&["test:brew-style", "flagged"])
+    {
         let cmd = if *target == "snapshot" {
             "anodizer release --snapshot --clean"
         } else {
@@ -2713,7 +2733,7 @@ fn run_gate_mirror(root: &Path, path: &str) -> (i32, String) {
 }
 
 /// A `task <target>` a ci.yml step runs must be reachable from `task gate`,
-/// through the `task -n gate` dry-run and through the yq walk the audit falls
+/// through the `task -n -v gate` dry-run and through the yq walk the audit falls
 /// back to where no `task` binary is installed (CI's actionlint job). A
 /// fixture whose gate reaches `test:brew-style` two hops down passes; the
 /// same fixture with that edge removed fails naming the step.
@@ -2748,7 +2768,7 @@ fn the_gate_mirror_audit_requires_every_ci_step_target_in_the_gate() {
 
     let mut legs: Vec<(&str, &str)> = Vec::new();
     if which("task").is_some() {
-        legs.push(("task -n gate", &inherited));
+        legs.push(("task -n -v gate", &inherited));
     }
     if task_hidden {
         legs.push(("yq walk", &without_task));
@@ -2766,8 +2786,9 @@ fn the_gate_mirror_audit_requires_every_ci_step_target_in_the_gate() {
             "{leg}: a gate reaching every step target passes:\n{out}"
         );
         assert!(
-            out.contains("2 `task` step target(s)"),
-            "{leg}: both step targets are read, the second from a multi-line run:\n{out}"
+            out.contains("5 `task` step target(s)"),
+            "{leg}: test, test:brew-style (from a multi-line run), quiet, bundle and \
+             flagged are read, and the commented and quoted calls are not:\n{out}"
         );
 
         let unwired = gate_mirror_fixture(false);

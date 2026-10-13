@@ -200,9 +200,9 @@ tasks:
     # `brew style` needs a working Homebrew with its style gems, which only
     # the macOS hosts have; the Linux box runs brew as root, which brew
     # refuses. The test itself is opt-in through the variable, so `task test`
-    # never depends on a brew install. The host check sits in the command
-    # rather than in `platforms:`, which would hide the target from
-    # `task -n gate` and so from the gate-mirror audit.
+    # never depends on a brew install. The host check sits in the command:
+    # `platforms:` would hide the target from `task -n gate`, and so from the
+    # gate-mirror audit.
     desc: "Run brew style over the rendered Homebrew casks (macOS only)."
     env:
       ANODIZER_BREW_STYLE: "1"

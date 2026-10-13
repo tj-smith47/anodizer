@@ -87,19 +87,39 @@ if ! step_runs=$(yq -r '.jobs[] | .steps[]? | select(.run != null) | .run' "$CI_
     exit 2
 fi
 declare -A STEP_TARGETS=()
-task_word='(^|[;&|[:space:]])task[[:space:]]+([A-Za-z][A-Za-z0-9:_.-]*)(.*)'
+# go-task flags that take the next word as their value.
+value_flags=" -d --dir -t --taskfile -o --output -C --concurrency -I --interval --sort --output-group-begin --output-group-end "
+task_name='^[A-Za-z][A-Za-z0-9:_.-]*$'
 while IFS= read -r line; do
-    rest="$line"
-    while [[ "$rest" =~ $task_word ]]; do
-        STEP_TARGETS[${BASH_REMATCH[2]}]=1
-        rest="${BASH_REMATCH[3]}"
-    done
+    # Quoted strings and `#` comments name no target a step runs.
+    code=$(sed -E "s/'[^']*'//g; s/\"([^\"\\\\]|\\\\.)*\"//g; s/(^|[[:space:]])#.*//" <<< "$line")
+    while IFS= read -r segment; do
+        read -ra words <<< "$segment"
+        in_task=0
+        skip_value=0
+        for word in "${words[@]}"; do
+            if ((in_task == 0)); then
+                [[ "$word" == task ]] && in_task=1
+                continue
+            fi
+            if ((skip_value)); then
+                skip_value=0
+                continue
+            fi
+            [[ "$word" == -- ]] && break
+            if [[ "$word" == -* ]]; then
+                [[ "$word" != *=* && "$value_flags" == *" $word "* ]] && skip_value=1
+                continue
+            fi
+            [[ "$word" == *=* ]] && continue
+            [[ "$word" =~ $task_name ]] && STEP_TARGETS[$word]=1
+        done
+    done < <(tr ';&|()' '\n\n\n\n\n' <<< "$code")
 done <<< "$step_runs"
 
 # Reachability: does every mapped local target, and every target a ci.yml
-# step runs, actually run as part of `task gate`? Prefer `task -n gate` (a
-# real dry-run of the composed task graph); each leaf task prints as
-# `task: [<name>] <cmd>`. CI's actionlint job has no `task` binary on PATH, so
+# step runs, actually run as part of `task gate`? Prefer `task -n -v gate` (a
+# real dry-run of the composed task graph). CI's actionlint job has no `task` binary on PATH, so
 # fall back to walking Taskfile.yml's `- task:` cmds and `deps:` from `gate`
 # with yq — it does not evaluate `platforms:` or vars, but it doesn't require
 # the binary.
@@ -110,16 +130,16 @@ done <<< "$step_runs"
 # a walk that spawns none of it.
 unreachable=""
 if command -v task >/dev/null 2>&1; then
-    if ! dryrun=$(ANODIZER_STRUCTURAL_WALK=1 task -n gate 2>&1); then
-        echo "audit-gate-mirror: 'task -n gate' failed — refusing to report a pass on unparsed input." >&2
+    if ! dryrun=$(ANODIZER_STRUCTURAL_WALK=1 task -n -v gate 2>&1); then
+        echo "audit-gate-mirror: 'task -n -v gate' failed — refusing to report a pass on unparsed input." >&2
         echo "$dryrun" >&2
         exit 2
     fi
-    # A target whose sources and generates are current prints `Task "<name>" is
-    # up to date` in place of its `[<name>]` command lines, so either form
-    # means the gate reached it.
-    reachable() { grep -qF -e "[$1]" -e "Task \"$1\" is up to date" <<< "$dryrun"; }
-    where="\`task -n gate\` output"
+    # Under -v every target the run reaches prints `task: "<name>" started`,
+    # including a silent one, one whose cmds only call other targets, and one
+    # whose sources are up to date; none of those print a `[<name>]` line.
+    reachable() { grep -qF "task: \"$1\" started" <<< "$dryrun"; }
+    where="\`task -n -v gate\` output"
 else
     taskfile="Taskfile.yml"
     if [[ ! -f "$taskfile" ]]; then

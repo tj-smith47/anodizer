@@ -231,11 +231,11 @@ dependencies:
 Homebrew installs a cask on Linux unless it depends on macOS, so without the
 line a cask of macOS `binaries` would install a Mach-O executable on a Linux
 host. A cask has a Linux side when the release ships Linux artifacts (an
-`on_linux` block) or its `custom_block` holds a top-level `on_linux` or
-`on_system` block or an `app_image` stanza. The line is also left out when
-the `custom_block` declares an OS dependency of its own (`depends_on macos: …`,
-`maximum_macos: …`, `:macos`, `:linux` or `linux: …`), since a second one is
-redundant.
+`on_linux` block) or its `custom_block` holds an `on_linux` or `on_system`
+block or an `app_image` stanza, at any depth. The line is also left out when
+the `custom_block` declares an OS dependency of its own anywhere in it
+(`depends_on macos: …`, `maximum_macos: …`, `:macos`, `:linux` or
+`linux: …`), since a second one is redundant.
 
 A flat single-download cask whose `custom_block` gives it a Linux side puts
 its `sha256` / `url` (and `app` / `service`) inside `on_macos`, so a Linux
@@ -394,9 +394,15 @@ A lipo'd universal binary has the synthetic `darwin-universal` target
 (architecture `all`) and serves every Mac. In the cask it fills whichever of
 the `on_arm` / `on_intel` slots no per-arch macOS artifact fills: beside an
 `arm64` build alone, `on_arm` downloads the `arm64` build and `on_intel` the
-universal one. When both slots are filled the universal artifact is left out,
-and `-v` prints
-`skipped universal artifact <name>: both macOS architectures have their own download`.
+universal one. The universal artifact fills that slot only when it carries
+the same build id as the per-arch artifact; otherwise it is left out and `-v`
+names it as skipped. When both slots are filled the
+universal artifact is left out, and `-v` prints:
+
+```text
+skipped universal artifact 'myapp-darwin-universal.tar.gz' — both macOS architectures have their own download
+```
+
 Which shape the cask takes depends on `universal_binaries.replace`:
 
 - **`replace: false`** (or unset) → the per-arch `amd64` and `arm64` artifacts

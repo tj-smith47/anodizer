@@ -635,145 +635,139 @@ fn render_platform_blocks(
 /// What a `custom_block` contributes to the `depends_on :macos` decision.
 #[derive(Default, Debug, PartialEq, Eq)]
 pub(super) struct CustomBlockOsFacts {
-    /// A top-level `on_linux` or `on_system` block, or the Linux-only
-    /// `app_image` stanza: the cask has a Linux side.
+    /// An `on_linux` or `on_system` block, or the Linux-only `app_image`
+    /// stanza, at any depth: the cask has a Linux side.
     pub(super) other_os_block: bool,
-    /// A top-level `depends_on` naming `:macos`, `macos:`, `maximum_macos:`,
-    /// `:linux` or `linux:`.
+    /// A `depends_on` naming `:macos`, `macos:`, `maximum_macos:`, `:linux`
+    /// or `linux:`, at any depth.
     pub(super) os_dependency: bool,
 }
 
-/// Keywords that open a block closed by `end` when they start a statement.
-/// `do` opens one wherever it appears.
-const BLOCK_OPENERS: &[&str] = &[
-    "begin", "case", "class", "def", "for", "if", "module", "unless", "until", "while",
-];
-
-/// One line of Ruby with the contents of its string literals blanked out and
-/// any trailing `#` comment removed, so a keyword, brace or `#` inside a
-/// string is never read as code. Heredoc openers (`<<~EOS`, `<<-EOS`,
-/// `<<EOS`, quoted or not) are pushed onto `heredocs` with whether their
-/// terminator may be indented.
-fn ruby_code_of(line: &str, heredocs: &mut Vec<(String, bool)>) -> String {
-    let mut code = String::with_capacity(line.len());
-    let mut chars = line.chars().peekable();
+/// `block` with the contents of its string literals, its `#` comments and
+/// its heredoc bodies (`<<~tag`, `<<-tag`, `<<tag`, the tag quoted or not)
+/// blanked to spaces, line breaks kept, so a stanza word written inside any
+/// of them is never read as code.
+fn ruby_code_of(block: &str) -> String {
+    let mut code = String::with_capacity(block.len());
     let mut quote: Option<char> = None;
-    while let Some(c) = chars.next() {
-        if let Some(q) = quote {
-            if c == '\\' {
-                chars.next();
-                code.push_str("  ");
-            } else if c == q {
-                quote = None;
-                code.push(c);
-            } else {
-                code.push(' ');
+    // Heredocs opened on the current line, as (terminator, may be indented);
+    // their bodies start on the next line, in the order they were opened.
+    let mut opened: Vec<(String, bool)> = Vec::new();
+    let mut bodies: std::collections::VecDeque<(String, bool)> = Default::default();
+    for line in block.split_inclusive('\n') {
+        if let Some((tag, indented)) = bodies.front() {
+            let text = line.trim_end_matches(['\n', '\r']);
+            let end = if *indented { text.trim() } else { text };
+            if end == tag {
+                bodies.pop_front();
             }
+            code.push_str(if line.ends_with('\n') { "\n" } else { "" });
             continue;
         }
-        match c {
-            '#' => break,
-            '"' | '\'' => {
-                quote = Some(c);
-                code.push(c);
+        let mut chars = line.chars().peekable();
+        let mut in_comment = false;
+        while let Some(c) = chars.next() {
+            if c == '\n' {
+                code.push('\n');
+                continue;
             }
-            '<' if chars.peek() == Some(&'<') => {
-                chars.next();
-                code.push_str("<<");
-                let indented = matches!(chars.peek(), Some('~' | '-'));
-                if indented {
-                    code.push(chars.next().unwrap_or('~'));
-                }
-                let quoted = matches!(chars.peek(), Some('"' | '\''));
-                let close = if quoted { chars.next() } else { None };
-                let mut tag = String::new();
-                while let Some(&t) = chars.peek() {
-                    if t.is_ascii_alphanumeric() || t == '_' {
-                        tag.push(t);
+            if in_comment {
+                code.push(' ');
+                continue;
+            }
+            if let Some(q) = quote {
+                if c == '\\' {
+                    code.push(' ');
+                    if chars.peek().is_some_and(|n| *n != '\n') {
                         chars.next();
+                        code.push(' ');
+                    }
+                } else if c == q {
+                    quote = None;
+                    code.push(c);
+                } else {
+                    code.push(' ');
+                }
+                continue;
+            }
+            match c {
+                '#' => {
+                    in_comment = true;
+                    code.push(' ');
+                }
+                '"' | '\'' => {
+                    quote = Some(c);
+                    code.push(c);
+                }
+                '<' if chars.peek() == Some(&'<') => {
+                    chars.next();
+                    code.push_str("<<");
+                    let indented = matches!(chars.peek(), Some('~' | '-'));
+                    if indented {
+                        chars.next();
+                        code.push(' ');
+                    }
+                    let close = chars.next_if(|n| matches!(n, '"' | '\''));
+                    let mut tag = String::new();
+                    if chars
+                        .peek()
+                        .is_some_and(|n| n.is_ascii_alphabetic() || *n == '_')
+                    {
+                        while let Some(t) =
+                            chars.next_if(|n| n.is_ascii_alphanumeric() || *n == '_')
+                        {
+                            tag.push(t);
+                        }
+                    }
+                    if tag.is_empty() {
+                        // `<<` is a shift and the quote opens a string.
+                        if let Some(q) = close {
+                            quote = Some(q);
+                            code.push(q);
+                        }
                     } else {
-                        break;
+                        if let Some(q) = close {
+                            chars.next_if_eq(&q);
+                        }
+                        code.extend(std::iter::repeat_n(' ', tag.len()));
+                        opened.push((tag, indented));
                     }
                 }
-                if close.is_some() && chars.peek() == close.as_ref() {
-                    chars.next();
-                }
-                if tag.starts_with(|t: char| t.is_ascii_uppercase() || t == '_') {
-                    heredocs.push((tag, indented));
-                }
+                _ => code.push(c),
             }
-            _ => code.push(c),
         }
+        bodies.extend(opened.drain(..));
     }
     code
 }
 
 /// Read a `custom_block` for the facts `Homebrew/OSDependsOn` and
-/// `Cask#supports_linux?` look at. Only top-level statements count: the
-/// reader tracks `do`/`end` and `{`/`}` depth, splits a line at `;`, reads
-/// each statement by its first word, and skips heredoc bodies, string
-/// contents and comments.
-// ponytail: a line scanner over Ruby, so a stanza it misreads (one inside a
-// multi-line string, a `%w[]` literal or a `=begin` comment) adds or drops
-// `depends_on :macos`, which decides whether Homebrew installs the cask on
-// Linux or only on macOS. Reading the block with a Ruby parser removes that.
+/// `Cask#supports_linux?` look at, at any depth. A statement starts a line
+/// or follows a `;`, and only its first word decides what it is.
+// ponytail: the blanking of strings, comments and heredocs is lexical, so a
+// stanza word inside a literal it does not know (`%w[]`, `/regexp/`, a
+// `=begin` comment) still counts. Reading the block with a Ruby parser
+// removes that.
 pub(super) fn custom_block_os_facts(block: Option<&str>) -> CustomBlockOsFacts {
     let mut facts = CustomBlockOsFacts::default();
     let Some(block) = block else {
         return facts;
     };
-    let mut depth = 0usize;
-    let mut heredocs: Vec<(String, bool)> = Vec::new();
-    let mut open_heredoc: Option<(String, bool)> = None;
-    for line in block.lines() {
-        if let Some((tag, indented)) = &open_heredoc {
-            let end = if *indented { line.trim() } else { line };
-            if end == tag {
-                open_heredoc = (!heredocs.is_empty()).then(|| heredocs.remove(0));
+    let code = ruby_code_of(block);
+    for statement in code.split(['\n', ';']) {
+        let text = statement.trim_start();
+        let first = text
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .next()
+            .unwrap_or("");
+        match first {
+            "on_linux" | "on_system" | "app_image" => facts.other_os_block = true,
+            "depends_on" => {
+                facts.os_dependency |= [":macos", "macos:", ":linux", "linux:"]
+                    .iter()
+                    .any(|token| text.contains(token));
             }
-            continue;
-        }
-        let code = ruby_code_of(line, &mut heredocs);
-        for statement in code.split(';') {
-            let words: Vec<&str> = statement
-                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
-                .filter(|w| !w.is_empty())
-                .collect();
-            let first = words.first().copied().unwrap_or("");
-            if depth == 0 {
-                match first {
-                    "on_linux" | "on_system" | "app_image" => facts.other_os_block = true,
-                    "depends_on" => {
-                        facts.os_dependency |= words[1..].iter().any(|w| {
-                            matches!(
-                                *w,
-                                ":macos" | ":linux" | "macos:" | "maximum_macos:" | "linux:"
-                            )
-                        });
-                    }
-                    _ => {}
-                }
-            }
-            if BLOCK_OPENERS.contains(&first) {
-                depth += 1;
-            }
-            for word in &words {
-                match *word {
-                    "do" => depth += 1,
-                    "end" => depth = depth.saturating_sub(1),
-                    _ => {}
-                }
-            }
-            for c in statement.chars() {
-                match c {
-                    '{' => depth += 1,
-                    '}' => depth = depth.saturating_sub(1),
-                    _ => {}
-                }
-            }
-        }
-        if !heredocs.is_empty() {
-            open_heredoc = Some(heredocs.remove(0));
+            _ => {}
         }
     }
     facts

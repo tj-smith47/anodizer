@@ -188,9 +188,7 @@ fn render_top_level_cask_inner(
     // name, so it carries the spelling the user wrote.
     let display_name = cask_cfg.name.as_deref().unwrap_or(&ctx.config.project_name);
 
-    let Some(first_macos_artifact) =
-        find_top_level_cask_artifact(ctx, cask_cfg.ids.as_deref(), &[])
-    else {
+    if find_top_level_cask_artifact(ctx, cask_cfg.ids.as_deref()).is_none() {
         // Distinguish "no darwin build exists at all" (a genuine
         // NotApplicable skip — e.g. a Linux-only pipeline or a per-crate
         // publish-only pass over a library workspace) from "an `ids:` filter
@@ -200,7 +198,7 @@ fn render_top_level_cask_inner(
         // typo is caught at release time rather than when `brew install`
         // 404s.
         let ids_set = cask_cfg.ids.as_deref().is_some_and(|ids| !ids.is_empty());
-        if ids_set && find_top_level_cask_artifact(ctx, None, &[]).is_some() {
+        if ids_set && find_top_level_cask_artifact(ctx, None).is_some() {
             anyhow::bail!(
                 "homebrew_casks: cask '{}' has `ids: {:?}` but no macOS artifact \
                  matches those ids, even though other macOS artifacts exist. This is \
@@ -218,7 +216,7 @@ fn render_top_level_cask_inner(
             ),
         );
         return Ok(None);
-    };
+    }
 
     // Build per-platform `on_macos` / `on_linux` blocks across the whole
     // release (scoped by the same `ids:` filter as the single-artifact
@@ -226,13 +224,9 @@ fn render_top_level_cask_inner(
     // architecture. A release that builds both `darwin/amd64` and
     // `darwin/arm64` must emit a per-arch body so each Mac downloads the
     // binary built for its architecture; a single flat `url` would ship one
-    // architecture's binary to every Mac. The single-arch flat `url`/`sha256`
-    // below stays the fallback for genuinely single-platform projects.
+    // architecture's binary to every Mac.
     let url_template = cask_cfg.url.as_ref().and_then(|u| u.template.as_deref());
-    let super::cask_scope::CaskPlatforms {
-        blocks: platform_blocks,
-        skipped_universal,
-    } = super::cask_scope::build_cask_platform_blocks(
+    let platform_blocks = super::cask_scope::build_cask_platform_blocks(
         ctx,
         &super::cask_scope::CaskArtifactScope::TopLevel {
             ids: cask_cfg.ids.as_deref(),
@@ -242,73 +236,30 @@ fn render_top_level_cask_inner(
         &format!("cask '{}'", cask_name),
         log,
     )?;
-    // The flat fallback leaves out a universal artifact the blocks left out.
-    // Something is always left when one is skipped: both per-arch artifacts.
-    let macos_artifact =
-        find_top_level_cask_artifact(ctx, cask_cfg.ids.as_deref(), &skipped_universal)
-            .unwrap_or(first_macos_artifact);
-
-    // Build URL.
-    let url = if let Some(ref url_cfg) = cask_cfg.url {
-        if let Some(ref tmpl) = url_cfg.template {
-            let target = macos_artifact.target.as_deref().unwrap_or("");
-            let (os, arch) = anodizer_core::target::map_target(target);
-            crate::util::render_url_template_with_ctx(
-                ctx,
-                tmpl,
-                macos_artifact.name(),
-                &version,
-                crate::util::UrlTarget::of(macos_artifact, &os, &arch),
-            )
-        } else {
-            macos_artifact.metadata.get("url").cloned().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "homebrew_casks: artifact for cask '{}' has no 'url' metadata \
-                         and no url.template configured to synthesize one. A cask with \
-                         an empty `url \"\"` line is rejected by `brew style` and fails \
-                         on `brew install` (no download endpoint). Either set \
-                         `homebrew_casks[].url.template` to render a URL from \
-                         `{{{{ .Tag }}}}` / `{{{{ .Os }}}}` / `{{{{ .Arch }}}}`, or \
-                         ensure the release stage seeds `metadata.url` onto the \
-                         macOS artifact for '{}'.",
-                    cask_name,
-                    cask_name
-                )
-            })?
-        }
-    } else {
-        macos_artifact.metadata.get("url").cloned().ok_or_else(|| {
-            anyhow::anyhow!(
-                "homebrew_casks: artifact for '{}' has no 'url' metadata; set url.template",
-                cask_name
-            )
-        })?
-    };
-
-    // Escape before substituting: `#{version}` is Ruby interpolation
-    // anodizer emits on purpose so `brew livecheck` can bump the cask, while
-    // everything else in the URL must reach the file as a literal.
-    let url = anodizer_core::template::ruby_escape_str(&url).replace(&version, "#{version}");
-
-    let sha256 = macos_artifact
-        .metadata
-        .get("sha256")
-        .cloned()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "homebrew_casks: artifact has no 'sha256' metadata for cask '{}'",
-                cask_name
-            )
-        })?;
 
     // Use the per-arch blocks only when more than one OS×arch slot is present;
     // a single slot keeps the flat single-`url` body so single-arch projects
     // don't get pointless `on_arm` / `on_intel` wrappers.
-    let use_platforms = platform_blocks
-        .iter()
-        .map(|p| p.arches.len())
-        .sum::<usize>()
-        > 1;
+    let use_platforms = super::cask_scope::download_count(&platform_blocks) > 1;
+    let (url, sha256) = if use_platforms {
+        (String::new(), String::new())
+    } else {
+        let only = super::cask_scope::single_macos_download(&platform_blocks).ok_or_else(|| {
+            anyhow::anyhow!(
+                "homebrew_casks: artifact for cask '{}' has no 'url' metadata \
+                 and no url.template configured to synthesize one. A cask with \
+                 an empty `url \"\"` line is rejected by `brew style` and fails \
+                 on `brew install` (no download endpoint). Either set \
+                 `homebrew_casks[].url.template` to render a URL from \
+                 `{{{{ .Tag }}}}` / `{{{{ .Os }}}}` / `{{{{ .Arch }}}}`, or \
+                 ensure the release stage seeds `metadata.url` onto the \
+                 macOS artifact for '{}'.",
+                cask_name,
+                cask_name
+            )
+        })?;
+        (only.url.clone(), only.sha256.clone())
+    };
 
     // Pre-render multi-key uninstall + zap blocks (see
     // `cask::render_zap_block` doc-comment).
