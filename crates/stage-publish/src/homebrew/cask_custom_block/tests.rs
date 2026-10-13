@@ -11,8 +11,9 @@ fn facts(other_os_block: bool, os_dependency: bool) -> CustomBlockOsFacts {
 }
 
 /// The code of a line keeps everything outside its literals, writes
-/// each literal that closes on the line as `""`, leaves out the part of
-/// one that stays open, and stops at a `#` outside them.
+/// each literal that closes on the line as `""` with the code of its
+/// `#{…}` between the quotes, leaves out the part of one that stays open
+/// but for that code, and stops at a `#` outside them.
 #[test]
 fn code_lines_blank_literals_and_cut_the_comment() {
     let cases = [
@@ -35,9 +36,10 @@ fn code_lines_blank_literals_and_cut_the_comment() {
         ("x =~ /#/ # c", "x =~ \"\" "),
         ("y = a / b # c", "y = a / b "),
         ("f(/#/, /#/) # c", "f(\"\", \"\") "),
-        ("\"a#{\"}\"}b\" # c", "\"\" "),
-        ("\"a#{'\"'}b\" # c", "\"\" "),
-        ("\"#{{a: 1}[:a]}\" x", "\"\" x"),
+        ("\"a#{\"}\"}b\" # c", "\"\"\" \" "),
+        ("\"a#{'\"'}b\" # c", "\"\"\" \" "),
+        ("\"#{{a: 1}[:a]}\" x", "\"{a: 1}[:a] \" x"),
+        ("x \"#{a}b#{c}\"", "x \"a c \""),
         ("caveats <<~EOS # c", "caveats \"\" "),
         ("m = 1<<FLAGS # c", "m = 1<<FLAGS "),
         ("m = a << 1 <<2 # c", "m = a << 1 <<2 "),
@@ -65,7 +67,8 @@ fn code_lines_blank_literals_and_cut_the_comment() {
 }
 
 /// A literal or heredoc that does not close on its line carries on into
-/// the following lines; its content is left out until it closes.
+/// the following lines; its content is left out until it closes, and the
+/// code of a `#{…}` in it reads at the end of its line.
 #[test]
 fn an_open_literal_carries_into_the_next_lines() {
     let line = |text: &str, open: bool| CodeLine {
@@ -83,7 +86,11 @@ fn an_open_literal_carries_into_the_next_lines() {
         ),
         (
             "\"#{\n x \"}\" \n}\" y",
-            &[line("", true), line("", true), line("\"\" y", false)],
+            &[
+                line("", true),
+                line("  x \"\" ", true),
+                line("\"\" y", false),
+            ],
         ),
         (
             "caveats <<~EOS, <<-'B'\n on_linux\n  EOS\n  B\nz",
@@ -1247,4 +1254,68 @@ fn a_regex_closed_by_a_newline_takes_the_next_line_s_letters_as_options() {
         }
     );
     assert!(edges[3].starts_in_code);
+}
+
+/// A `::` that ends a line, or stands before a space, makes the word after
+/// it a constant path, as one written on the same line does, so the `%`
+/// after that word opens a literal.
+#[test]
+fn a_word_after_a_double_colon_on_an_earlier_line_is_a_constant_path() {
+    for block in [
+        "y = A::\nB %(on_linux)",
+        "x = 1\ny = A::\nx %(on_linux)",
+        "x = A::\n  B %(on_linux)",
+        "x = A::\n# c\nB %(on_linux)",
+        "x = A::\\\nB %(on_linux)",
+        "x = A:: B %(on_linux)",
+    ] {
+        assert_facts(block, false, false, None);
+    }
+}
+
+/// A symbol spelled as an operator, or of a name ending in `=`, `?` or
+/// `!`, is a value, so a `%`, `<<` or `/` after it opens nothing. A `:`
+/// after a value ends a ternary.
+#[test]
+fn an_operator_symbol_is_a_value() {
+    for symbol in [
+        ":+", ":|", ":%", ":<<", ":==", ":a=", ":!~", ":<=>", ":[]", ":[]=", ":!", ":a?", ":a!",
+        ":-", ":/", ":*", ":**", ":=~", ":+@", ":`",
+    ] {
+        assert_facts(&format!("x = {symbol} %(on_linux)"), true, false, None);
+    }
+    assert_facts("x = [:+, :-] %(on_linux)", true, false, None);
+    assert_facts("f ? 1 :+ 2\n%(on_linux)", false, false, None);
+}
+
+/// The code inside `#{…}` is code, so its words count toward both facts,
+/// in a string, a percent literal, a regex, a backtick command and a
+/// heredoc body, and in a literal delimited by the end of its line. A
+/// single-quoted literal holds no interpolation.
+#[test]
+fn the_code_of_an_interpolation_counts_toward_both_facts() {
+    for block in [
+        "x = \"#{on_linux}\"",
+        "x = %(#{on_linux})",
+        "x = /#{on_linux}/",
+        "x = <<~EOS\n  #{on_linux}\nEOS",
+        "x = %Q\n#{on_linux}\n",
+        "x = `#{on_linux}`",
+        "x = \"a#{b}#{on_linux}c\"",
+        "x = \"#{\non_linux}\"",
+        "x = \"#{\"#{on_linux}\"}\"",
+    ] {
+        assert_facts(block, true, false, None);
+    }
+    for block in ["x = '#{on_linux}'", "x = %q(#{on_linux})"] {
+        assert_facts(block, false, false, None);
+    }
+    assert_facts(
+        "depends_on macos: \"#{:ventura}\", linux: 1",
+        false,
+        true,
+        None,
+    );
+    let edges = super::line_code_edges("x = \"#{on_linux}\"  \ny");
+    assert_eq!(edges[0].trim_from, Some(17));
 }

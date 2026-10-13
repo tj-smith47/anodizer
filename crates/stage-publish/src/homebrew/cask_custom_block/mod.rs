@@ -8,6 +8,7 @@ use super::cask::CaskParams;
 
 mod heredoc;
 mod lexer;
+mod literal;
 mod names;
 mod words;
 
@@ -91,6 +92,13 @@ pub(super) enum UnreadReason {
 /// - a `#` comment, which cuts the rest of the line, and an `=begin` …
 ///   `=end` comment.
 ///
+/// The code inside `#{…}` is kept, in every literal that interpolates: a
+/// `"…"` or `` `…` `` string, a heredoc whose tag is not single-quoted, a
+/// `%()`, `%Q`, `%W`, `%I`, `%r` or `%x` literal and a `/…/` regex. Its
+/// words count toward both facts below as the code around the literal
+/// does, so `"#{on_linux}"` names a Linux side and `'#{on_linux}'` does
+/// not.
+///
 /// None of these opens after a `:` that makes a symbol (`:%`, `` :` ``), in
 /// a special global (`$"`, `$/`), or where it names a method: after `.`,
 /// `&.` or `::`, with or without a space, whatever the name looks like
@@ -101,8 +109,10 @@ pub(super) enum UnreadReason {
 ///
 /// A `<<`, `%`, `?` or `/` that follows a value is a shift, a modulo, a
 /// ternary or a division and opens nothing. The code before it ends with a
-/// value when, whitespace aside, it ends with `)`, `]`, `}`, a number or a
-/// closed literal, or with one of these words:
+/// value when, whitespace aside, it ends with `)`, `]`, `}`, a number, a
+/// closed literal or a symbol, the ones spelled as an operator or as a
+/// name ending in `=`, `?` or `!` included (`:+`, `:<=>`, `:[]=`, `:a=`),
+/// or with one of these words:
 ///
 /// - `self`, `nil`, `true`, `false`, `end`, `class` (`class <<self`) or
 ///   `def` (`def /(other)`);
@@ -125,7 +135,9 @@ pub(super) enum UnreadReason {
 /// lambda (`-> { … }`, `->(x) do … end`) included, sees them, and its
 /// parameters and the locals first assigned in it end at its `end` or `}`.
 /// `if`, `while`, `case` and `begin` open no scope. After a word, a `/`
-/// followed by a space or `=` divides. A statement continued with a `\` at
+/// followed by a space or `=` divides. A `:` after a value ends a ternary
+/// and starts no symbol (`f ? 1 :+ 2`), and the word after a `::` is a
+/// constant path or a method, also when the `::` ended an earlier line. A statement continued with a `\` at
 /// the end of a line, with a `?\` character literal that holds the
 /// newline, with a `.`, `&.` or `::` that ends a line (past blank and
 /// comment lines; a `..` range continues nothing) or with a literal the

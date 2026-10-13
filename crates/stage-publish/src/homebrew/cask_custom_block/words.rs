@@ -1,7 +1,7 @@
 //! The words and short tokens a `custom_block` lexer reads: what the code
 //! before an operator makes of it, the words that take an argument, the
-//! method names spelled as operators, the spelling of a number and the `?x`
-//! character literal.
+//! method names and symbols spelled as operators, the spelling of a number
+//! and the `?x` character literal.
 
 use super::is_word_char;
 use super::names::Scopes;
@@ -182,6 +182,29 @@ pub(super) fn operator_method_len(text: &[char]) -> Option<usize> {
         .iter()
         .find(|name| text.len() >= name.len() && name.chars().zip(text).all(|(a, b)| a == *b))
         .map(|name| name.len())
+}
+
+/// The length of the symbol name at the start of `text`, which follows a
+/// `:`, when the name is spelled as an operator (`:+`, `:<=>`, `:[]=`) or
+/// ends in `=`, `?` or `!` (`:a=`, `:a?`), or `None` for any other name.
+pub(super) fn symbol_len(text: &[char]) -> Option<usize> {
+    if let Some(len) = operator_method_len(text) {
+        return Some(len);
+    }
+    if !text
+        .first()
+        .is_some_and(|&c| is_word_char(c) && !c.is_ascii_digit())
+    {
+        return None;
+    }
+    let name = text.iter().take_while(|&&c| is_word_char(c)).count();
+    let next = text.get(name + 1).copied();
+    match text.get(name) {
+        // `:a==b` compares and `:a=>1` is a pair, as `:a!=b` compares.
+        Some('?' | '!') if next != Some('=') => Some(name + 1),
+        Some('=') if !matches!(next, Some('=' | '~' | '>')) => Some(name + 1),
+        _ => None,
+    }
 }
 
 /// Whether `c` extends the number `word` (`0x1f`, `1_000`, `1e5`, `2r`):

@@ -55,3 +55,13 @@ EOF
 echo "the length(s) of the generated rows"
 awk '{ print length(s) }' f
 my-awk '{ print length(s) }' f
+awk -v \
+  n=1 '{ print length(s) }' /dev/null
+gawk -i inplace '{ print length(s) }' f
+gawk -l ordchr '{ print toupper(s) }' f
+gawk -e '{ print length(s) }' f
+echo "the row(s) counted" | awk '{ print length(s) }'
+gawk -e'{ print length(s) }' f
+gawk -e"{ print toupper(s) }" f
+gawk --source='{ print length(s) }' f
+gawk --source="{ print tolower(s) }" f

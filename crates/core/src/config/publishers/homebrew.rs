@@ -367,14 +367,18 @@ pub struct HomebrewCaskConfig {
     /// run of `\`, and a `%r` closed that way takes the letters that start
     /// the line after as its options); `?x` character literals (not `?ab`
     /// or `?"a"`); a `/…/` regex where an operand stands; `#`
-    /// comments; and `=begin` … `=end` comments. None opens after a `:`
+    /// comments; and `=begin` … `=end` comments. The code inside `#{…}`, in
+    /// every literal that interpolates, is kept, and its words count as
+    /// the code around the literal does (`"#{on_linux}"` names a Linux
+    /// side, `'#{on_linux}'` does not). None opens after a `:`
     /// that makes a symbol, in a special global (`$"`), or where it names a
     /// method: after `.`, `&.` or `::` (with or without a space, whatever
     /// the name looks like, so `x. %` and `a&.!~` are method names) or
     /// `def`, and as the `?` or `!` of a method name.
     ///
     /// A `<<`, `%`, `?` or `/` after a value is a shift, a modulo, a ternary
-    /// or a division: after `)`, `]`, `}`, a number, a literal, `self`,
+    /// or a division: after `)`, `]`, `}`, a number, a literal, a symbol
+    /// (the operator ones and `:a=`, `:a?`, `:a!` included), `self`,
     /// `nil`, `true`, `false`, `end`, `class`, `def`, an `@` or `$`
     /// variable, a local assigned earlier in its scope (`name =`,
     /// `name ||=` and the other operator assignments, `a, b =`,
@@ -393,7 +397,10 @@ pub struct HomebrewCaskConfig {
     /// line (past blank and comment lines) or with a literal the newline
     /// closes, is read as one statement, so the code before the break
     /// decides what the operator, `if` or `until` after it is.
-    /// After a word, a `/` followed by a space or `=` divides. After an
+    /// After a word, a `/` followed by a space or `=` divides, and a `:`
+    /// after a value ends a ternary and starts no symbol. The word after a
+    /// `::` is a constant path or a method, also when the `::` ended an
+    /// earlier line. After an
     /// operator, `(`, `,`, `;`, the start of a line, a Ruby keyword, any
     /// method of the cask DSL or a common method such as `puts` the
     /// operator opens a literal, and after any other word followed by a

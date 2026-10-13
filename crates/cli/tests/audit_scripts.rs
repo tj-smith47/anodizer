@@ -219,8 +219,11 @@ fn the_misspelled_tool_name_is_reported_and_the_config_alias_is_not() {
 /// several lines in single or double quotes, a heredoc tagged AWK or a whole
 /// `.awk` library. `gawk`, `mawk` and `nawk` open a program as `awk` does,
 /// past every option before it (a `-v` value quoted with a space in it,
-/// `--awk`, `--lint=fatal`, `--field-separator ':'`, `-W posix`, `--`) and
-/// onto the next line after a `\`, and the line that opens an AWK heredoc
+/// `--awk`, `--lint=fatal`, `--field-separator ':'`, `-W posix`, `--`,
+/// gawk's `-i inplace` and `-l ordchr`, and a `-e` or `--source` that
+/// takes the program, after a space or `=` or written against it)
+/// and onto the next line after a `\`, a `-v` there taking its value from
+/// that line, and the line that opens an AWK heredoc
 /// has its own program read
 /// first. An `awk -f lib.awk` line opens no program, so an apostrophe in its
 /// comment hides no later line, and a quote before `BEGIN {` opens one only
@@ -228,8 +231,8 @@ fn the_misspelled_tool_name_is_reported_and_the_config_alias_is_not() {
 /// count. A bare `BEGIN {` line in an untagged heredoc is prose and opens no
 /// program, so a count after it is still read, and `my-awk` is no awk word.
 /// Outside a program only a line defining `function <name>(s) {` is code,
-/// so `the function file(s) are missing` and `length(s) of the files` are
-/// counts.
+/// so `the function file(s) are missing`, `length(s) of the files` and the
+/// `echo "the row(s) counted"` piped into an awk program are counts.
 #[test]
 fn a_plural_in_parentheses_in_a_script_a_workflow_or_the_taskfile_is_reported() {
     let taskfile = "tasks:\n  demo:\n    desc: \"Guard: every categor(ies) entry is read.\"\n";
@@ -268,6 +271,7 @@ fn a_plural_in_parentheses_in_a_script_a_workflow_or_the_taskfile_is_reported() 
         "BEGIN { length(s) of the rows",
         "the length(s) of the generated rows",
         "my-awk '{ print length(s) }'",
+        "the row(s) counted",
     ]
     .iter()
     .map(|needle| {
@@ -319,6 +323,7 @@ fn a_script_whose_counts_go_through_plural_passes_the_plural_scan() {
                 "length(s) after",
                 "tolower(s) is prose",
                 "my-awk",
+                "row(s)",
             ]
             .iter()
             .any(|f| l.contains(f))

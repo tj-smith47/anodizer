@@ -273,6 +273,12 @@ into the following lines until it closes:
 - A `#` comment, which cuts the rest of the line, so a comment line reads as
   blank, and an `=begin` … `=end` comment.
 
+The code inside `#{…}` is kept, in every literal that interpolates: a `"…"`
+or `` `…` `` string, a heredoc whose tag is not single-quoted, a `%()`,
+`%Q`, `%W`, `%I`, `%r` or `%x` literal and a `/…/` regex. Its words count
+toward both checks below as the code around the literal does, so
+`"#{on_linux}"` names a Linux side and `'#{on_linux}'` does not.
+
 None of these opens after a `:` that makes a symbol (`:%`, `` :` ``), in a
 special global (`$"`, `$/`), or where it names a method: after `.`, `&.` or
 `::`, with or without a space before the name, whatever the name looks like
@@ -283,8 +289,10 @@ modulo) and a `?` opens a character literal.
 
 A `<<`, `%`, `?` or `/` that follows a value is a shift, a modulo, a ternary
 or a division and opens nothing. The code before it ends with a value when,
-spaces aside, it ends with `)`, `]`, `}`, a number or a closed literal, or
-with one of these words:
+spaces aside, it ends with `)`, `]`, `}`, a number, a closed literal or a
+symbol, the ones spelled as an operator or as a name ending in `=`, `?` or
+`!` included (`x = :+ %(on_linux)` is a modulo, as is `x = :a= %(on_linux)`),
+or with one of these words:
 
 - `self`, `nil`, `true`, `false`, `end`, `class` (`class <<self`) or `def`
   (`def /(other)`);
@@ -309,7 +317,10 @@ parameters and the locals first assigned in it end at its `end` or `}`. The
 body of a lambda is a block too, so after `f = -> { w = 1 }` the name `w` is
 gone and `r = w %w[on_linux]` passes `%w[on_linux]` to a method `w`.
 `if`, `while`, `case` and `begin` open no scope. After a word, a `/` followed
-by a space or `=` divides.
+by a space or `=` divides. A `:` after a value ends a ternary and starts no
+symbol (`f ? 1 :+ 2`), and the word after a `::` is a constant path or a
+method, also when the `::` ended an earlier line (`y = A::` then
+`B %(on_linux)` passes a string to `B`).
 
 A statement continued with a `\` at the end of a line, with a `?\`
 character literal that holds the newline, with a `.`, `&.` or `::` that

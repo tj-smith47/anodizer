@@ -290,12 +290,13 @@ run_scanner plural_prose -v AWK_S_CALLS="$AWK_S_CALLS" -f - \
     # `q` is the quote of a program still open at the end of the line,
     # `touched` says whether the line holds any program text, and `expect`
     # that an awk command continued with `\` still waits for its program.
-    function scan(line,    out, i, n, c, start, rest, named) {
+    function scan(line,    out, i, n, c, start, rest, named, pending) {
         out = ""; i = 1; n = length(line); touched = 0
         named = line ~ /(^|[^-.A-Za-z0-9_])[gmn]?awk([ \t]|$)/
         if (expect) {
+            pending = expect == 2
             expect = 0
-            i = program_start(line, 1)
+            i = program_start(line, 1, pending)
             out = substr(line, 1, i - 1)
         }
         while (i <= n) {
@@ -330,21 +331,49 @@ run_scanner plural_prose -v AWK_S_CALLS="$AWK_S_CALLS" -f - \
 
     # Where the program of an awk command starts in `line`, from `i` just
     # after the command word or at the start of a continued line: past its
-    # options and the opening quote, which sets `q`. `-v`, `-F`, `-W`,
-    # `--assign` and `--field-separator` take a value, written against them
-    # or after a space; any other short option takes none, and any other
-    # long one only after `=` (`--awk`, `--lint=fatal`). A line that ends in
-    # `\` there sets `expect`; with neither, `i` itself.
-    function program_start(line, i,    value, option) {
+    # options and the opening quote, which sets `q`. `-v`, `-F`, `-W`, `-i`,
+    # `-l`, `--assign`, `--field-separator`, `--include` and `--load` take a
+    # value, written against them or after a space, or on the next line
+    # after a `\` (`pending` is set on that line). `-e` and `--source` take
+    # the program itself, after a space or `=` or written against them
+    # (`-e'{…}'`). `-f`, `-E`, `--file` and `--exec` name a program
+    # file, so the command holds no program in its text. A short option
+    # outside these sets takes no value, and a long one only after `=`
+    # (`--awk`, `--lint=fatal`). A line that ends in `\` before the program
+    # sets `expect`, to 2 when an option there waits for its value; with
+    # neither, `i` itself.
+    function program_start(line, i, pending,    body, cont, value, takes, rest) {
+        body = line
+        cont = sub(/[ \t]*\\$/, "", body)
         value = "([^ \t\"']|\"[^\"]*\"|'[^']*')+"
-        option = "-[vFW][ \t]*" value "|--(assign|field-separator)([ \t]+|=)" value \
-            "|--([A-Za-z][-A-Za-z]*(=" value ")?)?|-[A-Za-z]+"
-        while (match(substr(line, i), "^[ \t]*(" option ")([ \t]|$)")) i += RLENGTH
-        if (match(substr(line, i), /^[ \t]*['"]/)) {
+        takes = "(-[vFWil]|--(assign|field-separator|include|load))"
+        if (pending && match(substr(body, i), "^[ \t]*" value "([ \t]|$)")) i += RLENGTH
+        pending = 0
+        while (1) {
+            rest = substr(body, i)
+            if (match(rest, /^[ \t]*(-[fE]|--(file|exec))([ \t=]|$)/)) return i
+            if (match(rest, /^[ \t]*(-e|--source)([ \t]+|=)?/) \
+                && substr(rest, RLENGTH + 1) ~ /^(['"]|$)/) {
+                i += RLENGTH
+                break
+            }
+            if (match(rest, "^[ \t]*" takes "([ \t]+|=)?$")) {
+                pending = 1
+                i += RLENGTH
+                break
+            }
+            if (match(rest, "^[ \t]*(-[vFWil][ \t]*|" takes "([ \t]+|=))" value "([ \t]|$)") \
+                || match(rest, "^[ \t]*(--([A-Za-z][-A-Za-z]*(=" value ")?)?|-[A-Za-z]+)([ \t]|$)")) {
+                i += RLENGTH
+                continue
+            }
+            break
+        }
+        if (match(substr(body, i), /^[ \t]*['"]/)) {
             i += RLENGTH
             q = substr(line, i - 1, 1)
-        } else if (substr(line, i) ~ /^[ \t]*\\$/) {
-            expect = 1
+        } else if (cont && substr(body, i) ~ /^[ \t]*$/) {
+            expect = pending ? 2 : 1
             i = length(line) + 1
         }
         return i

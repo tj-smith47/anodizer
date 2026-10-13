@@ -3,11 +3,13 @@
 use std::collections::{HashMap, VecDeque};
 
 use super::heredoc::{Heredoc, heredoc_opener, joins_next_line};
+use super::literal::{Frame, literal, percent_literal, regex};
 use super::names::{
     LevelKind, Scopes, assigned_names, bind_statement, capture_names, for_names, param_names,
 };
 use super::words::{
     HASH_AFTER, Position, char_literal_len, number_continues, operator_method_len, position,
+    symbol_len,
 };
 use super::{UnreadReason, Unreadable, bracket_balance, is_local_name, is_word_char};
 
@@ -37,29 +39,6 @@ pub(super) struct Lexed {
     pub(super) unread: Option<Unreadable>,
 }
 
-/// A literal, or the code of an interpolation inside one, that the lexer
-/// is in.
-#[derive(Debug)]
-enum Frame {
-    /// A string, percent literal or regex, read up to `close`. A bracket
-    /// pair nests, counted in `depth`.
-    Literal {
-        open: char,
-        close: char,
-        depth: usize,
-        interpolates: bool,
-        /// What the literal is and the line it opens on, for [`Unreadable`].
-        kind: &'static str,
-        line: usize,
-        /// It was opened on its line after an ambiguous opener.
-        guessed: bool,
-        /// The text of a regex, kept for its named captures.
-        body: Option<String>,
-    },
-    /// `#{…}` code, ended by the `}` that matches no `{` opened inside it.
-    Interpolation { braces: usize },
-}
-
 /// What carries from one line of a block to the next.
 #[derive(Default)]
 struct Carry {
@@ -84,8 +63,13 @@ struct Carry {
     continued: Option<Continued>,
 }
 
-/// What a line that ends in `\` hands to the next one, which reads on as
-/// part of the same statement.
+/// What a line hands to the next one when the statement reads on past its
+/// end: the line ends in a `\` continuation, in a `?\` character literal
+/// that holds the newline, or in a `.`, `&.` or `::` before the method
+/// name, or its last literal is closed by the newline (a `%r` closed that
+/// way takes the letters that start the next line as its options). The
+/// fields are the lexer's state at the end of the line, described where
+/// [`lex_line`] reads them.
 #[derive(Default)]
 struct Continued {
     /// The code of the statement so far, which the positions in `st`
@@ -99,8 +83,14 @@ struct Continued {
     word_colon: Option<bool>,
     pending: Vec<String>,
     captures: Vec<String>,
+    /// A `.`, `&.` or `::` came last, so the next token is a method name
+    /// whatever it looks like.
     method_next: bool,
+    /// The method name that came last is spelled as an operator (`x.%`),
+    /// so a `<<`, `%` or `/` written straight after it is an operator.
     after_operator_method: bool,
+    /// The line ended in a `%r` closed by the newline, so the letters that
+    /// start the next line are its options.
     regex_options: bool,
 }
 
@@ -132,10 +122,12 @@ pub(super) fn lex_block(block: &str) -> Lexed {
             starts.push(closes && heredoc.squiggly);
             if closes {
                 carry.heredocs.pop_front();
+                out.push(CodeLine::default());
             } else if heredoc.interpolates && line.contains("#{") {
-                lex_body_line(line, n + 1, &mut carry);
+                out.push(lex_body_line(line, n + 1, &mut carry));
+            } else {
+                out.push(CodeLine::default());
             }
-            out.push(CodeLine::default());
             continue;
         }
         if carry.comment.is_some() {
@@ -218,9 +210,9 @@ pub(super) fn lex_block(block: &str) -> Lexed {
 }
 
 /// Read the `#{…}` code of line `number`, a body line of an interpolating
-/// heredoc. A heredoc opened there has its body read from the next line,
-/// before the rest of the body around it, as Ruby reads it.
-fn lex_body_line(line: &str, number: usize, carry: &mut Carry) {
+/// heredoc, and return it. A heredoc opened there has its body read from
+/// the next line, before the rest of the body around it, as Ruby reads it.
+fn lex_body_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
     let depth = carry.stack.len();
     let queued = carry.heredocs.len();
     // The statement and parameter list the heredoc's opener left open go on
@@ -232,7 +224,7 @@ fn lex_body_line(line: &str, number: usize, carry: &mut Carry) {
     carry
         .stack
         .push(literal('\n', '\n', true, "heredoc", number));
-    lex_line(line, number, carry);
+    let (code, _) = lex_line(line, number, carry);
     if carry.stack.len() > depth + 1 && carry.open_interpolation.is_none() {
         carry.open_interpolation = Some(Unreadable {
             line: number,
@@ -245,6 +237,10 @@ fn lex_body_line(line: &str, number: usize, carry: &mut Carry) {
     carry.heredocs.rotate_right(opened);
     carry.continued = continued;
     carry.param_list = param_list;
+    CodeLine {
+        text: code.text,
+        open: true,
+    }
 }
 
 /// What the statement being read has opened so far.
@@ -352,9 +348,8 @@ fn end_statement(code: &str, st: &Statement, scopes: &mut Scopes) {
 }
 
 /// Read line `number` of a block on top of what the lines before it left
-/// in `carry`.
-/// Read one line of a block: its code, and the byte offset where the last
-/// literal read on it ends, 0 when it has none.
+/// in `carry`: its code, and the byte offset where the last literal read
+/// on it ends, 0 when it has none.
 fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
     let Carry {
         stack,
@@ -418,6 +413,12 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
     // whitespace that trimming the line must keep.
     let mut literal_end = i;
     let mut regex_options = false;
+    // The code read inside the `#{…}` of the literal being read, and where
+    // in `text` the code of each such literal that closed is shown, between
+    // its quotes. It stays out of `text`, whose names and brackets are the
+    // statement's.
+    let mut interpolated = String::new();
+    let mut inserts: Vec<(usize, String)> = Vec::new();
     while i < chars.len() {
         let c = chars[i];
         if let Some(Frame::Literal {
@@ -447,6 +448,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                 i += 3;
             } else if *interpolates && c == '#' && chars.get(i + 1) == Some(&'{') {
                 stack.push(Frame::Interpolation { braces: 0 });
+                separate(&mut interpolated);
                 prev = None;
                 word.clear();
                 i += 2;
@@ -468,8 +470,8 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                 if closes {
                     literal_end = i;
                     let frame = stack.pop();
+                    close_literal(stack, &mut text, &mut interpolated, &mut inserts);
                     if stack.is_empty() {
-                        text.push_str("\"\"");
                         captures = match frame {
                             Some(Frame::Literal {
                                 body: Some(body), ..
@@ -518,14 +520,32 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
         let method_name = !c.is_whitespace() && c != '#' && std::mem::take(&mut method_next);
         let operator_method = !c.is_whitespace() && std::mem::take(&mut after_operator_method);
         if method_name && let Some(len) = operator_method_len(&chars[i..]) {
-            if stack.is_empty() {
-                text.extend(&chars[i..i + len]);
-            }
+            emit(stack, &mut text, &mut interpolated, &chars[i..i + len]);
             prev = Some('"');
             word.clear();
             spaced = false;
             after_operator_method = true;
             i += len;
+            continue;
+        }
+        // An operator symbol (`:+`, `:<=>`, `:[]=`) or a symbol of a name
+        // ending in `=`, `?` or `!` is a value. A `:` after a value ends a
+        // ternary instead (`f ? 1 :+ 2`).
+        if c == ':'
+            && (i == 0
+                || !(is_word_char(chars[i - 1])
+                    || matches!(chars[i - 1], ':' | '"' | '\'' | ')' | ']' | '}')))
+            && !matches!(
+                position(prev, &word, spaced, before_word == Some('.'), scopes),
+                Position::Value | Position::Parameter
+            )
+            && let Some(len) = symbol_len(&chars[i + 1..])
+        {
+            emit(stack, &mut text, &mut interpolated, &chars[i..=i + len]);
+            prev = Some('"');
+            word.clear();
+            spaced = false;
+            i += len + 1;
             continue;
         }
         // A special global (`$"`, `$/`, `$;`, `$-w`) is a value whose
@@ -534,9 +554,8 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             && let Some(name) = next.filter(|n| n.is_ascii_punctuation() && *n != '_')
         {
             let len = if name == '-' { 3 } else { 2 };
-            if stack.is_empty() {
-                text.extend(&chars[i..(i + len).min(chars.len())]);
-            }
+            let spelled = &chars[i..(i + len).min(chars.len())];
+            emit(stack, &mut text, &mut interpolated, spelled);
             prev = Some('"');
             word.clear();
             i += len;
@@ -628,8 +647,8 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                     stack.push(frame);
                 }
                 None => {
+                    close_literal(stack, &mut text, &mut interpolated, &mut inserts);
                     if stack.is_empty() {
-                        text.push_str("\"\"");
                         captures.clear();
                     }
                     prev = Some('"');
@@ -649,12 +668,14 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                 '{' => *braces += 1,
                 '}' if *braces == 0 => {
                     stack.pop();
+                    separate(&mut interpolated);
                     i += 1;
                     continue;
                 }
                 '}' => *braces -= 1,
                 _ => {}
             }
+            interpolated.push(c);
         } else {
             text.push(c);
             let code = &text[st.start..text.len() - c.len_utf8()];
@@ -748,7 +769,10 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             if !continues && !joins {
                 word.clear();
                 before_word = prev;
-                word_colon = (prev == Some(':')).then(|| i > 1 && chars[i - 2] == ':');
+                // A `::` that ended an earlier line, or stood before a
+                // space, makes a constant path too (`A::\nB`).
+                word_colon =
+                    (prev == Some(':')).then(|| method_name || (i > 1 && chars[i - 2] == ':'));
             }
             if matches!(c, '@' | '$') || is_word_char(c) || joins {
                 word.push(c);
@@ -789,8 +813,8 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
         regex_options = body.is_some();
         stack.pop();
         literal_end = chars.len();
+        close_literal(stack, &mut text, &mut interpolated, &mut inserts);
         if stack.is_empty() {
-            text.push_str("\"\"");
             prev = Some('"');
             word.clear();
             continues_line = true;
@@ -801,7 +825,19 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
     if stack.is_empty() && method_next {
         continues_line = true;
     }
-    let mut code = text[base..].to_string();
+    // The code of a `#{…}` still open, or in a literal still open, at the
+    // end of the line reads at its end.
+    if !interpolated.is_empty() {
+        inserts.push((text.len(), format!(" {interpolated}")));
+    }
+    let mut code = String::new();
+    let mut from = base;
+    for (at, inserted) in inserts {
+        code.push_str(&text[from..at]);
+        code.push_str(&inserted);
+        from = at;
+    }
+    code.push_str(&text[from..]);
     if continues_line {
         code.push('\\');
         text.push(' ');
@@ -847,6 +883,42 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
         open: !stack.is_empty(),
     };
     (code, end)
+}
+
+/// End the code read in `interpolated` with a space, so the code of two
+/// interpolations reads as two words.
+fn separate(interpolated: &mut String) {
+    if !interpolated.is_empty() && !interpolated.ends_with(' ') {
+        interpolated.push(' ');
+    }
+}
+
+/// Add the code `code` to `text`, or to `interpolated` inside a `#{…}`.
+fn emit(stack: &[Frame], text: &mut String, interpolated: &mut String, code: &[char]) {
+    if stack.is_empty() {
+        text.extend(code);
+    } else {
+        interpolated.extend(code);
+    }
+}
+
+/// Write a literal that just closed as `""`: in `text` when it was read in
+/// code, with the code of its interpolations noted in `inserts` to be shown
+/// between its quotes, or in `interpolated` inside a `#{…}`.
+fn close_literal(
+    stack: &[Frame],
+    text: &mut String,
+    interpolated: &mut String,
+    inserts: &mut Vec<(usize, String)>,
+) {
+    if !stack.is_empty() {
+        interpolated.push_str("\"\"");
+        return;
+    }
+    text.push_str("\"\"");
+    if !interpolated.is_empty() {
+        inserts.push((text.len() - 1, std::mem::take(interpolated)));
+    }
 }
 
 /// Read the code character `c`, just added to `text`, into the parameter
@@ -897,64 +969,4 @@ fn read_params(
             st.params_open = None;
         }
     }
-}
-
-fn literal(open: char, close: char, interpolates: bool, kind: &'static str, line: usize) -> Frame {
-    Frame::Literal {
-        open,
-        close,
-        depth: 0,
-        interpolates,
-        kind,
-        line,
-        guessed: false,
-        body: None,
-    }
-}
-
-/// A `/…/` regex opened on line `line`, which keeps its text.
-fn regex(line: usize) -> Frame {
-    let mut frame = literal('/', '/', true, "regex", line);
-    if let Frame::Literal { body, .. } = &mut frame {
-        *body = Some(String::new());
-    }
-    frame
-}
-/// The opener of a percent literal at the start of `text`, on line `line`:
-/// its length and the literal it opens, or `None` when `text` opens none.
-/// `bare` is whether it stands where an operand must and no word comes
-/// before it (`x = %…`): only there does a bare `%` take a space, a tab,
-/// `=` or the end of the line as its delimiter, which after a word make it
-/// a modulo or a modulo assignment. A typed literal (`%q a `, `%q` at the
-/// end of the line) takes a space or the end of the line anywhere it opens.
-/// A literal delimited by the end of the line holds the next line, and a
-/// list (`%w`, `%i`) delimited by whitespace never closes, since Ruby reads
-/// that whitespace as a word separator.
-fn percent_literal(text: &[char], line: usize, bare: bool) -> Option<(usize, Frame)> {
-    let (kind, at) = match text.get(1) {
-        Some(c @ ('q' | 'Q' | 'w' | 'W' | 'i' | 'I' | 'r' | 's' | 'x')) => (Some(*c), 2),
-        _ => (None, 1),
-    };
-    let list = matches!(kind, Some('w' | 'W' | 'i' | 'I'));
-    let delimiter = text.get(at).copied();
-    let (open, close) = match delimiter {
-        None | Some(' ' | '\t') if list => ('\0', '\0'),
-        None if kind.is_none() && !bare => return None,
-        None => ('\n', '\n'),
-        Some('(') => ('(', ')'),
-        Some('[') => ('[', ']'),
-        Some('{') => ('{', '}'),
-        Some('<') => ('<', '>'),
-        Some(' ' | '\t' | '=') if kind.is_none() && !bare => return None,
-        Some(c) if matches!(c, ' ' | '\t') || c.is_ascii_punctuation() => (c, c),
-        _ => return None,
-    };
-    let interpolates = !matches!(kind, Some('q' | 'w' | 'i' | 's'));
-    let mut frame = literal(open, close, interpolates, "percent literal", line);
-    if kind == Some('r')
-        && let Frame::Literal { body, .. } = &mut frame
-    {
-        *body = Some(String::new());
-    }
-    Some((at + usize::from(delimiter.is_some()), frame))
 }
