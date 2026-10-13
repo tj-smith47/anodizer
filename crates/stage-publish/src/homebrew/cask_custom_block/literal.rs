@@ -22,7 +22,13 @@ pub(super) enum Frame {
         body: Option<String>,
     },
     /// `#{…}` code, ended by the `}` that matches no `{` opened inside it.
-    Interpolation { braces: usize },
+    /// `code` holds what has been read of it, literals written as `""`,
+    /// and `start` where in `code` its current statement starts.
+    Interpolation {
+        braces: usize,
+        code: String,
+        start: usize,
+    },
 }
 
 /// A literal delimited by `open` and `close`, opened on line `line`.

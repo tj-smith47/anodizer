@@ -5,7 +5,8 @@ use std::collections::{HashMap, VecDeque};
 use super::heredoc::{Heredoc, heredoc_opener, joins_next_line};
 use super::literal::{Frame, literal, percent_literal, regex};
 use super::names::{
-    LevelKind, Scopes, assigned_names, bind_statement, capture_names, for_names, param_names,
+    LevelKind, Scopes, assigned_names, bind_interpolated, bind_statement, capture_names, for_names,
+    param_names,
 };
 use super::words::{
     HASH_AFTER, Position, char_literal_len, number_continues, operator_method_len, position,
@@ -21,6 +22,11 @@ pub(super) struct CodeLine {
     pub(super) text: String,
     /// The line ends inside a literal that closes on a later line.
     pub(super) open: bool,
+    /// The code inside each `#{…}` that closes on the line, in the order
+    /// they close, each its own list of statements. A `#{…}` that spans
+    /// lines is one entry, on the line it closes on, its lines joined by
+    /// `\n`.
+    pub(super) interpolations: Vec<String>,
 }
 
 /// A whole `custom_block` read by the lexer.
@@ -237,10 +243,7 @@ fn lex_body_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
     carry.heredocs.rotate_right(opened);
     carry.continued = continued;
     carry.param_list = param_list;
-    CodeLine {
-        text: code.text,
-        open: true,
-    }
+    CodeLine { open: true, ..code }
 }
 
 /// What the statement being read has opened so far.
@@ -413,12 +416,9 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
     // whitespace that trimming the line must keep.
     let mut literal_end = i;
     let mut regex_options = false;
-    // The code read inside the `#{…}` of the literal being read, and where
-    // in `text` the code of each such literal that closed is shown, between
-    // its quotes. It stays out of `text`, whose names and brackets are the
-    // statement's.
-    let mut interpolated = String::new();
-    let mut inserts: Vec<(usize, String)> = Vec::new();
+    // The code of each `#{…}` that closed on the line. It stays out of
+    // `text`, whose names, brackets and `;` are the statement's.
+    let mut interpolations = Vec::new();
     while i < chars.len() {
         let c = chars[i];
         if let Some(Frame::Literal {
@@ -447,8 +447,11 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                 }
                 i += 3;
             } else if *interpolates && c == '#' && chars.get(i + 1) == Some(&'{') {
-                stack.push(Frame::Interpolation { braces: 0 });
-                separate(&mut interpolated);
+                stack.push(Frame::Interpolation {
+                    braces: 0,
+                    code: String::new(),
+                    start: 0,
+                });
                 prev = None;
                 word.clear();
                 i += 2;
@@ -470,7 +473,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                 if closes {
                     literal_end = i;
                     let frame = stack.pop();
-                    close_literal(stack, &mut text, &mut interpolated, &mut inserts);
+                    close_literal(stack, &mut text);
                     if stack.is_empty() {
                         captures = match frame {
                             Some(Frame::Literal {
@@ -520,7 +523,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
         let method_name = !c.is_whitespace() && c != '#' && std::mem::take(&mut method_next);
         let operator_method = !c.is_whitespace() && std::mem::take(&mut after_operator_method);
         if method_name && let Some(len) = operator_method_len(&chars[i..]) {
-            emit(stack, &mut text, &mut interpolated, &chars[i..i + len]);
+            emit(stack, &mut text, &chars[i..i + len]);
             prev = Some('"');
             word.clear();
             spaced = false;
@@ -541,7 +544,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             )
             && let Some(len) = symbol_len(&chars[i + 1..])
         {
-            emit(stack, &mut text, &mut interpolated, &chars[i..=i + len]);
+            emit(stack, &mut text, &chars[i..=i + len]);
             prev = Some('"');
             word.clear();
             spaced = false;
@@ -549,13 +552,16 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             continue;
         }
         // A special global (`$"`, `$/`, `$;`, `$-w`) is a value whose
-        // punctuation opens nothing.
+        // punctuation opens nothing. It is written as `$_` padded with `_`,
+        // so a `;`, `,` or bracket in its name ends, continues or opens
+        // nothing in the statement read from the code.
         if c == '$'
             && let Some(name) = next.filter(|n| n.is_ascii_punctuation() && *n != '_')
         {
-            let len = if name == '-' { 3 } else { 2 };
-            let spelled = &chars[i..(i + len).min(chars.len())];
-            emit(stack, &mut text, &mut interpolated, spelled);
+            let len = if name == '-' { 3 } else { 2 }.min(chars.len() - i);
+            let mut spelled = vec!['_'; len];
+            spelled[0] = '$';
+            emit(stack, &mut text, &spelled);
             prev = Some('"');
             word.clear();
             i += len;
@@ -570,7 +576,10 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             && i > 1
             && (is_word_char(chars[i - 2]) || matches!(chars[i - 2], '"' | '\'' | ')' | ']' | '}'));
         let symbol = colon && !labelled;
-        let after_word = prev.is_some_and(|p| is_word_char(p) || matches!(p, '?' | '!'));
+        // A `?` or `!` ends a word only as part of its name (`empty?`); one
+        // read as an operator (`!/a/`) leaves an operand position.
+        let after_word =
+            prev.is_some_and(is_word_char) || (matches!(prev, Some('?' | '!')) && !word.is_empty());
         let position = if !(shift || matches!(c, '%' | '?' | '/')) {
             Position::Value
         } else if labelled && matches!(c, '%' | '/') {
@@ -593,7 +602,20 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                 Position::Value
             }
         } else {
-            position(prev, &word, spaced, before_word == Some('.'), scopes)
+            let found = position(prev, &word, spaced, before_word == Some('.'), scopes);
+            // Ruby reads a name that is no local variable as a method call,
+            // and straight after one a `?` opens a character literal
+            // (`EOS!?"`, `foo?=`, `x&.def??"`).
+            if c == '?'
+                && found == Position::Value
+                && !spaced
+                && after_word
+                && names_a_call(&word, scopes)
+            {
+                Position::Operand
+            } else {
+                found
+            }
         };
         let opens = matches!(position, Position::Operand | Position::Guess);
         // After a word, `/` followed by a space or `=` divides.
@@ -647,7 +669,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                     stack.push(frame);
                 }
                 None => {
-                    close_literal(stack, &mut text, &mut interpolated, &mut inserts);
+                    close_literal(stack, &mut text);
                     if stack.is_empty() {
                         captures.clear();
                     }
@@ -663,19 +685,31 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             }
             continue;
         }
-        if let Some(Frame::Interpolation { braces }) = stack.last_mut() {
+        if let Some(Frame::Interpolation {
+            braces,
+            code,
+            start,
+        }) = stack.last_mut()
+        {
             match c {
                 '{' => *braces += 1,
                 '}' if *braces == 0 => {
+                    bind_interpolated(&code[*start..], scopes);
+                    interpolations.push(std::mem::take(code));
                     stack.pop();
-                    separate(&mut interpolated);
                     i += 1;
                     continue;
                 }
                 '}' => *braces -= 1,
+                // Ruby binds the names a statement inside `#{…}` assigns
+                // in the scope around the literal.
+                ';' => {
+                    bind_interpolated(&code[*start..], scopes);
+                    *start = code.len() + 1;
+                }
                 _ => {}
             }
-            interpolated.push(c);
+            code.push(c);
         } else {
             text.push(c);
             let code = &text[st.start..text.len() - c.len_utf8()];
@@ -813,7 +847,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
         regex_options = body.is_some();
         stack.pop();
         literal_end = chars.len();
-        close_literal(stack, &mut text, &mut interpolated, &mut inserts);
+        close_literal(stack, &mut text);
         if stack.is_empty() {
             prev = Some('"');
             word.clear();
@@ -825,19 +859,13 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
     if stack.is_empty() && method_next {
         continues_line = true;
     }
-    // The code of a `#{…}` still open, or in a literal still open, at the
-    // end of the line reads at its end.
-    if !interpolated.is_empty() {
-        inserts.push((text.len(), format!(" {interpolated}")));
+    // A `#{…}` open at the end of the line ends a statement there.
+    if let Some(Frame::Interpolation { code, start, .. }) = stack.last_mut() {
+        bind_interpolated(&code[*start..], scopes);
+        code.push('\n');
+        *start = code.len();
     }
-    let mut code = String::new();
-    let mut from = base;
-    for (at, inserted) in inserts {
-        code.push_str(&text[from..at]);
-        code.push_str(&inserted);
-        from = at;
-    }
-    code.push_str(&text[from..]);
+    let mut code = text[base..].to_string();
     if continues_line {
         code.push('\\');
         text.push(' ');
@@ -881,44 +909,35 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
     let code = CodeLine {
         text: code,
         open: !stack.is_empty(),
+        interpolations,
     };
     (code, end)
 }
 
-/// End the code read in `interpolated` with a space, so the code of two
-/// interpolations reads as two words.
-fn separate(interpolated: &mut String) {
-    if !interpolated.is_empty() && !interpolated.ends_with(' ') {
-        interpolated.push(' ');
+/// True when the word `word` is a name Ruby reads as a method call: no
+/// number, variable with a sigil, local variable, parameter or keyword
+/// that ends a value.
+fn names_a_call(word: &str, scopes: &Scopes) -> bool {
+    !word.starts_with(|c: char| c.is_ascii_digit() || matches!(c, '@' | '$'))
+        && !matches!(
+            word,
+            "self" | "nil" | "true" | "false" | "end" | "__FILE__" | "__LINE__" | "__ENCODING__"
+        )
+        && scopes.lookup(word).is_none()
+}
+
+/// Add the code `code` to `text`, or to the `#{…}` being read.
+fn emit(stack: &mut [Frame], text: &mut String, code: &[char]) {
+    match stack.last_mut() {
+        Some(Frame::Interpolation { code: inner, .. }) => inner.extend(code),
+        _ => text.extend(code),
     }
 }
 
-/// Add the code `code` to `text`, or to `interpolated` inside a `#{…}`.
-fn emit(stack: &[Frame], text: &mut String, interpolated: &mut String, code: &[char]) {
-    if stack.is_empty() {
-        text.extend(code);
-    } else {
-        interpolated.extend(code);
-    }
-}
-
-/// Write a literal that just closed as `""`: in `text` when it was read in
-/// code, with the code of its interpolations noted in `inserts` to be shown
-/// between its quotes, or in `interpolated` inside a `#{…}`.
-fn close_literal(
-    stack: &[Frame],
-    text: &mut String,
-    interpolated: &mut String,
-    inserts: &mut Vec<(usize, String)>,
-) {
-    if !stack.is_empty() {
-        interpolated.push_str("\"\"");
-        return;
-    }
-    text.push_str("\"\"");
-    if !interpolated.is_empty() {
-        inserts.push((text.len() - 1, std::mem::take(interpolated)));
-    }
+/// Write a literal that just closed as `""`, in `text` when it was read in
+/// code or in the `#{…}` it was read in.
+fn close_literal(stack: &mut [Frame], text: &mut String) {
+    emit(stack, text, &['"', '"']);
 }
 
 /// Read the code character `c`, just added to `text`, into the parameter

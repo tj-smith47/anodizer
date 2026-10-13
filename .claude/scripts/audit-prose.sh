@@ -257,10 +257,13 @@ jargon_violations+="$jargon_prose"
 # one too on a line that names awk or already holds a program. A bare
 # `BEGIN {` line is code only inside an open program or an AWK heredoc; in an
 # untagged heredoc it is prose. Inside a `"` program `\"` is skipped. A quote
-# outside a program is not counted, and an `awk -f file` names a program held
-# elsewhere and opens none. The line that opens a heredoc tagged AWK is
-# scanned like any other up to the heredoc. Outside a program, only a line that
-# defines `function <name>(s) {` is exempt.
+# outside a program is not counted. An `awk -f file` names a program held
+# elsewhere, so past it only the program of a later `-e` or `--source` is
+# read (`gawk -f lib.awk -e '{…}'`), and `-E file` opens none. `awk -f- '{…}'`
+# and `gawk --source= '{…}'` hand the quoted text to awk as a data file, so
+# it is read as prose and a plural in it is reported. The line that opens a
+# heredoc tagged AWK is scanned like any other up to the heredoc. Outside a
+# program, only a line that defines `function <name>(s) {` is exempt.
 AWK_S_CALLS='trim|ltrim|rtrim|length|tolower|toupper'
 collect_files PLURAL_SH -rl --include='*.sh' --include='*.sh.tpl' -- '(' .claude/scripts scripts packaging
 collect_files PLURAL_AWK -l -- '(' .claude/scripts/lib/*.awk
@@ -320,6 +323,7 @@ run_scanner plural_prose -v AWK_S_CALLS="$AWK_S_CALLS" -f - \
                     q = c; out = out c; i++; continue
                 }
             } else if (match(rest, /^[gmn]?awk[ \t]/) && (i == 1 || substr(line, i - 1, 1) !~ /[-.A-Za-z0-9_]/)) {
+                held = 0
                 start = program_start(line, i + RLENGTH - 1)
                 out = out substr(line, i, start - i); i = start
                 continue
@@ -332,29 +336,34 @@ run_scanner plural_prose -v AWK_S_CALLS="$AWK_S_CALLS" -f - \
     # Where the program of an awk command starts in `line`, from `i` just
     # after the command word or at the start of a continued line: past its
     # options and the opening quote, which sets `q`. `-v`, `-F`, `-W`, `-i`,
-    # `-l`, `--assign`, `--field-separator`, `--include` and `--load` take a
-    # value, written against them or after a space, or on the next line
-    # after a `\` (`pending` is set on that line). `-e` and `--source` take
-    # the program itself, after a space or `=` or written against them
-    # (`-e'{…}'`). `-f`, `-E`, `--file` and `--exec` name a program
-    # file, so the command holds no program in its text. A short option
-    # outside these sets takes no value, and a long one only after `=`
-    # (`--awk`, `--lint=fatal`). A line that ends in `\` before the program
-    # sets `expect`, to 2 when an option there waits for its value; with
-    # neither, `i` itself.
+    # `-l`, `-f`, `--assign`, `--field-separator`, `--include`, `--load` and
+    # `--file` take a value, written against them or after a space, or on
+    # the next line after a `\` (`pending` is set on that line). `-e` and
+    # `--source` take the program itself, after a space or `=` or written
+    # against them (`-e'{…}'`). `-f` and `--file` name a program file and
+    # set `held`, kept across a continued line until a `-e` or `--source`
+    # clears it: past one, only the program of a later `-e` or `--source`
+    # is read, since gawk takes the two mixed (`gawk -f lib.awk -e '{…}'`)
+    # and any other operand is a data file. `-E` and `--exec` end the options, so the command holds no
+    # program in its text. A short option outside these sets takes no
+    # value, and a long one only after `=` (`--awk`, `--lint=fatal`). A
+    # line that ends in `\` before the program sets `expect`, to 2 when an
+    # option there waits for its value; with neither, `i` itself.
     function program_start(line, i, pending,    body, cont, value, takes, rest) {
         body = line
         cont = sub(/[ \t]*\\$/, "", body)
         value = "([^ \t\"']|\"[^\"]*\"|'[^']*')+"
-        takes = "(-[vFWil]|--(assign|field-separator|include|load))"
+        takes = "(-[vFWilf]|--(assign|field-separator|include|load|file))"
         if (pending && match(substr(body, i), "^[ \t]*" value "([ \t]|$)")) i += RLENGTH
         pending = 0
         while (1) {
             rest = substr(body, i)
-            if (match(rest, /^[ \t]*(-[fE]|--(file|exec))([ \t=]|$)/)) return i
+            if (match(rest, /^[ \t]*(-E|--exec)([ \t=]|$)/)) return i
+            if (match(rest, /^[ \t]*(-f|--file([ \t=]|$))/)) held = 1
             if (match(rest, /^[ \t]*(-e|--source)([ \t]+|=)?/) \
                 && substr(rest, RLENGTH + 1) ~ /^(['"]|$)/) {
                 i += RLENGTH
+                held = 0
                 break
             }
             if (match(rest, "^[ \t]*" takes "([ \t]+|=)?$")) {
@@ -362,7 +371,7 @@ run_scanner plural_prose -v AWK_S_CALLS="$AWK_S_CALLS" -f - \
                 i += RLENGTH
                 break
             }
-            if (match(rest, "^[ \t]*(-[vFWil][ \t]*|" takes "([ \t]+|=))" value "([ \t]|$)") \
+            if (match(rest, "^[ \t]*(-[vFWilf][ \t]*|" takes "([ \t]+|=))" value "([ \t]|$)") \
                 || match(rest, "^[ \t]*(--([A-Za-z][-A-Za-z]*(=" value ")?)?|-[A-Za-z]+)([ \t]|$)")) {
                 i += RLENGTH
                 continue
@@ -370,6 +379,7 @@ run_scanner plural_prose -v AWK_S_CALLS="$AWK_S_CALLS" -f - \
             break
         }
         if (match(substr(body, i), /^[ \t]*['"]/)) {
+            if (held) return i
             i += RLENGTH
             q = substr(line, i - 1, 1)
         } else if (cont && substr(body, i) ~ /^[ \t]*$/) {

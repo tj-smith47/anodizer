@@ -209,29 +209,32 @@ fn the_misspelled_tool_name_is_reported_and_the_config_alias_is_not() {
     assert_eq!(code, 1, "{out}");
 }
 
-/// A count in a script, a workflow, an action or the Taskfile spells its noun
-/// for the number, so `file(s)`,
-/// `match(es)`, `entr(y|ies)` and `director(ies)` are reported wherever they
-/// sit on the line, whatever follows them (`file(s);`, `leg(s))`,
-/// `crate(s) {`). A count printed through `plural` is not, and neither is
-/// an awk parameter `s` inside an awk program (`function trim(s)`,
-/// `length(s)`, `print trim(s)`): a one-line `awk '…'`, one spread over
-/// several lines in single or double quotes, a heredoc tagged AWK or a whole
-/// `.awk` library. `gawk`, `mawk` and `nawk` open a program as `awk` does,
-/// past every option before it (a `-v` value quoted with a space in it,
-/// `--awk`, `--lint=fatal`, `--field-separator ':'`, `-W posix`, `--`,
-/// gawk's `-i inplace` and `-l ordchr`, and a `-e` or `--source` that
-/// takes the program, after a space or `=` or written against it)
-/// and onto the next line after a `\`, a `-v` there taking its value from
-/// that line, and the line that opens an AWK heredoc
-/// has its own program read
-/// first. An `awk -f lib.awk` line opens no program, so an apostrophe in its
-/// comment hides no later line, and a quote before `BEGIN {` opens one only
-/// on a line that names awk, so `echo "BEGIN { length(s) of the rows }"` is a
-/// count. A bare `BEGIN {` line in an untagged heredoc is prose and opens no
-/// program, so a count after it is still read, and `my-awk` is no awk word.
-/// Outside a program only a line defining `function <name>(s) {` is code,
-/// so `the function file(s) are missing`, `length(s) of the files` and the
+/// A count in a script, a workflow, an action or the Taskfile spells its
+/// noun for the number, so `file(s)`, `match(es)`, `entr(y|ies)` and
+/// `director(ies)` are reported wherever they sit on the line, whatever
+/// follows them (`file(s);`, `leg(s))`, `crate(s) {`). A count printed
+/// through `plural` is not, and neither is an awk parameter `s` inside an
+/// awk program (`function trim(s)`, `length(s)`, `print trim(s)`): a
+/// one-line `awk '…'`, one spread over several lines in single or double
+/// quotes, a heredoc tagged AWK or a whole `.awk` library. `gawk`, `mawk`
+/// and `nawk` open a program as `awk` does, past every option before it (a
+/// `-v` value quoted with a space in it, `--awk`, `--lint=fatal`,
+/// `--field-separator ':'`, `-W posix`, `--`, gawk's `-i inplace` and
+/// `-l ordchr`, and a `-e` or `--source` that takes the program, after a
+/// space or `=` or written against it) and onto the next line after a `\`,
+/// a `-v` there taking its value from that line. Past a `-f` or `--file`
+/// and its program file only the program of a later `-e` or `--source` is
+/// read (`gawk -f prog.awk -e '{…}'`), so `awk -f- '{…}'` and
+/// `gawk --source= '{…}'`, which hand the quoted text to awk as a data
+/// file, are counts. The line that opens an AWK heredoc has its own
+/// program read first. An `awk -f lib.awk` line opens no program, so an
+/// apostrophe in its comment hides no later line, and a quote before
+/// `BEGIN {` opens one only on a line that names awk, so
+/// `echo "BEGIN { length(s) of the rows }"` is a count. A bare `BEGIN {`
+/// line in an untagged heredoc is prose and opens no program, so a count
+/// after it is still read, and `my-awk` is no awk word. Outside a program
+/// only a line defining `function <name>(s) {` is code, so
+/// `the function file(s) are missing`, `length(s) of the files` and the
 /// `echo "the row(s) counted"` piped into an awk program are counts.
 #[test]
 fn a_plural_in_parentheses_in_a_script_a_workflow_or_the_taskfile_is_reported() {
@@ -272,6 +275,8 @@ fn a_plural_in_parentheses_in_a_script_a_workflow_or_the_taskfile_is_reported() 
         "the length(s) of the generated rows",
         "my-awk '{ print length(s) }'",
         "the row(s) counted",
+        "awk -f- '{ print length(s) }'",
+        "gawk --source= '{ print tolower(s) }'",
     ]
     .iter()
     .map(|needle| {
@@ -324,6 +329,8 @@ fn a_script_whose_counts_go_through_plural_passes_the_plural_scan() {
                 "tolower(s) is prose",
                 "my-awk",
                 "row(s)",
+                "awk -f- ",
+                "--source= ",
             ]
             .iter()
             .any(|f| l.contains(f))

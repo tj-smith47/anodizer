@@ -367,14 +367,23 @@ pub struct HomebrewCaskConfig {
     /// run of `\`, and a `%r` closed that way takes the letters that start
     /// the line after as its options); `?x` character literals (not `?ab`
     /// or `?"a"`); a `/…/` regex where an operand stands; `#`
-    /// comments; and `=begin` … `=end` comments. The code inside `#{…}`, in
-    /// every literal that interpolates, is kept, and its words count as
-    /// the code around the literal does (`"#{on_linux}"` names a Linux
-    /// side, `'#{on_linux}'` does not). None opens after a `:`
-    /// that makes a symbol, in a special global (`$"`), or where it names a
+    /// comments; and `=begin` … `=end` comments. The code inside `#{…}` is
+    /// kept apart from the code around it, in every literal that
+    /// interpolates (`"…"` and `` `…` `` strings, `:"…"` symbols, heredocs
+    /// whose tag is not single-quoted, `%()`, `%Q`, `%W`, `%I`, `%r` and
+    /// `%x` literals and `/…/` regexes), and each `#{…}` is read as
+    /// statements of its own: its words count toward the Linux side, a
+    /// `depends_on` opening one of its statements toward the OS
+    /// dependency, a `;` in it ends no statement around the literal, and
+    /// the names it assigns are locals after it (`"#{on_linux}"` names a
+    /// Linux side, `'#{on_linux}'` does not). None opens after a `:` that
+    /// makes a symbol, in a special global (`$"`), or where it names a
     /// method: after `.`, `&.` or `::` (with or without a space, whatever
     /// the name looks like, so `x. %` and `a&.!~` are method names) or
-    /// `def`, and as the `?` or `!` of a method name.
+    /// `def`, and as the `?` or `!` of a method name. Straight after a name
+    /// Ruby reads as a method call (`EOS!?"`, `foo?=`), a `?` opens a
+    /// character literal, and a `?` or `!` read as an operator ends no
+    /// word, so a `/` after it opens a regex (`!/a/`).
     ///
     /// A `<<`, `%`, `?` or `/` after a value is a shift, a modulo, a ternary
     /// or a division: after `)`, `]`, `}`, a number, a literal, a symbol
@@ -388,7 +397,7 @@ pub struct HomebrewCaskConfig {
     /// several lines), method (`def name(a, b = 1)`, with or without
     /// parentheses; a setter `def name=(v)` binds `v` alone) or lambda
     /// (`->(x)`, `-> (x)`), or a word other than a keyword written straight
-    /// against it. A `def` body sees none of the locals outside it; a
+    /// against a `<<`, `%` or `/`. A `def` body sees none of the locals outside it; a
     /// block, a lambda body (`-> { … }`) included, sees them, and its
     /// parameters and the locals first assigned in it end at its `end` or
     /// `}`; `if`, `while`, `case` and `begin` open no scope. A statement
@@ -400,16 +409,15 @@ pub struct HomebrewCaskConfig {
     /// After a word, a `/` followed by a space or `=` divides, and a `:`
     /// after a value ends a ternary and starts no symbol. The word after a
     /// `::` is a constant path or a method, also when the `::` ended an
-    /// earlier line. After an
-    /// operator, `(`, `,`, `;`, the start of a line, a Ruby keyword, any
-    /// method of the cask DSL or a common method such as `puts` the
-    /// operator opens a literal, and after any other word followed by a
-    /// space it is read as an opener too, which is a guess.
+    /// earlier line. After an operator, `(`, `,`, `;`, the start of a line,
+    /// a Ruby keyword, any method of the cask DSL or a common method such
+    /// as `puts` the operator opens a literal, and after any other word
+    /// followed by a space it is read as an opener too, which is a guess.
     ///
     /// A Linux side is the word `on_linux`, `on_system` or `app_image` in
     /// that code. An OS dependency is a statement whose first word is
-    /// `depends_on` (at the start of a line or after a `;`, after any
-    /// opening `(`) that names the key `macos:`, `maximum_macos:` or
+    /// `depends_on` (at the start of a line or after a `;`, in the code
+    /// around the literals or in a `#{…}`, after any opening `(`) that names the key `macos:`, `maximum_macos:` or
     /// `linux:`, or the symbol `:macos` or `:linux`; the statement continues
     /// onto the next line while a line ends with `,`, `(`, `[`, `{`, `|`,
     /// `.`, `&&`, `||`, `=>` or `\`, ends inside an open literal, or while

@@ -65,3 +65,9 @@ gawk -e'{ print length(s) }' f
 gawk -e"{ print toupper(s) }" f
 gawk --source='{ print length(s) }' f
 gawk --source="{ print tolower(s) }" f
+gawk -f prog.awk -e '{ print length(s) }' f
+gawk --file=prog.awk --source '{ print toupper(s) }' f
+gawk -fprog.awk -e \
+  '{ print length(s) }' f
+awk -f- '{ print length(s) }' f
+gawk --source= '{ print tolower(s) }' f

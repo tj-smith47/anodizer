@@ -11,9 +11,9 @@ fn facts(other_os_block: bool, os_dependency: bool) -> CustomBlockOsFacts {
 }
 
 /// The code of a line keeps everything outside its literals, writes
-/// each literal that closes on the line as `""` with the code of its
-/// `#{…}` between the quotes, leaves out the part of one that stays open
-/// but for that code, and stops at a `#` outside them.
+/// each literal that closes on the line as `""`, leaves out the part of
+/// one that stays open, and stops at a `#` outside them. The code of each
+/// `#{…}` is kept apart from it, one entry per interpolation.
 #[test]
 fn code_lines_blank_literals_and_cut_the_comment() {
     let cases = [
@@ -36,10 +36,6 @@ fn code_lines_blank_literals_and_cut_the_comment() {
         ("x =~ /#/ # c", "x =~ \"\" "),
         ("y = a / b # c", "y = a / b "),
         ("f(/#/, /#/) # c", "f(\"\", \"\") "),
-        ("\"a#{\"}\"}b\" # c", "\"\"\" \" "),
-        ("\"a#{'\"'}b\" # c", "\"\"\" \" "),
-        ("\"#{{a: 1}[:a]}\" x", "\"{a: 1}[:a] \" x"),
-        ("x \"#{a}b#{c}\"", "x \"a c \""),
         ("caveats <<~EOS # c", "caveats \"\" "),
         ("m = 1<<FLAGS # c", "m = 1<<FLAGS "),
         ("m = a << 1 <<2 # c", "m = a << 1 <<2 "),
@@ -59,7 +55,27 @@ fn code_lines_blank_literals_and_cut_the_comment() {
             code_lines(line).0,
             [CodeLine {
                 text: want.to_string(),
-                open: false
+                open: false,
+                interpolations: Vec::new(),
+            }],
+            "{line}"
+        );
+    }
+    let cases: &[(&str, &str, &[&str])] = &[
+        ("\"a#{\"}\"}b\" # c", "\"\" ", &["\"\""]),
+        ("\"a#{'\"'}b\" # c", "\"\" ", &["\"\""]),
+        ("\"#{{a: 1}[:a]}\" x", "\"\" x", &["{a: 1}[:a]"]),
+        ("x \"#{a}b#{c}\"", "x \"\"", &["a", "c"]),
+        ("x \"#{\"#{a}\" b}\"", "x \"\"", &["a", "\"\" b"]),
+        ("x \"#{a; $;}\"; y", "x \"\"; y", &["a; $_"]),
+    ];
+    for (line, text, interpolations) in cases {
+        assert_eq!(
+            code_lines(line).0,
+            [CodeLine {
+                text: text.to_string(),
+                open: false,
+                interpolations: interpolations.iter().map(|c| c.to_string()).collect(),
             }],
             "{line}"
         );
@@ -68,12 +84,17 @@ fn code_lines_blank_literals_and_cut_the_comment() {
 
 /// A literal or heredoc that does not close on its line carries on into
 /// the following lines; its content is left out until it closes, and the
-/// code of a `#{…}` in it reads at the end of its line.
+/// code of a `#{…}` in it is one entry on the line the `#{…}` closes on.
 #[test]
 fn an_open_literal_carries_into_the_next_lines() {
     let line = |text: &str, open: bool| CodeLine {
         text: text.to_string(),
         open,
+        interpolations: Vec::new(),
+    };
+    let closing = |text: &str, code: &str| CodeLine {
+        interpolations: vec![code.to_string()],
+        ..line(text, false)
     };
     let cases: &[(&str, &[CodeLine])] = &[
         (
@@ -88,8 +109,8 @@ fn an_open_literal_carries_into_the_next_lines() {
             "\"#{\n x \"}\" \n}\" y",
             &[
                 line("", true),
-                line("  x \"\" ", true),
-                line("\"\" y", false),
+                line("", true),
+                closing("\"\" y", "\n x \"\" \n"),
             ],
         ),
         (
@@ -1318,4 +1339,71 @@ fn the_code_of_an_interpolation_counts_toward_both_facts() {
     );
     let edges = super::line_code_edges("x = \"#{on_linux}\"  \ny");
     assert_eq!(edges[0].trim_from, Some(17));
+}
+
+/// The code of each `#{…}` is a list of statements of its own: a `;` or
+/// `$;` in it splits no statement around the literal, a `depends_on` that
+/// opens one of its statements, on one line or several, counts, and the
+/// names it assigns are bound in the scope around the literal, as Ruby
+/// binds them.
+#[test]
+fn the_code_of_an_interpolation_is_read_as_statements_of_its_own() {
+    for block in [
+        "depends_on formula: \"#{a; b}\", macos: :ventura",
+        "depends_on formula: \"x#{$;}\", macos: :ventura",
+        "depends_on formula: \"x#{?;}\", macos: :ventura",
+        "depends_on formula: $;, macos: :ventura",
+        "x = <<~EOS\n  #{depends_on macos: :ventura}\nEOS",
+        "x = \"#{depends_on macos: :ventura}\"",
+        "x = \"#{a; depends_on macos: :ventura}\"",
+        "x = \"#{\ndepends_on macos: :ventura}\"",
+        "x = \"a#{b\ndepends_on macos: :ventura\n}\"",
+        "x = \"#{\"#{(depends_on macos: :ventura)}\"}\"",
+    ] {
+        assert_facts(block, false, true, None);
+    }
+    assert_facts(
+        "x = \"#{a}\"\ndepends_on formula: \"#{b} macos:\"",
+        false,
+        false,
+        None,
+    );
+    for block in [
+        "x = \"#{y = 1}\"\ny %(on_linux)",
+        "x = \"#{y = 1; y %(on_linux)}\"",
+        "x = \"#{y = 1\ny %(on_linux)}\"",
+        "x = \"#{a, y = 1, 2}\"\ny %(on_linux)",
+        "x = \"#{f(y = 1)}\"\ny %(on_linux)",
+    ] {
+        assert_facts(block, true, false, None);
+    }
+    for block in [
+        "x = \"#{y}\"\ny %(on_linux)",
+        "x = \"#{o.y = 1}\"\ny %(on_linux)",
+        "x = \"#{y == 1}\"\ny %(on_linux)",
+    ] {
+        assert_facts(block, false, false, None);
+    }
+}
+
+/// Straight after a name Ruby reads as a method call, a constant or a
+/// name ending in `?` or `!` included, a `?` opens a character literal.
+/// A `!` or `?` read as an
+/// operator ends no word, so a `/` after it opens a regex.
+#[test]
+fn a_question_mark_after_a_method_name_and_a_slash_after_an_operator_open_literals() {
+    for block in [
+        "EOS!?\"/ on_linux do\nend\nputs$\"",
+        "foo\n&.def??\"&.on_linux #p)\"",
+        "foo?=\non_linux do\nend",
+    ] {
+        assert_facts(block, true, false, None);
+    }
+    for block in [
+        "!/ on_linux do\nend\nBEGIN/#|a, (b, c)|z, w = 1?\\ /2case;",
+        "x = !/ on_linux/",
+        "x = a ? !/ on_linux/ : 1",
+    ] {
+        assert_facts(block, false, false, None);
+    }
 }

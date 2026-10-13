@@ -92,12 +92,16 @@ pub(super) enum UnreadReason {
 /// - a `#` comment, which cuts the rest of the line, and an `=begin` …
 ///   `=end` comment.
 ///
-/// The code inside `#{…}` is kept, in every literal that interpolates: a
-/// `"…"` or `` `…` `` string, a heredoc whose tag is not single-quoted, a
-/// `%()`, `%Q`, `%W`, `%I`, `%r` or `%x` literal and a `/…/` regex. Its
-/// words count toward both facts below as the code around the literal
-/// does, so `"#{on_linux}"` names a Linux side and `'#{on_linux}'` does
-/// not.
+/// The code inside `#{…}` is kept apart from the code around it, in every
+/// literal that interpolates: a `"…"` or `` `…` `` string, a `:"…"`
+/// symbol, a heredoc whose tag is not single-quoted, a `%()`, `%Q`, `%W`,
+/// `%I`, `%r` or `%x` literal and a `/…/` regex. Each `#{…}`, one line
+/// long or several, is read as statements of its own: its words count
+/// toward the Linux side, a `depends_on` that opens one of its statements
+/// counts toward the OS dependency, a `;` in it ends no statement around
+/// the literal, and the names it assigns are locals after it, as Ruby
+/// binds them. So `"#{on_linux}"` names a Linux side, `"#{depends_on
+/// macos: :ventura}"` an OS dependency, and `'#{on_linux}'` neither.
 ///
 /// None of these opens after a `:` that makes a symbol (`:%`, `` :` ``), in
 /// a special global (`$"`, `$/`), or where it names a method: after `.`,
@@ -105,7 +109,9 @@ pub(super) enum UnreadReason {
 /// (`x.<<`, `x. %`, `a&.!~`), after `def` (`def /(other)`), and as the `?`
 /// or `!` of a method name (`then?"a"`). Written straight after a method
 /// name spelled as an operator, a `<<`, `%` or `/` is an operator and a `?`
-/// opens a character literal.
+/// opens a character literal, and so does a `?` written straight after a
+/// name Ruby reads as a method call (`EOS!?"`, `foo?=`, `x&.def??"`): one
+/// that is no local variable, parameter, number or keyword below.
 ///
 /// A `<<`, `%`, `?` or `/` that follows a value is a shift, a modulo, a
 /// ternary or a division and opens nothing. The code before it ends with a
@@ -128,8 +134,8 @@ pub(super) enum UnreadReason {
 ///   over several lines), of a method (`def name(a, b = 1, *rest, **kw,
 ///   &blk)`, with or without parentheses; a setter `def name=(v)` binds `v`
 ///   alone) or of a lambda (`->(x)`, `-> (x)`);
-/// - any word other than a keyword written straight against the operator
-///   (`a%(b)`, `1<<FLAGS`); `if%w[a]` opens a literal.
+/// - any word other than a keyword written straight against a `<<`, `%`
+///   or `/` (`a%(b)`, `1<<FLAGS`); `if%w[a]` opens a literal.
 ///
 /// A `def` body sees none of the locals outside it. A block, the body of a
 /// lambda (`-> { … }`, `->(x) do … end`) included, sees them, and its
@@ -137,12 +143,14 @@ pub(super) enum UnreadReason {
 /// `if`, `while`, `case` and `begin` open no scope. After a word, a `/`
 /// followed by a space or `=` divides. A `:` after a value ends a ternary
 /// and starts no symbol (`f ? 1 :+ 2`), and the word after a `::` is a
-/// constant path or a method, also when the `::` ended an earlier line. A statement continued with a `\` at
-/// the end of a line, with a `?\` character literal that holds the
-/// newline, with a `.`, `&.` or `::` that ends a line (past blank and
-/// comment lines; a `..` range continues nothing) or with a literal the
-/// newline closes reads on as one statement: the code before the break
-/// decides what a `%`, `<<`, `?`, `/`, `if` or `until` after it is.
+/// constant path or a method, also when the `::` ended an earlier line. A
+/// `?` or `!` read as an operator ends no word, so a `/` after it opens a
+/// regex (`!/a/`). A statement continued with a `\` at the end of a line,
+/// with a `?\` character literal that holds the newline, with a `.`, `&.`
+/// or `::` that ends a line (past blank and comment lines; a `..` range
+/// continues nothing) or with a literal the newline closes reads on as one
+/// statement: the code before the break decides what a `%`, `<<`, `?`,
+/// `/`, `if` or `until` after it is.
 ///
 /// The operator opens a literal after an operator, `(`, `,`, `;`, the start
 /// of a line, a Ruby keyword, any method of the cask DSL (`caveats <<~EOS`,
@@ -157,7 +165,8 @@ pub(super) enum UnreadReason {
 ///   as a whole word, so a receiver (`self.on_linux do`), a parenthesis or
 ///   a one-line nesting still counts.
 /// - A `depends_on` statement starts where `depends_on` is the first word
-///   of a line or of a `;`-separated statement, after any opening `(`. It
+///   of a line or of a `;`-separated statement, in the code around the
+///   literals or in a `#{…}`, after any opening `(`. It
 ///   continues onto the next line while the current one ends with `,`,
 ///   `(`, `[`, `{`, `|`, `.`, `&&`, `||`, `=>` or `\`, ends inside an open
 ///   literal, or while the statement has opened more `(`, `[` and `{` than
@@ -209,7 +218,9 @@ pub(super) fn custom_block_os_facts(block: Option<&str>) -> CustomBlockOsFacts {
             unread: Some(unread),
         };
     }
-    let other_os_block = code.iter().any(|line| names_a_linux_side(&line.text));
+    let other_os_block = code.iter().any(|line| {
+        names_a_linux_side(&line.text) || line.interpolations.iter().any(|c| names_a_linux_side(c))
+    });
     let os_dependency = depends_on_statements(&code)
         .iter()
         .any(|statement| names_an_os(statement));
@@ -300,17 +311,36 @@ fn is_local_name(name: &str) -> bool {
 }
 
 /// Every statement among the code lines `lines` that opens with the word
-/// `depends_on`, joined across its continuation lines.
+/// `depends_on`, joined across its continuation lines. The code inside
+/// each `#{…}` is read as statements of its own, so a `;` there splits no
+/// statement around the literal.
 fn depends_on_statements(lines: &[CodeLine]) -> Vec<String> {
+    let mut found = statements_opening_with_depends_on(
+        lines.iter().map(|line| (line.text.as_str(), line.open)),
+    );
+    for code in lines.iter().flat_map(|line| &line.interpolations) {
+        found.extend(statements_opening_with_depends_on(
+            code.split('\n').map(|text| (text, false)),
+        ));
+    }
+    found
+}
+
+/// Every statement among `lines`, each a line of code and whether it ends
+/// inside an open literal, that opens with the word `depends_on`, joined
+/// across its continuation lines.
+fn statements_opening_with_depends_on<'a>(
+    lines: impl Iterator<Item = (&'a str, bool)>,
+) -> Vec<String> {
     let mut found = Vec::new();
     // The statement the previous line left open, whether it is a
     // `depends_on`, and how many brackets it has left open.
     let mut open: Option<(bool, String, i32)> = None;
-    for line in lines {
-        if line.text.trim().is_empty() {
+    for (text, line_open) in lines {
+        if text.trim().is_empty() {
             continue;
         }
-        let segments: Vec<&str> = line.text.split(';').collect();
+        let segments: Vec<&str> = text.split(';').collect();
         let last = segments.len() - 1;
         for (i, segment) in segments.into_iter().enumerate() {
             let opens = opens_with_depends_on(segment);
@@ -331,7 +361,7 @@ fn depends_on_statements(lines: &[CodeLine]) -> Vec<String> {
             balance += bracket_balance(segment);
             let tail = segment.trim_end();
             let continues = balance > 0
-                || line.open
+                || line_open
                 || tail.ends_with([',', '(', '[', '{', '|', '.', '\\'])
                 || tail.ends_with("&&")
                 || tail.ends_with("=>");

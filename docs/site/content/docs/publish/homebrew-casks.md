@@ -273,11 +273,16 @@ into the following lines until it closes:
 - A `#` comment, which cuts the rest of the line, so a comment line reads as
   blank, and an `=begin` … `=end` comment.
 
-The code inside `#{…}` is kept, in every literal that interpolates: a `"…"`
-or `` `…` `` string, a heredoc whose tag is not single-quoted, a `%()`,
-`%Q`, `%W`, `%I`, `%r` or `%x` literal and a `/…/` regex. Its words count
-toward both checks below as the code around the literal does, so
-`"#{on_linux}"` names a Linux side and `'#{on_linux}'` does not.
+The code inside `#{…}` is kept apart from the code around it, in every
+literal that interpolates: a `"…"` or `` `…` `` string, a `:"…"` symbol, a
+heredoc whose tag is not single-quoted, a `%()`, `%Q`, `%W`, `%I`, `%r` or
+`%x` literal and a `/…/` regex. Each `#{…}`, one line long or several, is
+read as statements of its own: its words count toward the Linux side, a
+`depends_on` that opens one of its statements counts toward the OS
+dependency, a `;` in it ends no statement around the literal, and the names
+it assigns are locals after it, as Ruby binds them. So `"#{on_linux}"` names
+a Linux side, `"#{depends_on macos: :ventura}"` an OS dependency, and
+`'#{on_linux}'` neither.
 
 None of these opens after a `:` that makes a symbol (`:%`, `` :` ``), in a
 special global (`$"`, `$/`), or where it names a method: after `.`, `&.` or
@@ -285,7 +290,10 @@ special global (`$"`, `$/`), or where it names a method: after `.`, `&.` or
 (`x.<<`, `x. %`, `a&.!~`), after `def` (`def /(other)`), and as the `?` or
 `!` of a method name (`then?"a"`). Written straight after a method name
 spelled as an operator, a `<<`, `%` or `/` is an operator (`a&.!~% b` is a
-modulo) and a `?` opens a character literal.
+modulo) and a `?` opens a character literal, and so does a `?` written
+straight after a name Ruby reads as a method call (`EOS!?"`, `foo?=`,
+`x&.def??"`): one that is no local variable, parameter, number or keyword
+below.
 
 A `<<`, `%`, `?` or `/` that follows a value is a shift, a modulo, a ternary
 or a division and opens nothing. The code before it ends with a value when,
@@ -309,8 +317,8 @@ or with one of these words:
   several lines), of a method (`def name(a, b = 1, *rest, k: 1, **kw, &blk)`,
   with or without parentheses; a setter `def name=(v)` binds `v` alone) or of
   a lambda (`->(x)`, `-> (x)`);
-- any word other than a keyword written straight against the operator
-  (`a%(b)`, `1<<FLAGS`); `if%w[a]` opens a literal.
+- any word other than a keyword written straight against a `<<`, `%` or
+  `/` (`a%(b)`, `1<<FLAGS`); `if%w[a]` opens a literal.
 
 A `def` body sees none of the locals outside it. A block sees them, and its
 parameters and the locals first assigned in it end at its `end` or `}`. The
@@ -320,7 +328,8 @@ gone and `r = w %w[on_linux]` passes `%w[on_linux]` to a method `w`.
 by a space or `=` divides. A `:` after a value ends a ternary and starts no
 symbol (`f ? 1 :+ 2`), and the word after a `::` is a constant path or a
 method, also when the `::` ended an earlier line (`y = A::` then
-`B %(on_linux)` passes a string to `B`).
+`B %(on_linux)` passes a string to `B`). A `?` or `!` read as an operator
+ends no word, so a `/` after it opens a regex (`x = !/on_linux/`).
 
 A statement continued with a `\` at the end of a line, with a `?\`
 character literal that holds the newline, with a `.`, `&.` or `::` that
@@ -344,8 +353,9 @@ Then:
   code, as a whole word: `self.on_linux do`, `(on_linux do` and a one-line
   `on_arm do on_linux do … end end` all count.
 - A `depends_on` statement starts where `depends_on` is the first word of a
-  line or of a `;`-separated statement, after any opening `(`, so
-  `(depends_on macos: :ventura)` counts.
+  line or of a `;`-separated statement, in the code around the literals or
+  in a `#{…}`, after any opening `(`, so `(depends_on macos: :ventura)` and
+  `x = "#{depends_on macos: :ventura}"` count.
 - The statement continues onto the next line while the current line ends
   with `,`, `(`, `[`, `{`, `|`, `.`, `&&`, `||`, `=>` or `\`, while the line
   ends inside an open string or literal, or while the statement has opened
@@ -366,6 +376,7 @@ Then:
 | `depends_on :formula =>` / `  "x", :macos => :ventura` on two lines | yes |
 | `caveats "a` / `b"; depends_on macos: :ventura` on two lines | yes |
 | `(depends_on macos: :ventura)` | yes |
+| `depends_on formula: "#{a; b}", macos: :ventura` | yes: the `;` is inside the `#{…}` |
 | `depends_on formula: "jq" # needs :macos 13` | no: the OS is in the comment |
 | `depends_on cask: ":macos"` | no: the OS is in a string |
 | `# depends_on macos: ">= :ventura"` | no: the line is a comment |
