@@ -798,3 +798,155 @@ fn a_child_reading_a_large_stdin_receives_every_byte() {
     );
     assert!(drain_cut_off_lines(&cap).is_empty());
 }
+
+/// Wait up to `limit` for `path` to hold a full line, and return it trimmed.
+#[cfg(unix)]
+fn wait_for_line(path: &std::path::Path, limit: Duration) -> Option<String> {
+    let start = Instant::now();
+    while start.elapsed() < limit {
+        if let Ok(text) = std::fs::read_to_string(path)
+            && text.ends_with('\n')
+        {
+            return Some(text.trim().to_string());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    None
+}
+
+/// After a cut-off the reader threads stop waiting on the pipes and close
+/// them promptly: a grandchild that writes one second after the call returned
+/// gets a broken pipe on both stdout and stderr, and nothing it wrote is
+/// captured or teed.
+#[test]
+#[cfg(unix)]
+fn the_readers_close_the_pipes_promptly_after_a_cut_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let status_file = dir.path().join("status");
+    let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+    let script = format!(
+        "(trap '' PIPE; sleep {}; echo late; a=$?; echo late-err >&2; b=$?; \
+         echo \"$a $b\" > '{}') & echo started; exit 0",
+        POST_EXIT_DRAIN_WINDOW.as_secs() + 1,
+        status_file.display()
+    );
+    let out = run_capture(&mut sh(&script), &log, "background-writer").expect("a clean child exit");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "started\n");
+    let statuses = wait_for_line(&status_file, Duration::from_secs(5))
+        .expect("the grandchild must finish its writes");
+    let codes: Vec<&str> = statuses.split(' ').collect();
+    assert!(
+        codes.len() == 2 && codes.iter().all(|c| *c != "0"),
+        "both late writes must fail on a closed pipe, got exit codes {statuses:?}"
+    );
+    assert!(
+        !cap.all_messages().iter().any(|(_, m)| m.contains("late")),
+        "nothing written after the cut-off may be printed"
+    );
+}
+
+/// How many bytes a fresh pipe accepts before a non-blocking write would block.
+#[cfg(unix)]
+fn pipe_capacity() -> usize {
+    let mut fds = [0 as libc::c_int; 2];
+    // SAFETY: `fds` is a two-element array as `pipe` requires; both ends are
+    // closed below, and the writes only read from `chunk`.
+    unsafe {
+        assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
+        let flags = libc::fcntl(fds[1], libc::F_GETFL);
+        assert_eq!(
+            libc::fcntl(fds[1], libc::F_SETFL, flags | libc::O_NONBLOCK),
+            0
+        );
+        let chunk = [0u8; 1024];
+        let mut total = 0usize;
+        loop {
+            let n = libc::write(fds[1], chunk.as_ptr().cast(), chunk.len());
+            if n <= 0 {
+                break;
+            }
+            total += n as usize;
+        }
+        libc::close(fds[0]);
+        libc::close(fds[1]);
+        total
+    }
+}
+
+/// After a cut-off the stdin writer stops and closes the child's stdin
+/// without waiting for the pipe to drain: a grandchild that holds stdin unread
+/// and reads it one second after the call returned gets what the pipe had
+/// buffered and then EOF. A writer still parked in a blocking write would
+/// complete that write once the grandchild started reading, so the grandchild
+/// would read more than one pipe's worth.
+#[test]
+#[cfg(unix)]
+fn the_stdin_writer_closes_the_pipe_promptly_after_a_cut_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let count_file = dir.path().join("count");
+    let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+    let payload = vec![b'x'; 1024 * 1024];
+    // A non-interactive shell points a background list's stdin at /dev/null,
+    // so the child's stdin reaches it as fd 3; stdout and stderr go elsewhere
+    // so only the writer is left waiting at the cut-off.
+    let script = format!(
+        "exec 3<&0; (sleep {}; wc -c <&3 > '{}') >/dev/null 2>&1 & exit 0",
+        POST_EXIT_DRAIN_WINDOW.as_secs() + 1,
+        count_file.display()
+    );
+    let out = run_checked_with_stdin(&mut sh(&script), &payload, &log, "stdin-holder")
+        .expect("a clean child exit");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(drain_cut_off_lines(&cap).len(), 1);
+    let count: usize = wait_for_line(&count_file, Duration::from_secs(5))
+        .expect("the grandchild must reach EOF on stdin")
+        .parse()
+        .unwrap();
+    let capacity = pipe_capacity();
+    assert!(
+        count <= capacity,
+        "the writer must close stdin at the cut-off, yet the grandchild read \
+         {count} bytes from a pipe that holds {capacity}"
+    );
+}
+
+/// The Windows twin of
+/// `a_grandchild_holding_the_pipes_ends_the_drain_after_the_window`: `start /b`
+/// leaves a `ping` holding the child's stderr after `cmd` exits, and
+/// `run_capture`, which has no timeout and so no Job Object reap, still
+/// returns one window after the child exited.
+#[test]
+#[cfg(windows)]
+fn a_grandchild_holding_the_pipes_ends_the_drain_after_the_window_windows() {
+    let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+    let start = Instant::now();
+    let out = run_capture(
+        &mut cmd_c("start /b ping -n 30 127.0.0.1 >nul & echo started"),
+        &log,
+        "grandchild-holds-pipes",
+    )
+    .expect("a clean child exit must yield Ok(Output)");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= POST_EXIT_DRAIN_WINDOW
+            && elapsed < POST_EXIT_DRAIN_WINDOW + Duration::from_secs(5),
+        "the drain must end one window after the child exited, not when the \
+         grandchild does ({elapsed:?})"
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "started");
+    let cut_off: Vec<String> = cap
+        .all_messages()
+        .into_iter()
+        .filter(|(_, msg)| msg.contains("stopped using the pipes"))
+        .map(|(_, msg)| msg)
+        .collect();
+    assert_eq!(
+        cut_off,
+        vec![format!(
+            "stopped using the pipes of grandchild-holds-pipes {}s after it exited: \
+             a process it started still holds them",
+            POST_EXIT_DRAIN_WINDOW.as_secs()
+        )]
+    );
+}

@@ -6,7 +6,7 @@
 //! only marks a timeout-bounded child for group isolation, registers the
 //! spawned tree, and asks for a reap when a deadline expires.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
@@ -18,14 +18,16 @@ use anyhow::{Context as _, Result};
 use crate::log::StageLogger;
 use crate::retry::Retriable;
 
+use super::pipe::{AbandonableReader, RawPipe, write_payload};
 #[cfg(windows)]
 use super::process_tree::windows_job;
 use super::process_tree::{
     ChildTree, TreeRegistration, kill_child_tree, register_child_tree, set_own_process_group,
 };
 
-/// Poll cadence for the bounded-wait watchdog. Short enough that a child that
-/// exits just after a poll is reaped promptly, long enough not to spin a core.
+/// Poll cadence for the bounded-wait watchdog and for the calling thread's wait
+/// for the pipe threads in `await_readers`. Short enough that a child that
+/// exits just after a poll is noticed promptly, long enough not to spin a core.
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Grace window granted to the reader threads to hit EOF AFTER the direct child
@@ -36,6 +38,11 @@ const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 /// the watchdog reaps the whole process group so the leaked grandchild releases
 /// the pipe and the readers EOF, instead of the drain hanging for the
 /// grandchild's full lifetime and blowing past the deadline.
+///
+/// It must stay below [`POST_EXIT_DRAIN_WINDOW`]: on the timeout path the reap
+/// at this grace is what closes a leftover grandchild's pipes, so the readers
+/// reach EOF and keep everything it wrote; a longer grace would let the window
+/// cut the drain off first and drop that output.
 const POST_EXIT_DRAIN_GRACE: Duration = Duration::from_secs(3);
 
 /// How long every `run_*` helper keeps reading a child's stdout and stderr,
@@ -44,17 +51,30 @@ const POST_EXIT_DRAIN_GRACE: Duration = Duration::from_secs(3);
 ///
 /// The pipes normally close the moment the child exits. They stay open when
 /// the child started a process that inherited them and outlived it (a tool
-/// ending in `something &`, a daemon it launched). Once this window has passed
-/// the helper stops reading and writing, returns the child's own exit status with the
-/// output captured so far, and says so in one verbose line. The process that
-/// still holds the pipes is left running; the next thing it writes fails with
-/// a broken pipe.
+/// ending in `something &`, a daemon it launched). The calling thread waits
+/// for the reader and writer threads on a channel each of them signals when it
+/// returns; once this window has passed since the child exited with one of
+/// them still running, the call sets a shared abandon flag, returns the
+/// child's own exit status with the output captured so far, and says so in one
+/// verbose line.
+///
+/// The abandoned threads never block on the pipe itself: each one waits for
+/// its pipe to become ready in steps of at most
+/// [`PIPE_POLL_INTERVAL`](super::pipe::PIPE_POLL_INTERVAL) and
+/// checks the flag between them (`poll` on Unix; `PeekNamedPipe` for the
+/// readers on Windows). So within about that interval of the cut-off each
+/// thread drops its end of the pipe and exits, and the process that still
+/// holds the pipes gets a broken pipe on its next write. The one exception is
+/// the stdin writer on Windows, which cannot tell how much a pipe will accept:
+/// it checks the flag between writes of `STDIN_CHUNK` (16 KiB), so a write the
+/// leftover process never reads keeps that thread, its copy of the payload and
+/// the pipe until that process reads or exits.
 ///
 /// The window is not a deadline on the child: a child that runs for an hour
 /// is read for an hour. It only starts when the child has exited. It is long
 /// enough that output still buffered in the pipe when the child exits is read
 /// in full.
-pub const POST_EXIT_DRAIN_WINDOW: Duration = Duration::from_secs(5);
+pub(crate) const POST_EXIT_DRAIN_WINDOW: Duration = Duration::from_secs(5);
 
 /// Run an already-constructed `cmd`, capturing stdout and stderr, and route
 /// the result through [`StageLogger::check_output`].
@@ -155,7 +175,9 @@ pub fn run_checked_timeout(
 /// Wait for `child` to exit, killing it if it outlives `timeout`, and bound the
 /// post-exit reader drain so a leaked grandchild can't hang past the deadline.
 ///
-/// Polls [`Child::try_wait`] on a short cadence. Two deadline edges:
+/// Runs on its own scoped thread beside the calling thread, which waits on the
+/// pipe threads' channel in `await_readers`. Polls [`Child::try_wait`] on a
+/// short cadence. Two deadline edges:
 /// - **Child runtime** — if the direct child has not exited by `timeout`, the
 ///   whole subtree is killed and `Ok(None)` is returned (a true timeout).
 /// - **Drain** — once the direct child HAS exited, the reader threads must hit
@@ -170,6 +192,12 @@ pub fn run_checked_timeout(
 ///   STILL returned, because the child itself succeeded; only a leaked
 ///   descendant was force-closed. Rewriting that into a timeout would re-publish
 ///   a succeeded one-way-door publisher on retry.
+///
+/// Because [`POST_EXIT_DRAIN_GRACE`] is shorter than [`POST_EXIT_DRAIN_WINDOW`],
+/// on the timeout path this reap normally ends the drain: the readers reach
+/// EOF and the calling thread's channel wait returns before its window runs
+/// out. The window only cuts the drain off there when the reap cannot close
+/// the pipes (a process that escaped the group or the Job Object).
 ///
 /// `child` is shared with the main thread (which performs the final reaping
 /// `wait`) through a `Mutex`; the lock is held only for each non-blocking
@@ -228,13 +256,13 @@ fn wait_or_kill(
 /// stdin cannot deadlock, because the readers keep draining. At verbose, each
 /// output line is also teed live (redacted) to stderr.
 ///
-/// The stdout and stderr readers are detached threads; the optional stdin
-/// writer, the watchdog and the heartbeat are scoped threads that borrow
-/// `log` / `stdin` and join before the scope returns. The calling thread waits
-/// until both readers hit EOF, or until [`POST_EXIT_DRAIN_WINDOW`] has passed
-/// since the child exited, and only then takes the captured buffers, so they
-/// are complete before the success/failure decision in every case but the
-/// cut-off one.
+/// The stdout and stderr readers and the optional stdin writer are detached
+/// threads that own their pipe ends (the writer a copy of `stdin`); the
+/// watchdog and the heartbeat are scoped threads that borrow `log` and join
+/// before the scope returns. The calling thread waits until every pipe thread
+/// has returned, or until [`POST_EXIT_DRAIN_WINDOW`] has passed since the child
+/// exited, and only then takes the captured buffers, so they are complete
+/// before the success/failure decision in every case but the cut-off one.
 ///
 /// When `timeout` is `Some`, a fourth scoped thread watches the child: if it
 /// outlives the deadline it is **killed**, which closes its pipes so the reader
@@ -427,9 +455,6 @@ fn capture_inner(
             stop_tx
         });
 
-        // A reader-thread panic must not vanish the captured stream (it drives
-        // the failure embed). Warn loudly and fall back to an empty buffer
-        // instead of silently swallowing it.
         match await_readers(child_ref, &reader_rx, pipe_threads, POST_EXIT_DRAIN_WINDOW) {
             Ok(cut_off) => drain_cut_off = cut_off,
             Err(e) => {
@@ -439,14 +464,22 @@ fn capture_inner(
         }
         if drain_cut_off {
             abandon.store(true, Ordering::Release);
+        }
+        // A reader-thread panic must not vanish the captured stream (it drives
+        // the failure embed): `take` warns and falls back to an empty buffer.
+        // Taking both buffers before the cut-off line is printed matters: a
+        // reader checks `abandon` under the same lock before it captures or
+        // tees a line, so once both locks have been taken here no line can be
+        // printed after the cut-off line.
+        out_buf = out_reader.take(log, "stdout");
+        err_buf = err_reader.take(log, "stderr");
+        if drain_cut_off {
             log.verbose(&format!(
                 "stopped using the pipes of {label} {}s after it exited: \
                  a process it started still holds them",
                 POST_EXIT_DRAIN_WINDOW.as_secs()
             ));
         }
-        out_buf = out_reader.take(log, "stdout");
-        err_buf = err_reader.take(log, "stderr");
 
         if let Some(h) = watchdog {
             match h.join() {
@@ -605,6 +638,11 @@ impl StreamReader {
 
 /// Signals that a reader or the stdin writer has returned, on every exit edge
 /// including a panic.
+///
+/// A panic is reported (through `panicked`) only when it happens before the
+/// call that started the thread has taken its result. A detached thread that
+/// panics after a cut-off has no one left to report to; the default panic hook
+/// still prints its message to stderr.
 struct ThreadFinished {
     done: Arc<AtomicUsize>,
     panicked: Arc<AtomicBool>,
@@ -622,7 +660,7 @@ impl Drop for ThreadFinished {
 }
 
 /// Start a detached thread draining `reader` through [`tee_stream`].
-fn spawn_reader<R: Read + Send + 'static>(
+fn spawn_reader<R: Read + RawPipe + Send + 'static>(
     reader: R,
     log: &StageLogger,
     is_stderr: bool,
@@ -641,14 +679,14 @@ fn spawn_reader<R: Read + Send + 'static>(
     let (log, sink, abandon) = (log.clone(), Arc::clone(&buf), Arc::clone(abandon));
     std::thread::spawn(move || {
         let _finished = finished;
+        let reader = AbandonableReader {
+            pipe: reader,
+            abandon: Arc::clone(&abandon),
+        };
         tee_stream(reader, &log, is_stderr, tee, &sink, &abandon);
     });
     StreamReader { buf, panicked }
 }
-
-/// Bytes the stdin writer hands the pipe per write, so it can notice `abandon`
-/// between writes of a payload larger than the pipe buffer.
-const STDIN_CHUNK: usize = 16 * 1024;
 
 /// The stdin writer running on its own thread: the write error it hit, if
 /// any, and whether it ended in a panic.
@@ -677,14 +715,12 @@ fn spawn_writer(
     let (bytes, sink, abandon) = (bytes.to_vec(), Arc::clone(&err), Arc::clone(abandon));
     std::thread::spawn(move || {
         let _finished = finished;
-        for chunk in bytes.chunks(STDIN_CHUNK) {
-            if abandon.load(Ordering::Acquire) {
-                return;
-            }
-            if let Err(e) = pipe.write_all(chunk) {
-                *sink.lock().unwrap_or_else(|p| p.into_inner()) = Some(e);
-                return;
-            }
+        // Once abandoned, nobody reads the error and the call has already
+        // returned: drop the pipe quietly.
+        if let Err(e) = write_payload(&mut pipe, &bytes, &abandon)
+            && !abandon.load(Ordering::Acquire)
+        {
+            *sink.lock().unwrap_or_else(|p| p.into_inner()) = Some(e);
         }
     });
     StdinWriter { err, panicked }
@@ -737,8 +773,10 @@ fn await_readers(
 ///
 /// Keeps whatever was captured even if a mid-stream read errors, so a
 /// transient pipe hiccup never loses the bytes already read (the buffer
-/// still drives the failure embed). Stops at the first read that completes
-/// after `abandon` is set.
+/// still drives the failure embed). Once `abandon` is set it captures and
+/// prints nothing more, including a redacter tail it was still holding back:
+/// the check is made under the capture lock, which the calling thread takes
+/// before it prints the cut-off line.
 fn tee_stream<R: Read>(
     reader: R,
     log: &StageLogger,
@@ -758,15 +796,13 @@ fn tee_stream<R: Read>(
     loop {
         line.clear();
         match buf.read_until(b'\n', &mut line) {
-            Ok(0) => break,
-            // The caller has already returned without this stream: neither
-            // capture nor print what a leftover process wrote afterwards.
-            Ok(_) if abandon.load(Ordering::Acquire) => return,
+            Ok(0) | Err(_) => break,
             Ok(_) => {
-                capture
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .extend_from_slice(&line);
+                let mut captured = capture.lock().unwrap_or_else(|p| p.into_inner());
+                if abandon.load(Ordering::Acquire) {
+                    return;
+                }
+                captured.extend_from_slice(&line);
                 if let Some(r) = redacter.as_mut() {
                     // The child's REAL bytes, terminator included: a secret
                     // whose value carries `\r\n` is only recognisable to a
@@ -775,11 +811,14 @@ fn tee_stream<R: Read>(
                     emit_released(&released, log, is_stderr, &mut open_line);
                 }
             }
-            Err(_) => break,
         }
     }
     // Runs on the read-error path too, so a mid-stream failure cannot strand a
     // withheld secret prefix in the buffer.
+    let _captured = capture.lock().unwrap_or_else(|p| p.into_inner());
+    if abandon.load(Ordering::Acquire) {
+        return;
+    }
     if let Some(r) = redacter.as_mut() {
         let tail = r.flush();
         emit_released(&tail, log, is_stderr, &mut open_line);
