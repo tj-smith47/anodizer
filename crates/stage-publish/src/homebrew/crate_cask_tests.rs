@@ -522,6 +522,93 @@ fn every_gate_skip_line_prints_once_per_command() {
     }
 }
 
+/// A `custom_block` the lexer cannot read to its end warns once per
+/// command, naming the cask, the line and the open literal, for a same-tap
+/// cask, a cask on its own tap and a top-level cask. A `depends_on_macos:`
+/// decides the verdict itself, so it silences the warning.
+#[test]
+fn an_unreadable_custom_block_warns_once_per_command() {
+    // Valid Ruby: `a` is a local, so `%-2` is a modulo, but the lexer does
+    // not see a local assigned by `a, b = …` and opens a percent literal.
+    const BLOCK: &str = "a, b = 1, 2\nn = a %-2\non_linux do\nend";
+    let warning = |name: &str| {
+        format!(
+            "homebrew cask '{name}': custom_block could not be read past line 2 (an unclosed percent literal); \
+             the Linux-side and depends_on checks fell back to a word scan — set depends_on_macos: to decide it"
+        )
+    };
+    let with_block = |cask: &mut HomebrewCaskConfig| cask.custom_block = Some(BLOCK.to_string());
+
+    assert_gate_line_prints_once_per_command(
+        "same-tap cask",
+        &|bare_url| {
+            let mut publish = same_tap_publish(bare_url, "alpha", false);
+            with_block(publish.homebrew_cask.as_mut().unwrap());
+            single_crate_ctx(publish)
+        },
+        &|ctx, log| {
+            super::publish_to_homebrew(ctx, "alpha", log).expect("formula runs");
+        },
+        LogLevel::Warn,
+        &warning("alpha"),
+    );
+    assert_gate_line_prints_once_per_command(
+        "own-tap cask",
+        &|bare_url| {
+            let mut publish = cask_only_publish(bare_url, "alpha");
+            with_block(publish.homebrew_cask.as_mut().unwrap());
+            single_crate_ctx(publish)
+        },
+        &|ctx, log| {
+            super::publish_cask(ctx, "alpha", log).expect("cask runs");
+        },
+        LogLevel::Warn,
+        &warning("alpha"),
+    );
+    let top_level = |bare_url: &str, depends_on_macos: Option<bool>| {
+        let mut top = HomebrewCaskConfig {
+            repository: Some(tap_repository(bare_url)),
+            depends_on_macos,
+            ..cask("mycask")
+        };
+        with_block(&mut top);
+        release_ctx(
+            Config {
+                project_name: "alpha".to_string(),
+                crates: vec![crate_with("alpha", PublishConfig::default())],
+                homebrew_casks: Some(vec![top]),
+                ..Default::default()
+            },
+            &["alpha"],
+        )
+    };
+    assert_gate_line_prints_once_per_command(
+        "top-level cask",
+        &|bare_url| top_level(bare_url, None),
+        &|ctx, log| {
+            super::publish_top_level_homebrew_casks(ctx, log).expect("casks run");
+        },
+        LogLevel::Warn,
+        &warning("mycask"),
+    );
+
+    for decided in [true, false] {
+        let (bare_url, bare) = make_bare_cask_tap("main");
+        let mut ctx = top_level(&bare_url, Some(decided));
+        let cap = LogCapture::new();
+        ctx.with_log_capture(cap.clone());
+        let log = ctx.logger("publish");
+        super::publish_top_level_homebrew_casks(&mut ctx, &log).expect("casks run");
+        assert!(
+            !cap.printed_messages(LogLevel::Warn)
+                .iter()
+                .any(|m| m.contains("custom_block could not be read")),
+            "depends_on_macos: {decided}"
+        );
+        drop(bare);
+    }
+}
+
 /// Two `homebrew_casks:` entries that share a name each warn about their
 /// own unrecognized `skip_upload` value, once per command: the warning is
 /// keyed on the entry's index.

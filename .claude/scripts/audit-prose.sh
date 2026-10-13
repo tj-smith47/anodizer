@@ -23,8 +23,8 @@
 #      radius`, `bolted on`, `keystone`, `seam`, `mint`, `drain`, `green`,
 #      `land`), in a comment or a doc page.
 #   4. A count whose plural sits in parentheses (`file` + `(s)`, `(es)`,
-#      `(ies)`, `(y|ies)`) in a shell script, a workflow, an action or the
-#      Taskfile. The Rust side of the same rule is
+#      `(ies)`, `(y|ies)`) in a shell script, a workflow, an action, the
+#      Taskfile, a packaging script or an awk library. The Rust side of the same rule is
 #      `no_production_string_spells_a_plural_in_parentheses`
 #      (crates/core/src/text.rs); a script spells the count through `plural`
 #      from lib/plural.sh, and a workflow `run:` block chooses the noun with
@@ -243,22 +243,44 @@ AWK
 
 jargon_violations+="$jargon_prose"
 
-# Scan 4, a plural in parentheses in a shell script, workflow, action or the
-# Taskfile. Every line is read, since an `echo`, a `printf` and a `desc:` are
-# exactly what the operator sees. An awk program a script embeds names a
-# parameter `s`, so `function <name>(s)` and a call to one of the helpers in
-# AWK_S_CALLS (`trim(s)`, `length(s)`) are code; any other word before `(s)`
-# is a count.
+# Scan 4, a plural in parentheses in a shell script, workflow, action, the
+# Taskfile, a packaging script or an awk library. Every line is read, since an
+# `echo`, a `printf` and a `desc:` are exactly what the operator sees. Inside
+# an awk program the parameter `s` is code: `function <name>(s)` and a call to
+# one of the helpers in AWK_S_CALLS on `s` (`trim`, `length`). An awk program is
+# a whole `.awk` file, a heredoc tagged AWK, or the text from a line holding
+# `awk '`, `awk -f` or `BEGIN {` to the line holding its closing quote. Outside
+# one, only a line that defines `function <name>(s) {` is exempt, so
+# `echo "the function file(s) are missing"` is a count.
 AWK_S_CALLS='trim|ltrim|rtrim|length|tolower|toupper'
-collect_files PLURAL_SH -rl --include='*.sh' --include='*.sh.tpl' -- '(' .claude/scripts scripts
+collect_files PLURAL_SH -rl --include='*.sh' --include='*.sh.tpl' -- '(' .claude/scripts scripts packaging
+collect_files PLURAL_AWK -l -- '(' .claude/scripts/lib/*.awk
 collect_files PLURAL_YML -l -- '(' Taskfile.yml .github/workflows/*.yml .github/workflows/*.yaml
 collect_files PLURAL_ACTIONS -rl --include='*.yml' --include='*.yaml' --include='*.sh' -- '(' .github/actions
 run_scanner plural_prose -v AWK_S_CALLS="$AWK_S_CALLS" -f - \
-    "${PLURAL_SH[@]}" "${PLURAL_YML[@]}" "${PLURAL_ACTIONS[@]}" /dev/null <<'AWK'
-    BEGIN { awk_call = "(^|[^A-Za-z0-9_])(function +[A-Za-z_][A-Za-z0-9_]*|" AWK_S_CALLS ")\\(s\\)" }
+    "${PLURAL_SH[@]}" "${PLURAL_AWK[@]}" "${PLURAL_YML[@]}" "${PLURAL_ACTIONS[@]}" /dev/null <<'AWK'
+    BEGIN {
+        awk_call = "(^|[^A-Za-z0-9_])(function +[A-Za-z_][A-Za-z0-9_]*|" AWK_S_CALLS ")\\(s\\)"
+        defines = "^[ \t]*function +[A-Za-z_][A-Za-z0-9_]*\\(s\\) *\\{"
+    }
+    FNR == 1 { whole = FILENAME ~ /\.awk$/; heredoc = 0; quoted = 0 }
     {
         text = $0
-        gsub(awk_call, " ", text)
+        opens = !heredoc && !quoted && !whole
+        in_program = whole || heredoc || quoted
+        if (opens && text ~ /<<-?["']?AWK["']?/) {
+            heredoc = 1
+        } else if (opens && (text ~ /awk +'/ || text ~ /awk +-f/ || text ~ /BEGIN *\{/)) {
+            in_program = 1
+            # An odd count of quotes leaves the program open past this line.
+            quoted = gsub(/'/, "'", text) % 2
+        } else if (heredoc && text ~ /^[ \t]*AWK[ \t]*$/) {
+            heredoc = 0
+        } else if (quoted && gsub(/'/, "'", text) % 2) {
+            quoted = 0
+        }
+        if (in_program) gsub(awk_call, " ", text)
+        else if (text ~ defines) next
         if (text ~ /[A-Za-z]\((s|es|ies|y\|ies)\)/) printf("%s:%d: %s\n", FILENAME, FNR, trim($0))
     }
 

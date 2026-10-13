@@ -258,6 +258,23 @@ into the following lines until it closes:
 - A `#` comment, which cuts the rest of the line, so a comment line reads as
   blank.
 
+A `<<`, `%` or `?` that follows a value is a shift, a modulo or a ternary and
+opens nothing. The code before it ends with a value when, spaces aside, it
+ends with `)`, `]`, `}`, a number or a closed literal, or with one of these
+words:
+
+- `self`, `nil`, `true`, `false`, `end`, or `class` (`class <<self`);
+- an instance, class or global variable (`@args <<extra`, `$stdout <<x`);
+- a local variable: a name assigned earlier in the block with `name =`
+  (`==`, `=~`, `=>`, `!=`, `<=`, `>=` and `obj.name =` assign nothing), or a
+  name in a block's parameters (`do |a, b|`, `{ |a| … }`). So after
+  `y = 1`, the line `x = y <<z` is a shift, and after `cond = true`,
+  `x = cond ?"" : "no"` is a ternary;
+- any word written straight against the operator (`a%(b)`, `1<<FLAGS`).
+
+Any other word followed by a space is a method taking an argument, so
+`caveats <<~EOS` opens a heredoc and `puts %w[a]` a word list.
+
 Then:
 
 - A Linux side is the word `on_linux`, `on_system` or `app_image` in the
@@ -295,13 +312,27 @@ A flat single-download cask whose `custom_block` gives it a Linux side puts
 its `sha256` / `url` (and `app` / `service`) inside `on_macos`, so a Linux
 host never downloads the macOS archive.
 
-Three shapes are not read correctly. A stanza built at runtime (an
+Four shapes are not read correctly. A stanza built at runtime (an
 `on_linux` sent through `send`, or a method made with `define_method`) is not
 seen, nor is a `depends_on` that follows a `do` on the same line
 (`on_macos do depends_on macos: :ventura end`). A regex after any token not
 listed above (`when /on_linux/`) is read as code, so a Linux-side word inside
-it counts. A wrong answer gives a cask that
-Homebrew refuses:
+it counts. A local assigned in a way the scan does not track (`a, b = …`,
+`for a in …`, `rescue => a`, a block parameter list spread over several
+lines) is read as a method, so a `<<`, `%` or `?` after it opens a literal.
+
+When a string, heredoc, percent literal or regex is still open after the last
+line of the block, the scan has misread it. It then reads the raw text
+instead: a Linux side when `on_linux`, `on_system` or `app_image` appears
+anywhere in the block, comments and strings included, and an OS dependency
+when `depends_on` and an OS key or symbol both do. Both answers leave
+`depends_on :macos` out. The render prints one warning per command, unless
+`depends_on_macos:` is set:
+`homebrew cask 'mytool': custom_block could not be read past line 2 (an
+unclosed percent literal); the Linux-side and depends_on checks fell back to
+a word scan — set depends_on_macos: to decide it`.
+
+A wrong answer gives a cask that Homebrew refuses:
 
 - A download inside `on_macos` with no real Linux block and no
   `depends_on :macos` fails to load on Linux with `Missing Linux stanzas can

@@ -11,3 +11,15 @@ echo "audit-demo: scanned the file(s); done"
 printf '%s\n' "(checked every leg(s))"
 echo "for each crate(s) { read it }"
 echo "the scheme is http or https"
+echo "the function file(s) are missing"
+echo "length(s) of the files"
+function first_of(s) { echo "$1"; }
+awk '
+function first(s) { return s }
+{ print length(s), toupper(s) }
+' /dev/null
+awk -f - /dev/null <<'AWK'
+{ print toupper(s), trim(s) }
+function last(s) { return s }
+AWK
+echo "after the program, tolower(s) is prose"

@@ -359,10 +359,19 @@ pub struct HomebrewCaskConfig {
     /// `linux:`, or the symbol `:macos` or `:linux`; the statement continues
     /// onto the next line while a line ends with `,`, `(`, `[`, `{`, `|`,
     /// `.`, `&&`, `||`, `=>` or `\`, ends inside an open literal, or while
-    /// it has opened more `(`, `[` and `{` than it closed. Not seen: a
-    /// stanza built at runtime (through `send` or `define_method`), and a
-    /// `depends_on` after a `do` on the same line. A regex after any other
-    /// token is read as code.
+    /// it has opened more `(`, `[` and `{` than it closed. A `<<`, `%` or
+    /// `?` after a value is a shift, a modulo or a ternary: after `)`, `]`,
+    /// `}`, a number, a literal, `self`, `nil`, `true`, `false`, `end`,
+    /// `class`, an `@` or `$` variable, a local assigned earlier with
+    /// `name =` or named in block parameters (`|a, b|`), or a word written
+    /// straight against it. Not seen: a stanza built at runtime (through
+    /// `send` or `define_method`), and a `depends_on` after a `do` on the
+    /// same line. A regex after any other token is read as code, and a local
+    /// assigned another way (`a, b = …`, `for a in …`) is read as a method.
+    /// When a literal or heredoc is still open after the last line, the
+    /// block was misread: both checks then look for their words anywhere in
+    /// the raw text, which leaves `depends_on :macos` out, and the render
+    /// warns once unless this field is set.
     /// `true` renders `depends_on :macos` with a flat download; `false`
     /// renders no dependency and places a flat download inside `on_macos`.
     pub depends_on_macos: Option<bool>,

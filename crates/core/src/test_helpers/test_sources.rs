@@ -317,12 +317,15 @@ pub fn is_test_only_cfg(line: &str) -> bool {
 /// above an item written out in place (`mod tests {` …) when one attribute of
 /// the run is a top-level test-only `#[cfg(…)]` ([`is_test_only_cfg`]). The
 /// attributes may share the item's line (`#[cfg(test)] mod tests {`) or
-/// spread over several lines (`#[cfg(all(` … `))]`), where a bracket inside a
-/// string or a `//` comment is text. The module may have a raw name
-/// (`mod r#tests {`), a `// …` or `/* … */` comment may follow the `{` or sit
-/// between attribute and item, and an attribute such as
-/// `#[cfg_attr(test, …)]` in the run is cut with the module. A `mod tests;` declaration does not start one — its body
-/// is a file the name rules already classify, and production items follow the
+/// spread over several lines (`#[cfg(all(` … `))]`). Inside an attribute, a
+/// string, raw string, character literal or comment is set aside: its
+/// brackets do not open or close the attribute, and a comment between the
+/// terms of a `cfg` (`#[cfg(all( // why` … `test))]`) is not part of a term.
+/// The module may have a raw name (`mod r#tests {`), a `// …` or `/* … */`
+/// comment may follow the `{` or sit between attribute and item, and an
+/// attribute such as `#[cfg_attr(test, …)]` in the run is cut with the
+/// module. A `mod tests;` declaration does not start one — its body is a
+/// file the name rules already classify, and production items follow the
 /// declaration — and neither does a `cfg` nested inside another item. A file
 /// with no inline test module is returned whole.
 ///
@@ -423,7 +426,8 @@ fn leading_attributes(line: &str) -> (bool, &str) {
     while rest.starts_with("#[") {
         let mut depth = 0usize;
         let mut close = None;
-        for (index, ch) in attribute_code(rest).skip(1) {
+        let code = attribute_code(rest);
+        for &(index, ch) in code.iter().skip(1) {
             match ch {
                 '[' => depth += 1,
                 ']' => {
@@ -439,7 +443,14 @@ fn leading_attributes(line: &str) -> (bool, &str) {
         let Some(close) = close else {
             return (gated, "");
         };
-        gated |= is_test_only_cfg(&rest[..=close]);
+        // The predicate is read with its comments and literals left out, so
+        // a `// why` between terms is not part of the `test` term.
+        let attribute: String = code
+            .iter()
+            .take_while(|&&(index, _)| index <= close)
+            .map(|&(_, ch)| ch)
+            .collect();
+        gated |= is_test_only_cfg(&attribute);
         rest = rest[close + 1..].trim_start();
     }
     (gated, strip_trailing_comment(rest).trim())
@@ -476,9 +487,10 @@ fn is_inline_module_header(line: &str) -> bool {
 }
 
 /// Whether every `[` in `text` has its `]`, so an attribute that opens in
-/// it has ended. Brackets inside a string or a `//` comment are text.
+/// it has ended. Brackets inside a literal or a comment are text.
 fn brackets_close(text: &str) -> bool {
     attribute_code(text)
+        .into_iter()
         .map(|(_, ch)| match ch {
             '[' => 1,
             ']' => -1,
@@ -488,35 +500,75 @@ fn brackets_close(text: &str) -> bool {
         <= 0
 }
 
-/// The characters of attribute text, with their offsets, leaving out the
-/// contents of each `"…"` string and each `//` comment up to its line's end.
-fn attribute_code(text: &str) -> impl Iterator<Item = (usize, char)> + '_ {
-    let mut in_string = false;
-    let mut escaped = false;
-    let mut in_comment = false;
-    let mut chars = text.char_indices().peekable();
-    std::iter::from_fn(move || {
-        while let Some((index, ch)) = chars.next() {
-            if in_comment {
-                in_comment = ch != '\n';
-            } else if in_string {
-                if escaped {
-                    escaped = false;
-                } else if ch == '\\' {
-                    escaped = true;
-                } else if ch == '"' {
-                    in_string = false;
-                }
-            } else if ch == '"' {
-                in_string = true;
-            } else if ch == '/' && chars.peek().is_some_and(|&(_, next)| next == '/') {
-                in_comment = true;
-            } else {
-                return Some((index, ch));
+/// The characters of attribute text, with their offsets, leaving out each
+/// `"…"` string, `r#"…"#` raw string, `'x'` character literal, `//` comment
+/// up to its line's end and `/* … */` comment (nested ones included).
+fn attribute_code(text: &str) -> Vec<(usize, char)> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let at = |i: usize| chars.get(i).map(|&(_, ch)| ch);
+    let mut code = Vec::new();
+    let mut i = 0;
+    while let Some(ch) = at(i) {
+        let next = at(i + 1);
+        let word_before = i > 0 && at(i - 1).is_some_and(|c| c.is_alphanumeric() || c == '_');
+        if ch == '/' && next == Some('/') {
+            while at(i).is_some_and(|c| c != '\n') {
+                i += 1;
             }
+        } else if ch == '/' && next == Some('*') {
+            let mut depth = 0usize;
+            while let Some(c) = at(i) {
+                if c == '/' && at(i + 1) == Some('*') {
+                    depth += 1;
+                    i += 2;
+                } else if c == '*' && at(i + 1) == Some('/') {
+                    depth -= 1;
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+        } else if ch == '"' {
+            i += 1;
+            while let Some(c) = at(i) {
+                i += if c == '\\' { 2 } else { 1 };
+                if c == '"' {
+                    break;
+                }
+            }
+        } else if let Some(hashes) = (ch == 'r' && !word_before)
+            .then(|| (i + 1..).take_while(|&j| at(j) == Some('#')).count())
+            .filter(|&hashes| at(i + 1 + hashes) == Some('"'))
+        {
+            let close: String = std::iter::once('"')
+                .chain("#".repeat(hashes).chars())
+                .collect();
+            let body = i + 2 + hashes;
+            let rest: String = chars[body.min(chars.len())..]
+                .iter()
+                .map(|&(_, c)| c)
+                .collect();
+            i = match rest.find(&close) {
+                Some(end) => body + rest[..end].chars().count() + close.chars().count(),
+                None => chars.len(),
+            };
+        } else if ch == '\'' && next == Some('\\') {
+            i += 3;
+            while at(i).is_some_and(|c| c != '\'') {
+                i += 1;
+            }
+            i += 1;
+        } else if ch == '\'' && next.is_some() && at(i + 2) == Some('\'') {
+            i += 3;
+        } else {
+            code.push(chars[i]);
+            i += 1;
         }
-        None
-    })
+    }
+    code
 }
 
 /// Split `rest` — the text after an opening `(` — at the `)` that closes it,
@@ -1156,6 +1208,13 @@ unsafe impl Send for NotAFn {
             "#[cfg_attr(test, doc = \"[\")]\n#[cfg(test)]\nmod tests {\n}\n",
             "#[cfg(all(\n    feature = \"a]\",\n    test\n))]\nmod tests {\n}\n",
             "#[cfg(test)]\nmod r#tests {\n}\n",
+            "#[cfg(all( // why\n    test, unix))]\nmod tests {\n}\n",
+            "#[cfg(all( /* why, [ */ test, unix))]\nmod tests {\n}\n",
+            "#[my_attr('\"')]\n#[cfg(test)]\nmod tests {\n}\n",
+            "#[my_attr('[')]\n#[cfg(test)]\nmod tests {\n}\n",
+            "#[my_attr(']', '\\'')]\n#[cfg(test)]\nmod tests {\n}\n",
+            "#[doc = r#\"a \" ] b\"#]\n#[cfg(test)]\nmod tests {\n}\n",
+            "#[doc = r\"[\"]\n#[cfg(test)]\nmod tests {\n}\n",
         ] {
             let src = format!("{prod}{module}");
             assert_eq!(production_half(&src), prod, "{module}");
@@ -1167,6 +1226,9 @@ unsafe impl Send for NotAFn {
             "#[cfg(test)] fn helper() {}\nmod later {\n}\n",
             "// #[cfg(test)]\nmod prod {\n}\n",
             "#[cfg_attr(test, doc = \"[\")]\nfn prod() {}\n#[cfg(test)]\nmod r#a b {\n}\n",
+            "#[cfg(all(unix /* , test */))]\nmod prod {\n}\n",
+            "#[cfg(all(unix, // test\n))]\nmod prod {\n}\n",
+            "#[my_attr('\"')]\nfn prod() {}\n",
         ] {
             let src = format!("{prod}{not_a_module}");
             assert_eq!(production_half(&src), src, "{not_a_module}");

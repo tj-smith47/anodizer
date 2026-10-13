@@ -213,9 +213,12 @@ fn the_misspelled_tool_name_is_reported_and_the_config_alias_is_not() {
 /// for the number, so `file(s)`,
 /// `match(es)`, `entr(y|ies)` and `director(ies)` are reported wherever they
 /// sit on the line, whatever follows them (`file(s);`, `leg(s))`,
-/// `crate(s) {`). A count printed through `plural`, and an awk parameter
-/// `s` in an embedded program (`function trim(s)`, `length(s)`,
-/// `print trim(s)`), are not.
+/// `crate(s) {`). A count printed through `plural` is not, and neither is
+/// an awk parameter `s` inside an awk program (`function trim(s)`,
+/// `length(s)`, `print trim(s)`): a one-line `awk '…'`, one spread over
+/// several lines, a heredoc tagged AWK or a whole `.awk` library. Outside a
+/// program only a line defining `function <name>(s) {` is code, so
+/// `the function file(s) are missing` and `length(s) of the files` are counts.
 #[test]
 fn a_plural_in_parentheses_in_a_script_a_workflow_or_the_taskfile_is_reported() {
     let taskfile = "tasks:\n  demo:\n    desc: \"Guard: every categor(ies) entry is read.\"\n";
@@ -229,6 +232,11 @@ fn a_plural_in_parentheses_in_a_script_a_workflow_or_the_taskfile_is_reported() 
         (".github/workflows/demo.yml", workflow),
         (".github/actions/demo/action.yml", action),
         (".github/actions/demo/run.sh", "echo \"$n file(s) moved\"\n"),
+        ("packaging/nfpm/demo.sh", "echo \"$n unit(s) enabled\"\n"),
+        (
+            ".claude/scripts/lib/demo.awk",
+            "function trim(s) { return s }\n{ n = length(s) }\nEND { printf(\"%d row(s)\\n\", n) }\n",
+        ),
     ]);
     let (code, out) = run_audit("audit-prose.sh", dir.path());
 
@@ -240,6 +248,9 @@ fn a_plural_in_parentheses_in_a_script_a_workflow_or_the_taskfile_is_reported() 
         "the file(s);",
         "leg(s))",
         "crate(s) {",
+        "the function file(s)",
+        "length(s) of",
+        "tolower(s) is prose",
     ]
     .iter()
     .map(|needle| {
@@ -254,12 +265,14 @@ fn a_plural_in_parentheses_in_a_script_a_workflow_or_the_taskfile_is_reported() 
             ".github/workflows/demo.yml:4: - run: printf 'Found %d manifest(s)\\n' \"$n\"",
             ".github/actions/demo/action.yml:3: - run: echo \"$n shard(s) merged\"",
             ".github/actions/demo/run.sh:1: echo \"$n file(s) moved\"",
+            "packaging/nfpm/demo.sh:1: echo \"$n unit(s) enabled\"",
+            ".claude/scripts/lib/demo.awk:3: END { printf(\"%d row(s)\\n\", n) }",
         ]
         .map(String::from),
     );
     let mut found: Vec<String> = out
         .lines()
-        .filter(|l| l.contains(".sh:") || l.contains(".yml:"))
+        .filter(|l| l.contains(".sh:") || l.contains(".yml:") || l.contains(".awk:"))
         .map(str::to_string)
         .collect();
     found.sort();
@@ -285,6 +298,8 @@ fn a_script_whose_counts_go_through_plural_passes_the_plural_scan() {
                 "director(ies)",
                 "leg(s)",
                 "crate(s)",
+                "length(s) of",
+                "tolower(s) is prose",
             ]
             .iter()
             .any(|f| l.contains(f))

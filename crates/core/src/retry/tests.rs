@@ -2112,8 +2112,11 @@ fn a_rate_limit_reset_is_the_wait_on_the_bytes_variant() {
     assert_eq!(bytes, vec![0xff, 0xfe], "the binary body is not re-encoded");
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     let elapsed = started.elapsed();
-    // The reset is at least two seconds ahead when the 429 is read, so a
-    // wait under one second means the header was ignored.
+    // The wait is `reset - floor(now)` in whole seconds. With the reset set
+    // to `now + 3`, it is between one and three seconds depending on how far
+    // the clock moved before the 429 was read, so one second is the bound
+    // that holds on every host, and a wait under it means the header was
+    // ignored.
     assert!(
         elapsed >= Duration::from_secs(1),
         "the retry waited for the reset header: {elapsed:?}"

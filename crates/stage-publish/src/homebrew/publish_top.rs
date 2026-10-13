@@ -459,6 +459,7 @@ fn render_top_level_cask_inner(
             .and_then(super::cask::render_generate_completions),
     };
 
+    super::cask_custom_block::warn_unread_custom_block(&params, log);
     let content = generate_cask(&params)?;
     // Final-text chokepoint: a residual `{{ … }}` means a config field escaped
     // rendering — fail strict, warn lenient — before the cask is written or
