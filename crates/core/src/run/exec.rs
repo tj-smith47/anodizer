@@ -380,12 +380,11 @@ fn capture_inner(
     let readers_done = Arc::new(AtomicUsize::new(0));
     let readers_done_ref: &AtomicUsize = &readers_done;
     // The readers and the stdin writer are detached threads rather than scoped
-    // ones, so the call returns at the cut-off without waiting for them: a
-    // reader can take up to `PIPE_POLL_INTERVAL` to notice `abandon`, and the
+    // ones, so the call returns at the cut-off without waiting for them: once
+    // `abandon` is set each reader, and the Unix writer, takes up to
+    // `PIPE_POLL_INTERVAL` to notice it and drop its end of the pipe, and the
     // Windows stdin writer, blocked in a write the leftover process never
-    // reads, may not notice it at all. Once `abandon` is set each reader, and
-    // the Unix writer, stops within `PIPE_POLL_INTERVAL` and drops its end of
-    // the pipe.
+    // reads, may not notice it at all.
     let abandon = Arc::new(AtomicBool::new(false));
     let (reader_tx, reader_rx) = std::sync::mpsc::channel::<()>();
     // The writer runs concurrently with the readers, so a child that fills its
@@ -756,9 +755,9 @@ fn await_readers(
     }
 }
 
-/// Drain `reader` line-by-line into `capture`, appending the
-/// raw bytes (line terminator included). When `tee` is set, each line is also
-/// streamed live (redacted) to stderr — `is_stderr` selects the capture level
+/// Drain `reader` into `capture`, appending the raw bytes as they arrive (line
+/// terminators included). When `tee` is set, each whole line is also streamed
+/// live (redacted) to stderr — `is_stderr` selects the capture level
 /// (stdout→Verbose, stderr→Error). At non-verbose verbosity `tee` is `false`,
 /// so the reader still drains the pipe (preventing deadlock) but prints
 /// nothing, leaving the captured buffer for `check_output` to surface only on
@@ -769,7 +768,9 @@ fn await_readers(
 /// still drives the failure embed). Once `abandon` is set it captures and
 /// prints nothing more, including a redacter tail it was still holding back:
 /// the check is made under the capture lock, which the calling thread takes
-/// before it prints the cut-off line.
+/// before it prints the cut-off line. Bytes are captured per read rather than
+/// per line, so an unterminated last line read before the cut-off is still in
+/// the buffer the calling thread takes.
 pub(super) fn tee_stream<R: Read>(
     reader: R,
     log: &StageLogger,
@@ -779,7 +780,8 @@ pub(super) fn tee_stream<R: Read>(
     abandon: &AtomicBool,
 ) {
     let mut buf = BufReader::new(reader);
-    let mut line: Vec<u8> = Vec::new();
+    // Bytes captured but not yet teed because their line has no terminator yet.
+    let mut pending: Vec<u8> = Vec::new();
     // One redacter for the whole stream: a secret split across two reads is
     // only recognisable to something that remembers the first half.
     let mut redacter = tee.then(|| log.stream_redacter());
@@ -788,28 +790,32 @@ pub(super) fn tee_stream<R: Read>(
     // final release.
     let mut open_line = false;
     loop {
-        line.clear();
-        // On a read error `read_until` has already appended the bytes it read
-        // before failing; they are kept like any other line, then the loop
-        // ends.
-        let read = buf.read_until(b'\n', &mut line);
-        if !line.is_empty() {
+        let chunk = match buf.fill_buf() {
+            Ok([]) => break,
+            Ok(chunk) => chunk,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        let n = chunk.len();
+        {
             let mut captured = capture.lock().unwrap_or_else(|p| p.into_inner());
             if abandon.load(Ordering::Acquire) {
                 return;
             }
-            captured.extend_from_slice(&line);
+            captured.extend_from_slice(chunk);
             if let Some(r) = redacter.as_mut() {
-                // The child's REAL bytes, terminator included: a secret
-                // whose value carries `\r\n` is only recognisable to a
-                // redacter that receives what the child actually wrote.
-                let released = r.push(&String::from_utf8_lossy(&line));
-                emit_released(&released, log, is_stderr, &mut open_line);
+                pending.extend_from_slice(chunk);
+                // The child's REAL bytes, terminator included: a secret whose
+                // value carries `\r\n` is only recognisable to a redacter that
+                // receives what the child actually wrote.
+                while let Some(end) = pending.iter().position(|&b| b == b'\n') {
+                    let line: Vec<u8> = pending.drain(..=end).collect();
+                    let released = r.push(&String::from_utf8_lossy(&line));
+                    emit_released(&released, log, is_stderr, &mut open_line);
+                }
             }
         }
-        if !matches!(read, Ok(n) if n > 0) {
-            break;
-        }
+        buf.consume(n);
     }
     // Runs on the read-error path too, so a mid-stream failure cannot strand a
     // withheld secret prefix in the buffer.
@@ -818,8 +824,12 @@ pub(super) fn tee_stream<R: Read>(
         return;
     }
     if let Some(r) = redacter.as_mut() {
-        let tail = r.flush();
-        emit_released(&tail, log, is_stderr, &mut open_line);
+        let mut released = String::new();
+        if !pending.is_empty() {
+            released = r.push(&String::from_utf8_lossy(&pending));
+        }
+        released.push_str(&r.flush());
+        emit_released(&released, log, is_stderr, &mut open_line);
         if open_line {
             log.stream_child_chunk("\n", is_stderr);
         }

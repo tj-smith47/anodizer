@@ -1851,8 +1851,8 @@ fn file_names_and_empty_messages_survive_the_commit_record_read() {
     run(&["commit", "-m", "initial"]);
     let base = get_head_commit_in(dir).unwrap();
     let mut names = vec![" lead", "mid space", "\u{e9} x.rs"];
-    // NTFS strips a trailing space from a file name, so the file would reach
-    // git as `trail`.
+    // Windows path handling strips a trailing space from a file name, so the
+    // file would reach git as `trail`.
     #[cfg(unix)]
     names.push("trail ");
     for name in &names {

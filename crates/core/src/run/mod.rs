@@ -2,10 +2,9 @@
 //! the result through `StageLogger::check_output`.
 //!
 //! Consolidates the spawn / capture / surface-on-failure pattern that every
-//! stage repeats by hand so the success/failure surface stays consistent:
-//!
+//! stage repeats by hand so the success/failure surface stays consistent.
 //! Every helper runs the child through the same capture loop; verbosity only
-//! decides whether the captured lines are also printed as they arrive.
+//! decides whether the captured lines are also printed as they arrive:
 //!
 //! - **Default (quiet) verbosity** — the child's output is captured silently;
 //!   on success nothing prints, on non-zero exit the logger emits the redacted
@@ -22,17 +21,17 @@
 //!   verbose tee is an anodizer-only superset: GoReleaser never streams live.
 //!
 //! - **After the child exits** — reading stdout and stderr, and writing any
-//!   stdin payload, stop once the pipes close, or 5 seconds after the child
-//!   exited, whichever comes first. A process the child started that still
-//!   holds its stdin, stdout or stderr (`tool &`, a daemon it launched)
-//!   therefore cannot keep the call waiting: the helper returns the child's
-//!   own exit status with the output read so far and prints `stopped using the
-//!   pipes of <label> 5s after it exited: a process it started still holds
-//!   them` at verbose. The threads that were using the pipes close them within
-//!   about 100 ms after that. The exception is the stdin writer on Windows,
-//!   which can only check between 16 KiB writes: a write the leftover process
-//!   never reads keeps that thread and the pipe until the process reads or
-//!   exits.
+//!   stdin payload, stop once the pipes close, or `POST_EXIT_DRAIN_WINDOW`
+//!   after the child exited, whichever comes first. A process the child
+//!   started that still holds its stdin, stdout or stderr (`tool &`, a daemon
+//!   it launched) therefore cannot keep the call waiting: the helper returns
+//!   the child's own exit status with the output read so far and prints
+//!   `stopped using the pipes of <label> 5s after it exited: a process it
+//!   started still holds them` at verbose. The threads that were using the
+//!   pipes close them within `PIPE_POLL_INTERVAL` after that. The exception is
+//!   the stdin writer on Windows, which can only check between `STDIN_CHUNK`
+//!   writes: a write the leftover process never reads keeps that thread and
+//!   the pipe until the process reads or exits.
 //!   The window applies to every `run_*` helper, with or without a timeout,
 //!   on every platform; a timeout-bounded helper additionally kills the
 //!   leftover process tree after its own shorter grace.

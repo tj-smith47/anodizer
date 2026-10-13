@@ -969,16 +969,18 @@ impl std::io::Read for FailsAfter {
 }
 
 /// A read error mid-line keeps and prints the partial line read before it,
-/// alongside the complete lines.
+/// alongside the complete lines, and the partial line still goes through the
+/// redacter.
 #[test]
 fn tee_stream_keeps_the_partial_line_read_before_an_error() {
     use std::sync::Mutex;
     use std::sync::atomic::AtomicBool;
     let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+    let log = log.with_job_env([("API_TOKEN".to_string(), "longvalue1234".to_string())]);
     let capture = Mutex::new(Vec::new());
     tee_stream(
         FailsAfter {
-            data: b"whole\npartial",
+            data: b"whole\npartial longvalue1234",
         },
         &log,
         false,
@@ -986,7 +988,10 @@ fn tee_stream_keeps_the_partial_line_read_before_an_error() {
         &capture,
         &AtomicBool::new(false),
     );
-    assert_eq!(capture.into_inner().unwrap(), b"whole\npartial");
+    assert_eq!(
+        capture.into_inner().unwrap(),
+        b"whole\npartial longvalue1234"
+    );
     let printed: String = cap
         .all_messages()
         .into_iter()
@@ -994,7 +999,33 @@ fn tee_stream_keeps_the_partial_line_read_before_an_error() {
         .collect::<Vec<_>>()
         .join("|");
     assert!(
-        printed.contains("partial"),
-        "tee lost the partial line: {printed}"
+        printed.contains("partial $API_TOKEN"),
+        "tee lost or did not mask the partial line: {printed}"
+    );
+    assert!(
+        !printed.contains("longvalue1234"),
+        "the secret in the partial line reached the log: {printed}"
+    );
+}
+
+/// An unterminated last line the child wrote before exiting is captured even
+/// when a grandchild keeps the pipe open past the drain window: the bytes were
+/// read before the cut-off, so they are in the output the call returns.
+#[test]
+#[cfg(unix)]
+fn the_unterminated_last_line_read_before_the_cut_off_is_captured() {
+    let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+    let out = run_capture(
+        &mut sh("printf 'tail-no-nl'; sleep 30 &"),
+        &log,
+        "grandchild-holds-pipes",
+    )
+    .expect("a clean child exit must yield Ok(Output)");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "tail-no-nl");
+    assert_eq!(
+        drain_cut_off_lines(&cap).len(),
+        1,
+        "the call must end at the cut-off, with the grandchild still holding the pipe"
     );
 }
