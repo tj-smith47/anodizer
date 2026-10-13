@@ -249,13 +249,24 @@ into the following lines until it closes:
   quoted) and closed by a line holding the tag alone, indented for `<<~` and
   `<<-`, matched case-sensitively. Unless the tag is single-quoted, a body
   line ending in an odd run of `\` joins the next line, so a tag on that
-  line does not close the heredoc. A `<<` followed by a space or a digit is a shift.
+  line does not close the heredoc, and `#{…}` in a body line is read as
+  code: a heredoc opened there (`#{<<~X}`) has its body read from the next
+  line, before the rest of the body around it. A body line that ends inside
+  `#{…}` cannot be read past. A `<<` followed by a space or a digit is a
+  shift.
 - A `%()`, `%q`, `%Q`, `%w`, `%W`, `%i`, `%I`, `%r`, `%s` or `%x` literal
   delimited by `()`, `[]`, `{}` or `<>` (which nest) or by one repeated
-  punctuation character (`%q|…|`). A typed one also takes a space as its
-  delimiter (`%q a `). A bare `%` with nothing before it on its statement but
-  an operator also takes a space, a tab, `=` or the end of the line, which
-  holds the next line (`x = [%` then `text` then `]`).
+  punctuation character (`%q|…|`). A typed one also takes a space or the end
+  of the line as its delimiter (`%q a `, `%q` at the end of a line), except
+  that whitespace only separates the words of a list (`%w`, `%W`, `%i`,
+  `%I`), so a list delimited by it never closes. A bare `%` with nothing
+  before it on its statement but an operator also takes a space, a tab, `=`
+  or the end of the line. A literal delimited by the end of its line holds
+  the next line, and the line after that too while the held line ends in an
+  odd run of `\`; the statement reads on past it (`x = [%` then `text` then
+  `]`). A `%r` closed that way takes the letters that start the line after
+  as its options (`x = %r` then `ab` then `ix`), so that line is kept as
+  written.
 - A `?x` character literal, such as `?#`, `?"` or `?'`, unless a word
   character follows a word character (`?ab`) or a quote (`?"a"`).
 - A `/…/` regex where an operand stands.
@@ -263,9 +274,12 @@ into the following lines until it closes:
   blank, and an `=begin` … `=end` comment.
 
 None of these opens after a `:` that makes a symbol (`:%`, `` :` ``), in a
-special global (`$"`, `$/`), or where it names a method: after `.`, `&.`,
-`::` or `def` (`x.<<`, `def /(other)`), and as the `?` or `!` of a method
-name (`then?"a"`).
+special global (`$"`, `$/`), or where it names a method: after `.`, `&.` or
+`::`, with or without a space before the name, whatever the name looks like
+(`x.<<`, `x. %`, `a&.!~`), after `def` (`def /(other)`), and as the `?` or
+`!` of a method name (`then?"a"`). Written straight after a method name
+spelled as an operator, a `<<`, `%` or `/` is an operator (`a&.!~% b` is a
+modulo) and a `?` opens a character literal.
 
 A `<<`, `%`, `?` or `/` that follows a value is a shift, a modulo, a ternary
 or a division and opens nothing. The code before it ends with a value when,
@@ -297,9 +311,12 @@ gone and `r = w %w[on_linux]` passes `%w[on_linux]` to a method `w`.
 `if`, `while`, `case` and `begin` open no scope. After a word, a `/` followed
 by a space or `=` divides.
 
-A statement continued with a `\` at the end of a line, or with a `?\`
-character literal that holds the newline, is read as one statement, so the
-code before the break decides what comes after it: after `n = 7`, the lines
+A statement continued with a `\` at the end of a line, with a `?\`
+character literal that holds the newline, with a `.`, `&.` or `::` that
+ends a line (past any blank or comment line; a `..` range continues
+nothing) or with a literal the newline closes, is read as one statement, so
+the code before the break decides what comes after it: `y = x.` then
+`%(on_linux)` calls the method `%`, and after `n = 7`, the lines
 `m = n \` and `  % 2` are a modulo, and a modifier `if` or `until` on a
 continuation line (`puts "a" \` then `  if ready`) opens no block.
 

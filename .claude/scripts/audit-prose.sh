@@ -330,11 +330,16 @@ run_scanner plural_prose -v AWK_S_CALLS="$AWK_S_CALLS" -f - \
 
     # Where the program of an awk command starts in `line`, from `i` just
     # after the command word or at the start of a continued line: past its
-    # `-v` and `-F` options and the opening quote, which sets `q`. A line
-    # that ends in `\` there sets `expect`; with neither, `i` itself.
-    function program_start(line, i,    value) {
+    # options and the opening quote, which sets `q`. `-v`, `-F`, `-W`,
+    # `--assign` and `--field-separator` take a value, written against them
+    # or after a space; any other short option takes none, and any other
+    # long one only after `=` (`--awk`, `--lint=fatal`). A line that ends in
+    # `\` there sets `expect`; with neither, `i` itself.
+    function program_start(line, i,    value, option) {
         value = "([^ \t\"']|\"[^\"]*\"|'[^']*')+"
-        while (match(substr(line, i), "^[ \t]*-[vF][ \t]*" value)) i += RLENGTH
+        option = "-[vFW][ \t]*" value "|--(assign|field-separator)([ \t]+|=)" value \
+            "|--([A-Za-z][-A-Za-z]*(=" value ")?)?|-[A-Za-z]+"
+        while (match(substr(line, i), "^[ \t]*(" option ")([ \t]|$)")) i += RLENGTH
         if (match(substr(line, i), /^[ \t]*['"]/)) {
             i += RLENGTH
             q = substr(line, i - 1, 1)

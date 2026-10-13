@@ -2,11 +2,13 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use super::heredoc::{Heredoc, heredoc_opener};
+use super::heredoc::{Heredoc, heredoc_opener, joins_next_line};
 use super::names::{
     LevelKind, Scopes, assigned_names, bind_statement, capture_names, for_names, param_names,
 };
-use super::words::{HASH_AFTER, takes_operand};
+use super::words::{
+    HASH_AFTER, Position, char_literal_len, number_continues, operator_method_len, position,
+};
 use super::{UnreadReason, Unreadable, bracket_balance, is_local_name, is_word_char};
 
 /// The code of one line of a `custom_block`.
@@ -58,20 +60,6 @@ enum Frame {
     Interpolation { braces: usize },
 }
 
-/// What the code before a `<<`, `%`, `?` or `/` makes of it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Position {
-    /// A value: the operator is a shift, a modulo, a ternary or a division.
-    Value,
-    /// A parameter's name, read as a value.
-    Parameter,
-    /// An operand position: the operator opens a literal.
-    Operand,
-    /// A word that may be a method or a local not seen assigned: the
-    /// operator is read as an opener.
-    Guess,
-}
-
 /// What carries from one line of a block to the next.
 #[derive(Default)]
 struct Carry {
@@ -88,6 +76,8 @@ struct Carry {
     shifts: Vec<Heredoc>,
     /// The first line a guessed literal spans past.
     ambiguous: Option<Unreadable>,
+    /// The first heredoc body line that ends inside a `#{…}`.
+    open_interpolation: Option<Unreadable>,
     /// Inside a `=begin` … `=end` comment, opened on this line.
     comment: Option<usize>,
     /// The statement a line ending in `\` continues onto the next line.
@@ -109,6 +99,9 @@ struct Continued {
     word_colon: Option<bool>,
     pending: Vec<String>,
     captures: Vec<String>,
+    method_next: bool,
+    after_operator_method: bool,
+    regex_options: bool,
 }
 
 /// The code of every line of `block`, and the first place it cannot be
@@ -139,6 +132,8 @@ pub(super) fn lex_block(block: &str) -> Lexed {
             starts.push(closes && heredoc.squiggly);
             if closes {
                 carry.heredocs.pop_front();
+            } else if heredoc.interpolates && line.contains("#{") {
+                lex_body_line(line, n + 1, &mut carry);
             }
             out.push(CodeLine::default());
             continue;
@@ -157,7 +152,11 @@ pub(super) fn lex_block(block: &str) -> Lexed {
             out.push(CodeLine::default());
             continue;
         }
-        starts.push(carry.stack.is_empty());
+        // A line that opens with the options of a regex closed by the
+        // newline before it begins inside that literal.
+        let options = carry.continued.as_ref().is_some_and(|c| c.regex_options)
+            && line.starts_with(|c: char| c.is_ascii_alphabetic());
+        starts.push(carry.stack.is_empty() && !options);
         let (code, end) = lex_line(line, n + 1, &mut carry);
         code_ends[n] = (!code.open).then_some(end);
         out.push(code);
@@ -198,7 +197,14 @@ pub(super) fn lex_block(block: &str) -> Lexed {
             reason: UnreadReason::Ambiguous { operator: "<<" },
         });
     // On a tie the ambiguous reading names the cause of the open literal.
-    let found = [carry.ambiguous, shift, literal, heredoc, comment];
+    let found = [
+        carry.ambiguous,
+        shift,
+        carry.open_interpolation,
+        literal,
+        heredoc,
+        comment,
+    ];
     let unread = found
         .into_iter()
         .flatten()
@@ -209,6 +215,36 @@ pub(super) fn lex_block(block: &str) -> Lexed {
         code_ends,
         unread,
     }
+}
+
+/// Read the `#{…}` code of line `number`, a body line of an interpolating
+/// heredoc. A heredoc opened there has its body read from the next line,
+/// before the rest of the body around it, as Ruby reads it.
+fn lex_body_line(line: &str, number: usize, carry: &mut Carry) {
+    let depth = carry.stack.len();
+    let queued = carry.heredocs.len();
+    // The statement and parameter list the heredoc's opener left open go on
+    // after the body.
+    let continued = carry.continued.take();
+    let param_list = carry.param_list.take();
+    // The body as a literal that closes nowhere on the line, so only its
+    // interpolations are read as code.
+    carry
+        .stack
+        .push(literal('\n', '\n', true, "heredoc", number));
+    lex_line(line, number, carry);
+    if carry.stack.len() > depth + 1 && carry.open_interpolation.is_none() {
+        carry.open_interpolation = Some(Unreadable {
+            line: number,
+            kind: "heredoc",
+            reason: UnreadReason::Unclosed,
+        });
+    }
+    carry.stack.truncate(depth);
+    let opened = carry.heredocs.len() - queued;
+    carry.heredocs.rotate_right(opened);
+    carry.continued = continued;
+    carry.param_list = param_list;
 }
 
 /// What the statement being read has opened so far.
@@ -342,7 +378,10 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
     // `Some(false)` for a symbol (`:case`, `a:case`), `Some(true)` for a
     // constant path (`A::B`). `pending` holds the parameters of a lambda,
     // bound once its body opens, and `captures` the named captures of the
-    // regex literal that closed last.
+    // regex literal that closed last. `method_next` is whether a `.`, `&.`
+    // or `::` came last, so the next token is a method name whatever it
+    // looks like (`x. %`, `&.!~`), and `after_operator_method` whether such
+    // a name spelled as an operator did.
     let Continued {
         mut text,
         mut st,
@@ -353,21 +392,32 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
         mut word_colon,
         mut pending,
         mut captures,
+        mut method_next,
+        mut after_operator_method,
+        regex_options,
     } = continued.take().unwrap_or_default();
     let base = text.len();
     // Whether the word is still being read, and whether whitespace
     // followed it; the `\` that continued a line counts as whitespace.
     let mut word_open = false;
     let mut spaced = base > 0;
-    // The line ends in a `\` that continues its statement.
+    // The statement reads on into the next line: this one ends in `\`, a
+    // `?\`, a `.` before the method name, or a literal the newline closes.
     let mut continues_line = false;
     // The first ambiguous opener on this line: its operator and the kind
     // of literal it opened. Every literal opened after it is guessed.
     let mut guess: Option<(&'static str, &'static str)> = None;
+    // A `%r` closed by the newline before this line takes the letters it
+    // starts with as its options (`%r` then `ab` then `ix`).
+    let mut i = if regex_options {
+        chars.iter().take_while(|c| c.is_ascii_alphabetic()).count()
+    } else {
+        0
+    };
     // Past the last literal read, whose delimiter or content may be
     // whitespace that trimming the line must keep.
-    let mut literal_end = 0;
-    let mut i = 0;
+    let mut literal_end = i;
+    let mut regex_options = false;
     while i < chars.len() {
         let c = chars[i];
         if let Some(Frame::Literal {
@@ -464,6 +514,20 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             continues_line = true;
             break;
         }
+        // A comment between a `.` and the method name leaves it pending.
+        let method_name = !c.is_whitespace() && c != '#' && std::mem::take(&mut method_next);
+        let operator_method = !c.is_whitespace() && std::mem::take(&mut after_operator_method);
+        if method_name && let Some(len) = operator_method_len(&chars[i..]) {
+            if stack.is_empty() {
+                text.extend(&chars[i..i + len]);
+            }
+            prev = Some('"');
+            word.clear();
+            spaced = false;
+            after_operator_method = true;
+            i += len;
+            continue;
+        }
         // A special global (`$"`, `$/`, `$;`, `$-w`) is a value whose
         // punctuation opens nothing.
         if c == '$'
@@ -496,15 +560,19 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             Position::Value
         } else if after_word && word_colon == Some(true) {
             Position::Guess
-        } else if (prev == Some('.') && !(i > 1 && chars[i - 2] == '.'))
-            || (colon && i > 1 && chars[i - 2] == ':')
-        {
-            // `.<<`, `&.%`, `self./` and `a::<<` name a method.
+        } else if method_name {
             Position::Value
-        } else if i > 1 && chars[i - 2] == '.' && matches!(prev, Some('%' | '/' | '<')) {
-            // An operator written straight after such a method name
-            // (`x.%%w`) is an operator.
-            Position::Value
+        } else if operator_method {
+            // Written straight after an operator method name (`x.%%w`) the
+            // operator is one, but a `?` opens a character literal; after a
+            // space it may open the argument.
+            if spaced {
+                Position::Guess
+            } else if c == '?' {
+                Position::Operand
+            } else {
+                Position::Value
+            }
         } else {
             position(prev, &word, spaced, before_word == Some('.'), scopes)
         };
@@ -516,7 +584,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             '#' => break,
             '"' | '\'' => Some((1, Some(literal(c, c, c == '"', "string", number)))),
             // `` :` ``, `` .` `` and `` def ` `` name the backtick method.
-            '`' if !colon && prev != Some('.') && !(after_word && word == "def") => {
+            '`' if !colon && !(after_word && word == "def") => {
                 Some((1, Some(literal(c, c, true, "string", number))))
             }
             '%' if opens && !symbol => {
@@ -687,6 +755,8 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                 word_open = stack.is_empty();
             }
             spaced = false;
+            method_next = (c == '.' && (i == 0 || chars[i - 1] != '.') && next != Some('.'))
+                || (c == ':' && i > 0 && chars[i - 1] == ':' && (i < 2 || chars[i - 2] != ':'));
             prev = if c == ';' { None } else { Some(c) };
         }
         i += 1;
@@ -703,18 +773,33 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             &mut pending,
         );
     }
+    // A literal delimited by the end of a line closes at the end of the
+    // next, unless an odd run of `\` there joins the line after it. The
+    // newline that closes it ends no statement, so the next line reads on
+    // after the value.
     if let Some(Frame::Literal {
         close: '\n',
         line: opened,
+        body,
         ..
     }) = stack.last()
         && *opened < number
+        && !joins_next_line(line)
     {
+        regex_options = body.is_some();
         stack.pop();
         literal_end = chars.len();
         if stack.is_empty() {
             text.push_str("\"\"");
+            prev = Some('"');
+            word.clear();
+            continues_line = true;
         }
+    }
+    // A line ending in `.`, `&.` or `::` names its method on a later line,
+    // past any blank or comment line, so the statement reads on.
+    if stack.is_empty() && method_next {
+        continues_line = true;
     }
     let mut code = text[base..].to_string();
     if continues_line {
@@ -730,6 +815,9 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             word_colon,
             pending,
             captures,
+            method_next,
+            after_operator_method,
+            regex_options,
         });
     } else {
         end_statement(&text[st.start..], &st, scopes);
@@ -811,61 +899,6 @@ fn read_params(
     }
 }
 
-/// What the code before a `<<`, `?`, `%` or `/` makes of it. `prev` is the
-/// last code character (`"` for a literal that closed), `word` the word or
-/// number the code ends with, `spaced` whether whitespace followed it, and
-/// `scopes` the local variables and parameters visible here. A word after a
-/// `.` (`method`) is a method name, which no local or keyword shadows.
-///
-/// A value ends with `)`, `]`, `}`, a closed literal or a number, or is a
-/// word other than a keyword written straight against the operator
-/// (`a%(b)`; `if%w[a]` opens a literal). These words count with a space
-/// too: `self`, `nil`, `true`, `false`, `end`, `class` (for `class <<self`),
-/// `def` (for `def /(other)`), a variable with a sigil (`@args`,
-/// `$stdout`), a local and a parameter. A word [`takes_operand`] accepts,
-/// an operator, `(`, `,` or the start of a statement leaves an operand
-/// position, and any other word followed by a space a guess.
-fn position(
-    prev: Option<char>,
-    word: &str,
-    spaced: bool,
-    method: bool,
-    scopes: &Scopes,
-) -> Position {
-    match prev {
-        Some(')' | ']' | '}' | '"') => Position::Value,
-        Some(c) if is_word_char(c) || (matches!(c, '?' | '!') && word.ends_with(c)) => {
-            let number = word.starts_with(|c: char| c.is_ascii_digit());
-            if method && spaced && !number {
-                return Position::Guess;
-            }
-            let bound = scopes.lookup(word);
-            if !method && HASH_AFTER.contains(&word) {
-                // A keyword takes an operand with or without a space
-                // (`if%w[a]`).
-                Position::Operand
-            } else if !spaced
-                || number
-                || word.starts_with(['@', '$'])
-                || matches!(
-                    word,
-                    "self" | "nil" | "true" | "false" | "end" | "class" | "def"
-                )
-                || bound == Some(false)
-            {
-                Position::Value
-            } else if bound == Some(true) {
-                Position::Parameter
-            } else if takes_operand(word) {
-                Position::Operand
-            } else {
-                Position::Guess
-            }
-        }
-        _ => Position::Operand,
-    }
-}
-
 fn literal(open: char, close: char, interpolates: bool, kind: &'static str, line: usize) -> Frame {
     Frame::Literal {
         open,
@@ -892,26 +925,28 @@ fn regex(line: usize) -> Frame {
 /// `bare` is whether it stands where an operand must and no word comes
 /// before it (`x = %…`): only there does a bare `%` take a space, a tab,
 /// `=` or the end of the line as its delimiter, which after a word make it
-/// a modulo or a modulo assignment. A typed literal (`%q a `) takes a space
-/// anywhere it opens.
+/// a modulo or a modulo assignment. A typed literal (`%q a `, `%q` at the
+/// end of the line) takes a space or the end of the line anywhere it opens.
+/// A literal delimited by the end of the line holds the next line, and a
+/// list (`%w`, `%i`) delimited by whitespace never closes, since Ruby reads
+/// that whitespace as a word separator.
 fn percent_literal(text: &[char], line: usize, bare: bool) -> Option<(usize, Frame)> {
     let (kind, at) = match text.get(1) {
         Some(c @ ('q' | 'Q' | 'w' | 'W' | 'i' | 'I' | 'r' | 's' | 'x')) => (Some(*c), 2),
         _ => (None, 1),
     };
-    let Some(&open) = text.get(at) else {
-        // A literal delimited by the end of the line holds the next line.
-        return (bare && kind.is_none())
-            .then(|| (at, literal('\n', '\n', true, "percent literal", line)));
-    };
-    let close = match open {
-        '(' => ')',
-        '[' => ']',
-        '{' => '}',
-        '<' => '>',
-        ' ' | '\t' | '=' if kind.is_none() && !bare => return None,
-        ' ' | '\t' => open,
-        c if c.is_ascii_punctuation() => c,
+    let list = matches!(kind, Some('w' | 'W' | 'i' | 'I'));
+    let delimiter = text.get(at).copied();
+    let (open, close) = match delimiter {
+        None | Some(' ' | '\t') if list => ('\0', '\0'),
+        None if kind.is_none() && !bare => return None,
+        None => ('\n', '\n'),
+        Some('(') => ('(', ')'),
+        Some('[') => ('[', ']'),
+        Some('{') => ('{', '}'),
+        Some('<') => ('<', '>'),
+        Some(' ' | '\t' | '=') if kind.is_none() && !bare => return None,
+        Some(c) if matches!(c, ' ' | '\t') || c.is_ascii_punctuation() => (c, c),
         _ => return None,
     };
     let interpolates = !matches!(kind, Some('q' | 'w' | 'i' | 's'));
@@ -921,33 +956,5 @@ fn percent_literal(text: &[char], line: usize, bare: bool) -> Option<(usize, Fra
     {
         *body = Some(String::new());
     }
-    Some((at + 1, frame))
-}
-
-/// Whether `c` extends the number `word` (`0x1f`, `1_000`, `1e5`, `2r`):
-/// a keyword written against a number starts a word of its own (`2if`).
-fn number_continues(word: &str, c: char, next: Option<char>) -> bool {
-    let hex = word.starts_with("0x") || word.starts_with("0X");
-    c.is_ascii_digit()
-        || c == '_'
-        || (word == "0" && matches!(c, 'x' | 'X' | 'b' | 'B' | 'o' | 'O' | 'd' | 'D'))
-        || (hex && c.is_ascii_hexdigit())
-        || (!hex
-            && matches!(c, 'e' | 'E')
-            && next.is_some_and(|n| n.is_ascii_digit() || matches!(n, '-' | '+')))
-        || (matches!(c, 'r' | 'i') && !next.is_some_and(is_word_char))
-}
-
-/// The length of a `?x` character literal at the start of `text`, or
-/// `None` when the `?` is not one (`a ? b : c`, `?ab`).
-fn char_literal_len(text: &[char]) -> Option<usize> {
-    let c = *text.get(1).filter(|c| !c.is_whitespace())?;
-    let len = if c == '\\' { 3 } else { 2 };
-    // A word character followed straight by another is no literal (`?ab`),
-    // and neither is a quote before a word (`?"a"`, a ternary before a
-    // string); `?#if` is a literal before a modifier.
-    if !matches!(c, '#' | '\\') && text.get(len).is_some_and(|&next| is_word_char(next)) {
-        return None;
-    }
-    Some(len.min(text.len()))
+    Some((at + usize::from(delimiter.is_some()), frame))
 }

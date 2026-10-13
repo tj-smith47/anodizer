@@ -1108,3 +1108,143 @@ fn a_backslash_ending_a_heredoc_body_line_joins_the_next_line() {
     assert_facts("x = <<~'EOS'\n  a \\\nEOS\non_linux", true, false, None);
     assert_facts("x = <<~EOS\n  a \\\\\nEOS\non_linux", true, false, None);
 }
+
+/// A typed percent literal whose delimiter is the end of its line holds the
+/// next line, as a bare `%` does, and that line ending in an odd run of `\`
+/// joins the line after it. The newline that closes it ends no statement,
+/// so a `%` or `if` on the next line follows a value. A list (`%w`, `%i`)
+/// splits its words on whitespace, so a space or the end of the line never
+/// closes it.
+#[test]
+fn a_percent_literal_delimited_by_the_end_of_its_line_holds_the_next() {
+    for kind in ["", "q", "Q", "s", "r", "x"] {
+        assert_facts(&format!("x = %{kind}\n  on_linux \n"), false, false, None);
+        // After a method name only a typed literal opens; a bare `%` is a
+        // modulo.
+        assert_facts(
+            &format!("p %{kind}\n  on_linux \n"),
+            kind.is_empty(),
+            false,
+            None,
+        );
+        assert_facts(
+            &format!("v = %{kind}\nab \\\non_linux\n"),
+            false,
+            false,
+            None,
+        );
+        assert_facts(
+            &format!("n = %{kind}\nab\n% 2\non_linux do\nend"),
+            true,
+            false,
+            None,
+        );
+    }
+    for kind in ["w", "W", "i", "I"] {
+        for block in [
+            format!("x = %{kind}\n  on_linux \n"),
+            format!("x = %{kind} a b \non_linux"),
+        ] {
+            assert_facts(&block, true, false, unclosed(1, "percent literal"));
+        }
+    }
+    let edges = super::line_code_edges("x = %q\n  on_linux \n.strip");
+    assert_eq!(
+        edges.iter().map(|e| e.starts_in_code).collect::<Vec<_>>(),
+        [true, false, true]
+    );
+}
+
+/// In the body of a heredoc whose tag is not single-quoted, `#{…}` is code:
+/// a heredoc opened there has its body read from the next line, before the
+/// rest of the body around it. A body line that ends inside `#{…}` cannot
+/// be read on, and a single-quoted tag reads `#{` as text.
+#[test]
+fn an_interpolation_in_a_heredoc_body_is_read_as_code() {
+    let cases: &[(&str, bool, Option<Unreadable>)] = &[
+        ("x = <<~EOS\n  #{<<~X}\nEOS\nX\non_linux\nEOS", false, None),
+        (
+            "x = <<~EOS\n  #{<<~X}\nEOS\nX\nEOS\non_linux do\nend",
+            true,
+            None,
+        ),
+        (
+            "x = <<~EOS\n #{<<~A} #{<<~B}\nA\nB\non_linux\nEOS",
+            false,
+            None,
+        ),
+        ("x = <<~EOS\n  #{\"a\"}\n  on_linux\nEOS", false, None),
+        ("x = <<~EOS\n  #{\"}\"}\nEOS\non_linux do\nend", true, None),
+        (
+            "x = <<~'EOS'\n  #{<<~X}\nEOS\nX\non_linux do\nend",
+            true,
+            None,
+        ),
+        (
+            "x = <<~EOS\n  #{a \\\n }\nEOS\non_linux do\nend",
+            true,
+            unclosed(2, "heredoc"),
+        ),
+    ];
+    for (block, other_os_block, unread) in cases {
+        assert_facts(block, *other_os_block, false, *unread);
+    }
+}
+
+/// After `.`, `&.` or `::`, with or without a space, the next token is a
+/// method name whatever it looks like, so a `%`, `!~` or `<<` there opens
+/// nothing, and a `%` written straight after such a name is a modulo.
+#[test]
+fn an_operator_after_a_call_operator_is_a_method_name() {
+    for block in [
+        "fself. % on_linux do\nend",
+        "nil\n&.!~% on_linux do\nend",
+        "x:: % on_linux do\nend",
+        "x.  <<  on_linux do\nend",
+        "x = 1.<=>?#\non_linux do\nend",
+    ] {
+        assert_facts(block, true, false, None);
+    }
+}
+
+/// A line ending in `.`, `&.` or `::` names its method on a later line,
+/// past blank and comment lines, so the statement reads on and the `%` or
+/// `<<` that starts the next line is the method name. A `..` range at the
+/// end of a line reads nothing on.
+#[test]
+fn a_call_operator_at_the_end_of_a_line_continues_the_statement() {
+    for block in [
+        "y = x.\n%(on_linux)",
+        "foo = 1\nfoo&.\n%(on_linux)",
+        "A::\n%(on_linux)",
+        "y = x.\n  # c\n\n%(on_linux)",
+        "y = x.\n<<~EOS\non_linux\nEOS",
+    ] {
+        assert_facts(block, true, false, None);
+    }
+    assert_facts("x = 1..\n%(on_linux)", false, false, None);
+}
+
+/// A `%r` closed by a newline takes the letters that start the next line
+/// as its options, and the statement reads on after them, so the line
+/// begins inside the literal and its trim keeps the options.
+#[test]
+fn a_regex_closed_by_a_newline_takes_the_next_line_s_letters_as_options() {
+    assert_facts("x = %r\nab\nix + 1", false, false, None);
+    for block in [
+        "x = %r\nab\ni % 2\non_linux do\nend",
+        "x = %r\nab\nix.size\non_linux do\nend",
+        "x = %r\nab\n\non_linux do\nend",
+    ] {
+        assert_facts(block, true, false, None);
+    }
+    let edges = super::line_code_edges("x = %r\nab\nix  \ny = 1");
+    assert_eq!(
+        edges[2],
+        super::LineEdges {
+            starts_in_code: false,
+            trim_from: Some(2),
+        }
+    );
+    assert!(edges[3].starts_in_code);
+}

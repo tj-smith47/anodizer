@@ -15,8 +15,8 @@ pub(super) struct Heredoc {
     /// It was opened on its line after an ambiguous opener.
     pub(super) guessed: bool,
     /// Its tag is not single-quoted, so a `\` at the end of a body line
-    /// joins the next line to it.
-    interpolates: bool,
+    /// joins the next line to it and `#{…}` in a body line is code.
+    pub(super) interpolates: bool,
     /// The body line before ended in an odd run of `\`, so the current line
     /// is joined to it and cannot close the heredoc.
     joined: bool,
@@ -34,10 +34,15 @@ impl Heredoc {
         if !joined && tag == self.tag {
             return true;
         }
-        let backslashes = line.len() - line.trim_end_matches('\\').len();
-        self.joined = self.interpolates && backslashes % 2 == 1;
+        self.joined = self.interpolates && joins_next_line(line);
         false
     }
+}
+
+/// True when `line` ends in an odd run of `\`: the last one escapes the
+/// newline, so the next line is joined to it.
+pub(super) fn joins_next_line(line: &str) -> bool {
+    (line.len() - line.trim_end_matches('\\').len()) % 2 == 1
 }
 
 /// The heredoc opened by the text after a `<<` on line `line`: the length

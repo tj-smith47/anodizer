@@ -1,4 +1,10 @@
-//! The words a `custom_block` lexer reads as taking an argument.
+//! The words and short tokens a `custom_block` lexer reads: what the code
+//! before an operator makes of it, the words that take an argument, the
+//! method names spelled as operators, the spelling of a number and the `?x`
+//! character literal.
+
+use super::is_word_char;
+use super::names::Scopes;
 
 /// Ruby keywords and the common methods after which a `<<`, `%`, `?` or `/`
 /// opens a literal.
@@ -159,4 +165,118 @@ pub(super) const HASH_AFTER: &[&str] = &[
 /// Whether a `<<`, `%`, `?` or `/` after `word` opens a literal.
 pub(super) fn takes_operand(word: &str) -> bool {
     OPERAND_WORDS.contains(&word) || CASK_DSL_WORDS.contains(&word)
+}
+
+/// The method names spelled as operators, longest first so a name is read
+/// whole (`<=>` before `<=` before `<`).
+const OPERATOR_METHODS: &[&str] = &[
+    "[]=", "<=>", "===", "[]", "**", "==", "=~", "!=", "!~", "<<", ">>", "<=", ">=", "+@", "-@",
+    "!@", "~@", "+", "-", "*", "/", "%", "<", ">", "!", "~", "&", "|", "^", "`",
+];
+
+/// The length of the operator method name at the start of `text`, which
+/// follows a `.`, `&.` or `::` (`x.%`, `a&.!~`), or `None` when it starts
+/// with none.
+pub(super) fn operator_method_len(text: &[char]) -> Option<usize> {
+    OPERATOR_METHODS
+        .iter()
+        .find(|name| text.len() >= name.len() && name.chars().zip(text).all(|(a, b)| a == *b))
+        .map(|name| name.len())
+}
+
+/// Whether `c` extends the number `word` (`0x1f`, `1_000`, `1e5`, `2r`):
+/// a keyword written against a number starts a word of its own (`2if`).
+pub(super) fn number_continues(word: &str, c: char, next: Option<char>) -> bool {
+    let hex = word.starts_with("0x") || word.starts_with("0X");
+    c.is_ascii_digit()
+        || c == '_'
+        || (word == "0" && matches!(c, 'x' | 'X' | 'b' | 'B' | 'o' | 'O' | 'd' | 'D'))
+        || (hex && c.is_ascii_hexdigit())
+        || (!hex
+            && matches!(c, 'e' | 'E')
+            && next.is_some_and(|n| n.is_ascii_digit() || matches!(n, '-' | '+')))
+        || (matches!(c, 'r' | 'i') && !next.is_some_and(is_word_char))
+}
+
+/// The length of a `?x` character literal at the start of `text`, or
+/// `None` when the `?` is not one (`a ? b : c`, `?ab`).
+pub(super) fn char_literal_len(text: &[char]) -> Option<usize> {
+    let c = *text.get(1).filter(|c| !c.is_whitespace())?;
+    let len = if c == '\\' { 3 } else { 2 };
+    // A word character followed straight by another is no literal (`?ab`),
+    // and neither is a quote before a word (`?"a"`, a ternary before a
+    // string); `?#if` is a literal before a modifier.
+    if !matches!(c, '#' | '\\') && text.get(len).is_some_and(|&next| is_word_char(next)) {
+        return None;
+    }
+    Some(len.min(text.len()))
+}
+
+/// What the code before a `<<`, `%`, `?` or `/` makes of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Position {
+    /// A value: the operator is a shift, a modulo, a ternary or a division.
+    Value,
+    /// A parameter's name, read as a value.
+    Parameter,
+    /// An operand position: the operator opens a literal.
+    Operand,
+    /// A word that may be a method or a local not seen assigned: the
+    /// operator is read as an opener.
+    Guess,
+}
+
+/// What the code before a `<<`, `?`, `%` or `/` makes of it. `prev` is the
+/// last code character (`"` for a literal that closed), `word` the word or
+/// number the code ends with, `spaced` whether whitespace followed it, and
+/// `scopes` the local variables and parameters visible here. A word after a
+/// `.` (`method`) is a method name, which no local or keyword shadows.
+///
+/// A value ends with `)`, `]`, `}`, a closed literal or a number, or is a
+/// word other than a keyword written straight against the operator
+/// (`a%(b)`; `if%w[a]` opens a literal). These words count with a space
+/// too: `self`, `nil`, `true`, `false`, `end`, `class` (for `class <<self`),
+/// `def` (for `def /(other)`), a variable with a sigil (`@args`,
+/// `$stdout`), a local and a parameter. A word [`takes_operand`] accepts,
+/// an operator, `(`, `,` or the start of a statement leaves an operand
+/// position, and any other word followed by a space a guess.
+pub(super) fn position(
+    prev: Option<char>,
+    word: &str,
+    spaced: bool,
+    method: bool,
+    scopes: &Scopes,
+) -> Position {
+    match prev {
+        Some(')' | ']' | '}' | '"') => Position::Value,
+        Some(c) if is_word_char(c) || (matches!(c, '?' | '!') && word.ends_with(c)) => {
+            let number = word.starts_with(|c: char| c.is_ascii_digit());
+            if method && spaced && !number {
+                return Position::Guess;
+            }
+            let bound = scopes.lookup(word);
+            if !method && HASH_AFTER.contains(&word) {
+                // A keyword takes an operand with or without a space
+                // (`if%w[a]`).
+                Position::Operand
+            } else if !spaced
+                || number
+                || word.starts_with(['@', '$'])
+                || matches!(
+                    word,
+                    "self" | "nil" | "true" | "false" | "end" | "class" | "def"
+                )
+                || bound == Some(false)
+            {
+                Position::Value
+            } else if bound == Some(true) {
+                Position::Parameter
+            } else if takes_operand(word) {
+                Position::Operand
+            } else {
+                Position::Guess
+            }
+        }
+        _ => Position::Operand,
+    }
 }

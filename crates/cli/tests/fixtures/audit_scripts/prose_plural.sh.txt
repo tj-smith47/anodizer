@@ -43,6 +43,8 @@ awk '{ print tolower(s) }' /dev/null && awk -f - /dev/null <<'AWK'
 { print trim(s) }
 AWK
 awk -v x="a b" -F ' ' '{ print length(s) }' /dev/null
+gawk --awk '{ print length(s) }' f
+gawk --lint=fatal --field-separator ':' -W posix -- '{ print toupper(s) }' f
 awk -v n=1 \
   '{ print length(s) }' /dev/null
 echo "BEGIN { length(s) of the rows }"

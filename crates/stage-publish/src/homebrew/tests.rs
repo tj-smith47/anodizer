@@ -8201,6 +8201,15 @@ fn a_rendered_custom_block_keeps_the_whitespace_of_its_literals() {
         ("s = % a ", "\n  s = % a \n"),
         ("s = %\ta\t", "\n  s = %\ta\t\n"),
         ("x = [%\nabc   \n]", "\n  x = [%\nabc   \n  ]\n"),
+        (
+            "x = %q\n  on_linux \n.strip",
+            "\n  x = %q\n  on_linux \n  .strip\n",
+        ),
+        (
+            "v = %\nab \\\non_linux\n.strip",
+            "\n  v = %\nab \\\non_linux\n  .strip\n",
+        ),
+        ("x = %r\nab\nix   ", "\n  x = %r\nab\nix\n"),
         ("s = \"a\"   ", "\n  s = \"a\"\n"),
         (
             "x = <<~EOS\n  a \\\nEOS\n  on_linux\nEOS",

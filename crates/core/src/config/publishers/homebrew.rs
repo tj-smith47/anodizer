@@ -354,16 +354,24 @@ pub struct HomebrewCaskConfig {
     /// bodies (`<<~TAG`, `<<-TAG`, `<<TAG`, a `<<` before a space or a digit
     /// being a shift; unless the tag is single-quoted, a body line ending in
     /// an odd run of `\` joins the next one, so a tag there does not close
-    /// it); `%()`, `%q`, `%Q`, `%w`, `%W`, `%i`, `%I`, `%r`, `%s`
-    /// and `%x` literals delimited by nesting brackets or one repeated
-    /// punctuation character, a typed one also by a space, and a bare `%`
-    /// with nothing before it on its statement but an operator also by a
-    /// space, a tab, `=` or the end of the line; `?x` character literals
-    /// (not `?ab` or `?"a"`); a `/…/` regex where an operand stands; `#`
+    /// it, and `#{…}` in a body line is code, so a heredoc opened there has
+    /// its body read from the next line, before the rest of the body around
+    /// it); `%()`, `%q`, `%Q`, `%w`, `%W`, `%i`, `%I`, `%r`, `%s` and `%x`
+    /// literals delimited by nesting brackets or one repeated punctuation
+    /// character, a typed one also by a space or the end of the line (a
+    /// list, `%w` `%W` `%i` `%I`, splits its words on whitespace, so
+    /// whitespace never closes it), and a bare `%` with nothing before it
+    /// on its statement but an operator also by a space, a tab, `=` or the
+    /// end of the line (a literal delimited by the end of its line holds
+    /// the next line, and the one after while the held line ends in an odd
+    /// run of `\`, and a `%r` closed that way takes the letters that start
+    /// the line after as its options); `?x` character literals (not `?ab`
+    /// or `?"a"`); a `/…/` regex where an operand stands; `#`
     /// comments; and `=begin` … `=end` comments. None opens after a `:`
     /// that makes a symbol, in a special global (`$"`), or where it names a
-    /// method: after `.`, `&.`, `::` or `def`, and as the `?` or `!` of a
-    /// method name.
+    /// method: after `.`, `&.` or `::` (with or without a space, whatever
+    /// the name looks like, so `x. %` and `a&.!~` are method names) or
+    /// `def`, and as the `?` or `!` of a method name.
     ///
     /// A `<<`, `%`, `?` or `/` after a value is a shift, a modulo, a ternary
     /// or a division: after `)`, `]`, `}`, a number, a literal, `self`,
@@ -380,10 +388,11 @@ pub struct HomebrewCaskConfig {
     /// block, a lambda body (`-> { … }`) included, sees them, and its
     /// parameters and the locals first assigned in it end at its `end` or
     /// `}`; `if`, `while`, `case` and `begin` open no scope. A statement
-    /// continued with a `\` at the end of a line, or with a `?\` character
-    /// literal holding the newline, is read as one statement, so the code
-    /// before the break decides what the operator, `if` or `until` after
-    /// it is.
+    /// continued with a `\` at the end of a line, with a `?\` character
+    /// literal holding the newline, with a `.`, `&.` or `::` that ends a
+    /// line (past blank and comment lines) or with a literal the newline
+    /// closes, is read as one statement, so the code before the break
+    /// decides what the operator, `if` or `until` after it is.
     /// After a word, a `/` followed by a space or `=` divides. After an
     /// operator, `(`, `,`, `;`, the start of a line, a Ruby keyword, any
     /// method of the cask DSL or a common method such as `puts` the

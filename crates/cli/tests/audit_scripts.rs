@@ -218,8 +218,10 @@ fn the_misspelled_tool_name_is_reported_and_the_config_alias_is_not() {
 /// `length(s)`, `print trim(s)`): a one-line `awk '…'`, one spread over
 /// several lines in single or double quotes, a heredoc tagged AWK or a whole
 /// `.awk` library. `gawk`, `mawk` and `nawk` open a program as `awk` does,
-/// past a `-v` value quoted with a space in it and onto the next line after
-/// a `\`, and the line that opens an AWK heredoc has its own program read
+/// past every option before it (a `-v` value quoted with a space in it,
+/// `--awk`, `--lint=fatal`, `--field-separator ':'`, `-W posix`, `--`) and
+/// onto the next line after a `\`, and the line that opens an AWK heredoc
+/// has its own program read
 /// first. An `awk -f lib.awk` line opens no program, so an apostrophe in its
 /// comment hides no later line, and a quote before `BEGIN {` opens one only
 /// on a line that names awk, so `echo "BEGIN { length(s) of the rows }"` is a

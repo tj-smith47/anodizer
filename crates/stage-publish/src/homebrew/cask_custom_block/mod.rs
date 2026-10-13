@@ -69,14 +69,22 @@ pub(super) enum UnreadReason {
 ///   bare or quoted and closed by a line holding the tag alone (indented
 ///   for `<<~` and `<<-`), case-sensitive; unless the tag is
 ///   single-quoted, a body line ending in an odd run of `\` joins the next
-///   line, so a tag on that line does not close the heredoc; `<<` followed
-///   by a space or a digit is a shift;
+///   line, so a tag on that line does not close the heredoc, and `#{…}` in
+///   a body line is read as code: a heredoc opened there has its body read
+///   from the next line, before the rest of the body around it, and a body
+///   line that ends inside `#{…}` cannot be read past; `<<` followed by a
+///   space or a digit is a shift;
 /// - a `%(…)`, `%q`, `%Q`, `%w`, `%W`, `%i`, `%I`, `%r`, `%s` or `%x`
 ///   literal delimited by `()`, `[]`, `{}` or `<>` (which nest) or by one
-///   repeated punctuation character; a typed one also by a space, and a
-///   bare `%` with nothing before it on its statement but an operator also
-///   by a space, a tab, `=` or the end of the line, which holds the next
-///   line;
+///   repeated punctuation character; a typed one also by a space or the end
+///   of the line, except a list (`%w`, `%W`, `%i`, `%I`), whose words
+///   whitespace separates, so whitespace never closes it; and a bare `%`
+///   with nothing before it on its statement but an operator also by a
+///   space, a tab, `=` or the end of the line. A literal delimited by the
+///   end of its line holds the next line, and the one after while the held
+///   line ends in an odd run of `\`, and its statement reads on past it; a
+///   `%r` closed that way takes the letters that start the line after as
+///   its options (`%r`, `ab`, `ix`), so that line begins inside it;
 /// - a `?x` character literal (`?#`, `?"`, `?'`) unless a word character
 ///   follows a word character (`?ab`) or a quote (`?"a"`);
 /// - a `/…/` regex where an operand stands;
@@ -85,8 +93,11 @@ pub(super) enum UnreadReason {
 ///
 /// None of these opens after a `:` that makes a symbol (`:%`, `` :` ``), in
 /// a special global (`$"`, `$/`), or where it names a method: after `.`,
-/// `&.`, `::` or `def` (`x.<<`, `def /(other)`), and as the `?` or `!` of a
-/// method name (`then?"a"`).
+/// `&.` or `::`, with or without a space, whatever the name looks like
+/// (`x.<<`, `x. %`, `a&.!~`), after `def` (`def /(other)`), and as the `?`
+/// or `!` of a method name (`then?"a"`). Written straight after a method
+/// name spelled as an operator, a `<<`, `%` or `/` is an operator and a `?`
+/// opens a character literal.
 ///
 /// A `<<`, `%`, `?` or `/` that follows a value is a shift, a modulo, a
 /// ternary or a division and opens nothing. The code before it ends with a
@@ -115,9 +126,11 @@ pub(super) enum UnreadReason {
 /// parameters and the locals first assigned in it end at its `end` or `}`.
 /// `if`, `while`, `case` and `begin` open no scope. After a word, a `/`
 /// followed by a space or `=` divides. A statement continued with a `\` at
-/// the end of a line, or with a `?\` character literal that holds the
-/// newline, reads on as one statement: the code before the break decides
-/// what a `%`, `<<`, `?`, `/`, `if` or `until` after it is.
+/// the end of a line, with a `?\` character literal that holds the
+/// newline, with a `.`, `&.` or `::` that ends a line (past blank and
+/// comment lines; a `..` range continues nothing) or with a literal the
+/// newline closes reads on as one statement: the code before the break
+/// decides what a `%`, `<<`, `?`, `/`, `if` or `until` after it is.
 ///
 /// The operator opens a literal after an operator, `(`, `,`, `;`, the start
 /// of a line, a Ruby keyword, any method of the cask DSL (`caveats <<~EOS`,
