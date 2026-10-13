@@ -2,9 +2,9 @@ use super::*;
 
 /// Render a `key: value` template map (build_args / annotations / labels)
 /// through the engine. A pair whose rendered key or value is empty or only
-/// whitespace is dropped. Output is sorted by rendered key for deterministic
-/// emission; two templates rendering the same key keep the order of their
-/// template keys, so the later one is passed last and wins in docker.
+/// whitespace is dropped. Pairs come out in the order of their template
+/// keys, whatever they render to, so two templates rendering the same key
+/// pass the later one last, and docker keeps that one.
 pub fn render_v2_kv_map(
     ctx: &mut Context,
     map: Option<&HashMap<String, String>>,
@@ -25,7 +25,6 @@ pub fn render_v2_kv_map(
                 out.push((rendered_key, rendered_value));
             }
         }
-        out.sort_by(|a, b| a.0.cmp(&b.0));
     }
     Ok(out)
 }

@@ -69,10 +69,12 @@ fn holds_run(lines: &[String], block: &[String]) -> bool {
 
 #[test]
 fn the_lines_quoted_in_the_docker_manifests_docs_are_what_a_release_prints() {
-    if !tool_on_path("git") || !tool_on_path("cargo") {
-        eprintln!("skipping: git or cargo not on PATH");
-        return;
-    }
+    // The page is a claim about a real run; a host without the tools the run
+    // needs fails here, so the claim is never left unchecked.
+    assert!(
+        tool_on_path("git") && tool_on_path("cargo"),
+        "this test runs a real release and needs git and cargo on PATH"
+    );
     let blocks = no_images_blocks();
     let languages: Vec<&str> = blocks.iter().map(|(l, _)| l.as_str()).collect();
     assert_eq!(languages, ["yaml", "text", "text", "text"], "{blocks:?}");
@@ -101,6 +103,9 @@ fn the_lines_quoted_in_the_docker_manifests_docs_are_what_a_release_prints() {
         blocks[3].1
     );
 
+    // The section's blocks are matched above; this count reads the whole
+    // page, so a `Warning ` line quoted in another section fails here until
+    // it is held by a test too.
     let page = std::fs::read_to_string(PAGE).unwrap();
     let warnings = page
         .lines()

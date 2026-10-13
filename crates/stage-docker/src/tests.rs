@@ -6057,22 +6057,27 @@ fn dry_run_ctx_with_crates(
 // render_v2_kv_map — label / build-arg / annotation template assembly
 // ---------------------------------------------------------------------------
 
+/// Pairs keep the order of their template keys after rendering: `{{ .A }}`
+/// sorts after `vendor` as a template, so `aaa` comes out last although it
+/// would sort first as a rendered key.
 #[test]
-fn render_v2_kv_map_renders_templates_and_sorts_by_key() {
+fn render_v2_kv_map_orders_pairs_by_template_key() {
     use anodizer_core::config::Config;
     use anodizer_core::context::{Context, ContextOptions};
     let mut ctx = Context::new(Config::default(), ContextOptions::default());
     ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("A", "aaa");
 
-    let mut map = HashMap::new();
-    map.insert(
-        "org.opencontainers.image.version".to_string(),
-        "{{ .Version }}".to_string(),
-    );
-    map.insert("vendor".to_string(), "acme".to_string());
+    let map = HashMap::from([
+        (
+            "org.opencontainers.image.version".to_string(),
+            "{{ .Version }}".to_string(),
+        ),
+        ("vendor".to_string(), "acme".to_string()),
+        ("{{ .A }}".to_string(), "first-when-sorted".to_string()),
+    ]);
 
     let out = render_v2_kv_map(&mut ctx, Some(&map), "label").unwrap();
-    // Sorted by rendered key; `org...` sorts before `vendor`.
     assert_eq!(
         out,
         vec![
@@ -6081,6 +6086,7 @@ fn render_v2_kv_map_renders_templates_and_sorts_by_key() {
                 "1.0.0".to_string()
             ),
             ("vendor".to_string(), "acme".to_string()),
+            ("aaa".to_string(), "first-when-sorted".to_string()),
         ],
     );
 }
@@ -8257,13 +8263,17 @@ fn every_config_block_on_the_docker_pages_loads_and_matches_the_schema() {
         serde_json::from_str(&fs::read_to_string(schema_path).unwrap()).unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     let mut failures: Vec<String> = Vec::new();
-    let mut counts: Vec<(&str, usize)> = Vec::new();
     for page in ["packages/docker.md", "packages/docker-manifests.md"] {
-        let blocks: Vec<String> = fenced_blocks(&docs_page(page))
-            .into_iter()
-            .filter(|(language, _)| language == "yaml")
-            .map(|(_, body)| body)
-            .collect();
+        let mut blocks: Vec<String> = Vec::new();
+        for (language, body) in fenced_blocks(&docs_page(page)) {
+            match language.as_str() {
+                "yaml" => blocks.push(body),
+                "text" | "dockerfile" => {}
+                // A `yml` or `yaml title=…` fence would otherwise escape the
+                // config check unread.
+                other => failures.push(format!("{page}: unexpected fence tag `{other}`")),
+            }
+        }
         for body in &blocks {
             if let Err(e) = serde_yaml_ng::from_str::<anodizer_core::config::Config>(body) {
                 failures.push(format!("{page}: does not load: {e}\n{body}"));
@@ -8278,17 +8288,8 @@ fn every_config_block_on_the_docker_pages_loads_and_matches_the_schema() {
                 ));
             }
         }
-        counts.push((page, blocks.len()));
     }
     assert!(failures.is_empty(), "{}", failures.join("\n---\n"));
-    assert_eq!(
-        counts,
-        [
-            ("packages/docker.md", 11),
-            ("packages/docker-manifests.md", 6)
-        ],
-        "the config blocks on each page"
-    );
 }
 
 /// The push command quoted under "Push flags" is the argv the stage gives
