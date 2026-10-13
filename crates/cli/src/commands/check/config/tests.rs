@@ -3746,12 +3746,36 @@ fn the_warning_quoted_in_the_resilience_docs_is_a_message_the_check_produces() {
 /// carrying the elision character is an abbreviation of real output rather
 /// than a claim about it, so it is left out.
 pub(crate) fn quoted_label_lines(relative: &str, label: &str) -> Vec<String> {
+    label_lines(&read_docs_page(relative), label)
+}
+
+/// [`quoted_label_lines`] narrowed to one `## ` section of the page: the
+/// lines from the `heading` line up to the next `## ` heading.
+pub(crate) fn quoted_label_lines_in_section(
+    relative: &str,
+    heading: &str,
+    label: &str,
+) -> Vec<String> {
+    let page = read_docs_page(relative);
+    let mut lines = page.lines().skip_while(|line| *line != heading);
+    let first = lines
+        .next()
+        .unwrap_or_else(|| panic!("{relative} has no `{heading}` heading"));
+    let section: Vec<&str> = std::iter::once(first)
+        .chain(lines.take_while(|line| !line.starts_with("## ")))
+        .collect();
+    label_lines(&section.join("\n"), label)
+}
+
+fn read_docs_page(relative: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/site/content/docs")
         .join(relative);
-    let page =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    page.lines()
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+fn label_lines(text: &str, label: &str) -> Vec<String> {
+    text.lines()
         .filter_map(|line| line.trim_start().strip_prefix(label))
         .filter(|line| !line.contains('\u{2026}'))
         .map(str::to_string)

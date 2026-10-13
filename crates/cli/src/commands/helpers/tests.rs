@@ -2945,11 +2945,27 @@ fn auto_detect_github_does_not_warn_about_github_on_a_gitlab_project() {
 #[test]
 #[serial_test::serial(cwd)]
 fn the_refusal_quoted_in_the_github_release_docs_is_what_the_inference_produces() {
-    let quoted = crate::commands::check::config::tests::quoted_error_lines("publish/github.md");
+    use crate::commands::check::config::tests::{
+        quoted_error_lines, quoted_label_lines_in_section,
+    };
+    let quoted = quoted_label_lines_in_section("publish/github.md", "## Minimal config", "Error ");
     assert_eq!(
         quoted.len(),
         1,
-        "the page quotes one Error line: {quoted:?}"
+        "the Minimal config section quotes one Error line: {quoted:?}"
+    );
+    // The page's only other quoted Error line is the release preflight abort,
+    // held by `the_lines_quoted_in_the_release_preflight_docs_are_what_the_preflight_prints`
+    // (crates/cli/tests/preflight_integration.rs). A third one fails here
+    // until a test holds it too.
+    let page = quoted_error_lines("publish/github.md");
+    let preflight =
+        quoted_label_lines_in_section("publish/github.md", "## Release preflight", "Error ");
+    assert_eq!(preflight.len(), 1, "{preflight:?}");
+    assert_eq!(
+        page,
+        [preflight, quoted.clone()].concat(),
+        "every Error line on the page is in one of the two held sections"
     );
     with_empty_git_repo_cwd(|| {
         let mut config = Config {
