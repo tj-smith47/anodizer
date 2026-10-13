@@ -1725,7 +1725,8 @@ fn a_line_ending_in_an_open_interpolation_starts_a_statement_in_it() {
 
 /// The `|` that closed a block's parameters ends a line only in the code
 /// it was read in, so a `#{…}` that opens or closes after it leaves a line
-/// ending in `,` reading on, whatever the lengths of the two codes.
+/// ending in `,` reading on, whatever the lengths of the code inside and
+/// around the `#{…}`.
 #[test]
 fn block_parameters_closed_in_other_code_leave_a_trailing_comma_reading_on() {
     for block in [
