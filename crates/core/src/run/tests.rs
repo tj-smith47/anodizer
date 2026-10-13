@@ -1056,10 +1056,59 @@ impl std::io::Read for Trickle<'_> {
     }
 }
 
+/// Yields one unterminated chunk, then raises the abandon flag on the next read
+/// and reports end of stream, as a drain cut-off arriving mid-line would.
+struct AbandonsAfterOneChunk<'a> {
+    sent: bool,
+    abandon: &'a std::sync::atomic::AtomicBool,
+}
+
+impl std::io::Read for AbandonsAfterOneChunk<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.sent {
+            self.abandon
+                .store(true, std::sync::atomic::Ordering::Release);
+            return Ok(0);
+        }
+        self.sent = true;
+        let data = b"tail-no-nl";
+        buf[..data.len()].copy_from_slice(data);
+        Ok(data.len())
+    }
+}
+
+/// An unterminated line read before the drain cut-off is kept in the capture,
+/// but the held-back text is not printed once the stream is abandoned.
+#[test]
+fn an_unterminated_line_held_back_at_the_cut_off_is_captured_but_not_printed() {
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+    let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+    let capture = Mutex::new(Vec::new());
+    let abandon = AtomicBool::new(false);
+    tee_stream(
+        AbandonsAfterOneChunk {
+            sent: false,
+            abandon: &abandon,
+        },
+        &log,
+        false,
+        true,
+        &capture,
+        &abandon,
+    );
+    assert_eq!(capture.into_inner().unwrap(), b"tail-no-nl");
+    let printed: Vec<String> = cap.all_messages().into_iter().map(|(_, m)| m).collect();
+    assert!(
+        printed.iter().all(|m| !m.contains("tail-no-nl")),
+        "the held-back line was printed after the cut-off: {printed:?}"
+    );
+}
+
 /// A multi-megabyte line with no terminator (single-line JSON at `-v`) is
 /// captured byte for byte and printed once, in time linear in its length.
 /// The bound is loose so a slow machine passes; rescanning everything held
-/// back on every read took far longer than it on this input.
+/// back on every read took far longer than that on this input (about 11 s in a debug build).
 #[test]
 fn tee_stream_handles_a_long_unterminated_line_in_linear_time() {
     use std::sync::Mutex;
