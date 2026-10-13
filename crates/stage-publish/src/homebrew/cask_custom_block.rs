@@ -2,7 +2,7 @@
 //! dependencies, the two facts that decide whether the rendered cask
 //! carries `depends_on :macos`.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use anodizer_core::log::StageLogger;
 
@@ -17,19 +17,33 @@ pub(super) struct CustomBlockOsFacts {
     /// A `depends_on` statement names an OS: the key `macos:`,
     /// `maximum_macos:` or `linux:`, or the symbol `:macos` or `:linux`.
     pub(super) os_dependency: bool,
-    /// The literal or heredoc still open after the last line of the block.
-    /// When it is set, both facts above come from a word scan of the raw
-    /// text.
-    pub(super) unread: Option<Unclosed>,
+    /// The first place the lexer could not read with confidence. When it is
+    /// set, both facts above come from a word scan of the raw text.
+    pub(super) unread: Option<Unreadable>,
 }
 
-/// A literal or heredoc that does not close before the block ends.
+/// A place in a `custom_block` past which its code cannot be trusted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Unclosed {
-    /// The line of the block it opens on, counted from 1.
+pub(super) struct Unreadable {
+    /// The line of the block it is on, counted from 1.
     pub(super) line: usize,
-    /// What it is: `string`, `heredoc`, `percent literal` or `regex`.
+    /// The literal involved: `string`, `heredoc`, `percent literal`,
+    /// `regex` or `character literal`.
     pub(super) kind: &'static str,
+    /// Why the code after it cannot be trusted.
+    pub(super) reason: UnreadReason,
+}
+
+/// Why a `custom_block` could not be read past a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum UnreadReason {
+    /// The literal opened there is still open after the last line.
+    Unclosed,
+    /// The `operator` there reads as an operator or as the opener of a
+    /// literal depending on whether the word before it is a local variable,
+    /// which the lexer cannot tell, and the literal it would open spans
+    /// more than one line.
+    Ambiguous { operator: &'static str },
 }
 
 /// Read a `custom_block` for the facts `Homebrew/OSDependsOn` and
@@ -61,15 +75,22 @@ pub(super) struct Unclosed {
 ///
 /// - `self`, `nil`, `true`, `false`, `end`, or `class` (`class <<self`);
 /// - an instance, class or global variable (`@args`, `@@all`, `$stdout`);
-/// - a local variable: a name assigned earlier in the block with `name =`
-///   (`==`, `=~`, `=>`, `!=`, `<=` and `>=` assign nothing, and neither
-///   does `obj.name =`), or a name in a block's parameters
-///   (`do |a, b|`, `{ |a| … }`);
+/// - a local variable, which is a name assigned earlier in the block:
+///   `name =`, `name ||=` and the other operator assignments (`==`, `=~`,
+///   `=>`, `!=`, `<=` and `>=` assign nothing, and neither does
+///   `obj.name =`), `a, b =`, `(a, b) =`, `for a in`, `rescue => a`;
+/// - a parameter: of a block (`do |a, b|`, `{ |a| … }`, a list spread over
+///   several lines), of a method (`def name(a, b = 1, *rest, **kw, &blk)`,
+///   with or without parentheses) or of a lambda (`->(x)`, `-> (x)`);
 /// - any word written straight against the operator (`a%(b)`, `1<<FLAGS`).
 ///
-/// It does not after an operator, `(`, `,`, `;`, the start of a line, or
-/// any other word followed by a space, which is a method or keyword taking
-/// an argument (`caveats <<~EOS`, `puts %w[a]`).
+/// It does not after an operator, `(`, `,`, `;`, the start of a line, a
+/// Ruby keyword, a cask stanza or common method that takes an argument
+/// (`caveats <<~EOS`, `puts %w[a]`), and there the operator opens a
+/// literal. After any other word followed by a space the lexer cannot tell
+/// a method from a local it did not see assigned, so it reads the operator
+/// as an opener; when the literal it opens spans more than one line, the
+/// block is unreadable from that line.
 ///
 /// Then:
 ///
@@ -86,12 +107,16 @@ pub(super) struct Unclosed {
 /// - An OS dependency holds when the joined statement names an OS key or
 ///   symbol as a whole word.
 ///
-/// A literal or heredoc still open after the last line means an operator
-/// was read as an opener and the code above cannot be trusted. Both facts
-/// then come from the raw text: a Linux side when one of its words appears
-/// anywhere, an OS dependency when `depends_on` and an OS key or symbol
-/// both do. [`CustomBlockOsFacts::unread`] names the line the open literal
-/// starts on, for the warning [`warn_unread_custom_block`] prints.
+/// The block is unreadable from a line when a literal opened there is
+/// still open after the last line, when a literal opened there from an
+/// ambiguous position spans several lines, or when a parameter's name is
+/// followed there by a `<<` whose heredoc tag closes on a later line (a
+/// parameter outside its block is no local). Both facts then come from a
+/// word scan of the raw text with `#` comments cut (a `#` that starts a
+/// line or follows whitespace): a Linux side when one of its words appears,
+/// an OS dependency when `depends_on` and an OS key or symbol both do.
+/// [`CustomBlockOsFacts::unread`] names the line, for the warning
+/// [`warn_unread_custom_block`] prints.
 // A wrong verdict renders a cask Homebrew refuses. A missed Linux side or a
 // missed OS dependency adds `depends_on :macos`: beside a real `on_linux` a
 // Linux install stops at "This cask requires macOS.", and beside the
@@ -106,28 +131,28 @@ pub(super) struct Unclosed {
 // and fails to load on Linux. The word scan errs toward that second case,
 // which a cask with no Linux side meets only when its own text names one.
 //
-// Misses: a stanza built at runtime (through `send` or `define_method`); a
-// `depends_on` after a `do` on the same line; a regex after any other token,
-// which is read as code; and a local the lexer does not see assigned (one
-// from `a, b = …`, `a += 1` alone, `for a in …`, a `rescue => a`, or a block
-// parameter list spread over several lines), before which a `<<`, `%` or `?`
-// is read as an opener. When that opener leaves a literal open to the end
-// of the block the word scan takes over; when the literal closes further
-// down, the lines between are set aside.
+// Not read correctly: a stanza built at runtime (through `send` or
+// `define_method`); a `depends_on` after a `do` on the same line; a regex
+// after any token not listed above, which is read as code; and an
+// ambiguous opener whose literal closes on the same line, whose content is
+// set aside without a warning. A local assigned inside a method and used
+// after it still counts as one, and so does a parameter used outside its
+// block before a `%` or `?`.
 // `depends_on_macos:` overrides the verdict for every case.
 pub(super) fn custom_block_os_facts(block: Option<&str>) -> CustomBlockOsFacts {
     let Some(block) = block else {
         return CustomBlockOsFacts::default();
     };
-    let (code, unclosed) = code_lines(block);
-    if let Some(unclosed) = unclosed {
+    let (code, unread) = code_lines(block);
+    if let Some(unread) = unread {
+        let text = without_comments(block);
         return CustomBlockOsFacts {
-            other_os_block: names_a_linux_side(block),
-            os_dependency: block
+            other_os_block: names_a_linux_side(&text),
+            os_dependency: text
                 .split(|c: char| !is_word_char(c))
                 .any(|w| w == "depends_on")
-                && names_an_os(block),
-            unread: Some(unclosed),
+                && names_an_os(&text),
+            unread: Some(unread),
         };
     }
     let other_os_block = code.iter().any(|line| names_a_linux_side(&line.text));
@@ -148,13 +173,41 @@ pub(super) fn warn_unread_custom_block(params: &CaskParams<'_>, log: &StageLogge
     if params.depends_on_macos.is_some() {
         return;
     }
-    if let Some(Unclosed { line, kind }) = custom_block_os_facts(params.custom_block).unread {
-        log.warn(&format!(
-            "homebrew cask '{}': custom_block could not be read past line {line} (an unclosed {kind}); \
-             the Linux-side and depends_on checks fell back to a word scan — set depends_on_macos: to decide it",
-            params.name
-        ));
-    }
+    let Some(Unreadable { line, kind, reason }) = custom_block_os_facts(params.custom_block).unread
+    else {
+        return;
+    };
+    let cause = match reason {
+        UnreadReason::Unclosed => format!("an unclosed {kind}"),
+        UnreadReason::Ambiguous { operator } => {
+            format!("the '{operator}' there could open a {kind} or be an operator")
+        }
+    };
+    log.warn(&format!(
+        "homebrew cask '{}': custom_block could not be read past line {line} ({cause}); \
+         the Linux-side and depends_on checks fell back to a word scan, which may over-match — \
+         set depends_on_macos: to decide it",
+        params.name
+    ));
+}
+
+/// `block` with each `#` comment cut: from a `#` that starts a line or
+/// follows whitespace to the end of that line.
+fn without_comments(block: &str) -> String {
+    block
+        .lines()
+        .map(|line| {
+            let mut prev_space = true;
+            for (at, c) in line.char_indices() {
+                if c == '#' && prev_space {
+                    return &line[..at];
+                }
+                prev_space = c.is_whitespace();
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn is_word_char(c: char) -> bool {
@@ -173,6 +226,54 @@ fn names_a_linux_side(text: &str) -> bool {
 fn is_local_name(name: &str) -> bool {
     name.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
 }
+
+/// Words after which a `<<`, `%` or `?` opens a literal: Ruby keywords, the
+/// cask stanzas and the common methods that take an argument.
+const OPERAND_WORDS: &[&str] = &[
+    "and",
+    "app",
+    "artifact",
+    "begin",
+    "binary",
+    "break",
+    "case",
+    "caveats",
+    "conflicts_with",
+    "depends_on",
+    "desc",
+    "do",
+    "else",
+    "elsif",
+    "homepage",
+    "if",
+    "in",
+    "manpage",
+    "name",
+    "next",
+    "not",
+    "or",
+    "p",
+    "postflight",
+    "preflight",
+    "print",
+    "puts",
+    "raise",
+    "require",
+    "return",
+    "system",
+    "then",
+    "uninstall",
+    "uninstall_postflight",
+    "uninstall_preflight",
+    "unless",
+    "until",
+    "url",
+    "warn",
+    "when",
+    "while",
+    "yield",
+    "zap",
+];
 
 /// The code of one line of a `custom_block`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -195,9 +296,11 @@ enum Frame {
         close: char,
         depth: usize,
         interpolates: bool,
-        /// What the literal is and the line it opens on, for [`Unclosed`].
+        /// What the literal is and the line it opens on, for [`Unreadable`].
         kind: &'static str,
         line: usize,
+        /// It was opened on its line after an ambiguous opener.
+        guessed: bool,
     },
     /// `#{…}` code, ended by the `}` that matches no `{` opened inside it.
     Interpolation { braces: usize },
@@ -209,6 +312,8 @@ struct Heredoc {
     indented: bool,
     /// The line of the opener.
     line: usize,
+    /// It was opened on its line after an ambiguous opener.
+    guessed: bool,
 }
 
 impl Heredoc {
@@ -221,21 +326,47 @@ impl Heredoc {
     }
 }
 
-/// What carries from one line of a block to the next: the open literals,
-/// the pending heredocs and the local variables assigned so far.
-#[derive(Default)]
-struct Carry {
-    stack: Vec<Frame>,
-    heredocs: VecDeque<Heredoc>,
-    locals: HashSet<String>,
+/// What the code before a `<<`, `%` or `?` makes of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Position {
+    /// A value: the operator is a shift, a modulo or a ternary.
+    Value,
+    /// A parameter's name, read as a value.
+    Parameter,
+    /// An operand position: the operator opens a literal.
+    Operand,
+    /// A word that may be a method or a local not seen assigned: the
+    /// operator is read as an opener.
+    Guess,
 }
 
-/// The code of every line of `block`, and the literal or heredoc left open
-/// at its end.
-fn code_lines(block: &str) -> (Vec<CodeLine>, Option<Unclosed>) {
+/// What carries from one line of a block to the next.
+#[derive(Default)]
+struct Carry {
+    /// The open literals.
+    stack: Vec<Frame>,
+    /// The heredocs whose bodies are pending.
+    heredocs: VecDeque<Heredoc>,
+    /// The local variables assigned so far.
+    locals: HashSet<String>,
+    /// The parameters of the blocks, methods and lambdas read so far.
+    params: HashSet<String>,
+    /// The text of a block's parameter list from its opening `|`, while the
+    /// list is still open.
+    param_list: Option<String>,
+    /// The heredoc a `<<` after a parameter's name would open.
+    shifts: Vec<Heredoc>,
+    /// The first line a guessed literal spans past.
+    ambiguous: Option<Unreadable>,
+}
+
+/// The code of every line of `block`, and the first place it cannot be
+/// read with confidence.
+fn code_lines(block: &str) -> (Vec<CodeLine>, Option<Unreadable>) {
+    let lines: Vec<&str> = block.lines().collect();
     let mut carry = Carry::default();
     let mut out = Vec::new();
-    for (n, line) in block.lines().enumerate() {
+    for (n, line) in lines.iter().enumerate() {
         if let Some(heredoc) = carry.heredocs.front() {
             if heredoc.closes_on(line) {
                 carry.heredocs.pop_front();
@@ -245,19 +376,47 @@ fn code_lines(block: &str) -> (Vec<CodeLine>, Option<Unclosed>) {
         }
         out.push(lex_line(line, n + 1, &mut carry));
     }
+    let unclosed = |line: usize, kind| Unreadable {
+        line,
+        kind,
+        reason: UnreadReason::Unclosed,
+    };
     let literal = carry.stack.first().and_then(|frame| match frame {
-        Frame::Literal { kind, line, .. } => Some(Unclosed { line: *line, kind }),
+        Frame::Literal { kind, line, .. } => Some(unclosed(*line, *kind)),
         Frame::Interpolation { .. } => None,
     });
-    let heredoc = carry.heredocs.front().map(|h| Unclosed {
-        line: h.line,
-        kind: "heredoc",
-    });
-    let unclosed = match (literal, heredoc) {
-        (Some(a), Some(b)) => Some(if b.line < a.line { b } else { a }),
-        (a, b) => a.or(b),
-    };
-    (out, unclosed)
+    let heredoc = carry.heredocs.front().map(|h| unclosed(h.line, "heredoc"));
+    // The last line each text appears on, as written and indented, so a
+    // tag is looked up once per heredoc.
+    let mut last_exact = HashMap::new();
+    let mut last_indented = HashMap::new();
+    for (n, line) in lines.iter().enumerate() {
+        last_exact.insert(*line, n + 1);
+        last_indented.insert(line.trim_start(), n + 1);
+    }
+    let shift = carry
+        .shifts
+        .iter()
+        .find(|h| {
+            let last = if h.indented {
+                &last_indented
+            } else {
+                &last_exact
+            };
+            last.get(h.tag.as_str()).is_some_and(|&n| n > h.line)
+        })
+        .map(|h| Unreadable {
+            line: h.line,
+            kind: "heredoc",
+            reason: UnreadReason::Ambiguous { operator: "<<" },
+        });
+    // On a tie the ambiguous reading names the cause of the open literal.
+    let found = [carry.ambiguous, shift, literal, heredoc];
+    let first = found
+        .into_iter()
+        .flatten()
+        .min_by_key(|u| (u.line, matches!(u.reason, UnreadReason::Unclosed)));
+    (out, first)
 }
 
 /// Read line `number` of a block on top of what the lines before it left
@@ -267,9 +426,20 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
         stack,
         heredocs,
         locals,
+        params,
+        param_list,
+        shifts,
+        ambiguous,
     } = carry;
     let chars: Vec<char> = line.chars().collect();
     let mut text = String::new();
+    // Where the statement being read starts in `text`; whether its first
+    // assignment and its first `in` have been read; and where the parameter list of a `def` or
+    // `->` in it may start.
+    let mut statement = 0;
+    let mut assigned = false;
+    let mut read_in = false;
+    let mut params_from: Option<usize> = None;
     // The last two characters of code read, ignoring whitespace; `None`
     // at the start of a statement.
     let mut prev: Option<char> = None;
@@ -281,8 +451,9 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
     let mut word = String::new();
     let mut spaced = false;
     let mut before_word: Option<char> = None;
-    // The text of a block's parameter list, from its opening `|`.
-    let mut params: Option<String> = None;
+    // The first ambiguous opener on this line: its operator and the kind
+    // of literal it opened. Every literal opened after it is guessed.
+    let mut guess: Option<(&'static str, &'static str)> = None;
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
@@ -320,32 +491,53 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
             }
             continue;
         }
-        let after_value = after_value(prev, &word, spaced, locals);
+        let position = position(prev, &word, spaced, locals, params);
+        let opens = matches!(position, Position::Operand | Position::Guess);
         let rest = &chars[i..];
+        let shift = c == '<' && rest.get(1) == Some(&'<');
+        let mut heredoc = None;
         let opened = match c {
             '#' => break,
             '"' | '\'' => Some((1, Some(literal(c, c, c == '"', "string", number)))),
-            '%' if !after_value => {
-                percent_literal(rest, number).map(|(len, frame)| (len, Some(frame)))
-            }
-            '?' if !after_value => char_literal_len(rest).map(|len| (len, None)),
+            '%' if opens => percent_literal(rest, number).map(|(len, frame)| (len, Some(frame))),
+            '?' if opens => char_literal_len(rest).map(|len| (len, None)),
             '/' if prev.is_none()
                 || matches!(prev, Some('(' | ',' | '='))
                 || (prev == Some('~') && matches!(before_prev, Some('=' | '!'))) =>
             {
                 Some((1, Some(literal('/', '/', true, "regex", number))))
             }
-            '<' if !after_value && rest.get(1) == Some(&'<') => heredoc_opener(&rest[2..], number)
-                .map(|(len, heredoc)| {
-                    heredocs.push_back(heredoc);
-                    (2 + len, None)
-                }),
+            '<' if shift && opens => heredoc_opener(&rest[2..], number).map(|(len, h)| {
+                heredoc = Some(h);
+                (2 + len, None)
+            }),
+            '<' if shift && position == Position::Parameter => {
+                shifts.extend(heredoc_opener(&rest[2..], number).map(|(_, h)| h));
+                None
+            }
             _ => None,
         };
         if let Some((len, frame)) = opened {
+            if position == Position::Guess && guess.is_none() {
+                guess = match c {
+                    '%' => Some(("%", "percent literal")),
+                    '?' => Some(("?", "character literal")),
+                    '<' => Some(("<<", "heredoc")),
+                    _ => None,
+                };
+            }
             i += len;
+            if let Some(mut h) = heredoc {
+                h.guessed = guess.is_some();
+                heredocs.push_back(h);
+            }
             match frame {
-                Some(frame) => stack.push(frame),
+                Some(mut frame) => {
+                    if let Frame::Literal { guessed, .. } = &mut frame {
+                        *guessed = guess.is_some();
+                    }
+                    stack.push(frame);
+                }
                 None => {
                     if stack.is_empty() {
                         text.push_str("\"\"");
@@ -369,26 +561,50 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
             }
         } else {
             text.push(c);
-        }
-        if c == '='
-            && prev.is_some_and(is_word_char)
-            && before_word != Some('.')
-            && is_local_name(&word)
-            && !matches!(rest.get(1), Some('=' | '~' | '>'))
-        {
-            locals.insert(word.clone());
+            let code = &text[statement..text.len() - c.len_utf8()];
+            if c == '='
+                && !matches!(rest.get(1), Some('=' | '~' | '>'))
+                && !matches!(prev, Some('=' | '!' | '<' | '>'))
+            {
+                if prev.is_some_and(is_word_char)
+                    && before_word != Some('.')
+                    && is_local_name(&word)
+                {
+                    locals.insert(word.clone());
+                }
+                if !assigned {
+                    locals.extend(assigned_names(code));
+                }
+                assigned = true;
+            } else if c == ')' {
+                if let Some(from) = params_from
+                    && let Some(names) = parenthesized_params(&text[from..])
+                {
+                    params.extend(names);
+                    params_from = None;
+                }
+            } else if c == '>' && prev == Some('-') {
+                params_from = Some(text.len());
+            } else if c == ';' {
+                bind_statement(code, locals, params);
+                statement = text.len();
+                assigned = false;
+                read_in = false;
+                params_from = None;
+            } else if c.is_whitespace() && word == "def" && code.trim_start() == "def" {
+                params_from = Some(text.len());
+            } else if c.is_whitespace() && word == "in" && !read_in {
+                locals.extend(for_names(code));
+                read_in = true;
+            }
         }
         if c == '|' {
-            if let Some(list) = params.take() {
-                locals.extend(
-                    list.split(|c: char| !is_word_char(c))
-                        .filter(|name| is_local_name(name))
-                        .map(String::from),
-                );
+            if let Some(list) = param_list.take() {
+                params.extend(param_names(&list));
             } else if prev == Some('{') || word == "do" {
-                params = Some(String::new());
+                *param_list = Some(String::new());
             }
-        } else if let Some(list) = &mut params {
+        } else if let Some(list) = param_list {
             list.push(c);
         }
         if c.is_whitespace() {
@@ -414,36 +630,148 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
         }
         i += 1;
     }
+    bind_statement(&text[statement..], locals, params);
+    if let Some(list) = param_list {
+        list.push('\n');
+    }
+    if let Some((operator, kind)) = guess {
+        let spans = stack
+            .iter()
+            .any(|f| matches!(f, Frame::Literal { guessed: true, .. }))
+            || heredocs.iter().any(|h| h.guessed);
+        if spans && ambiguous.is_none() {
+            *ambiguous = Some(Unreadable {
+                line: number,
+                kind,
+                reason: UnreadReason::Ambiguous { operator },
+            });
+        }
+    }
     CodeLine {
         text,
         open: !stack.is_empty(),
     }
 }
 
-/// True when the code before a `<<`, `?` or `%` ends with a value, which
-/// makes it a shift, a ternary or a modulo. `prev` is the last code
-/// character (`"` for a literal that closed), `word` the word or number the
-/// code ends with, `spaced` whether whitespace followed it, and `locals`
-/// the local variables assigned so far.
+/// What the code before a `<<`, `?` or `%` makes of it. `prev` is the last
+/// code character (`"` for a literal that closed), `word` the word or
+/// number the code ends with, `spaced` whether whitespace followed it, and
+/// `locals` and `params` the local variables and parameters read so far.
 ///
 /// A value ends with `)`, `]`, `}`, a closed literal or a number, or is a
 /// word written straight against the operator (`a%(b)`). These words count
 /// with a space too: `self`, `nil`, `true`, `false`, `end`, `class` (for
-/// `class <<self`), a variable with a sigil (`@args`, `$stdout`) and a
-/// local in `locals`. Any other word is a method or keyword taking an
-/// argument (`caveats <<~EOS`, `puts %w[a]`), and an operator, `(`, `,` or
-/// the start of a statement leaves no value.
-fn after_value(prev: Option<char>, word: &str, spaced: bool, locals: &HashSet<String>) -> bool {
+/// `class <<self`), a variable with a sigil (`@args`, `$stdout`), a local
+/// and a parameter. A word in [`OPERAND_WORDS`], an operator, `(`, `,` or
+/// the start of a statement leaves an operand position, and any other word
+/// followed by a space a guess.
+fn position(
+    prev: Option<char>,
+    word: &str,
+    spaced: bool,
+    locals: &HashSet<String>,
+    params: &HashSet<String>,
+) -> Position {
     match prev {
-        Some(')' | ']' | '}' | '"') => true,
+        Some(')' | ']' | '}' | '"') => Position::Value,
         Some(c) if is_word_char(c) => {
-            !spaced
+            if !spaced
                 || word.starts_with(|c: char| c.is_ascii_digit() || matches!(c, '@' | '$'))
                 || matches!(word, "self" | "nil" | "true" | "false" | "end" | "class")
                 || locals.contains(word)
+            {
+                Position::Value
+            } else if params.contains(word) {
+                Position::Parameter
+            } else if OPERAND_WORDS.contains(&word) {
+                Position::Operand
+            } else {
+                Position::Guess
+            }
         }
-        _ => false,
+        _ => Position::Operand,
     }
+}
+
+/// The names `code`, the statement before an `=`, assigns: `a` from `a`
+/// or `a ||` (and the other operator assignments), `a`, `b` and `c` from
+/// `a, *b, c` and `(a, b)`. Empty when `code` is anything else.
+fn assigned_names(code: &str) -> Vec<String> {
+    let target = code
+        .trim()
+        .trim_end_matches(['|', '&', '+', '-', '*', '/', '%'])
+        .trim();
+    let target = target
+        .strip_prefix('(')
+        .and_then(|t| t.strip_suffix(')'))
+        .unwrap_or(target);
+    let names: Vec<&str> = target
+        .split(',')
+        .map(|name| name.trim().trim_start_matches('*'))
+        .collect();
+    if names
+        .iter()
+        .all(|name| is_local_name(name) && name.chars().all(is_word_char))
+    {
+        names.into_iter().map(String::from).collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// The names a `for … in` statement `code`, read up to `in`, binds.
+fn for_names(code: &str) -> Vec<String> {
+    code.trim_start()
+        .strip_prefix("for ")
+        .and_then(|rest| rest.trim_end().strip_suffix(" in"))
+        .map(|names| assigned_names(names.trim()))
+        .unwrap_or_default()
+}
+
+/// Bind the names a whole statement `code` declares: the variable of a
+/// `rescue … => e`, and the parameters of a `def name a, b` written
+/// without parentheses.
+fn bind_statement(code: &str, locals: &mut HashSet<String>, params: &mut HashSet<String>) {
+    let code = code.trim();
+    if code.starts_with("rescue")
+        && let Some((_, name)) = code.rsplit_once("=>")
+    {
+        locals.extend(assigned_names(name));
+    }
+    if let Some(rest) = code.strip_prefix("def ")
+        && let Some((name, list)) = rest.trim_start().split_once(char::is_whitespace)
+        && !name.contains('(')
+    {
+        params.extend(param_names(list));
+    }
+}
+
+/// The parameters in `code`, the text after a `def` or `->` up to a `)`
+/// just read: `None` while that `)` leaves the list open, the names once it
+/// closes the list, and no names when `code` starts no parenthesized list
+/// (`def name a, b`).
+fn parenthesized_params(code: &str) -> Option<Vec<String>> {
+    let Some(open) = code.find('(') else {
+        return Some(Vec::new());
+    };
+    if code[..open].trim().contains(char::is_whitespace) {
+        return Some(Vec::new());
+    }
+    let list = &code[open..];
+    (bracket_balance(list) == 0).then(|| param_names(&list[1..list.len() - 1]))
+}
+
+/// The names in a parameter list: each comma-separated entry's leading
+/// name after any `*`, `**`, `&` or `(`, so a default value or a keyword's
+/// `:` is passed over.
+fn param_names(list: &str) -> Vec<String> {
+    list.split(',')
+        .filter_map(|entry| {
+            let entry = entry.trim_start_matches(|c: char| c.is_whitespace() || "*&(".contains(c));
+            let name: String = entry.chars().take_while(|&c| is_word_char(c)).collect();
+            is_local_name(&name).then_some(name)
+        })
+        .collect()
 }
 
 fn literal(open: char, close: char, interpolates: bool, kind: &'static str, line: usize) -> Frame {
@@ -454,6 +782,7 @@ fn literal(open: char, close: char, interpolates: bool, kind: &'static str, line
         interpolates,
         kind,
         line,
+        guessed: false,
     }
 }
 
@@ -516,6 +845,7 @@ fn heredoc_opener(text: &[char], line: usize) -> Option<(usize, Heredoc)> {
             tag: tag.iter().collect(),
             indented,
             line,
+            guessed: false,
         },
     ))
 }
@@ -620,7 +950,9 @@ fn names_an_os(args: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{CodeLine, CustomBlockOsFacts, Unclosed, code_lines, custom_block_os_facts};
+    use super::{
+        CodeLine, CustomBlockOsFacts, UnreadReason, Unreadable, code_lines, custom_block_os_facts,
+    };
 
     fn facts(other_os_block: bool, os_dependency: bool) -> CustomBlockOsFacts {
         CustomBlockOsFacts {
@@ -698,8 +1030,8 @@ mod tests {
                 &[line("x ", true), line("\"\" y", false)],
             ),
             (
-                "x %w[\n on_linux\n] y",
-                &[line("x ", true), line("", true), line("\"\" y", false)],
+                "puts %w[\n on_linux\n] y",
+                &[line("puts ", true), line("", true), line("\"\" y", false)],
             ),
             (
                 "\"#{\n x \"}\" \n}\" y",
@@ -716,9 +1048,9 @@ mod tests {
                 ],
             ),
             (
-                "x <<EOS\n  EOS\neos\nEOS\nz",
+                "puts <<EOS\n  EOS\neos\nEOS\nz",
                 &[
-                    line("x \"\"", false),
+                    line("puts \"\"", false),
                     line("", false),
                     line("", false),
                     line("", false),
@@ -1032,13 +1364,13 @@ mod tests {
                 facts(true, false),
             ),
             (
-                "an == comparison assigns no local, so its heredoc hides on_linux",
-                "z == 1\nz <<~EOS\n  on_linux\nEOS\n",
+                "an == comparison assigns no local, so its percent literal hides on_linux",
+                "z == 1\nz %(on_linux)",
                 facts(false, false),
             ),
             (
-                "an attribute assignment assigns no local, so its heredoc hides on_linux",
-                "obj.y = 1\ny <<~EOS\n  on_linux\nEOS\n",
+                "an attribute assignment assigns no local, so its percent literal hides on_linux",
+                "obj.y = 1\ny %(on_linux)",
                 facts(false, false),
             ),
             (
@@ -1191,38 +1523,64 @@ mod tests {
         assert_eq!(custom_block_os_facts(None), facts(false, false));
     }
 
+    fn unclosed(line: usize, kind: &'static str) -> Option<Unreadable> {
+        Some(Unreadable {
+            line,
+            kind,
+            reason: UnreadReason::Unclosed,
+        })
+    }
+
+    fn ambiguous(line: usize, kind: &'static str, operator: &'static str) -> Option<Unreadable> {
+        Some(Unreadable {
+            line,
+            kind,
+            reason: UnreadReason::Ambiguous { operator },
+        })
+    }
+
+    /// The facts for `block`, asserted against the verdict and the place,
+    /// if any, the block could not be read past.
+    fn assert_facts(
+        block: &str,
+        other_os_block: bool,
+        os_dependency: bool,
+        unread: Option<Unreadable>,
+    ) {
+        assert_eq!(
+            custom_block_os_facts(Some(block)),
+            CustomBlockOsFacts {
+                other_os_block,
+                os_dependency,
+                unread,
+            },
+            "{block}"
+        );
+    }
+
     /// A literal or heredoc still open after the last line means the block
-    /// was misread. Both facts then come from a word scan of the raw text,
-    /// and `unread` names the line the open literal starts on and its kind.
+    /// was misread. Both facts then come from a word scan of the raw text
+    /// with its comments cut, and `unread` names the line the open literal
+    /// starts on and its kind.
     #[test]
     fn an_unclosed_literal_falls_back_to_the_word_scan() {
-        let unread = |line: usize, kind: &'static str| Some(Unclosed { line, kind });
         let cases: &[(&str, &str, CustomBlockOsFacts)] = &[
-            (
-                "a local the lexer does not see assigned opens a percent literal",
-                "a, b = 1, 2\nn = a %-2\non_linux do\nend",
-                CustomBlockOsFacts {
-                    other_os_block: true,
-                    os_dependency: false,
-                    unread: unread(2, "percent literal"),
-                },
-            ),
             (
                 "an unclosed string hides nothing after it",
                 "url \"x\"\ncaveats \"never closed\non_linux do\nend",
                 CustomBlockOsFacts {
                     other_os_block: true,
                     os_dependency: false,
-                    unread: unread(2, "string"),
+                    unread: unclosed(2, "string"),
                 },
             ),
             (
-                "a ? after a name that is no local opens a string that never closes",
+                "a ? after a name that is no local reads a character literal, and the string after it never closes",
                 "x = cond ?\"\" : \"no\"\ndepends_on macos: :ventura",
                 CustomBlockOsFacts {
                     other_os_block: false,
                     os_dependency: true,
-                    unread: unread(1, "string"),
+                    unread: ambiguous(1, "character literal", "?"),
                 },
             ),
             (
@@ -1231,16 +1589,16 @@ mod tests {
                 CustomBlockOsFacts {
                     other_os_block: true,
                     os_dependency: false,
-                    unread: unread(1, "heredoc"),
+                    unread: unclosed(1, "heredoc"),
                 },
             ),
             (
-                "an unclosed percent literal; the word scan reads comments too",
+                "an unclosed percent literal; the word scan cuts a comment",
                 "x = %w[a\n# on_linux\n",
                 CustomBlockOsFacts {
-                    other_os_block: true,
+                    other_os_block: false,
                     os_dependency: false,
-                    unread: unread(1, "percent literal"),
+                    unread: unclosed(1, "percent literal"),
                 },
             ),
             (
@@ -1249,7 +1607,7 @@ mod tests {
                 CustomBlockOsFacts {
                     other_os_block: false,
                     os_dependency: false,
-                    unread: unread(1, "regex"),
+                    unread: unclosed(1, "regex"),
                 },
             ),
         ];
@@ -1260,6 +1618,185 @@ mod tests {
                 "{label}:\n{block}"
             );
         }
+    }
+
+    /// A comment after an unclosed heredoc names no OS for the word scan: a
+    /// `#` that starts a line or follows whitespace cuts the line, and a `#`
+    /// inside a word does not.
+    #[test]
+    fn the_word_scan_cuts_comments() {
+        assert_facts(
+            "opts ||= []\nopts <<\"--quiet\"\ndepends_on arch: :arm64\n# built for macos: 13 and newer\ncaveats <<~EOS\n",
+            false,
+            false,
+            unclosed(5, "heredoc"),
+        );
+        assert_facts(
+            "caveats <<~EOS\ndepends_on formula: \"a\" # macos: 13\n",
+            false,
+            false,
+            unclosed(1, "heredoc"),
+        );
+        assert_facts(
+            "caveats <<~EOS\ndepends_on x#macos: :ventura\n",
+            false,
+            true,
+            unclosed(1, "heredoc"),
+        );
+    }
+
+    /// An untracked word before a `<<`, `%` or `?` may be a local the lexer
+    /// did not see: the operator is read as an opener, and when the literal
+    /// it opens spans more than one line the block falls back to the word
+    /// scan. One that closes on its line stays read as code.
+    #[test]
+    fn an_ambiguous_opener_spanning_lines_falls_back_to_the_word_scan() {
+        assert_facts(
+            "x = width %-2\non_linux do\nend\nn = 3 - 1",
+            true,
+            false,
+            ambiguous(1, "percent literal", "%"),
+        );
+        assert_facts("y = width %(a) + 1\non_linux do\nend", true, false, None);
+        assert_facts(
+            "z <<~EOS\n  on_linux\nEOS\n",
+            true,
+            false,
+            ambiguous(1, "heredoc", "<<"),
+        );
+        assert_facts("caveats <<~EOS\n  on_linux\nEOS\n", false, false, None);
+    }
+
+    /// `a, b = 10, 3` binds both names, so `a %-b` is a modulo.
+    #[test]
+    fn a_multiple_assignment_binds_every_name() {
+        assert_facts(
+            "a, b = 10, 3\nr = a %-b\ndepends_on macos: \">= :ventura\"\npad = 1 - 2",
+            false,
+            true,
+            None,
+        );
+    }
+
+    /// `flag ||= true` binds `flag`, so `flag ?'-'` is a ternary.
+    #[test]
+    fn an_operator_assignment_binds_its_name() {
+        assert_facts(
+            "flag ||= true\nsep = flag ?'-' : '_'\non_linux do\n  binary \"tool\"\nend\n# it's built per arch",
+            true,
+            false,
+            None,
+        );
+        for operator in ["&&=", "+=", "-=", "*=", "/="] {
+            assert_facts(
+                &format!("n {operator} 1\nm = n %-2\npad = 3 - 1\non_linux do\nend"),
+                true,
+                false,
+                None,
+            );
+        }
+    }
+
+    /// `for n in [1, 2]` binds `n`, so `n %-2` is a modulo.
+    #[test]
+    fn a_for_loop_binds_its_variable() {
+        assert_facts(
+            "for n in [1, 2]\n  m = n %-2\nend\ndepends_on macos: :ventura\npad = 3 - 1",
+            false,
+            true,
+            None,
+        );
+    }
+
+    /// Every parameter of a `def`, with or without parentheses, defaults,
+    /// `*rest`, `**kw` and `&blk`, is read as a value.
+    #[test]
+    fn a_method_definition_binds_its_parameters() {
+        assert_facts(
+            "def self.wrap(a, b = 1)\n  a %-b\nend\non_linux do\n  binary \"tool\"\nend\npad = 3 - 1",
+            true,
+            false,
+            None,
+        );
+        for name in ["a", "b", "rest", "kw", "blk", "k"] {
+            for head in [
+                "def wrap(a, b = [1, 2], *rest, k: 1, **kw, &blk)",
+                "def wrap a, b = 1, *rest, k: 1, **kw, &blk",
+            ] {
+                assert_facts(
+                    &format!("{head}\n  {name} %-2\nend\npad = 3 - 1\non_linux do\nend"),
+                    true,
+                    false,
+                    None,
+                );
+            }
+        }
+    }
+
+    /// `->(x)` and `-> (x)` bind `x` for the lambda body on the same line.
+    #[test]
+    fn a_lambda_binds_its_parameters() {
+        for head in ["->(x)", "-> (x)"] {
+            assert_facts(
+                &format!("half = {head} {{ x %-2 }}\ndepends_on macos: :ventura\npad = 3 - 1"),
+                false,
+                true,
+                None,
+            );
+        }
+    }
+
+    /// `rescue => e` binds `e`, so `e %-1` is a modulo.
+    #[test]
+    fn a_rescue_binds_its_variable() {
+        assert_facts(
+            "begin\n  Integer(\"x\")\nrescue => e\n  e %-1 rescue nil\nend\non_system :linux, macos: :ventura do\n  binary \"tool\"\nend\npad = 3 - 1",
+            true,
+            false,
+            None,
+        );
+    }
+
+    /// `(lo, hi) = 1, 9` binds both names, so `lo %-hi` is a modulo.
+    #[test]
+    fn a_parenthesized_multiple_assignment_binds_every_name() {
+        assert_facts(
+            "(lo, hi) = 1, 9\nr = lo %-hi\ndepends_on macos: :ventura\npad = 3 - 1",
+            false,
+            true,
+            None,
+        );
+    }
+
+    /// A block parameter list spread over several lines binds every name.
+    #[test]
+    fn a_block_parameter_list_over_several_lines_binds_every_name() {
+        assert_facts(
+            "v = [[1, 2]].map do |a,\n  b|\n  a %-b\nend\non_linux do\n  binary \"tool\"\nend\npad = 3 - 1",
+            true,
+            false,
+            None,
+        );
+    }
+
+    /// A block parameter is no local after its block, so a `<<` after its
+    /// name whose heredoc tag closes on a later line is ambiguous, and the
+    /// block falls back to the word scan with a warning. A `<<` whose tag
+    /// never closes can only be a shift.
+    #[test]
+    fn a_heredoc_after_a_block_parameter_falls_back_to_the_word_scan() {
+        assert_facts(
+            "[1].each do |caveats| end\ncaveats <<~EOS\n  Runs on_linux too.\nEOS",
+            true,
+            false,
+            ambiguous(2, "heredoc", "<<"),
+        );
+        assert_facts(
+            "list.map { |a, b| a <<b }\non_linux do\nend",
+            true,
+            false,
+            None,
+        );
     }
 
     /// Each line ending continues a `depends_on` statement onto the next

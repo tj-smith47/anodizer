@@ -216,8 +216,10 @@ fn the_misspelled_tool_name_is_reported_and_the_config_alias_is_not() {
 /// `crate(s) {`). A count printed through `plural` is not, and neither is
 /// an awk parameter `s` inside an awk program (`function trim(s)`,
 /// `length(s)`, `print trim(s)`): a one-line `awk '…'`, one spread over
-/// several lines, a heredoc tagged AWK or a whole `.awk` library. Outside a
-/// program only a line defining `function <name>(s) {` is code, so
+/// several lines in single or double quotes, a heredoc tagged AWK or a whole
+/// `.awk` library. An `awk -f lib.awk` line opens no program, so an
+/// apostrophe in its comment hides no later line. Outside a program only a
+/// line defining `function <name>(s) {` is code, so
 /// `the function file(s) are missing` and `length(s) of the files` are counts.
 #[test]
 fn a_plural_in_parentheses_in_a_script_a_workflow_or_the_taskfile_is_reported() {
@@ -250,6 +252,7 @@ fn a_plural_in_parentheses_in_a_script_a_workflow_or_the_taskfile_is_reported() 
         "crate(s) {",
         "the function file(s)",
         "length(s) of",
+        "the length(s) of",
         "tolower(s) is prose",
     ]
     .iter()

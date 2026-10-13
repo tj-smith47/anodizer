@@ -22,4 +22,10 @@ awk -f - /dev/null <<'AWK'
 { print toupper(s), trim(s) }
 function last(s) { return s }
 AWK
+awk -f lib.awk "$f" # it's the lib
+echo "the length(s) of the files"
+awk "
+function second(s) { return s }
+{ print length(s), \$1 }
+" /dev/null
 echo "after the program, tolower(s) is prose"

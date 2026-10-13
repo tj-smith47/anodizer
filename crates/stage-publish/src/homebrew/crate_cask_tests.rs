@@ -523,21 +523,42 @@ fn every_gate_skip_line_prints_once_per_command() {
 }
 
 /// A `custom_block` the lexer cannot read to its end warns once per
-/// command, naming the cask, the line and the open literal, for a same-tap
-/// cask, a cask on its own tap and a top-level cask. A `depends_on_macos:`
-/// decides the verdict itself, so it silences the warning.
+/// command, naming the cask, the line and the cause, for a same-tap cask, a
+/// cask on its own tap and a top-level cask. The cause is a literal still
+/// open at the end of the block, or an operator after an untracked word
+/// that may open a literal spanning lines. A `depends_on_macos:` decides
+/// the verdict itself, so it silences the warning.
 #[test]
 fn an_unreadable_custom_block_warns_once_per_command() {
-    // Valid Ruby: `a` is a local, so `%-2` is a modulo, but the lexer does
-    // not see a local assigned by `a, b = …` and opens a percent literal.
-    const BLOCK: &str = "a, b = 1, 2\nn = a %-2\non_linux do\nend";
+    // Both blocks are valid Ruby. The `/` after `when` is a regex the lexer
+    // does not read as one, so its `"` opens a string to the end. `width` is
+    // a local through a nested multiple assignment the lexer does not
+    // track, so `%-2` is a modulo it reads as a percent literal that closes
+    // at the `-` three lines down.
+    const CASES: &[(&str, &str)] = &[
+        (
+            "case \"a\"\nwhen /\"/ then 1\nend\non_linux do\nend",
+            "line 2 (an unclosed string)",
+        ),
+        (
+            "a, (width, b) = 1, [3, 4]\nn = width %-2\non_linux do\nend\nn = 3 - 1",
+            "line 2 (the '%' there could open a percent literal or be an operator)",
+        ),
+    ];
+    for (block, cause) in CASES {
+        assert_an_unreadable_custom_block_warns_once(block, cause);
+    }
+}
+
+fn assert_an_unreadable_custom_block_warns_once(block: &'static str, cause: &str) {
     let warning = |name: &str| {
         format!(
-            "homebrew cask '{name}': custom_block could not be read past line 2 (an unclosed percent literal); \
-             the Linux-side and depends_on checks fell back to a word scan — set depends_on_macos: to decide it"
+            "homebrew cask '{name}': custom_block could not be read past {cause}; \
+             the Linux-side and depends_on checks fell back to a word scan, which may over-match — \
+             set depends_on_macos: to decide it"
         )
     };
-    let with_block = |cask: &mut HomebrewCaskConfig| cask.custom_block = Some(BLOCK.to_string());
+    let with_block = |cask: &mut HomebrewCaskConfig| cask.custom_block = Some(block.to_string());
 
     assert_gate_line_prints_once_per_command(
         "same-tap cask",

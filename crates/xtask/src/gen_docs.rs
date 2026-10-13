@@ -3,6 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tera::{Context, Tera};
 
+mod rustdoc_links;
+use rustdoc_links::unwrap_rustdoc_links;
+
 /// Marker comment emitted at the top of every generated per-crate README so
 /// editors and reviewers can see the file is machine-managed.
 const GENERATED_MARKER: &str =
@@ -606,72 +609,6 @@ fn collapse_description(s: &str) -> String {
     unwrap_rustdoc_links(&anodizer_core::config::collapse_description(s))
 }
 
-/// Unwrap rustdoc intra-doc links — `` [`Path::to::item`] `` and
-/// `` [`item`](rust::path) `` — to plain inline code.
-///
-/// schemars copies rustdoc verbatim into schema descriptions, but this
-/// markdown pipeline has no rustdoc link resolver, so the bracket syntax
-/// would render literally (e.g. ``[`Self::upload_concurrency`]``) or, for
-/// the explicit-target form, as a link whose href is a rust path — broken
-/// either way. A leading `Self::` is dropped — the reference tables already
-/// scope fields to their section. Markdown links with a real URL / relative
-/// / anchor target (``[`x`](https://…)``) and reference-style links
-/// (``[`x`][ref]``) are left untouched: those render as real links.
-fn unwrap_rustdoc_links(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(start) = rest.find("[`") {
-        let Some(end_rel) = rest[start + 2..].find("`]") else {
-            break;
-        };
-        let end = start + 2 + end_rel;
-        let mut after = end + 2;
-        let mut unwrap_to_code = true;
-        match rest.as_bytes().get(after) {
-            // Explicit target: unwrap only when the target is a rust path,
-            // and consume it; a real URL/relative/anchor target stays a link.
-            Some(b'(') => {
-                if let Some(close_rel) = rest[after..].find(')') {
-                    let target = &rest[after + 1..after + close_rel];
-                    if is_rust_path_target(target) {
-                        after += close_rel + 1;
-                    } else {
-                        unwrap_to_code = false;
-                    }
-                } else {
-                    unwrap_to_code = false;
-                }
-            }
-            // Reference-style link — leave for the renderer.
-            Some(b'[') => unwrap_to_code = false,
-            _ => {}
-        }
-        out.push_str(&rest[..start]);
-        if unwrap_to_code {
-            let code = &rest[start + 2..end];
-            out.push('`');
-            out.push_str(code.strip_prefix("Self::").unwrap_or(code));
-            out.push('`');
-        } else {
-            out.push_str(&rest[start..after]);
-        }
-        rest = &rest[after..];
-    }
-    out.push_str(rest);
-    out
-}
-
-/// True when a markdown link target is a rustdoc item path (`crate::x`,
-/// `super::super::y`, `Self::z`, or a bare identifier) rather than a real
-/// URL, relative file path, or `#anchor` — i.e. when the "link" only means
-/// something to rustdoc and must be unwrapped to inline code.
-fn is_rust_path_target(target: &str) -> bool {
-    !target.is_empty()
-        && target.split("::").all(|seg| {
-            !seg.is_empty() && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        })
-}
-
 /// The `description` keyword on a schema, normalized via [`collapse_description`]
 /// and flattened for a markdown-table cell: paragraph breaks become
 /// `<br><br>` and any residual newline a space (a bare newline inside a cell
@@ -1116,46 +1053,6 @@ mod tests {
             linked += 1;
         }
         assert!(linked > 0, "no composite default was linked to a section");
-    }
-
-    #[test]
-    fn unwrap_rustdoc_links_strips_brackets_and_self_prefix() {
-        assert_eq!(
-            unwrap_rustdoc_links("layered on top of [`Self::upload_concurrency`] (the cap)"),
-            "layered on top of `upload_concurrency` (the cap)"
-        );
-        assert_eq!(
-            unwrap_rustdoc_links("[`AttestationMode::Subjects`] emits a manifest"),
-            "`AttestationMode::Subjects` emits a manifest"
-        );
-        // Multiple links in one description.
-        assert_eq!(
-            unwrap_rustdoc_links("see [`Self::a`] and [`b::c`]"),
-            "see `a` and `b::c`"
-        );
-        // A non-`Self::` path keeps its full form.
-        assert_eq!(unwrap_rustdoc_links("[`b::c`]"), "`b::c`");
-        // Explicit rust-path target: the href means nothing outside rustdoc,
-        // so the link collapses to its code text.
-        assert_eq!(
-            unwrap_rustdoc_links("see [`apply_legacy`](super::super::apply_legacy) for details"),
-            "see `apply_legacy` for details"
-        );
-    }
-
-    #[test]
-    fn unwrap_rustdoc_links_leaves_real_markdown_links_alone() {
-        assert_eq!(
-            unwrap_rustdoc_links("[`docs`](https://example.com) and [`x`][ref]"),
-            "[`docs`](https://example.com) and [`x`][ref]"
-        );
-        // No link syntax at all: pass through unchanged.
-        assert_eq!(
-            unwrap_rustdoc_links("plain `code` text"),
-            "plain `code` text"
-        );
-        // Unterminated bracket: pass through unchanged.
-        assert_eq!(unwrap_rustdoc_links("broken [`link"), "broken [`link");
     }
 
     #[test]

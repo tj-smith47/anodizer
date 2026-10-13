@@ -249,7 +249,8 @@ jargon_violations+="$jargon_prose"
 # an awk program the parameter `s` is code: `function <name>(s)` and a call to
 # one of the helpers in AWK_S_CALLS on `s` (`trim`, `length`). An awk program is
 # a whole `.awk` file, a heredoc tagged AWK, or the text from a line holding
-# `awk '`, `awk -f` or `BEGIN {` to the line holding its closing quote. Outside
+# `awk '`, `awk "` or `BEGIN {` to the line holding the matching closing quote;
+# an `awk -f file` line names a program held elsewhere and opens none. Outside
 # one, only a line that defines `function <name>(s) {` is exempt, so
 # `echo "the function file(s) are missing"` is a count.
 AWK_S_CALLS='trim|ltrim|rtrim|length|tolower|toupper'
@@ -270,13 +271,16 @@ run_scanner plural_prose -v AWK_S_CALLS="$AWK_S_CALLS" -f - \
         in_program = whole || heredoc || quoted
         if (opens && text ~ /<<-?["']?AWK["']?/) {
             heredoc = 1
-        } else if (opens && (text ~ /awk +'/ || text ~ /awk +-f/ || text ~ /BEGIN *\{/)) {
+        } else if (opens && (text ~ /awk +['"]/ || text ~ /BEGIN *\{/)) {
             in_program = 1
-            # An odd count of quotes leaves the program open past this line.
-            quoted = gsub(/'/, "'", text) % 2
+            # The program closes at the quote that opened it: `awk "` takes a
+            # double-quoted one, `awk '` and a bare `BEGIN {` a single-quoted
+            # one. An odd count of that quote leaves it open past this line.
+            q = (text ~ /awk +"/ && text !~ /awk +'/) ? "\"" : "'"
+            quoted = gsub(q, q, text) % 2
         } else if (heredoc && text ~ /^[ \t]*AWK[ \t]*$/) {
             heredoc = 0
-        } else if (quoted && gsub(/'/, "'", text) % 2) {
+        } else if (quoted && gsub(q, q, text) % 2) {
             quoted = 0
         }
         if (in_program) gsub(awk_call, " ", text)

@@ -501,8 +501,9 @@ fn brackets_close(text: &str) -> bool {
 }
 
 /// The characters of attribute text, with their offsets, leaving out each
-/// `"…"` string, `r#"…"#` raw string, `'x'` character literal, `//` comment
-/// up to its line's end and `/* … */` comment (nested ones included).
+/// `"…"` string, `r#"…"#` raw string (`br` and `cr` ones included), `'x'`
+/// character literal, `//` comment up to its line's end and `/* … */`
+/// comment (nested ones included).
 fn attribute_code(text: &str) -> Vec<(usize, char)> {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     let at = |i: usize| chars.get(i).map(|&(_, ch)| ch);
@@ -510,7 +511,14 @@ fn attribute_code(text: &str) -> Vec<(usize, char)> {
     let mut i = 0;
     while let Some(ch) = at(i) {
         let next = at(i + 1);
-        let word_before = i > 0 && at(i - 1).is_some_and(|c| c.is_alphanumeric() || c == '_');
+        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        let word_before = i > 0 && at(i - 1).is_some_and(is_word);
+        // The `b` of `br"…"` or the `c` of `cr"…"`, itself starting a token.
+        let raw_prefix = |i: usize| {
+            i > 0
+                && matches!(at(i - 1), Some('b' | 'c'))
+                && !(i > 1 && at(i - 2).is_some_and(is_word))
+        };
         if ch == '/' && next == Some('/') {
             while at(i).is_some_and(|c| c != '\n') {
                 i += 1;
@@ -539,7 +547,7 @@ fn attribute_code(text: &str) -> Vec<(usize, char)> {
                     break;
                 }
             }
-        } else if let Some(hashes) = (ch == 'r' && !word_before)
+        } else if let Some(hashes) = (ch == 'r' && (!word_before || raw_prefix(i)))
             .then(|| (i + 1..).take_while(|&j| at(j) == Some('#')).count())
             .filter(|&hashes| at(i + 1 + hashes) == Some('"'))
         {
@@ -1215,6 +1223,10 @@ unsafe impl Send for NotAFn {
             "#[my_attr(']', '\\'')]\n#[cfg(test)]\nmod tests {\n}\n",
             "#[doc = r#\"a \" ] b\"#]\n#[cfg(test)]\nmod tests {\n}\n",
             "#[doc = r\"[\"]\n#[cfg(test)]\nmod tests {\n}\n",
+            "#[my_attr(br\"\\\")]\n#[cfg(test)]\nmod tests {\n}\n",
+            "#[my_attr(br#\"q \" ] \"#)]\n#[cfg(test)]\nmod tests {\n}\n",
+            "#[my_attr(cr\"\\\")]\n#[cfg(test)]\nmod tests {\n}\n",
+            "#[my_attr(cr#\"q \" ] \"#)]\n#[cfg(test)]\nmod tests {\n}\n",
         ] {
             let src = format!("{prod}{module}");
             assert_eq!(production_half(&src), prod, "{module}");

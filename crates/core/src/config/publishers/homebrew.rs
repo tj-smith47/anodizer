@@ -362,16 +362,27 @@ pub struct HomebrewCaskConfig {
     /// it has opened more `(`, `[` and `{` than it closed. A `<<`, `%` or
     /// `?` after a value is a shift, a modulo or a ternary: after `)`, `]`,
     /// `}`, a number, a literal, `self`, `nil`, `true`, `false`, `end`,
-    /// `class`, an `@` or `$` variable, a local assigned earlier with
-    /// `name =` or named in block parameters (`|a, b|`), or a word written
-    /// straight against it. Not seen: a stanza built at runtime (through
-    /// `send` or `define_method`), and a `depends_on` after a `do` on the
-    /// same line. A regex after any other token is read as code, and a local
-    /// assigned another way (`a, b = …`, `for a in …`) is read as a method.
-    /// When a literal or heredoc is still open after the last line, the
-    /// block was misread: both checks then look for their words anywhere in
-    /// the raw text, which leaves `depends_on :macos` out, and the render
-    /// warns once unless this field is set.
+    /// `class`, an `@` or `$` variable, a local assigned earlier (`name =`,
+    /// `name ||=` and the other operator assignments, `a, b =`,
+    /// `(a, b) =`, `for a in`, `rescue => a`), a parameter of a block
+    /// (`|a, b|`, also over several lines), method (`def name(a, b = 1)`)
+    /// or lambda (`->(x)`), or a word written straight against it. After a
+    /// Ruby keyword, a cask stanza or a common method such as `caveats` or
+    /// `puts` it opens a literal, and after any other word followed by a
+    /// space it is read as an opener too. Not read correctly, with no
+    /// warning: a stanza built at runtime (through `send` or
+    /// `define_method`), a `depends_on` after a `do` on the same line, a
+    /// regex after any other token (read as code), and an opener after an
+    /// untracked word whose literal closes on the same line. The checks
+    /// fall back to a word scan of the raw text, with `#` comments cut,
+    /// when a literal or heredoc is still open after the last line, when an
+    /// opener read after an untracked word opens a literal that runs onto a
+    /// later line, or when a `<<` after a parameter's name has a heredoc tag
+    /// that closes on a later line. A word scan that finds a Linux-side
+    /// word leaves `depends_on :macos` out and moves a flat download into
+    /// `on_macos`, one that finds a `depends_on` OS key leaves the bare
+    /// dependency out, and one that finds neither adds `depends_on :macos`;
+    /// the render warns once per command unless this field is set.
     /// `true` renders `depends_on :macos` with a flat download; `false`
     /// renders no dependency and places a flat download inside `on_macos`.
     pub depends_on_macos: Option<bool>,

@@ -265,15 +265,22 @@ words:
 
 - `self`, `nil`, `true`, `false`, `end`, or `class` (`class <<self`);
 - an instance, class or global variable (`@args <<extra`, `$stdout <<x`);
-- a local variable: a name assigned earlier in the block with `name =`
-  (`==`, `=~`, `=>`, `!=`, `<=`, `>=` and `obj.name =` assign nothing), or a
-  name in a block's parameters (`do |a, b|`, `{ |a| … }`). So after
+- a local variable, a name assigned earlier in the block: `name =`,
+  `name ||=` and the other operator assignments (`&&=`, `+=`, `-=`, `*=`,
+  `/=`), `a, b =`, `(a, b) =`, `for a in` and `rescue => a`. `==`, `=~`,
+  `=>`, `!=`, `<=`, `>=` and `obj.name =` assign nothing. So after
   `y = 1`, the line `x = y <<z` is a shift, and after `cond = true`,
   `x = cond ?"" : "no"` is a ternary;
+- a parameter: of a block (`do |a, b|`, `{ |a| … }`, a list spread over
+  several lines), of a method (`def name(a, b = 1, *rest, k: 1, **kw, &blk)`,
+  with or without parentheses) or of a lambda (`->(x)`, `-> (x)`);
 - any word written straight against the operator (`a%(b)`, `1<<FLAGS`).
 
-Any other word followed by a space is a method taking an argument, so
-`caveats <<~EOS` opens a heredoc and `puts %w[a]` a word list.
+After a Ruby keyword, a cask stanza or a common method that takes an argument
+(`caveats`, `puts`, `url`, `if`, `when`, …), the operator opens a literal, so
+`caveats <<~EOS` opens a heredoc and `puts %w[a]` a word list. After any
+other word followed by a space, the scan cannot tell a method from a local
+assigned in a way it does not see, and it reads the operator as an opener.
 
 Then:
 
@@ -312,25 +319,42 @@ A flat single-download cask whose `custom_block` gives it a Linux side puts
 its `sha256` / `url` (and `app` / `service`) inside `on_macos`, so a Linux
 host never downloads the macOS archive.
 
-Four shapes are not read correctly. A stanza built at runtime (an
-`on_linux` sent through `send`, or a method made with `define_method`) is not
-seen, nor is a `depends_on` that follows a `do` on the same line
-(`on_macos do depends_on macos: :ventura end`). A regex after any token not
-listed above (`when /on_linux/`) is read as code, so a Linux-side word inside
-it counts. A local assigned in a way the scan does not track (`a, b = …`,
-`for a in …`, `rescue => a`, a block parameter list spread over several
-lines) is read as a method, so a `<<`, `%` or `?` after it opens a literal.
+These are not read correctly, and nothing warns about them:
 
-When a string, heredoc, percent literal or regex is still open after the last
-line of the block, the scan has misread it. It then reads the raw text
-instead: a Linux side when `on_linux`, `on_system` or `app_image` appears
-anywhere in the block, comments and strings included, and an OS dependency
-when `depends_on` and an OS key or symbol both do. Both answers leave
-`depends_on :macos` out. The render prints one warning per command, unless
-`depends_on_macos:` is set:
-`homebrew cask 'mytool': custom_block could not be read past line 2 (an
-unclosed percent literal); the Linux-side and depends_on checks fell back to
-a word scan — set depends_on_macos: to decide it`.
+- a stanza built at runtime (an `on_linux` sent through `send`, or a method
+  made with `define_method`) is not seen;
+- a `depends_on` that follows a `do` on the same line
+  (`on_macos do depends_on macos: :ventura end`) is not seen;
+- a regex after any token not listed above (`when /on_linux/`) is read as
+  code, so a Linux-side word inside it counts;
+- an operator after an untracked word whose literal closes on the same line
+  (`x = width %(a) + 1`) has that literal set aside.
+
+Three cases make the scan stop trusting the code from a line on:
+
+- a string, heredoc, percent literal or regex opened there is still open
+  after the last line of the block;
+- a `<<`, `%` or `?` read as an opener after an untracked word opens a
+  literal that runs onto a later line (`n = width %-2` with `width` a local
+  the scan did not see assigned, and a `-` further down);
+- a `<<` after a parameter's name whose heredoc tag closes on a later line
+  (`[1].each do |caveats| end` followed by `caveats <<~EOS`), since a
+  parameter is no local outside its block.
+
+The scan then reads the raw text with its `#` comments cut (a `#` that starts
+a line or follows whitespace, even inside a string): a Linux side when `on_linux`,
+`on_system` or `app_image` appears anywhere in the block, and an OS dependency
+when `depends_on` and an OS key or symbol both do. A word scan that finds a
+Linux-side word leaves `depends_on :macos` out and moves a flat download into
+`on_macos`; one that finds a `depends_on` OS key leaves the bare dependency
+out; one that finds neither adds `depends_on :macos`. Text inside strings and
+heredocs counts, so the word scan may over-match. The render prints one
+warning per command, unless `depends_on_macos:` is set:
+`homebrew cask 'mytool': custom_block could not be read past line 2 (the '%'
+there could open a percent literal or be an operator); the Linux-side and
+depends_on checks fell back to a word scan, which may over-match — set
+depends_on_macos: to decide it`, or `… (an unclosed string); …` for a literal
+open at the end of the block.
 
 A wrong answer gives a cask that Homebrew refuses:
 
