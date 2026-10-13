@@ -85,7 +85,7 @@ release:
 - `replace_existing_artifacts`: on conflict (400/422), deletes the link of the same name and creates the new one in the same attempt; a 400 that no existing link explains is reported as the create failure
 - URL-encoded project paths (e.g., `group/subgroup/project` becomes `group%2Fsubgroup%2Fproject`)
 - 300-second HTTP timeout
-- Release preflight: before the build, `GET /projects/{id}` checks that the token has Developer access or higher (the higher of the project and group access; a response with no `permissions` passes). A failed check stops the run unless `release.preflight.fail_on_error` is `false`; see [Release preflight](@/docs/publish/github.md#release-preflight)
+- Release preflight: before the build, `GET /projects/{id}` checks that the token has Developer access or higher (the higher of the project and group access; a response with no `permissions` passes). A run that authenticates with a CI job token (`use_job_token`) skips the check, because GitLab does not let a job token read `GET /projects/{id}`. A failed check stops the run unless `release.preflight.fail_on_error` is `false`; see [Release preflight](@/docs/publish/github.md#release-preflight)
 
 ## Self-hosted GitLab
 

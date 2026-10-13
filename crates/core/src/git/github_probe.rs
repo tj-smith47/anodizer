@@ -288,24 +288,48 @@ pub fn github_repo_probe(
     deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> RepoProbe {
-    let rlog = RetryLog::new("github repo probe", log);
-    let token = token.map(str::to_string);
-    let outcome = retry_sync_deadline(rlog, policy, deadline, |_attempt| {
-        let mut b = client
+    let token = token.filter(|t| !t.is_empty());
+    let request = || {
+        let b = client
             .get(url)
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28");
-        if let Some(ref tok) = token
-            && !tok.is_empty()
-        {
-            b = b.header("Authorization", format!("Bearer {tok}"));
+        match token {
+            Some(tok) => b.header("Authorization", format!("Bearer {tok}")),
+            None => b,
         }
-        match b.send() {
+    };
+    repo_probe(
+        "github repo probe",
+        request,
+        response_is_rate_limited,
+        policy,
+        deadline,
+        log,
+    )
+}
+
+/// One forge API `GET` for a repository or project, retried on a 5xx or a
+/// retriable connection failure within `deadline`, and classified as a
+/// [`RepoProbe`]. `label` names the request in retry lines; `rate_limited`
+/// reads the forge's own headers to tell a throttled 401 / 403 from a refused
+/// token (a 429 is always a rate limit).
+pub fn repo_probe(
+    label: &'static str,
+    request: impl Fn() -> reqwest::blocking::RequestBuilder,
+    rate_limited: impl Fn(&reqwest::header::HeaderMap) -> bool,
+    policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
+    log: &StageLogger,
+) -> RepoProbe {
+    let rlog = RetryLog::new(label, log);
+    let outcome = retry_sync_deadline(rlog, policy, deadline, |_attempt| {
+        match request().send() {
             Ok(resp) => {
                 let code = resp.status().as_u16();
                 // Capture the rate-limit verdict from headers BEFORE `text()`
                 // consumes the response.
-                let rate_limited = response_is_rate_limited(resp.headers());
+                let rate_limited = rate_limited(resp.headers());
                 if resp.status().is_success() {
                     Ok(RepoProbe::Body(resp.text().unwrap_or_default()))
                 } else if resp.status().is_server_error() {

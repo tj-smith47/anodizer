@@ -8,12 +8,22 @@ use serde::{Deserialize, Deserializer, Serialize};
 /// A value that can be either a bool or a template string.
 /// Used by `skip`, `skip_upload`, and similar fields across multiple config
 /// structs to support both `skip: true` and template conditionals like
-/// `skip: "{{ if .IsSnapshot }}true{{ endif }}"`.
+/// `skip: "{{ if .IsSnapshot }}true{{ endif }}"`. An unquoted `1` or `0`
+/// loads as `true` or `false`.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(untagged)]
+#[schemars(transform = accept_one_or_zero)]
 pub enum StringOrBool {
     Bool(bool),
     String(String),
+}
+
+/// The loader reads an unquoted `1` / `0` as a bool, so the schema accepts
+/// those two integers beside the derived bool and string.
+fn accept_one_or_zero(schema: &mut schemars::Schema) {
+    if let Some(any_of) = schema.get_mut("anyOf").and_then(|v| v.as_array_mut()) {
+        any_of.push(serde_json::json!({ "type": "integer", "enum": [0, 1] }));
+    }
 }
 
 impl StringOrBool {
@@ -195,11 +205,29 @@ where
         type Value = Option<StringOrBool>;
 
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("a bool, a string, or null")
+            f.write_str("a bool, 0, 1, a string, or null")
         }
 
         fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
             Ok(Some(StringOrBool::Bool(v)))
+        }
+
+        // An unquoted `1` / `0` is the integer YAML reads, and both spell a
+        // boolean the string form already accepts; any other number is not
+        // one.
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            match v {
+                0 => Ok(Some(StringOrBool::Bool(false))),
+                1 => Ok(Some(StringOrBool::Bool(true))),
+                _ => Err(E::invalid_value(de::Unexpected::Unsigned(v), &self)),
+            }
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            match u64::try_from(v) {
+                Ok(u) => self.visit_u64(u),
+                Err(_) => Err(E::invalid_value(de::Unexpected::Signed(v), &self)),
+            }
         }
 
         fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
@@ -485,6 +513,31 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn an_unquoted_one_or_zero_loads_as_a_bool_and_any_other_number_does_not() {
+        let load = |value: &str| {
+            serde_yaml_ng::from_str::<crate::config::Config>(&format!(
+                "project_name: p\nrelease:\n  preflight:\n    fail_on_error: {value}\n"
+            ))
+            .map(|c| c.release.unwrap().preflight.unwrap().fail_on_error)
+        };
+        assert_eq!(load("1").unwrap(), Some(StringOrBool::Bool(true)));
+        assert_eq!(load("0").unwrap(), Some(StringOrBool::Bool(false)));
+        assert_eq!(
+            load("\"1\"").unwrap(),
+            Some(StringOrBool::String("1".into()))
+        );
+        for bad in ["2", "-1"] {
+            let err = load(bad).unwrap_err().to_string();
+            assert!(
+                err.contains("expected a bool, 0, 1, a string, or null"),
+                "{bad}: {err}"
+            );
+        }
+    }
 
     #[test]
     fn strict_evaluation_reads_only_a_boolean_spelling() {
@@ -527,8 +580,6 @@ mod tests {
             .to_string();
         assert_eq!(err, "f: template render failed: boom");
     }
-    use super::*;
-    use std::time::Duration;
 
     // --- as_bool -----------------------------------------------------------
 

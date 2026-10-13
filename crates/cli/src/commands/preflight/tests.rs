@@ -1210,7 +1210,10 @@ fn reconcile_sweep_applies_when_the_tag_does_not_exist() {
 /// and every production caller of `run_engine(` is the standalone
 /// `preflight::run` or `release::run::run`. A third caller, or a command
 /// that runs one half on its own, fails here until it goes through the
-/// engine. Rule: `.claude/rules/preflight-one-engine.md`.
+/// engine. The release preflight (`release_preflight(`) runs inside the
+/// publisher half, so its callers are exactly the github-release publisher's
+/// `preflight` and the publisher half's extension for GitLab and Gitea.
+/// Rule: `.claude/rules/preflight-one-engine.md`.
 #[test]
 fn every_preflight_half_runs_inside_the_one_engine() {
     use anodizer_core::test_helpers::test_sources::{
@@ -1248,6 +1251,7 @@ fn every_preflight_half_runs_inside_the_one_engine() {
 
     let mut half_callers: Vec<(String, String)> = Vec::new();
     let mut engine_callers: Vec<(String, String)> = Vec::new();
+    let mut release_callers: Vec<String> = Vec::new();
     for source in workspace_production_sources() {
         let text = std::fs::read_to_string(&source).expect("read source");
         let file = source.to_string_lossy().replace('\\', "/");
@@ -1257,6 +1261,10 @@ fn every_preflight_half_runs_inside_the_one_engine() {
             let rest: String = body.lines().skip(1).collect::<Vec<_>>().join("\n");
             if rest.contains("run_env_preflight(") || calls_publisher_half(&rest) {
                 half_callers.push((file.clone(), name.clone()));
+            }
+            if rest.contains("release_preflight(") {
+                let tail = file.rsplit("crates/").next().unwrap_or(&file);
+                release_callers.push(format!("{tail}::{name}"));
             }
             if rest.contains("run_engine(") {
                 engine_callers.push((file.clone(), name));
@@ -1293,6 +1301,17 @@ fn every_preflight_half_runs_inside_the_one_engine() {
             "commands/release/run.rs::run".to_string(),
         ],
         "run_engine has exactly two callers, the standalone command and release"
+    );
+
+    release_callers.sort();
+    assert_eq!(
+        release_callers,
+        vec![
+            "stage-publish/src/preflight/simulation.rs::run_publisher_preflight_extension"
+                .to_string(),
+            "stage-release/src/publisher.rs::preflight".to_string(),
+        ],
+        "the release preflight runs only inside the publisher half"
     );
 }
 

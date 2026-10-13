@@ -227,6 +227,8 @@ pub struct ReleasePreflightConfig {
     ///   release cannot be updated and its assets cannot be replaced, so the
     ///   release would fail.
     /// - GitLab: the token has Developer access or higher on the project.
+    ///   A run authenticating with a CI job token skips this check, since a
+    ///   job token cannot read the project.
     /// - Gitea: the token can push to the repository.
     /// - A missing token is a failed check on every forge.
     ///
@@ -242,9 +244,9 @@ pub struct ReleasePreflightConfig {
     /// here too.
     ///
     /// A crate's own value wins over the top-level `release:` block's; an
-    /// empty value counts as unset. Accepts a bool or a template that renders
-    /// to `true`, `false`, `1` or `0` (any letter case). Any other render, an
-    /// empty one included, stops the run with an error naming the value.
+    /// empty value counts as unset. Accepts a bool, an unquoted `1` or `0`,
+    /// or a template that renders to `true`, `false`, `1` or `0` (any letter
+    /// case). Any other render, an empty one included, stops the run with an error naming the value.
     ///
     /// ```yaml
     /// release:

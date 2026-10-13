@@ -2196,6 +2196,20 @@ fn an_empty_crate_fail_on_error_falls_back_to_the_top_level_value() {
     assert_warned(&out, &report.unwrap());
 }
 
+/// An empty top-level value is unset too, so with no crate value the
+/// default `true` applies and the failed check stops the run.
+#[test]
+fn an_empty_top_level_fail_on_error_falls_back_to_the_default() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let tmp =
+        single_crate_release_fixture_with(&root_fail_on_error("\"\""), &crate_release("myapp", ""));
+    let (out, report) = run_release_preflight(tmp.path(), push_access_api(), true);
+    assert_blocked(&out, &report.unwrap());
+}
+
 #[test]
 fn a_crate_fail_on_error_true_wins_over_a_top_level_false() {
     if !tool_on_path("git") {
@@ -2424,7 +2438,9 @@ fn assert_forge_release_preflight(
     let log = log.lock().unwrap();
     assert_eq!(log.len(), 3, "{log:?}");
     assert!(
-        log.iter().all(|r| r.header(auth.0) == Some(auth.1)),
+        log.iter().all(|r| r.header(auth.0) == Some(auth.1)
+            && r.header("accept") == Some("application/json")
+            && r.header("x-github-api-version").is_none()),
         "{log:?}"
     );
 }
@@ -2485,6 +2501,180 @@ fn a_gitea_release_preflight_needs_push_permission() {
          release",
         ("Authorization", "token dummy-gitea-token"),
         &log,
+    );
+}
+
+/// An API answering every GET of `path` with the raw HTTP `response`.
+fn raw_api(path: &'static str, response: &str) -> (std::net::SocketAddr, RequestLogs) {
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+    spawn_scripted_responder(vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: path,
+        response: Box::leak(response.to_string().into_boxed_str()),
+        times: None,
+    }])
+}
+
+/// GitLab's and Gitea's `(forge, api path of myorg/myapp, the config line
+/// naming the API at {api}, token env var, the subject the preflight names)`.
+const FORGES: [(&str, &str, &str, &str, &str); 2] = [
+    (
+        "gitlab",
+        "/api/v4/projects/myorg%2Fmyapp",
+        "gitlab_urls:\n  api: http://{api}/api/v4\n",
+        "GITLAB_TOKEN",
+        "GitLab project myorg/myapp",
+    ),
+    (
+        "gitea",
+        "/api/v1/repos/myorg/myapp",
+        "gitea_urls:\n  api: http://{api}\n",
+        "GITEA_TOKEN",
+        "Gitea repository myorg/myapp",
+    ),
+];
+
+/// Run the GitLab or Gitea release preflight of `myorg/myapp` against an
+/// API answering `response`, with `root` at the top of the config.
+fn run_forge_response(
+    forge: (&str, &'static str, &str, &str, &str),
+    response: &str,
+    root: &str,
+    args: &[&str],
+) -> std::process::Output {
+    let (name, path, urls, token_var, _) = forge;
+    let (api, _log) = raw_api(path, response);
+    let root = format!("{}{root}", urls.replace("{api}", &api.to_string()));
+    let tmp = single_crate_release_fixture_with(&root, &forge_release(name, "myapp", ""));
+    run_forge_preflight(tmp.path(), &[(token_var, "dummy-token".to_string())], args)
+}
+
+/// Each forge's own rate-limit signal: GitLab marks a throttled 401 / 403
+/// with `RateLimit-Remaining: 0` or `Retry-After`, Gitea with `Retry-After`,
+/// and a 429 is always one. The check cannot reach a verdict, so it warns,
+/// and strict preflight makes it a blocker. A GitLab 403 with requests left
+/// is a refused token.
+#[test]
+fn a_forge_rate_limit_warns_and_strict_preflight_makes_it_a_blocker() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let [gitlab, gitea] = FORGES;
+    let throttled = [
+        (gitlab, "403 Forbidden", "RateLimit-Remaining: 0\r\n"),
+        (gitlab, "401 Unauthorized", "Retry-After: 30\r\n"),
+        (gitlab, "429 Too Many Requests", ""),
+        (gitea, "403 Forbidden", "Retry-After: 30\r\n"),
+        (gitea, "429 Too Many Requests", ""),
+    ];
+    for (forge, status, header) in throttled {
+        let response = format!("HTTP/1.1 {status}\r\n{header}Content-Length: 0\r\n\r\n");
+        let expected = format!(
+            "release: API rate-limited while probing {}; verify the token manually",
+            forge.4
+        );
+
+        let out = run_forge_response(forge, &response, "", &["--json"]);
+        let report = json_report(&out)["publishers"].clone();
+        assert!(
+            out.status.success(),
+            "{} {status}: {}",
+            forge.0,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(strings(&report, "blockers").is_empty(), "{report}");
+        assert_eq!(strings(&report, "warnings"), vec![expected.clone()]);
+
+        let out = run_forge_response(
+            forge,
+            &response,
+            "preflight:\n  strict: true\n",
+            &["--json"],
+        );
+        let report = json_report(&out)["publishers"].clone();
+        assert_eq!(
+            single_blocker(&out, &report),
+            expected,
+            "{} {status}",
+            forge.0
+        );
+    }
+
+    let out = run_forge_response(
+        gitlab,
+        "HTTP/1.1 403 Forbidden\r\nRateLimit-Remaining: 5\r\nContent-Length: 0\r\n\r\n",
+        "",
+        &["--json"],
+    );
+    let report = json_report(&out)["publishers"].clone();
+    assert_eq!(
+        single_blocker(&out, &report),
+        "release: GitLab project myorg/myapp not found or the token lacks access; cannot \
+         create the release"
+    );
+}
+
+/// A retried GitLab or Gitea request names its own forge in the retry line.
+#[test]
+fn a_retried_forge_probe_names_its_forge() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let [gitlab, gitea] = FORGES;
+    for (forge, label) in [
+        (gitlab, "gitlab project probe"),
+        (gitea, "gitea repo probe"),
+    ] {
+        let out = run_forge_response(
+            forge,
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+            "",
+            &[],
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{stderr}");
+        assert!(
+            stderr.contains(&format!("{label} attempt 1/3 failed")),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("github"), "{stderr}");
+    }
+}
+
+/// A CI job token cannot read `GET /projects/:id`, so on a job-token run the
+/// GitLab access check is skipped and the preflight passes without asking.
+#[test]
+fn a_gitlab_job_token_run_skips_the_access_check() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let (api, log) = json_api(vec![(
+        "/api/v4/projects/myorg%2Fmyapp",
+        r#"{"permissions":{"project_access":{"access_level":20},"group_access":null}}"#.to_string(),
+    )]);
+    let tmp = single_crate_release_fixture_with(
+        &format!("gitlab_urls:\n  api: http://{api}/api/v4\n  use_job_token: true\n"),
+        &forge_release("gitlab", "myapp", ""),
+    );
+    let env = [
+        ("GITLAB_TOKEN", "job-token".to_string()),
+        ("CI_JOB_TOKEN", "job-token".to_string()),
+    ];
+    let out = run_forge_preflight(tmp.path(), &env, &["--json", "--verbose"]);
+    let report = json_report(&out)["publishers"].clone();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(strings(&report, "blockers").is_empty(), "{report}");
+    assert!(strings(&report, "warnings").is_empty(), "{report}");
+    assert_eq!(requests_for(&log, "/api/v4/projects/myorg%2Fmyapp"), 0);
+    assert!(
+        stderr.contains("skipped the GitLab access check for myorg/myapp"),
+        "{stderr}"
     );
 }
 

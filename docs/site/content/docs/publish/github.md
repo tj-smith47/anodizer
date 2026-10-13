@@ -44,6 +44,8 @@ Before anything is built or published, the preflight asks the forge the release 
 | Gitea | the token can push to the repository |
 | every forge | a token is resolved at all; a repository that does not exist or the token cannot see fails too |
 
+A check that cannot reach a verdict (the forge answers with a 5xx, rate-limits the request, or cannot be reached) is a warning, and [`preflight.strict`](../general/preflight.md) makes it a blocker. On GitLab, a run that authenticates with a CI job token (`gitlab_urls.use_job_token`) skips the access check, since a job token cannot read the project.
+
 An immutable GitHub release cannot be updated and its assets cannot be replaced, so a run releasing onto one would fail at release creation; the preflight reports it before the build instead. A tag with no release yet passes.
 
 `release.preflight.fail_on_error: false` reports the failure as a warning and lets the run continue:

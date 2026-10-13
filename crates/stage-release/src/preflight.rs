@@ -301,14 +301,26 @@ fn gitlab(ctx: &Context, targets: Vec<Target<'_>>) -> PreflightCheck {
                 "no GitLab token available (set GITLAB_TOKEN, or pass --token); cannot create the \
                  release in {project}"
             )),
+            Some(token)
+                if crate::gitlab::resolve_use_job_token_with_env(
+                    urls.use_job_token.unwrap_or(false),
+                    token,
+                    ctx.env_source(),
+                ) =>
+            {
+                // A CI job token may create releases but may not read
+                // `GET /projects/:id` (it is not among the endpoints GitLab
+                // lets a job token call), so the refusal would say nothing
+                // about whether the release can be created.
+                ctx.logger("preflight").verbose(&format!(
+                    "skipped the GitLab access check for {project}: a CI job token cannot read \
+                     the project"
+                ));
+                PreflightCheck::Pass
+            }
             Some(token) => probed
                 .entry((project.clone(), token.to_string()))
                 .or_insert_with(|| {
-                    let use_job_token = crate::gitlab::resolve_use_job_token_with_env(
-                        urls.use_job_token.unwrap_or(false),
-                        token,
-                        ctx.env_source(),
-                    );
                     let url = format!(
                         "{api}/projects/{}",
                         crate::gitlab::encode_project_id(&project)
@@ -317,9 +329,10 @@ fn gitlab(ctx: &Context, targets: Vec<Target<'_>>) -> PreflightCheck {
                         ctx,
                         ForgeRequest {
                             url: &url,
-                            auth: (crate::gitlab::auth_header(use_job_token), token.to_string()),
+                            auth: (crate::gitlab::auth_header(false), token.to_string()),
                             skip_tls,
                             subject: &format!("GitLab project {project}"),
+                            forge: Forge::GitLab,
                         },
                         |v| gitlab_access(&project, v),
                     )
@@ -384,6 +397,7 @@ fn gitea(ctx: &Context, targets: Vec<Target<'_>>) -> PreflightCheck {
                             auth: ("Authorization", format!("token {token}")),
                             skip_tls,
                             subject: &format!("Gitea repository {owner}/{repo}"),
+                            forge: Forge::Gitea,
                         },
                         |v| match v.get("permissions").filter(|p| !p.is_null()) {
                             Some(p) if p.get("push").and_then(Value::as_bool) != Some(true) => {
@@ -410,11 +424,42 @@ struct ForgeRequest<'a> {
     auth: (&'static str, String),
     skip_tls: bool,
     subject: &'a str,
+    forge: Forge,
+}
+
+#[derive(Clone, Copy)]
+enum Forge {
+    GitLab,
+    Gitea,
+}
+
+impl Forge {
+    /// The name a retry line gives the request.
+    fn probe_label(self) -> &'static str {
+        match self {
+            Forge::GitLab => "gitlab project probe",
+            Forge::Gitea => "gitea repo probe",
+        }
+    }
+
+    /// Whether a 401 / 403 is the forge's rate limit rather than a refused
+    /// token. GitLab sends `RateLimit-Remaining: 0` or `Retry-After` with a
+    /// throttled request; Gitea sends `Retry-After`.
+    fn rate_limited(self, headers: &reqwest::header::HeaderMap) -> bool {
+        let exhausted = || {
+            headers
+                .get("ratelimit-remaining")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.trim() == "0")
+        };
+        headers.contains_key(reqwest::header::RETRY_AFTER)
+            || (matches!(self, Forge::GitLab) && exhausted())
+    }
 }
 
 /// `GET` a GitLab project or Gitea repository and read the token's access
-/// from the body with `read`. The status mapping is the GitHub probe's: a
-/// 404 or a refused token blocks, a rate limit, a 5xx or a transport failure
+/// from the body with `read`. A 404 or a refused token blocks; a rate limit
+/// (429, or a 401 / 403 the forge marks as one), a 5xx or a failed connection
 /// warns (blocks under strict preflight).
 fn forge_probe(
     ctx: &Context,
@@ -445,13 +490,18 @@ fn forge_probe(
             );
         }
     };
-    let probe = anodizer_core::git::github_repo_probe(
-        &client,
-        req.url,
-        None,
+    let log = ctx.logger("preflight");
+    let probe = anodizer_core::git::repo_probe(
+        req.forge.probe_label(),
+        || {
+            client
+                .get(req.url)
+                .header(reqwest::header::ACCEPT, "application/json")
+        },
+        |headers| req.forge.rate_limited(headers),
         &RetryPolicy::PREFLIGHT,
         ctx.retry_deadline(),
-        &ctx.logger("preflight"),
+        &log,
     );
     match probe {
         RepoProbe::Body(body) => match serde_json::from_str::<Value>(&body) {
@@ -476,9 +526,9 @@ fn forge_probe(
 }
 
 /// Probe `GET {api_base}/repos/{owner}/{repo}` for push access, resolving
-/// the base through [`anodizer_core::http::github_api_base_with_config`] —
-/// the probe must contact the same host the release backend will
-/// (`github_urls.api` on GHES), not hardcoded github.com.
+/// the base through [`anodizer_core::http::github_api_base_with_config`] so
+/// the probe asks the host the release backend writes to (`github_urls.api`
+/// on GitHub Enterprise Server).
 /// See [`repo_push_check_at`] for the status/permission mapping.
 pub(crate) fn repo_push_check<E: anodizer_core::EnvSource + ?Sized>(
     probe: &GithubRepoProbe<'_>,
@@ -496,8 +546,9 @@ pub(crate) fn repo_push_check<E: anodizer_core::EnvSource + ?Sized>(
 ///
 /// github-release is REQUIRED and creates the release + uploads assets, so a
 /// definitively-unwritable target is a hard prerequisite the run cannot
-/// satisfy — those map to Blocker. A transient rate-limit / transport blip must
-/// not abort a release that would otherwise succeed — those warn.
+/// satisfy, so those map to Blocker. A rate limit or a failed connection can
+/// clear by the time the release runs, so it must not stop a release that
+/// would otherwise succeed; those warn.
 ///
 /// * 200 + `permissions.push == true` ⇒ Pass
 /// * 200 + `permissions.push == false` ⇒ Blocker (token lacks `contents:write`)
@@ -536,6 +587,170 @@ pub(crate) fn repo_push_check_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tlog() -> &'static anodizer_core::log::StageLogger {
+        anodizer_core::test_helpers::test_logger()
+    }
+
+    fn one_attempt_policy() -> anodizer_core::retry::RetryPolicy {
+        anodizer_core::retry::RetryPolicy {
+            max_attempts: 1,
+            base_delay: std::time::Duration::from_millis(1),
+            max_delay: std::time::Duration::from_millis(1),
+        }
+    }
+
+    /// A non-strict `acme/widget` probe carrying `token` and no wall-clock
+    /// budget — the shape every status/permission-mapping test drives.
+    fn probe<'a>(
+        token: &'a str,
+        policy: &'a anodizer_core::retry::RetryPolicy,
+    ) -> anodizer_core::git::GithubRepoProbe<'a> {
+        anodizer_core::git::GithubRepoProbe {
+            owner: "acme",
+            repo: "widget",
+            token: Some(token),
+            policy,
+            deadline: None,
+            strict: false,
+        }
+    }
+
+    fn http(status_line: &str, body: &str) -> &'static str {
+        Box::leak(
+            format!(
+                "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        )
+    }
+
+    #[test]
+    fn repo_push_check_passes_when_push_true() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        let (addr, _c) =
+            spawn_oneshot_http_responder(vec![http("200 OK", r#"{"permissions":{"push":true}}"#)]);
+        let url = format!("http://{addr}/repos/acme/widget");
+        assert!(matches!(
+            repo_push_check_at(&url, &probe("tok", &one_attempt_policy()), tlog()),
+            PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn repo_push_check_blocks_when_push_false() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        let (addr, _c) =
+            spawn_oneshot_http_responder(vec![http("200 OK", r#"{"permissions":{"push":false}}"#)]);
+        let url = format!("http://{addr}/repos/acme/widget");
+        match repo_push_check_at(&url, &probe("tok", &one_attempt_policy()), tlog()) {
+            PreflightCheck::Blocker(m) => assert!(m.contains("contents:write"), "{m}"),
+            _ => panic!("expected Blocker when permissions.push is false"),
+        }
+    }
+
+    #[test]
+    fn repo_push_check_resolves_base_from_env_override() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        // The probe must route through the shared github_api_base resolver:
+        // the env override sends it to the local responder.
+        let (addr, calls) =
+            spawn_oneshot_http_responder(vec![http("200 OK", r#"{"permissions":{"push":true}}"#)]);
+        let env = anodizer_core::MapEnvSource::new()
+            .with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"));
+        assert!(matches!(
+            repo_push_check(&probe("tok", &one_attempt_policy()), None, &env, tlog()),
+            PreflightCheck::Pass
+        ));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "probe must hit the env-resolved base"
+        );
+    }
+
+    #[test]
+    fn repo_push_check_prefers_configured_ghes_api_base() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        // A GHES `github_urls.api` config must win: the release backend
+        // contacts that host, so the preflight verdict is only meaningful
+        // against the same host.
+        let (addr, calls) =
+            spawn_oneshot_http_responder(vec![http("200 OK", r#"{"permissions":{"push":true}}"#)]);
+        let urls = anodizer_core::config::GitHubUrlsConfig {
+            api: Some(format!("http://{addr}/api/v3")),
+            ..Default::default()
+        };
+        assert!(matches!(
+            repo_push_check(
+                &probe("tok", &one_attempt_policy()),
+                Some(&urls),
+                &anodizer_core::MapEnvSource::new(),
+                tlog(),
+            ),
+            PreflightCheck::Pass
+        ));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "probe must hit the configured GHES base"
+        );
+    }
+
+    #[test]
+    fn repo_push_check_blocks_on_auth_denied() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        // A 401 with no rate-limit header ⇒ the token cannot access the repo.
+        let (addr, _c) = spawn_oneshot_http_responder(vec![http("401 Unauthorized", "")]);
+        let url = format!("http://{addr}/repos/acme/widget");
+        match repo_push_check_at(&url, &probe("bad", &one_attempt_policy()), tlog()) {
+            PreflightCheck::Blocker(m) => assert!(m.contains("acme/widget"), "{m}"),
+            _ => panic!("expected Blocker on a 401"),
+        }
+    }
+
+    fn http_with_header(status_line: &str, header: &str, body: &str) -> &'static str {
+        Box::leak(
+            format!(
+                "HTTP/1.1 {status_line}\r\n{header}\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        )
+    }
+
+    #[test]
+    fn repo_push_check_warns_on_rate_limited_403() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        // A secondary-rate-limit 403 carries `X-RateLimit-Remaining: 0`; it is
+        // transient (RepoProbe::RateLimited) and must NOT block a release whose
+        // token is actually valid.
+        let (addr, _c) = spawn_oneshot_http_responder(vec![http_with_header(
+            "403 Forbidden",
+            "X-RateLimit-Remaining: 0",
+            "",
+        )]);
+        let url = format!("http://{addr}/repos/acme/widget");
+        match repo_push_check_at(&url, &probe("tok", &one_attempt_policy()), tlog()) {
+            PreflightCheck::Warning(m) => assert!(m.contains("rate-limited"), "{m}"),
+            other => panic!("rate-limited 403 must degrade to Warning, not {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repo_push_check_warns_on_inconclusive_5xx() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        // A 5xx is host-reachable-but-not-answering-cleanly
+        // (RepoProbe::Inconclusive); it must warn rather than abort a release
+        // whose token is fine.
+        let (addr, _c) = spawn_oneshot_http_responder(vec![http("503 Service Unavailable", "")]);
+        let url = format!("http://{addr}/repos/acme/widget");
+        match repo_push_check_at(&url, &probe("tok", &one_attempt_policy()), tlog()) {
+            PreflightCheck::Warning(m) => assert!(m.contains("acme/widget"), "{m}"),
+            other => panic!("inconclusive 5xx must degrade to Warning, not {other:?}"),
+        }
+    }
 
     #[test]
     fn gitlab_access_takes_the_higher_level_and_passes_without_permissions() {
