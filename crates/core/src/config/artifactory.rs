@@ -99,7 +99,8 @@ pub struct ArtifactoryConfig {
     /// PEM-encoded trusted CA certificates for TLS verification.
     /// Appended to the system certificate pool.
     pub trusted_certificates: Option<String>,
-    /// Template-conditional skip: if rendered result is `"true"`, skip this publisher.
+    /// Template-conditional skip: skip this publisher when the
+    /// value is, or a template renders, `true` or `1` (any letter case).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Override whether this publisher failing should fail the overall release.

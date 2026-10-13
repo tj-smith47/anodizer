@@ -46,7 +46,7 @@ pub fn seed_missing_download_urls_for_crate(
         } else {
             su.as_str().to_string()
         };
-        if matches!(rendered.trim(), "true" | "1") {
+        if crate::config::is_true_spelling(&rendered) {
             return Ok(None);
         }
     }
@@ -427,6 +427,30 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    /// A `skip_upload` string reading `true` or `1` in any letter case seeds
+    /// no URL; `false` and `0` seed one.
+    #[test]
+    fn seed_reads_any_case_of_a_skip_upload_true_or_1() {
+        for (value, seeded) in [
+            ("TRUE", false),
+            (" 1 ", false),
+            ("False", true),
+            ("0", true),
+        ] {
+            let mut cfg = crate_cfg_with_release();
+            cfg.release.as_mut().unwrap().skip_upload =
+                Some(StringOrBool::String(value.to_string()));
+            let mut ctx = ctx_with(&cfg, vec![archive("myapp", "a.tar.gz", "x")]);
+            assert_eq!(
+                seed_missing_download_urls_for_crate(&mut ctx, &cfg)
+                    .unwrap()
+                    .is_some(),
+                seeded,
+                "{value:?}"
+            );
+        }
     }
 
     /// `release.tag:` override wins over `tag_template`, mirroring

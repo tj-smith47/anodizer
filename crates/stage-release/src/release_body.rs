@@ -7,7 +7,9 @@
 //! template. Lifted out of the ReleaseStage monolith so the body-shape
 //! decisions are reviewable in one place.
 
-use anodizer_core::config::{ContentSource, ExtraFileSpec, MakeLatestConfig, ReleaseConfig};
+use anodizer_core::config::{
+    ContentSource, ExtraFileSpec, MakeLatestConfig, ReleaseConfig, is_false_spelling,
+};
 use anodizer_core::context::Context;
 use anodizer_core::text::truncate_with_ellipsis;
 use anyhow::{Context as _, Result};
@@ -358,11 +360,14 @@ where
         Some(MakeLatestConfig::String(tmpl)) => {
             let rendered = render(tmpl)
                 .with_context(|| format!("release: render make_latest template '{tmpl}'"))?;
-            match rendered.trim() {
-                "true" | "1" => Some(MakeLatest::True),
-                "false" | "0" | "" => Some(MakeLatest::False),
-                "auto" => Some(MakeLatest::Legacy),
-                _ => Some(MakeLatest::True), // non-empty = truthy
+            let value = rendered.trim();
+            if is_false_spelling(value) || value.is_empty() {
+                Some(MakeLatest::False)
+            } else if value.eq_ignore_ascii_case("auto") {
+                Some(MakeLatest::Legacy)
+            } else {
+                // `true`, `1` and any other non-empty render mark it latest.
+                Some(MakeLatest::True)
             }
         }
         None => None,

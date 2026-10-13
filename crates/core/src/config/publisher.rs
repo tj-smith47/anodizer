@@ -25,7 +25,8 @@ pub struct PublisherConfig {
     pub env: Option<Vec<String>>,
     /// Working directory for the publisher command.
     pub dir: Option<String>,
-    /// Template-conditional skip: if rendered result is `"true"`, skip this publisher.
+    /// Template-conditional skip: skip this publisher when the
+    /// value is, or a template renders, `true` or `1` (any letter case).
     /// Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`).
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat.
     #[serde(

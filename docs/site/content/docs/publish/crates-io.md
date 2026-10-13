@@ -166,7 +166,7 @@ publish:
     auth: auto                # auto | token | oidc (Trusted Publishing)
 
     # ----- peer-publisher pattern -----
-    skip: false               # template-aware: bool, "true"/"false", or "auto"
+    skip: false               # bool or template; skips when it renders true or 1, any case
 ```
 
 ## Workspace ordering

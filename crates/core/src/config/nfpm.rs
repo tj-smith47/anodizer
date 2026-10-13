@@ -127,7 +127,8 @@ pub struct NfpmConfig {
     pub libdirs: Option<NfpmLibdirs>,
     /// Path to a YAML-format changelog file for deb/rpm packages.
     pub changelog: Option<String>,
-    /// Template-conditional: skip this nfpm config if rendered result is "false" or empty.
+    /// Template-conditional: skip this nfpm config when the gate renders `false`,
+    /// `0`, `no` or empty (any letter case).
     /// Conditional-skip gate.
     /// An absent, empty or blank `if:` imposes no gate and always runs; the
     /// falsy test applies to what a non-blank gate renders.

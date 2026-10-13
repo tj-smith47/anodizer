@@ -108,7 +108,7 @@ If `package_identifier` is not set, Anodizer auto-generates it as `Publisher.Nam
 | `default_locale` | string | `en-US` | Manifest locale: stamped into the version manifest (`DefaultLocale`), installer manifest (`InstallerLocale`), locale manifest (`PackageLocale`), and the `.locale.<locale>.yaml` file name. Templates allowed. |
 | `url_template` | string | release URL | Custom download URL template |
 | `ids` | list of strings | all | Build IDs filter: only include matching artifacts |
-| `skip_upload` | bool or string | `false` | Skip publishing (`true` always skips, `"auto"` skips for prereleases) |
+| `skip_upload` | bool or string | `false` | Skip publishing: `true` or `1` always skips, `auto` skips for prereleases, `false`, `0` or empty publishes; a template is rendered and read the same way, in any letter case (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)) |
 | `commit_msg_template` | string | `New version: {{ PackageIdentifier }} {{ Version }}` | Custom commit message template |
 | `path` | string | auto-generated | Custom manifest path inside the repo |
 | `release_notes` | string | none | Release notes for this version |
@@ -487,7 +487,7 @@ The `skip_upload` field controls whether publishing is skipped:
 - `false` (default) -- Always publish.
 - `true` -- Always skip.
 - `"auto"` -- Skip when the version is a prerelease (e.g. `1.0.0-rc1`).
-- A template string -- Evaluated at runtime; if the result is `"true"`, publishing is skipped.
+- A template string -- Evaluated at runtime; a result of `true` or `1` skips publishing, `false`, `0` or empty publishes, in any letter case, and `auto` behaves as above (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)).
 
 ## Template rendering
 

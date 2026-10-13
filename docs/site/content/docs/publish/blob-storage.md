@@ -132,7 +132,7 @@ Application Default Credentials (ADC) via `gcloud auth application-default login
 ## Common gotchas
 
 - **`s3_force_path_style`** defaults to `true` when `endpoint` is set. Virtual-hosted style (`https://<bucket>.s3.amazonaws.com`) is only valid for AWS proper — S3-compatible backends (MinIO, R2, Spaces) require path style.
-- **`disable` template**: the `disable` field accepts a template string, enabling conditional skip: `"{{ if IsSnapshot }}true{{ end }}"` skips blob upload for snapshot builds.
+- **`disable` template**: the `disable` field accepts a template string, enabling conditional skip: `"{{ if IsSnapshot }}true{{ end }}"` skips blob upload for snapshot builds. A render of `true` or `1`, in any letter case, skips (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)).
 - **`content_disposition: "-"`**: set to the literal string `"-"` to disable the `Content-Disposition` header entirely (useful for direct-browser-download use cases).
 - **Large files are streamed** in 10 MiB multipart parts, which changes the permissions an S3 identity needs and the object's ETag. See [How a file is uploaded](#how-a-file-is-uploaded).
 - **A killed run can leave multipart parts behind.** They are invisible in a bucket listing and billed until removed. See [Incomplete multipart uploads](#incomplete-multipart-uploads).

@@ -158,7 +158,7 @@ When `republish_in_moderation: true`, anodizer re-pushes a queued nupkg if the f
 | `api_key` | string | `$CHOCOLATEY_API_KEY` | Chocolatey API key for `choco push` (supports templates) |
 | `source_repo` | string | `https://push.chocolatey.org/` | Push source URL |
 | `skip_publish` | bool | `false` | Skip pushing the `.nupkg` to the Chocolatey repository |
-| `disable` | bool or string | `false` | Disable this publisher entirely. Accepts a bool or a template string that evaluates to a truthy value |
+| `disable` | bool or string | `false` | Disable this publisher entirely. Accepts a bool or a template string that renders `true` or `1`, in any letter case |
 | `use` | string | `archive` | Artifact type to package, which also routes the install cmdlet: `archive` → `Install-ChocolateyZipPackage` (unpacked into `tools/`); `msi` → `Install-ChocolateyPackage -FileType 'msi'` with `-SilentArgs '/qn /norestart'` and MSI `-ValidExitCodes @(0, 1641, 3010)`; `nsis` → `Install-ChocolateyPackage -FileType 'exe'` with `-SilentArgs '/S'`. |
 | `amd64_variant` | enum | `v1` | amd64 microarchitecture variant filter — exactly one of `v1`, `v2`, `v3`, `v4` (any other value is rejected when the config is parsed) |
 | `republish_in_moderation` | bool or string | `false` | Re-push the nupkg when a version is already in the community moderation queue. See [Recovery flags](../advanced/recovery-flags.md#chocolatey-republish-in-moderation). |

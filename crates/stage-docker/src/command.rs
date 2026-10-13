@@ -768,14 +768,13 @@ pub fn resolve_skip_push(skip_push: &Option<SkipPushConfig>, ctx: &Context) -> R
                 .unwrap_or(false)
         }
         Some(SkipPushConfig::Template(tmpl)) => {
-            // Exact `"true"` / `"auto"` string match on the trimmed render,
-            // case-sensitive. `"TRUE"` or `"True"` must NOT skip push.
+            // The trimmed render reads `true` / `1` as a skip in any letter
+            // case, the spellings a literal `skip_push` loads as a bool.
             let rendered = ctx
                 .render_template(tmpl)
                 .with_context(|| format!("dockers_v2: render skip_push template '{tmpl}'"))?;
-            let trimmed = rendered.trim();
-            trimmed == "true"
-                || (trimmed == "auto"
+            anodizer_core::config::is_true_spelling(&rendered)
+                || (rendered.trim().eq_ignore_ascii_case("auto")
                     && ctx
                         .template_vars()
                         .get("Prerelease")

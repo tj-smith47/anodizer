@@ -441,15 +441,25 @@ fn non_null_variants(variants: &[Value]) -> Vec<&Value> {
 /// Resolve a property schema to a human-readable type name, matching the config
 /// reference's vocabulary.
 ///
+/// The cell names JSON shapes only, never a Rust type: a reader of the
+/// reference writes YAML and has no use for `StringOrBool` or `HooksConfig`.
+///
 /// Handles:
-/// - direct `$ref` → definition name;
+/// - direct `$ref` → the shape of the definition it names: a struct is
+///   `object` (linked to its section when `section_anchors` has one), a
+///   string enum is `string`, a union definition such as `StringOrBool` is
+///   its members, and a scalar newtype is the scalar;
 /// - `anyOf`/`oneOf` (the `Option<T>` pattern: `[T, {"type":"null"}]`) → the
 ///   single non-null variant's type, or a `T | U` join for a true union;
 /// - `allOf` (the `#[serde(default)]`-wrapper pattern) → the first entry's type;
 /// - array → `list of <inner>` (or bare `list` when the element type is
 ///   inexpressible);
 /// - a `type` keyword (string or `[T, "null"]` union) → the mapped scalar name.
-fn resolve_type_name(prop: &Value, defs: &Map<String, Value>) -> String {
+fn resolve_type_name(
+    prop: &Value,
+    defs: &Map<String, Value>,
+    section_anchors: &HashMap<String, String>,
+) -> String {
     let Some(obj) = prop.as_object() else {
         return "object".into();
     };
@@ -458,31 +468,53 @@ fn resolve_type_name(prop: &Value, defs: &Map<String, Value>) -> String {
         let Some(name) = ref_name(r) else {
             return r.to_string();
         };
-        // A `#[serde(transparent)]` newtype over a scalar (e.g. `StringOrU32`
-        // wrapping a `u32`) is a named definition that is just a scalar type;
-        // inline its underlying type so the field shows `integer` rather than
-        // the wrapper's name. Definitions with structure (`properties`, an enum
-        // `oneOf`/`anyOf`, …) keep their name and get their own section.
-        if let Some(scalar) = defs.get(&name).and_then(scalar_def_type) {
-            return scalar;
+        let Some(def) = defs.get(&name) else {
+            return "object".into();
+        };
+        if def.get("properties").is_some() {
+            return match section_anchors.get(&name) {
+                Some(anchor) => format!("[object](#{anchor})"),
+                None => "object".into(),
+            };
         }
-        return name;
+        return resolve_type_name(def, defs, section_anchors);
     }
 
-    // Only `anyOf` participates in type naming — it is how an `Option<T>`/
-    // nullable field renders (`[T, {"type":"null"}]`), so the field shows `T`.
-    // A `oneOf` (e.g. the `"auto"`-or-bool tri-state schemas) has no single
-    // representative type and renders as the generic `object`, matching the
-    // reference's long-standing treatment of those fields.
-    if let Some(Value::Array(variants)) = obj.get("anyOf") {
+    // An enum or a `const`, inline or behind a `$ref`, shows the type of its
+    // values (`archives: false` is a `bool`).
+    if obj.contains_key("enum") || obj.contains_key("const") {
+        if let Some(Value::String(t)) = obj.get("type") {
+            return format_instance_type(t);
+        }
+        let first = obj.get("const").or_else(|| {
+            obj.get("enum")
+                .and_then(Value::as_array)
+                .and_then(|v| v.first())
+        });
+        return match first {
+            Some(Value::Bool(_)) => "bool".into(),
+            Some(Value::Number(n)) if n.is_f64() => "number".into(),
+            Some(Value::Number(_)) => "integer".into(),
+            _ => "string".into(),
+        };
+    }
+
+    // An `anyOf` is how an `Option<T>`/nullable field renders
+    // (`[T, {"type":"null"}]`), so the field shows `T`; a union of several
+    // types (`anyOf` or `oneOf`, such as the bool-or-template fields) shows
+    // each distinct member once, sorted so the same union reads the same
+    // wherever it is declared.
+    if let Some(Value::Array(variants)) = obj.get("anyOf").or_else(|| obj.get("oneOf")) {
         let non_null = non_null_variants(variants);
         if let [single] = non_null.as_slice() {
-            return resolve_type_name(single, defs);
+            return resolve_type_name(single, defs, section_anchors);
         }
-        let names: Vec<String> = non_null
+        let mut names: Vec<String> = non_null
             .iter()
-            .map(|s| resolve_type_name(s, defs))
+            .map(|s| resolve_type_name(s, defs, section_anchors))
             .collect();
+        names.sort();
+        names.dedup();
         if !names.is_empty() {
             return names.join(" | ");
         }
@@ -491,7 +523,12 @@ fn resolve_type_name(prop: &Value, defs: &Map<String, Value>) -> String {
     if let Some(Value::Array(all_of)) = obj.get("allOf")
         && let Some(first) = all_of.first()
     {
-        return resolve_type_name(first, defs);
+        return resolve_type_name(first, defs, section_anchors);
+    }
+
+    // A struct written inline rather than behind a `$ref`.
+    if obj.get("properties").is_some() {
+        return "object".into();
     }
 
     // `Option<Vec<T>>` renders as `type: ["array", "null"]`, while `Vec<T>`
@@ -499,7 +536,13 @@ fn resolve_type_name(prop: &Value, defs: &Map<String, Value>) -> String {
     // so the field shows `list of <inner>` rather than a bare `list`.
     if schema_has_type(prop, "array") {
         if let Some(item) = array_item(prop) {
-            return format!("list of {}", resolve_type_name(item, defs));
+            let inner = resolve_type_name(item, defs, section_anchors);
+            // A union item type is grouped so `list of (object | string)` does
+            // not read as a list of objects or a bare string.
+            if inner.contains(" | ") {
+                return format!("list of ({inner})");
+            }
+            return format!("list of {inner}");
         }
         return "list".into();
     }
@@ -534,25 +577,6 @@ fn schema_has_type(schema: &Value, ty: &str) -> bool {
     }
 }
 
-/// The mapped scalar type name of a definition that is a bare scalar — a `type`
-/// keyword and nothing structural (`properties`, `oneOf`, `anyOf`, `allOf`,
-/// `enum`). `None` for a structured definition (which keeps its own name and
-/// section). Underpins inlining a `#[serde(transparent)]` scalar newtype to the
-/// type it wraps.
-fn scalar_def_type(def: &Value) -> Option<String> {
-    let obj = def.as_object()?;
-    let structural = ["properties", "oneOf", "anyOf", "allOf", "enum"];
-    if structural.iter().any(|k| obj.contains_key(*k)) {
-        return None;
-    }
-    match obj.get("type")?.as_str()? {
-        // Only true scalars inline; a map (`object` + `additionalProperties`) or
-        // list newtype keeps its definition name and its own section.
-        t @ ("string" | "integer" | "number" | "boolean") => Some(format_instance_type(t)),
-        _ => None,
-    }
-}
-
 /// The element schema of an array schema's `items`, handling both the single-
 /// schema form (`"items": {…}`) and the tuple form (`"items": [{…}, …]`).
 fn array_item(schema: &Value) -> Option<&Value> {
@@ -580,10 +604,10 @@ fn resolve_ref_type_name(schema: &Value) -> Option<String> {
 
     for key in ["anyOf", "oneOf", "allOf"] {
         if let Some(Value::Array(variants)) = obj.get(key) {
-            for s in variants {
-                if let Some(r) = direct_ref(s) {
-                    return ref_name(r);
-                }
+            // A variant may itself be an array of a `$ref` (`archives`:
+            // `false` or a list of archive configs).
+            if let Some(name) = variants.iter().find_map(resolve_ref_type_name) {
+                return Some(name);
             }
         }
     }
@@ -704,7 +728,9 @@ fn extract_fields(
                 .map(String::as_str);
             ConfigField {
                 name: name.clone(),
-                field_type: resolve_type_name(schema, defs),
+                // A union type joins its members with `|`, which would end
+                // the table cell.
+                field_type: resolve_type_name(schema, defs, section_anchors).replace('|', "\\|"),
                 default: format_default(schema.as_object().and_then(|o| o.get("default")), anchor),
                 description: schema_description(schema),
             }
@@ -725,6 +751,7 @@ fn extract_fields(
 /// per-crate publisher / packager sub-structs — they show up only as a type
 /// name in the parent table.
 const SECOND_LEVEL_SECTIONS: &[(&str, &str, &str)] = &[
+    ("crates[].archives", "CrateConfig", "archives"),
     ("crates[].dockers_v2", "CrateConfig", "dockers_v2"),
     (
         "crates[].docker_manifests",
@@ -942,6 +969,162 @@ mod tests {
         tera.load_from_glob(dir.join("*.tera").to_str().unwrap())
             .expect("templates load");
         tera
+    }
+
+    /// Every row of every table in the generated configuration reference has
+    /// as many cells as its header, so no unescaped `|` (a union type, a
+    /// description) splits a cell.
+    #[test]
+    fn every_configuration_reference_row_has_the_header_cell_count() {
+        let reference = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../docs/site/content/docs/reference/configuration.md"),
+        )
+        .expect("read configuration.md");
+        let cells = |line: &str| {
+            let mut count = 0;
+            let mut escaped = false;
+            for c in line.chars() {
+                if c == '|' && !escaped {
+                    count += 1;
+                }
+                escaped = c == '\\' && !escaped;
+            }
+            count
+        };
+        let lines: Vec<&str> = reference.lines().collect();
+        let mut tables = 0;
+        let mut bad = Vec::new();
+        let mut i = 0;
+        while i + 1 < lines.len() {
+            if lines[i].starts_with('|') && lines[i + 1].starts_with("|--") {
+                tables += 1;
+                let header = cells(lines[i]);
+                let mut j = i + 1;
+                while j < lines.len() && lines[j].starts_with('|') {
+                    if cells(lines[j]) != header {
+                        bad.push(format!("line {}: {}", j + 1, lines[j]));
+                    }
+                    j += 1;
+                }
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        assert!(tables > 50, "found only {tables} tables");
+        assert!(
+            bad.is_empty(),
+            "rows whose cell count differs from the header:\n{}",
+            bad.join("\n")
+        );
+    }
+
+    /// Every Type cell of the configuration reference is built from the JSON
+    /// shape words alone, so no Rust type name (`StringOrBool`,
+    /// `HooksConfig`, `Amd64Variant`) reaches a reader.
+    #[test]
+    fn every_configuration_reference_type_cell_names_json_shapes_only() {
+        const SHAPES: &[&str] = &[
+            "any", "bool", "integer", "list", "map", "number", "object", "string",
+        ];
+        let reference = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../docs/site/content/docs/reference/configuration.md"),
+        )
+        .expect("read configuration.md");
+        let mut rows = 0;
+        let mut bad = Vec::new();
+        let mut in_field_table = false;
+        for line in reference.lines() {
+            if line == "| Field | Type | Default | Description |" {
+                in_field_table = true;
+                continue;
+            }
+            if !line.starts_with('|') {
+                in_field_table = false;
+                continue;
+            }
+            if !in_field_table || line.starts_with("|--") {
+                continue;
+            }
+            rows += 1;
+            let mut type_cell = line.split(" | ").nth(1).unwrap_or_default().to_string();
+            while let Some(start) = type_cell.find("[object](#") {
+                let Some(len) = type_cell[start..].find(')') else {
+                    break;
+                };
+                type_cell.replace_range(start..start + len + 1, "object");
+            }
+            let type_cell = type_cell.replace(['(', ')'], "");
+            let named_only_shapes = type_cell.split(" \\| ").all(|member| {
+                let mut shape = member;
+                while let Some(rest) = shape.strip_prefix("list of ") {
+                    shape = rest;
+                }
+                SHAPES.contains(&shape)
+            });
+            if !named_only_shapes {
+                bad.push(line.chars().take(120).collect::<String>());
+            }
+        }
+        assert!(rows > 500, "read only {rows} field rows");
+        assert!(
+            bad.is_empty(),
+            "type cells naming a Rust type:\n{}",
+            bad.join("\n")
+        );
+    }
+
+    /// A `$ref` resolves to the shape of what it names: a union definition
+    /// to its sorted members, a string enum to `string`, a struct to
+    /// `object` linked to the section that documents it.
+    #[test]
+    fn a_referenced_definition_renders_as_its_json_shape() {
+        let defs: Map<String, Value> = serde_json::from_value(serde_json::json!({
+            "StringOrBool": { "anyOf": [
+                { "type": "boolean" }, { "type": "string" }, { "type": "integer", "enum": [0, 1] }
+            ] },
+            "Variant": { "type": "string", "enum": ["v1", "v2"] },
+            "HooksConfig": { "type": "object", "properties": { "cmd": { "type": "string" } } },
+            "Inner": { "type": "object", "properties": { "x": { "type": "string" } } }
+        }))
+        .unwrap();
+        let props: Map<String, Value> = serde_json::from_value(serde_json::json!({
+            "a": { "$ref": "#/definitions/StringOrBool" },
+            "b": { "anyOf": [{ "$ref": "#/definitions/Variant" }, { "type": "null" }] },
+            "c": { "$ref": "#/definitions/HooksConfig" },
+            "d": { "type": "array", "items": { "$ref": "#/definitions/Inner" } },
+            "e": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "$ref": "#/definitions/Inner" }] } },
+            "f": { "anyOf": [{ "const": false }, { "type": "array", "items": { "type": "string" } }, { "type": "null" }] }
+        }))
+        .unwrap();
+        let anchors = HashMap::from([("HooksConfig".to_string(), "after".to_string())]);
+        let fields = extract_fields(&props, &defs, &anchors);
+        let types: Vec<&str> = fields.iter().map(|f| f.field_type.as_str()).collect();
+        assert_eq!(
+            types,
+            [
+                "bool \\| integer \\| string",
+                "string",
+                "[object](#after)",
+                "list of object",
+                "list of (object \\| string)",
+                "bool \\| list of string"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_union_type_renders_as_one_escaped_cell() {
+        let props: Map<String, Value> = serde_json::from_value(serde_json::json!({
+            "f": { "description": "d", "anyOf": [{ "type": "boolean" }, { "type": "string" }] },
+            "g": { "description": "d", "oneOf": [{ "type": "boolean" }, { "type": "integer" }] }
+        }))
+        .unwrap();
+        let fields = extract_fields(&props, &Map::new(), &HashMap::new());
+        let types: Vec<&str> = fields.iter().map(|f| f.field_type.as_str()).collect();
+        assert_eq!(types, ["bool \\| string", "bool \\| integer"]);
     }
 
     #[test]
@@ -1299,7 +1482,7 @@ mod tests {
             if schema.as_bool().is_some() {
                 continue;
             }
-            let type_str = super::resolve_type_name(schema, defs);
+            let type_str = super::resolve_type_name(schema, defs, &HashMap::new());
             assert!(
                 !type_str.is_empty(),
                 "field `{name}` resolved to an empty type string"

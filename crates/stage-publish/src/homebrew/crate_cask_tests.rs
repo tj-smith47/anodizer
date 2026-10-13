@@ -406,7 +406,7 @@ fn assert_gate_line_prints_once_per_command(
 /// cask.
 #[test]
 fn every_gate_skip_line_prints_once_per_command() {
-    const WARNING: &str = "unrecognized skip_upload value \"ture\" (expected \"true\", \"false\", or \"auto\"); treating as false";
+    const WARNING: &str = "unrecognized skip_upload value \"ture\" (expected \"true\", \"false\", \"1\", \"0\" or \"auto\"); treating as false";
     for gate in ["skip_upload", "if", "warn"] {
         let gated = |skip_upload: &mut Option<StringOrBool>, if_condition: &mut Option<String>| {
             match gate {
@@ -644,7 +644,7 @@ fn assert_an_unreadable_custom_block_warns_once(block: &'static str, cause: &str
 /// keyed on the entry's index.
 #[test]
 fn two_top_level_casks_sharing_a_name_each_warn_once_per_command() {
-    const WARNING: &str = "unrecognized skip_upload value \"ture\" (expected \"true\", \"false\", or \"auto\"); treating as false";
+    const WARNING: &str = "unrecognized skip_upload value \"ture\" (expected \"true\", \"false\", \"1\", \"0\" or \"auto\"); treating as false";
     for (command, dry_run, passes) in COMMAND_PASSES {
         let (bare_url, bare) = make_bare_cask_tap("main");
         let entry = |directory: &str| HomebrewCaskConfig {

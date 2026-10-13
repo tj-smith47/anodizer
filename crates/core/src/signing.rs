@@ -82,7 +82,8 @@ pub struct SignConfig {
     /// the keyless certificate identity / issuer when they cannot be derived
     /// from the environment.
     pub verify: Option<SignVerifyConfig>,
-    /// Template-conditional: skip this sign config if rendered result is "false" or empty.
+    /// Template-conditional: skip this sign config when the gate renders `false`,
+    /// `0`, `no` or empty (any letter case).
     /// An absent, empty or blank `if:` imposes no gate and always runs; the
     /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
@@ -454,7 +455,8 @@ pub struct DockerSignConfig {
     /// signatures are verified with `cosign verify` against the registry
     /// the sign just pushed to.
     pub verify: Option<SignVerifyConfig>,
-    /// Template-conditional: skip this docker sign config if rendered result is "false" or empty.
+    /// Template-conditional: skip this docker sign config when the gate renders `false`,
+    /// `0`, `no` or empty (any letter case).
     /// An absent, empty or blank `if:` imposes no gate and always runs; the
     /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]

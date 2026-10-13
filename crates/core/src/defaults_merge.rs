@@ -55,7 +55,8 @@ use crate::config::{
 // a new `skip`-bearing config type requires no changes here.
 
 /// Returns `true` when the per-crate value's serialized JSON form has a
-/// `skip` field whose value evaluates to truthy (`true`, `"true"`, `"1"`).
+/// `skip` field whose value evaluates to truthy (`true`, or `"true"` / `"1"`
+/// in any letter case).
 /// Returns `false` for any other shape — including values without a `skip`
 /// field, falsey skip values, and serialization failures (defaults inherit
 /// in those cases, matching prior behaviour).
@@ -67,7 +68,7 @@ fn is_skipped<T: Serialize>(value: &T) -> bool {
 }
 
 /// Returns `true` when `value` is an object containing a `skip` key whose
-/// value is a truthy bool / truthy string ("true" / "1").
+/// value is a truthy bool or a string reading `true` / `1` in any letter case.
 fn json_skip_truthy(value: &Json) -> bool {
     let Some(obj) = value.as_object() else {
         return false;
@@ -77,7 +78,7 @@ fn json_skip_truthy(value: &Json) -> bool {
     };
     match skip {
         Json::Bool(b) => *b,
-        Json::String(s) => matches!(s.trim(), "true" | "1"),
+        Json::String(s) => crate::config::is_true_spelling(s),
         _ => false,
     }
 }
@@ -589,6 +590,20 @@ mod tests {
         AnchoredVersionFile, ArchiveConfig, ArchivesConfig, ChecksumConfig, CrossStrategy,
         HomebrewCaskConfig, HomebrewCaskUninstall, HomebrewConfig, StringOrBool, VersionFileEntry,
     };
+
+    /// A `skip` string reads `true` / `1` in any letter case.
+    #[test]
+    fn a_skip_string_reads_any_case_of_true_and_1() {
+        for (value, skipped) in [
+            ("TRUE", true),
+            (" 1 ", true),
+            ("False", false),
+            ("0", false),
+        ] {
+            let json = serde_json::json!({ "skip": value });
+            assert_eq!(json_skip_truthy(&json), skipped, "{value:?}");
+        }
+    }
 
     /// Each sign slice a `defaults:` block fills records which block filled
     /// it, so a diagnostic names what the operator wrote.

@@ -1,3 +1,4 @@
+use anodizer_core::config::{is_false_spelling, is_true_spelling};
 use anodizer_core::context::Context;
 use anyhow::{Context as _, Result, bail};
 
@@ -53,7 +54,7 @@ pub(crate) fn validate_release_flags(
 /// `true` / `false` / `auto` / `1` / `0` / "". `auto` resolves as:
 /// skip when the run is a snapshot. Any other rendered value bails with
 /// the actionable error message.
-fn resolve_skip_upload(
+pub(crate) fn resolve_skip_upload(
     ctx: &Context,
     release_cfg: &anodizer_core::config::ReleaseConfig,
     crate_name: &str,
@@ -72,17 +73,19 @@ fn resolve_skip_upload(
     } else {
         s.as_str().to_string()
     };
-    Ok(match rendered.trim() {
-        "auto" => ctx.is_snapshot(),
-        "true" | "1" => true,
-        "false" | "0" | "" => false,
-        other => bail!(
-            "release: invalid skip_upload value '{}' for crate '{}' \
-             (expected one of: true/false/auto/1/0, or a template that renders to one of those)",
-            other,
-            crate_name
-        ),
-    })
+    let value = rendered.trim();
+    if is_true_spelling(value) {
+        Ok(true)
+    } else if is_false_spelling(value) || value.is_empty() {
+        Ok(false)
+    } else if value.eq_ignore_ascii_case("auto") {
+        Ok(ctx.is_snapshot())
+    } else {
+        bail!(
+            "release: invalid skip_upload value '{value}' for crate '{crate_name}' \
+             (expected one of: true/false/auto/1/0, or a template that renders to one of those)"
+        )
+    }
 }
 
 /// Resolved boolean/enum flags for one crate's release, computed once and

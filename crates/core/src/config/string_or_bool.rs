@@ -60,12 +60,12 @@ pub(crate) fn bool_from_i64<E: serde::de::Error>(
 }
 
 impl StringOrBool {
-    /// Evaluate this value to a bool. If it's a string, treat "true" / "1" as true,
-    /// everything else as false.
+    /// Evaluate this value to a bool. If it's a string, treat `true` / `1` in
+    /// any letter case as true, everything else as false.
     pub fn as_bool(&self) -> bool {
         match self {
             StringOrBool::Bool(b) => *b,
-            StringOrBool::String(s) => matches!(s.trim(), "true" | "1"),
+            StringOrBool::String(s) => is_true_spelling(s),
         }
     }
 
@@ -87,8 +87,8 @@ impl StringOrBool {
     ///
     /// The value is always run through `render` (Tera leaves plain literals
     /// unchanged, so this is a no-op for non-templated values). The rendered
-    /// result is then compared to `"true"` / `"1"` after trimming. A `Bool`
-    /// variant short-circuits without rendering.
+    /// result is then compared to `true` / `1` after trimming, in any letter
+    /// case. A `Bool` variant short-circuits without rendering.
     ///
     /// Always-rendering keeps this helper consistent with sibling
     /// `should_skip_upload` (which always renders) — a literal `"{{ broken"`
@@ -106,7 +106,7 @@ impl StringOrBool {
             StringOrBool::String(s) => {
                 reject_stale_typed_compare(s, "skip/enable expression")?;
                 let rendered = render(s)?;
-                Ok(matches!(rendered.trim(), "true" | "1"))
+                Ok(is_true_spelling(&rendered))
             }
         }
     }
@@ -131,15 +131,33 @@ impl StringOrBool {
         reject_stale_typed_compare(s, label)?;
         let rendered =
             render(s).map_err(|e| anyhow::anyhow!("{label}: template render failed: {e:#}"))?;
-        match rendered.trim().to_ascii_lowercase().as_str() {
-            "true" | "1" => Ok(true),
-            "false" | "0" => Ok(false),
-            _ => anyhow::bail!(
+        if is_true_spelling(&rendered) {
+            Ok(true)
+        } else if is_false_spelling(&rendered) {
+            Ok(false)
+        } else {
+            anyhow::bail!(
                 "{label} rendered {:?}, which is not true, false, 1 or 0",
                 rendered.trim()
-            ),
+            )
         }
     }
+}
+
+/// Whether `s`, trimmed, spells true: `true` or `1` in any letter case, the
+/// spellings [`StringOrBool::try_evaluate_strict`] reads as true.
+///
+/// This and [`is_false_spelling`] are the one place a rendered value is
+/// matched against the words; the "Bool-or-template values" table on the
+/// templates docs page lists what each field does with them.
+pub fn is_true_spelling(s: &str) -> bool {
+    matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "1")
+}
+
+/// Whether `s`, trimmed, spells false: `false` or `0` in any letter case.
+/// An empty value is not a spelling; each reader says what it does with one.
+pub fn is_false_spelling(s: &str) -> bool {
+    matches!(s.trim().to_ascii_lowercase().as_str(), "false" | "0")
 }
 
 impl Default for StringOrBool {
@@ -199,8 +217,8 @@ pub fn active_if_gate(condition: Option<&str>) -> Option<&str> {
 /// - Template render failure → hard `Err` (matches every existing
 ///   `if_condition` site; silent-skip on a typo'd template was the W1
 ///   release-resilience footgun and is intentionally NOT replicated).
-/// - Rendered value (trimmed) equal to `"false"`, `"0"`, `"no"`, or empty
-///   → skip.
+/// - Rendered value (trimmed, any letter case) equal to `"false"`, `"0"`,
+///   `"no"`, or empty → skip.
 /// - Any other rendered value → proceed.
 ///
 /// `label` is the resource-identifying string woven into the error context
@@ -218,9 +236,14 @@ pub fn evaluate_if_condition(
     let rendered = render(template).with_context(|| {
         format!("{label}: `if` template render failed (expression: {template})")
     })?;
+    Ok(!is_if_falsy(&rendered))
+}
+
+/// Whether a rendered `if:` value means "skip": empty, or `false`, `0` or
+/// `no` in any letter case, after trimming.
+pub fn is_if_falsy(rendered: &str) -> bool {
     let trimmed = rendered.trim();
-    let falsy = matches!(trimmed, "" | "false" | "0" | "no");
-    Ok(!falsy)
+    trimmed.is_empty() || is_false_spelling(trimmed) || trimmed.eq_ignore_ascii_case("no")
 }
 
 /// Custom deserializer for `Option<StringOrBool>`.
@@ -628,6 +651,45 @@ mod tests {
         assert!(!StringOrBool::String("no".into()).as_bool());
         assert!(!StringOrBool::String(String::new()).as_bool());
         assert!(!StringOrBool::String("false".into()).as_bool());
+    }
+
+    /// The strict reader `try_evaluate_strict`, the lenient readers
+    /// `as_bool`, `try_evaluates_to_true` and `evaluate_if_condition`, and the
+    /// spelling helpers all read `true` / `1` and `false` / `0` in any letter
+    /// case.
+    #[test]
+    fn every_reader_strict_and_lenient_takes_true_false_one_and_zero_in_any_case() {
+        for (value, truthy) in [
+            ("true", true),
+            (" TRUE ", true),
+            ("True", true),
+            ("1", true),
+            ("false", false),
+            ("FALSE", false),
+            ("0", false),
+        ] {
+            let v = StringOrBool::String(value.to_string());
+            assert_eq!(is_true_spelling(value), truthy, "{value:?}");
+            assert_eq!(is_false_spelling(value), !truthy, "{value:?}");
+            assert_eq!(is_if_falsy(value), !truthy, "{value:?}");
+            assert_eq!(v.as_bool(), truthy, "{value:?}");
+            assert_eq!(
+                v.try_evaluates_to_true(|s| Ok(s.to_string())).unwrap(),
+                truthy,
+                "{value:?}"
+            );
+            assert_eq!(
+                v.try_evaluate_strict("lbl", |s| Ok(s.to_string())).unwrap(),
+                truthy,
+                "{value:?}"
+            );
+            assert_eq!(
+                evaluate_if_condition(Some("tmpl"), "lbl", |_| Ok(value.to_string())).unwrap(),
+                truthy,
+                "{value:?}"
+            );
+        }
+        assert!(!evaluate_if_condition(Some("tmpl"), "lbl", |_| Ok("NO".to_string())).unwrap());
     }
 
     // --- Default -----------------------------------------------------------
@@ -1109,5 +1171,535 @@ mod tests {
             "the walk found a different number of documented `if:` fields than \
              it expects; a new one must carry the sentence and be counted here"
         );
+    }
+
+    /// Every enum in the config with a `Bool(bool)` variant is a value that
+    /// spells a bool, so it loads an unquoted `1` / `0` through the shared
+    /// helpers and its schema accepts them. Its deserializer names
+    /// `bool_from_u64` and `bool_from_i64`, and its schema either carries the
+    /// `accept_one_or_zero` transform or, on every field of that type, a
+    /// `schema_with` function that reaches `one_or_zero_schema`. Rule:
+    /// `.claude/rules/bool-or-template-values.md`.
+    #[test]
+    fn every_bool_or_template_enum_reads_one_and_zero() {
+        use crate::test_helpers::test_sources::{
+            function_bodies, production_half, workspace_production_sources,
+        };
+
+        /// Enums with a `Bool(bool)` variant that do not spell a bool, each
+        /// with the reason.
+        const NOT_A_BOOL_SPELLING: &[(&str, &str)] = &[];
+
+        let all: String = workspace_production_sources()
+            .into_iter()
+            .filter(|p| {
+                p.to_string_lossy()
+                    .replace('\\', "/")
+                    .contains("crates/core/src/config/")
+            })
+            .map(|p| production_half(&std::fs::read_to_string(&p).unwrap()).to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines: Vec<&str> = all.lines().collect();
+        let bodies = function_bodies(&all);
+        let header_names = |b: &str, name: &str| {
+            b.lines().next().is_some_and(|h| {
+                h.contains(&format!("fn {name}(")) || h.contains(&format!("fn {name}<"))
+            })
+        };
+        let ident = |s: &str| {
+            s.trim_start()
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        };
+        // The attribute and doc lines directly above line `i`.
+        let attrs_above = |i: usize| {
+            lines[..i]
+                .iter()
+                .rev()
+                .take_while(|l| {
+                    let t = l.trim_start();
+                    t.starts_with('#') || t.starts_with("//")
+                })
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let mut enums: Vec<(String, usize)> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let t = line.trim_start();
+            let Some(rest) = ["pub enum ", "pub(crate) enum ", "enum "]
+                .iter()
+                .find_map(|p| t.strip_prefix(p))
+            else {
+                continue;
+            };
+            let body: Vec<&str> = lines[i..]
+                .iter()
+                .take_while(|l| **l != "}")
+                .copied()
+                .collect();
+            if body.iter().any(|l| l.trim() == "Bool(bool),") {
+                enums.push((ident(rest), i));
+            }
+        }
+
+        let macro_types: Vec<String> = all
+            .split("impl_auto_or_bool_serde!(")
+            .skip(1)
+            .map(ident)
+            .collect();
+        let macro_body = all
+            .find("macro_rules! impl_auto_or_bool_serde")
+            .map(|at| &all[at..])
+            .map(|rest| &rest[..rest.find("\n}\n").unwrap_or(rest.len())])
+            .unwrap_or_default();
+        let uses_helpers = |s: &str| s.contains("bool_from_u64") && s.contains("bool_from_i64");
+
+        // Functions whose body reaches `one_or_zero_schema`, directly or
+        // through one call.
+        let direct: Vec<String> = bodies
+            .iter()
+            .filter(|b| b.contains("one_or_zero_schema()"))
+            .map(|b| {
+                ident(
+                    b.lines()
+                        .next()
+                        .unwrap()
+                        .split("fn ")
+                        .nth(1)
+                        .unwrap_or_default(),
+                )
+            })
+            .collect();
+        let reaches_schema = |name: &str| {
+            bodies.iter().filter(|b| header_names(b, name)).any(|b| {
+                b.contains("one_or_zero_schema()")
+                    || direct.iter().any(|d| b.contains(&format!("{d}()")))
+            })
+        };
+
+        let mut failures = Vec::new();
+        for (name, at) in &enums {
+            if NOT_A_BOOL_SPELLING.iter().any(|(n, _)| n == name) {
+                continue;
+            }
+            let impl_region = all
+                .find(&format!("Deserialize<'de> for {name} {{"))
+                .map(|i| &all[i..])
+                .map(|rest| &rest[..rest.find("\nimpl").unwrap_or(rest.len())]);
+            let deserializes = match impl_region {
+                Some(region) => uses_helpers(region),
+                None if macro_types.contains(name) => uses_helpers(macro_body),
+                None => bodies.iter().any(|b| {
+                    b.lines()
+                        .next()
+                        .is_some_and(|h| h.contains("fn deserialize_"))
+                        && b.contains(&format!("Option<{name}>"))
+                        && uses_helpers(b)
+                }),
+            };
+            if !deserializes {
+                failures.push(format!(
+                    "{name}: its deserializer does not use bool_from_u64 / bool_from_i64"
+                ));
+            }
+
+            let schema_ok = if attrs_above(*at).contains("accept_one_or_zero") {
+                true
+            } else {
+                let fields: Vec<usize> = lines
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, l)| l.trim_end().ends_with(&format!(": Option<{name}>,")))
+                    .map(|(i, _)| i)
+                    .collect();
+                !fields.is_empty()
+                    && fields.iter().all(|&i| {
+                        let attrs = attrs_above(i);
+                        attrs
+                            .split("schema_with = \"")
+                            .nth(1)
+                            .and_then(|r| r.split('"').next())
+                            .map(|path| path.rsplit("::").next().unwrap_or(path))
+                            .is_some_and(reaches_schema)
+                    })
+            };
+            if !schema_ok {
+                failures.push(format!("{name}: its schema does not accept 1 / 0"));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+
+        for (name, _) in NOT_A_BOOL_SPELLING {
+            assert!(
+                enums.iter().any(|(n, _)| n == name),
+                "allow-list names no enum {name}"
+            );
+        }
+        let mut names: Vec<&str> = enums.iter().map(|(n, _)| n.as_str()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "MakeLatestConfig",
+                "PrereleaseConfig",
+                "SkipPushConfig",
+                "StringOrBool",
+                "WrapInDirectory"
+            ],
+            "a new enum with a Bool(bool) variant must read 1 / 0 and be counted here"
+        );
+    }
+
+    fn published_schema_validator() -> jsonschema::Validator {
+        let schema: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../docs/site/static/schema.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        jsonschema::validator_for(&schema).unwrap()
+    }
+
+    /// The published schema accepts an unquoted `1` / `0` on one field of
+    /// each of the five bool-or-template types (`prerelease`, `make_latest`,
+    /// `fail_on_error` for `StringOrBool`, `wrap_in_directory`, `skip_push`),
+    /// as the loader does, and refuses `2`. Every other field of a type
+    /// shares that type's schema, which
+    /// `every_bool_or_template_enum_reads_one_and_zero` holds.
+    #[test]
+    fn the_published_schema_accepts_one_and_zero_on_a_field_of_each_bool_or_template_type() {
+        let validator = published_schema_validator();
+        // `values` = prerelease, make_latest, fail_on_error,
+        // wrap_in_directory, skip_push.
+        let config = |v: [&str; 5]| {
+            format!(
+                "project_name: p\nrelease:\n  prerelease: {}\n  make_latest: {}\n  \
+                 preflight:\n    fail_on_error: {}\ncrates:\n  - name: p\n    path: .\n    \
+                 archives:\n      - wrap_in_directory: {}\n    docker_manifests:\n      \
+                 - name_template: x\n        image_templates: [x]\n        skip_push: {}\n",
+                v[0], v[1], v[2], v[3], v[4]
+            )
+        };
+        let valid = |yaml: &str| {
+            let instance: serde_json::Value = serde_yaml_ng::from_str(yaml).unwrap();
+            validator.is_valid(&instance)
+        };
+
+        let yaml = config(["1", "1", "0", "1", "0"]);
+        serde_yaml_ng::from_str::<crate::config::Config>(&yaml)
+            .unwrap_or_else(|e| panic!("{e}\n{yaml}"));
+        let instance: serde_json::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+        let errors: Vec<String> = validator
+            .iter_errors(&instance)
+            .map(|e| e.to_string())
+            .collect();
+        assert!(errors.is_empty(), "{errors:#?}");
+
+        for field in 0..5 {
+            let mut v = ["1", "1", "0", "1", "0"];
+            v[field] = "2";
+            let yaml = config(v);
+            assert!(!valid(&yaml), "the schema accepted 2:\n{yaml}");
+            assert!(
+                serde_yaml_ng::from_str::<crate::config::Config>(&yaml).is_err(),
+                "{yaml}"
+            );
+        }
+    }
+
+    /// A crate's `archives` takes `false`, a list or null in both the
+    /// published schema and the loader, and `true` in neither.
+    #[test]
+    fn the_published_schema_accepts_archives_false_and_refuses_true() {
+        let validator = published_schema_validator();
+        let config = |v: &str| {
+            format!("project_name: p\ncrates:\n  - name: p\n    path: .\n    archives: {v}\n")
+        };
+        for v in ["false", "[]", "null", "[{formats: [tar.gz]}]"] {
+            let yaml = config(v);
+            let instance: serde_json::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+            let errors: Vec<String> = validator
+                .iter_errors(&instance)
+                .map(|e| e.to_string())
+                .collect();
+            assert!(errors.is_empty(), "{errors:#?}\n{yaml}");
+            serde_yaml_ng::from_str::<crate::config::Config>(&yaml)
+                .unwrap_or_else(|e| panic!("{e}\n{yaml}"));
+        }
+        let yaml = config("true");
+        let instance: serde_json::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert!(!validator.is_valid(&instance), "{yaml}");
+        assert!(serde_yaml_ng::from_str::<crate::config::Config>(&yaml).is_err());
+    }
+
+    /// The text of `line` up to a `//` comment that sits outside a string.
+    fn before_comment(line: &str) -> &str {
+        let mut in_string = false;
+        let mut escaped = false;
+        let bytes = line.as_bytes();
+        for (i, &b) in bytes.iter().enumerate() {
+            if in_string {
+                match (escaped, b) {
+                    (false, b'\\') => escaped = true,
+                    (false, b'"') => in_string = false,
+                    _ => escaped = false,
+                }
+            } else if b == b'"' {
+                in_string = true;
+            } else if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+                return &line[..i];
+            }
+        }
+        line
+    }
+
+    /// Whether `code` compares something against the literal `"true"` or
+    /// `"false"`: an `==` / `!=` / match-arm `|` before it, a `=>` / `|` /
+    /// `==` / `!=` after it, an `eq_ignore_ascii_case` argument, or a
+    /// `matches!` pattern. A closure `||` or a `"true".into()` is not one.
+    fn compares_a_bool_word(code: &str) -> bool {
+        for word in ["\"true\"", "\"false\""] {
+            let mut from = 0;
+            while let Some(at) = code[from..].find(word) {
+                let start = from + at;
+                let end = start + word.len();
+                let before = code[..start].trim_end();
+                let after = code[end..].trim_start();
+                let single_bar_before = before.ends_with('|') && !before.ends_with("||");
+                let single_bar_after = after.starts_with('|') && !after.starts_with("||");
+                if before.ends_with("==")
+                    || before.ends_with("!=")
+                    || single_bar_before
+                    || before.ends_with("eq_ignore_ascii_case(")
+                    || after.starts_with("=>")
+                    || single_bar_after
+                    || after.starts_with("==")
+                    || after.starts_with("!=")
+                    || (before.contains("matches!(") && after.starts_with(')'))
+                {
+                    return true;
+                }
+                from = end;
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn compares_a_bool_word_reads_the_comparison_shapes() {
+        for code in [
+            r#"if v == "true" {"#,
+            r#"v != "false""#,
+            r#""true" | "1" => x,"#,
+            r#"| "false""#,
+            r#""false" => y,"#,
+            r#"v.eq_ignore_ascii_case("true")"#,
+            r#"matches!(v, "true")"#,
+        ] {
+            assert!(compares_a_bool_word(code), "{code}");
+        }
+        for code in [
+            r#"env.entry(k).or_insert_with(|| "true".into());"#,
+            r#"let s = "true";"#,
+            r#"out.push_str("false");"#,
+            r#"x.starts_with("true")"#,
+        ] {
+            assert!(!compares_a_bool_word(code), "{code}");
+        }
+        assert_eq!(before_comment(r#"a == "x" // == "true""#), r#"a == "x" "#);
+        assert_eq!(before_comment(r#"u = "http://h""#), r#"u = "http://h""#);
+    }
+
+    /// Production code matches a rendered value against `true` / `false`
+    /// only through `is_true_spelling` / `is_false_spelling`, so the
+    /// accepted spellings live in one place (the templates page's
+    /// "Bool-or-template values" table documents them). The functions below
+    /// compare against those words for a reason other than reading a
+    /// bool-or-template value; each entry must still match a comparison.
+    #[test]
+    fn no_production_function_matches_a_rendered_value_against_true_or_false() {
+        use crate::test_helpers::test_sources::{
+            function_bodies, production_half, workspace_production_sources,
+        };
+        use std::collections::{BTreeMap, BTreeSet};
+
+        const HELPERS: &[&str] = &["is_true_spelling", "is_false_spelling"];
+        const ALLOWED: &[(&str, &str, &str)] = &[
+            (
+                "crates/cli/src/commands/tag/bump_detect.rs",
+                "detect_bump_from_tokens",
+                "default_bump is a bump keyword, `false` being its alias for none",
+            ),
+            (
+                "crates/core/src/artifact/filter.rs",
+                "is_binary_sign_output",
+                "artifact metadata the build writes as exactly `true`",
+            ),
+            (
+                "crates/core/src/artifact/registry.rs",
+                "only_replacing_unibins",
+                "artifact metadata the build writes as exactly `false`",
+            ),
+            (
+                "crates/core/src/config/release.rs",
+                "visit_str",
+                "load-time visitors for a quoted YAML scalar, before any render",
+            ),
+            (
+                "crates/core/src/git/status.rs",
+                "shallow_from_answer",
+                "git rev-parse output",
+            ),
+            (
+                "crates/core/src/redact.rs",
+                "is_boolean_shape",
+                "classifies an env value's shape for redaction",
+            ),
+            (
+                "crates/core/src/test_helpers/bool_spellings.rs",
+                "from_cell",
+                "reads the outcome words of the docs table, a test helper",
+            ),
+            (
+                "crates/core/src/template/render.rs",
+                "build_tera_context",
+                "types a template variable as a bool for the template engine",
+            ),
+            (
+                "crates/stage-archive/src/archive_config.rs",
+                "archive_metadata",
+                "artifact metadata the build writes as exactly `true`",
+            ),
+            (
+                "crates/stage-publish/src/homebrew/cask_custom_block/lexer.rs",
+                "names_a_call",
+                "Ruby keywords in the cask lexer",
+            ),
+            (
+                "crates/stage-publish/src/homebrew/cask_custom_block/names.rs",
+                "pattern_names",
+                "Ruby keywords in the cask lexer",
+            ),
+            (
+                "crates/stage-publish/src/homebrew/cask_custom_block/words.rs",
+                "position",
+                "Ruby keywords in the cask lexer",
+            ),
+            (
+                "crates/stage-publish/src/nix/publish/build.rs",
+                "detect_dynamically_linked",
+                "artifact metadata the build writes as exactly `true`",
+            ),
+            (
+                "crates/stage-publish/src/schema_validation/chocolatey.rs",
+                "validate_nuspec_structural",
+                "the nuspec XML schema's own boolean spellings",
+            ),
+            (
+                "crates/stage-publish/src/util/git_revert.rs",
+                "check_out_branch_with_history",
+                "git rev-parse output",
+            ),
+            (
+                "crates/stage-sign/src/verify.rs",
+                "tlog_upload_disabled",
+                "a cosign flag value in the sign argv",
+            ),
+            (
+                "crates/stage-sign/src/verify.rs",
+                "resolve_keyless_identity",
+                "the GITHUB_ACTIONS env var, which the runner sets to `true`",
+            ),
+        ];
+
+        fn fn_name(body: &str) -> String {
+            let first = body.lines().next().unwrap_or_default();
+            let after = first.split("fn ").nth(1).unwrap_or_default();
+            after
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        }
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = root.canonicalize().unwrap();
+        // A hit is one comparing line; it passes when any function body
+        // holding it is a helper or allowed, so a nested fn is judged by the
+        // function that owns the line.
+        let mut hits: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+        let mut bodies_read = 0;
+        for path in workspace_production_sources() {
+            let rel = path
+                .canonicalize()
+                .unwrap()
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            let text = std::fs::read_to_string(&path).unwrap();
+            for body in function_bodies(production_half(&text)) {
+                bodies_read += 1;
+                let name = fn_name(&body);
+                for line in body.lines() {
+                    let trimmed = line.trim_start();
+                    if trimmed.starts_with("//") {
+                        continue;
+                    }
+                    if compares_a_bool_word(before_comment(line)) {
+                        hits.entry((rel.clone(), trimmed.to_string()))
+                            .or_default()
+                            .insert(name.clone());
+                    }
+                }
+            }
+        }
+        assert!(
+            bodies_read > 5000,
+            "read only {bodies_read} function bodies"
+        );
+
+        let mut used = BTreeSet::new();
+        let mut failures = Vec::new();
+        for ((file, line), owners) in &hits {
+            let allowed = owners.iter().find(|name| {
+                HELPERS.contains(&name.as_str())
+                    || ALLOWED.iter().any(|(f, n, _)| f == file && n == name)
+            });
+            match allowed {
+                Some(name) => {
+                    used.insert((file.clone(), name.clone()));
+                }
+                None => failures.push(format!("{file} ({owners:?}): {line}")),
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "match a rendered value through is_true_spelling / is_false_spelling, \
+             or add the function to ALLOWED with its reason:\n{}",
+            failures.join("\n")
+        );
+        let stale: Vec<_> = ALLOWED
+            .iter()
+            .filter(|(f, n, _)| !used.contains(&(f.to_string(), n.to_string())))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "ALLOWED entries that match nothing: {stale:#?}"
+        );
+        for helper in HELPERS {
+            assert!(
+                used.iter()
+                    .any(|(f, n)| f == "crates/core/src/config/string_or_bool.rs" && n == helper),
+                "{helper} no longer matches the words"
+            );
+        }
     }
 }

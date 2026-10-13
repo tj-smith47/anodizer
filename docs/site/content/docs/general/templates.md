@@ -155,6 +155,43 @@ coerces one. `?.` suppresses the Undefined error at *every* link of a
 dotted path — including a wholly undefined root — not just a missing leaf
 field, so it composes with `or` for a safe default anywhere in a chain.
 
+## Bool-or-template values
+
+A field documented as "bool or template" takes a YAML bool (`true`, `false`),
+an unquoted `1` or `0`, or a string. A string is rendered, trimmed and read in
+any letter case, so `TRUE`, ` 1 ` and `False` all count. What each render
+means depends on the field:
+
+| Field | Reads as true | Reads as false | `auto` | Any other render |
+|---|---|---|---|---|
+| `skip`, `disable`, `enabled` (other than notarize's) and every other bool-or-template field | `true`, `1` | `false`, `0`, empty | false | false |
+| a publisher's `skip_upload` | `true`, `1` | `false`, `0`, empty | true on a prerelease | false, with a warning |
+| `release.skip_upload` | `true`, `1` | `false`, `0`, empty | true on a snapshot | an error |
+| `docker_manifests` `skip_push` | `true`, `1` | `false`, `0`, empty | true on a prerelease | false |
+| `release.make_latest` | `true`, `1` | `false`, `0`, empty | GitHub decides (`legacy`) | true |
+| `release.preflight.fail_on_error` | `true`, `1` | `false`, `0` | an error | an error, an empty render included; a literal blank value falls back to the parent level, then to `true` |
+| `if:` (and a hook's `if:`) | any other render | `false`, `0`, `no`, empty | true | true |
+| notarize `enabled` | `true`, `1`, `yes`, any other render | `false`, `0`, `no`, a template that renders empty | true | true |
+
+For `if:`, true means the entry runs. An absent, empty or blank `if:` sets no
+gate at all, so the entry always runs; the falsy set applies to what a
+non-blank `if:` renders. Notarize's `enabled` reads the same way: a literal
+`enabled: ""` sets no gate and notarizes, while a template that renders empty
+turns notarizing off.
+
+```yaml
+crates:
+  - name: myapp
+    docker_manifests:
+      - name_template: "ghcr.io/myorg/myapp:{{ Version }}"
+        image_templates: ["ghcr.io/myorg/myapp:{{ Version }}-amd64"]
+        skip_push: "{{ if IsSnapshot }}1{{ end }}"   # skips the push on a snapshot
+    publish:
+      homebrew:
+        skip_upload: auto                            # skips a prerelease
+        if: "{{ not IsNightly }}"                    # renders false on a nightly, which skips
+```
+
 ## GoReleaser compatibility
 
 Anodizer auto-translates Go `text/template` syntax to its Tera equivalent before rendering, so a template copied verbatim from a `.goreleaser.yaml` works without edits. The translation covers:

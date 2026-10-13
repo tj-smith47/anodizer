@@ -50,7 +50,7 @@ pub struct DockerRetryConfig {
 /// - `annotations` map for OCI annotations (`--annotation`)
 /// - `build_args` map for build-time variables
 /// - `skip` as a [`StringOrBool`] template for conditional opt-out
-/// - `sbom` as a [`StringOrBool`] — when truthy, adds `--sbom=true` to buildx
+/// - `sbom` as a [`StringOrBool`] — when `true` or `1`, adds `--sbom=true` to buildx
 /// - `flags` for arbitrary extra `docker build` flags
 /// - `platforms` is the only target selector — no per-arch field overrides
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -111,7 +111,8 @@ pub struct DockerV2Config {
     pub retry: Option<DockerRetryConfig>,
     /// Arbitrary extra flags passed to the docker build command.
     pub flags: Option<Vec<String>>,
-    /// When truthy, skip this docker build entirely. Supports templates.
+    /// Skip this docker build entirely when the value is, or a template
+    /// renders, `true` or `1` (any letter case).
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat.
     #[serde(
         default,
@@ -119,7 +120,8 @@ pub struct DockerV2Config {
         deserialize_with = "deserialize_string_or_bool_opt"
     )]
     pub skip: Option<StringOrBool>,
-    /// When truthy, adds `--sbom=true` to buildx. Supports templates.
+    /// Adds `--sbom=true` to buildx when the value is, or a template renders,
+    /// `true` or `1` (any letter case).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub sbom: Option<StringOrBool>,
     /// Pre/post hooks for this dockers_v2 config. Each hook accepts the same
@@ -176,7 +178,8 @@ pub struct DockerV2Config {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct DockerDigestConfig {
-    /// When truthy, disable docker digest artifact creation.
+    /// Disable docker digest artifact creation when the value is, or a
+    /// template renders, `true` or `1` (any letter case).
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat.
     #[serde(
         alias = "disable",
@@ -216,7 +219,13 @@ pub struct DockerManifestConfig {
     pub create_flags: Option<Vec<String>>,
     /// Extra flags for `docker manifest push`.
     pub push_flags: Option<Vec<String>>,
-    /// Skip push: true, false, or "auto" (skip for prereleases).
+    /// Skip push: `true`, `false`, `"auto"` (skip for prereleases), or a
+    /// template rendered at run time. An unquoted `1` / `0` and the strings
+    /// `"1"` / `"0"` are booleans.
+    ///
+    /// ```yaml
+    /// skip_push: "{{ IsSnapshot }}"
+    /// ```
     #[schemars(schema_with = "skip_push_schema")]
     pub skip_push: Option<SkipPushConfig>,
     /// Unique identifier for this manifest config.

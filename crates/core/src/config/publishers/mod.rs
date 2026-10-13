@@ -288,7 +288,7 @@ pub struct PublishConfig {
 /// `cargo publish` flag surface.
 ///
 /// Presence under `publish:` opts the crate in; use `skip: true` (or a
-/// truthy template) to opt out. There is no `enabled` field — presence is
+/// template rendering `true` or `1`) to opt out. There is no `enabled` field — presence is
 /// the on-switch.
 ///
 /// Fields intentionally omitted because anodizer owns them:

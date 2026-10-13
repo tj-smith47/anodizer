@@ -66,7 +66,7 @@ Not applicable as a config flag — the stage removes any existing manifest befo
 | `image_templates` | list | — | Image references to include (templates) |
 | `create_flags` | list | none | Extra flags for `docker manifest create` (templates) |
 | `push_flags` | list | none | Extra flags for `docker manifest push` (templates) |
-| `skip_push` | string/bool | none | Skip push: `true`, `false`, or `"auto"` (skip for prereleases) |
+| `skip_push` | string/bool | none | Skip push: `true` or `1` skips, `auto` skips for prereleases, anything else pushes; a template is rendered and read the same way, in any letter case (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)) |
 | `id` | string | none | Unique identifier |
 | `use` | string | `docker` | Backend: `"docker"` or `"podman"`. The `"podman"` backend is **Linux-only** — see [Podman backend](@/docs/packages/podman.md) for the full caveats and flag-compatibility table. |
 | `retry` | object | see below | Retry config for manifest push |

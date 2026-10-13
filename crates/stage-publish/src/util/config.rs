@@ -8,7 +8,7 @@
 //! - Skip-gate evaluation (`should_skip_upload`, `should_skip_publisher_with_if`).
 
 use anodizer_core::artifact::ArtifactKind;
-use anodizer_core::config::{CrateConfig, PublishConfig};
+use anodizer_core::config::{CrateConfig, PublishConfig, is_false_spelling, is_true_spelling};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
@@ -160,23 +160,23 @@ pub(crate) fn should_skip_upload(
         None => return Ok(false),
     };
     let rendered = super::template::render_or_warn(ctx, log, "skip_upload", raw)?;
-    let skip = match rendered.trim() {
-        "true" => true,
-        "auto" => {
-            let pre = ctx
-                .template_vars()
-                .get("Prerelease")
-                .cloned()
-                .unwrap_or_default();
-            !pre.is_empty()
-        }
-        "false" | "" => false,
-        other => {
-            log.warn(&format!(
-                "unrecognized skip_upload value {other:?} (expected \"true\", \"false\", or \"auto\"); treating as false"
-            ));
-            false
-        }
+    let value = rendered.trim();
+    let skip = if is_true_spelling(value) {
+        true
+    } else if is_false_spelling(value) || value.is_empty() {
+        false
+    } else if value.eq_ignore_ascii_case("auto") {
+        let pre = ctx
+            .template_vars()
+            .get("Prerelease")
+            .cloned()
+            .unwrap_or_default();
+        !pre.is_empty()
+    } else {
+        log.warn(&format!(
+            "unrecognized skip_upload value {value:?} (expected \"true\", \"false\", \"1\", \"0\" or \"auto\"); treating as false"
+        ));
+        false
     };
     if skip && let Some(label) = label {
         log.status(&skip_upload_line(label));

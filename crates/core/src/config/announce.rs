@@ -60,7 +60,8 @@ pub enum AnnounceGate {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct AnnounceConfig {
-    /// Template-conditional skip: if rendered to "true", skip the entire announce stage.
+    /// Template-conditional skip: skip the entire announce stage when the
+    /// value is, or a template renders, `true` or `1` (any letter case).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Template-conditional gate: when the rendered result is falsy

@@ -122,6 +122,7 @@ dependencies = [
  "crc32fast",
  "fs4",
  "glob",
+ "jsonschema",
  "libc",
  "md-5",
  "object",

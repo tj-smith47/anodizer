@@ -140,8 +140,8 @@ pub struct NpmConfig {
     /// library owning the name) while anodizer owns the per-platform binary
     /// packages it lists under its own `optionalDependencies`. Hard error in
     /// `postinstall` mode (there is no metapackage to skip) — but only when
-    /// it evaluates truthy: `skip_metapackage: false` (or a template
-    /// rendering falsey/empty) is inert. Example bool form:
+    /// it is, or a template renders, `true` or `1`: `skip_metapackage: false`
+    /// (or a template rendering `false`, `0` or empty) is inert. Example bool form:
     /// `skip_metapackage: true`. Example templated form:
     /// `skip_metapackage: "{{ if .Env.EXTERNAL_METAPACKAGE }}true{{ end }}"`
     /// — skip only when the base package is published elsewhere.

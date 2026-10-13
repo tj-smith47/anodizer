@@ -170,9 +170,9 @@ fn run_hooks_inner(
             // as proceed unless the literal condition is explicitly falsy.
             // `active_if_gate` folds the absent, empty and blank spellings
             // into the "no gate set" no-op the template path above gets from
-            // `evaluate_if_condition`; only `false`/`0`/`no` skip here.
-            let falsy = matches!(cond.trim(), "false" | "0" | "no");
-            if falsy {
+            // `evaluate_if_condition`; only `false`/`0`/`no`, in any letter case,
+            // skip here.
+            if config::is_if_falsy(cond) {
                 tracing::debug!(
                     label = label,
                     cmd = raw_cmd,
@@ -846,10 +846,28 @@ mod tests {
         // the no-vars path. `false-cmd` would error if spawned; a non-dry-run
         // call succeeding proves it was skipped, not executed.
         let log = test_logger();
-        for falsy in ["false", "0", "no", " false "] {
-            let hooks = vec![structured("false-cmd-must-be-skipped", Some(falsy))];
+        // A blank literal sets no gate, so only the non-empty spellings of
+        // the documented falsy set apply here.
+        use crate::test_helpers::bool_spellings::{DocumentedOutcome, documented_bool_row};
+        let row = documented_bool_row("`if:` (and a hook's `if:`)");
+        assert!(!row.falsy.is_empty(), "{row:?}");
+        for falsy in row.falsy.iter().filter(|v| !v.trim().is_empty()) {
+            let hooks = vec![structured(
+                "false-cmd-must-be-skipped",
+                Some(falsy.as_str()),
+            )];
             run_hooks(&hooks, "test", HookRunContext::new(false, &log, None))
                 .expect("falsy literal `if:` with no vars must skip without spawning");
+        }
+        // A gate the row says reads as true runs the hook, whose missing
+        // command then fails the run.
+        for (value, outcome) in [("auto", row.auto), ("anything", row.other)] {
+            assert_eq!(outcome, DocumentedOutcome::True, "{value:?}");
+            let hooks = vec![structured("false-cmd-must-be-skipped", Some(value))];
+            assert!(
+                run_hooks(&hooks, "test", HookRunContext::new(false, &log, None)).is_err(),
+                "`if: {value}` must run the hook"
+            );
         }
     }
 

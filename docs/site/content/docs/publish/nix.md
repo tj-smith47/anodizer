@@ -124,7 +124,7 @@ The token can also be set via `repository.token` in the config.
 | `commit_msg_template` | string | | Custom commit message template. |
 | `ids` | list | all | Filter to artifacts with these IDs. |
 | `url_template` | string | | Override download URL template (defaults to release asset URL). |
-| `skip_upload` | string | | `"true"` always skips; `"auto"` skips for prereleases. |
+| `skip_upload` | string | | `true` or `1` (any letter case) always skips; `auto` skips for prereleases; `false`, `0` or empty publishes (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)). |
 | `install` | string | | Custom install commands replacing auto-generated binary install. |
 | `extra_install` | string | | Additional install commands appended after the main install. |
 | `post_install` | string | | Commands for the `postInstall` phase. |

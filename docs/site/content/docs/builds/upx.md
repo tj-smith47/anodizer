@@ -40,7 +40,7 @@ supports the following fields:
 | `required` | bool | `false` | When `true`, fail the build if the UPX binary is not found. When `false`, skip with a warning. |
 
 The `enabled` field must be explicitly set to `true` (or a template that
-evaluates to true) for the config to take effect. An omitted or `null` `enabled`
+renders `true` or `1`, in any letter case (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values))) for the config to take effect. An omitted or `null` `enabled`
 field is treated as disabled.
 
 ## Examples

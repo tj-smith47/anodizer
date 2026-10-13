@@ -26,7 +26,8 @@ pub struct SchemastoreConfig {
         alias = "disable"
     )]
     pub skip: Option<StringOrBool>,
-    /// Tera condition; when it renders falsy the publisher is skipped.
+    /// Tera condition; when it renders `false`, `0`, `no` or empty (any letter
+    /// case) the publisher is skipped.
     /// An absent, empty or blank `if:` imposes no gate and always runs; the
     /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
@@ -130,7 +131,8 @@ impl SchemastoreConfig {
         entry.versioned.or(self.versioned).unwrap_or(false)
     }
 
-    /// Effective `skip`: true if either the entry or the block sets it truthy.
+    /// Effective `skip`: true if either the entry or the block sets it to `true` or
+    /// `1`.
     pub fn resolved_skip(&self, entry: &SchemaEntry) -> bool {
         let block = self
             .skip

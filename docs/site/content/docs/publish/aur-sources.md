@@ -139,7 +139,7 @@ aur_sources:
 | `git_ssh_command` | string | none | Custom `GIT_SSH_COMMAND` |
 | `private_key` | string | none | SSH private key path |
 | `directory` | string | repo root | Subdirectory in the git repo |
-| `skip_upload` | string/bool | none | Skip git push (`"auto"` skips for prereleases) |
+| `skip_upload` | string/bool | none | Skip git push: `true` or `1` always skips, `auto` skips for prereleases, `false`, `0` or empty publishes; a template is rendered and read the same way, in any letter case (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)) |
 | `commit_author` | object | none | Git commit author (`name`, `email`) |
 | `commit_msg_template` | string | none | Custom commit message (template) |
 | `arches` | list | from the Linux build targets | Pacman `arch=()` list |

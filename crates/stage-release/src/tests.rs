@@ -6724,3 +6724,72 @@ fn a_nightly_release_body_carries_no_discussion_category_name() {
         "nightly publish body must omit discussion_category_name, got {publish}"
     );
 }
+
+/// `release.skip_upload` reads every spelling the templates docs list for
+/// it, and `auto` and any other render, the way the page says.
+#[test]
+fn a_release_skip_upload_template_reads_the_documented_spellings() {
+    use anodizer_core::test_helpers::bool_spellings::{DocumentedOutcome, documented_bool_row};
+    let row = documented_bool_row("`release.skip_upload`");
+    assert!(!row.truthy.is_empty() && !row.falsy.is_empty(), "{row:?}");
+    let release = ReleaseConfig {
+        skip_upload: Some(StringOrBool::String("{{ .Skip }}".to_string())),
+        ..Default::default()
+    };
+    let read = |value: &str, snapshot: bool| {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .snapshot(snapshot)
+            .build();
+        ctx.template_vars_mut().set("Skip", value);
+        crate::flags::resolve_skip_upload(&ctx, &release, "testcrate").ok()
+    };
+    for (values, skip) in [(&row.truthy, true), (&row.falsy, false)] {
+        for value in values {
+            assert_eq!(read(value, false), Some(skip), "{value:?}");
+        }
+    }
+    for (value, outcome) in [("auto", row.auto), ("anything", row.other)] {
+        let (on_snapshot, on_release) = match outcome {
+            DocumentedOutcome::TrueOnSnapshot => (Some(true), Some(false)),
+            DocumentedOutcome::Error => (None, None),
+            DocumentedOutcome::True => (Some(true), Some(true)),
+            DocumentedOutcome::False => (Some(false), Some(false)),
+            other => panic!("release.skip_upload has no reader for {other:?}"),
+        };
+        assert_eq!(read(value, true), on_snapshot, "{value:?}");
+        assert_eq!(read(value, false), on_release, "{value:?}");
+    }
+}
+
+/// `release.make_latest` reads every spelling the templates docs list for
+/// it, and `auto` and any other render, the way the page says.
+#[test]
+fn a_make_latest_template_reads_the_documented_spellings() {
+    use anodizer_core::test_helpers::bool_spellings::{DocumentedOutcome, documented_bool_row};
+    let row = documented_bool_row("`release.make_latest`");
+    assert!(!row.truthy.is_empty() && !row.falsy.is_empty(), "{row:?}");
+    let read = |value: &str| {
+        resolve_make_latest(
+            &Some(MakeLatestConfig::String(value.to_string())),
+            noop_render,
+        )
+        .unwrap()
+        .unwrap()
+        .to_string()
+    };
+    for (values, want) in [(&row.truthy, "true"), (&row.falsy, "false")] {
+        for value in values {
+            assert_eq!(read(value), want, "{value:?}");
+        }
+    }
+    for (value, outcome) in [("auto", row.auto), ("anything", row.other)] {
+        let want = match outcome {
+            DocumentedOutcome::GitHubDecides => "legacy",
+            DocumentedOutcome::True => "true",
+            DocumentedOutcome::False => "false",
+            other => panic!("release.make_latest has no reader for {other:?}"),
+        };
+        assert_eq!(read(value), want, "{value:?}");
+    }
+}

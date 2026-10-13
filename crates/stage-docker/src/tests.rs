@@ -8603,3 +8603,37 @@ fn build_args_labels_and_annotations_reach_the_build_command_in_template_key_ord
         }
     }
 }
+
+/// A `skip_push` template reads every spelling the templates docs list for
+/// it, and `auto` and any other render, the way the page says.
+#[test]
+fn a_skip_push_template_reads_the_documented_spellings() {
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::test_helpers::bool_spellings::{DocumentedOutcome, documented_bool_row};
+
+    let row = documented_bool_row("`docker_manifests` `skip_push`");
+    assert!(!row.truthy.is_empty() && !row.falsy.is_empty(), "{row:?}");
+    let mut ctx = Context::new(Config::default(), ContextOptions::default());
+    let mut read = |value: &str, prerelease: &str| {
+        ctx.template_vars_mut().set("Skip", value);
+        ctx.template_vars_mut().set("Prerelease", prerelease);
+        let tmpl = SkipPushConfig::Template("{{ .Skip }}".to_string());
+        resolve_skip_push(&Some(tmpl), &ctx).unwrap()
+    };
+    for (values, skip) in [(&row.truthy, true), (&row.falsy, false)] {
+        for value in values {
+            assert_eq!(read(value, ""), skip, "{value:?}");
+        }
+    }
+    for (value, outcome) in [("auto", row.auto), ("anything", row.other)] {
+        let (on_prerelease, on_stable) = match outcome {
+            DocumentedOutcome::TrueOnPrerelease => (true, false),
+            DocumentedOutcome::False => (false, false),
+            DocumentedOutcome::True => (true, true),
+            other => panic!("skip_push has no reader for {other:?}"),
+        };
+        assert_eq!(read(value, "rc.1"), on_prerelease, "{value:?}");
+        assert_eq!(read(value, ""), on_stable, "{value:?}");
+    }
+}

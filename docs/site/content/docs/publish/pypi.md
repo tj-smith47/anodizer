@@ -132,7 +132,7 @@ pypis:
 | `keywords` | — | Comma-joined METADATA `Keywords` |
 | `classifiers` | — | One `Classifier:` header each |
 | `token` | `$PYPI_TOKEN` → `$MATURIN_PYPI_TOKEN` | Templated API token |
-| `skip` / `if` | — | Entry gating (bool/template; falsy `if` skips) |
+| `skip` / `if` | — | Entry gating (bool/template; an `if` rendering `false`, `0`, `no` or empty skips (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values))) |
 | `required` | `true` | Whether failure fails the release |
 | `retain_on_rollback` | `false` | Leave work in place on rollback |
 

@@ -127,13 +127,13 @@ $ anodizer check config
 | `github.token` | string | pipeline token | Token override for this release repository (templates allowed). Useful when the release repo needs a different token than the build repo — e.g. releasing to another organization. |
 | `draft` | bool | `false` | Create as draft release |
 | `prerelease` | string/bool | `auto` | Mark as prerelease: `auto` (detect from version), `true`, `false` |
-| `make_latest` | string/bool | `auto` | Mark as latest: `auto`, `true`, `false` |
+| `make_latest` | string/bool | `auto` | Mark as latest: `auto`, `true` or `1`, `false` or `0`; a template is rendered and read the same way, in any letter case, and any other non-empty render marks it latest (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)) |
 | `name_template` | string | `{{ Tag }}` | Release title |
 | `header` | string | none | Text prepended to release body |
 | `footer` | string | `Released with [anodizer](…) 🦀` | Text appended to release body. REPLACES the default attribution line; set to `""` for no footer |
 | `full_changelog_link` | bool | `true` | Append a derived `**Full Changelog**: …/compare/<prev>...<tag>` line below the changelog and above the footer |
 | `extra_files` | list | none | Additional files to upload (glob patterns) |
-| `skip_upload` | bool | `false` | Create release without uploading assets |
+| `skip_upload` | bool or template | `false` | Create release without uploading assets: `true` or `1` skips, `auto` skips on a snapshot, `false`, `0` or empty uploads, any other render is an error; read in any letter case (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)) |
 | `replace_existing_draft` | bool | `false` | Replace existing draft release. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-draft). |
 | `replace_existing_artifacts` | bool | `false` | Overwrite existing assets. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-artifacts). |
 | `preflight.fail_on_error` | bool/template | `true` | Stop the run when the release preflight fails; `false` reports it as a warning. See [Release preflight](#release-preflight). |

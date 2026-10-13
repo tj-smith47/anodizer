@@ -862,7 +862,7 @@
           ]
         },
         "skip": {
-          "description": "Template-conditional skip: if rendered to \"true\", skip the entire announce stage.",
+          "description": "Template-conditional skip: skip the entire announce stage when the value is, or a template renders, `true` or `1` (any letter case).",
           "default": null,
           "anyOf": [
             {
@@ -995,7 +995,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this app bundle config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
+          "description": "Template-conditional: skip this app bundle config when the gate renders `false`, `0`, `no` or empty (any letter case). Render failure hard-errors (not silent-skip). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -1661,7 +1661,7 @@
           ]
         },
         "skip": {
-          "description": "Template-conditional skip: if rendered result is `\"true\"`, skip this publisher.",
+          "description": "Template-conditional skip: skip this publisher when the value is, or a template renders, `true` or `1` (any letter case).",
           "default": null,
           "anyOf": [
             {
@@ -3159,7 +3159,7 @@
       ]
     },
     "CargoPublishConfig": {
-      "description": "`cargo publish` flag surface.\n\nPresence under `publish:` opts the crate in; use `skip: true` (or a truthy template) to opt out. There is no `enabled` field — presence is the on-switch.\n\nFields intentionally omitted because anodizer owns them: - `--package` / `--workspace` / `--exclude`: the top-level `crates[]` axis owns crate selection. - `--dry-run`: pipeline-level CLI ergonomics (`anodizer release --dry-run`). - `-v` / `-q` / `--color`: CLI ergonomics, not config. - `--config` / `-Z`: cargo CLI escape hatches; out of scope.",
+      "description": "`cargo publish` flag surface.\n\nPresence under `publish:` opts the crate in; use `skip: true` (or a template rendering `true` or `1`) to opt out. There is no `enabled` field — presence is the on-switch.\n\nFields intentionally omitted because anodizer owns them: - `--package` / `--workspace` / `--exclude`: the top-level `crates[]` axis owns crate selection. - `--dry-run`: pipeline-level CLI ergonomics (`anodizer release --dry-run`). - `-v` / `-q` / `--color`: CLI ergonomics, not config. - `--config` / `-Z`: cargo CLI escape hatches; out of scope.",
       "type": "object",
       "properties": {
         "all_features": {
@@ -4260,7 +4260,7 @@
           ]
         },
         "skip": {
-          "description": "Template-conditional skip: if rendered result is `\"true\"`, skip this publisher.",
+          "description": "Template-conditional skip: skip this publisher when the value is, or a template renders, `true` or `1` (any letter case).",
           "default": null,
           "anyOf": [
             {
@@ -4529,13 +4529,20 @@
         "archives": {
           "description": "Archive configurations for this crate. Set to false to disable archiving, or provide an array of archive configs.",
           "default": [],
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "$ref": "#/definitions/ArchiveConfig"
-          }
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ArchiveConfig"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "before": {
           "description": "Hooks that run inside THIS crate's scope at the start of the release, before the build. Distinct from the top-level `before:`, which fires ONCE around the whole release; these fire once per crate with that crate's version/tag template vars anchored, so `cmd` / `dir` / `env` / `if` render against the crate's own `Version` / `Tag` / `ProjectName`. A non-zero exit aborts the release.\n\nFires once per crate in EVERY multi-crate mode — workspace per-crate AND workspace lockstep with multiple publisher crates — in both a full `anodizer release` and `anodizer release --publish-only`, matching the per-crate iteration of `before_publish:` and the publishers. With an explicit `--crate` subset only the selected crates' hooks fire. No-op in a single-crate config with no `crates:` block (use the top-level `before:` there).",
@@ -5385,7 +5392,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this DMG config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
+          "description": "Template-conditional: skip this DMG config when the gate renders `false`, `0`, `no` or empty (any letter case). Render failure hard-errors (not silent-skip). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -5471,7 +5478,7 @@
           ]
         },
         "skip": {
-          "description": "When truthy, disable docker digest artifact creation. Accepts the legacy `disable:` spelling via serde alias for back-compat.",
+          "description": "Disable docker digest artifact creation when the value is, or a template renders, `true` or `1` (any letter case). Accepts the legacy `disable:` spelling via serde alias for back-compat.",
           "default": null,
           "anyOf": [
             {
@@ -5700,7 +5707,7 @@
           ]
         },
         "skip_push": {
-          "description": "Skip push: true, false, or \"auto\" (skip for prereleases).",
+          "description": "Skip push: `true`, `false`, `\"auto\"` (skip for prereleases), or a template rendered at run time. An unquoted `1` / `0` and the strings `\"1\"` / `\"0\"` are booleans.\n\n```yaml\nskip_push: \"{{ IsSnapshot }}\"\n```",
           "default": null,
           "anyOf": [
             {
@@ -5831,7 +5838,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this docker sign config if rendered result is \"false\" or empty. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
+          "description": "Template-conditional: skip this docker sign config when the gate renders `false`, `0`, `no` or empty (any letter case). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -5890,7 +5897,7 @@
       "additionalProperties": false
     },
     "DockerV2Config": {
-      "description": "Docker V2 configuration — the canonical Docker build API.\n\nNotable surface: - `images` + `tags` (cleaner separation than a single `image_templates` list) - `annotations` map for OCI annotations (`--annotation`) - `build_args` map for build-time variables - `skip` as a [`StringOrBool`] template for conditional opt-out - `sbom` as a [`StringOrBool`] — when truthy, adds `--sbom=true` to buildx - `flags` for arbitrary extra `docker build` flags - `platforms` is the only target selector — no per-arch field overrides",
+      "description": "Docker V2 configuration — the canonical Docker build API.\n\nNotable surface: - `images` + `tags` (cleaner separation than a single `image_templates` list) - `annotations` map for OCI annotations (`--annotation`) - `build_args` map for build-time variables - `skip` as a [`StringOrBool`] template for conditional opt-out - `sbom` as a [`StringOrBool`] — when `true` or `1`, adds `--sbom=true` to buildx - `flags` for arbitrary extra `docker build` flags - `platforms` is the only target selector — no per-arch field overrides",
       "type": "object",
       "properties": {
         "annotations": {
@@ -6028,7 +6035,7 @@
           ]
         },
         "sbom": {
-          "description": "When truthy, adds `--sbom=true` to buildx. Supports templates.",
+          "description": "Adds `--sbom=true` to buildx when the value is, or a template renders, `true` or `1` (any letter case).",
           "default": null,
           "anyOf": [
             {
@@ -6040,7 +6047,7 @@
           ]
         },
         "skip": {
-          "description": "When truthy, skip this docker build entirely. Supports templates. Accepts the legacy `disable:` spelling via serde alias for back-compat.",
+          "description": "Skip this docker build entirely when the value is, or a template renders, `true` or `1` (any letter case). Accepts the legacy `disable:` spelling via serde alias for back-compat.",
           "default": null,
           "anyOf": [
             {
@@ -6592,7 +6599,7 @@
           ]
         },
         "skip": {
-          "description": "Template-conditional skip: if rendered result is `\"true\"`, skip this publisher entry. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported `gemfury[].disable:` configs.",
+          "description": "Template-conditional skip: skip this publisher entry when the value is, or a template renders, `true` or `1` (any letter case). Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported `gemfury[].disable:` configs.",
           "default": null,
           "anyOf": [
             {
@@ -7988,7 +7995,7 @@
           ]
         },
         "update_existing_pr": {
-          "description": "When truthy, refresh the existing bump PR in place instead of skipping it: a same-version re-cut force-resets the bump branch to the current base and re-commits the rewritten formula, so the open PR carries this run's content rather than a stale earlier attempt (and no duplicate PR is opened). When falsy (default), an already-open bump PR is left untouched and a warning names this toggle. Accepts bool or template string. Mirrors `winget` / `krew` / `homebrew_cask`'s `update_existing_pr`.",
+          "description": "When `true` or `1`, refresh the existing bump PR in place instead of skipping it: a same-version re-cut force-resets the bump branch to the current base and re-commits the rewritten formula, so the open PR carries this run's content rather than a stale earlier attempt (and no duplicate PR is opened). When `false`, `0` or empty (default), an already-open bump PR is left untouched and a warning names this toggle. Accepts bool or template string. Mirrors `winget` / `krew` / `homebrew_cask`'s `update_existing_pr`.",
           "default": null,
           "anyOf": [
             {
@@ -9362,7 +9369,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this publisher when the expression evaluates truthy. Accepts a bool or a Tera template that renders to `\"true\"`/`\"false\"` (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"`). Accepts the legacy `disable:` spelling via serde alias for back-compat with imported imported configs (the MCP config field `MCP.Disable string`).",
+          "description": "Skip this publisher when the value is, or a Tera template renders, `true` or `1` (any letter case); `false`, `0` or empty runs it (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"`). Accepts the legacy `disable:` spelling via serde alias for back-compat with imported configs (the MCP config field `MCP.Disable string`).",
           "default": null,
           "anyOf": [
             {
@@ -9763,7 +9770,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this MSI config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
+          "description": "Template-conditional: skip this MSI config when the gate renders `false`, `0`, `no` or empty (any letter case). Render failure hard-errors (not silent-skip). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -10104,7 +10111,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this nfpm config if rendered result is \"false\" or empty. Conditional-skip gate. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
+          "description": "Template-conditional: skip this nfpm config when the gate renders `false`, `0`, `no` or empty (any letter case). Conditional-skip gate. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -11287,7 +11294,7 @@
           ]
         },
         "make_latest": {
-          "description": "Override `release.make_latest` for nightly runs only. Default: `false` — a rolling nightly must not displace the newest stable release in the GitHub UI, in `releases/latest`, or for the install scripts and `gh release download` invocations that resolve it.\n\n`None` does not fall through to `release.make_latest` for the same reason as [`Self::prerelease`]: unset there means GitHub's own default, which IS latest.",
+          "description": "Override `release.make_latest` for nightly runs only, with the same spellings: `true`, `false`, `\"auto\"`, an unquoted `1` / `0`, or a template. Default: `false` — a rolling nightly must not displace the newest stable release in the GitHub UI, in `releases/latest`, or for the install scripts and `gh release download` invocations that resolve it.\n\n`None` does not fall through to `release.make_latest` for the same reason as [`Self::prerelease`]: unset there means GitHub's own default, which IS latest.",
           "default": null,
           "anyOf": [
             {
@@ -12026,7 +12033,7 @@
           ]
         },
         "skip_metapackage": {
-          "description": "In `optional-deps` mode, emit and publish ONLY the per-platform packages — no metapackage (no `optionalDependencies` aggregate, no `bin` shim). Accepts bool or template string, like `skip`. For projects whose base npm package is hand-written (e.g. a TypeScript library owning the name) while anodizer owns the per-platform binary packages it lists under its own `optionalDependencies`. Hard error in `postinstall` mode (there is no metapackage to skip) — but only when it evaluates truthy: `skip_metapackage: false` (or a template rendering falsey/empty) is inert. Example bool form: `skip_metapackage: true`. Example templated form: `skip_metapackage: \"{{ if .Env.EXTERNAL_METAPACKAGE }}true{{ end }}\"` — skip only when the base package is published elsewhere.",
+          "description": "In `optional-deps` mode, emit and publish ONLY the per-platform packages — no metapackage (no `optionalDependencies` aggregate, no `bin` shim). Accepts bool or template string, like `skip`. For projects whose base npm package is hand-written (e.g. a TypeScript library owning the name) while anodizer owns the per-platform binary packages it lists under its own `optionalDependencies`. Hard error in `postinstall` mode (there is no metapackage to skip) — but only when it is, or a template renders, `true` or `1`: `skip_metapackage: false` (or a template rendering `false`, `0` or empty) is inert. Example bool form: `skip_metapackage: true`. Example templated form: `skip_metapackage: \"{{ if .Env.EXTERNAL_METAPACKAGE }}true{{ end }}\"` — skip only when the base package is published elsewhere.",
           "default": null,
           "anyOf": [
             {
@@ -12164,7 +12171,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this NSIS config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
+          "description": "Template-conditional: skip this NSIS config when the gate renders `false`, `0`, `no` or empty (any letter case). Render failure hard-errors (not silent-skip). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -12342,7 +12349,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this PKG config if rendered result is \"false\" or empty. Render failure hard-errors (not silent-skip). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
+          "description": "Template-conditional: skip this PKG config when the gate renders `false`, `0`, `no` or empty (any letter case). Render failure hard-errors (not silent-skip). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -12894,7 +12901,7 @@
           ]
         },
         "skip": {
-          "description": "Template-conditional skip: if rendered result is `\"true\"`, skip this publisher. Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"`). Accepts the legacy `disable:` spelling via serde alias for back-compat.",
+          "description": "Template-conditional skip: skip this publisher when the value is, or a template renders, `true` or `1` (any letter case). Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"`). Accepts the legacy `disable:` spelling via serde alias for back-compat.",
           "default": null,
           "anyOf": [
             {
@@ -13458,7 +13465,7 @@
           ]
         },
         "make_latest": {
-          "description": "Mark release as latest: true, false, or \"auto\" (latest non-prerelease).",
+          "description": "Mark release as latest: `true`, `false`, `\"auto\"` (GitHub decides: the release is sent with `make_latest: legacy`), or a template rendered at publish time. An unquoted `1` / `0` and the strings `\"1\"` / `\"0\"` are booleans. A template that renders `false`, `0` or empty does not mark the release latest, `auto` lets GitHub decide, and `true`, `1` or any other render marks it latest.\n\n```yaml\nrelease:\n  make_latest: \"{{ not IsSnapshot }}\"\n```",
           "default": null,
           "anyOf": [
             {
@@ -13517,19 +13524,9 @@
           ]
         },
         "prerelease": {
-          "description": "Mark release as pre-release: true, false, or \"auto\" (inferred from tag).",
+          "description": "Mark release as pre-release: `true`, `false`, or `\"auto\"` (inferred from the tag). An unquoted `1` / `0` and the strings `\"true\"`, `\"false\"`, `\"1\"` and `\"0\"` are accepted as booleans; any other string is a load error.\n\n```yaml\nrelease:\n  prerelease: auto\n```",
           "default": null,
           "oneOf": [
-            {
-              "type": "string",
-              "enum": [
-                "auto",
-                "true",
-                "false",
-                "1",
-                "0"
-              ]
-            },
             {
               "type": "boolean"
             },
@@ -13538,6 +13535,16 @@
               "enum": [
                 0,
                 1
+              ]
+            },
+            {
+              "type": "string",
+              "enum": [
+                "auto",
+                "true",
+                "false",
+                "1",
+                "0"
               ]
             }
           ]
@@ -14060,7 +14067,7 @@
           ]
         },
         "if": {
-          "description": "Tera condition; when it renders falsy the publisher is skipped. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
+          "description": "Tera condition; when it renders `false`, `0`, `no` or empty (any letter case) the publisher is skipped. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -14448,7 +14455,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: skip this sign config if rendered result is \"false\" or empty. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
+          "description": "Template-conditional: skip this sign config when the gate renders `false`, `0`, `no` or empty (any letter case). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders.",
           "default": null,
           "type": [
             "string",
@@ -16184,7 +16191,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this entry when truthy. Accepts a literal bool or a Tera template that renders to `\"true\"`/`\"false\"` (e.g. `'{{ if eq .Os \"windows\" }}true{{ end }}'`). Mirrors the per-entry `skip:` pattern used by `ChangelogConfig`, `ChecksumConfig`, and the publishers.",
+          "description": "Skip this entry when the value is, or a Tera template renders, `true` or `1` (any letter case); `false`, `0` or empty keeps it (e.g. `'{{ if eq .Os \"windows\" }}true{{ end }}'`). Mirrors the per-entry `skip:` pattern used by `ChangelogConfig`, `ChecksumConfig`, and the publishers.",
           "default": null,
           "anyOf": [
             {
@@ -16503,7 +16510,7 @@
           ]
         },
         "skip": {
-          "description": "Skip condition template (if rendered to \"true\", skip this upload).",
+          "description": "Skip this upload when the value is, or a template renders, `true` or `1` (any letter case).",
           "default": null,
           "anyOf": [
             {

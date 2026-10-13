@@ -35,7 +35,7 @@ crates:
         mod_timestamp: ""             # optional; fixed timestamp for reproducible builds
         use: binary                   # optional; "binary" (default) or "appbundle"
         amd64_variant: v1             # optional; amd64 variant filter
-        if: ""                        # optional; empty imposes no gate; a non-blank one skips when it renders falsy
+        if: ""                        # optional; empty imposes no gate; a non-blank one skips when it renders false, 0, no or empty
         skip: false                   # optional
 ```
 
@@ -83,7 +83,7 @@ DMG only processes binary artifacts targeting Darwin (macOS). Binaries for other
 | `mod_timestamp` | string | | Fixed timestamp for reproducible builds. Supports templates (e.g. `{{ CommitTimestamp }}`). |
 | `use` | string | `binary` | Which artifact type to package: `binary` or `appbundle`. |
 | `amd64_variant` | enum | | amd64 microarchitecture variant filter — exactly one of `v1`/`v2`/`v3`/`v4` (any other value is rejected when the config is parsed). |
-| `if` | string | | Template-conditional: skip this config when rendered result is falsy. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
+| `if` | string | | Template-conditional: skip this config when the rendered value is `false`, `0`, `no` or empty, in any letter case. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `skip` | bool/string | `false` | Skip this DMG config. Accepts bool or template string. |
 
 ## Volume name

@@ -185,7 +185,7 @@ crates:
 | `git_ssh_command` | string | none | Custom SSH command for git operations |
 | `commit_author` | object | none | Override commit author (`name`, `email`) |
 | `commit_msg_template` | string | `Update to <version>` | Custom commit message template |
-| `skip_upload` | bool/string | `false` | Skip publishing. `true` always skips; `"auto"` skips for prereleases |
+| `skip_upload` | bool/string | `false` | Skip publishing. `true` or `1` always skips, `auto` skips for prereleases, `false`, `0` or empty publishes; a template is rendered and read the same way, in any letter case (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)) |
 | `disable` | bool/string | `false` | Disable this config entirely. Accepts a template string for conditional disable |
 
 ### Full example
@@ -289,7 +289,7 @@ crates:
 | `commit_msg_template` | string | `Update to <version>` | Custom commit message template |
 | `ids` | string[] | all | Build IDs filter |
 | `arches` | string[] | auto | Explicit architecture list |
-| `skip_upload` | bool/string | `false` | Skip publishing. `true` always skips; `"auto"` skips for prereleases |
+| `skip_upload` | bool/string | `false` | Skip publishing. `true` or `1` always skips, `auto` skips for prereleases, `false`, `0` or empty publishes; a template is rendered and read the same way, in any letter case (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)) |
 | `disable` | bool/string | `false` | Disable this config entirely |
 
 ### Full example
@@ -421,7 +421,7 @@ The `skip_upload` field controls whether Anodizer pushes to the AUR git repo:
 | `false` (default) | Always publish |
 | `true` | Never publish (PKGBUILD is still generated locally) |
 | `"auto"` | Skip publishing for prerelease versions (e.g. `1.0.0-rc1`) |
-| template string | Evaluated as a template; skips when the result is `"true"` |
+| template string | Evaluated as a template; skips when the result is `true` or `1`, publishes when it is `false`, `0` or empty, in any letter case; `auto` behaves as above (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)) |
 
 The `disable` field works similarly but skips the entire stage, including PKGBUILD generation.
 

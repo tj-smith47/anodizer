@@ -105,11 +105,11 @@ pub struct HomebrewCoreConfig {
     #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
     pub direct_commit: Option<StringOrBool>,
 
-    /// When truthy, refresh the existing bump PR in place instead of skipping
+    /// When `true` or `1`, refresh the existing bump PR in place instead of skipping
     /// it: a same-version re-cut force-resets the bump branch to the current
     /// base and re-commits the rewritten formula, so the open PR carries this
     /// run's content rather than a stale earlier attempt (and no duplicate PR
-    /// is opened). When falsy (default), an already-open bump PR is left
+    /// is opened). When `false`, `0` or empty (default), an already-open bump PR is left
     /// untouched and a warning names this toggle. Accepts bool or template
     /// string. Mirrors `winget` / `krew` / `homebrew_cask`'s
     /// `update_existing_pr`.

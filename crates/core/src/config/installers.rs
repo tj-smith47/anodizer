@@ -43,8 +43,8 @@ pub struct DmgConfig {
     /// rejected when the config is parsed.
     #[serde(alias = "goamd64")]
     pub amd64_variant: Option<Amd64Variant>,
-    /// Template-conditional: skip this DMG config if rendered result is "false"
-    /// or empty. Render failure hard-errors (not silent-skip).
+    /// Template-conditional: skip this DMG config when the gate renders `false`,
+    /// `0`, `no` or empty (any letter case). Render failure hard-errors (not silent-skip).
     /// An absent, empty or blank `if:` imposes no gate and always runs; the
     /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
@@ -98,8 +98,8 @@ pub struct MsiConfig {
     pub extra_files: Option<Vec<String>>,
     /// WiX extensions to enable (e.g., "WixUIExtension"). Templates allowed.
     pub extensions: Option<Vec<String>>,
-    /// Template-conditional: skip this MSI config if rendered result is "false"
-    /// or empty. Render failure hard-errors (not silent-skip).
+    /// Template-conditional: skip this MSI config when the gate renders `false`,
+    /// `0`, `no` or empty (any letter case). Render failure hard-errors (not silent-skip).
     /// An absent, empty or blank `if:` imposes no gate and always runs; the
     /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
@@ -156,8 +156,8 @@ pub struct PkgConfig {
         deserialize_with = "deserialize_string_or_bool_opt"
     )]
     pub skip: Option<StringOrBool>,
-    /// Template-conditional: skip this PKG config if rendered result is "false"
-    /// or empty. Render failure hard-errors (not silent-skip).
+    /// Template-conditional: skip this PKG config when the gate renders `false`,
+    /// `0`, `no` or empty (any letter case). Render failure hard-errors (not silent-skip).
     /// An absent, empty or blank `if:` imposes no gate and always runs; the
     /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
@@ -207,8 +207,8 @@ pub struct NsisConfig {
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
-    /// Template-conditional: skip this NSIS config if rendered result is "false"
-    /// or empty. Render failure hard-errors (not silent-skip).
+    /// Template-conditional: skip this NSIS config when the gate renders `false`,
+    /// `0`, `no` or empty (any letter case). Render failure hard-errors (not silent-skip).
     /// An absent, empty or blank `if:` imposes no gate and always runs; the
     /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
@@ -254,8 +254,8 @@ pub struct AppBundleConfig {
     /// Skip this app bundle config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
-    /// Template-conditional: skip this app bundle config if rendered result is
-    /// "false" or empty. Render failure hard-errors (not silent-skip).
+    /// Template-conditional: skip this app bundle config when the gate renders `false`,
+    /// `0`, `no` or empty (any letter case). Render failure hard-errors (not silent-skip).
     /// An absent, empty or blank `if:` imposes no gate and always runs; the
     /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]

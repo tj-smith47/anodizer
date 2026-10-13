@@ -145,7 +145,7 @@ Cask files are updated in-place on each release; no recovery flag is required fo
 | `livecheck` | object | skip | `livecheck do … end` stanza for version polling. See [Livecheck](#livecheck). |
 | `alternative_names` | list | none | Alternative cask names |
 | `ids` | list | none | Filter by build IDs |
-| `skip_upload` | string/bool | none | Skip git push (`"auto"` skips for prereleases) |
+| `skip_upload` | string/bool | none | Skip git push: `true` or `1` always skips, `auto` skips for prereleases, `false`, `0` or empty publishes; a template is rendered and read the same way, in any letter case (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)) |
 | `commit_author` | object | none | Git commit author (`name`, `email`) |
 | `commit_msg_template` | string | auto-generated | Custom commit message (template) |
 

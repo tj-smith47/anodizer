@@ -19,6 +19,8 @@ test-helpers = ["dep:rcgen", "dep:tracing-subscriber"]
 [dev-dependencies]
 anodizer-core = { path = ".", features = ["test-helpers"] }
 serial_test.workspace = true
+# Test-only: validate config examples against the published schema.json.
+jsonschema.workspace = true
 # Test-only: redirect the process stderr fd (dup/dup2) so the section-header
 # regression guard can capture the EXACT bytes `flush_pending`/`step` emit via
 # `eprintln!` and prove both real paths delegate to `render_header`. Never

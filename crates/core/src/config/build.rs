@@ -252,14 +252,19 @@ pub struct CrateConfig {
     pub before_publish: Option<HooksConfig>,
 }
 
-/// Helper schema function for archives (accepts false or array).
+/// Schema for a crate's `archives`: `false`, a list of archive configs, or
+/// null, the three shapes `deserialize_archives_config` reads.
 pub(super) fn archives_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    let mut schema = generator.subschema_for::<Option<Vec<ArchiveConfig>>>();
-    schema.ensure_object().insert(
-        "description".to_owned(),
-        "Archive configurations for this crate. Set to false to disable archiving, or provide an array of archive configs.".into(),
-    );
-    schema
+    let item = generator.subschema_for::<ArchiveConfig>();
+    schemars::json_schema!({
+        "description": "Archive configurations for this crate. Set to false to disable archiving, or provide an array of archive configs.",
+        "default": [],
+        "anyOf": [
+            { "const": false },
+            { "type": "array", "items": item },
+            { "type": "null" }
+        ]
+    })
 }
 
 impl Default for CrateConfig {

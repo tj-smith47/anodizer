@@ -1,7 +1,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{HumanDuration, StringOrBool, deserialize_string_or_bool_opt, evaluate_if_condition};
+use super::{
+    HumanDuration, StringOrBool, deserialize_string_or_bool_opt, evaluate_if_condition,
+    is_false_spelling, is_true_spelling,
+};
 
 // ---------------------------------------------------------------------------
 // NotarizeConfig (macOS code signing and notarization)
@@ -350,30 +353,28 @@ fn resolve_skip_with_enabled_alias(
 
 /// Invert a single `enabled:` value into a [`ResolvedSkip`].
 ///
-/// `Bool(b)` flips to `Bool(!b)`; literal `"true"`/`"false"` strings map to
-/// the inverse bool; any other string is treated as a template, kept verbatim
-/// with `inverts_enabled = true` so the evaluator renders it on its own and
-/// negates the rendered truthiness (no `{{ }}` is ever spliced into a
-/// condition head).
+/// `Bool(b)` flips to `Bool(!b)`; literal `true`/`1` and `false`/`0`
+/// strings, in any letter case, map to the inverse bool; any other string is
+/// treated as a template, kept verbatim with `inverts_enabled = true` so the
+/// evaluator renders it on its own and negates the rendered truthiness (no
+/// `{{ }}` is ever spliced into a condition head).
 fn invert_enabled(v: StringOrBool) -> ResolvedSkip {
     match v {
         StringOrBool::Bool(b) => ResolvedSkip {
             skip: Some(StringOrBool::Bool(!b)),
             inverts_enabled: false,
         },
-        StringOrBool::String(s) => match s.trim() {
-            "true" => ResolvedSkip {
-                skip: Some(StringOrBool::Bool(false)),
-                inverts_enabled: false,
-            },
-            "false" => ResolvedSkip {
-                skip: Some(StringOrBool::Bool(true)),
-                inverts_enabled: false,
-            },
-            _ => ResolvedSkip {
-                skip: Some(StringOrBool::String(s)),
-                inverts_enabled: true,
-            },
+        StringOrBool::String(s) if is_true_spelling(&s) => ResolvedSkip {
+            skip: Some(StringOrBool::Bool(false)),
+            inverts_enabled: false,
+        },
+        StringOrBool::String(s) if is_false_spelling(&s) => ResolvedSkip {
+            skip: Some(StringOrBool::Bool(true)),
+            inverts_enabled: false,
+        },
+        StringOrBool::String(s) => ResolvedSkip {
+            skip: Some(StringOrBool::String(s)),
+            inverts_enabled: true,
         },
     }
 }
@@ -582,6 +583,22 @@ mod tests {
         );
         let skip = parse("enabled: \"false\"");
         assert!(skip.should_skip(|_| unreachable!()).unwrap());
+    }
+
+    /// A literal `enabled:` string reads `true` / `1` and `false` / `0` in
+    /// any letter case, inverted without rendering.
+    #[test]
+    fn literal_enabled_string_reads_any_case_of_true_false_1_and_0() {
+        for (value, skip) in [("TRUE", false), ("1", false), ("False", true), ("0", true)] {
+            let cfg = parse(&format!("enabled: \"{value}\""));
+            assert!(!cfg.skip_inverts_enabled, "{value:?}");
+            assert_eq!(
+                cfg.should_skip(|_| panic!("literal enabled must not render"))
+                    .unwrap(),
+                skip,
+                "{value:?}"
+            );
+        }
     }
 
     // --- skip/enabled conflict resolution ---------------------------------

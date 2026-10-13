@@ -120,8 +120,9 @@ pub struct NightlyConfig {
     /// part, and a pinned [`Self::tag_name`] (`nightly`, `edge`) parses as no
     /// semver at all. Set `false` to opt out.
     pub prerelease: Option<bool>,
-    /// Override `release.make_latest` for nightly runs only. Default:
-    /// `false` — a rolling nightly must not displace the newest stable
+    /// Override `release.make_latest` for nightly runs only, with the same
+    /// spellings: `true`, `false`, `"auto"`, an unquoted `1` / `0`, or a
+    /// template. Default: `false` — a rolling nightly must not displace the newest stable
     /// release in the GitHub UI, in `releases/latest`, or for the install
     /// scripts and `gh release download` invocations that resolve it.
     ///

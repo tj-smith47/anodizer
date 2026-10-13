@@ -74,7 +74,8 @@ pub struct UploadConfig {
     pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Upload only extra files, skip normal artifacts.
     pub extra_files_only: Option<bool>,
-    /// Skip condition template (if rendered to "true", skip this upload).
+    /// Skip this upload when the value is, or a template renders,
+    /// `true` or `1` (any letter case).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Template-conditional gate: when the rendered result is falsy

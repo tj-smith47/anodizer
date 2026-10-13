@@ -11872,3 +11872,132 @@ crates:
     let config: Config = serde_yaml_ng::from_str(&yaml("")).unwrap();
     assert_eq!(super::legacy_homebrew_formula_warnings(&config).len(), 1);
 }
+
+/// The generic bool-or-template readers, `fail_on_error`'s strict reader,
+/// `if:` and notarize's `enabled` read every spelling the templates docs list
+/// for their rows, and do what the row's `auto` and "Any other render" cells
+/// say, the way the page says.
+#[test]
+fn the_bool_or_template_spellings_on_the_templates_page_are_what_the_readers_take() {
+    use crate::config::{
+        MacOSNativeSignNotarizeConfig, MacOSSignNotarizeConfig, StringOrBool, evaluate_if_condition,
+    };
+    use crate::test_helpers::bool_spellings::{DocumentedOutcome, documented_bool_row};
+    let as_is = |s: &str| Ok(s.to_string());
+    // A reader with no extra context reads `auto` and any other render as a
+    // plain true or false, or fails.
+    let plain = |outcome: DocumentedOutcome| match outcome {
+        DocumentedOutcome::True => Some(true),
+        DocumentedOutcome::False => Some(false),
+        DocumentedOutcome::Error => None,
+        other => panic!("a context-free reader cannot be {other:?}"),
+    };
+
+    let row = documented_bool_row(
+        "`skip`, `disable`, `enabled` (other than notarize's) and every other bool-or-template field",
+    );
+    assert!(!row.truthy.is_empty() && !row.falsy.is_empty(), "{row:?}");
+    let generic = |value: &str| {
+        let v = StringOrBool::String(value.to_string());
+        let lenient = v.try_evaluates_to_true(as_is).unwrap();
+        assert_eq!(v.as_bool(), lenient, "{value:?}");
+        lenient
+    };
+    for (values, want) in [(&row.truthy, true), (&row.falsy, false)] {
+        for value in values {
+            assert_eq!(generic(value), want, "{value:?}");
+        }
+    }
+    assert_eq!(Some(generic("auto")), plain(row.auto));
+    assert_eq!(Some(generic("anything")), plain(row.other));
+
+    let row = documented_bool_row("`release.preflight.fail_on_error`");
+    assert!(!row.truthy.is_empty() && !row.falsy.is_empty(), "{row:?}");
+    let strict = |value: &str| {
+        StringOrBool::String(value.to_string())
+            .try_evaluate_strict("fail_on_error", as_is)
+            .ok()
+    };
+    for (values, want) in [(&row.truthy, true), (&row.falsy, false)] {
+        for value in values {
+            assert_eq!(strict(value), Some(want), "{value:?}");
+        }
+    }
+    assert_eq!(strict("auto"), plain(row.auto));
+    assert_eq!(strict("anything"), plain(row.other));
+    assert_eq!(strict(""), None, "the row says an empty render is an error");
+
+    let row = documented_bool_row("`if:` (and a hook's `if:`)");
+    assert!(
+        row.truthy.is_empty(),
+        "the `if:` row lists its true reads as prose"
+    );
+    assert!(!row.falsy.is_empty(), "{row:?}");
+    let gate = |value: &str| {
+        let rendered = value.to_string();
+        evaluate_if_condition(Some("{{ x }}"), "if", move |_| Ok(rendered.clone())).ok()
+    };
+    for value in &row.falsy {
+        assert_eq!(gate(value), Some(false), "{value:?}");
+    }
+    assert_eq!(gate("auto"), plain(row.auto));
+    for other in ["yes", "anything"] {
+        assert_eq!(gate(other), plain(row.other), "{other:?}");
+    }
+
+    // Notarize's `enabled`, both as a literal and as a template, on both
+    // notarize blocks. A literal blank value sets no gate, so it is the one
+    // place the template and literal forms differ.
+    let row = documented_bool_row("notarize `enabled`");
+    assert!(!row.truthy.is_empty() && !row.falsy.is_empty(), "{row:?}");
+    let enabled = |value: &str, templated: bool| {
+        let yaml_value = if templated { "{{ x }}" } else { value };
+        let yaml = format!("enabled: {yaml_value:?}\n");
+        let rendered = value.to_string();
+        let render = move |s: &str| {
+            Ok(if s == "{{ x }}" {
+                rendered.clone()
+            } else {
+                s.to_string()
+            })
+        };
+        let cross: MacOSSignNotarizeConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+        let native: MacOSNativeSignNotarizeConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+        let cross = cross.should_skip(render.clone()).ok().map(|skip| !skip);
+        let native = native.should_skip(render).ok().map(|skip| !skip);
+        assert_eq!(cross, native, "{value:?}");
+        cross
+    };
+    for (values, want) in [(&row.truthy, true), (&row.falsy, false)] {
+        for value in values {
+            assert_eq!(enabled(value, true), Some(want), "templated {value:?}");
+            if !value.is_empty() {
+                assert_eq!(enabled(value, false), Some(want), "literal {value:?}");
+            }
+        }
+    }
+    assert_eq!(
+        enabled("", false),
+        Some(true),
+        "a literal blank `enabled` sets no gate"
+    );
+    for templated in [true, false] {
+        assert_eq!(enabled("auto", templated), plain(row.auto));
+        assert_eq!(enabled("anything", templated), plain(row.other));
+    }
+
+    let page = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/site/content/docs/general/templates.md"
+    ))
+    .unwrap();
+    let section = page.split("\n## Bool-or-template values\n").nth(1).unwrap();
+    let example = section
+        .split("```yaml\n")
+        .nth(1)
+        .unwrap()
+        .split("```")
+        .next()
+        .unwrap();
+    serde_yaml_ng::from_str::<Config>(example).expect("the section's example loads");
+}

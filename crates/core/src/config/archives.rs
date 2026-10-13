@@ -191,11 +191,17 @@ impl<'de> serde::Deserialize<'de> for WrapInDirectory {
             serde_yaml_ng::Value::String(s) => Ok(WrapInDirectory::Name(s)),
             // A quoted "1" stays a directory name; only the unquoted integer
             // spells a bool.
-            serde_yaml_ng::Value::Number(n) if n.as_u64() == Some(1) => {
-                Ok(WrapInDirectory::Bool(true))
-            }
-            serde_yaml_ng::Value::Number(n) if n.as_u64() == Some(0) => {
-                Ok(WrapInDirectory::Bool(false))
+            serde_yaml_ng::Value::Number(n) => {
+                let expected = &"a bool, 1, 0 or a string";
+                match (n.as_u64(), n.as_i64()) {
+                    (Some(u), _) => super::string_or_bool::bool_from_u64(u, expected),
+                    (None, Some(i)) => super::string_or_bool::bool_from_i64(i, expected),
+                    _ => Err(serde::de::Error::invalid_type(
+                        serde::de::Unexpected::Other("a float"),
+                        expected,
+                    )),
+                }
+                .map(WrapInDirectory::Bool)
             }
             _ => Err(serde::de::Error::custom(
                 "expected a bool, 1, 0 or a string",
@@ -868,7 +874,13 @@ mod tests {
         assert_eq!(load("1").unwrap(), WrapInDirectory::Bool(true));
         assert_eq!(load("0").unwrap(), WrapInDirectory::Bool(false));
         assert_eq!(load("\"1\"").unwrap(), WrapInDirectory::Name("1".into()));
-        assert!(load("2").is_err());
+        for bad in ["2", "-1"] {
+            let err = load(bad).unwrap_err().to_string();
+            assert!(
+                err.contains("expected a bool, 1, 0 or a string"),
+                "{bad}: {err}"
+            );
+        }
     }
 
     #[test]

@@ -25,10 +25,28 @@ pub struct ReleaseConfig {
     /// When true, create the release as a draft (unpublished).
     pub draft: Option<bool>,
     #[schemars(schema_with = "prerelease_schema")]
-    /// Mark release as pre-release: true, false, or "auto" (inferred from tag).
+    /// Mark release as pre-release: `true`, `false`, or `"auto"` (inferred
+    /// from the tag). An unquoted `1` / `0` and the strings `"true"`,
+    /// `"false"`, `"1"` and `"0"` are accepted as booleans; any other string
+    /// is a load error.
+    ///
+    /// ```yaml
+    /// release:
+    ///   prerelease: auto
+    /// ```
     pub prerelease: Option<PrereleaseConfig>,
     #[schemars(schema_with = "make_latest_schema")]
-    /// Mark release as latest: true, false, or "auto" (latest non-prerelease).
+    /// Mark release as latest: `true`, `false`, `"auto"` (GitHub decides:
+    /// the release is sent with `make_latest: legacy`), or a template
+    /// rendered at publish time. An unquoted `1` / `0` and the strings
+    /// `"1"` / `"0"` are booleans. A template that renders `false`, `0` or
+    /// empty does not mark the release latest, `auto` lets GitHub decide, and
+    /// `true`, `1` or any other render marks it latest.
+    ///
+    /// ```yaml
+    /// release:
+    ///   make_latest: "{{ not IsSnapshot }}"
+    /// ```
     pub make_latest: Option<MakeLatestConfig>,
     /// Release title template (supports templates).
     pub name_template: Option<String>,
@@ -389,9 +407,9 @@ impl std::fmt::Display for OnFailureConfig {
 fn prerelease_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({
         "oneOf": [
-            { "type": "string", "enum": ["auto", "true", "false", "1", "0"] },
             { "type": "boolean" },
-            super::string_or_bool::one_or_zero_schema()
+            super::string_or_bool::one_or_zero_schema(),
+            { "type": "string", "enum": ["auto", "true", "false", "1", "0"] }
         ]
     })
 }
@@ -680,7 +698,8 @@ impl<'de> Deserialize<'de> for MakeLatestConfig {
 pub enum SkipPushConfig {
     Auto,
     Bool(bool),
-    /// Arbitrary template string — rendered at runtime, truthy result means skip push.
+    /// Template string rendered at runtime: `true` or `1` skips the push,
+    /// `auto` skips it on a prerelease, anything else pushes.
     Template(String),
 }
 

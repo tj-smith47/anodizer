@@ -214,7 +214,7 @@ This works on **both GitHub-hosted and self-hosted runners**. The registry verif
 | `title` | string | none | Human-readable title shown in registry UIs. Supports templates |
 | `description` | string | none | One-line description. Supports templates |
 | `homepage` | string | none | Project homepage URL. Supports templates |
-| `skip` | string or bool | `false` | Skip this publisher. Tera template that evaluates to a truthy value (e.g. `"{{ true }}"`) also skips. Accepts the legacy `disable:` spelling for back-compat with imported GoReleaser configs |
+| `skip` | string or bool | `false` | Skip this publisher. A Tera template that renders `true` or `1`, in any letter case (e.g. `"{{ true }}"`), also skips. Accepts the legacy `disable:` spelling for back-compat with imported GoReleaser configs |
 | `repository` | object | inferred | Source repository metadata. See [Repository](#repository) |
 | `packages` | object[] | **required** | One or more distribution packages. See [Packages](#packages) |
 | `transports` | object[] | none | Top-level transport list. Parsed for GoReleaser config-portability (silently ignored — see [note below](#top-level-transports)); the current MCP server schema derives transports per-package via `packages[].transport`, so this list is not emitted to the registry |
@@ -287,7 +287,7 @@ Optional. The `transports:` list is accepted for GoReleaser config-portability (
 
 ## Skipping per release
 
-`skip` accepts either a bool or a Tera template:
+`skip` accepts either a bool or a Tera template, which skips when it renders `true` or `1` in any letter case (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)):
 
 ```yaml
 mcp:

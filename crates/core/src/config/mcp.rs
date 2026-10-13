@@ -52,10 +52,10 @@ pub struct McpConfig {
     /// deserialization and is intentionally not emitted to the registry.
     pub transports: Vec<McpTransport>,
 
-    /// Skip this publisher when the expression evaluates truthy. Accepts a
-    /// bool or a Tera template that renders to `"true"`/`"false"` (e.g.
+    /// Skip this publisher when the value is, or a Tera template renders,
+    /// `true` or `1` (any letter case); `false`, `0` or empty runs it (e.g.
     /// `"{{ if .IsSnapshot }}true{{ endif }}"`). Accepts the legacy
-    /// `disable:` spelling via serde alias for back-compat with imported
+    /// `disable:` spelling via serde alias for back-compat with
     /// imported configs (the MCP config field
     /// `MCP.Disable string`).
     #[serde(

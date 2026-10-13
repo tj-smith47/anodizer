@@ -35,7 +35,7 @@ crates:
             formats: [zip]
         files: []                       # optional; extra files to include
         binaries: []                    # optional; specific binaries (default: all)
-        wrap_in_directory: ""           # optional; wrap contents in a subdirectory
+        wrap_in_directory: ""           # optional; "" or false: flat; true: archive name; or a dir name template
 ```
 
 ## Authentication
@@ -61,7 +61,21 @@ Not applicable — this is a local packaging stage, not a publisher.
 | `format_overrides` | list | none | Per-OS format overrides (each entry takes `os` plus `formats`) |
 | `files` | list | none | Extra files to include (e.g., `LICENSE`, `README.md`) |
 | `binaries` | list | all | Specific binaries to include (default: all from builds) |
-| `wrap_in_directory` | string | none | Wrap contents in a subdirectory |
+| `wrap_in_directory` | bool \| string | none | Wrap contents in a subdirectory. `true` (or an unquoted `1`) names it after the archive, `false` (or an unquoted `0`) or `""` leaves the archive flat, and a string is a directory name template. A quoted `"1"` is a directory named `1`. |
+
+```yaml
+crates:
+  - name: myapp
+    archives:
+      - wrap_in_directory: true      # one top-level directory named after the archive
+```
+
+```yaml
+crates:
+  - name: myapp
+    archives:
+      - wrap_in_directory: "{{ ProjectName }}-{{ Version }}"   # a directory named by the template
+```
 
 ## Format overrides
 

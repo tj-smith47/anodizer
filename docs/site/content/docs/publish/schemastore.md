@@ -132,7 +132,7 @@ Resolution order (most-specific wins): **per-entry field → block `schemastore.
 | `commit_author` | object | git config | Commit author `name` and `email` |
 | `versioned` | bool | `false` | Default for all entries. Vendor-only. See [`versioned`](#versioned) |
 | `skip` | bool or string | `false` | Skip the whole publisher. Accepts bool or Tera template string. Alias: `disable` |
-| `if` | string | — | Tera condition; publisher is skipped when it renders falsy. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
+| `if` | string | — | Tera condition; the publisher is skipped when it renders `false`, `0`, `no` or empty, in any letter case. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `schemas` | list | **required** | The schema entries to register or refresh. At least one required |
 
 ### Per-entry fields

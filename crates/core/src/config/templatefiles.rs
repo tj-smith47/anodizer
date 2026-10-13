@@ -26,8 +26,8 @@ pub struct TemplateFileConfig {
     /// File permissions in octal notation as a string, e.g. `"0755"` (default: `"0655"`).
     /// Parsed at runtime via `parse_octal_mode()` to avoid YAML interpreting as decimal.
     pub mode: Option<String>,
-    /// Skip this entry when truthy. Accepts a literal bool or a Tera
-    /// template that renders to `"true"`/`"false"` (e.g.
+    /// Skip this entry when the value is, or a Tera template renders, `true`
+    /// or `1` (any letter case); `false`, `0` or empty keeps it (e.g.
     /// `'{{ if eq .Os "windows" }}true{{ end }}'`). Mirrors the
     /// per-entry `skip:` pattern used by `ChangelogConfig`,
     /// `ChecksumConfig`, and the publishers.

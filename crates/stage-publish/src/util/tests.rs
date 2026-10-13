@@ -704,6 +704,47 @@ fn test_should_skip_upload_explicit_false_bool() {
     assert!(!should_skip_upload(Some(&val), &ctx, &test_log(), None).unwrap());
 }
 
+/// A publisher's `skip_upload` template reads every spelling the templates
+/// docs list for it, and `auto` and any other render, the way the page says.
+#[test]
+fn a_skip_upload_template_reads_the_documented_spellings() {
+    use anodizer_core::config::StringOrBool;
+    use anodizer_core::test_helpers::bool_spellings::{DocumentedOutcome, documented_bool_row};
+    let row = documented_bool_row("a publisher's `skip_upload`");
+    assert!(!row.truthy.is_empty() && !row.falsy.is_empty(), "{row:?}");
+    let mut ctx = Context::new(Config::default(), ContextOptions::default());
+    for (values, skip) in [(&row.truthy, true), (&row.falsy, false)] {
+        for value in values {
+            ctx.template_vars_mut().set("Skip", value);
+            let val = StringOrBool::String("{{ .Skip }}".to_string());
+            assert_eq!(
+                should_skip_upload(Some(&val), &ctx, &test_log(), None).unwrap(),
+                skip,
+                "{value:?}"
+            );
+        }
+    }
+
+    // (skip, warnings) for a rendered value, on a prerelease or not.
+    let read = |ctx: &mut Context, value: &str, prerelease: &str| {
+        ctx.template_vars_mut().set("Skip", value);
+        ctx.template_vars_mut().set("Prerelease", prerelease);
+        let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
+        let val = StringOrBool::String("{{ .Skip }}".to_string());
+        let skip = should_skip_upload(Some(&val), ctx, &log, None).unwrap();
+        (skip, cap.warn_count())
+    };
+    for (value, outcome) in [("auto", row.auto), ("anything", row.other)] {
+        let (on_prerelease, on_stable) = match outcome {
+            DocumentedOutcome::TrueOnPrerelease => ((true, 0), (false, 0)),
+            DocumentedOutcome::FalseWithWarning => ((false, 1), (false, 1)),
+            other => panic!("a publisher's skip_upload has no reader for {other:?}"),
+        };
+        assert_eq!(read(&mut ctx, value, "rc.1"), on_prerelease, "{value:?}");
+        assert_eq!(read(&mut ctx, value, ""), on_stable, "{value:?}");
+    }
+}
+
 #[test]
 fn test_should_skip_upload_auto_skips_prerelease() {
     use anodizer_core::config::{Config, StringOrBool};

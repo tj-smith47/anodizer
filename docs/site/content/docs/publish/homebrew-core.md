@@ -85,7 +85,7 @@ homebrew_cores:
 | `sha256` | **yes** | download + hash `download_url` | Source-archive digest |
 | `commit_msg_template` | **yes** | `"<formula> <version>"` | Commit message / PR title |
 | `direct_commit` | **yes** (bool/template) | `false` | Commit straight to the base branch (personal repos only) |
-| `skip` / `if` | **`if` yes** | — | Entry gating (bool/template; falsy `if` skips). `skip` also accepts the legacy `disable:` spelling via serde alias |
+| `skip` / `if` | **`if` yes** | — | Entry gating (bool/template; an `if` rendering `false`, `0`, `no` or empty skips (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values))). `skip` also accepts the legacy `disable:` spelling via serde alias |
 | `required` | — | `false` | Whether failure fails the release |
 | `retain_on_rollback` | — | `false` | Leave the opened PR in place on rollback |
 

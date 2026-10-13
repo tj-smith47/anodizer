@@ -191,7 +191,7 @@ crates:
 | `binaries` | list | none | Binary stubs to install |
 | `description` | string | Cargo `[package].description` | Cask description. Derived from `Cargo.toml`; set to override. |
 | `homepage` | string | Cargo `[package].homepage` | Project homepage. Derived from `Cargo.toml`; set to override. |
-| `skip_upload` | bool or string | the formula's `skip_upload`, else `false` | Skip publishing; `true` always skips, `"auto"` skips for prereleases |
+| `skip_upload` | bool or string | the formula's `skip_upload`, else `false` | Skip publishing; `true` or `1` always skips, `auto` skips for prereleases, `false`, `0` or empty publishes; a template is rendered and read the same way, in any letter case (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)) |
 | `update_existing_pr` | bool or string | `false` | Force-push to an existing open PR branch instead of skipping. See [Cask existing PR behavior](#cask-existing-pr-behavior). |
 
 `defaults.publish.homebrew_cask:` merges into each crate's cask field by

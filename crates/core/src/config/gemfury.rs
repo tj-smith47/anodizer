@@ -72,8 +72,8 @@ pub struct GemFuryConfig {
     /// Defaults to `["apk", "deb", "rpm"]`.
     pub formats: Option<Vec<String>>,
 
-    /// Template-conditional skip: if rendered result is `"true"`, skip this
-    /// publisher entry. Accepts bool or template string.
+    /// Template-conditional skip: skip this publisher entry when the
+    /// value is, or a template renders, `true` or `1` (any letter case). Accepts bool or template string.
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat
     /// with imported `gemfury[].disable:` configs.
     #[serde(
