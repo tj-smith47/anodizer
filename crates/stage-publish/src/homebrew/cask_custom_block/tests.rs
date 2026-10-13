@@ -1593,6 +1593,177 @@ fn a_name_at_the_start_of_a_continued_expression_is_a_label() {
     }
 }
 
+/// A `=begin` that starts a heredoc body line is text of the body, so the
+/// code after the heredoc is read.
+#[test]
+fn a_begin_marker_on_a_heredoc_body_line_is_body_text() {
+    assert_facts("x = <<~E\n=begin\nE\non_linux do\nend", true, false, None);
+    assert_facts("x = <<~E\n=begin\nE\n  on_linux\nE", true, false, None);
+    let edges = super::line_code_edges("x = <<~E\n=begin\nE\non_linux do\nend");
+    assert_eq!(
+        edges.iter().map(|e| e.starts_in_code).collect::<Vec<_>>(),
+        [true, false, true, true, true]
+    );
+}
+
+/// Every keyword after which Ruby reads an operand, `%` written against
+/// it or after a space opens a literal; `not` and `yield` read like a
+/// method call, so a `%` after them is an operator.
+#[test]
+fn a_percent_after_every_keyword_that_leaves_an_operand_opens_a_literal() {
+    for template in [
+        "x = 1 and{} on_linux ",
+        "begin{} on_linux \nend",
+        "x.each do\nbreak{} on_linux \nend",
+        "case{} on_linux \nwhen 1 then 2\nend",
+        "x.each do{} on_linux \nend",
+        "if x\n1\nelse{} on_linux \nend",
+        "if x\n1\nelsif{} on_linux \n2\nend",
+        "begin\n1\nensure{} on_linux \nend",
+        "if{} on_linux \n1\nend",
+        "for x in{} on_linux \nend",
+        "x.each do\nnext{} on_linux \nend",
+        "x = 1 or{} on_linux ",
+        "begin\n1\nrescue{} on_linux \nend",
+        "def f\nreturn{} on_linux \nend",
+        "if x then{} on_linux \nend",
+        "unless{} on_linux \nend",
+        "until{} on_linux \nend",
+        "case 1\nwhen{} on_linux \nend",
+        "while{} on_linux \nend",
+    ] {
+        for percent in ["%", " %"] {
+            assert_facts(&template.replace("{}", percent), false, false, None);
+        }
+    }
+    for block in [
+        "def f\nyield% on_linux \nend",
+        "def f\nyield % on_linux \nend",
+        "x = (not% on_linux )",
+    ] {
+        assert_facts(block, true, false, None);
+    }
+}
+
+/// A line that ends a statement leaves the `name:` that starts the next
+/// line heading a statement, so the name takes no label and its `` :` ``
+/// is a symbol.
+fn assert_next_name_heads(first: &str) {
+    assert_facts(
+        &format!("{first}\nfoo:`% on_linux do\nend"),
+        true,
+        false,
+        None,
+    );
+}
+
+/// A name spelled with `?` or `!` ends the line's statement.
+#[test]
+fn a_line_ending_in_a_name_with_a_question_or_exclamation_mark_ends_its_statement() {
+    assert_next_name_heads("x = a.b?");
+    assert_next_name_heads("x = a.b!");
+}
+
+/// The `|` that closes a block's parameters ends the line's statement.
+#[test]
+fn a_line_ending_in_the_bar_after_block_parameters_ends_its_statement() {
+    for first in [
+        "x.each { |y|",
+        "x.each do |y|",
+        "x.each { ||",
+        "x.each { |y, z|",
+    ] {
+        assert_next_name_heads(first);
+    }
+}
+
+#[test]
+fn a_line_ending_in_a_closing_parenthesis_ends_its_statement() {
+    assert_next_name_heads("x = f(1)");
+}
+
+#[test]
+fn a_line_ending_in_a_closing_bracket_ends_its_statement() {
+    assert_next_name_heads("x = [1]");
+}
+
+#[test]
+fn a_line_ending_in_a_closing_brace_ends_its_statement() {
+    assert_next_name_heads("x = {}");
+}
+
+#[test]
+fn a_line_ending_in_a_literal_ends_its_statement() {
+    assert_next_name_heads("x = \"a\"");
+}
+
+#[test]
+fn a_line_ending_in_a_semicolon_ends_its_statement() {
+    assert_next_name_heads("x = 1;");
+}
+
+/// A `#{` that ends its line starts a statement inside it, whatever the
+/// line before left open, and the code of a heredoc body leaves the
+/// statement around the heredoc as its opener left it.
+#[test]
+fn a_line_ending_in_an_open_interpolation_starts_a_statement_in_it() {
+    for block in [
+        "x = \"#{\nfoo:`% on_linux do\nend}\"",
+        "x = \"#{y = 1\nfoo:`% on_linux do\nend}\"",
+        "x = [1,\n \"#{\nfoo:`% on_linux do\nend}\"]",
+        "x = <<~E\n  #{1}\nE\nfoo:`% on_linux do\nend",
+    ] {
+        assert_facts(block, true, false, None);
+    }
+    for block in [
+        "x = \"#{f(1,\nfoo:%w[on_linux])}\"",
+        "f(<<~E,\n  #{1}\nE\nfoo:%w[on_linux])",
+    ] {
+        assert_facts(block, false, false, None);
+    }
+}
+
+/// A `;` starts a statement on a line that goes on with the expression of
+/// the line before it.
+#[test]
+fn a_semicolon_on_a_continued_line_starts_a_statement() {
+    assert_facts("x = [1,\n 2]; foo:`% on_linux do\nend", true, false, None);
+}
+
+/// A `#{` starts a statement on a line that goes on with the expression of
+/// the line before it.
+#[test]
+fn an_interpolation_on_a_continued_line_starts_a_statement() {
+    assert_facts(
+        "x = [1,\n \"#{foo:`% on_linux do\nend}\"]",
+        true,
+        false,
+        None,
+    );
+}
+
+/// A line ending in `\\` goes on with its statement, so a `name:` on the
+/// next line is a label.
+#[test]
+fn a_line_ending_in_a_backslash_reads_on() {
+    assert_facts("f \\\nfoo:%w[on_linux]", false, false, None);
+}
+
+/// After a label a backtick opens a command string, as in a hash or an
+/// argument list.
+#[test]
+fn a_backtick_after_a_label_opens_a_command_string() {
+    for block in [
+        "x = {a:`on_linux`}",
+        "f(a:`on_linux`)",
+        "f a:`on_linux`",
+        "x = {\"a\":`on_linux`}",
+        "x = {a:` on_linux`}",
+    ] {
+        assert_facts(block, false, false, None);
+    }
+}
+
 /// Where an operand must stand, a `?` opens a character literal before
 /// any character but a letter, digit or `_` followed by a word character,
 /// so `?"` before a keyword is a literal and the keyword a modifier.

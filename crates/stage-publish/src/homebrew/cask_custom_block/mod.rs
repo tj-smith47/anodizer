@@ -83,12 +83,15 @@ pub(super) enum UnreadReason {
 ///   whitespace separates, so whitespace never closes it; and a bare `%`
 ///   where an operand must stand (with nothing before it on its statement
 ///   but an operator, or after a label `a:`, the `:` of a ternary or a
-///   keyword other than `not` and `yield`, as in `if% a `) also by a space,
-///   a tab, `=` or the end of the line. A literal delimited by the end of
-///   its line holds the next line, and the one after while the held line
-///   ends in an odd run of `\`, and its statement reads on past it; a `%r`
-///   closed that way takes the letters that start the line after as its
-///   options (`%r`, `ab`, `ix`), so that line begins inside it;
+///   keyword that takes an operand (`and`, `begin`, `break`, `case`, `do`,
+///   `else`, `elsif`, `ensure`, `for`, `if`, `in`, `module`, `next`, `or`,
+///   `rescue`, `return`, `then`, `unless`, `until`, `when`, `while`), as in
+///   `if% a `) also by a space, a tab, `=` or the end of the line. A
+///   literal delimited by the end of its line holds the next line, and the
+///   one after while the held line ends in an odd run of `\`, and its
+///   statement reads on past it; a `%r` closed that way takes the letters
+///   that start the line after as its options (`%r`, `ab`, `ix`), so that
+///   line begins inside it;
 /// - a `?x` character literal (`?#`, `?"`, `?'`) unless a letter, digit or
 ///   `_` is followed by a word character (`?ab`), or a quote is after a
 ///   word that may be a local (`x ?"a"`);

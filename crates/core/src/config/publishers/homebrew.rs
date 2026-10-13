@@ -364,40 +364,42 @@ pub struct HomebrewCaskConfig {
     /// `%w` `%W` `%i` `%I`, splits its words on whitespace, so whitespace
     /// never closes it), and a bare `%` where an operand must stand (with
     /// nothing before it on its statement but an operator, or after a label
-    /// `a:`, the `:` of a ternary or a keyword other than `not` and `yield`)
-    /// also by a space, a tab, `=` or the end of the line (a literal
-    /// delimited by the end of its line holds the next line, and the one
-    /// after while the held line ends in an odd run of `\`, and a `%r` closed
-    /// that way takes the letters that start the line after as its options);
-    /// `?x` character literals (not `?ab`, nor `?"a"` after a word that may
-    /// be a local); a `/…/` regex where an operand stands; `#` comments; and
-    /// `=begin` … `=end` comments, opened on any line that starts in code,
-    /// the code of a `#{…}` left open at the end of the line before included.
-    /// The code inside `#{…}` is kept apart from the code around it, in every
-    /// literal that interpolates (`"…"` and `` `…` `` strings, `:"…"`
-    /// symbols, heredocs whose tag is not single-quoted, `%()`, `%Q`, `%W`,
-    /// `%I`, `%r` and `%x` literals and `/…/` regexes), and each `#{…}` is
-    /// read as statements of its own: its words count toward the Linux side,
-    /// a `depends_on` opening one of its statements toward the OS dependency,
-    /// and a `;` in it ends no statement around the literal; it is read in
-    /// the scopes around the literal by the rules below, as Ruby reads it, so
-    /// the names it assigns are locals after it and the parameters and locals
-    /// of a block, lambda or `def` inside it end with that block, lambda or
-    /// `def` (`"#{on_linux}"` names a Linux side, `'#{on_linux}'` does not).
-    /// None opens after a `:` that makes a symbol (one written against a
-    /// method call that heads its statement or follows `.`, `&.` or `::`
-    /// does, as in `` foo:` ``, since such a call takes no label), in a
-    /// special global (`$"`), or where it names a method: after `.`, `&.` or
-    /// `::` (with or without a space, whatever the name looks like, so `x. %`
-    /// and `a&.!~` are method names) or `def`, and as the `?` or `!` of a
-    /// method name. Straight after a name Ruby reads as a method call, a `?`
-    /// opens a character literal (`EOS!?"`, `foo?=`, `x&.def??"`,
-    /// `foo.nil?=`). Ruby reads a name as a method call after `.`, `&.` or
-    /// `::`, whatever it spells, and elsewhere unless it is a local variable,
-    /// a parameter, a number, a variable with a sigil, or `self`, `nil`,
-    /// `true`, `false`, `end`, `__FILE__`, `__LINE__` or `__ENCODING__`. A
-    /// `?` or `!` read as an operator ends no word, so a `/` after it opens a
-    /// regex (`!/a/`).
+    /// `a:`, the `:` of a ternary or a keyword that takes an operand: `and`,
+    /// `begin`, `break`, `case`, `do`, `else`, `elsif`, `ensure`, `for`,
+    /// `if`, `in`, `module`, `next`, `or`, `rescue`, `return`, `then`,
+    /// `unless`, `until`, `when` or `while`) also by a space, a tab, `=` or
+    /// the end of the line (a literal delimited by the end of its line holds
+    /// the next line, and the one after while the held line ends in an odd
+    /// run of `\`, and a `%r` closed that way takes the letters that start
+    /// the line after as its options); `?x` character literals (not `?ab`,
+    /// nor `?"a"` after a word that may be a local); a `/…/` regex where an
+    /// operand stands; `#` comments; and `=begin` … `=end` comments, opened
+    /// on any line that starts in code, the code of a `#{…}` left open at the
+    /// end of the line before included. The code inside `#{…}` is kept apart
+    /// from the code around it, in every literal that interpolates (`"…"` and
+    /// `` `…` `` strings, `:"…"` symbols, heredocs whose tag is not
+    /// single-quoted, `%()`, `%Q`, `%W`, `%I`, `%r` and `%x` literals and
+    /// `/…/` regexes), and each `#{…}` is read as statements of its own: its
+    /// words count toward the Linux side, a `depends_on` opening one of its
+    /// statements toward the OS dependency, and a `;` in it ends no statement
+    /// around the literal; it is read in the scopes around the literal by the
+    /// rules below, as Ruby reads it, so the names it assigns are locals
+    /// after it and the parameters and locals of a block, lambda or `def`
+    /// inside it end with that block, lambda or `def` (`"#{on_linux}"` names
+    /// a Linux side, `'#{on_linux}'` does not). None opens after a `:` that
+    /// makes a symbol (one written against a method call that heads its
+    /// statement or follows `.`, `&.` or `::` does, as in `` foo:` ``, since
+    /// such a call takes no label), in a special global (`$"`), or where it
+    /// names a method: after `.`, `&.` or `::` (with or without a space,
+    /// whatever the name looks like, so `x. %` and `a&.!~` are method names)
+    /// or `def`, and as the `?` or `!` of a method name. Straight after a
+    /// name Ruby reads as a method call, a `?` opens a character literal
+    /// (`EOS!?"`, `foo?=`, `x&.def??"`, `foo.nil?=`). Ruby reads a name as a
+    /// method call after `.`, `&.` or `::`, whatever it spells, and elsewhere
+    /// unless it is a local variable, a parameter, a number, a variable with
+    /// a sigil, or `self`, `nil`, `true`, `false`, `end`, `__FILE__`,
+    /// `__LINE__` or `__ENCODING__`. A `?` or `!` read as an operator ends no
+    /// word, so a `/` after it opens a regex (`!/a/`).
     ///
     /// A `<<`, `%`, `?` or `/` after a value is a shift, a modulo, a ternary
     /// or a division: after `)`, `]`, `}`, a number, a literal, a symbol (the

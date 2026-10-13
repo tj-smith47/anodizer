@@ -64,16 +64,18 @@ struct Carry {
     /// The code around each open `#{…}`, outermost first, one per
     /// interpolation frame on `stack`.
     outer: Vec<Outer>,
-    /// The statement and parameter list the opener of each heredoc whose
-    /// body is being read in a `#{…}` left open, innermost last.
-    bodies: Vec<(Option<Continued>, Option<String>)>,
+    /// The statement, parameter list and `reads_on` the opener of each
+    /// heredoc whose body is being read in a `#{…}` left open, innermost
+    /// last.
+    bodies: Vec<(Option<Continued>, Option<String>, bool)>,
     /// Inside a `=begin` … `=end` comment, opened on this line.
     comment: Option<usize>,
     /// The statement a line ending in `\` continues onto the next line.
     continued: Option<Continued>,
-    /// The last line of code ended where Ruby reads the next line on as
-    /// part of its expression: in an open literal, or after a `,`, an
-    /// operator or an opening bracket, where a `name:` may be a label.
+    /// The code the last line ended in reads on into the next line as
+    /// part of its expression, so a `name:` there may be a label: it ended
+    /// after a `,`, an operator or an opening bracket, outside a literal
+    /// or in an open `#{…}`.
     reads_on: bool,
 }
 
@@ -131,15 +133,6 @@ fn is_comment_marker(line: &str, marker: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
 }
 
-/// A line of a `=begin` comment, which stays inside the literals around
-/// it.
-fn comment_line(stack: &[Frame]) -> CodeLine {
-    CodeLine {
-        open: !stack.is_empty(),
-        ..CodeLine::default()
-    }
-}
-
 /// Read every line of `block`.
 pub(super) fn lex_block(block: &str) -> Lexed {
     let lines: Vec<&str> = block.lines().collect();
@@ -154,7 +147,7 @@ pub(super) fn lex_block(block: &str) -> Lexed {
                 carry.comment = None;
             }
             starts.push(false);
-            out.push(comment_line(&carry.stack));
+            out.push(CodeLine::default());
             continue;
         }
         // Ruby reads `=begin` as a comment wherever its line starts in
@@ -167,7 +160,7 @@ pub(super) fn lex_block(block: &str) -> Lexed {
         if !in_body && in_code(&carry.stack) && is_comment_marker(line, "=begin") {
             carry.comment = Some(n + 1);
             starts.push(false);
-            out.push(comment_line(&carry.stack));
+            out.push(CodeLine::default());
             continue;
         }
         if let Some(heredoc) = carry.heredocs.front_mut() {
@@ -193,11 +186,6 @@ pub(super) fn lex_block(block: &str) -> Lexed {
         starts.push(carry.stack.is_empty() && !options);
         let (code, end) = lex_line(line, n + 1, &mut carry);
         code_ends[n] = (!code.open).then_some(end);
-        if let Some(last) = code.text.trim_end().chars().last().filter(|_| !code.open) {
-            carry.reads_on = !(is_word_char(last) || matches!(last, ')' | ']' | '}' | '"' | ';'));
-        } else if code.open {
-            carry.reads_on = true;
-        }
         out.push(code);
     }
     let unclosed = |line: usize, kind| Unreadable {
@@ -265,9 +253,11 @@ fn lex_body_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
         None => {
             // The statement and parameter list the heredoc's opener left
             // open go on after the body.
-            carry
-                .bodies
-                .push((carry.continued.take(), carry.param_list.take()));
+            carry.bodies.push((
+                carry.continued.take(),
+                carry.param_list.take(),
+                carry.reads_on,
+            ));
             // The body as a literal that closes nowhere on the line, so
             // only its interpolations are read as code.
             carry
@@ -282,7 +272,8 @@ fn lex_body_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
     carry.heredocs[0].interpolating = open.then_some(depth);
     if !open {
         carry.stack.truncate(depth);
-        (carry.continued, carry.param_list) = carry.bodies.pop().unwrap_or_default();
+        (carry.continued, carry.param_list, carry.reads_on) =
+            carry.bodies.pop().unwrap_or_default();
     }
     let opened = carry.heredocs.len() - queued;
     carry.heredocs.rotate_right(opened);
@@ -347,6 +338,9 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
     // of a line the line before ended, after a `;` and at the start of a
     // `#{…}`.
     let mut heads_statement = !*reads_on;
+    // Where in `text` the `|` that closed a block's parameters ends, after
+    // which the statement reads on no further (`{ |y|`).
+    let mut params_closed_at = usize::MAX;
     // Whether the word is still being read, and whether whitespace
     // followed it; the `\` or newline that ended the line before counts as
     // whitespace.
@@ -608,7 +602,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             '#' => break,
             '"' | '\'' => Some((1, Some(literal(c, c, c == '"', "string", number)))),
             // `` def ` `` names the backtick method.
-            '`' if !labelled && !(after_word && word == "def") => {
+            '`' if !(after_word && word == "def") => {
                 Some((1, Some(literal(c, c, true, "string", number))))
             }
             '%' if opens => {
@@ -733,8 +727,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                 }
                 // An operator assignment binds its target wherever it
                 // stands: in an argument, a condition or after another `=`.
-                let operator = (!spaced
-                    && matches!(prev, Some('|' | '&' | '+' | '-' | '*' | '/' | '%' | '^')))
+                let operator = matches!(prev, Some('|' | '&' | '+' | '-' | '*' | '/' | '%' | '^'))
                     || code.ends_with("<<")
                     || code.ends_with(">>");
                 if operator && let Some(name) = operator_target(code) {
@@ -795,6 +788,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
         }
         if c == '|' {
             if let Some(list) = param_list.take() {
+                params_closed_at = text.len();
                 for name in param_names(&list) {
                     scopes.bind(&name, true);
                 }
@@ -867,6 +861,13 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
     if in_code(stack) && method_next {
         continues_line = true;
     }
+    // A line that ends with no code, blank or a comment, leaves the
+    // statement as the line before left it, and one that opened a `#{…}`
+    // last starts a statement in it.
+    *reads_on = match text.trim_end() {
+        "" => !heads_statement,
+        code => code.len() != params_closed_at && code_reads_on(code),
+    };
     let mut code = outer.first().map_or(&text, |o| &o.state.text)[base..].to_string();
     // Inside a `#{…}` the code read so far waits for the next line, and a
     // newline in its code ends a statement there.
@@ -935,6 +936,18 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
         interpolations,
     };
     (code, end)
+}
+
+/// Whether the statement `code`, a line's code up to its end, reads on into
+/// the next line. A name, a value or a `;` ends it, and so does a name
+/// ending in `?` or `!` (`a.b?`).
+fn code_reads_on(code: &str) -> bool {
+    let Some(last) = code.chars().next_back() else {
+        return false;
+    };
+    let head = &code[..code.len() - last.len_utf8()];
+    let ends_name = matches!(last, '?' | '!') && head.chars().next_back().is_some_and(is_word_char);
+    !(is_word_char(last) || matches!(last, ')' | ']' | '}' | '"' | ';') || ends_name)
 }
 
 /// True when the word `word` is a name Ruby reads as a method call: one

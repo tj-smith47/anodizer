@@ -156,15 +156,17 @@ pub(super) const CASK_DSL_WORDS: &[&str] = &[
 ];
 
 /// Keywords after which a `{` opens a hash, and a `%`, `/` or `<<`
-/// written straight against them opens a literal (`if%w[a]`).
+/// written straight against them opens a literal (`if%w[a]`). `class` is
+/// left out: `class << self` opens no heredoc, and a literal after it is a
+/// syntax error.
 pub(super) const HASH_AFTER: &[&str] = &[
-    "and", "case", "else", "elsif", "if", "in", "not", "or", "return", "then", "unless", "until",
-    "when", "while", "yield",
+    "and", "begin", "break", "case", "do", "else", "elsif", "ensure", "for", "if", "in", "module",
+    "next", "not", "or", "rescue", "return", "then", "unless", "until", "when", "while", "yield",
 ];
 
 /// Whether the keyword `word` leaves Ruby where an operand must stand, so
-/// a `%` after it opens a literal whatever delimits it (`if% a `). `not`
-/// and `yield` read like a method call.
+/// a `%` after it opens a literal whatever delimits it (`if% a `, `do% a
+/// `). `not` and `yield` read like a method call.
 pub(super) fn leaves_operand(word: &str) -> bool {
     HASH_AFTER.contains(&word) && !matches!(word, "not" | "yield")
 }

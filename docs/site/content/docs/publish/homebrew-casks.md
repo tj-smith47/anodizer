@@ -261,13 +261,15 @@ into the following lines until it closes:
   that whitespace only separates the words of a list (`%w`, `%W`, `%i`, `%I`),
   so a list delimited by it never closes. A bare `%` where an operand must
   stand (with nothing before it on its statement but an operator, or after a
-  label `a:`, the `:` of a ternary or a keyword other than `not` and `yield`,
-  as in `if% a `) also takes a space, a tab, `=` or the end of the line. A
-  literal delimited by the end of its line holds the next line, and the line
-  after that too while the held line ends in an odd run of `\`; the statement
-  reads on past it (`x = [%` then `text` then `]`). A `%r` closed that way
-  takes the letters that start the line after as its options (`x = %r` then
-  `ab` then `ix`), so that line is kept as written.
+  label `a:`, the `:` of a ternary or a keyword that takes an operand (`and`,
+  `begin`, `break`, `case`, `do`, `else`, `elsif`, `ensure`, `for`, `if`,
+  `in`, `module`, `next`, `or`, `rescue`, `return`, `then`, `unless`, `until`,
+  `when`, `while`), as in `if% a `) also takes a space, a tab, `=` or the end
+  of the line. A literal delimited by the end of its line holds the next line,
+  and the line after that too while the held line ends in an odd run of `\`;
+  the statement reads on past it (`x = [%` then `text` then `]`). A `%r`
+  closed that way takes the letters that start the line after as its options
+  (`x = %r` then `ab` then `ix`), so that line is kept as written.
 - A `?x` character literal, such as `?#`, `?"` or `?'`, unless a letter, digit
   or `_` is followed by a word character (`?ab`), or a quote is after a word
   that may be a local (`x ?"a"`).
