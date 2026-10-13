@@ -7,7 +7,7 @@
 //! * **Required default**: `false` — a failed bump PR is recoverable by
 //!   hand and must not abort the release.
 //! * **Rollback scope**: PR close (`pull_request:write`). Rollback closes
-//!   the PR(s) this run opened; a `direct_commit` bump is warn-only.
+//!   the PRs this run opened; a `direct_commit` bump is warn-only.
 //!
 //! Evidence: one `HomebrewCoreTargetSnapshot` per bumped formula — the
 //! upstream, head owner, branch, and PR URL — so `anodizer tag rollback`

@@ -3,7 +3,7 @@
 //! Pure-CLI helper module: holds the static map from each installer
 //! [`super::StageId`] to the list of tool binaries it depends on, plus
 //! the [`filter_available_with_probe`] function that drops any
-//! installer stage whose backing tool(s) are not reachable on `PATH`.
+//! installer stage whose backing tools are not reachable on `PATH`.
 //!
 //! The availability question is answered by
 //! [`anodizer_core::tool_detect::on_path`] — a pure `PATH` lookup with no
@@ -32,7 +32,7 @@ use anodizer_core::tool_detect::on_path;
 
 /// Result of an installer-tool availability sweep.
 ///
-/// `available` carries the stages whose backing tool(s) are reachable
+/// `available` carries the stages whose backing tools are reachable
 /// on `PATH`; `skipped` carries the (stage, missing-tool-name) pairs
 /// the harness will surface to stderr so the operator can install the
 /// missing tool.

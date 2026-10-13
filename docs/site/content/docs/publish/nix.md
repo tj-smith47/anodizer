@@ -132,7 +132,7 @@ The token can also be set via `repository.token` in the config.
 | `long_description` | string | | Expanded blurb for `meta.longDescription` — the multi-sentence text nixpkgs search and `nix-env -qa --description` show. Use a YAML block scalar for multi-line text. |
 | `homepage` | string | | Project homepage URL for `meta.homepage`. |
 | `changelog` | string | | URL for `meta.changelog` — links the release history into the derivation (e.g. the GitHub Releases page or a per-tag URL). |
-| `maintainers` | list of strings | | nixpkgs maintainer handles rendered as `meta.maintainers = with lib.maintainers; [ ... ];`. Use your registered nixpkgs handle(s), not full names. |
+| `maintainers` | list of strings | | nixpkgs maintainer handles rendered as `meta.maintainers = with lib.maintainers; [ ... ];`. Use your registered nixpkgs handles, not full names. |
 | `license` | string | Cargo SPDX | `lib.licenses` attribute (`mit`, `asl20`) or an SPDX id (`MIT`, `Apache-2.0`); SPDX is mapped to the nix attribute. Derived from `Cargo.toml [package].license` when omitted. Compound SPDX requires an explicit single attribute. |
 | `dependencies` | list | | Runtime dependencies as Nix package names. |
 | `formatter` | string | | Nix formatter to run on the generated file: `alejandra` or `nixfmt`. |

@@ -184,7 +184,7 @@ pub static VALID_BUILD_SKIPS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
 /// Validate that all skip values are in the allowed set.
 ///
 /// Returns `Ok(())` if all values are valid, or `Err` with a descriptive
-/// message listing the invalid value(s) and the full set of valid options.
+/// message listing the invalid values and the full set of valid options.
 pub fn validate_skip_values(skip: &[String], valid: &[&str]) -> Result<(), String> {
     let invalid: Vec<&str> = dedup_preserving_order(
         skip.iter()

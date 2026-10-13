@@ -31,7 +31,7 @@ pub struct ChangelogOpts {
     /// Output format; defaults to keep-a-changelog.
     pub format: ChangelogFormat,
     /// Apply the regenerated `[Unreleased]` to the configured `CHANGELOG.md`
-    /// file(s). Valid only with `--format keep-a-changelog`.
+    /// files. Valid only with `--format keep-a-changelog`.
     pub write: bool,
     /// Preview as a snapshot release (forwarded to the release-notes path).
     pub snapshot: bool,
@@ -352,7 +352,7 @@ fn resolve_single_track(
 }
 
 /// keep-a-changelog: refresh each selected crate's pending `[Unreleased]`
-/// section. Previews to stdout unless `write` writes the file(s) in place.
+/// section. Previews to stdout unless `write` writes the files in place.
 fn run_refresh(
     workspace_root: &Path,
     config: &Config,

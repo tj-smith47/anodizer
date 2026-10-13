@@ -122,8 +122,8 @@ pub(crate) struct RenderedTopCask {
     pub(crate) versioned_files: Vec<(String, String)>,
 }
 
-/// Render the Ruby cask a live publish would write for one `homebrew_casks:`
-/// entry, honoring `skip_upload` and the `if:` condition (evaluated without
+/// Render the Ruby cask a live publish would write for the `homebrew_casks:`
+/// entry at `index`, honoring `skip_upload` and the `if:` condition (evaluated without
 /// printing; the publish loop reports the skip), and the macOS-artifact
 /// applicability check (no darwin artifact in scope ⇒ not applicable).
 ///
@@ -136,13 +136,14 @@ pub(crate) struct RenderedTopCask {
 /// live push path and the offline schema validator share this one render.
 pub(crate) fn render_top_level_cask_entry(
     ctx: &Context,
+    index: usize,
     cask_cfg: &HomebrewCaskConfig,
     log: &StageLogger,
 ) -> Result<Option<RenderedTopCask>> {
     let project_name = &ctx.config.project_name;
     let cask_name = super::cask::cask_name_for(cask_cfg.name.as_deref().unwrap_or(project_name));
 
-    if top_cask_skip_gates_trip(ctx, cask_cfg, &cask_name, log, false)? {
+    if top_cask_skip_gates_trip(ctx, index, cask_cfg, &cask_name, log, false)? {
         return Ok(None);
     }
     render_top_level_cask_inner(ctx, cask_cfg, &cask_name, log)
@@ -156,12 +157,19 @@ pub(crate) fn render_top_level_cask_entry(
 /// per command in every mode.
 fn top_cask_skip_gates_trip(
     ctx: &Context,
+    index: usize,
     cask_cfg: &HomebrewCaskConfig,
     cask_name: &str,
     log: &StageLogger,
     report_skip: bool,
 ) -> Result<bool> {
-    let warn_log = ctx.claim_render_log(&format!("homebrew_casks '{cask_name}' skip_upload"), log);
+    let warn_log = ctx.claim_render_log(
+        &format!(
+            "{} skip_upload",
+            super::cask_scope::top_level_cask_render_key(index)
+        ),
+        log,
+    );
     if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, &warn_log, None)? {
         if report_skip {
             log.status(&crate::util::skip_upload_line(&format!(
@@ -496,7 +504,7 @@ pub(crate) fn render_top_level_homebrew_casks(
     for (index, cask_cfg) in entries.iter().enumerate() {
         let render_log =
             ctx.claim_render_log(&super::cask_scope::top_level_cask_render_key(index), log);
-        let Some(rendered) = render_top_level_cask_entry(ctx, cask_cfg, &render_log)? else {
+        let Some(rendered) = render_top_level_cask_entry(ctx, index, cask_cfg, &render_log)? else {
             continue;
         };
         out.push(rendered.content);
@@ -534,7 +542,7 @@ pub fn publish_top_level_homebrew_casks(
             super::cask::cask_name_for(cask_cfg.name.as_deref().unwrap_or(project_name));
         let version = ctx.version();
 
-        if top_cask_skip_gates_trip(ctx, cask_cfg, &cask_name, log, true)? {
+        if top_cask_skip_gates_trip(ctx, index, cask_cfg, &cask_name, log, true)? {
             continue;
         }
 

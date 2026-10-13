@@ -385,7 +385,7 @@ pub(crate) fn validate_crate_scoped<T: Default>(
 
 /// A publisher's self-contained artifact-schema validator.
 ///
-/// Each implementation renders the manifest(s) the publisher would emit for
+/// Each implementation renders the manifests the publisher would emit for
 /// every in-scope crate — in-memory, with no side effects — and validates each
 /// against its vendored registry schema, returning a [`SchemaFinding`] per
 /// violation. `Ok(vec![])` means every rendered artifact conforms.
@@ -394,7 +394,7 @@ pub(crate) trait PublisherSchemaValidator: Send + Sync {
     /// Stable registry id of this publisher, e.g. `winget`.
     fn publisher(&self) -> &'static str;
 
-    /// Render this publisher's configured artifact(s) for every in-scope crate
+    /// Render this publisher's configured artifacts for every in-scope crate
     /// and validate them against the vendored schema. `Ok(vec![])` means pass.
     ///
     /// `resolve_tag` supplies each crate's release tag so a per-crate render

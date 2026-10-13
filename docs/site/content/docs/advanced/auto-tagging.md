@@ -28,7 +28,7 @@ Reaching the remote is always an explicit opt-in:
   the tag** (`git push --atomic`) — branch HEAD and tag arrive together or not at
   all, so this mode can never leave an orphan tag (a remote tag whose bump
   commit is absent from the remote branch).
-- **`--push-tags-only`** pushes the tag(s) but *not* the bump commit — the
+- **`--push-tags-only`** pushes the tags but *not* the bump commit — the
   deferred-branch CI pattern (see the table). This is the one mode that
   deliberately creates a remote tag ahead of its branch, so the branch must be
   fast-forwarded onto the bump commit after publish succeeds.
@@ -36,8 +36,8 @@ Reaching the remote is always an explicit opt-in:
 | Flag | Effect |
 |------|--------|
 | `--push` | Push the bump commit (branch HEAD) atomically with the tag |
-| `--no-push` | Push nothing — the explicit, redundant form of the default (the tag(s) and bump commit stay local) |
-| `--push-tags-only` | Push the tag(s) but not the bump commit — the deferred-branch CI pattern: the pipeline is triggered by the tag, and the branch is fast-forwarded onto the bump commit only after publish succeeds. The branch **must** be advanced separately or the tag permanently references a commit missing from every branch |
+| `--no-push` | Push nothing — the explicit, redundant form of the default (the tags and bump commit stay local) |
+| `--push-tags-only` | Push the tags but not the bump commit — the deferred-branch CI pattern: the pipeline is triggered by the tag, and the branch is fast-forwarded onto the bump commit only after publish succeeds. The branch **must** be advanced separately or the tag permanently references a commit missing from every branch |
 | `--push-remote <name>` | Push to `<name>` instead of `origin` |
 | `--push-dry-run` | Create the tag + bump commit locally, but only **print** the `git push` commands `--push` would run instead of executing them |
 | `--changelog` | Refresh `CHANGELOG.md` as part of this tag — opt-in; requires a `changelog:` config block |
@@ -377,7 +377,7 @@ back to `tag.initial_version` when the manifest carries no literal version.
 
 **Push behavior is uniform across modes.** Every dispatch shape — single,
 lockstep, `--crate`, and per-crate auto-dispatch — is fully **local** by
-default: a bare `anodizer tag` creates the tag(s) and bump commit in your clone
+default: a bare `anodizer tag` creates the tags and bump commit in your clone
 and pushes nothing. Pass `--push` (or set `tag.push: true`) to push the bump
 commit and every tag atomically, or `--push-tags-only` for the deferred-branch
 CI pattern. Use `--push-remote <name>` to target a remote other than `origin`.
@@ -512,7 +512,7 @@ left with a tag pointing at a bumped-but-broken commit. The reverse direction
 of `anodizer tag` is `anodizer tag rollback`:
 
 ```bash
-anodizer tag rollback "$GITHUB_SHA"       # delete tag(s) at SHA + revert the bump
+anodizer tag rollback "$GITHUB_SHA"       # delete tags at SHA + revert the bump
 anodizer tag rollback --dry-run HEAD       # preview without mutation
 ```
 

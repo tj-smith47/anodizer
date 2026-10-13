@@ -1,4 +1,4 @@
-//! SchemaStore publisher: registers a tool's JSON Schema(s) on
+//! SchemaStore publisher: registers a tool's JSON Schemas on
 //! [SchemaStore](https://www.schemastore.org/) via a pull request against a
 //! fork of `SchemaStore/schemastore`, plus the pure helpers (slug, description
 //! validation, catalog-entry construction, JSON vendor formatting) it builds on.
@@ -138,7 +138,7 @@ fn run_publish(ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
 /// Roll back a SchemaStore publish given its evidence.
 ///
 /// Delegates to [`rollback::rollback_publish`], which closes the registration
-/// PR(s) [`run_publish`] opened against `SchemaStore/schemastore` (best-effort,
+/// PRs [`run_publish`] opened against `SchemaStore/schemastore` (best-effort,
 /// mirroring krew's PR-close rollback).
 fn rollback_publish(ctx: &mut Context, evidence: &PublishEvidence) -> anyhow::Result<()> {
     rollback::rollback_publish(ctx, evidence)

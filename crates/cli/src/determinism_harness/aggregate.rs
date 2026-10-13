@@ -17,7 +17,7 @@ impl Harness {
         None
     }
 
-    /// Parse the run's `artifacts.json` manifest(s) into the set of produced
+    /// Parse the run's `artifacts.json` manifests into the set of produced
     /// member basenames. This is the authoritative "what did we produce"
     /// list, so any dist file whose basename appears here is a tracked
     /// primary regardless of its extension (covers `template_files` /
@@ -47,7 +47,7 @@ impl Harness {
         out
     }
 
-    /// Parse the run's `artifacts.json` manifest(s) into the set of basenames
+    /// Parse the run's `artifacts.json` manifests into the set of basenames
     /// flagged as combined checksums files via the `combined = "true"` marker.
     /// This is the authoritative recognizer for the combined-checksums
     /// aggregate — it catches an operator-renamed file (`SHA512SUMS`) that the

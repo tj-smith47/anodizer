@@ -372,7 +372,7 @@ pub struct Config {
     /// skipped. The `mcp:` publisher block.
     #[serde(default)]
     pub mcp: McpConfig,
-    /// SchemaStore publisher. Registers the project's JSON Schema(s) on
+    /// SchemaStore publisher. Registers the project's JSON Schemas on
     /// SchemaStore at release time. When `schemas` is empty (the default),
     /// the publisher is skipped. The `schemastore:` publisher block.
     #[serde(default)]

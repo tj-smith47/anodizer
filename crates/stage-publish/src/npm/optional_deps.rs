@@ -264,7 +264,7 @@ fn universal_replace_retires_darwin_pair(
 
 /// The npm platform identities (`platform_suffix` values, e.g.
 /// `linux-x64-glibc`) that a completeness gate REQUIRES an artifact for, each
-/// mapped to the source target triple(s) it was derived from (so an error
+/// mapped to the source target triples it was derived from (so an error
 /// message can point the user at the exact `targets:` self-service value).
 ///
 /// Derived from the crate's CONFIGURED build targets — not from whatever

@@ -28,7 +28,7 @@ pub struct ChocolateyConfig {
     pub owners: Option<String>,
     /// Package title (default: project name).
     pub title: Option<String>,
-    /// Package author(s) displayed in the Chocolatey gallery.
+    /// Package authors displayed in the Chocolatey gallery.
     pub authors: Option<String>,
     /// Project homepage URL.
     pub project_url: Option<String>,

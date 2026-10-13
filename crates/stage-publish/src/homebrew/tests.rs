@@ -3497,10 +3497,15 @@ fn depends_on_macos_overrides_the_custom_block_scan() {
         (None, None, true, flat_top_level),
         (None, Some(false), false, flat_in_on_macos),
         (None, Some(true), true, flat_top_level),
-        // The scan reads `on_linux` inside a caveat string as a Linux side.
-        (Some("caveats \"on_linux\""), None, false, flat_in_on_macos),
+        // The scan reads `on_linux` on a heredoc body line as a Linux side.
         (
-            Some("caveats \"on_linux\""),
+            Some("caveats <<~EOS\n  on_linux\nEOS"),
+            None,
+            false,
+            flat_in_on_macos,
+        ),
+        (
+            Some("caveats <<~EOS\n  on_linux\nEOS"),
             Some(true),
             true,
             flat_top_level,
@@ -3560,239 +3565,6 @@ fn depends_on_macos_overrides_the_custom_block_scan() {
     );
 }
 
-/// What `custom_block_os_facts` reads from a `custom_block`, case by case.
-/// Comment lines are ignored. A Linux side holds when its word appears as
-/// a whole word on any other line, strings and heredoc bodies included. An
-/// OS dependency holds when a statement that opens with `depends_on`, read
-/// across its continuation lines with trailing comments cut, names an OS
-/// key or symbol. A wrong verdict renders a cask Homebrew refuses, so the
-/// over-matches below are the cases `depends_on_macos: true` exists for and
-/// the misses are the cases for `depends_on_macos: false`.
-#[test]
-fn custom_block_os_facts_reads_whole_words_anywhere() {
-    use super::cask::{CustomBlockOsFacts, custom_block_os_facts};
-    let facts = |other_os_block: bool, os_dependency: bool| CustomBlockOsFacts {
-        other_os_block,
-        os_dependency,
-    };
-    let cases: &[(&str, &str, CustomBlockOsFacts)] = &[
-        ("empty", "", facts(false, false)),
-        (
-            "top-level on_linux",
-            "on_linux do\n  binary \"x\"\nend",
-            facts(true, false),
-        ),
-        (
-            "top-level on_system",
-            "on_system :linux do\nend",
-            facts(true, false),
-        ),
-        ("app_image", "app_image \"X.AppImage\"", facts(true, false)),
-        (
-            "on_linux nested in on_macos",
-            "on_macos do\n  on_linux do\n  end\nend",
-            facts(true, false),
-        ),
-        (
-            "depends_on macos: nested in on_macos",
-            "on_macos do\n  depends_on macos: \">= :sonoma\"\nend",
-            facts(false, true),
-        ),
-        (
-            "depends_on after ; in a one-line block",
-            "on_macos do; depends_on macos: :sonoma; end",
-            facts(false, true),
-        ),
-        (
-            "depends_on spread over several lines",
-            "depends_on(\n  macos: \">= :big_sur\"\n)",
-            facts(false, true),
-        ),
-        (
-            "depends_on macos: with a symbol in its value",
-            "depends_on macos: \">= :big_sur\"",
-            facts(false, true),
-        ),
-        (
-            "an OS name in a comment after a depends_on without one",
-            "depends_on formula: \"jq\" # needs :macos 13",
-            facts(false, false),
-        ),
-        (
-            "an OS name in a comment on the next line",
-            "depends_on formula: \"jq\"\n# needs :macos 13",
-            facts(false, false),
-        ),
-        (
-            "an OS name in the statement after the depends_on",
-            "depends_on formula: \"jq\"; caveats \":macos\"",
-            facts(false, false),
-        ),
-        (
-            "a whole-line comment naming an OS dependency",
-            "  # depends_on macos: \">= :ventura\"",
-            facts(false, false),
-        ),
-        (
-            "a whole-line comment naming a Linux side",
-            "# on_linux do\n#   binary \"x\"\n# end",
-            facts(false, false),
-        ),
-        (
-            "depends_on inside a string",
-            "caveats \"this depends_on macos: newer\"",
-            facts(false, false),
-        ),
-        (
-            "a ; inside a string starts no statement",
-            "caveats \"a; depends_on macos: :ventura\"",
-            facts(false, false),
-        ),
-        (
-            "a ) inside a string does not close the call",
-            "depends_on(formula: \"a)b\",\n  macos: \">= :ventura\")",
-            facts(false, true),
-        ),
-        (
-            "a trailing comma continues the statement",
-            "depends_on arch: :arm64,\n  macos: \">= :ventura\"",
-            facts(false, true),
-        ),
-        (
-            "a comment line inside a continued statement",
-            "depends_on arch: :arm64,\n  # newer systems only\n  macos: :ventura",
-            facts(false, true),
-        ),
-        (
-            "a trailing backslash continues the statement",
-            "depends_on arch: :arm64 \\\n  , macos: :ventura",
-            facts(false, true),
-        ),
-        (
-            "a trailing comment is cut before the comma is read",
-            "depends_on arch: :arm64, # :macos below\n  formula: \"x\"",
-            facts(false, false),
-        ),
-        (
-            "depends_on as the last token of a line",
-            "x = depends_on\nmacos: :ventura",
-            facts(false, false),
-        ),
-        (
-            "a bare depends_on ends its statement",
-            "depends_on\nmacos: :ventura",
-            facts(false, false),
-        ),
-        (
-            "a second ;-statement opens with depends_on",
-            "depends_on formula: \"x\"; depends_on macos: :ventura",
-            facts(false, true),
-        ),
-        (
-            "an OS key on a later line of a depends_on( call",
-            "depends_on(\n  formula: \"jq\",\n  linux: :any\n)",
-            facts(false, true),
-        ),
-        (
-            "a constant path is not a symbol",
-            "depends_on formula: Foo::macos",
-            facts(false, false),
-        ),
-        (
-            "maximum_macos: contains macos:",
-            "depends_on maximum_macos: :sonoma",
-            facts(false, true),
-        ),
-        ("bare :macos", "depends_on :macos", facts(false, true)),
-        ("linux: hash", "depends_on linux: :any", facts(false, true)),
-        (
-            "a depends_on without an OS",
-            "depends_on formula: \"x\"",
-            facts(false, false),
-        ),
-        (
-            "an OS name without a depends_on",
-            "caveats \":macos\"",
-            facts(false, false),
-        ),
-        (
-            "an apostrophe in a %q string, then on_linux",
-            "caveats %q(Don't forget)\non_linux do\nend",
-            facts(true, false),
-        ),
-        (
-            "a << shift, then on_linux",
-            "m = 1<<FLAGS\non_linux do\nend",
-            facts(true, false),
-        ),
-        (
-            "a quoted heredoc tag with a dash, then on_linux",
-            "caveats <<~'END-TEXT'\n  text\nEND-TEXT\non_linux do\nend",
-            facts(true, false),
-        ),
-        (
-            "on_linux after a string with a ; inside it",
-            "caveats \"a; on_linux\"; on_linux do\nend",
-            facts(true, false),
-        ),
-        (
-            "on_linux behind a receiver",
-            "self.on_linux do\nend",
-            facts(true, false),
-        ),
-        (
-            "on_linux inside parentheses",
-            "(on_linux do\nend)",
-            facts(true, false),
-        ),
-        (
-            "on_linux nested on one line",
-            "on_arm do on_linux do binary \"x\" end end",
-            facts(true, false),
-        ),
-        // Over-matches: no Linux side in Ruby, so the rendered cask loads on
-        // macOS and fails on Linux until `depends_on_macos: true` is set.
-        (
-            "on_linux inside a %w[] list",
-            "%w[\n on_linux\n]",
-            facts(true, false),
-        ),
-        (
-            "on_linux on a heredoc body line",
-            "caveats <<~EOS\n  on_linux\nEOS\n",
-            facts(true, false),
-        ),
-        (
-            "an OS name inside a string",
-            "depends_on cask: \":macos\"",
-            facts(false, true),
-        ),
-        (
-            "on_linux in a string and in a comment",
-            "caveats \"on_linux\"\n# on_linux",
-            facts(true, false),
-        ),
-        (
-            "a longer word holding on_linux or depends_on",
-            "end_foo\non_linux_helper\nmy_on_system\ndepends_on_x :macos\n",
-            facts(false, false),
-        ),
-        (
-            "an on_linux built at runtime",
-            "send(:\"on_#{\"lin\"}ux\") do\n  url \"https://e.com/l.tar.gz\"\nend\n",
-            facts(false, false),
-        ),
-    ];
-    for (label, block, want) in cases {
-        assert_eq!(
-            custom_block_os_facts(Some(block)),
-            *want,
-            "{label}:\n{block}"
-        );
-    }
-    assert_eq!(custom_block_os_facts(None), facts(false, false));
-}
-
 /// A `universal_binaries` (`replace: true`) macOS artifact beside Linux
 /// per-arch artifacts renders as a flat `sha256`/`url` inside `on_macos`,
 /// with `on_linux` keeping its two arch blocks.
@@ -3822,7 +3594,7 @@ fn a_universal_macos_artifact_beside_linux_renders_flat_inside_on_macos() {
             &sha.repeat(64),
         ));
     }
-    let c = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+    let c = super::publish_top::render_top_level_cask_entry(&ctx, 0, &cask_cfg, &test_log())
         .expect("top-level cask render")
         .expect("top-level cask applicable")
         .content;
@@ -3860,7 +3632,7 @@ fn a_universal_artifact_beside_both_per_arch_ones_is_dropped_and_logged() {
         ));
     }
     let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
-    let c = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &log)
+    let c = super::publish_top::render_top_level_cask_entry(&ctx, 0, &cask_cfg, &log)
         .expect("top-level cask render")
         .expect("top-level cask applicable")
         .content;
@@ -3911,7 +3683,7 @@ fn a_universal_artifact_fills_the_architecture_no_per_arch_build_covers() {
         ctx.artifacts.add(art);
     }
     let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
-    let c = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &log)
+    let c = super::publish_top::render_top_level_cask_entry(&ctx, 0, &cask_cfg, &log)
         .expect("top-level cask render")
         .expect("top-level cask applicable")
         .content;
@@ -3963,7 +3735,7 @@ fn a_universal_artifact_fills_a_slot_only_beside_its_own_build() {
             "cli",
         ));
         let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
-        let c = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &log)
+        let c = super::publish_top::render_top_level_cask_entry(&ctx, 0, &cask_cfg, &log)
             .expect("top-level cask render")
             .expect("top-level cask applicable")
             .content;
@@ -4046,7 +3818,7 @@ fn a_universal_artifact_without_a_matching_id_on_both_sides_fills_no_slot() {
             ctx.artifacts.add(art);
         }
         let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
-        let c = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &log)
+        let c = super::publish_top::render_top_level_cask_entry(&ctx, 0, &cask_cfg, &log)
             .expect("top-level cask render")
             .expect("top-level cask applicable")
             .content;
@@ -4107,11 +3879,11 @@ pub(super) enum RenderPass {
 }
 
 /// The passes each command runs, in pipeline order, and whether it runs
-/// them under `--dry-run`. A release runs all three; `--publish-only`,
-/// `publish` and `continue` have no emission validation; a dry run keeps
-/// every pass (the guard skips only a snapshot or nightly run, and the
-/// publish stage only a snapshot) and the publishers stop before their
-/// push; `--snapshot` skips the guard and the publish stage.
+/// them under `--dry-run`. A release and a `--merge` run all three;
+/// `--publish-only`, `publish` and `continue` have no emission validation;
+/// a dry run keeps every pass and the publishers stop before their push;
+/// `--snapshot` skips the guard and the publish stage, and `--nightly`
+/// skips the guard and the homebrew publisher (`skips_on_nightly`).
 pub(super) const COMMAND_PASSES: &[(&str, bool, &[RenderPass])] = &[
     (
         "release",
@@ -4141,7 +3913,17 @@ pub(super) const COMMAND_PASSES: &[(&str, bool, &[RenderPass])] = &[
         true,
         &[RenderPass::Guard, RenderPass::Publisher],
     ),
+    (
+        "release --merge",
+        false,
+        &[
+            RenderPass::Emission,
+            RenderPass::Guard,
+            RenderPass::Publisher,
+        ],
+    ),
     ("release --snapshot", false, &[RenderPass::Emission]),
+    ("release --nightly", false, &[RenderPass::Emission]),
 ];
 
 /// Run `pass` the way its stage does: the guard flips strict rendering on
@@ -4348,7 +4130,7 @@ fn a_universal_dmg_beside_per_arch_binaries_renders_the_per_arch_blocks() {
     )
     .expect("per-crate cask render")
     .content;
-    let top = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+    let top = super::publish_top::render_top_level_cask_entry(&ctx, 0, &cask_cfg, &test_log())
         .expect("top-level cask render")
         .expect("top-level cask applicable")
         .content;
@@ -4399,7 +4181,7 @@ fn the_universal_skip_line_quoted_in_the_cask_docs_is_what_the_renderer_logs() {
         ));
     }
     let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
-    super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &log)
+    super::publish_top::render_top_level_cask_entry(&ctx, 0, &cask_cfg, &log)
         .expect("top-level cask render")
         .expect("top-level cask applicable");
     let produced: Vec<String> = cap
@@ -6322,6 +6104,7 @@ fn cask_token_and_filename_use_the_normalised_name() {
     };
     let top = super::publish_top::render_top_level_cask_entry(
         &top_cask_ctx(&top_cfg),
+        0,
         &top_cfg,
         &test_log(),
     )
@@ -6363,6 +6146,7 @@ fn cask_display_name_keeps_the_raw_value() {
     };
     let top = super::publish_top::render_top_level_cask_entry(
         &top_cask_ctx(&top_cfg),
+        0,
         &top_cfg,
         &test_log(),
     )
@@ -6454,7 +6238,7 @@ fn top_level_cask_string_fields_are_template_rendered() {
         "https://e.com/mytool-1.2.3-darwin-amd64.tar.gz",
         "sha_darwin_amd64",
     ));
-    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, 0, &cask_cfg, &test_log())
         .expect("top-level cask render")
         .expect("top-level cask applicable");
     let c = rendered.content;
@@ -6512,7 +6296,7 @@ fn top_level_cask_dual_darwin_arch_emits_per_arch_blocks() {
         "https://e.com/mytool-1.2.3-darwin-arm64.tar.gz",
         "sha_darwin_arm64",
     ));
-    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, 0, &cask_cfg, &test_log())
         .expect("top-level cask render")
         .expect("top-level cask applicable");
     let c = rendered.content;
@@ -6576,7 +6360,7 @@ fn top_level_cask_single_darwin_arch_keeps_flat_url() {
         "https://e.com/mytool-1.2.3-darwin-arm64.tar.gz",
         "sha_darwin_arm64",
     ));
-    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, 0, &cask_cfg, &test_log())
         .expect("top-level cask render")
         .expect("top-level cask applicable");
     let c = rendered.content;
@@ -6629,7 +6413,7 @@ fn top_level_cask_universal_replace_falls_back_to_flat_url() {
         "https://e.com/mytool-1.2.3-darwin-universal.tar.gz",
         "sha_darwin_universal",
     ));
-    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, 0, &cask_cfg, &test_log())
         .expect("top-level cask render")
         .expect("top-level cask applicable");
     let c = rendered.content;
@@ -6704,7 +6488,7 @@ fn top_level_cask_darwin_and_linux_coexist_with_deterministic_order() {
         "https://e.com/mytool-1.2.3-linux-arm64.tar.gz",
         "sha_linux_arm64",
     ));
-    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, 0, &cask_cfg, &test_log())
         .expect("top-level cask render")
         .expect("top-level cask applicable");
     let c = rendered.content;
@@ -6807,7 +6591,7 @@ fn top_level_cask_excludes_watchos_from_macos_block() {
         "https://e.com/mytool-1.2.3-watchos-arm64.tar.gz",
         "sha_watchos",
     ));
-    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, 0, &cask_cfg, &test_log())
         .expect("top-level cask render")
         .expect("top-level cask applicable");
     let c = rendered.content;
@@ -6869,7 +6653,7 @@ fn homebrew_top_level_cask_url_template_renders_the_target_variant() {
         ctx.template_vars_mut().set("Tag", "v1.2.3");
         ctx.template_vars_mut().set("Version", "1.2.3");
         ctx.artifacts.add(variant_archive(target, amd64_variant));
-        super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+        super::publish_top::render_top_level_cask_entry(&ctx, 0, &cask_cfg, &test_log())
             .expect("top-level cask render")
             .expect("cask applies")
             .content
@@ -8245,7 +8029,7 @@ fn every_ruby_example_in_the_cask_docs_is_what_the_renderer_produces() {
             ));
         }
         let rendered =
-            super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+            super::publish_top::render_top_level_cask_entry(&ctx, 0, &cask_cfg, &test_log())
                 .expect("top-level cask render")
                 .expect("top-level cask applicable")
                 .content;

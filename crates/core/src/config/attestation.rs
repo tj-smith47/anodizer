@@ -70,7 +70,7 @@ pub enum AttestationArtifactKind {
     Archive,
     /// Raw uploadable binaries (uploaded as bare release assets).
     Binary,
-    /// Checksum file(s) (`checksums.txt` and split sidecars).
+    /// Checksum files (`checksums.txt` and split sidecars).
     Checksum,
     /// Linux packages (`.deb` / `.rpm` / `.apk`) and source RPMs.
     Package,

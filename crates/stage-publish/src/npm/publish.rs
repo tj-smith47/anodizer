@@ -1,4 +1,4 @@
-//! NPM publish orchestration — assembles the package tarball(s) and invokes
+//! NPM publish orchestration — assembles the package tarballs and invokes
 //! `npm publish` with a per-run `.npmrc` that carries the auth token.
 //!
 //! Two modes (see [`anodizer_core::config::NpmMode`]):

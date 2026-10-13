@@ -5,7 +5,7 @@ weight = 13
 template = "docs.html"
 +++
 
-Anodizer registers and refreshes your tool's JSON schema(s) on [SchemaStore](https://www.schemastore.org/) at release time, opening a PR against your fork of `SchemaStore/schemastore`. Once merged, editors that consume SchemaStore (VS Code, JetBrains IDEs, Neovim, etc.) automatically offer validation and autocomplete for your tool's config files.
+Anodizer registers and refreshes your tool's JSON schemas on [SchemaStore](https://www.schemastore.org/) at release time, opening a PR against your fork of `SchemaStore/schemastore`. Once merged, editors that consume SchemaStore (VS Code, JetBrains IDEs, Neovim, etc.) automatically offer validation and autocomplete for your tool's config files.
 
 SchemaStore registration is always a PR with CI + human codeowner review — auto-merge is impossible. Anodizer opens (or refreshes) the PR; a SchemaStore maintainer merges it.
 

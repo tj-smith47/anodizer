@@ -63,7 +63,7 @@ pub(crate) struct TagOpts {
     pub push: bool,
     /// Do not push anything; the tag and the version-sync bump commit both stay local.
     pub no_push: bool,
-    /// Push the tag(s) but NOT the version-sync bump commit. The explicit
+    /// Push the tags but NOT the version-sync bump commit. The explicit
     /// opt-in for the deferred-branch CI pattern: the release pipeline pushes
     /// the tag to trigger publishing and fast-forwards the branch onto the
     /// bump commit only after publish succeeds, so a failed release advances
@@ -91,7 +91,7 @@ pub(crate) struct TagOpts {
     pub strict: bool,
 }
 
-/// Resolve whether this run pushes at all (the bump commit + tag(s),
+/// Resolve whether this run pushes at all (the bump commit + tags,
 /// atomically). A run either pushes branch and tags together or pushes
 /// nothing — a remote tag referencing an unpushed bump commit (an orphan
 /// tag) is not a representable outcome.

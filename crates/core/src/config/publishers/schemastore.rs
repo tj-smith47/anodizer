@@ -1,4 +1,4 @@
-//! `schemastore:` publisher config — registers a tool's JSON Schema(s) on
+//! `schemastore:` publisher config — registers a tool's JSON Schemas on
 //! SchemaStore. Field presence selects the mode: `url` ⇒ external (catalog
 //! entry only), `schema_file` ⇒ vendor (file copied into the SchemaStore repo).
 

@@ -153,7 +153,7 @@ PyPI only accepts PEP 440 versions, so the release's semver version is mapped â€
 The label is matched case-sensitively against the supported set, with both
 dotted (`-rc.1`) and suffix (`-rc1`) number forms accepted:
 
-| semver label(s) | PEP 440 segment |
+| semver labels | PEP 440 segment |
 |---|---|
 | `alpha`, `a` | `a` |
 | `beta`, `b` | `b` |

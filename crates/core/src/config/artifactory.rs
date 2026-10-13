@@ -45,14 +45,14 @@ pub struct ArtifactoryConfig {
     pub client_x509_cert: Option<String>,
     /// Path to client X.509 private key for mTLS authentication.
     pub client_x509_key: Option<String>,
-    /// Debian repository distribution(s) for `.deb` uploads, written into the
+    /// Debian repository distributions for `.deb` uploads, written into the
     /// Artifactory `;deb.distribution=` upload matrix param so apt can index
     /// the package. Defaults to `["stable"]` when unset. A multi-element list
     /// is emitted as Artifactory's comma-separated form
     /// (`deb.distribution=bookworm,bullseye`), publishing the same `.deb` into
     /// several distributions at once. Ignored for non-`.deb` artifacts.
     pub deb_distributions: Option<Vec<String>>,
-    /// Debian repository component(s) for `.deb` uploads, written into the
+    /// Debian repository components for `.deb` uploads, written into the
     /// `;deb.component=` matrix param. Defaults to `["main"]` when unset.
     /// Multiple components are emitted comma-separated. Ignored for
     /// non-`.deb` artifacts.

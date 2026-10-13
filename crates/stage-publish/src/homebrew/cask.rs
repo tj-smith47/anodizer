@@ -4,6 +4,7 @@ use anodizer_core::context::Context;
 use anodizer_core::template::ruby_escape_str;
 use anyhow::{Context as _, Result};
 
+use super::cask_custom_block::custom_block_os_facts;
 use super::formula::reindent;
 
 /// Column of the first argument of a top-level `url "…"` stanza, where its
@@ -112,7 +113,8 @@ pub struct CaskParams<'a> {
     /// depends_on directives (e.g. `cask: "other-app"`).
     pub depends_on: &'a [String],
     /// The `depends_on_macos:` override. `None` takes the verdict of
-    /// [`custom_block_os_facts`]; `Some(true)` renders `depends_on :macos`
+    /// [`custom_block_os_facts`](super::cask_custom_block::custom_block_os_facts);
+    /// `Some(true)` renders `depends_on :macos`
     /// with a flat download, `Some(false)` renders neither and places a flat
     /// download inside `on_macos`.
     pub depends_on_macos: Option<bool>,
@@ -602,185 +604,6 @@ fn render_platform_blocks(
         lines.push("  end".to_string());
     }
     lines.join("\n")
-}
-
-/// What a `custom_block` contributes to the `depends_on :macos` decision.
-#[derive(Default, Debug, PartialEq, Eq)]
-pub(super) struct CustomBlockOsFacts {
-    /// The word `on_linux`, `on_system` or the Linux-only `app_image`
-    /// appears on a line of the block that is not a comment: the cask has a
-    /// Linux side.
-    pub(super) other_os_block: bool,
-    /// A `depends_on` statement names an OS: the key `macos:`,
-    /// `maximum_macos:` or `linux:`, or the symbol `:macos` or `:linux`.
-    pub(super) os_dependency: bool,
-}
-
-/// Read a `custom_block` for the facts `Homebrew/OSDependsOn` and
-/// `Cask#supports_linux?` look at.
-///
-/// - A line whose first non-blank character is `#` is ignored.
-/// - A Linux side holds when `on_linux`, `on_system` or `app_image` appears
-///   as a whole word, so a receiver (`self.on_linux do`), a parenthesis or
-///   a one-line nesting still counts.
-/// - A `depends_on` statement starts where `depends_on` is the first word
-///   of a line or of a `;`-separated statement. It continues onto the next
-///   line while the current one ends with `,`, `(` or `\`, or opens more
-///   `(` than it closes, counting only parentheses and `;` outside `"…"`
-///   and `'…'` on that line. Each line is cut at a `#` outside quotes.
-/// - An OS dependency holds when the joined statement names an OS key or
-///   symbol as a whole word.
-// A wrong verdict renders a cask Homebrew refuses. A missed Linux side or a
-// missed OS dependency adds `depends_on :macos`: beside a real `on_linux` a
-// Linux install stops at "This cask requires macOS.", and beside the
-// block's own `depends_on macos: :ventura` Homebrew 7.0.8 refuses to load
-// the cask on every system (`brew readall --os=all --arch=all`: "Calling
-// combining `depends_on :macos` with a versioned macOS dependency is
-// disabled! Use only the versioned macOS dependency instead."; two
-// `depends_on macos:` lines fail the same way with "`depends_on macos:`
-// cannot be combined with another macOS `depends_on`"). A Linux side or OS
-// dependency read where there is none leaves `depends_on :macos` out, and a
-// cask whose downloads all sit in `on_macos` then has a nil Linux `sha256`
-// and fails to load on Linux. Strings and heredoc bodies are read as code,
-// so a stanza word inside one is an over-match; a stanza built at runtime,
-// or a `depends_on` after a `do` on the same line, is a miss.
-// `depends_on_macos:` overrides the verdict for every case.
-pub(super) fn custom_block_os_facts(block: Option<&str>) -> CustomBlockOsFacts {
-    let Some(block) = block else {
-        return CustomBlockOsFacts::default();
-    };
-    let code: Vec<&str> = block
-        .lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
-        .collect();
-    let other_os_block = code
-        .iter()
-        .flat_map(|line| line.split(|c: char| !is_word_char(c)))
-        .any(|w| matches!(w, "on_linux" | "on_system" | "app_image"));
-    let os_dependency = depends_on_statements(&code)
-        .iter()
-        .any(|statement| names_an_os(statement));
-    CustomBlockOsFacts {
-        other_os_block,
-        os_dependency,
-    }
-}
-
-fn is_word_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_'
-}
-
-/// Every statement among `lines` that opens with the word `depends_on`,
-/// joined across its continuation lines, comments cut.
-fn depends_on_statements(lines: &[&str]) -> Vec<String> {
-    let mut found = Vec::new();
-    // The statement the previous line left open, and whether it is a
-    // `depends_on`.
-    let mut open: Option<(bool, String)> = None;
-    for line in lines {
-        let segments = code_segments(line);
-        let last = segments.len() - 1;
-        for (i, (segment, paren_balance)) in segments.into_iter().enumerate() {
-            let (is_depends_on, mut text) = match open.take() {
-                Some((is_depends_on, mut text)) => {
-                    text.push('\n');
-                    (is_depends_on, text)
-                }
-                None => (opens_with_depends_on(segment), String::new()),
-            };
-            text.push_str(segment);
-            let tail = segment.trim_end();
-            let continues = tail.ends_with([',', '(', '\\']) || paren_balance > 0;
-            if i == last && continues {
-                open = Some((is_depends_on, text));
-            } else if is_depends_on {
-                found.push(text);
-            }
-        }
-    }
-    if let Some((true, text)) = open {
-        found.push(text);
-    }
-    found
-}
-
-fn opens_with_depends_on(statement: &str) -> bool {
-    statement
-        .trim_start()
-        .strip_prefix("depends_on")
-        .is_some_and(|rest| !rest.starts_with(is_word_char))
-}
-
-/// The `;`-separated statements of one line, cut at its comment, each with
-/// its count of `(` minus `)`. Quotes, `;`, `#` and parentheses are read
-/// only outside `"…"` and `'…'`, and a quote never runs past its line.
-fn code_segments(line: &str) -> Vec<(&str, i32)> {
-    let mut segments = Vec::new();
-    let mut start = 0;
-    let mut balance = 0;
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-    let mut end = line.len();
-    for (at, c) in line.char_indices() {
-        if let Some(q) = quote {
-            if escaped {
-                escaped = false;
-            } else if c == '\\' {
-                escaped = true;
-            } else if c == q {
-                quote = None;
-            }
-            continue;
-        }
-        match c {
-            '"' | '\'' => quote = Some(c),
-            '(' => balance += 1,
-            ')' => balance -= 1,
-            ';' => {
-                segments.push((&line[start..at], balance));
-                start = at + 1;
-                balance = 0;
-            }
-            '#' => {
-                end = at;
-                break;
-            }
-            _ => {}
-        }
-    }
-    segments.push((&line[start..end], balance));
-    segments
-}
-
-/// True when `args` names an OS as a whole word: the key `macos:`,
-/// `maximum_macos:` or `linux:`, or the symbol `:macos` or `:linux`.
-fn names_an_os(args: &str) -> bool {
-    let bytes = args.as_bytes();
-    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    let mut start = 0;
-    while start < bytes.len() {
-        if !is_word(bytes[start]) {
-            start += 1;
-            continue;
-        }
-        let mut end = start;
-        while end < bytes.len() && is_word(bytes[end]) {
-            end += 1;
-        }
-        let word = &args[start..end];
-        let symbol = matches!(word, "macos" | "linux")
-            && start >= 1
-            && bytes[start - 1] == b':'
-            && (start < 2 || bytes[start - 2] != b':');
-        let key = matches!(word, "macos" | "maximum_macos" | "linux")
-            && bytes.get(end) == Some(&b':')
-            && bytes.get(end + 1) != Some(&b':');
-        if symbol || key {
-            return true;
-        }
-        start = end;
-    }
-    false
 }
 
 /// A `<name> do … end` stanza around a user-supplied Ruby body.

@@ -139,7 +139,7 @@ When `republish_in_moderation: true`, anodizer re-pushes a queued nupkg if the f
 | `package_source_url` | string | none | URL shown as the package source in the Chocolatey gallery |
 | `owners` | string | none | Chocolatey gallery package owner username |
 | `title` | string | package name | Display title in the gallery (supports templates) |
-| `authors` | string | crate name | Author name(s) shown in the gallery |
+| `authors` | string | crate name | Author names shown in the gallery |
 | `project_url` | string | GitHub repo URL | Project homepage URL |
 | `url_template` | string | release URL | Custom URL template for download URLs (overrides the release asset URL) |
 | `icon_url` | string | none | URL to the package icon image |

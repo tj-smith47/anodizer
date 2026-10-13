@@ -173,7 +173,7 @@ pub fn validate_on_failure_root_only(config: &Config) -> Result<(), String> {
 /// Validate that `release.on_failure` never selects the removed `rollback`
 /// policy, root-level or crate-level.
 ///
-/// Automatic rollback (delete the run's release tag(s), revert the
+/// Automatic rollback (delete the run's release tags, revert the
 /// version-bump commit) was removed in favor of convergent reconcile:
 /// re-running `anodizer release` now converges on already-published state
 /// instead of needing to unwind it. `hold` is the only accepted policy.

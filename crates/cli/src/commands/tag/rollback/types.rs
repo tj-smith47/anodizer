@@ -1,5 +1,5 @@
 /// A published-state guard refusal: the rollback was declined BY DESIGN
-/// because destroying the tag(s) could only orphan live published state
+/// because destroying the tags could only orphan live published state
 /// (a one-way-door registry already holds the version). Distinct from a
 /// mechanical rollback failure (git error, unreachable network probe,
 /// unmappable config): a refusal is final protection with a known next
@@ -36,7 +36,7 @@ pub(super) fn refusal_next_step() -> String {
         .to_string()
 }
 
-/// Scope filter for which tag shape(s) to operate on.
+/// Scope filter for which tag shapes to operate on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     /// Both lockstep (`vX.Y.Z`) and per-crate (`<crate>-vX.Y.Z`) tags.

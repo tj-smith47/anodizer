@@ -12,7 +12,7 @@
 //!
 //! At run time (`curl -fsSL .../install.sh | sh`) the script detects the host
 //! OS + architecture, maps it to the matching release archive, downloads and
-//! (by default) sha256-verifies it, extracts the binary(ies), and installs
+//! (by default) sha256-verifies it, extracts the binaries, and installs
 //! them — defaulting the release version to the latest GitHub release,
 //! overridable via a `VERSION=` environment variable.
 //!

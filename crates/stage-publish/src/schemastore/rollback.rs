@@ -1,4 +1,4 @@
-//! SchemaStore rollback: close the registration PR(s) [`super::publish::run_publish`]
+//! SchemaStore rollback: close the registration PRs [`super::publish::run_publish`]
 //! opened against `SchemaStore/schemastore`.
 //!
 //! Mirrors krew's PR-close rollback (`crate::krew::rollback`): decode the
@@ -52,7 +52,7 @@ fn dedup_targets(targets: Vec<SchemastoreTargetSnapshot>) -> Vec<SchemastoreTarg
     out
 }
 
-/// Roll back a SchemaStore publish by closing the registration PR(s) it opened.
+/// Roll back a SchemaStore publish by closing the registration PRs it opened.
 ///
 /// Best-effort: closing a PR does not undo a merge, so an already-merged PR
 /// (which never appears in the open-PR query) surfaces as an actionable warn

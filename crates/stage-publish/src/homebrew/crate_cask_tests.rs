@@ -522,6 +522,47 @@ fn every_gate_skip_line_prints_once_per_command() {
     }
 }
 
+/// Two `homebrew_casks:` entries that share a name each warn about their
+/// own unrecognized `skip_upload` value, once per command: the warning is
+/// keyed on the entry's index.
+#[test]
+fn two_top_level_casks_sharing_a_name_each_warn_once_per_command() {
+    const WARNING: &str = "unrecognized skip_upload value \"ture\" (expected \"true\", \"false\", or \"auto\"); treating as false";
+    for (command, dry_run, passes) in COMMAND_PASSES {
+        let (bare_url, bare) = make_bare_cask_tap("main");
+        let entry = |directory: &str| HomebrewCaskConfig {
+            repository: Some(tap_repository(&bare_url)),
+            directory: Some(directory.to_string()),
+            skip_upload: Some(StringOrBool::String("ture".to_string())),
+            ..cask("mycask")
+        };
+        let mut ctx = release_ctx(
+            Config {
+                project_name: "alpha".to_string(),
+                crates: vec![crate_with("alpha", PublishConfig::default())],
+                homebrew_casks: Some(vec![entry("Casks"), entry("CasksTwo")]),
+                ..Default::default()
+            },
+            &["alpha"],
+        );
+        ctx.options.dry_run = *dry_run;
+        let cap = LogCapture::new();
+        ctx.with_log_capture(cap.clone());
+        for pass in *passes {
+            run_render_pass(&mut ctx, *pass, &|ctx, log| {
+                super::publish_top_level_homebrew_casks(ctx, log).expect("casks run");
+            });
+        }
+        let warned = cap
+            .printed_messages(LogLevel::Warn)
+            .into_iter()
+            .filter(|m| m == WARNING)
+            .count();
+        assert_eq!(warned, 2, "{command}");
+        drop(bare);
+    }
+}
+
 /// A crate whose formula and cask each sit on their own tap, with the
 /// formula's gate set by `formula_gate` and the cask's by `cask_gate`.
 fn own_tap_ctx(

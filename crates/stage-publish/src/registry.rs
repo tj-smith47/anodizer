@@ -708,7 +708,7 @@ pub fn valid_publisher_names() -> Vec<String> {
 ///   (from [`anodizer_core::context::VALID_RELEASE_SKIPS`]), so `--skip=npm`
 ///   and `--skip=build` both pass while `--skip=nmp` fails.
 ///
-/// On any invalid value returns an `Err` string listing the offending value(s)
+/// On any invalid value returns an `Err` string listing the offending values
 /// and the valid options for that selector. Returns `Ok(())` when both
 /// selectors are clean (including when both are empty).
 pub fn validate_publisher_selection(allowlist: &[String], skip: &[String]) -> Result<(), String> {
@@ -748,7 +748,7 @@ pub fn validate_publisher_selection(allowlist: &[String], skip: &[String]) -> Re
 /// nothing at release time. Two failure classes are distinguished:
 ///
 /// - A token that is not even a known publisher (a typo) returns the same loud
-///   `invalid --publishers value(s)` error as [`validate_publisher_selection`],
+///   `invalid --publishers value` error as [`validate_publisher_selection`],
 ///   listing the valid names.
 /// - A token that *is* a known publisher but is *not configured* (no matching
 ///   publish block) returns `publisher '<name>' named in --publishers is not

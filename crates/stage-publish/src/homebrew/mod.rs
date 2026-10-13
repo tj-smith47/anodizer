@@ -3,6 +3,8 @@
 //! Module layout:
 //! - `formula` — Tera template + `FormulaOptions` + `generate_formula*`.
 //! - `cask` — cask Tera template + `CaskParams` + `generate_cask*`.
+//! - `cask_custom_block` — what a cask's `custom_block` says about its Linux
+//!   side and its OS dependencies.
 //! - `cask_scope` — artifact-scope resolution + `generate_cask_from_context`.
 //! - `commit_msg` — shared commit-message renderer (used by aur, scoop,
 //!   krew, nix, aur_source publishers as well).
@@ -14,6 +16,7 @@
 //!   `homebrew_casks:` config).
 
 mod cask;
+mod cask_custom_block;
 mod cask_scope;
 mod commit_msg;
 mod formula;

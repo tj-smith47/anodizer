@@ -313,9 +313,13 @@ pub fn is_test_only_cfg(line: &str) -> bool {
 }
 
 /// The production half of one Rust source file: everything before its inline
-/// test module. That module starts at the first top-level `#[cfg(…)]` that is
-/// test-only ([`is_test_only_cfg`]) and gates an item written out in place
-/// (`mod tests {` …). A `mod tests;` declaration does not start one — its body
+/// test module. That module starts at the run of attribute and comment lines
+/// above an item written out in place (`mod tests {` …) when one attribute of
+/// the run is a top-level test-only `#[cfg(…)]` ([`is_test_only_cfg`]). The
+/// attributes may share the item's line (`#[cfg(test)] mod tests {`), a
+/// `// …` or `/* … */` comment may follow the `{` or sit between attribute and
+/// item, and an attribute such as `#[cfg_attr(test, …)]` in the run is cut
+/// with the module. A `mod tests;` declaration does not start one — its body
 /// is a file the name rules already classify, and production items follow the
 /// declaration — and neither does a `cfg` nested inside another item. A file
 /// with no inline test module is returned whole.
@@ -324,6 +328,8 @@ pub fn is_test_only_cfg(line: &str) -> bool {
 /// # use anodizer_core::test_helpers::test_sources::production_half;
 /// let inline = "fn a() {}\n#[cfg(test)]\nmod tests {\n    fn b() {}\n}\n";
 /// assert_eq!(production_half(inline), "fn a() {}\n");
+/// let one_line = "fn a() {}\n#[cfg(test)] mod tests { // unit tests\n}\n";
+/// assert_eq!(production_half(one_line), "fn a() {}\n");
 /// let sibling = "#[cfg(test)]\nmod tests;\nfn a() {}\n";
 /// assert_eq!(production_half(sibling), sibling);
 /// let helper = "#[cfg(test)]\nfn h() {\n}\nfn a() {}\n";
@@ -331,34 +337,106 @@ pub fn is_test_only_cfg(line: &str) -> bool {
 /// ```
 pub fn production_half(text: &str) -> &str {
     let mut offset = 0usize;
-    let mut cfg_at: Option<usize> = None;
+    // Where the current run of attribute and comment lines began, and
+    // whether one of its attributes is a test-only `cfg`.
+    let mut run_start: Option<usize> = None;
+    let mut gated = false;
+    let mut in_block_comment = false;
     for line in text.split_inclusive('\n') {
-        if line.starts_with("#[cfg(") && is_test_only_cfg(line) {
-            cfg_at.get_or_insert(offset);
-        } else if let Some(start) = cfg_at
-            && !line.starts_with("#[")
-            && !line.starts_with("//")
-            && !line.trim().is_empty()
-        {
-            // The gated item itself: a module body opened in place is the
-            // inline test module. Any other gated item (a `mod tests;`
-            // declaration, a test-only helper `fn`, `impl` or `use` group) is
-            // one item among the production ones, and cutting there would
-            // hide every production item written after it.
-            if is_inline_module_header(line) {
-                return &text[..start];
-            }
-            cfg_at = None;
-        }
+        let at = offset;
         offset += line.len();
+        if in_block_comment {
+            in_block_comment = !line.contains("*/");
+            continue;
+        }
+        if line.starts_with("//") {
+            run_start.get_or_insert(at);
+            continue;
+        }
+        if let Some(body) = line.strip_prefix("/*") {
+            run_start.get_or_insert(at);
+            in_block_comment = !body.contains("*/");
+            continue;
+        }
+        if line.trim().is_empty() {
+            // A blank line inside a gated run still belongs to the gated
+            // item; one before any test `cfg` ends the run.
+            if !gated {
+                run_start = None;
+            }
+            continue;
+        }
+        let item = if line.starts_with("#[") {
+            run_start.get_or_insert(at);
+            let (attributes_gate, rest) = leading_attributes(line);
+            gated |= attributes_gate;
+            if rest.is_empty() {
+                continue;
+            }
+            rest
+        } else {
+            line
+        };
+        // The gated item itself: a module body opened in place is the inline
+        // test module. Any other gated item (a `mod tests;` declaration, a
+        // test-only helper `fn`, `impl` or `use` group) is one item among the
+        // production ones, and cutting there would hide every production item
+        // written after it.
+        if gated && is_inline_module_header(item) {
+            return &text[..run_start.unwrap_or(at)];
+        }
+        run_start = None;
+        gated = false;
     }
     text
 }
 
-/// `mod name {` or `pub(…) mod name {`: a module whose body is written in
-/// place.
+/// The attributes that open `line`, read off one at a time: whether any of
+/// them is a test-only `cfg` ([`is_test_only_cfg`]), and the code after the
+/// last of them with any trailing comment cut and whitespace trimmed (empty
+/// when the line holds attributes alone).
+fn leading_attributes(line: &str) -> (bool, &str) {
+    let mut gated = false;
+    let mut rest = line.trim_start();
+    while rest.starts_with("#[") {
+        let mut depth = 0usize;
+        let mut close = None;
+        for (index, ch) in rest.char_indices().skip(1) {
+            match ch {
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(close) = close else {
+            return (gated, "");
+        };
+        gated |= is_test_only_cfg(&rest[..=close]);
+        rest = rest[close + 1..].trim_start();
+    }
+    (gated, strip_trailing_comment(rest).trim())
+}
+
+/// `line` with a trailing `// …` or `/* … */` comment cut.
+fn strip_trailing_comment(line: &str) -> &str {
+    let cut = [line.find("//"), line.find("/*")]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(line.len());
+    &line[..cut]
+}
+
+/// `mod name {` or `pub(…) mod name {`, a trailing comment allowed: a module
+/// whose body is written in place.
 fn is_inline_module_header(line: &str) -> bool {
-    let item = line.trim();
+    let item = strip_trailing_comment(line).trim();
     let item = match item.strip_prefix("pub") {
         Some(rest) if rest.starts_with('(') => rest.split_once(')').map_or(rest, |(_, r)| r),
         Some(rest) => rest,
@@ -981,6 +1059,38 @@ unsafe impl Send for NotAFn {
         assert_eq!(production_half(src), src);
     }
 
+    /// The inline test module is found in each of the shapes it is written
+    /// in: attribute and header on one line, a comment after the `{`, a
+    /// block comment between attribute and header, and a `cfg_attr(test, …)`
+    /// attribute in the run, which is cut with the module.
+    #[test]
+    fn production_half_finds_every_shape_of_the_inline_test_module() {
+        let prod = "fn a() {}\n\n";
+        for module in [
+            "#[cfg(test)] mod tests {\n    fn b() {}\n}\n",
+            "#[cfg(test)]\nmod tests { // unit tests\n    fn b() {}\n}\n",
+            "#[cfg(test)]\nmod tests { /* unit tests */\n}\n",
+            "#[cfg(test)]\n/* the tests\n   for a */\nmod tests {\n}\n",
+            "#[cfg(test)]\n/* the tests for a */\nmod tests {\n}\n",
+            "#[cfg_attr(test, allow(dead_code))]\n#[cfg(test)]\nmod tests {\n}\n",
+            "#[cfg(test)]\n#[cfg_attr(test, allow(dead_code))]\nmod tests {\n}\n",
+            "#[allow(dead_code)] #[cfg(all(test, unix))] pub(crate) mod tests {\n}\n",
+            "#[cfg(test)]\n\nmod tests {\n}\n",
+        ] {
+            let src = format!("{prod}{module}");
+            assert_eq!(production_half(&src), prod, "{module}");
+        }
+        for not_a_module in [
+            "#[cfg_attr(test, allow(dead_code))]\nmod prod {\n}\n",
+            "#[cfg(test)] mod tests;\nfn later() {}\n",
+            "#[cfg(test)] fn helper() {}\nmod later {\n}\n",
+            "// #[cfg(test)]\nmod prod {\n}\n",
+        ] {
+            let src = format!("{prod}{not_a_module}");
+            assert_eq!(production_half(&src), src, "{not_a_module}");
+        }
+    }
+
     /// Neither a non-test `cfg` nor a test `cfg` nested inside another item
     /// starts the inline test module.
     #[test]
@@ -1015,9 +1125,9 @@ unsafe impl Send for NotAFn {
     }
 
     /// `production_half` stops at the first inline test module, so a
-    /// production item written after one is invisible to every pin that
-    /// walks the production half. Each production source keeps its inline
-    /// test modules at the end, after the last production item.
+    /// production item written after one is invisible to every structural
+    /// test that reads the production half. Each production source keeps
+    /// its inline test modules at the end, after the last production item.
     #[test]
     fn no_production_item_follows_an_inline_test_module() {
         const ITEM_STARTS: &[&str] = &[
@@ -1049,15 +1159,34 @@ unsafe impl Send for NotAFn {
             let text = std::fs::read_to_string(&source).expect("read source");
             let tail = &text[production_half(&text).len()..];
             let lines: Vec<&str> = tail.lines().collect();
+            let mut in_block_comment = false;
             for (index, line) in lines.iter().enumerate() {
-                if !ITEM_STARTS.iter().any(|start| line.starts_with(start)) {
+                if in_block_comment {
+                    in_block_comment = !line.contains("*/");
                     continue;
                 }
-                let gated = lines[..index]
-                    .iter()
-                    .rev()
-                    .take_while(|above| above.starts_with("#[") || above.starts_with("//"))
-                    .any(|above| is_test_only_cfg(above));
+                if let Some(body) = line.strip_prefix("/*") {
+                    in_block_comment = !body.contains("*/");
+                    continue;
+                }
+                let (same_line_gate, item) = if line.starts_with("#[") {
+                    leading_attributes(line)
+                } else {
+                    (false, *line)
+                };
+                if !ITEM_STARTS.iter().any(|start| item.starts_with(start)) {
+                    continue;
+                }
+                let gated = same_line_gate
+                    || lines[..index]
+                        .iter()
+                        .rev()
+                        .take_while(|above| {
+                            ["#[", "//", "/*", " *", "*/"]
+                                .iter()
+                                .any(|start| above.starts_with(start))
+                        })
+                        .any(|above| above.starts_with("#[") && leading_attributes(above).0);
                 if !gated {
                     stranded.push(format!("{path}: {line}"));
                 }

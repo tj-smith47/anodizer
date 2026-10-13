@@ -15,7 +15,7 @@
 //!
 //! [`resolve_nix_license_meta`] reconciles both: a value already valid as a
 //! nix attribute is preserved verbatim; a known SPDX id (or `OR`/`AND` list of
-//! known ids) is mapped to its nix attribute(s); anything unmappable — an
+//! known ids) is mapped to its nix attributes; anything unmappable — an
 //! unknown id or an unparseable compound expression — degrades to a verbatim
 //! quoted-string `meta.license` (always valid in Nix `meta`) rather than emit
 //! a bogus `lib.licenses.<id>` attr-path or abort the release.

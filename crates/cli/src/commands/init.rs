@@ -449,7 +449,7 @@ pub fn enroll_version_files(
     Ok(())
 }
 
-/// Collect the version string(s) to scan candidate files for, covering every
+/// Collect the version strings to scan candidate files for, covering every
 /// config mode: the shared `[workspace.package].version` (lockstep) plus each
 /// member's own literal `[package].version` (per-crate), and the single-crate
 /// root manifest as a fallback. De-duplicated; the engine matcher handles both

@@ -2,7 +2,7 @@
 //!
 //! A `.deb` is a Unix `ar` archive whose members are typically
 //! `debian-binary`, `control.tar.*`, and `data.tar.*`. The shipped
-//! executable(s) live inside `data.tar.{gz,xz,zst}`. This module parses the
+//! executables live inside `data.tar.{gz,xz,zst}`. This module parses the
 //! `ar` container (no external crate — the format is trivial), decompresses
 //! the data tarball with whichever codec it uses, and returns the largest ELF
 //! member as the binary to glibc-check (the common single-binary case).

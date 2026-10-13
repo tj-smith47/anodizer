@@ -356,7 +356,7 @@ fn entry_reads_vars(
 /// an arm could fetch the wrong-endian binary) and illumos (`uname -s` is
 /// `SunOS`, mapped to `solaris` only). Releasing such a target leaves its
 /// asset arm unreachable; a default-visible warning names the stranded
-/// target(s) so the release operator knows those hosts fall through to the
+/// targets so the release operator knows those hosts fall through to the
 /// unsupported-platform error.
 ///
 /// A `darwin-universal` build's asset is fanned out to the `darwin-amd64` /

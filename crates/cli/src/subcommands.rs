@@ -9,8 +9,8 @@ use std::path::PathBuf;
 /// Output format for `anodizer changelog`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum ChangelogFormat {
-    /// Regenerate the `## [Unreleased]` section(s) of the configured
-    /// `CHANGELOG.md` file(s) (the default). Previews to stdout; writes in
+    /// Regenerate the `## [Unreleased]` sections of the configured
+    /// `CHANGELOG.md` files (the default). Previews to stdout; writes in
     /// place with `--write`.
     #[default]
     #[value(name = "keep-a-changelog", alias = "kac")]

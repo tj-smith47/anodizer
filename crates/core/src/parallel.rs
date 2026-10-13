@@ -100,8 +100,9 @@ pub fn join_panic_to_err<T>(join_result: std::thread::Result<T>, label: &str) ->
 /// how many jobs in the batch succeeded before the failure and how many
 /// later jobs were never started. `nouns` names a job in that line as a
 /// `(singular, plural)` pair (`("object", "objects")`, `("binary",
-/// "binaries")`), so the count reads in plain words; a batch of one job has no siblings and
-/// gets the totals alone, and a single job gets no line at all.
+/// "binaries")`), so the count reads in plain words; a batch of one job
+/// has no siblings and gets the totals alone, and a single job gets no
+/// line at all.
 pub fn run_parallel_chunks<J, T, F>(
     jobs: &[J],
     parallelism: usize,

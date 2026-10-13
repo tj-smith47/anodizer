@@ -294,7 +294,7 @@ fn commit_files_to_tap(
 
 /// Submit (or record) the optional PR for the tap update. The PR title
 /// and body switch between formula-only and formula+cask phrasings to
-/// match the kind of file(s) that were committed.
+/// match the kind of files that were committed.
 #[allow(clippy::too_many_arguments)]
 fn submit_homebrew_pr(
     ctx: &mut Context,

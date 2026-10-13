@@ -169,7 +169,7 @@ impl ForgeHosts {
 }
 
 /// The refusal for a block whose `owner` / `name` the remote could not fill,
-/// naming the field(s) that are empty; `None` when both are set. Given the
+/// naming the fields that are empty; `None` when both are set. Given the
 /// host of an `origin` remote that is not this forge's, the sentence names
 /// that host and the `<forge>_urls.api` override that would make it this
 /// forge's.
