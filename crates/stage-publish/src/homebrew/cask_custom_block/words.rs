@@ -162,6 +162,13 @@ pub(super) const HASH_AFTER: &[&str] = &[
     "when", "while", "yield",
 ];
 
+/// Whether the keyword `word` leaves Ruby where an operand must stand, so
+/// a `%` after it opens a literal whatever delimits it (`if% a `). `not`
+/// and `yield` read like a method call.
+pub(super) fn leaves_operand(word: &str) -> bool {
+    HASH_AFTER.contains(&word) && !matches!(word, "not" | "yield")
+}
+
 /// Whether a `<<`, `%`, `?` or `/` after `word` opens a literal.
 pub(super) fn takes_operand(word: &str) -> bool {
     OPERAND_WORDS.contains(&word) || CASK_DSL_WORDS.contains(&word)
@@ -222,14 +229,23 @@ pub(super) fn number_continues(word: &str, c: char, next: Option<char>) -> bool 
 }
 
 /// The length of a `?x` character literal at the start of `text`, or
-/// `None` when the `?` is not one (`a ? b : c`, `?ab`).
-pub(super) fn char_literal_len(text: &[char]) -> Option<usize> {
+/// `None` when the `?` is not one (`a ? b : c`, `?ab`). `operand` is
+/// whether the `?` stands where an operand must, and not after a word that
+/// may be a local.
+pub(super) fn char_literal_len(text: &[char], operand: bool) -> Option<usize> {
     let c = *text.get(1).filter(|c| !c.is_whitespace())?;
     let len = if c == '\\' { 3 } else { 2 };
-    // A word character followed straight by another is no literal (`?ab`),
-    // and neither is a quote before a word (`?"a"`, a ternary before a
-    // string); `?#if` is a literal before a modifier.
-    if !matches!(c, '#' | '\\') && text.get(len).is_some_and(|&next| is_word_char(next)) {
+    // A letter, digit or `_` followed straight by a word character is no
+    // literal (`?ab`). Where an operand must stand any other character
+    // opens one (`?"if`); after a word that may be a local a quote before
+    // a word is read as a ternary before a string (`x ?"a"`), while `?#if`
+    // is still a literal before a modifier.
+    let blocked = if operand {
+        c.is_ascii_alphanumeric() || c == '_'
+    } else {
+        !matches!(c, '#' | '\\')
+    };
+    if blocked && text.get(len).is_some_and(|&next| is_word_char(next)) {
         return None;
     }
     Some(len.min(text.len()))

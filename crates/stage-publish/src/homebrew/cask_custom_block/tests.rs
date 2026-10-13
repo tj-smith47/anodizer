@@ -1464,20 +1464,147 @@ fn an_interpolation_binds_names_the_way_code_outside_a_literal_does() {
     }
 }
 
-/// Every operator assignment binds its target, `<<=`, `>>=`, `^=` and
-/// `**=` included, inside an interpolation and outside one.
+/// Every operator assignment binds its target wherever it stands: at the
+/// head of a statement, after another `=`, in an argument, in a modifier's
+/// condition and inside an interpolation. A target after `.` or with a
+/// sigil binds no local.
 #[test]
 fn every_operator_assignment_binds_its_target() {
-    for operator in ["<<=", ">>=", "^=", "**=", "+=", "||=", "&&="] {
-        assert_facts(&format!("a {operator} 1\na %(on_linux)"), true, false, None);
-        assert_facts(
-            &format!("\"#{{a {operator} 1}}\"\na %(on_linux)"),
-            true,
-            false,
-            None,
-        );
+    let operators = [
+        "||=", "&&=", "+=", "-=", "*=", "/=", "%=", "**=", "<<=", ">>=", "^=", "|=", "&=",
+    ];
+    for operator in operators {
+        for head in [
+            format!("b {operator} 1"),
+            format!("a = b {operator} 1"),
+            format!("f(b {operator} 1)"),
+            format!("x = 1 if (b {operator} 1)"),
+            format!("a, c = 1, 2 if b {operator} 1"),
+            format!("\"#{{b {operator} 1}}\""),
+            format!("\"#{{a = b {operator} 1}}\""),
+        ] {
+            assert_facts(&format!("{head}\nb %(on_linux)"), true, false, None);
+        }
+        for head in [
+            format!("x = y.b {operator} 1"),
+            format!("x = @b {operator} 1"),
+        ] {
+            assert_facts(&format!("{head}\nb %(on_linux)"), false, false, None);
+        }
     }
     assert_facts("a <= 1\na %(on_linux)", false, false, None);
+    assert_facts("x = a <= 1\na %(on_linux)", false, false, None);
+}
+
+/// Ruby reads `=begin` at the start of a line as a comment wherever the
+/// line starts in code, the code of a `#{…}` left open on the line before
+/// included, in a heredoc body or a string. The lines up to `=end` are
+/// comment, so the `}` and heredoc tag on them close nothing.
+#[test]
+fn a_begin_comment_inside_an_open_interpolation_is_a_comment() {
+    assert_facts(
+        "x = <<~E\n  #{\n=begin\n  }\nE\n=end\n  1}\nE\non_linux do\nend",
+        true,
+        false,
+        None,
+    );
+    assert_facts(
+        "x = <<~E\n  #{\n=begin\n  }\nE\n=end\n  1}\n  on_linux\nE",
+        false,
+        false,
+        None,
+    );
+    assert_facts("x = \"#{\n=begin\n}\"\n=end\n1}\"", false, false, None);
+    assert_facts(
+        "x = \"#{\n=begin\n}\"\n=end\n1}\"\non_linux do\nend",
+        true,
+        false,
+        None,
+    );
+    let edges = super::line_code_edges("x = \"#{\n=begin\n}\" \n=end\n1}\"\ny");
+    assert_eq!(
+        edges.iter().map(|e| e.starts_in_code).collect::<Vec<_>>(),
+        [true, false, false, false, false, true]
+    );
+    assert_eq!(
+        edges.iter().map(|e| e.trim_from).collect::<Vec<_>>(),
+        [None, None, None, None, Some(3), Some(0)]
+    );
+}
+
+/// Ruby binds the named groups of a regex only when it has no `#{…}`.
+#[test]
+fn a_regex_with_an_interpolation_binds_no_named_group() {
+    for head in ["/(?<v>#{1})/ =~ \"a\"", "/(?<v>.)#{}/ =~ \"a\""] {
+        assert_facts(&format!("{head}\nz = v /on_linux/"), false, false, None);
+    }
+    assert_facts("/(?<v>.)/ =~ \"a\"\nz = v /on_linux/ 1", true, false, None);
+}
+
+/// A `%` after a label, the `:` of a ternary or a keyword that leaves an
+/// operand opens a literal whatever delimits it, a `/` or `` ` `` after
+/// that `:` opens one too, and a `:` written against a method call that
+/// heads its statement or follows `.` or `&.` starts a symbol, as Ruby
+/// reads them.
+#[test]
+fn a_percent_after_a_label_or_keyword_and_a_symbol_after_a_head_call() {
+    for block in ["do1e5def:`% on_linux do\nend", "x = c ? 1 :?a\non_linux"] {
+        assert_facts(block, true, false, None);
+    }
+    for block in [
+        "%()if% \\on_linux ",
+        " y!w wa:% on_linux do\nend",
+        "\"a#{x}b\"in% =/a/?\\self.))on_linux ",
+        "f(a:% on_linux )",
+        "x = c ? 1 :% on_linux ",
+        "x = c ? 1 :%(on_linux)",
+        "x = c ? ?a:% on_linux ",
+        "x = c ? 1 :/on_linux/",
+        "x = c ? 1 :`on_linux`",
+        "x = nil\nx&.a:/&&1#<=>/a/url\\%q(a(b)c)on_linux BEGINdefcaveats",
+        "p foo:% on_linux ",
+    ] {
+        assert_facts(block, false, false, None);
+    }
+}
+
+/// A line that goes on with the expression of the line before it, after a
+/// `,` or an opening bracket, does not head a statement, so a `name:` at
+/// its start is a label; after a line that ended a statement, or after a
+/// `;` or a `#{`, the name heads one and takes no label.
+#[test]
+fn a_name_at_the_start_of_a_continued_expression_is_a_label() {
+    for block in [
+        "x = {\n  a:%w[on_linux],\n}",
+        "f(\n  a:%w[on_linux])",
+        "x = [\n  a:%w[on_linux]]",
+        "x = {\n  a:/on_linux/,\n}",
+        "f a,\n  b:%w[on_linux]",
+        "x = {\n  # c\n\n  a:%w[on_linux],\n}",
+    ] {
+        assert_facts(block, false, false, None);
+    }
+    for block in [
+        "x = 1\nfoo:`% on_linux do\nend",
+        "x = 1;foo:`% on_linux do\nend",
+        "x = \"#{foo:`% on_linux }\"",
+    ] {
+        assert_facts(block, true, false, None);
+    }
+}
+
+/// Where an operand must stand, a `?` opens a character literal before
+/// any character but a letter, digit or `_` followed by a word character,
+/// so `?"` before a keyword is a literal and the keyword a modifier.
+#[test]
+fn a_question_mark_where_an_operand_stands_opens_a_quote_literal() {
+    assert_facts("?\"if on_linux do\nend\n \"a#{x}b\" ", true, false, None);
+    assert_facts(
+        "?\"in#foo1.0defEOS:\"!%q(a(b)c)1.0==on_linux \nEOS",
+        false,
+        false,
+        None,
+    );
 }
 
 /// No local or parameter is spelled with a `?` or `!`, so a word ending in

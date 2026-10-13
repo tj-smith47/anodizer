@@ -20,6 +20,9 @@ pub(super) enum Frame {
         guessed: bool,
         /// The text of a regex, kept for its named captures.
         body: Option<String>,
+        /// A `#{…}` was read in it. Ruby binds the named captures of a
+        /// regex with no interpolation only.
+        interpolated: bool,
     },
     /// `#{…}` code, ended by the `}` that matches no `{` opened inside it,
     /// counted in `braces`.
@@ -43,6 +46,7 @@ pub(super) fn literal(
         line,
         guessed: false,
         body: None,
+        interpolated: false,
     }
 }
 

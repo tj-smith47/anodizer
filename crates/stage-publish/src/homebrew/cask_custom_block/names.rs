@@ -124,6 +124,24 @@ pub(super) fn assigned_names(code: &str) -> Vec<String> {
     }
 }
 
+/// The local an operator assignment (`b ||= 1`, `b <<= 1`) assigns, when
+/// `code` is the code before its `=`: the name written before the
+/// operator. A name after `.`, `&.` or `::`, or with a sigil, is a method
+/// or another kind of variable and binds no local.
+pub(super) fn operator_target(code: &str) -> Option<&str> {
+    let before = code
+        .trim_end_matches(['|', '&', '+', '-', '*', '/', '%', '<', '>', '^'])
+        .trim_end();
+    let start = before
+        .char_indices()
+        .rev()
+        .find(|&(_, c)| !is_word_char(c))
+        .map_or(0, |(at, c)| at + c.len_utf8());
+    let name = &before[start..];
+    let lead = before[..start].trim_end().chars().next_back();
+    (is_local_name(name) && !matches!(lead, Some('.' | ':' | '@' | '$'))).then_some(name)
+}
+
 /// Add the names of the assignment target `target` to `names`, reading a
 /// parenthesized group as a nested target. False when `target` is not one,
 /// or nests deeper than [`MAX_TARGET_DEPTH`] groups.

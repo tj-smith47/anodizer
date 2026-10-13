@@ -81,17 +81,21 @@ pub(super) enum UnreadReason {
 ///   repeated punctuation character; a typed one also by a space or the end
 ///   of the line, except a list (`%w`, `%W`, `%i`, `%I`), whose words
 ///   whitespace separates, so whitespace never closes it; and a bare `%`
-///   with nothing before it on its statement but an operator also by a
-///   space, a tab, `=` or the end of the line. A literal delimited by the
-///   end of its line holds the next line, and the one after while the held
-///   line ends in an odd run of `\`, and its statement reads on past it; a
-///   `%r` closed that way takes the letters that start the line after as
-///   its options (`%r`, `ab`, `ix`), so that line begins inside it;
-/// - a `?x` character literal (`?#`, `?"`, `?'`) unless a word character
-///   follows a word character (`?ab`) or a quote (`?"a"`);
+///   where an operand must stand (with nothing before it on its statement
+///   but an operator, or after a label `a:`, the `:` of a ternary or a
+///   keyword other than `not` and `yield`, as in `if% a `) also by a space,
+///   a tab, `=` or the end of the line. A literal delimited by the end of
+///   its line holds the next line, and the one after while the held line
+///   ends in an odd run of `\`, and its statement reads on past it; a `%r`
+///   closed that way takes the letters that start the line after as its
+///   options (`%r`, `ab`, `ix`), so that line begins inside it;
+/// - a `?x` character literal (`?#`, `?"`, `?'`) unless a letter, digit or
+///   `_` is followed by a word character (`?ab`), or a quote is after a
+///   word that may be a local (`x ?"a"`);
 /// - a `/…/` regex where an operand stands;
 /// - a `#` comment, which cuts the rest of the line, and an `=begin` …
-///   `=end` comment.
+///   `=end` comment, which opens on any line that starts in code, the code
+///   of a `#{…}` left open at the end of the line before included.
 ///
 /// The code inside `#{…}` is kept apart from the code around it, in every
 /// literal that interpolates: a `"…"` or `` `…` `` string, a `:"…"`
@@ -107,18 +111,20 @@ pub(super) enum UnreadReason {
 /// side, `"#{depends_on macos: :ventura}"` an OS dependency, and
 /// `'#{on_linux}'` neither.
 ///
-/// None of these opens after a `:` that makes a symbol (`:%`, `` :` ``), in
-/// a special global (`$"`, `$/`), or where it names a method: after `.`,
-/// `&.` or `::`, with or without a space, whatever the name looks like
-/// (`x.<<`, `x. %`, `a&.!~`), after `def` (`def /(other)`), and as the `?`
-/// or `!` of a method name (`then?"a"`). Written straight after a method
-/// name spelled as an operator, a `<<`, `%` or `/` is an operator and a `?`
-/// opens a character literal. Straight after a name Ruby reads as a method
-/// call, a `?` opens a character literal (`EOS!?"`, `foo?=`, `x&.def??"`,
-/// `foo.nil?=`). Ruby reads a name as a method call after `.`, `&.` or
-/// `::`, whatever it spells, and elsewhere unless it is a local variable,
-/// a parameter, a number, a variable with a sigil, or `self`, `nil`,
-/// `true`, `false`, `end`, `__FILE__`, `__LINE__` or `__ENCODING__`.
+/// None of these opens after a `:` that makes a symbol (`:%`, `` :` ``, and
+/// `` foo:` `` or `x.a:/`, since a method call that heads its statement or
+/// follows `.`, `&.` or `::` takes no label), in a special global (`$"`,
+/// `$/`), or where it names a method: after `.`, `&.` or `::`, with or
+/// without a space, whatever the name looks like (`x.<<`, `x. %`, `a&.!~`),
+/// after `def` (`def /(other)`), and as the `?` or `!` of a method name
+/// (`then?"a"`). Written straight after a method name spelled as an
+/// operator, a `<<`, `%` or `/` is an operator and a `?` opens a character
+/// literal. Straight after a name Ruby reads as a method call, a `?` opens
+/// a character literal (`EOS!?"`, `foo?=`, `x&.def??"`, `foo.nil?=`). Ruby
+/// reads a name as a method call after `.`, `&.` or `::`, whatever it
+/// spells, and elsewhere unless it is a local variable, a parameter, a
+/// number, a variable with a sigil, or `self`, `nil`, `true`, `false`,
+/// `end`, `__FILE__`, `__LINE__` or `__ENCODING__`.
 ///
 /// A `<<`, `%`, `?` or `/` that follows a value is a shift, a modulo, a
 /// ternary or a division and opens nothing. The code before it ends with a
@@ -131,10 +137,12 @@ pub(super) enum UnreadReason {
 ///   `def` (`def /(other)`);
 /// - an instance, class or global variable (`@args`, `@@all`, `$stdout`);
 /// - a local variable, which is a name assigned earlier in its scope:
-///   `name =`, `name ||=` and the other operator assignments (`==`, `=~`,
-///   `=>`, `!=`, `<=` and `>=` assign nothing, and neither does
-///   `obj.name =`), `a, b =`, `a, (b, c) =`, `(a, b) =`, `a, =`,
-///   `for a in`, `rescue => a`, a named group before `=~`
+///   `name =` (`==`, `=~`, `=>`, `!=`, `<=` and `>=` assign nothing, and
+///   neither does `obj.name =`), `name ||=` and the other operator
+///   assignments wherever they stand (`a = b ||= 1`, `f(b += 1)`,
+///   `x if (b ^= 1)`, and none whose target follows `.`, `&.` or `::` or
+///   has a sigil), `a, b =`, `a, (b, c) =`, `(a, b) =`, `a, =`, `for a in`,
+///   `rescue => a`, a named group before `=~` in a regex with no `#{…}`
 ///   (`/(?<a>\d+)/ =~ s`), a name in an `in` pattern (`in [a, 2]`,
 ///   `x in {k: a}`) and the target of a rightward `=>` (`2 => a`);
 /// - a parameter: of a block (`do |a, b; c|`, `{ |a| … }`, a list spread
@@ -149,24 +157,25 @@ pub(super) enum UnreadReason {
 /// parameters and the locals first assigned in it end at its `end` or `}`.
 /// `if`, `while`, `case` and `begin` open no scope. After a word, a `/`
 /// followed by a space or `=` divides. A `:` after a value ends a ternary
-/// and starts no symbol (`f ? 1 :+ 2`), and the word after a `::` is a
-/// constant path or a method, also when the `::` ended an earlier line. A
-/// `?` or `!` read as an operator ends no word, so a `/` after it opens a
-/// regex (`!/a/`). A statement continued with a `\` at the end of a line,
-/// with a `?\` character literal that holds the newline, with a `.`, `&.`
-/// or `::` that ends a line (past blank and comment lines; a `..` range
-/// continues nothing) or with a literal the newline closes reads on as one
-/// statement: the code before the break decides what a `%`, `<<`, `?`,
-/// `/`, `if` or `until` after it is.
+/// and starts no symbol (`f ? 1 :+ 2`), so an operand stands after it
+/// (`c ? 1 :%(a)`), and the word after a `::` is a constant path or a
+/// method, also when the `::` ended an earlier line. A `?` or `!` read as
+/// an operator ends no word, so a `/` after it opens a regex (`!/a/`). A
+/// statement continued with a `\` at the end of a line, with a `?\`
+/// character literal that holds the newline, with a `.`, `&.` or `::` that
+/// ends a line (past blank and comment lines; a `..` range continues
+/// nothing) or with a literal the newline closes reads on as one statement:
+/// the code before the break decides what a `%`, `<<`, `?`, `/`, `if` or
+/// `until` after it is.
 ///
 /// The operator opens a literal after an operator, `(`, `,`, `;`, the start
-/// of a line, a Ruby keyword, any method of the cask DSL (`caveats <<~EOS`,
-/// `binary %w[a]`), a common method that takes an argument
-/// (`puts %w[a]`) or a name ending in `?` or `!` followed by a space
-/// (`y = foo? <<E`), since no local or parameter is spelled that way.
-/// After any other word followed by a space the lexer
-/// cannot tell a method from a local it did not see assigned, and reads
-/// the operator as an opener; that is a guess.
+/// of a line, a label (`a:`), a Ruby keyword, any method of the cask DSL
+/// (`caveats <<~EOS`, `binary %w[a]`), a common method that takes an
+/// argument (`puts %w[a]`) or a name ending in `?` or `!` followed by a
+/// space (`y = foo? <<E`), since no local or parameter is spelled that way.
+/// After any other word followed by a space the lexer cannot tell a method
+/// from a local it did not see assigned, and reads the operator as an
+/// opener; that is a guess.
 ///
 /// Then:
 ///

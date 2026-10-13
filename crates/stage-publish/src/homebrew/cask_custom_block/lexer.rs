@@ -4,11 +4,13 @@ use std::collections::{HashMap, VecDeque};
 
 use super::heredoc::{Heredoc, heredoc_opener, joins_next_line};
 use super::literal::{Frame, literal, percent_literal, regex};
-use super::names::{LevelKind, Scopes, assigned_names, capture_names, for_names, param_names};
+use super::names::{
+    LevelKind, Scopes, assigned_names, capture_names, for_names, operator_target, param_names,
+};
 use super::statement::{Statement, end_statement, keyword, open_block, read_params};
 use super::words::{
-    HASH_AFTER, Position, char_literal_len, number_continues, operator_method_len, position,
-    symbol_len,
+    HASH_AFTER, Position, char_literal_len, leaves_operand, number_continues, operator_method_len,
+    position, symbol_len,
 };
 use super::{UnreadReason, Unreadable, bracket_balance, is_local_name, is_word_char};
 
@@ -69,6 +71,10 @@ struct Carry {
     comment: Option<usize>,
     /// The statement a line ending in `\` continues onto the next line.
     continued: Option<Continued>,
+    /// The last line of code ended where Ruby reads the next line on as
+    /// part of its expression: in an open literal, or after a `,`, an
+    /// operator or an opening bracket, where a `name:` may be a label.
+    reads_on: bool,
 }
 
 /// The code around a `#{…}`, read on from where it stopped once the `}`
@@ -125,6 +131,15 @@ fn is_comment_marker(line: &str, marker: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
 }
 
+/// A line of a `=begin` comment, which stays inside the literals around
+/// it.
+fn comment_line(stack: &[Frame]) -> CodeLine {
+    CodeLine {
+        open: !stack.is_empty(),
+        ..CodeLine::default()
+    }
+}
+
 /// Read every line of `block`.
 pub(super) fn lex_block(block: &str) -> Lexed {
     let lines: Vec<&str> = block.lines().collect();
@@ -134,6 +149,27 @@ pub(super) fn lex_block(block: &str) -> Lexed {
     let mut code_ends = Vec::with_capacity(lines.len());
     for (n, line) in lines.iter().enumerate() {
         code_ends.push(None);
+        if carry.comment.is_some() {
+            if is_comment_marker(line, "=end") {
+                carry.comment = None;
+            }
+            starts.push(false);
+            out.push(comment_line(&carry.stack));
+            continue;
+        }
+        // Ruby reads `=begin` as a comment wherever its line starts in
+        // code, the code of a `#{…}` left open at the end of the line
+        // before it included, even one in a heredoc body.
+        let in_body = carry
+            .heredocs
+            .front()
+            .is_some_and(|h| h.interpolating.is_none());
+        if !in_body && in_code(&carry.stack) && is_comment_marker(line, "=begin") {
+            carry.comment = Some(n + 1);
+            starts.push(false);
+            out.push(comment_line(&carry.stack));
+            continue;
+        }
         if let Some(heredoc) = carry.heredocs.front_mut() {
             // A line read inside a `#{…}` of the body is code, so its text
             // closes nothing.
@@ -150,20 +186,6 @@ pub(super) fn lex_block(block: &str) -> Lexed {
             }
             continue;
         }
-        if carry.comment.is_some() {
-            if is_comment_marker(line, "=end") {
-                carry.comment = None;
-            }
-            starts.push(false);
-            out.push(CodeLine::default());
-            continue;
-        }
-        if carry.stack.is_empty() && is_comment_marker(line, "=begin") {
-            carry.comment = Some(n + 1);
-            starts.push(false);
-            out.push(CodeLine::default());
-            continue;
-        }
         // A line that opens with the options of a regex closed by the
         // newline before it begins inside that literal.
         let options = carry.continued.as_ref().is_some_and(|c| c.regex_options)
@@ -171,6 +193,11 @@ pub(super) fn lex_block(block: &str) -> Lexed {
         starts.push(carry.stack.is_empty() && !options);
         let (code, end) = lex_line(line, n + 1, &mut carry);
         code_ends[n] = (!code.open).then_some(end);
+        if let Some(last) = code.text.trim_end().chars().last().filter(|_| !code.open) {
+            carry.reads_on = !(is_word_char(last) || matches!(last, ')' | ']' | '}' | '"' | ';'));
+        } else if code.open {
+            carry.reads_on = true;
+        }
         out.push(code);
     }
     let unclosed = |line: usize, kind| Unreadable {
@@ -279,6 +306,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
         ambiguous,
         continued,
         outer,
+        reads_on,
         ..
     } = carry;
     let chars: Vec<char> = line.chars().collect();
@@ -315,6 +343,10 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
     } = continued.take().unwrap_or_default();
     let base = outer.first().map_or(text.len(), |o| o.state.text.len());
     let mut word_method = false;
+    // A word read with nothing before it heads a statement: at the start
+    // of a line the line before ended, after a `;` and at the start of a
+    // `#{…}`.
+    let mut heads_statement = !*reads_on;
     // Whether the word is still being read, and whether whitespace
     // followed it; the `\` or newline that ended the line before counts as
     // whitespace.
@@ -348,6 +380,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             depth,
             interpolates,
             body,
+            interpolated,
             ..
         }) = stack.last_mut()
         {
@@ -370,6 +403,8 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             } else if *interpolates && c == '#' && chars.get(i + 1) == Some(&'{') {
                 // The code inside is read as code of its own, in the scopes
                 // around the literal.
+                *interpolated = true;
+                heads_statement = true;
                 stack.push(Frame::Interpolation { braces: 0 });
                 let state = Continued {
                     text: std::mem::take(&mut text),
@@ -414,7 +449,9 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                     if in_code(stack) {
                         captures = match frame {
                             Some(Frame::Literal {
-                                body: Some(body), ..
+                                body: Some(body),
+                                interpolated: false,
+                                ..
                             }) => capture_names(&body),
                             _ => Vec::new(),
                         };
@@ -468,17 +505,26 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             i += len;
             continue;
         }
+        // A method call that heads its statement, or a method name after
+        // `.`, `&.` or `::`, takes no label, so a `:` written against it
+        // starts a symbol (`` foo:` ``, `x.a:/`).
+        let heads = c == ':'
+            && i > 0
+            && is_word_char(chars[i - 1])
+            && (word_method
+                || heads_statement && before_word.is_none() && names_a_call(&word, false, scopes));
         // An operator symbol (`:+`, `:<=>`, `:[]=`) or a symbol of a name
         // ending in `=`, `?` or `!` is a value. A `:` after a value ends a
         // ternary instead (`f ? 1 :+ 2`).
         if c == ':'
-            && (i == 0
-                || !(is_word_char(chars[i - 1])
-                    || matches!(chars[i - 1], ':' | '"' | '\'' | ')' | ']' | '}')))
-            && !matches!(
-                position(prev, &word, spaced, before_word == Some('.'), scopes),
-                Position::Value | Position::Parameter
-            )
+            && (heads
+                || (i == 0
+                    || !(is_word_char(chars[i - 1])
+                        || matches!(chars[i - 1], ':' | '"' | '\'' | ')' | ']' | '}')))
+                    && !matches!(
+                        position(prev, &word, spaced, before_word == Some('.'), scopes),
+                        Position::Value | Position::Parameter
+                    ))
             && let Some(len) = symbol_len(&chars[i + 1..])
         {
             text.extend(&chars[i..=i + len]);
@@ -506,13 +552,13 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
         }
         let rest = &chars[i..];
         let shift = c == '<' && rest.get(1) == Some(&'<');
-        // `:%` and `:/` are symbols, except that a `:` written against a
-        // value may instead end a label or a ternary (`p:%`, `y ?x:%:a:`).
-        let colon = i > 0 && chars[i - 1] == ':';
-        let labelled = colon
-            && i > 1
+        // A `:` the symbol rule above passed over ends a ternary, after
+        // which an operand stands (`c ? 1 :%(a)`), unless it is written
+        // against a value, where it may also end a label or start a symbol
+        // (`p:%`, `y ?x:%:a:`).
+        let labelled = i > 1
+            && chars[i - 1] == ':'
             && (is_word_char(chars[i - 2]) || matches!(chars[i - 2], '"' | '\'' | ')' | ']' | '}'));
-        let symbol = colon && !labelled;
         // A `?` or `!` ends a word only as part of its name (`empty?`); one
         // read as an operator (`!/a/`) leaves an operand position.
         let after_word =
@@ -561,17 +607,25 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
         let opened = match c {
             '#' => break,
             '"' | '\'' => Some((1, Some(literal(c, c, c == '"', "string", number)))),
-            // `` :` ``, `` .` `` and `` def ` `` name the backtick method.
-            '`' if !colon && !(after_word && word == "def") => {
+            // `` def ` `` names the backtick method.
+            '`' if !labelled && !(after_word && word == "def") => {
                 Some((1, Some(literal(c, c, true, "string", number))))
             }
-            '%' if opens && !symbol => {
-                percent_literal(rest, number, position == Position::Operand && !after_word)
-                    .map(|(len, frame)| (len, Some(frame)))
+            '%' if opens => {
+                // After a label, the `:` of a ternary or a keyword that
+                // leaves an operand, a `%` takes any delimiter, as at the
+                // start of a statement.
+                let bare = match position {
+                    Position::Operand => !after_word || leaves_operand(&word),
+                    _ => labelled,
+                };
+                percent_literal(rest, number, bare).map(|(len, frame)| (len, Some(frame)))
             }
             // `then?"x"` is a method `then?`: the `?` joins the word.
-            '?' if opens && !joins => char_literal_len(rest).map(|len| (len, None)),
-            '/' if opens && !symbol && !divides => Some((1, Some(regex(number)))),
+            '?' if opens && !joins => {
+                char_literal_len(rest, position == Position::Operand).map(|len| (len, None))
+            }
+            '/' if opens && !divides => Some((1, Some(regex(number)))),
             '<' if shift && opens => heredoc_opener(&rest[2..], number).map(|(len, h)| {
                 heredoc = Some(h);
                 (2 + len, None)
@@ -677,6 +731,15 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
                 {
                     scopes.bind(&word, false);
                 }
+                // An operator assignment binds its target wherever it
+                // stands: in an argument, a condition or after another `=`.
+                let operator = (!spaced
+                    && matches!(prev, Some('|' | '&' | '+' | '-' | '*' | '/' | '%' | '^')))
+                    || code.ends_with("<<")
+                    || code.ends_with(">>");
+                if operator && let Some(name) = operator_target(code) {
+                    scopes.bind(name, false);
+                }
                 if !st.assigned {
                     for name in assigned_names(code) {
                         scopes.bind(&name, false);
@@ -693,6 +756,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
             st.lambda = true;
             st.params_open = None;
         } else if c == ';' {
+            heads_statement = true;
             end_statement(code, &st, scopes);
             st = Statement {
                 start: text.len(),
