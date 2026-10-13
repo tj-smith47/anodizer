@@ -143,7 +143,9 @@ fn maybe_write_cask_into_tap(
     repo_path: &Path,
     log: &StageLogger,
 ) -> Result<CaskInTapOutcome> {
-    let Some(cask_result) = render_same_tap_cask_for_crate(ctx, hb_cfg, crate_name, log)? else {
+    let render_log = super::super::cask_scope::publisher_render_log(ctx, log);
+    let Some(cask_result) = render_same_tap_cask_for_crate(ctx, hb_cfg, crate_name, &render_log)?
+    else {
         return Ok(CaskInTapOutcome::default());
     };
     let cask_cfg = hb_cfg.cask.as_ref().ok_or_else(|| {

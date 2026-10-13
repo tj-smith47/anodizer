@@ -2638,14 +2638,23 @@ const GATE_MIRROR_TARGETS: &[&str] = &[
     "coverage:gate",
 ];
 
+/// The step targets of the fixture's parser cases, each defined and reached
+/// from `gate` directly.
+const GATE_MIRROR_STEP_TARGETS: &[&str] =
+    &["apostrophe", "quoted", "continued", "redirected", "piped"];
+
 /// A repository whose ci.yml `test` job runs `task test`,
 /// `task test:brew-style`, a silent target, a target whose cmds only call
 /// another target, and a target named after go-task flags, and whose
 /// `task gate` reaches every mapped target plus those, `test:brew-style` only
 /// when `wire_brew_style` is set. `test:brew-style` is reached through `ci`, a
 /// second hop, so the walk has to follow the graph. A commented-out
-/// `task` call and one inside a quoted string name targets nothing defines,
-/// so reading either fails the audit.
+/// `task` call, one inside a quoted string, a `task` word that is not the
+/// first word of its command, a redirection target, a pipe's next command
+/// and the value of a value-taking flag name targets nothing defines, so
+/// reading any of them fails the audit. The steps also hold a `\`-continued
+/// call, an apostrophe inside a double-quoted string before a call, and a
+/// quoted target.
 fn gate_mirror_fixture(wire_brew_style: bool) -> TempDir {
     let dir = TempDir::new().expect("tempdir");
     let workflows = dir.path().join(".github/workflows");
@@ -2664,7 +2673,15 @@ fn gate_mirror_fixture(wire_brew_style: bool) -> TempDir {
                    task test:brew-style\n      \
                - run: task quiet  # task commented-out\n      \
                - run: echo \"task quoted-out\" && task bundle\n      \
-               - run: task -n --taskfile Taskfile.yml flagged -- --extra\n  \
+               - run: task -n --taskfile Taskfile.yml flagged -- --extra\n      \
+               - run: echo task done\n      \
+               - run: \"echo \\\"don't\\\" && task apostrophe\"\n      \
+               - run: \"task \\\"quoted\\\"\"\n      \
+               - run: |\n          \
+                   task --timeout 5s \\\n            \
+                     --temp-dir scratch continued\n      \
+               - run: task redirected > out.log 2> err.log\n      \
+               - run: task piped | tee piped.log\n  \
            snapshot:\n    \
              runs-on: ubuntu-latest\n    \
              steps:\n      \
@@ -2677,7 +2694,7 @@ fn gate_mirror_fixture(wire_brew_style: bool) -> TempDir {
         "version: '3'\ntasks:\n  gate:\n    cmds:\n      - task: ci\n      \
          - task: quiet\n      - task: bundle\n      - task: flagged\n",
     );
-    for target in GATE_MIRROR_TARGETS {
+    for target in GATE_MIRROR_TARGETS.iter().chain(GATE_MIRROR_STEP_TARGETS) {
         taskfile.push_str(&format!("      - task: {target}\n"));
     }
     taskfile.push_str("  ci:\n    cmds:\n");
@@ -2695,6 +2712,7 @@ fn gate_mirror_fixture(wire_brew_style: bool) -> TempDir {
     );
     for target in GATE_MIRROR_TARGETS
         .iter()
+        .chain(GATE_MIRROR_STEP_TARGETS)
         .chain(&["test:brew-style", "flagged"])
     {
         let cmd = if *target == "snapshot" {
@@ -2786,9 +2804,11 @@ fn the_gate_mirror_audit_requires_every_ci_step_target_in_the_gate() {
             "{leg}: a gate reaching every step target passes:\n{out}"
         );
         assert!(
-            out.contains("5 `task` step target(s)"),
-            "{leg}: test, test:brew-style (from a multi-line run), quiet, bundle and \
-             flagged are read, and the commented and quoted calls are not:\n{out}"
+            out.contains("10 `task` step target(s)"),
+            "{leg}: test, test:brew-style (from a multi-line run), quiet, bundle, \
+             flagged, apostrophe, quoted, continued, redirected and piped are read, \
+             and the commented, quoted, non-leading, redirected, piped and flag-value \
+             words are not:\n{out}"
         );
 
         let unwired = gate_mirror_fixture(false);
@@ -2806,4 +2826,38 @@ fn the_gate_mirror_audit_requires_every_ci_step_target_in_the_gate() {
             "{leg}: a reachable step target is not reported:\n{out}"
         );
     }
+}
+
+/// A step whose task target is a GitHub expression names no target the audit
+/// can check, so the audit stops with exit 2 and names the step.
+#[test]
+fn the_gate_mirror_audit_refuses_an_expression_target() {
+    let Some(yq) = Command::new("sh")
+        .args(["-c", "command -v yq"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    else {
+        eprintln!("SKIP the_gate_mirror_audit_refuses_an_expression_target: yq missing");
+        return;
+    };
+    let shim = TempDir::new().expect("shim dir");
+    std::os::unix::fs::symlink(&yq, shim.path().join("yq")).expect("yq symlink");
+    let path = format!("{}:/usr/bin:/bin", shim.path().display());
+    let fixture = gate_mirror_fixture(true);
+    let ci = fixture.path().join(".github/workflows/ci.yml");
+    let text = std::fs::read_to_string(&ci).expect("ci.yml");
+    let text = text.replacen(
+        "      - run: task test\n",
+        "      - run: task test\n      - run: task ${{ matrix.target }}\n",
+        1,
+    );
+    std::fs::write(&ci, text).expect("ci.yml");
+    let (code, out) = run_gate_mirror(fixture.path(), &path);
+    assert_eq!(code, 2, "an expression target stops the audit:\n{out}");
+    assert!(
+        out.contains("a step runs 'task ${{matrix.target}}' — cannot resolve expression target."),
+        "{out}"
+    );
 }

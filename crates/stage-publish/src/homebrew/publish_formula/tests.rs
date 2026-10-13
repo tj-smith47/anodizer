@@ -142,15 +142,21 @@ fn hb_cfg_local(bare_url: &str, branch: &str) -> HomebrewConfig {
 /// the homebrew tap with the supplied artifacts. Version resolves to
 /// `1.2.3` (tag `v1.2.3` via the builder default).
 fn single_crate_ctx(hb: HomebrewConfig, artifacts: Vec<Artifact>) -> Context {
+    single_crate_ctx_named("mytool", hb, artifacts)
+}
+
+/// [`single_crate_ctx`] for a crate named `name`, released from
+/// `myorg/<name>`.
+fn single_crate_ctx_named(name: &str, hb: HomebrewConfig, artifacts: Vec<Artifact>) -> Context {
     let mut ctx = TestContextBuilder::new()
         .crates(vec![CrateConfig {
-            name: "mytool".to_string(),
+            name: name.to_string(),
             path: ".".to_string(),
             tag_template: Some("v{{ .Version }}".to_string()),
             release: Some(ReleaseConfig {
                 github: Some(anodizer_core::config::ScmRepoConfig {
                     owner: "myorg".to_string(),
-                    name: "mytool".to_string(),
+                    name: name.to_string(),
                     token: None,
                 }),
                 ..Default::default()
@@ -1504,10 +1510,11 @@ fn an_unrenderable_pull_request_token_skips_the_entry_before_any_push() {
 
 /// Every ```ruby block on the formula page is part of what the formula
 /// renderer produces for the nearest ```yaml block above it, read as a crate
-/// entry's `publish.homebrew` block or as a bare `homebrew` fragment, for a
-/// release with a darwin arm64 and a linux amd64 archive. The count is
-/// pinned, so a new ```ruby block is held to the renderer as soon as it is
-/// added.
+/// entry's `publish.homebrew` block, a `publish.homebrew` block, or a bare
+/// `homebrew` fragment, for a release of the page's `myapp` crate (or the
+/// crate the block names) with a darwin arm64 and a linux amd64 archive.
+/// The count is pinned, so a new ```ruby block is held to the renderer as
+/// soon as it is added.
 #[test]
 fn every_ruby_example_in_the_formula_docs_is_part_of_the_render() {
     let path = concat!(
@@ -1529,24 +1536,38 @@ fn every_ruby_example_in_the_formula_docs_is_part_of_the_render() {
             .unwrap_or_else(|| panic!("ruby block {at} has no yaml block above it"));
         let value: serde_yaml_ng::Value =
             serde_yaml_ng::from_str(yaml).unwrap_or_else(|e| panic!("yaml above {at}: {e}"));
-        let entry = match value.get("crates") {
-            Some(crates) => crates[0]["publish"]["homebrew"].clone(),
-            None => value,
+        let name = value["crates"][0]["name"]
+            .as_str()
+            .unwrap_or("myapp")
+            .to_string();
+        let entry = match (value.get("crates"), value.get("publish")) {
+            (Some(crates), _) => crates[0]["publish"]["homebrew"].clone(),
+            (None, Some(publish)) => publish["homebrew"].clone(),
+            (None, None) => value,
         };
         let hb: HomebrewConfig = serde_yaml_ng::from_value(entry)
             .unwrap_or_else(|e| panic!("yaml above {at} is not a homebrew block: {e}"));
-        let ctx = single_crate_ctx(
-            hb,
-            vec![
-                archive("aarch64-apple-darwin", "https://e/arm.tar.gz", "shaarm"),
-                archive(
-                    "x86_64-unknown-linux-gnu",
-                    "https://e/linux.tar.gz",
-                    "shalin",
-                ),
-            ],
-        );
-        let rendered = render_homebrew_formula_for_crate(&ctx, "mytool", &quiet_log())
+        let release = format!("https://github.com/myorg/{name}/releases/download/v1.2.3");
+        let archives = [
+            archive(
+                "aarch64-apple-darwin",
+                &format!("{release}/{name}-darwin-arm64.tar.gz"),
+                &"1".repeat(64),
+            ),
+            archive(
+                "x86_64-unknown-linux-gnu",
+                &format!("{release}/{name}-linux-amd64.tar.gz"),
+                &"2".repeat(64),
+            ),
+        ]
+        .into_iter()
+        .map(|mut a| {
+            a.crate_name = name.clone();
+            a
+        })
+        .collect();
+        let ctx = single_crate_ctx_named(&name, hb, archives);
+        let rendered = render_homebrew_formula_for_crate(&ctx, &name, &quiet_log())
             .expect("render ok")
             .expect("not skipped")
             .formula;
@@ -1555,5 +1576,5 @@ fn every_ruby_example_in_the_formula_docs_is_part_of_the_render() {
             "ruby block {at} is not part of the render of the yaml above it:\n{ruby}\n--- render ---\n{rendered}"
         );
     }
-    assert_eq!(ruby_blocks, 2, "the page's ruby blocks");
+    assert_eq!(ruby_blocks, 3, "the page's ruby blocks");
 }

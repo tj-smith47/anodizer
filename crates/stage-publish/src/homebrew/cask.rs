@@ -3,6 +3,9 @@
 use anodizer_core::context::Context;
 use anodizer_core::template::ruby_escape_str;
 use anyhow::{Context as _, Result};
+
+use super::formula::reindent;
+
 /// Column of the first argument of a top-level `url "…"` stanza, where its
 /// keyword-argument continuation lines start.
 pub(super) const URL_ARGS_INDENT: &str = "      ";
@@ -516,42 +519,6 @@ pub(super) fn render_alternative_names(ctx: &Context, raw: &[String]) -> Result<
     Ok(out)
 }
 
-/// Re-indent free-form Ruby supplied by the user: drop leading and trailing
-/// blank lines, strip the indentation every line shares, and put `indent`
-/// before each non-blank line. Relative indentation inside the text is kept,
-/// so a body written flush-left in YAML and one already indented for the
-/// cask render the same.
-fn reindent(text: &str, indent: &str) -> String {
-    let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
-    let first = lines
-        .iter()
-        .position(|l| !l.is_empty())
-        .unwrap_or(lines.len());
-    let last = lines
-        .iter()
-        .rposition(|l| !l.is_empty())
-        .map_or(first, |i| i + 1);
-    let lines = &lines[first..last];
-    let leading = |l: &str| l.len() - l.trim_start_matches([' ', '\t']).len();
-    let common = lines
-        .iter()
-        .filter(|l| !l.is_empty())
-        .map(|l| leading(l))
-        .min()
-        .unwrap_or(0);
-    lines
-        .iter()
-        .map(|l| {
-            if l.is_empty() {
-                String::new()
-            } else {
-                format!("{indent}{}", &l[common..])
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// `Some(text)` when `text` holds anything but whitespace.
 fn non_blank(text: Option<&str>) -> Option<&str> {
     text.filter(|t| !t.trim().is_empty())
@@ -635,142 +602,45 @@ fn render_platform_blocks(
 /// What a `custom_block` contributes to the `depends_on :macos` decision.
 #[derive(Default, Debug, PartialEq, Eq)]
 pub(super) struct CustomBlockOsFacts {
-    /// An `on_linux` or `on_system` block, or the Linux-only `app_image`
-    /// stanza, at any depth: the cask has a Linux side.
+    /// A statement opening with `on_linux`, `on_system` or the Linux-only
+    /// `app_image`, at any depth: the cask has a Linux side.
     pub(super) other_os_block: bool,
-    /// A `depends_on` naming `:macos`, `macos:`, `maximum_macos:`, `:linux`
-    /// or `linux:`, at any depth.
+    /// The block mentions `depends_on` and any of `:macos`, `macos:`
+    /// (which `maximum_macos:` contains), `:linux` or `linux:`.
     pub(super) os_dependency: bool,
 }
 
-/// `block` with the contents of its string literals, its `#` comments and
-/// its heredoc bodies (`<<~tag`, `<<-tag`, `<<tag`, the tag quoted or not)
-/// blanked to spaces, line breaks kept, so a stanza word written inside any
-/// of them is never read as code.
-fn ruby_code_of(block: &str) -> String {
-    let mut code = String::with_capacity(block.len());
-    let mut quote: Option<char> = None;
-    // Heredocs opened on the current line, as (terminator, may be indented);
-    // their bodies start on the next line, in the order they were opened.
-    let mut opened: Vec<(String, bool)> = Vec::new();
-    let mut bodies: std::collections::VecDeque<(String, bool)> = Default::default();
-    for line in block.split_inclusive('\n') {
-        if let Some((tag, indented)) = bodies.front() {
-            let text = line.trim_end_matches(['\n', '\r']);
-            let end = if *indented { text.trim() } else { text };
-            if end == tag {
-                bodies.pop_front();
-            }
-            code.push_str(if line.ends_with('\n') { "\n" } else { "" });
-            continue;
-        }
-        let mut chars = line.chars().peekable();
-        let mut in_comment = false;
-        while let Some(c) = chars.next() {
-            if c == '\n' {
-                code.push('\n');
-                continue;
-            }
-            if in_comment {
-                code.push(' ');
-                continue;
-            }
-            if let Some(q) = quote {
-                if c == '\\' {
-                    code.push(' ');
-                    if chars.peek().is_some_and(|n| *n != '\n') {
-                        chars.next();
-                        code.push(' ');
-                    }
-                } else if c == q {
-                    quote = None;
-                    code.push(c);
-                } else {
-                    code.push(' ');
-                }
-                continue;
-            }
-            match c {
-                '#' => {
-                    in_comment = true;
-                    code.push(' ');
-                }
-                '"' | '\'' => {
-                    quote = Some(c);
-                    code.push(c);
-                }
-                '<' if chars.peek() == Some(&'<') => {
-                    chars.next();
-                    code.push_str("<<");
-                    let indented = matches!(chars.peek(), Some('~' | '-'));
-                    if indented {
-                        chars.next();
-                        code.push(' ');
-                    }
-                    let close = chars.next_if(|n| matches!(n, '"' | '\''));
-                    let mut tag = String::new();
-                    if chars
-                        .peek()
-                        .is_some_and(|n| n.is_ascii_alphabetic() || *n == '_')
-                    {
-                        while let Some(t) =
-                            chars.next_if(|n| n.is_ascii_alphanumeric() || *n == '_')
-                        {
-                            tag.push(t);
-                        }
-                    }
-                    if tag.is_empty() {
-                        // `<<` is a shift and the quote opens a string.
-                        if let Some(q) = close {
-                            quote = Some(q);
-                            code.push(q);
-                        }
-                    } else {
-                        if let Some(q) = close {
-                            chars.next_if_eq(&q);
-                        }
-                        code.extend(std::iter::repeat_n(' ', tag.len()));
-                        opened.push((tag, indented));
-                    }
-                }
-                _ => code.push(c),
-            }
-        }
-        bodies.extend(opened.drain(..));
-    }
-    code
-}
-
 /// Read a `custom_block` for the facts `Homebrew/OSDependsOn` and
-/// `Cask#supports_linux?` look at, at any depth. A statement starts a line
-/// or follows a `;`, and only its first word decides what it is.
-// ponytail: the blanking of strings, comments and heredocs is lexical, so a
-// stanza word inside a literal it does not know (`%w[]`, `/regexp/`, a
-// `=begin` comment) still counts. Reading the block with a Ruby parser
-// removes that.
+/// `Cask#supports_linux?` look at, at any depth, over the raw text. A
+/// statement starts a line or follows a `;`, and its first word decides
+/// whether it opens a Linux side; a `depends_on` names an OS when the word
+/// and any of the OS tokens appear anywhere in the block, so a call spread
+/// over several lines still counts.
+// The scan reads strings and comments as code on purpose. An over-match
+// only drops the auto-added `depends_on :macos` or wraps the download in
+// `on_macos`, both of which Homebrew still loads; an under-match adds
+// `depends_on :macos` beside a real `on_linux`, which Homebrew refuses to
+// load. So the scan errs toward matching.
 pub(super) fn custom_block_os_facts(block: Option<&str>) -> CustomBlockOsFacts {
-    let mut facts = CustomBlockOsFacts::default();
     let Some(block) = block else {
-        return facts;
+        return CustomBlockOsFacts::default();
     };
-    let code = ruby_code_of(block);
-    for statement in code.split(['\n', ';']) {
-        let text = statement.trim_start();
-        let first = text
+    let other_os_block = block.split(['\n', ';']).any(|statement| {
+        let first = statement
+            .trim_start()
             .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
             .next()
             .unwrap_or("");
-        match first {
-            "on_linux" | "on_system" | "app_image" => facts.other_os_block = true,
-            "depends_on" => {
-                facts.os_dependency |= [":macos", "macos:", ":linux", "linux:"]
-                    .iter()
-                    .any(|token| text.contains(token));
-            }
-            _ => {}
-        }
+        matches!(first, "on_linux" | "on_system" | "app_image")
+    });
+    let os_dependency = block.contains("depends_on")
+        && [":macos", "macos:", ":linux", "linux:"]
+            .iter()
+            .any(|token| block.contains(token));
+    CustomBlockOsFacts {
+        other_os_block,
+        os_dependency,
     }
-    facts
 }
 
 /// A `<name> do … end` stanza around a user-supplied Ruby body.

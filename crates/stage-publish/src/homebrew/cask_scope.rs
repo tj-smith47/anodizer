@@ -7,7 +7,9 @@
 //! ([`generate_cask_from_context`]) and the top-level artifact lookups live
 //! here.
 
+use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
 use anodizer_core::template::ruby_escape_str;
 use anyhow::Result;
 
@@ -46,7 +48,7 @@ pub(super) enum CaskArtifactScope<'a> {
     /// Per-crate scope: only `crate_name`'s artifacts of the given kind.
     Crate { crate_name: &'a str },
     /// Top-level scope: every crate's artifacts of the given kind, narrowed by
-    /// the optional `ids:` filter (mirrors [`find_top_level_cask_artifact`]).
+    /// the optional `ids:` filter (mirrors [`has_top_level_cask_artifact`]).
     TopLevel { ids: Option<&'a [String]> },
 }
 
@@ -112,34 +114,23 @@ pub(super) fn build_cask_platform_blocks(
     log: &anodizer_core::log::StageLogger,
 ) -> Result<Vec<CaskPlatformBlock>> {
     use std::collections::BTreeMap;
-    let kinds = [
-        anodizer_core::artifact::ArtifactKind::DiskImage,
-        anodizer_core::artifact::ArtifactKind::Archive,
-        anodizer_core::artifact::ArtifactKind::UploadableBinary,
-    ];
     // Each entry keeps its artifact's build id, which decides whether the
     // universal artifact may fill a slot beside it.
     let mut os_map: BTreeMap<String, Vec<(CaskArchEntry, Option<String>)>> = BTreeMap::new();
     // The first universal artifact per OS with its name and build id, placed
     // once every per-arch slot is known.
     let mut universal: BTreeMap<String, (String, Option<String>, CaskArchEntry)> = BTreeMap::new();
-    for kind in &kinds {
+    for kind in &CASK_DOWNLOAD_KINDS {
         for art in scope.artifacts_of_kind(ctx, *kind) {
             let target = art.target.as_deref().unwrap_or("");
-            // A disk image is a macOS-only format, so one built without a
-            // target is a download for every Mac.
-            let targetless_dmg =
-                art.target.is_none() && *kind == anodizer_core::artifact::ArtifactKind::DiskImage;
-            let (os, arch) = if targetless_dmg {
+            // A target-less artifact reaching the `on_macos` block is a disk
+            // image, which serves every Mac.
+            let (os, arch) = if art.target.is_none() {
                 ("darwin".to_string(), "all".to_string())
             } else {
                 anodizer_core::target::map_target(target)
             };
-            // `is_macos` (genuine `*-apple-darwin` only), NOT `os == "darwin"`:
-            // map_target folds `*-apple-watchos`/`-tvos` into os="darwin", but a
-            // watchOS archive dropped into the `on_macos` block is a
-            // non-installable cask `url`. Mirrors the formula's `is_macos` gate.
-            let os_block = if targetless_dmg || anodizer_core::target::is_macos(target) {
+            let os_block = if is_macos_cask_download(art) {
                 "macos"
             } else if anodizer_core::target::is_linux(target) {
                 "linux"
@@ -240,22 +231,28 @@ pub(super) fn build_cask_platform_blocks(
             [_, _] => arches.push((entry, id)),
             [slot] => {
                 let (filled, filled_id) = &arches[0];
-                if *filled_id == id {
-                    arches.push((
+                let arch = &filled.arch_block;
+                // Two artifacts without an id are not known to be one build,
+                // so a missing id on either side never fills the slot.
+                match (&id, filled_id) {
+                    (Some(own), Some(other)) if own == other => arches.push((
                         CaskArchEntry {
                             arch_block: (*slot).to_string(),
                             ..entry
                         },
                         id,
-                    ));
-                } else {
-                    log.verbose(&format!(
-                        "skipped universal artifact '{name}' — build id '{}' does not match \
-                         '{}', the build of the macOS {} download",
-                        id.as_deref().unwrap_or(""),
-                        filled_id.as_deref().unwrap_or(""),
-                        filled.arch_block,
-                    ));
+                    )),
+                    (None, _) => log.verbose(&format!(
+                        "skipped universal artifact '{name}' — it has no id to match against \
+                         the macOS {arch} download"
+                    )),
+                    (Some(_), None) => log.verbose(&format!(
+                        "skipped universal artifact '{name}' — the macOS {arch} download has no id"
+                    )),
+                    (Some(own), Some(other)) => log.verbose(&format!(
+                        "skipped universal artifact '{name}' — build id '{own}' does not match \
+                         '{other}', the build of the macOS {arch} download"
+                    )),
                 }
             }
             _ => log.verbose(&format!(
@@ -288,6 +285,18 @@ pub(super) fn single_macos_download(blocks: &[CaskPlatformBlock]) -> Option<&Cas
 /// per-OS / per-arch body; one renders flat.
 pub(super) fn download_count(blocks: &[CaskPlatformBlock]) -> usize {
     blocks.iter().map(|p| p.arches.len()).sum()
+}
+
+/// The logger a publisher renders its cask through. Emission validation
+/// renders every cask first and prints the render's `-v` lines, so the
+/// publisher keeps only its warnings and status lines. A `--publish-only`
+/// run has no emission validation, and there the publisher prints them.
+pub(super) fn publisher_render_log(ctx: &Context, log: &StageLogger) -> StageLogger {
+    if ctx.is_publish_only() {
+        log.clone()
+    } else {
+        log.capped_at(anodizer_core::log::Verbosity::Normal)
+    }
 }
 
 /// Generate a Homebrew Cask `.rb` file string from the project context.
@@ -578,81 +587,54 @@ pub(super) fn clone_cask_params<'a>(p: &'a CaskParams<'a>) -> CaskParams<'a> {
         generate_completions: p.generate_completions.clone(),
     }
 }
-/// Find a macOS artifact for top-level cask config.
-/// Searches all artifacts (not per-crate) with optional ID filtering.
-pub(super) fn find_top_level_cask_artifact<'a>(
-    ctx: &'a Context,
-    ids: Option<&[String]>,
-) -> Option<&'a anodizer_core::artifact::Artifact> {
-    let filter = |a: &&anodizer_core::artifact::Artifact| {
-        if !anodizer_core::artifact::matches_id_filter(a, ids) {
-            return false;
-        }
-        // `is_macos` (genuine `*-apple-darwin` only), NOT the broad
-        // `contains("apple")`: the latter also selects `*-apple-ios`/`-watchos`/
-        // `-tvos`, which carry no `brew`-installable binary and would end up in the
-        // cask's `url`/`sha256` (a 404-class cask install). Mirrors the formula.
-        a.target
-            .as_deref()
-            .map(anodizer_core::target::is_macos)
-            .unwrap_or(false)
-    };
+/// The artifact kinds a cask downloads, in the precedence
+/// [`build_cask_platform_blocks`] fills a slot with.
+const CASK_DOWNLOAD_KINDS: [ArtifactKind; 3] = [
+    ArtifactKind::DiskImage,
+    ArtifactKind::Archive,
+    ArtifactKind::UploadableBinary,
+];
 
-    // Prefer DiskImage (with OnlyReplacingUnibins filter)
-    ctx.artifacts
-        .by_kind(anodizer_core::artifact::ArtifactKind::DiskImage)
-        .into_iter()
-        .filter(|a| a.only_replacing_unibins())
-        .find(|a| filter(a))
-        .or_else(|| {
-            // Fall back to Archive
-            ctx.artifacts
-                .by_kind(anodizer_core::artifact::ArtifactKind::Archive)
-                .into_iter()
-                .filter(|a| a.only_replacing_unibins())
-                .find(|a| filter(a))
-        })
-        .or_else(|| {
-            // Fall back to UploadableBinary
-            ctx.artifacts
-                .by_kind(anodizer_core::artifact::ArtifactKind::UploadableBinary)
-                .into_iter()
-                .filter(|a| a.only_replacing_unibins())
-                .find(|a| filter(a))
-        })
+/// True when `art` is a download [`build_cask_platform_blocks`] places in the
+/// `on_macos` block: a cask download kind built for a `*-apple-darwin`
+/// target, or a disk image built without a target, which is a macOS-only
+/// format and so serves every Mac.
+pub(super) fn is_macos_cask_download(art: &Artifact) -> bool {
+    match art.target.as_deref() {
+        // `is_macos` matches genuine `*-apple-darwin` only: `*-apple-ios`,
+        // `-watchos` and `-tvos` carry nothing `brew` can install.
+        Some(target) => {
+            CASK_DOWNLOAD_KINDS.contains(&art.kind) && anodizer_core::target::is_macos(target)
+        }
+        None => art.kind == ArtifactKind::DiskImage,
+    }
 }
 
-/// True when `crate_name` has a macOS (darwin) `DiskImage` or `Archive`
-/// artifact in scope, which [`build_cask_platform_blocks`] places in the
-/// `on_macos` block. Uses the same darwin predicate so a
-/// validator can gate a not-applicable skip on artifact PRESENCE, then call the
-/// render and propagate any `Err` (a present-but-broken artifact, missing
-/// url/sha256), instead of collapsing every render `bail!` to "skip".
+/// True when the release has a macOS cask download for the top-level
+/// `homebrew_casks:` publisher, across every crate, narrowed by the optional
+/// `ids:` filter.
+pub(super) fn has_top_level_cask_artifact(ctx: &Context, ids: Option<&[String]>) -> bool {
+    let scope = CaskArtifactScope::TopLevel { ids };
+    CASK_DOWNLOAD_KINDS.iter().any(|kind| {
+        scope
+            .artifacts_of_kind(ctx, *kind)
+            .into_iter()
+            .any(is_macos_cask_download)
+    })
+}
+
+/// True when `crate_name` has a macOS cask download in scope, which
+/// [`build_cask_platform_blocks`] places in the `on_macos` block. It asks the
+/// same [`is_macos_cask_download`] question, so a validator can gate a
+/// not-applicable skip on artifact presence, then call the render and
+/// propagate any `Err` (a present-but-broken artifact, missing url/sha256),
+/// instead of collapsing every render `bail!` to "skip".
 pub(crate) fn crate_has_macos_cask_artifact(ctx: &Context, crate_name: &str) -> bool {
-    // A DiskImage is a macOS-only format, so a target-less one counts as darwin
-    // (`unwrap_or(true)`), as it does in `build_cask_platform_blocks`. An
-    // Archive must name a darwin/macos target (`unwrap_or(false)`).
-    let dmg_is_darwin = |a: &anodizer_core::artifact::Artifact| {
-        a.target
-            .as_deref()
-            .map(anodizer_core::target::is_macos)
-            .unwrap_or(true)
-    };
-    let archive_is_darwin = |a: &anodizer_core::artifact::Artifact| {
-        a.target
-            .as_deref()
-            .map(anodizer_core::target::is_macos)
-            .unwrap_or(false)
-    };
-    ctx.artifacts
-        .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::DiskImage, crate_name)
-        .iter()
-        .filter(|a| a.only_replacing_unibins())
-        .any(|a| dmg_is_darwin(a))
-        || ctx
-            .artifacts
-            .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::Archive, crate_name)
-            .iter()
-            .filter(|a| a.only_replacing_unibins())
-            .any(|a| archive_is_darwin(a))
+    let scope = CaskArtifactScope::Crate { crate_name };
+    CASK_DOWNLOAD_KINDS.iter().any(|kind| {
+        scope
+            .artifacts_of_kind(ctx, *kind)
+            .into_iter()
+            .any(is_macos_cask_download)
+    })
 }

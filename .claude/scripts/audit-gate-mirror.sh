@@ -11,6 +11,7 @@ set -euo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 source "$LIB_DIR/require-bash.sh"
+source "$LIB_DIR/scan.sh"
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
@@ -87,35 +88,100 @@ if ! step_runs=$(yq -r '.jobs[] | .steps[]? | select(.run != null) | .run' "$CI_
     exit 2
 fi
 declare -A STEP_TARGETS=()
-# go-task flags that take the next word as their value.
-value_flags=" -d --dir -t --taskfile -o --output -C --concurrency -I --interval --sort --output-group-begin --output-group-end "
+# go-task (3.53.1) flags that take the next word as their value.
+value_flags=" -d --dir -t --taskfile -o --output -C --concurrency -I --interval --sort --output-group-begin --output-group-end --cacert --cert --cert-key --completion --expiry --remote-cache-dir --temp-dir --timeout --trusted-hosts "
 task_name='^[A-Za-z][A-Za-z0-9:_.-]*$'
-while IFS= read -r line; do
-    # Quoted strings and `#` comments name no target a step runs.
-    code=$(sed -E "s/'[^']*'//g; s/\"([^\"\\\\]|\\\\.)*\"//g; s/(^|[[:space:]])#.*//" <<< "$line")
-    while IFS= read -r segment; do
-        read -ra words <<< "$segment"
-        in_task=0
-        skip_value=0
-        for word in "${words[@]}"; do
-            if ((in_task == 0)); then
-                [[ "$word" == task ]] && in_task=1
-                continue
-            fi
-            if ((skip_value)); then
-                skip_value=0
-                continue
-            fi
-            [[ "$word" == -- ]] && break
-            if [[ "$word" == -* ]]; then
-                [[ "$word" != *=* && "$value_flags" == *" $word "* ]] && skip_value=1
-                continue
-            fi
-            [[ "$word" == *=* ]] && continue
-            [[ "$word" =~ $task_name ]] && STEP_TARGETS[$word]=1
-        done
-    done < <(tr ';&|()' '\n\n\n\n\n' <<< "$code")
-done <<< "$step_runs"
+# Words that may precede the command of a segment without being it.
+lead_words=" if then else elif do while until ! time "
+
+# One left-to-right pass over each line, so an apostrophe inside a double
+# quoted string (`echo "don't"`) cannot open a single-quoted one. Quote
+# characters are dropped and their contents kept as words, with the shell's
+# separators inside them blanked; an unquoted `#` starting a word ends the
+# line; `;`, `&`, `|`, `(`, `)`, `<` and `>` end a command segment, and a
+# file-descriptor number before a redirection is dropped with it. A
+# `${{ … }}` expression is kept as one word with its spaces removed.
+SPLIT_SEGMENTS=$(cat <<'AWK'
+    {
+        out = ""; q = ""; n = length($0); i = 1
+        while (i <= n) {
+            c = substr($0, i, 1)
+            if (substr($0, i, 3) == "${{") {
+                j = index(substr($0, i), "}}")
+                if (j == 0) j = n - i + 1; else j += 1
+                expr = substr($0, i, j); gsub(/[[:space:]]/, "", expr)
+                out = out expr; i += j; continue
+            }
+            if (q == "'") {
+                if (c == "'") q = ""
+                else out = out (c ~ /[;&|()<>]/ ? " " : c)
+            } else if (q == "\"") {
+                if (c == "\\" && i < n) { i++; out = out substr($0, i, 1) }
+                else if (c == "\"") q = ""
+                else out = out (c ~ /[;&|()<>]/ ? " " : c)
+            } else if (c == "\\" && i < n) {
+                i++; out = out substr($0, i, 1)
+            } else if (c == "'" || c == "\"") {
+                q = c
+            } else if (c == "#" && (out == "" || substr(out, length(out), 1) ~ /[[:space:]]/)) {
+                break
+            } else if (c ~ /[;&|()]/) {
+                out = out "\n"
+            } else if (c ~ /[<>]/) {
+                sub(/[0-9]+$/, "", out)
+                out = out "\n"
+            } else {
+                out = out c
+            }
+            i++
+        }
+        print out
+    }
+AWK
+)
+
+# A `\`-continued line is one command.
+joined_runs=$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba}' <<< "$step_runs")
+run_scanner segments "$SPLIT_SEGMENTS" <<< "$joined_runs"
+expression_targets=""
+while IFS= read -r segment; do
+    read -ra words <<< "$segment"
+    first=0
+    while ((first < ${#words[@]})); do
+        word="${words[first]}"
+        if [[ "$lead_words" == *" $word "* || "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+            first=$((first + 1))
+        else
+            break
+        fi
+    done
+    ((first < ${#words[@]})) && [[ "${words[first]}" == task ]] || continue
+    skip_value=0
+    for word in "${words[@]:first+1}"; do
+        if ((skip_value)); then
+            skip_value=0
+            continue
+        fi
+        [[ "$word" == -- ]] && break
+        if [[ "$word" == -* ]]; then
+            [[ "$word" != *=* && "$value_flags" == *" $word "* ]] && skip_value=1
+            continue
+        fi
+        if [[ "$word" == *'${{'* ]]; then
+            expression_targets+="  ${CI_WORKFLOW}: a step runs 'task ${word}' — cannot resolve expression target."$'\n'
+            continue
+        fi
+        [[ "$word" == *=* ]] && continue
+        [[ "$word" =~ $task_name ]] && STEP_TARGETS[$word]=1
+    done
+done <<< "$segments"
+
+if [[ -n "$expression_targets" ]]; then
+    echo "audit-gate-mirror: FAIL — a ci.yml step names its task target through a GitHub expression, which this audit cannot resolve to a target." >&2
+    echo "" >&2
+    printf '%s' "$expression_targets" >&2
+    exit 2
+fi
 
 # Reachability: does every mapped local target, and every target a ci.yml
 # step runs, actually run as part of `task gate`? Prefer `task -n -v gate` (a

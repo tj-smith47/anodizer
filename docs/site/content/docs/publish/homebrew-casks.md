@@ -231,11 +231,17 @@ dependencies:
 Homebrew installs a cask on Linux unless it depends on macOS, so without the
 line a cask of macOS `binaries` would install a Mach-O executable on a Linux
 host. A cask has a Linux side when the release ships Linux artifacts (an
-`on_linux` block) or its `custom_block` holds an `on_linux` or `on_system`
-block or an `app_image` stanza, at any depth. The line is also left out when
-the `custom_block` declares an OS dependency of its own anywhere in it
-(`depends_on macos: …`, `maximum_macos: …`, `:macos`, `:linux` or
-`linux: …`), since a second one is redundant.
+`on_linux` block) or a line or `;`-separated statement of its `custom_block`
+starts with `on_linux`, `on_system` or `app_image`, at any depth. The line is
+also left out when the `custom_block` mentions `depends_on` and any of
+`:macos`, `macos:` (as in `maximum_macos:`), `:linux` or `linux:`, since a
+second OS dependency is redundant.
+
+The `custom_block` is scanned as plain text, so a stanza word inside a
+string, a comment or a heredoc body counts as well. A match too many only
+leaves out the `depends_on :macos` line or wraps the download in `on_macos`,
+and Homebrew still loads the cask; a missed match would add
+`depends_on :macos` beside a real `on_linux`, which Homebrew refuses to load.
 
 A flat single-download cask whose `custom_block` gives it a Linux side puts
 its `sha256` / `url` (and `app` / `service`) inside `on_macos`, so a Linux
@@ -394,9 +400,9 @@ A lipo'd universal binary has the synthetic `darwin-universal` target
 (architecture `all`) and serves every Mac. In the cask it fills whichever of
 the `on_arm` / `on_intel` slots no per-arch macOS artifact fills: beside an
 `arm64` build alone, `on_arm` downloads the `arm64` build and `on_intel` the
-universal one. The universal artifact fills that slot only when it carries
-the same build id as the per-arch artifact; otherwise it is left out and `-v`
-names it as skipped. When both slots are filled the
+universal one. The universal artifact fills that slot only when it and the
+per-arch artifact carry the same build id; when the ids differ or either one
+has none, it is left out and `-v` names it as skipped. When both slots are filled the
 universal artifact is left out, and `-v` prints:
 
 ```text

@@ -19,8 +19,8 @@ use anodizer_core::context::Context;
 use anyhow::Result;
 
 use super::{
-    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_crate_scoped, validate_json,
-    yaml_to_json,
+    PublisherSchemaValidator, SchemaFinding, SchemaPass, TagResolver, validate_crate_scoped,
+    validate_json, yaml_to_json,
 };
 
 /// The snap.yaml metadata schema (draft 2020-12), authored from snapd's own
@@ -54,6 +54,7 @@ impl PublisherSchemaValidator for SnapcraftSchemaValidator {
         &self,
         ctx: &mut Context,
         resolve_tag: TagResolver<'_>,
+        _pass: SchemaPass,
     ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
         let mut findings = Vec::new();
@@ -261,6 +262,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -346,6 +348,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -391,6 +394,7 @@ mod tests {
             .validate(
                 &mut ctx_a,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -418,6 +422,7 @@ mod tests {
             .validate(
                 &mut ctx_b,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -450,6 +455,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs without erroring on the absent binary");
         assert!(
@@ -487,6 +493,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -515,6 +522,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(

@@ -5,7 +5,7 @@ use super::cask::{
     CaskParams, generate_cask, render_additional_url_params, render_uninstall_block,
     render_zap_block,
 };
-use super::cask_scope::find_top_level_cask_artifact;
+use super::cask_scope::has_top_level_cask_artifact;
 use super::commit_msg::render_commit_msg;
 use super::formula::build_depends_directives;
 use anodizer_core::config::HomebrewCaskConfig;
@@ -188,7 +188,7 @@ fn render_top_level_cask_inner(
     // name, so it carries the spelling the user wrote.
     let display_name = cask_cfg.name.as_deref().unwrap_or(&ctx.config.project_name);
 
-    if find_top_level_cask_artifact(ctx, cask_cfg.ids.as_deref()).is_none() {
+    if !has_top_level_cask_artifact(ctx, cask_cfg.ids.as_deref()) {
         // Distinguish "no darwin build exists at all" (a genuine
         // NotApplicable skip — e.g. a Linux-only pipeline or a per-crate
         // publish-only pass over a library workspace) from "an `ids:` filter
@@ -198,7 +198,7 @@ fn render_top_level_cask_inner(
         // typo is caught at release time rather than when `brew install`
         // 404s.
         let ids_set = cask_cfg.ids.as_deref().is_some_and(|ids| !ids.is_empty());
-        if ids_set && find_top_level_cask_artifact(ctx, None).is_some() {
+        if ids_set && has_top_level_cask_artifact(ctx, None) {
             anyhow::bail!(
                 "homebrew_casks: cask '{}' has `ids: {:?}` but no macOS artifact \
                  matches those ids, even though other macOS artifacts exist. This is \
@@ -591,7 +591,9 @@ pub fn publish_top_level_homebrew_casks(
         // return is a config-vs-scope mismatch — no in-scope macOS artifact —
         // which is not-applicable, not a failure. Same render the offline
         // schema validator drives.
-        let Some(rendered) = render_top_level_cask_inner(ctx, cask_cfg, &cask_name, log)? else {
+        let render_log = super::cask_scope::publisher_render_log(ctx, log);
+        let Some(rendered) = render_top_level_cask_inner(ctx, cask_cfg, &cask_name, &render_log)?
+        else {
             continue;
         };
         applicable += 1;

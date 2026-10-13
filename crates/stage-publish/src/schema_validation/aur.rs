@@ -21,7 +21,9 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
-use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, validate_crate_scoped};
+use super::{
+    PublisherSchemaValidator, SchemaFinding, SchemaPass, TagResolver, validate_crate_scoped,
+};
 use crate::aur::{
     AurRendered, crate_has_aur_linux_archive, is_aur_per_crate_configured,
     render_aur_pkgbuild_and_srcinfo_for_crate,
@@ -43,6 +45,7 @@ impl PublisherSchemaValidator for AurSchemaValidator {
         &self,
         ctx: &mut Context,
         resolve_tag: TagResolver<'_>,
+        _pass: SchemaPass,
     ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
         // Threaded into the `bash -n` layer: an AUR push is a force-push, not a
@@ -656,6 +659,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -724,6 +728,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -888,6 +893,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -932,6 +938,7 @@ mod tests {
             .validate(
                 &mut ctx_a,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -962,6 +969,7 @@ mod tests {
             .validate(
                 &mut ctx_b,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -1006,6 +1014,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs without erroring on the absent archive");
         assert!(
@@ -1055,6 +1064,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect_err("a full build with binary AUR configured but no linux archive must error");
         assert!(
@@ -1100,6 +1110,7 @@ mod tests {
         let result = AurSchemaValidator.validate(
             &mut ctx,
             &crate::schema_validation::test_current_version_resolver(),
+            crate::schema_validation::SchemaPass::EmissionValidate,
         );
         assert!(
             result.is_err(),
@@ -1135,6 +1146,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -1171,6 +1183,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -1242,6 +1255,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -1432,6 +1446,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert_eq!(
@@ -1468,6 +1483,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert_eq!(
@@ -1510,6 +1526,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(findings.is_empty(), "got: {findings:?}");
@@ -1541,6 +1558,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert_eq!(findings.len(), 1, "got: {findings:?}");
@@ -1578,6 +1596,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert_eq!(findings.len(), 1, "one finding, got: {findings:?}");
@@ -1640,6 +1659,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(findings.is_empty(), "got: {findings:?}");
@@ -1690,6 +1710,7 @@ mod tests {
             &mut ctx,
             &log,
             &crate::schema_validation::test_current_version_resolver(),
+            crate::schema_validation::SchemaPass::EmissionValidate,
         )
         .expect_err("two entries naming one package fail the pass");
         let message = format!("{err:#}");

@@ -15,138 +15,64 @@ require_relative "{{ custom_require | ruby_escape }}"
 class {{ class_name }} < Formula
   desc "{{ description | ruby_escape }}"
   homepage "{{ homepage | ruby_escape }}"
-{% if license_stanza %}  {{ license_stanza }}
-{% elif license %}  license "{{ license | ruby_escape }}"
-{% endif %}
+{% if single_archive %}  url "{{ single_url | ruby_escape }}"{{ url_args }}
   version "{{ version | ruby_escape }}"
-
-{% if single_archive %}  url "{{ single_url | ruby_escape }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
-    headers: [
-{% for header in url_headers %}      "{{ header | ruby_escape }}",
-{% endfor %}    ]{% endif %}
-
   sha256 "{{ single_sha256 | ruby_escape }}"
+{% else %}  version "{{ version | ruby_escape }}"
+{% endif %}{% if license_stanza %}  {{ license_stanza }}
+{% elif license %}  license "{{ license | ruby_escape }}"
 {% endif %}{% for entry in unknown_entries %}  # platform: {{ entry.platform }}
-  url "{{ entry.url | ruby_escape }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
-    headers: [
-{% for header in url_headers %}      "{{ header | ruby_escape }}",
-{% endfor %}    ]{% endif %}
-
+  url "{{ entry.url | ruby_escape }}"{{ url_args }}
   sha256 "{{ entry.sha256 | ruby_escape }}"
+{% endfor %}{% if has_livecheck %}
+  livecheck do
+{% for line in livecheck_lines %}    {{ line }}
+{% endfor %}  end
+{% endif %}{% if global_deps or depends_on_macos or depends_on_linux %}
+{% endif %}{% for dep in global_deps %}  depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
 {% endfor %}{% if depends_on_macos %}  depends_on :macos
 {% endif %}{% if depends_on_linux %}  depends_on :linux
-{% endif %}{% if has_macos %}  on_macos do
-{% for dep in macos_deps %}    depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
-{% endfor %}{% if has_only_amd64_macos %}    url "{{ macos_entries[0].url | ruby_escape }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
-      headers: [
-{% for header in url_headers %}        "{{ header | ruby_escape }}",
-{% endfor %}      ]{% endif %}
-
-    sha256 "{{ macos_entries[0].sha256 | ruby_escape }}"
-
-    def install
-{% for line in install_lines %}      {{ line }}
-{% endfor %}{% for line in extra_install_lines %}      {{ line }}
-{% endfor %}    end
-
-    if Hardware::CPU.arm?
-      def caveats
-        <<~EOS
-          The darwin_arm64 architecture is not supported for the {{ name }}
-          formula at this time. The darwin_amd64 binary may work in compatibility
-          mode, but it might not be fully supported.
-        EOS
-      end
-    end
-{% elif macos_has_arch %}{% for entry in macos_entries %}    {{ entry.arch_block }} do
-      url "{{ entry.url | ruby_escape }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
-        headers: [
-{% for header in url_headers %}          "{{ header | ruby_escape }}",
-{% endfor %}        ]{% endif %}
-
+{% endif %}{% for os in os_blocks %}
+  {{ os.opener }} do
+{% for dep in os.deps %}    depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
+{% endfor %}{% if os.deps and os.entries %}
+{% endif %}{% for entry in os.entries %}    {{ entry.opener }}
+      url "{{ entry.url | ruby_escape }}"{{ nested_url_args }}
       sha256 "{{ entry.sha256 | ruby_escape }}"
-
-      def install
-{% for line in install_lines %}        {{ line }}
-{% endfor %}{% for line in extra_install_lines %}        {{ line }}
-{% endfor %}      end
     end
-{% endfor %}{% else %}{% for entry in macos_entries %}    url "{{ entry.url | ruby_escape }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
-      headers: [
-{% for header in url_headers %}        "{{ header | ruby_escape }}",
-{% endfor %}      ]{% endif %}
-
-    sha256 "{{ entry.sha256 | ruby_escape }}"
-
-    def install
-{% for line in install_lines %}      {{ line }}
-{% endfor %}{% for line in extra_install_lines %}      {{ line }}
-{% endfor %}    end
-{% endfor %}{% endif %}  end
-{% endif %}{% if has_linux %}  on_linux do
-{% for dep in linux_deps %}    depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
-{% endfor %}{% if linux_has_arch %}{% for entry in linux_entries %}    {{ entry.arch_block }}
-      url "{{ entry.url | ruby_escape }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
-        headers: [
-{% for header in url_headers %}          "{{ header | ruby_escape }}",
-{% endfor %}        ]{% endif %}
-
-      sha256 "{{ entry.sha256 | ruby_escape }}"
-
-      def install
-{% for line in install_lines %}        {{ line }}
-{% endfor %}{% for line in extra_install_lines %}        {{ line }}
-{% endfor %}      end
-    end
-{% endfor %}{% else %}{% for entry in linux_entries %}    url "{{ entry.url | ruby_escape }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
-      headers: [
-{% for header in url_headers %}        "{{ header | ruby_escape }}",
-{% endfor %}      ]{% endif %}
-
-    sha256 "{{ entry.sha256 | ruby_escape }}"
-
-    def install
-{% for line in install_lines %}      {{ line }}
-{% endfor %}{% for line in extra_install_lines %}      {{ line }}
-{% endfor %}    end
-{% endfor %}{% endif %}  end
-{% endif %}{% if global_deps %}
-{% endif %}{% for dep in global_deps %}  depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
-{% endfor %}{% if macos_deps and not has_macos %}
-  on_macos do
-{% for dep in macos_deps %}    depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
 {% endfor %}  end
-{% endif %}{% if linux_deps and not has_linux %}
-  on_linux do
-{% for dep in linux_deps %}    depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
-{% endfor %}  end
-{% endif %}{% if conflicts %}
+{% endfor %}{% if conflicts %}
 {% endif %}{% for c in conflicts %}  conflicts_with "{{ c.name | ruby_escape }}"{% if c.because %}, because: "{{ c.because | ruby_escape }}"{% endif %}
 {% endfor %}{% if custom_block %}
 {{ custom_block }}
-{% endif %}{% if single_archive or not has_platform_blocks %}
+{% endif %}
   def install
 {% for line in install_lines %}    {{ line }}
 {% endfor %}{% for line in extra_install_lines %}    {{ line }}
 {% endfor %}  end
-{% endif %}{% if has_post_install %}
+{% if has_post_install %}
   def post_install
 {% for line in post_install_lines %}    {{ line }}
 {% endfor %}  end
-{% endif %}
-{% if has_livecheck %}  livecheck do
-{% for line in livecheck_lines %}    {{ line }}
-{% endfor %}  end
-
-{% endif %}  test do
-{% for line in test_lines %}    {{ line }}
-{% endfor %}  end
-{% if has_caveats %}
+{% endif %}{% if has_caveats or arm_caveat %}
   def caveats
-    <<~EOS
-      {{ caveats }}
+{% if has_caveats and arm_caveat %}    message = <<~EOS
+{{ caveats }}
     EOS
-  end
+    return message if OS.linux? || Hardware::CPU.intel?
+
+    message + <<~EOS
+{{ arm_caveat }}
+    EOS
+{% elif has_caveats %}    <<~EOS
+{{ caveats }}
+    EOS
+{% else %}    return if OS.linux? || Hardware::CPU.intel?
+
+    <<~EOS
+{{ arm_caveat }}
+    EOS
+{% endif %}  end
 {% endif %}{% if has_plist %}
   plist_options startup: true
 
@@ -159,12 +85,13 @@ class {{ class_name }} < Formula
   service do
 {{ service }}
   end
-{% endif %}end
+{% endif %}
+  test do
+{% for line in test_lines %}    {{ line }}
+{% endfor %}  end
+end
 "#;
 
-// ---------------------------------------------------------------------------
-// Homebrew Cask Tera template
-// ---------------------------------------------------------------------------
 /// Optional extended fields for formula generation.
 #[derive(Default)]
 pub struct FormulaOptions<'a> {
@@ -334,16 +261,11 @@ pub fn generate_formula_with_opts(
     }
 
     // Build per-OS entry lists only for multi-archive layout
-    let empty_vec: Vec<std::collections::HashMap<&str, &str>> = Vec::new();
-    let (unknown_vals, macos_vals, linux_vals, macos_has_arch, linux_has_arch) = if single_archive {
-        (
-            empty_vec.clone(),
-            empty_vec.clone(),
-            empty_vec,
-            false,
-            false,
-        )
-    } else {
+    let mut unknown_vals: Vec<std::collections::HashMap<&str, &str>> = Vec::new();
+    let mut macos_vals: Vec<ArchEntry> = Vec::new();
+    let mut linux_vals: Vec<ArchEntry> = Vec::new();
+    let mut arm_caveat = String::new();
+    if !single_archive {
         let has_arch = |entries: &[(&str, &str, &str)]| -> bool {
             entries.iter().any(|(p, _, _)| {
                 p.contains("arm64")
@@ -361,7 +283,7 @@ pub fn generate_formula_with_opts(
         // contain "darwin") are already excluded before this render — an iOS
         // archive can no longer reach this `# platform:` url block. Retained so a
         // future eligibility widening cannot silently drop an unclassified entry.
-        let unknown: Vec<_> = archives
+        unknown_vals = archives
             .iter()
             .filter(|(p, _, _)| {
                 !p.contains("darwin") && !p.contains("macos") && !p.contains("linux")
@@ -380,95 +302,101 @@ pub fn generate_formula_with_opts(
             .filter(|(p, _, _)| p.contains("darwin") || p.contains("macos"))
             .copied()
             .collect();
-        let macos_has = !macos_archives.is_empty() && has_arch(&macos_archives);
-        let macos: Vec<_> = macos_archives
-            .iter()
-            .map(|(platform, url, sha256)| {
-                let arch_block = if platform.contains("arm64") || platform.contains("aarch64") {
-                    "on_arm"
-                } else {
-                    "on_intel"
-                };
-                let mut m = std::collections::HashMap::new();
-                m.insert("url", *url);
-                m.insert("sha256", *sha256);
-                m.insert("arch_block", arch_block);
-                m
-            })
-            .collect();
+        let only_intel_macos = macos_archives.len() == 1
+            && !macos_archives[0].0.contains("arm64")
+            && !macos_archives[0].0.contains("aarch64")
+            && has_arch(&macos_archives);
+        if only_intel_macos {
+            arm_caveat = format!(
+                "      The darwin_arm64 architecture is not supported for the {name}\n      \
+                 formula at this time. The darwin_amd64 binary may work in compatibility\n      \
+                 mode, but it might not be fully supported."
+            );
+        }
+        // Homebrew allows `url` inside `on_macos` only under an architecture
+        // block, so an archive that serves every Mac (a universal build, or
+        // the Intel build an Apple Silicon Mac runs under Rosetta) is listed
+        // under both.
+        if !has_arch(&macos_archives) || only_intel_macos {
+            macos_vals = macos_archives
+                .iter()
+                .flat_map(|(_, url, sha256)| {
+                    [ON_ARM, ON_INTEL].map(|opener| ArchEntry::new(opener, url, sha256))
+                })
+                .collect();
+        } else {
+            macos_vals = macos_archives
+                .iter()
+                .map(|(platform, url, sha256)| {
+                    let opener = if platform.contains("arm64") || platform.contains("aarch64") {
+                        ON_ARM
+                    } else {
+                        ON_INTEL
+                    };
+                    ArchEntry::new(opener, url, sha256)
+                })
+                .collect();
+        }
 
+        let is_32_bit_arm = |p: &str| {
+            p.contains("armv6") || p.contains("armv7") || {
+                let l = p.to_lowercase();
+                (l.contains("-arm") || l.contains("_arm"))
+                    && !l.contains("arm64")
+                    && !l.contains("aarch64")
+            }
+        };
         let linux_archives: Vec<_> = archives
             .iter()
             .filter(|(p, _, _)| p.contains("linux"))
             .copied()
             .collect();
-        let linux_has = !linux_archives.is_empty()
-            && linux_archives.iter().any(|(p, _, _)| {
-                p.contains("arm64")
-                    || p.contains("aarch64")
-                    || p.contains("amd64")
-                    || p.contains("x86_64")
-                    || p.contains("armv6")
-                    || p.contains("armv7")
-                    || {
-                        let l = p.to_lowercase();
-                        (l.contains("-arm") || l.contains("_arm"))
-                            && !l.contains("arm64")
-                            && !l.contains("aarch64")
-                    }
-            });
-        let linux: Vec<_> = linux_archives
+        let linux_has_arch = linux_archives
             .iter()
-            .map(|(platform, url, sha256)| {
-                let arch_block = if platform.contains("arm64") || platform.contains("aarch64") {
-                    "if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?"
-                } else if platform.contains("amd64") || platform.contains("x86_64") {
-                    "if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?"
-                } else if platform.contains("armv6") || platform.contains("armv7") || {
-                    let l = platform.to_lowercase();
-                    (l.contains("-arm") || l.contains("_arm"))
-                        && !l.contains("arm64")
-                        && !l.contains("aarch64")
-                } {
-                    "if Hardware::CPU.arm? && !Hardware::CPU.is_64_bit?"
-                } else {
-                    "if Hardware::CPU.intel?"
-                };
-                let mut m = std::collections::HashMap::new();
-                m.insert("url", *url);
-                m.insert("sha256", *sha256);
-                m.insert("arch_block", arch_block);
-                m
-            })
-            .collect();
-
-        (unknown, macos, linux, macos_has, linux_has)
-    };
+            .any(|(p, _, _)| has_arch(&[(*p, "", "")]) || is_32_bit_arm(p));
+        if linux_has_arch {
+            linux_vals = linux_archives
+                .iter()
+                .map(|(platform, url, sha256)| {
+                    let opener = if platform.contains("arm64") || platform.contains("aarch64") {
+                        "if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?"
+                    } else if platform.contains("amd64") || platform.contains("x86_64") {
+                        "if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?"
+                    } else if is_32_bit_arm(platform) {
+                        "if Hardware::CPU.arm? && !Hardware::CPU.is_64_bit?"
+                    } else {
+                        "if Hardware::CPU.intel?"
+                    };
+                    ArchEntry::new(opener, url, sha256)
+                })
+                .collect();
+        } else {
+            linux_vals = linux_archives
+                .iter()
+                .flat_map(|(_, url, sha256)| {
+                    [ON_ARM, ON_INTEL].map(|opener| ArchEntry::new(opener, url, sha256))
+                })
+                .collect();
+        }
+    }
 
     let has_macos = !macos_vals.is_empty();
     let has_linux = !linux_vals.is_empty();
     let depends_on_macos = has_macos && !has_linux;
     let depends_on_linux = has_linux && !has_macos;
-    let has_only_amd64_macos = has_macos
-        && macos_vals.len() == 1
-        && macos_vals
-            .first()
-            .and_then(|m| m.get("arch_block"))
-            .map(|a| *a == "on_intel")
-            .unwrap_or(false);
-    let has_platform_blocks = has_macos || has_linux;
 
     ctx.insert("unknown_entries", &unknown_vals);
-    ctx.insert("has_macos", &has_macos);
-    ctx.insert("macos_has_arch", &macos_has_arch);
-    ctx.insert("macos_entries", &macos_vals);
-    ctx.insert("has_linux", &has_linux);
-    ctx.insert("linux_has_arch", &linux_has_arch);
-    ctx.insert("linux_entries", &linux_vals);
     ctx.insert("depends_on_macos", &depends_on_macos);
     ctx.insert("depends_on_linux", &depends_on_linux);
-    ctx.insert("has_only_amd64_macos", &has_only_amd64_macos);
-    ctx.insert("has_platform_blocks", &has_platform_blocks);
+    ctx.insert("arm_caveat", &arm_caveat);
+
+    let url_strategy = opts.download_strategy.unwrap_or("");
+    let url_headers: Vec<&str> = opts
+        .url_headers
+        .map(|h| h.iter().map(|s| s.as_str()).collect())
+        .unwrap_or_default();
+    ctx.insert("url_args", &url_args(url_strategy, &url_headers, 6));
+    ctx.insert("nested_url_args", &url_args(url_strategy, &url_headers, 10));
 
     // Dependencies: split into global (no OS), macos-only, and linux-only.
     #[derive(serde::Serialize)]
@@ -507,8 +435,28 @@ pub fn generate_formula_with_opts(
         (Vec::new(), Vec::new(), Vec::new())
     };
     ctx.insert("global_deps", &global_deps);
-    ctx.insert("macos_deps", &macos_deps);
-    ctx.insert("linux_deps", &linux_deps);
+
+    // Homebrew allows one `on_macos` and one `on_linux` block, and orders
+    // them that way, so each OS's dependencies and downloads share its block.
+    #[derive(serde::Serialize)]
+    struct OsBlock {
+        opener: &'static str,
+        deps: Vec<DepEntry>,
+        entries: Vec<ArchEntry>,
+    }
+    let os_blocks: Vec<OsBlock> = [
+        ("on_macos", macos_deps, macos_vals),
+        ("on_linux", linux_deps, linux_vals),
+    ]
+    .into_iter()
+    .filter(|(_, deps, entries)| !deps.is_empty() || !entries.is_empty())
+    .map(|(opener, deps, entries)| OsBlock {
+        opener,
+        deps,
+        entries,
+    })
+    .collect();
+    ctx.insert("os_blocks", &os_blocks);
 
     // Conflicts — build serializable entries with name + optional because
     #[derive(serde::Serialize)]
@@ -529,13 +477,12 @@ pub fn generate_formula_with_opts(
 
     // Optional formula stanzas — each `unwrap_or("")` below pairs with either
     // a `{% if foo %}` truthy-guard or a sibling `has_<foo>` boolean in
-    // FORMULA_TEMPLATE. Empty values render as no-stanza; Homebrew formulae
-    // accept omitting caveats, plist, service, post_install, download_strategy,
-    // custom_require, and custom_block — none are required by `brew style`.
-    // The `license` field at line ~293 is likewise guarded by `{% if license %}`.
+    // FORMULA_TEMPLATE. Empty values render as no-stanza. The free-form Ruby
+    // ones are re-indented to their place in the formula, because
+    // `brew style` checks the indentation of every line.
     let has_caveats = opts.caveats.is_some();
     ctx.insert("has_caveats", &has_caveats);
-    ctx.insert("caveats", opts.caveats.unwrap_or(""));
+    ctx.insert("caveats", &reindent(opts.caveats.unwrap_or(""), "      "));
 
     let install_lines: Vec<&str> = install.lines().collect();
     let test_lines: Vec<&str> = test.lines().collect();
@@ -558,31 +505,24 @@ pub fn generate_formula_with_opts(
         .unwrap_or_default();
     ctx.insert("post_install_lines", &post_install_lines);
 
-    // Download strategy
-    ctx.insert("download_strategy", &opts.download_strategy.unwrap_or(""));
-
-    // URL headers
-    let url_headers: Vec<&str> = opts
-        .url_headers
-        .map(|h| h.iter().map(|s| s.as_str()).collect())
-        .unwrap_or_default();
-    ctx.insert("url_headers", &url_headers);
-
     // Custom require
     ctx.insert("custom_require", &opts.custom_require.unwrap_or(""));
 
     // Custom block
-    ctx.insert("custom_block", &opts.custom_block.unwrap_or(""));
+    ctx.insert(
+        "custom_block",
+        &reindent(opts.custom_block.unwrap_or(""), "  "),
+    );
 
     // Plist
     let has_plist = opts.plist.is_some();
     ctx.insert("has_plist", &has_plist);
-    ctx.insert("plist", &opts.plist.unwrap_or(""));
+    ctx.insert("plist", &reindent(opts.plist.unwrap_or(""), "      "));
 
     // Service
     let has_service = opts.service.is_some();
     ctx.insert("has_service", &has_service);
-    ctx.insert("service", &opts.service.unwrap_or(""));
+    ctx.insert("service", &reindent(opts.service.unwrap_or(""), "    "));
 
     // Livecheck stanza (lines between `livecheck do` and `end`).
     let has_livecheck = opts.livecheck.is_some();
@@ -608,6 +548,96 @@ pub fn generate_formula_with_opts(
 
     anodizer_core::template::render_static(&tera, "formula", &ctx, "homebrew")
 }
+/// The opener of a block whose `url` is fetched on Apple Silicon or
+/// 64-bit ARM Linux.
+const ON_ARM: &str = "on_arm do";
+/// The opener of a block whose `url` is fetched on an Intel CPU.
+const ON_INTEL: &str = "on_intel do";
+
+/// One download inside an `on_macos` / `on_linux` block, under the
+/// architecture block or condition that `opener` opens.
+#[derive(serde::Serialize)]
+struct ArchEntry {
+    opener: &'static str,
+    url: String,
+    sha256: String,
+}
+
+impl ArchEntry {
+    fn new(opener: &'static str, url: &str, sha256: &str) -> Self {
+        Self {
+            opener,
+            url: url.to_string(),
+            sha256: sha256.to_string(),
+        }
+    }
+}
+
+/// The keyword arguments that follow a formula `url "…"`, each on its own
+/// line at `column` with the values lined up after the longest key, the
+/// layout `Layout/HashAlignment` asks of a multi-line call. Empty when there
+/// is neither a download strategy nor a header.
+fn url_args(strategy: &str, headers: &[&str], column: usize) -> String {
+    let indent = " ".repeat(column);
+    let mut pairs: Vec<(&str, String)> = Vec::new();
+    if !strategy.is_empty() {
+        pairs.push(("using", strategy.to_string()));
+    }
+    if !headers.is_empty() {
+        let mut list = String::from("[\n");
+        for header in headers {
+            list.push_str(&format!("{indent}  \"{}\",\n", ruby_escape_str(header)));
+        }
+        list.push_str(&indent);
+        list.push(']');
+        pairs.push(("headers", list));
+    }
+    let key_width = pairs.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    pairs
+        .iter()
+        .map(|(key, value)| {
+            let pad = " ".repeat(key_width - key.len() + 1);
+            format!(",\n{indent}{key}:{pad}{value}")
+        })
+        .collect()
+}
+
+/// Re-indent free-form Ruby supplied by the user: drop leading and trailing
+/// blank lines, strip the indentation every line shares, and put `indent`
+/// before each non-blank line. Relative indentation inside the text is kept,
+/// so a body written flush-left in YAML and one already indented for the
+/// formula render the same.
+pub(super) fn reindent(text: &str, indent: &str) -> String {
+    let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+    let first = lines
+        .iter()
+        .position(|l| !l.is_empty())
+        .unwrap_or(lines.len());
+    let last = lines
+        .iter()
+        .rposition(|l| !l.is_empty())
+        .map_or(first, |i| i + 1);
+    let lines = &lines[first..last];
+    let leading = |l: &str| l.len() - l.trim_start_matches([' ', '\t']).len();
+    let common = lines
+        .iter()
+        .filter(|l| !l.is_empty())
+        .map(|l| leading(l))
+        .min()
+        .unwrap_or(0);
+    lines
+        .iter()
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                format!("{indent}{}", &l[common..])
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Build depends_on directives from structured cask dependency config.
 pub(super) fn build_depends_directives(
     deps: Option<&[anodizer_core::config::HomebrewCaskDependencyEntry]>,

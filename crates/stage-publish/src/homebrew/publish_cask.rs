@@ -1,6 +1,6 @@
 //! `publish_cask` — standalone cask publisher (used when the cask needs its
 //! own tap repo, distinct from the formula tap).
-use super::cask_scope::{CaskGenResult, generate_cask_from_context};
+use super::cask_scope::{CaskGenResult, generate_cask_from_context, publisher_render_log};
 use super::commit_msg::render_commit_msg;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
@@ -145,7 +145,13 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         return Ok(());
     }
 
-    let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg, log)?;
+    let cask_result = generate_cask_from_context(
+        ctx,
+        crate_name,
+        hb_cfg,
+        cask_cfg,
+        &publisher_render_log(ctx, log),
+    )?;
 
     // Clone tap repo, write cask, commit, push.
     let tmp_dir = tempfile::tempdir().context("homebrew cask: create temp dir")?;

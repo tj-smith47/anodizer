@@ -17,7 +17,9 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::Result;
 
-use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, validate_crate_scoped};
+use super::{
+    PublisherSchemaValidator, SchemaFinding, SchemaPass, TagResolver, validate_crate_scoped,
+};
 use crate::homebrew::{
     CaskGenResult, crate_has_homebrew_archives, crate_has_macos_cask_artifact,
     is_homebrew_per_crate_configured, render_homebrew_cask_for_crate,
@@ -45,6 +47,7 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
         &self,
         ctx: &mut Context,
         resolve_tag: TagResolver<'_>,
+        pass: SchemaPass,
     ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
         // Threaded into the `ruby -c` layer: a homebrew tap publish is a git
@@ -52,9 +55,14 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
         // `strict` leaves a missing `ruby` a warn+skip — wired uniformly.
         let strict = ctx.render_is_strict();
         let mut findings = Vec::new();
-        // The publisher renders each cask again and prints its `-v` lines
-        // then; the validation render keeps its warnings and status lines.
-        let render_log = log.capped_at(anodizer_core::log::Verbosity::Normal);
+        // Emission validation renders in every mode, snapshot and dry-run
+        // included, so its render prints the cask's `-v` lines once; the
+        // guard and the publisher render the same casks again and keep only
+        // their warnings and status lines.
+        let render_log = match pass {
+            SchemaPass::EmissionValidate => log.clone(),
+            SchemaPass::PrepublishGuard => log.capped_at(anodizer_core::log::Verbosity::Normal),
+        };
 
         // Walk exactly the crate set the live homebrew publisher's `run`
         // iterates (honoring `--crate` selection, else every
@@ -572,6 +580,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("windows shard: homebrew must self-skip, not render a windows-url formula");
         assert!(
@@ -599,6 +608,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect_err(
                 "a full build with homebrew configured but only a windows archive must error",
@@ -632,6 +642,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("a linux archive renders a valid formula");
         assert!(
@@ -665,8 +676,7 @@ mod tests {
         let err = HomebrewSchemaValidator
             .validate(
                 &mut ctx,
-                &crate::schema_validation::test_current_version_resolver(),
-            )
+                &crate::schema_validation::test_current_version_resolver(), crate::schema_validation::SchemaPass::EmissionValidate)
             .expect_err(
                 "a present macOS artifact missing sha256 must error, not be skipped by the OS filter",
             );
@@ -693,6 +703,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -786,6 +797,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -841,6 +853,7 @@ mod tests {
             .validate(
                 &mut ctx_a,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -867,6 +880,7 @@ mod tests {
             .validate(
                 &mut ctx_b,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -910,6 +924,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs without erroring on the absent archive");
         assert!(
@@ -945,6 +960,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -1260,6 +1276,7 @@ end
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -1322,6 +1339,7 @@ end
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -1397,6 +1415,7 @@ end
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs without erroring");
         assert!(
@@ -1440,6 +1459,7 @@ end
         let result = HomebrewSchemaValidator.validate(
             &mut ctx,
             &crate::schema_validation::test_current_version_resolver(),
+            crate::schema_validation::SchemaPass::EmissionValidate,
         );
         let err = result.expect_err(
             "a present-but-broken archive (missing sha256) must surface as an error, \

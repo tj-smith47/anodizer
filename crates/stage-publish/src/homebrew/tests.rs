@@ -266,16 +266,17 @@ fn test_integration_formula_multi_arch_complete_structure() {
     assert!(formula.contains("      url \"https://example.com/my-cli-2.0.0-darwin-arm64.tar.gz\""));
     assert!(formula.contains("      sha256 \"sha_darwin_arm64\""));
 
-    // Per-platform install blocks (no top-level def install for multi-arch)
+    // One top-level install serves every platform: `brew style` refuses a
+    // method defined inside a block.
     assert!(
-        !formula.contains("\n  def install\n"),
-        "multi-arch formula should NOT have top-level def install, got:\n{}",
+        formula.contains("\n  def install\n"),
+        "multi-arch formula should have a top-level def install, got:\n{}",
         formula
     );
     assert_eq!(
         formula.matches("def install").count(),
-        4,
-        "each of 4 arch blocks should have its own def install, got:\n{}",
+        1,
+        "the formula should define install once, got:\n{}",
         formula
     );
     // Linux blocks should use Hardware::CPU guards
@@ -2615,75 +2616,75 @@ fn art_with_url_sha(
     }
 }
 
-/// `find_top_level_cask_artifact` prefers DiskImage over Archive when both
-/// are available for darwin. Pins the selection order.
+/// A context holding `artifacts`, for the cask-download presence tests.
+fn ctx_with_artifacts(artifacts: Vec<Artifact>) -> Context {
+    let mut ctx = Context::new(Config::default(), ContextOptions::default());
+    for a in artifacts {
+        ctx.artifacts.add(a);
+    }
+    ctx
+}
+
+/// A disk image built without a target is a macOS cask download, at the top
+/// level and for its crate, as `build_cask_platform_blocks` places it.
 #[test]
-fn find_top_level_cask_artifact_prefers_disk_image_over_archive() {
-    let config = Config::default();
-    let mut ctx = Context::new(config, ContextOptions::default());
-    ctx.artifacts.add(art_with_url_sha(
-        ArtifactKind::Archive,
-        "mytool-darwin.tar.gz",
-        "aarch64-apple-darwin",
-        "https://e.com/mytool.tar.gz",
-        "archsha",
-    ));
-    ctx.artifacts.add(art_with_url_sha(
+fn a_targetless_disk_image_counts_as_a_macos_cask_download() {
+    let mut dmg = art_with_url_sha(
         ArtifactKind::DiskImage,
         "mytool.dmg",
-        "aarch64-apple-darwin",
+        "",
         "https://e.com/mytool.dmg",
         "dmgsha",
-    ));
-    let got = super::cask_scope::find_top_level_cask_artifact(&ctx, None).expect("artifact found");
-    assert_eq!(got.kind, ArtifactKind::DiskImage, "DiskImage preferred");
+    );
+    dmg.target = None;
+    let ctx = ctx_with_artifacts(vec![dmg]);
+    assert!(super::cask_scope::has_top_level_cask_artifact(&ctx, None));
+    assert!(super::crate_has_macos_cask_artifact(&ctx, "mytool"));
 }
 
-/// `find_top_level_cask_artifact` falls back to Archive when no DiskImage
-/// is present.
+/// A darwin `UploadableBinary` alone is a macOS cask download for both
+/// presence checks.
 #[test]
-fn find_top_level_cask_artifact_falls_back_to_archive() {
-    let config = Config::default();
-    let mut ctx = Context::new(config, ContextOptions::default());
-    ctx.artifacts.add(art_with_url_sha(
-        ArtifactKind::Archive,
-        "mytool-darwin.tar.gz",
+fn a_lone_darwin_binary_counts_as_a_macos_cask_download() {
+    let ctx = ctx_with_artifacts(vec![art_with_url_sha(
+        ArtifactKind::UploadableBinary,
+        "mytool",
         "aarch64-apple-darwin",
-        "https://e.com/mytool.tar.gz",
-        "archsha",
-    ));
-    let got = super::cask_scope::find_top_level_cask_artifact(&ctx, None).expect("artifact found");
-    assert_eq!(got.kind, ArtifactKind::Archive);
+        "https://e.com/mytool",
+        "binsha",
+    )]);
+    assert!(super::cask_scope::has_top_level_cask_artifact(&ctx, None));
+    assert!(super::crate_has_macos_cask_artifact(&ctx, "mytool"));
 }
 
-/// `find_top_level_cask_artifact` returns None when nothing matches darwin/macos.
+/// Linux artifacts, Apple-but-not-macOS archives (`*-apple-ios`, `-watchos`,
+/// `-tvos`) and a target-less archive are no macOS cask download.
 #[test]
-fn find_top_level_cask_artifact_returns_none_for_no_macos() {
-    let config = Config::default();
-    let mut ctx = Context::new(config, ContextOptions::default());
-    ctx.artifacts.add(art_with_url_sha(
+fn linux_and_non_macos_apple_artifacts_are_no_macos_cask_download() {
+    let mut targetless = art_with_url_sha(
         ArtifactKind::Archive,
-        "mytool-linux.tar.gz",
-        "x86_64-unknown-linux-gnu",
+        "mytool.tar.gz",
+        "",
         "https://e.com/mytool.tar.gz",
-        "linuxsha",
-    ));
-    assert!(super::cask_scope::find_top_level_cask_artifact(&ctx, None).is_none());
-}
-
-/// `find_top_level_cask_artifact` excludes Apple-but-not-macOS archives
-/// (`*-apple-ios`/`-watchos`/`-tvos`): they match the old broad
-/// `contains("apple")` selector but carry no `brew`-installable binary.
-#[test]
-fn find_top_level_cask_artifact_excludes_apple_non_macos() {
-    let config = Config::default();
-    let mut ctx = Context::new(config, ContextOptions::default());
+        "sha",
+    );
+    targetless.target = None;
+    let mut artifacts = vec![
+        targetless,
+        art_with_url_sha(
+            ArtifactKind::Archive,
+            "mytool-linux.tar.gz",
+            "x86_64-unknown-linux-gnu",
+            "https://e.com/mytool.tar.gz",
+            "linuxsha",
+        ),
+    ];
     for triple in [
         "aarch64-apple-ios",
         "aarch64-apple-watchos",
         "aarch64-apple-tvos",
     ] {
-        ctx.artifacts.add(art_with_url_sha(
+        artifacts.push(art_with_url_sha(
             ArtifactKind::Archive,
             &format!("mytool-{triple}.tar.gz"),
             triple,
@@ -2691,36 +2692,32 @@ fn find_top_level_cask_artifact_excludes_apple_non_macos() {
             "sha",
         ));
     }
-    assert!(
-        super::cask_scope::find_top_level_cask_artifact(&ctx, None).is_none(),
-        "iOS/watchOS/tvOS archives must not be selected as a cask url"
-    );
+    let ctx = ctx_with_artifacts(artifacts);
+    assert!(!super::cask_scope::has_top_level_cask_artifact(&ctx, None));
+    assert!(!super::crate_has_macos_cask_artifact(&ctx, "mytool"));
 }
 
-/// `find_top_level_cask_artifact` with an IDs filter excludes non-matching
-/// artifacts. Pins the ids filter behaviour.
+/// The `ids:` filter narrows the top-level presence check, which is the
+/// pair of answers the publisher reads to call an unmatched filter a typo.
 #[test]
-fn find_top_level_cask_artifact_filters_by_id() {
-    let config = Config::default();
-    let mut ctx = Context::new(config, ContextOptions::default());
+fn has_top_level_cask_artifact_filters_by_id() {
     let mut a = art_with_url_sha(
-        ArtifactKind::DiskImage,
-        "mytool.dmg",
+        ArtifactKind::UploadableBinary,
+        "mytool",
         "aarch64-apple-darwin",
-        "https://e.com/mytool.dmg",
-        "dmgsha",
+        "https://e.com/mytool",
+        "binsha",
     );
     a.metadata.insert("id".to_string(), "stable".to_string());
-    ctx.artifacts.add(a);
-    // Only `nightly` IDs are wanted => returns None.
-    assert!(
-        super::cask_scope::find_top_level_cask_artifact(&ctx, Some(&["nightly".to_string()]))
-            .is_none()
-    );
-    // `stable` IDs requested => the artifact is returned.
-    let got = super::cask_scope::find_top_level_cask_artifact(&ctx, Some(&["stable".to_string()]))
-        .expect("artifact must match");
-    assert_eq!(got.kind, ArtifactKind::DiskImage);
+    let ctx = ctx_with_artifacts(vec![a]);
+    assert!(!super::cask_scope::has_top_level_cask_artifact(
+        &ctx,
+        Some(&["nightly".to_string()])
+    ));
+    assert!(super::cask_scope::has_top_level_cask_artifact(
+        &ctx,
+        Some(&["stable".to_string()])
+    ));
 }
 
 /// `generate_cask` with a multi-platform `platforms` payload uses the
@@ -3447,9 +3444,10 @@ fn a_flat_cask_beside_a_custom_linux_block_puts_its_download_inside_on_macos() {
     }
 }
 
-/// What `custom_block_os_facts` reads from a `custom_block`, case by case: a
-/// statement counts at any depth, a word inside a string, comment or heredoc
-/// body is not code, and only a statement's first word decides what it is.
+/// What `custom_block_os_facts` reads from a `custom_block`, case by case:
+/// a statement counts at any depth when its first word opens a Linux side,
+/// and the raw text is scanned with strings, comments and heredoc bodies
+/// read as code, so the scan matches more than Ruby would and never less.
 #[test]
 fn custom_block_os_facts_reads_statements_at_any_depth() {
     use super::cask::{CustomBlockOsFacts, custom_block_os_facts};
@@ -3486,79 +3484,14 @@ fn custom_block_os_facts_reads_statements_at_any_depth() {
             facts(false, true),
         ),
         (
-            "while x do … end, then on_linux",
-            "while x do\n  y\nend\non_linux do\nend",
-            facts(true, false),
-        ),
-        (
-            "until and for … do, then on_linux",
-            "until x do\n  y\nend\nfor a in b do\n  c\nend\non_linux do\nend",
-            facts(true, false),
-        ),
-        (
-            "lowercase heredoc tag with do in the body, then on_linux",
-            "caveats <<~eos\n  please do this\n  on_linux\n  depends_on :macos\neos\non_linux do\nend",
-            facts(true, false),
-        ),
-        (
-            "heredoc body alone",
-            "caveats <<-EOS\n  on_linux do\n  app_image \"x\"\n  depends_on :macos\n  EOS\n",
-            facts(false, false),
-        ),
-        (
-            "quoted heredoc tag",
-            "caveats <<'EOS'\non_linux\nEOS\n",
-            facts(false, false),
-        ),
-        (
-            "endless def, then on_linux",
-            "def foo = 1\non_linux do\nend",
-            facts(true, false),
-        ),
-        (
-            "if … then … else … end expression, then on_linux",
-            "v = if a then 1 else 2 end\non_linux do\nend",
-            facts(true, false),
-        ),
-        (
-            "(1..2).end, then on_linux",
-            "(1..2).end\non_linux do\nend",
-            facts(true, false),
-        ),
-        (
-            "end_foo, then a dependency",
-            "on_macos do\n  end_foo\nend\ndepends_on maximum_macos: :sonoma",
+            "depends_on spread over several lines",
+            "depends_on(\n  macos: \">= :big_sur\"\n)",
             facts(false, true),
         ),
         (
-            "end_foo is not on_linux",
-            "end_foo\non_linux_helper\n",
-            facts(false, false),
-        ),
-        (
-            "an OS name in a trailing comment",
-            "depends_on cask: \"x\" # :macos",
-            facts(false, false),
-        ),
-        (
-            "an OS name inside a string",
-            "depends_on cask: \":macos\"",
-            facts(false, false),
-        ),
-        (
-            "on_linux inside a string",
-            "caveats \"on_linux\"\n\"on_linux\"\n'on_linux'",
-            facts(false, false),
-        ),
-        (
-            "on_linux after a string with a ; inside it",
-            "caveats \"a; on_linux\"; on_linux do\nend",
-            facts(true, false),
-        ),
-        (
-            "a commented-out stanza",
-            "# on_linux do\n# depends_on :macos",
-            facts(false, false),
+            "maximum_macos: contains macos:",
+            "depends_on maximum_macos: :sonoma",
+            facts(false, true),
         ),
         ("bare :macos", "depends_on :macos", facts(false, true)),
         ("linux: hash", "depends_on linux: :any", facts(false, true)),
@@ -3568,8 +3501,59 @@ fn custom_block_os_facts_reads_statements_at_any_depth() {
             facts(false, false),
         ),
         (
+            "an OS name without a depends_on",
+            "caveats \":macos\"",
+            facts(false, false),
+        ),
+        (
+            "an apostrophe in a %q string, then on_linux",
+            "caveats %q(Don't forget)\non_linux do\nend",
+            facts(true, false),
+        ),
+        (
+            "a << shift, then on_linux",
+            "m = 1<<FLAGS\non_linux do\nend",
+            facts(true, false),
+        ),
+        (
+            "a quoted heredoc tag with a dash, then on_linux",
+            "caveats <<~'END-TEXT'\n  text\nEND-TEXT\non_linux do\nend",
+            facts(true, false),
+        ),
+        (
+            "on_linux after a string with a ; inside it",
+            "caveats \"a; on_linux\"; on_linux do\nend",
+            facts(true, false),
+        ),
+        // Over-matches the scan accepts: Homebrew still loads the cask.
+        (
+            "on_linux inside a %w[] list",
+            "%w[\n on_linux\n]",
+            facts(true, false),
+        ),
+        (
+            "on_linux on a heredoc body line",
+            "caveats <<~EOS\n  on_linux\nEOS\n",
+            facts(true, false),
+        ),
+        (
+            "an OS name in a trailing comment",
+            "depends_on cask: \"x\" # :macos",
+            facts(false, true),
+        ),
+        (
+            "an OS name inside a string",
+            "depends_on cask: \":macos\"",
+            facts(false, true),
+        ),
+        (
             "on_linux not leading its statement",
-            "x.on_linux\nfoo on_linux",
+            "x.on_linux\nfoo on_linux\n\"on_linux\"\n# on_linux",
+            facts(false, false),
+        ),
+        (
+            "end_foo is not on_linux",
+            "end_foo\non_linux_helper\n",
             facts(false, false),
         ),
     ];
@@ -3690,13 +3674,15 @@ fn a_universal_artifact_fills_the_architecture_no_per_arch_build_covers() {
         ("mytool-darwin-universal.tar.gz", "darwin-universal", 'a'),
         ("mytool-darwin-arm64.tar.gz", "aarch64-apple-darwin", 'b'),
     ] {
-        ctx.artifacts.add(art_with_url_sha(
+        let mut art = art_with_url_sha(
             ArtifactKind::Archive,
             name,
             target,
             &format!("https://e.com/v1.2.3/{name}"),
             &sha.to_string().repeat(64),
-        ));
+        );
+        art.metadata.insert("id".to_string(), "cli".to_string());
+        ctx.artifacts.add(art);
     }
     let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
     let c = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &log)
@@ -3780,6 +3766,148 @@ fn a_universal_artifact_fills_a_slot_only_beside_its_own_build() {
                 "{c}"
             );
         }
+    }
+}
+
+/// A universal macOS artifact never fills the empty slot when either side
+/// has no build id: two artifacts without an id are not known to be one
+/// build. Each side's missing id is named in its own verbose line.
+#[test]
+fn a_universal_artifact_without_a_matching_id_on_both_sides_fills_no_slot() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let cask_cfg = HomebrewCaskConfig {
+        name: Some("mytool".to_string()),
+        ..Default::default()
+    };
+    let cases = [
+        (
+            None,
+            Some("cli"),
+            "skipped universal artifact 'mytool-darwin-universal.tar.gz' — it has no id to match against the macOS arm download",
+        ),
+        (
+            Some("cli"),
+            None,
+            "skipped universal artifact 'mytool-darwin-universal.tar.gz' — the macOS arm download has no id",
+        ),
+        (
+            None,
+            None,
+            "skipped universal artifact 'mytool-darwin-universal.tar.gz' — it has no id to match against the macOS arm download",
+        ),
+    ];
+    for (universal_id, arm_id, line) in cases {
+        let mut ctx = top_cask_ctx(&cask_cfg);
+        ctx.artifacts = Default::default();
+        for (name, target, id) in [
+            (
+                "mytool-darwin-universal.tar.gz",
+                "darwin-universal",
+                universal_id,
+            ),
+            ("mytool-darwin-arm64.tar.gz", "aarch64-apple-darwin", arm_id),
+        ] {
+            let mut art = art_with_url_sha(
+                ArtifactKind::Archive,
+                name,
+                target,
+                &format!("https://e.com/v1.2.3/{name}"),
+                &"c".repeat(64),
+            );
+            if let Some(id) = id {
+                art.metadata.insert("id".to_string(), id.to_string());
+            }
+            ctx.artifacts.add(art);
+        }
+        let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
+        let c = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &log)
+            .expect("top-level cask render")
+            .expect("top-level cask applicable")
+            .content;
+        assert!(!c.contains("universal"), "{c}");
+        let verbose: Vec<String> = cap
+            .all_messages()
+            .into_iter()
+            .filter(|(level, _)| *level == anodizer_core::log::LogLevel::Verbose)
+            .map(|(_, m)| m)
+            .collect();
+        assert_eq!(verbose, [line], "{universal_id:?} / {arm_id:?}");
+    }
+}
+
+/// A `-v` context with a log capture, holding a top-level cask whose
+/// universal artifact sits beside per-arch builds for both architectures.
+fn universal_beside_both_arches_ctx() -> (
+    Context,
+    anodizer_core::config::HomebrewCaskConfig,
+    anodizer_core::log::LogCapture,
+) {
+    let cask_cfg = anodizer_core::config::HomebrewCaskConfig {
+        name: Some("mytool".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = top_cask_ctx(&cask_cfg);
+    ctx.artifacts = Default::default();
+    for (name, target) in [
+        ("mytool-darwin-universal.tar.gz", "darwin-universal"),
+        ("mytool-darwin-arm64.tar.gz", "aarch64-apple-darwin"),
+        ("mytool-darwin-amd64.tar.gz", "x86_64-apple-darwin"),
+    ] {
+        ctx.artifacts.add(art_with_url_sha(
+            ArtifactKind::Archive,
+            name,
+            target,
+            &format!("https://e.com/v1.2.3/{name}"),
+            &"b".repeat(64),
+        ));
+    }
+    ctx.options.verbose = true;
+    let cap = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(cap.clone());
+    (ctx, cask_cfg, cap)
+}
+
+const BOTH_ARCHES_SKIP_LINE: &str = "skipped universal artifact 'mytool-darwin-universal.tar.gz' — both macOS architectures have their own download";
+
+/// Under `-v`, emission validation and the pre-publish guard render the same
+/// cask, and the universal skip line reaches stderr once.
+#[test]
+fn the_universal_skip_line_prints_once_across_emission_validation_and_the_guard() {
+    use crate::schema_validation::{
+        SchemaPass, test_current_version_resolver, validate_publisher_schemas,
+    };
+    let (mut ctx, _cask_cfg, cap) = universal_beside_both_arches_ctx();
+    let log = ctx.logger("publish");
+    for pass in [SchemaPass::EmissionValidate, SchemaPass::PrepublishGuard] {
+        validate_publisher_schemas(&mut ctx, &log, &test_current_version_resolver(), pass)
+            .expect("the cask validates");
+    }
+    let printed: Vec<String> = cap
+        .printed_verbose_messages()
+        .into_iter()
+        .filter(|m| m.starts_with("skipped universal artifact"))
+        .collect();
+    assert_eq!(printed, [BOTH_ARCHES_SKIP_LINE]);
+}
+
+/// The publisher's own render prints none of the render's `-v` lines, which
+/// emission validation printed already, except on a `--publish-only` run,
+/// which has no emission validation.
+#[test]
+fn the_publisher_render_prints_the_universal_skip_line_only_on_a_publish_only_run() {
+    for (publish_only, want) in [(false, &[][..]), (true, &[BOTH_ARCHES_SKIP_LINE][..])] {
+        let (mut ctx, cask_cfg, cap) = universal_beside_both_arches_ctx();
+        ctx.options.publish_only = publish_only;
+        let log = ctx.logger("publish");
+        let render_log = super::cask_scope::publisher_render_log(&ctx, &log);
+        super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &render_log)
+            .expect("top-level cask render")
+            .expect("top-level cask applicable");
+        assert_eq!(
+            cap.printed_verbose_messages(),
+            want,
+            "publish_only: {publish_only}"
+        );
     }
 }
 
@@ -5132,10 +5260,11 @@ fn install_fragment_escapes_each_side_keeps_structure() {
 // Formula renderer: previously-uncovered archive-layout and opts branches.
 // -----------------------------------------------------------------------
 
-/// A multi-archive macOS set with only an amd64 entry must emit the
-/// "darwin_arm64 not supported" caveats fallback inside `on_macos do`
-/// (the `has_only_amd64_macos` branch). The url/sha256 stay flat (no
-/// `on_intel`/`on_arm` sub-blocks) because the macos set isn't arch-split.
+/// A multi-archive macOS set with only an amd64 entry lists that archive
+/// under both `on_arm` and `on_intel` (Homebrew allows a `url` inside
+/// `on_macos` only under an architecture block, and an Apple Silicon Mac
+/// runs the Intel build), and the top-level `def caveats` warns on Apple
+/// Silicon only.
 #[test]
 fn test_formula_macos_amd64_only_emits_arm_unsupported_caveats() {
     let formula = generate_formula(
@@ -5163,13 +5292,123 @@ fn test_formula_macos_amd64_only_emits_arm_unsupported_caveats() {
         },
     )
     .unwrap();
-    assert!(formula.contains("on_macos do"));
-    assert!(formula.contains("if Hardware::CPU.arm?"));
-    assert!(formula.contains("The darwin_arm64 architecture is not supported for the monotool"));
-    assert!(formula.contains("machash"));
-    // No arch sub-blocks for the amd64-only macOS set.
-    assert!(!formula.contains("on_intel"));
-    assert!(!formula.contains("on_arm do"));
+    assert!(
+        formula.contains(
+            r#"  on_macos do
+    on_arm do
+      url "https://example.com/monotool-darwin-amd64.tar.gz"
+      sha256 "machash"
+    end
+    on_intel do
+      url "https://example.com/monotool-darwin-amd64.tar.gz"
+      sha256 "machash"
+    end
+  end
+"#
+        ),
+        "{formula}"
+    );
+    assert!(
+        formula.contains(
+            r#"  def caveats
+    return if OS.linux? || Hardware::CPU.intel?
+
+    <<~EOS
+      The darwin_arm64 architecture is not supported for the monotool
+      formula at this time. The darwin_amd64 binary may work in compatibility
+      mode, but it might not be fully supported.
+    EOS
+  end
+"#
+        ),
+        "{formula}"
+    );
+}
+
+/// The Apple Silicon caveat follows configured caveats, shown on Apple
+/// Silicon only; the configured ones show everywhere.
+#[test]
+fn the_apple_silicon_caveat_follows_the_configured_caveats() {
+    let opts = FormulaOptions {
+        caveats: Some("Run `monotool init` once.\nThen run `monotool serve`."),
+        ..Default::default()
+    };
+    let formula = generate_formula_with_opts(
+        &super::formula::FormulaCore {
+            name: "monotool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
+        &[
+            ("darwin-amd64", "https://example.com/mac.tar.gz", "machash"),
+            (
+                "linux-amd64",
+                "https://example.com/linux.tar.gz",
+                "linuxhash",
+            ),
+        ],
+        &super::formula::FormulaCode {
+            install: "bin.install \"monotool\"",
+            test: "system \"#{bin}/monotool\"",
+        },
+        &opts,
+    )
+    .unwrap();
+    assert!(
+        formula.contains(
+            r#"  def caveats
+    message = <<~EOS
+      Run `monotool init` once.
+      Then run `monotool serve`.
+    EOS
+    return message if OS.linux? || Hardware::CPU.intel?
+
+    message + <<~EOS
+      The darwin_arm64 architecture is not supported for the monotool
+"#
+        ),
+        "{formula}"
+    );
+}
+
+/// A universal macOS archive serves both architectures, so it is listed
+/// under `on_arm` and `on_intel` and carries no Apple Silicon caveat.
+#[test]
+fn a_universal_macos_archive_is_listed_for_both_architectures_without_a_caveat() {
+    let formula = generate_formula(
+        &super::formula::FormulaCore {
+            name: "unitool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
+        &[
+            (
+                "darwin-universal",
+                "https://example.com/uni.tar.gz",
+                "unihash",
+            ),
+            (
+                "linux-amd64",
+                "https://example.com/linux.tar.gz",
+                "linuxhash",
+            ),
+        ],
+        &super::formula::FormulaCode {
+            install: "bin.install \"unitool\"",
+            test: "system \"#{bin}/unitool\"",
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        formula.matches("sha256 \"unihash\"").count(),
+        2,
+        "{formula}"
+    );
+    assert!(formula.contains("    on_arm do\n      url \"https://example.com/uni.tar.gz\""));
+    assert!(formula.contains("    on_intel do\n      url \"https://example.com/uni.tar.gz\""));
+    assert!(!formula.contains("def caveats"), "{formula}");
 }
 
 /// A 32-bit linux ARM target (`armv7`) selects the
@@ -5278,12 +5517,18 @@ fn test_formula_download_strategy_custom_require_and_headers() {
     .unwrap();
     assert!(formula.contains("require_relative \"private_strategy\""));
     assert!(
-        formula.contains("using: GitHubPrivateRepositoryReleaseDownloadStrategy"),
-        "download strategy must splice into url line\n{formula}"
+        formula.contains(
+            r#"  url "https://example.com/privtool.tar.gz",
+      using:   GitHubPrivateRepositoryReleaseDownloadStrategy,
+      headers: [
+        "Authorization: Bearer tok",
+        "X-Foo: bar",
+      ]
+  version "2.0.0"
+"#
+        ),
+        "the url arguments must line up after the longest key\n{formula}"
     );
-    assert!(formula.contains("headers: ["));
-    assert!(formula.contains("\"Authorization: Bearer tok\","));
-    assert!(formula.contains("\"X-Foo: bar\","));
 }
 
 /// `extra_install`, `post_install`, `custom_block`, `plist`, and `service`
@@ -6922,6 +7167,377 @@ fn rendered_casks_pass_brew_style_opt_in() {
         assert_eq!(
             total, allowed_offences,
             "brew style reported offences other than {allowed:?} for the {stem} cask:\n{report}\n--- cask ---\n{body}"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------
+// Rendered formula layouts checked by `brew style`
+// -----------------------------------------------------------------------
+
+/// The formulae the `brew style` check renders, one per layout the renderer
+/// has: a single archive, macOS per-arch, an Intel-only macOS build (which
+/// carries the Apple Silicon caveat, alone and beside configured caveats), a
+/// universal macOS archive, Linux per-arch, macOS + Linux carrying every
+/// optional stanza, OS-scoped dependencies with no archive for that OS, a
+/// private download strategy, and the legacy `plist`. `custom_block` is
+/// placed after `conflicts_with`, so the full fixture's block holds a stanza
+/// Homebrew orders there. Returned as `(file stem, rendered formula)`.
+fn style_fixture_formulae() -> Vec<(&'static str, String)> {
+    use super::formula::{FormulaCode, FormulaCore, render_formula_license};
+    use anodizer_core::config::{HomebrewConflict, HomebrewDependency};
+    let sha = |c: char| c.to_string().repeat(64);
+    let (s1, s2, s3, s4, s5) = (sha('1'), sha('2'), sha('3'), sha('4'), sha('5'));
+    let release = "https://github.com/acme/mytool/releases/download/v1.2.3";
+    let url = |file: &str| format!("{release}/{file}");
+    let (mac_intel, mac_arm, mac_universal) = (
+        url("mytool-darwin-amd64.tar.gz"),
+        url("mytool-darwin-arm64.tar.gz"),
+        url("mytool-darwin-universal.tar.gz"),
+    );
+    let (linux_intel, linux_arm, linux_armv7) = (
+        url("mytool-linux-amd64.tar.gz"),
+        url("mytool-linux-arm64.tar.gz"),
+        url("mytool-linux-armv7.tar.gz"),
+    );
+    let core = FormulaCore {
+        name: "mytool",
+        version: "1.2.3",
+        description: "Fast CLI tool",
+        license: "MIT",
+    };
+    let code = FormulaCode {
+        install: "bin.install \"mytool\"",
+        test: "system \"#{bin}/mytool\", \"--version\"",
+    };
+    let livecheck = Some("skip \"Auto-generated on release.\"".to_string());
+    let base = || FormulaOptions {
+        github_slug: Some("acme/mytool".to_string()),
+        livecheck: livecheck.clone(),
+        ..Default::default()
+    };
+    let dep = |name: &str, dep_type: Option<&str>, os: Option<&str>| HomebrewDependency {
+        name: name.to_string(),
+        os: os.map(str::to_string),
+        dep_type: dep_type.map(str::to_string),
+        version: None,
+    };
+    let deps = vec![
+        dep("openssl@3", None, None),
+        dep("pkg-config", Some("build"), None),
+        dep("fzf", Some("optional"), None),
+        dep("git", None, Some("mac")),
+        dep("glibc", None, Some("linux")),
+    ];
+    let os_deps = vec![
+        dep("git", None, Some("mac")),
+        dep("glibc", None, Some("linux")),
+    ];
+    let conflicts = vec![
+        HomebrewConflict::Name("mytool-nightly".to_string()),
+        HomebrewConflict::WithReason {
+            name: "othertool".to_string(),
+            because: Some("both install a `mytool` binary".to_string()),
+        },
+    ];
+    let headers = vec!["Accept: application/octet-stream".to_string()];
+    let render = |archives: &[(&str, &str, &str)], opts: &FormulaOptions<'_>| {
+        generate_formula_with_opts(&core, archives, &code, opts).expect("render formula")
+    };
+
+    let mut formulae = Vec::new();
+    formulae.push((
+        "single_archive",
+        render(&[("aarch64-apple-darwin", &mac_arm, &s1)], &base()),
+    ));
+    formulae.push((
+        "macos_per_arch",
+        render(
+            &[
+                ("x86_64-apple-darwin", &mac_intel, &s1),
+                ("aarch64-apple-darwin", &mac_arm, &s2),
+            ],
+            &base(),
+        ),
+    ));
+    let intel_mac_and_linux = [
+        ("x86_64-apple-darwin", mac_intel.as_str(), s1.as_str()),
+        (
+            "x86_64-unknown-linux-gnu",
+            linux_intel.as_str(),
+            s2.as_str(),
+        ),
+    ];
+    formulae.push(("macos_intel_only", render(&intel_mac_and_linux, &base())));
+    let mut with_caveats = base();
+    with_caveats.caveats = Some("Run `mytool init` once.\nThen run `mytool serve`.");
+    formulae.push((
+        "macos_intel_only_with_caveats",
+        render(&intel_mac_and_linux, &with_caveats),
+    ));
+    formulae.push((
+        "macos_universal_and_linux",
+        render(
+            &[
+                ("darwin-universal", &mac_universal, &s1),
+                ("x86_64-unknown-linux-gnu", &linux_intel, &s2),
+                ("aarch64-unknown-linux-gnu", &linux_arm, &s3),
+            ],
+            &base(),
+        ),
+    ));
+    formulae.push((
+        "linux_per_arch",
+        render(
+            &[
+                ("x86_64-unknown-linux-gnu", &linux_intel, &s1),
+                ("aarch64-unknown-linux-gnu", &linux_arm, &s2),
+                ("armv7-unknown-linux-gnueabihf", &linux_armv7, &s3),
+            ],
+            &base(),
+        ),
+    ));
+    let mut full = base();
+    full.dependencies = Some(&deps);
+    full.conflicts = Some(&conflicts);
+    full.caveats = Some("Run `mytool init` once.");
+    full.extra_install = Some("bash_completion.install \"completions/mytool.bash\"");
+    full.post_install = Some("system bin/\"mytool\", \"setup\"");
+    full.custom_block = Some("link_overwrite \"bin/mytool\"");
+    full.service = Some("run [opt_bin/\"mytool\", \"serve\"]\nkeep_alive true");
+    full.livecheck = Some("url :stable\nstrategy :github_latest".to_string());
+    full.license_stanza = render_formula_license("MIT OR Apache-2.0");
+    formulae.push((
+        "macos_and_linux_full",
+        render(
+            &[
+                ("x86_64-apple-darwin", &mac_intel, &s1),
+                ("aarch64-apple-darwin", &mac_arm, &s2),
+                ("x86_64-unknown-linux-gnu", &linux_intel, &s3),
+                ("aarch64-unknown-linux-gnu", &linux_arm, &s4),
+                ("armv7-unknown-linux-gnueabihf", &linux_armv7, &s5),
+            ],
+            &full,
+        ),
+    ));
+    let mut os_deps_only = base();
+    os_deps_only.dependencies = Some(&os_deps);
+    formulae.push((
+        "os_dependencies_without_their_archive",
+        render(
+            &[("x86_64-unknown-linux-gnu", &linux_intel, &s1)],
+            &os_deps_only,
+        ),
+    ));
+    let mut private = base();
+    private.custom_require = Some("lib/private_strategy");
+    private.download_strategy = Some("GitHubPrivateRepositoryReleaseDownloadStrategy");
+    private.url_headers = Some(&headers);
+    formulae.push((
+        "private_download_strategy",
+        render(
+            &[
+                ("x86_64-apple-darwin", &mac_intel, &s1),
+                ("aarch64-apple-darwin", &mac_arm, &s2),
+                ("x86_64-unknown-linux-gnu", &linux_intel, &s3),
+            ],
+            &private,
+        ),
+    ));
+    let mut plist = base();
+    plist.plist =
+        Some("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict/></plist>");
+    formulae.push((
+        "legacy_plist",
+        render(&[("aarch64-apple-darwin", &mac_arm, &s1)], &plist),
+    ));
+    formulae
+}
+
+/// Run `brew style` over every formula layout fixture, the formula
+/// counterpart of [`rendered_casks_pass_brew_style_opt_in`] under the same
+/// `ANODIZER_BREW_STYLE=1` opt-in. Each fixture is written into a throwaway
+/// tap, because `brew style` holds a tap formula to the tap rules, and the
+/// tap is removed afterwards. `brew readall` then loads each one on every
+/// OS and architecture Homebrew knows.
+///
+/// Two offences are allowed, each where its cause is the config's own Ruby:
+///
+/// - `FormulaAudit/InstallSteps` in `macos_and_linux_full`: `post_install`
+///   is raw Ruby from the config, and Homebrew's `post_install_steps`
+///   replacement accepts only its own step calls, so the formula keeps
+///   `def post_install`.
+/// - `FormulaAudit/Text` (`def plist is deprecated`) in `legacy_plist`: the
+///   `plist` field is that deprecated stanza, and `service` is its
+///   replacement.
+///
+/// Every offence in RuboCop's summary count must be one of those, so an
+/// offence of any severity (`C`, `W`, `E`, `F`, `R`) fails the test.
+#[test]
+fn rendered_formulae_pass_brew_style_opt_in() {
+    use anodizer_core::tool_detect::{ToolProbe, runs};
+    if std::env::var(BREW_STYLE_OPT_IN).as_deref() != Ok("1") {
+        println!(
+            "skipped rendered_formulae_pass_brew_style_opt_in: set {BREW_STYLE_OPT_IN}=1 to run brew style over the rendered formulae"
+        );
+        return;
+    }
+    assert!(
+        matches!(runs("brew"), ToolProbe::Available),
+        "{BREW_STYLE_OPT_IN}=1 is set but brew is not runnable on PATH"
+    );
+    let brew = |args: &[&str]| {
+        std::process::Command::new("brew")
+            .args(args)
+            .env("HOMEBREW_NO_AUTO_UPDATE", "1")
+            .env("HOMEBREW_NO_INSTALL_FROM_API", "1")
+            .env("HOMEBREW_NO_ENV_HINTS", "1")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run brew")
+    };
+    let repo = brew(&["--repository"]);
+    assert!(
+        repo.status.success(),
+        "brew --repository failed:\n{}",
+        String::from_utf8_lossy(&repo.stderr)
+    );
+    // The guard below removes a tree under this path, so a blank or
+    // relative answer must never reach it.
+    let brew_repo = std::path::PathBuf::from(String::from_utf8_lossy(&repo.stdout).trim());
+    assert!(
+        !brew_repo.as_os_str().is_empty() && brew_repo.is_absolute(),
+        "brew --repository printed {brew_repo:?}, which is not an absolute path"
+    );
+    // The cask test runs in the same process, so the owner names the
+    // formula check apart from its tap.
+    let owner_name = format!("anodizer-formula-check-{}", std::process::id());
+    let tap = format!("{owner_name}/check");
+    let owner = brew_repo.join("Library/Taps").join(&owner_name);
+    let _tap = RemoveTreeOnDrop(owner.clone());
+    let formula_dir = owner.join("homebrew-check/Formula");
+    std::fs::create_dir_all(&formula_dir).expect("create the throwaway tap");
+    let formula_path = formula_dir.join("mytool.rb");
+
+    // Every fixture is linted before the test fails, so one run reports
+    // the offences of all of them.
+    let mut failures = Vec::new();
+    for (stem, body) in style_fixture_formulae() {
+        std::fs::write(&formula_path, &body).expect("write formula");
+        let out = brew(&[
+            "style",
+            "--formula",
+            formula_path.to_str().expect("utf-8 path"),
+        ]);
+        let report = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        println!("=== {stem}\n{report}");
+        let (files, total) = rubocop_summary(&report)
+            .unwrap_or_else(|| panic!("brew style did not lint the {stem} formula:\n{report}"));
+        assert_eq!(
+            files, 1,
+            "brew style inspected {files} files for the {stem} formula:\n{report}"
+        );
+        let allowed: &[&str] = match stem {
+            "macos_and_linux_full" => {
+                &["FormulaAudit/InstallSteps: Formulae must use post_install_steps"]
+            }
+            "legacy_plist" => &["FormulaAudit/Text: def plist is deprecated."],
+            _ => &[],
+        };
+        let allowed_offences = report
+            .lines()
+            .filter(|l| allowed.iter().any(|cop| l.contains(cop)))
+            .count();
+        if total != allowed_offences {
+            failures.push(format!(
+                "{stem}: offences other than {allowed:?}:\n{report}\n--- formula ---\n{body}"
+            ));
+        }
+        let load = brew(&["readall", "--os=all", "--arch=all", &tap]);
+        if !load.status.success() {
+            failures.push(format!(
+                "{stem}: brew readall failed:\n{}{}\n--- formula ---\n{body}",
+                String::from_utf8_lossy(&load.stdout),
+                String::from_utf8_lossy(&load.stderr)
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "brew style or brew readall failed for {} formulae:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// Homebrew's formula component order (`FORMULA_COMPONENT_PRECEDENCE_LIST`
+/// in Homebrew's `ast_constants.rb`, enforced by `FormulaAudit/ComponentsOrder`)
+/// for the top-level stanzas the renderer emits.
+const FORMULA_COMPONENT_ORDER: &[&str] = &[
+    "desc ",
+    "homepage ",
+    "url ",
+    "version ",
+    "sha256 ",
+    "license ",
+    "livecheck do",
+    "depends_on ",
+    "on_macos do",
+    "on_linux do",
+    "conflicts_with ",
+    "def install",
+    "def post_install",
+    "def caveats",
+    "plist_options ",
+    "def plist",
+    "service do",
+    "test do",
+];
+
+/// Every formula layout fixture lists its top-level stanzas in Homebrew's
+/// component order and defines each method once at the top level of the
+/// class, the two rules `brew style` holds a formula to that the renderer
+/// decides. Runs without Homebrew, so the order holds where the opt-in
+/// `brew style` check is not run.
+#[test]
+fn every_formula_layout_follows_the_homebrew_component_order() {
+    for (stem, body) in style_fixture_formulae() {
+        let mut last = 0;
+        for line in body.lines() {
+            let Some(stanza) = line.strip_prefix("  ") else {
+                continue;
+            };
+            if stanza.starts_with(' ') {
+                continue;
+            }
+            let Some(rank) = FORMULA_COMPONENT_ORDER
+                .iter()
+                .position(|c| stanza.starts_with(c))
+            else {
+                continue;
+            };
+            assert!(
+                rank >= last,
+                "{stem}: `{stanza}` follows `{}`:\n{body}",
+                FORMULA_COMPONENT_ORDER[last]
+            );
+            last = rank;
+        }
+        for line in body.lines().filter(|l| l.trim_start().starts_with("def ")) {
+            assert!(
+                line.starts_with("  def ") && !line.starts_with("   "),
+                "{stem}: `{}` is defined inside a block:\n{body}",
+                line.trim()
+            );
+        }
+        assert_eq!(
+            body.matches("\n  def install\n").count(),
+            1,
+            "{stem}: one top-level install:\n{body}"
         );
     }
 }

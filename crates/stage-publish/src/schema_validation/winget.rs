@@ -15,8 +15,8 @@ use anodizer_core::context::Context;
 use anyhow::Result;
 
 use super::{
-    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_crate_scoped, validate_json,
-    yaml_to_json,
+    PublisherSchemaValidator, SchemaFinding, SchemaPass, TagResolver, validate_crate_scoped,
+    validate_json, yaml_to_json,
 };
 use crate::winget::{
     crate_has_winget_installer_artifacts, is_winget_per_crate_configured,
@@ -46,6 +46,7 @@ impl PublisherSchemaValidator for WingetSchemaValidator {
         &self,
         ctx: &mut Context,
         resolve_tag: TagResolver<'_>,
+        _pass: SchemaPass,
     ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
         let mut findings = Vec::new();
@@ -313,6 +314,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -380,6 +382,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -423,6 +426,7 @@ mod tests {
             .validate(
                 &mut ctx_a,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -452,6 +456,7 @@ mod tests {
             .validate(
                 &mut ctx_b,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -520,7 +525,7 @@ mod tests {
         // The whole driver must pass: each crate's manifest conforms under its
         // own version.
         let findings = WingetSchemaValidator
-            .validate(&mut ctx, &resolver)
+            .validate(&mut ctx, &resolver, SchemaPass::EmissionValidate)
             .expect("validation runs");
         assert!(
             findings.is_empty(),
@@ -587,6 +592,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("a per-entry misconfiguration must not fail the validation pass");
         assert!(findings.is_empty(), "{findings:?}");
@@ -640,6 +646,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs without erroring on the absent Windows artifact");
         assert!(
@@ -684,6 +691,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs without erroring on the absent Windows artifact");
         assert!(
@@ -741,6 +749,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect_err(
                 "a present-but-broken Windows archive (missing sha256) must surface as an \
@@ -787,6 +796,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect_err("a full build with winget configured but no Windows installer must error");
         let msg = format!("{err:#}");
@@ -944,6 +954,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("a bad additional locale is a skip, never an abort");
         let skips = ctx.skip_memento.snapshot();
@@ -1020,6 +1031,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validate");
         assert!(findings.is_empty(), "{findings:?}");
@@ -1067,6 +1079,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("an ambiguous crate is a skip, never an abort");
 

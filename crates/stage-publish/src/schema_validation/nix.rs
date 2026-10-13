@@ -22,7 +22,9 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::Result;
 
-use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, validate_crate_scoped};
+use super::{
+    PublisherSchemaValidator, SchemaFinding, SchemaPass, TagResolver, validate_crate_scoped,
+};
 use crate::nix::{
     self, FlakePackage, crate_has_nix_archive, is_nix_per_crate_configured,
     render_nix_for_validation,
@@ -49,6 +51,7 @@ impl PublisherSchemaValidator for NixSchemaValidator {
         &self,
         ctx: &mut Context,
         resolve_tag: TagResolver<'_>,
+        _pass: SchemaPass,
     ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
         // Threaded into the `nix-instantiate` layer: a nix publish writes a git
@@ -520,6 +523,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -607,6 +611,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -649,6 +654,7 @@ mod tests {
             .validate(
                 &mut ctx_a,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -675,6 +681,7 @@ mod tests {
             .validate(
                 &mut ctx_b,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -719,6 +726,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs without erroring on the absent archive");
         assert!(
@@ -750,6 +758,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect_err("a full build with nix configured but no archive must error");
         let msg = format!("{err:#}");
@@ -775,6 +784,7 @@ mod tests {
         let result = NixSchemaValidator.validate(
             &mut ctx,
             &crate::schema_validation::test_current_version_resolver(),
+            crate::schema_validation::SchemaPass::EmissionValidate,
         );
         assert!(
             result.is_err(),
@@ -814,6 +824,7 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
+                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(

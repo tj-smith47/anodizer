@@ -20,7 +20,7 @@ use anodizer_core::config::{
 use anodizer_core::context::Context;
 use anodizer_core::test_helpers::TestContextBuilder;
 
-use super::{validate_publisher_schemas, validators};
+use super::{SchemaPass, validate_publisher_schemas, validators};
 
 const VERSION: &str = "1.0.0";
 
@@ -284,7 +284,7 @@ fn all_publishers_with_valid_config_validate_clean_together() {
     // Fixed-tag resolver: single crate at the pre-scoped VERSION, so per-crate
     // scoping resolves to the same version without a git fixture.
     let resolver = |_: &Context, _: &CrateConfig| Some(VERSION.to_string());
-    validate_publisher_schemas(&mut ctx, &log, &resolver)
+    validate_publisher_schemas(&mut ctx, &log, &resolver, SchemaPass::EmissionValidate)
         .expect("every configured publisher's artifact validates clean together");
 }
 
@@ -300,7 +300,7 @@ fn one_malformed_option_fails_loud_naming_publisher_and_field() {
     let log = ctx.logger("publish");
 
     let resolver = |_: &Context, _: &CrateConfig| Some(VERSION.to_string());
-    let err = validate_publisher_schemas(&mut ctx, &log, &resolver)
+    let err = validate_publisher_schemas(&mut ctx, &log, &resolver, SchemaPass::EmissionValidate)
         .expect_err("a malformed winget publisher_url must fail the pass");
     let message = format!("{err:#}");
 
@@ -332,7 +332,7 @@ fn deselected_publisher_is_not_validated() {
     let log = ctx.logger("publish");
 
     let resolver = |_: &Context, _: &CrateConfig| Some(VERSION.to_string());
-    validate_publisher_schemas(&mut ctx, &log, &resolver)
+    validate_publisher_schemas(&mut ctx, &log, &resolver, SchemaPass::EmissionValidate)
         .expect("a malformed winget config must be skipped when winget is not in --publishers");
 }
 
@@ -390,7 +390,7 @@ fn the_abort_quoted_in_the_validation_docs_is_what_the_pass_produces() {
     let mut ctx = multi_publisher_ctx("acme.example");
     let log = ctx.logger("publish");
     let resolver = |_: &Context, _: &CrateConfig| Some(VERSION.to_string());
-    let err = validate_publisher_schemas(&mut ctx, &log, &resolver)
+    let err = validate_publisher_schemas(&mut ctx, &log, &resolver, SchemaPass::EmissionValidate)
         .expect_err("a malformed winget publisher_url fails the pass");
     let message = format!("{err:#}");
     let mut lines = message.lines();

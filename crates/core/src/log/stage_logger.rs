@@ -434,7 +434,8 @@ impl StageLogger {
     /// detail body line beneath the current section.
     /// Use for: command output on success, env vars, file paths, template vars.
     pub fn verbose(&self, msg: &str) {
-        if self.verbosity >= Verbosity::Verbose {
+        let shown = self.verbosity >= Verbosity::Verbose;
+        if shown {
             flush_pending();
             eprintln!(
                 "{}",
@@ -444,6 +445,9 @@ impl StageLogger {
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
             cap.record(LogLevel::Verbose, msg);
+            if shown {
+                cap.record_printed_verbose(msg);
+            }
         }
     }
 
