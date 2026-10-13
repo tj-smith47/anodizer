@@ -248,11 +248,13 @@ jargon_violations+="$jargon_prose"
 # `echo`, a `printf` and a `desc:` are exactly what the operator sees. Inside
 # an awk program the parameter `s` is code: `function <name>(s)` and a call to
 # one of the helpers in AWK_S_CALLS on `s` (`trim`, `length`). An awk program is
-# a whole `.awk` file, a heredoc tagged AWK, or the text from a line holding
-# `awk '`, `awk "` or `BEGIN {` to the line holding the matching closing quote;
-# an `awk -f file` line names a program held elsewhere and opens none. Outside
-# one, only a line that defines `function <name>(s) {` is exempt, so
-# `echo "the function file(s) are missing"` is a count.
+# a whole `.awk` file, a heredoc tagged AWK, or the text a line scan finds
+# between a quote and the quote that matches it: the opening quote is the first
+# one after an `awk` word (its `-v name=value` and `-F x` options skipped), or
+# the one before a `BEGIN {`, and a bare `BEGIN {` opens one on a `'`. Inside a
+# `"` program `\"` is skipped. A quote outside a program is not counted, and
+# an `awk -f file` names a program held elsewhere and opens none. Outside a
+# program, only a line that defines `function <name>(s) {` is exempt.
 AWK_S_CALLS='trim|ltrim|rtrim|length|tolower|toupper'
 collect_files PLURAL_SH -rl --include='*.sh' --include='*.sh.tpl' -- '(' .claude/scripts scripts packaging
 collect_files PLURAL_AWK -l -- '(' .claude/scripts/lib/*.awk
@@ -264,30 +266,65 @@ run_scanner plural_prose -v AWK_S_CALLS="$AWK_S_CALLS" -f - \
         awk_call = "(^|[^A-Za-z0-9_])(function +[A-Za-z_][A-Za-z0-9_]*|" AWK_S_CALLS ")\\(s\\)"
         defines = "^[ \t]*function +[A-Za-z_][A-Za-z0-9_]*\\(s\\) *\\{"
     }
-    FNR == 1 { whole = FILENAME ~ /\.awk$/; heredoc = 0; quoted = 0 }
+    FNR == 1 { whole = FILENAME ~ /\.awk$/; heredoc = 0; q = "" }
     {
-        text = $0
-        opens = !heredoc && !quoted && !whole
-        in_program = whole || heredoc || quoted
-        if (opens && text ~ /<<-?["']?AWK["']?/) {
+        if (whole || heredoc) {
+            if (heredoc && $0 ~ /^[ \t]*AWK[ \t]*$/) heredoc = 0
+            text = $0
+            gsub(awk_call, " ", text)
+        } else if (q == "" && $0 ~ /<<-?["']?AWK["']?/) {
             heredoc = 1
-        } else if (opens && (text ~ /awk +['"]/ || text ~ /BEGIN *\{/)) {
-            in_program = 1
-            # The program closes at the quote that opened it: `awk "` takes a
-            # double-quoted one, `awk '` and a bare `BEGIN {` a single-quoted
-            # one. An odd count of that quote leaves it open past this line.
-            q = (text ~ /awk +"/ && text !~ /awk +'/) ? "\"" : "'"
-            quoted = gsub(q, q, text) % 2
-        } else if (heredoc && text ~ /^[ \t]*AWK[ \t]*$/) {
-            heredoc = 0
-        } else if (quoted && gsub(q, q, text) % 2) {
-            quoted = 0
+            text = $0
+        } else {
+            text = scan($0)
+            if (!touched && text ~ defines) next
         }
-        if (in_program) gsub(awk_call, " ", text)
-        else if (text ~ defines) next
         if (text ~ /[A-Za-z]\((s|es|ies|y\|ies)\)/) printf("%s:%d: %s\n", FILENAME, FNR, trim($0))
     }
 
+    # The line with every awk program span in it cleared of its `(s)` code.
+    # `q` is the quote of a program still open at the end of the line, and
+    # `touched` says whether the line holds any program text.
+    function scan(line,    out, i, n, c, start, rest) {
+        out = ""; i = 1; n = length(line); touched = 0
+        while (i <= n) {
+            if (q != "") {
+                touched = 1
+                start = i
+                while (i <= n) {
+                    c = substr(line, i, 1)
+                    if (q == "\"" && c == "\\") { i += 2; continue }
+                    if (c == q) break
+                    i++
+                }
+                out = out clear(substr(line, start, i - start))
+                if (i <= n) { out = out q; q = ""; i++ }
+                continue
+            }
+            c = substr(line, i, 1)
+            rest = substr(line, i)
+            if (c == "'" || c == "\"") {
+                if (substr(rest, 2) ~ /^[ \t]*BEGIN *\{/) { q = c; out = out c; i++; continue }
+            } else if (rest ~ /^awk[ \t]/ && (i == 1 || substr(line, i - 1, 1) !~ /[.A-Za-z0-9_]/)) {
+                out = out "awk"; i += 3
+                while (match(substr(line, i), /^[ \t]+(-v[ \t]*[^ \t]+|-F[ \t]*[^ \t]+)/)) {
+                    out = out substr(line, i, RLENGTH); i += RLENGTH
+                }
+                if (match(substr(line, i), /^[ \t]+['"]/)) {
+                    out = out substr(line, i, RLENGTH); i += RLENGTH
+                    q = substr(line, i - 1, 1)
+                }
+                continue
+            } else if (rest ~ /^BEGIN *\{/ && out ~ /^[ \t]*$/) {
+                q = "'"
+                continue
+            }
+            out = out c; i++
+        }
+        return out
+    }
+
+    function clear(t) { gsub(awk_call, " ", t); return t }
     function trim(l) { sub(/^[ \t]+/, "", l); return l }
 AWK
 

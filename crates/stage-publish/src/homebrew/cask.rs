@@ -5,7 +5,7 @@ use anodizer_core::template::ruby_escape_str;
 use anyhow::{Context as _, Result};
 
 use super::cask_custom_block::custom_block_os_facts;
-use super::formula::reindent;
+use super::formula::{reindent, reindent_code};
 
 /// Column of the first argument of a top-level `url "…"` stanza, where its
 /// keyword-argument continuation lines start.
@@ -610,7 +610,7 @@ fn render_platform_blocks(
 fn render_do_block(name: &str, body: &str) -> String {
     format!(
         "{STANZA_INDENT}{name} do\n{}\n{STANZA_INDENT}end",
-        reindent(body, BLOCK_INDENT)
+        reindent_code(body, BLOCK_INDENT)
     )
 }
 
@@ -666,7 +666,7 @@ pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
     let mut groups: Vec<String> = Vec::new();
 
     if let Some(block) = non_blank(params.custom_block) {
-        groups.push(reindent(block, STANZA_INDENT));
+        groups.push(reindent_code(block, STANZA_INDENT));
     }
 
     let mut version = vec![format!("  version {}", ruby_string(params.version))];
@@ -716,7 +716,7 @@ pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
         .unwrap_or("skip \"Auto-generated on release.\"");
     groups.push(format!(
         "  livecheck do\n{}\n  end",
-        reindent(livecheck_body, BLOCK_INDENT)
+        reindent_code(livecheck_body, BLOCK_INDENT)
     ));
 
     let mut relations: Vec<String> = Vec::new();

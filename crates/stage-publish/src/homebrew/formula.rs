@@ -23,7 +23,7 @@ class {{ class_name }} < Formula
 {% elif license %}  license "{{ license | ruby_escape }}"
 {% endif %}{% if has_livecheck %}
   livecheck do
-{% for line in livecheck_lines %}    {{ line }}
+{% for line in livecheck_lines %}{{ line }}
 {% endfor %}  end
 {% endif %}{% if top_deps %}
 {% endif %}{% for dep in top_deps %}  depends_on {{ dep }}
@@ -42,12 +42,12 @@ class {{ class_name }} < Formula
 {{ custom_block }}
 {% endif %}
   def install
-{% for line in install_lines %}    {{ line }}
-{% endfor %}{% for line in extra_install_lines %}    {{ line }}
+{% for line in install_lines %}{{ line }}
+{% endfor %}{% for line in extra_install_lines %}{{ line }}
 {% endfor %}  end
 {% if has_post_install %}
   def post_install
-{% for line in post_install_lines %}    {{ line }}
+{% for line in post_install_lines %}{{ line }}
 {% endfor %}  end
 {% endif %}{% if has_caveats or arm_caveat %}
   def caveats
@@ -80,7 +80,7 @@ class {{ class_name }} < Formula
   end
 {% endif %}
   test do
-{% for line in test_lines %}    {{ line }}
+{% for line in test_lines %}{{ line }}
 {% endfor %}  end
 end
 "#;
@@ -88,7 +88,8 @@ end
 /// Optional extended fields for formula generation.
 #[derive(Default)]
 pub struct FormulaOptions<'a> {
-    /// Explicit homepage URL.  Falls back to the GitHub release URL when available.
+    /// Explicit homepage URL. Falls back to the GitHub release URL when
+    /// available.
     pub homepage: Option<&'a str>,
     /// GitHub owner/name for default homepage fallback (e.g. "owner/repo").
     pub github_slug: Option<String>,
@@ -198,8 +199,8 @@ pub fn generate_formula_with_opts(
     let class_name: String = {
         let name_lower = name.to_lowercase();
         let s = name_lower.replace('+', "x");
-        // Replace `@` with `AT` only when followed by a digit (e.g., foo@2 -> fooAT2,
-        // but foo@bar stays as foo@bar).
+        // `@` becomes `AT` only before a digit: `foo@2` becomes `fooAT2`,
+        // and `foo@bar` stays as it is.
         let mut at_replaced = String::new();
         let chars: Vec<char> = s.chars().collect();
         let mut skip_next = false;
@@ -327,25 +328,21 @@ pub fn generate_formula_with_opts(
     ctx.insert("has_caveats", &has_caveats);
     ctx.insert("caveats", &reindent(opts.caveats.unwrap_or(""), "      "));
 
-    let install_lines: Vec<&str> = install.lines().collect();
-    let test_lines: Vec<&str> = test.lines().collect();
+    // Each body line is indented unless it continues a literal from the
+    // line before, whose text the indent would change.
+    let install_lines = indent_code_lines(install, "    ");
+    let test_lines = indent_code_lines(test, "    ");
     ctx.insert("install_lines", &install_lines);
     ctx.insert("test_lines", &test_lines);
 
     // Extra install lines (appended after main install block)
-    let extra_install_lines: Vec<&str> = opts
-        .extra_install
-        .map(|s| s.lines().collect())
-        .unwrap_or_default();
+    let extra_install_lines = indent_code_lines(opts.extra_install.unwrap_or(""), "    ");
     ctx.insert("extra_install_lines", &extra_install_lines);
 
     // Post-install method
     let has_post_install = opts.post_install.is_some();
     ctx.insert("has_post_install", &has_post_install);
-    let post_install_lines: Vec<&str> = opts
-        .post_install
-        .map(|s| s.lines().collect())
-        .unwrap_or_default();
+    let post_install_lines = indent_code_lines(opts.post_install.unwrap_or(""), "    ");
     ctx.insert("post_install_lines", &post_install_lines);
 
     // Custom require
@@ -354,7 +351,7 @@ pub fn generate_formula_with_opts(
     // Custom block
     ctx.insert(
         "custom_block",
-        &reindent(opts.custom_block.unwrap_or(""), "  "),
+        &reindent_code(opts.custom_block.unwrap_or(""), "  "),
     );
 
     // Homebrew 7 removed `plist_options`, so only `def plist` is written;
@@ -374,16 +371,15 @@ pub fn generate_formula_with_opts(
     // Service
     let has_service = opts.service.is_some();
     ctx.insert("has_service", &has_service);
-    ctx.insert("service", &reindent(opts.service.unwrap_or(""), "    "));
+    ctx.insert(
+        "service",
+        &reindent_code(opts.service.unwrap_or(""), "    "),
+    );
 
     // Livecheck stanza (lines between `livecheck do` and `end`).
     let has_livecheck = opts.livecheck.is_some();
     ctx.insert("has_livecheck", &has_livecheck);
-    let livecheck_lines: Vec<&str> = opts
-        .livecheck
-        .as_deref()
-        .map(|s| s.lines().collect())
-        .unwrap_or_default();
+    let livecheck_lines = indent_code_lines(opts.livecheck.as_deref().unwrap_or(""), "    ");
     ctx.insert("livecheck_lines", &livecheck_lines);
 
     // License stanza override (dual-license `any_of:`/`all_of:` form).
@@ -677,33 +673,85 @@ fn url_args(strategy: &str, headers: &[&str], column: usize) -> String {
         .collect()
 }
 
-/// Re-indent free-form Ruby supplied by the user: drop leading and trailing
-/// blank lines, strip the indentation every line shares, and put `indent`
-/// before each non-blank line. Relative indentation inside the text is kept,
-/// so a body written flush-left in YAML and one already indented for the
-/// formula render the same.
+/// Re-indent free-form text supplied by the user for a heredoc body (a
+/// `caveats` message, a plist): drop leading and trailing blank lines,
+/// strip the indentation every line shares, and put `indent` before each
+/// non-blank line. Relative indentation inside the text is kept, so a body
+/// written flush-left in YAML and one already indented for the formula
+/// render the same.
 pub(super) fn reindent(text: &str, indent: &str) -> String {
-    let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
-    let first = lines
-        .iter()
-        .position(|l| !l.is_empty())
-        .unwrap_or(lines.len());
+    let lines: Vec<(&str, bool)> = text.lines().map(|l| (l.trim_end(), true)).collect();
+    reindent_lines(&lines, indent)
+}
+
+/// Re-indent free-form Ruby supplied by the user the way [`reindent`] does,
+/// moving only the lines that begin in code. A line inside a multi-line
+/// string, percent literal, regex, heredoc body or `=begin` comment, and
+/// the closing tag of a `<<` or `<<-` heredoc, is kept byte for byte:
+/// indenting it would change the literal, and a `<<` heredoc closes only on
+/// a tag at the start of a line. Past a line the lexer cannot read, every
+/// line is kept as written.
+pub(super) fn reindent_code(text: &str, indent: &str) -> String {
+    let starts = super::cask_custom_block::line_starts_in_code(text);
+    let lines: Vec<(&str, bool)> = text
+        .lines()
+        .zip(starts)
+        .map(|(l, code)| {
+            if code {
+                (l.trim_end(), true)
+            } else {
+                (l, false)
+            }
+        })
+        .collect();
+    reindent_lines(&lines, indent)
+}
+
+/// Put `indent` before each line of Ruby `text` that begins in code (see
+/// [`reindent_code`]) and keep every other line as written, for a template
+/// that lays out a stanza's body one line at a time. A blank code line
+/// stays empty, since an indent alone is trailing whitespace to `brew
+/// style`.
+pub(super) fn indent_code_lines(text: &str, indent: &str) -> Vec<String> {
+    let starts = super::cask_custom_block::line_starts_in_code(text);
+    text.lines()
+        .zip(starts)
+        .map(|(l, code)| {
+            if code && l.trim().is_empty() {
+                String::new()
+            } else if code {
+                format!("{indent}{l}")
+            } else {
+                l.to_string()
+            }
+        })
+        .collect()
+}
+
+/// The shared body of [`reindent`] and [`reindent_code`]: each line paired
+/// with whether it may move. Only a line that may move is dropped as an
+/// outer blank line, counts toward the shared indentation, or is indented.
+fn reindent_lines(lines: &[(&str, bool)], indent: &str) -> String {
+    let blank = |(l, code): &(&str, bool)| *code && l.is_empty();
+    let first = lines.iter().position(|l| !blank(l)).unwrap_or(lines.len());
     let last = lines
         .iter()
-        .rposition(|l| !l.is_empty())
+        .rposition(|l| !blank(l))
         .map_or(first, |i| i + 1);
     let lines = &lines[first..last];
     let leading = |l: &str| l.len() - l.trim_start_matches([' ', '\t']).len();
     let common = lines
         .iter()
-        .filter(|l| !l.is_empty())
-        .map(|l| leading(l))
+        .filter(|(l, code)| *code && !l.is_empty())
+        .map(|(l, _)| leading(l))
         .min()
         .unwrap_or(0);
     lines
         .iter()
-        .map(|l| {
-            if l.is_empty() {
+        .map(|&(l, code)| {
+            if !code {
+                l.to_string()
+            } else if l.is_empty() {
                 String::new()
             } else {
                 format!("{indent}{}", &l[common..])
@@ -856,7 +904,8 @@ pub fn render_livecheck(
         lines.push(format!("strategy :{}", strategy.trim_start_matches(':')));
     }
     if let Some(regex) = cfg.regex.as_deref().filter(|s| !s.is_empty()) {
-        // `regex` is raw Ruby (a `%r{...}` or `/.../ ` literal), emitted verbatim.
+        // `regex` is raw Ruby (a `%r{...}` or `/.../` literal), emitted
+        // verbatim.
         lines.push(format!("regex({})", regex));
     }
     Some(lines.join("\n"))

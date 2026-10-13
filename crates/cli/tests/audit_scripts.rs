@@ -254,6 +254,8 @@ fn a_plural_in_parentheses_in_a_script_a_workflow_or_the_taskfile_is_reported() 
         "length(s) of",
         "the length(s) of",
         "tolower(s) is prose",
+        "the length(s) after a grep",
+        "the length(s) after a column",
     ]
     .iter()
     .map(|needle| {
@@ -302,6 +304,7 @@ fn a_script_whose_counts_go_through_plural_passes_the_plural_scan() {
                 "leg(s)",
                 "crate(s)",
                 "length(s) of",
+                "length(s) after",
                 "tolower(s) is prose",
             ]
             .iter()

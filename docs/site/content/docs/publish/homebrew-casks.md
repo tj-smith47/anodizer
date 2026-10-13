@@ -242,45 +242,64 @@ The block is first reduced to its code, and the rules below read only that.
 These are set aside, and each one that does not close on its line carries on
 into the following lines until it closes:
 
-- A `"…"` or `'…'` string. Inside a `"…"` string, `#{…}` is read as code with
-  its own braces and strings, so `"a#{'"'}b"` ends at its last `"`.
+- A `"…"`, `'…'` or `` `…` `` string. Inside a `"…"` or `` `…` `` string,
+  `#{…}` is read as code with its own braces and strings, so `"a#{'"'}b"`
+  ends at its last `"`, and `#$"` interpolates the global `$"`.
 - A heredoc body, opened by `<<~TAG`, `<<-TAG` or `<<TAG` (the tag bare or
   quoted) and closed by a line holding the tag alone, indented for `<<~` and
-  `<<-`, matched case-sensitively. A `<<` followed by a space or a digit, or
-  written straight after a value (`1<<FLAGS`), is a shift.
+  `<<-`, matched case-sensitively. A `<<` followed by a space or a digit is a
+  shift.
 - A `%()`, `%q`, `%Q`, `%w`, `%W`, `%i`, `%I`, `%r`, `%s` or `%x` literal
-  delimited by `()`, `[]`, `{}`, `<>` or one repeated punctuation character
-  (`%q|…|`). A `%` written straight after a value (`a%(b)`) is the modulo
-  operator.
-- A `?x` character literal, such as `?#`, `?"` or `?'`.
-- A `/…/` regex where the `/` follows `=~`, `!~`, `(`, `,` or `=`, or starts
-  a line or a `;` statement.
+  delimited by `()`, `[]`, `{}` or `<>` (which nest) or by one repeated
+  punctuation character (`%q|…|`). A typed one also takes a space as its
+  delimiter (`%q a `). A bare `%` with nothing before it on its statement but
+  an operator also takes a space, a tab, `=` or the end of the line, which
+  holds the next line (`x = [%` then `text` then `]`).
+- A `?x` character literal, such as `?#`, `?"` or `?'`, unless a word
+  character follows a word character (`?ab`) or a quote (`?"a"`).
+- A `/…/` regex where an operand stands.
 - A `#` comment, which cuts the rest of the line, so a comment line reads as
-  blank.
+  blank, and an `=begin` … `=end` comment.
 
-A `<<`, `%` or `?` that follows a value is a shift, a modulo or a ternary and
-opens nothing. The code before it ends with a value when, spaces aside, it
-ends with `)`, `]`, `}`, a number or a closed literal, or with one of these
-words:
+None of these opens after a `:` that makes a symbol (`:%`, `` :` ``), in a
+special global (`$"`, `$/`), or where it names a method: after `.`, `&.`,
+`::` or `def` (`x.<<`, `def /(other)`), and as the `?` or `!` of a method
+name (`then?"a"`).
 
-- `self`, `nil`, `true`, `false`, `end`, or `class` (`class <<self`);
+A `<<`, `%`, `?` or `/` that follows a value is a shift, a modulo, a ternary
+or a division and opens nothing. The code before it ends with a value when,
+spaces aside, it ends with `)`, `]`, `}`, a number or a closed literal, or
+with one of these words:
+
+- `self`, `nil`, `true`, `false`, `end`, `class` (`class <<self`) or `def`
+  (`def /(other)`);
 - an instance, class or global variable (`@args <<extra`, `$stdout <<x`);
-- a local variable, a name assigned earlier in the block: `name =`,
+- a local variable, a name assigned earlier in its scope: `name =`,
   `name ||=` and the other operator assignments (`&&=`, `+=`, `-=`, `*=`,
-  `/=`), `a, b =`, `(a, b) =`, `for a in` and `rescue => a`. `==`, `=~`,
-  `=>`, `!=`, `<=`, `>=` and `obj.name =` assign nothing. So after
-  `y = 1`, the line `x = y <<z` is a shift, and after `cond = true`,
-  `x = cond ?"" : "no"` is a ternary;
-- a parameter: of a block (`do |a, b|`, `{ |a| … }`, a list spread over
+  `/=`), `a, b =`, `a, (b, c) =`, `(a, b) =`, `a, =`, `for a in`,
+  `rescue => a`, a named group before `=~` (`/(?<a>\d+)/ =~ s`), a name in
+  an `in` pattern (`in [a, 2]`, `x in {k: a}`) and the target of a rightward
+  `=>` (`2 => a`). `==`, `=~`, `=>`, `!=`, `<=`, `>=` and `obj.name =`
+  assign nothing. So after `y = 1`, the line `x = y <<z` is a shift, and
+  after `cond = true`, `x = cond ?"" : "no"` is a ternary;
+- a parameter: of a block (`do |a, b; c|`, `{ |a| … }`, a list spread over
   several lines), of a method (`def name(a, b = 1, *rest, k: 1, **kw, &blk)`,
-  with or without parentheses) or of a lambda (`->(x)`, `-> (x)`);
-- any word written straight against the operator (`a%(b)`, `1<<FLAGS`).
+  with or without parentheses; a setter `def name=(v)` binds `v` alone) or of
+  a lambda (`->(x)`, `-> (x)`);
+- any word other than a keyword written straight against the operator
+  (`a%(b)`, `1<<FLAGS`); `if%w[a]` opens a literal.
 
-After a Ruby keyword, a cask stanza or a common method that takes an argument
-(`caveats`, `puts`, `url`, `if`, `when`, …), the operator opens a literal, so
-`caveats <<~EOS` opens a heredoc and `puts %w[a]` a word list. After any
-other word followed by a space, the scan cannot tell a method from a local
-assigned in a way it does not see, and it reads the operator as an opener.
+A `def` body sees none of the locals outside it. A block sees them, and its
+parameters and the locals first assigned in it end at its `end` or `}`.
+`if`, `while`, `case` and `begin` open no scope. After a word, a `/` followed
+by a space or `=` divides.
+
+The operator opens a literal after an operator, `(`, `,`, `;`, the start of
+a line, a Ruby keyword, any method of the cask DSL (`caveats <<~EOS`,
+`binary %w[a]`) or a common method that takes an argument (`puts %w[a]`).
+After any other word followed by a space, the scan cannot tell a method from
+a local it did not see assigned, and it reads the operator as an opener; that
+is a guess.
 
 Then:
 
@@ -319,42 +338,38 @@ A flat single-download cask whose `custom_block` gives it a Linux side puts
 its `sha256` / `url` (and `app` / `service`) inside `on_macos`, so a Linux
 host never downloads the macOS archive.
 
-These are not read correctly, and nothing warns about them:
-
-- a stanza built at runtime (an `on_linux` sent through `send`, or a method
-  made with `define_method`) is not seen;
-- a `depends_on` that follows a `do` on the same line
-  (`on_macos do depends_on macos: :ventura end`) is not seen;
-- a regex after any token not listed above (`when /on_linux/`) is read as
-  code, so a Linux-side word inside it counts;
-- an operator after an untracked word whose literal closes on the same line
-  (`x = width %(a) + 1`) has that literal set aside.
-
 Three cases make the scan stop trusting the code from a line on:
 
-- a string, heredoc, percent literal or regex opened there is still open
-  after the last line of the block;
-- a `<<`, `%` or `?` read as an opener after an untracked word opens a
-  literal that runs onto a later line (`n = width %-2` with `width` a local
-  the scan did not see assigned, and a `-` further down);
-- a `<<` after a parameter's name whose heredoc tag closes on a later line
-  (`[1].each do |caveats| end` followed by `caveats <<~EOS`), since a
-  parameter is no local outside its block.
+- a literal opened there is still open after the last line of the block;
+- a guess there opens a literal that spans several lines (`n = width %-2`
+  with `width` a local the scan did not see assigned, and a `-` further
+  down);
+- a parameter still in scope is followed there by a `<<` whose heredoc tag
+  closes on a later line (`[1].each do |caveats|` then `caveats <<~EOS`
+  inside the block).
 
-The scan then reads the raw text with its `#` comments cut (a `#` that starts
-a line or follows whitespace, even inside a string): a Linux side when `on_linux`,
-`on_system` or `app_image` appears anywhere in the block, and an OS dependency
-when `depends_on` and an OS key or symbol both do. A word scan that finds a
-Linux-side word leaves `depends_on :macos` out and moves a flat download into
-`on_macos`; one that finds a `depends_on` OS key leaves the bare dependency
-out; one that finds neither adds `depends_on :macos`. Text inside strings and
-heredocs counts, so the word scan may over-match. The render prints one
-warning per command, unless `depends_on_macos:` is set:
+The scan then reads the raw text, comments and strings included, which may
+over-match: a Linux side when `on_linux`, `on_system` or `app_image` appears
+anywhere in the block, and an OS dependency when `depends_on` and an OS key
+or symbol both do. A word scan that finds a Linux-side word leaves
+`depends_on :macos` out and moves a flat download into `on_macos`; one that
+finds a `depends_on` OS key leaves the bare dependency out; one that finds
+neither adds `depends_on :macos`. The render prints one warning per command,
+unless `depends_on_macos:` is set:
 `homebrew cask 'mytool': custom_block could not be read past line 2 (the '%'
 there could open a percent literal or be an operator); the Linux-side and
 depends_on checks fell back to a word scan, which may over-match — set
 depends_on_macos: to decide it`, or `… (an unclosed string); …` for a literal
 open at the end of the block.
+
+These are read wrongly, and nothing warns about them:
+
+- a stanza built at runtime (an `on_linux` sent through `send`, or a method
+  made with `define_method`) is not seen;
+- a `depends_on` that follows a `do` on the same line
+  (`on_macos do depends_on macos: :ventura end`) is not seen;
+- a guess whose literal closes on the same line (`x = width %(a) + 1`) has
+  that literal set aside.
 
 A wrong answer gives a cask that Homebrew refuses:
 
@@ -373,36 +388,34 @@ Set `depends_on_macos:` when the scan is wrong for your `custom_block`:
 homebrew_casks:
   - name: mytool
     binaries: [mytool]
-    # The scan reads the regex after `when` as code, so it sees on_linux.
+    # The Linux side is sent at runtime, so the scan does not see it.
     custom_block: |
-      caveats do
-        case ENV.fetch("MYTOOL_PROFILE", "")
-        when /on_linux/ then "Linux profiles are ignored on macOS."
-        end
+      send("on_linux") do
+        depends_on formula: "jq"
       end
-    depends_on_macos: true
+    depends_on_macos: false
 ```
 
 ```ruby
 # This file was generated by anodizer (https://github.com/tj-smith47/anodizer). DO NOT EDIT.
 cask "mytool" do
-  caveats do
-    case ENV.fetch("MYTOOL_PROFILE", "")
-    when /on_linux/ then "Linux profiles are ignored on macOS."
-    end
+  send("on_linux") do
+    depends_on formula: "jq"
   end
 
   version "1.2.3"
-  sha256 "2222222222222222222222222222222222222222222222222222222222222222"
 
-  url "https://github.com/myorg/myapp/releases/download/v#{version}/myapp-darwin-arm64.tar.gz"
+  on_macos do
+    sha256 "2222222222222222222222222222222222222222222222222222222222222222"
+
+    url "https://github.com/myorg/myapp/releases/download/v#{version}/myapp-darwin-arm64.tar.gz"
+  end
+
   name "mytool"
 
   livecheck do
     skip "Auto-generated on release."
   end
-
-  depends_on :macos
 
   binary "mytool"
 end

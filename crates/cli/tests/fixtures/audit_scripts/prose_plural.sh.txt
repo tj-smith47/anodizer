@@ -29,3 +29,10 @@ function second(s) { return s }
 { print length(s), \$1 }
 " /dev/null
 echo "after the program, tolower(s) is prose"
+awk -f lib.awk "$f" | grep -v '"'
+echo "the length(s) after a grep"
+awk '{ print $1 }' "$f" # it's the first column
+echo "the length(s) after a column"
+awk "BEGIN { x = \"a\" }
+{ print length(s) }" /dev/null
+awk -f x.awk 'BEGIN{ print length(s) }'

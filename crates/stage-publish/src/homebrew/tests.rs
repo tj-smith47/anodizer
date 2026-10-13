@@ -3497,16 +3497,16 @@ fn depends_on_macos_overrides_the_custom_block_scan() {
         (None, None, true, flat_top_level),
         (None, Some(false), false, flat_in_on_macos),
         (None, Some(true), true, flat_top_level),
-        // The scan reads a regex after `when` as code, so its `on_linux`
-        // counts as a Linux side.
+        // The scan sets a regex after `when` aside, so its `on_linux` is
+        // no Linux side.
         (
             Some("case x\nwhen /on_linux/ then 1\nend"),
             None,
-            false,
-            flat_in_on_macos,
+            true,
+            flat_top_level,
         ),
         (
-            Some("case x\nwhen /on_linux/ then 1\nend"),
+            Some("on_linux do\n  binary \"x\"\nend"),
             Some(true),
             true,
             flat_top_level,
@@ -7086,6 +7086,15 @@ fn style_fixture_casks() -> Vec<(&'static str, String)> {
     custom_linux.binaries = &bins;
     custom_linux.custom_block = Some("on_linux do\n  depends_on formula: \"jq\"\nend");
 
+    // A plain `<<` heredoc closes only on a tag at column 0, and its body
+    // is part of the text, so both must survive the re-indent.
+    let mut custom_heredoc = empty_cask_params("mytool", "1.2.3");
+    custom_heredoc.sha256 = &flat_sha;
+    custom_heredoc.url = &flat_url;
+    custom_heredoc.homepage = Some("https://github.com/acme/mytool");
+    custom_heredoc.app = Some("MyTool.app");
+    custom_heredoc.custom_block = Some("caveats <<EOS\n  Run mytool --setup once.\nEOS");
+
     vec![
         ("multi_platform", generate_cask(&full).unwrap()),
         ("macos_multi_arch", generate_cask(&macos).unwrap()),
@@ -7099,6 +7108,10 @@ fn style_fixture_casks() -> Vec<(&'static str, String)> {
         (
             "custom_block_on_linux",
             generate_cask(&custom_linux).unwrap(),
+        ),
+        (
+            "custom_block_plain_heredoc",
+            generate_cask(&custom_heredoc).unwrap(),
         ),
     ]
 }
@@ -7340,8 +7353,8 @@ fn rubocop_summary_reads_the_file_and_offence_counts() {
 /// `ANODIZER_BREW_STYLE=1`, because it needs a working Homebrew with its
 /// style gems (macOS, or Linux as a non-root user); once opted in, a brew
 /// that cannot lint fails the test. `brew style` only lints a cask inside a
-/// tap, so each fixture is written into a throwaway tap that is removed
-/// afterwards.
+/// tap, so each fixture is written into a throwaway tap, trusted for the
+/// test, that is untrusted and removed afterwards.
 ///
 /// Two offences are allowed, each where its cause is the config's own Ruby:
 ///
@@ -7396,13 +7409,22 @@ fn rendered_casks_pass_brew_style_opt_in() {
     // A per-process tap owner keeps concurrent runs apart. The guard exists
     // before the first directory does, so a partly created tap is removed
     // too, however the test ends.
-    let owner = brew_repo
-        .join("Library/Taps")
-        .join(format!("anodizer-style-check-{}", std::process::id()));
+    let owner_name = format!("anodizer-style-check-{}", std::process::id());
+    let tap = format!("{owner_name}/check");
+    let owner = brew_repo.join("Library/Taps").join(&owner_name);
     let _tap = RemoveTreeOnDrop(owner.clone());
     let casks = owner.join("homebrew-check/Casks");
     std::fs::create_dir_all(&casks).expect("create the throwaway tap");
     let cask_path = casks.join("mytool.rb");
+    // Homebrew loads nothing from a tap nobody trusts, so the tap is
+    // trusted for the test and untrusted afterwards.
+    let trust = brew(&["trust", "--tap", &tap]);
+    assert!(
+        trust.status.success(),
+        "brew trust --tap {tap} failed:\n{}",
+        String::from_utf8_lossy(&trust.stderr)
+    );
+    let _trust = UntrustTapOnDrop(tap.clone());
 
     for (stem, body) in style_fixture_casks() {
         std::fs::write(&cask_path, &body).expect("write cask");
@@ -7565,6 +7587,19 @@ fn style_fixture_formulae() -> Vec<(&'static str, String)> {
                 ("aarch64-apple-darwin", &mac_arm, &s2),
             ],
             &custom_def,
+        ),
+    ));
+    let mut custom_heredoc = base();
+    custom_heredoc.custom_block =
+        Some("def setup_note\n  <<EOS\n    Run mytool --setup once.\nEOS\nend");
+    formulae.push((
+        "custom_block_plain_heredoc",
+        render(
+            &[
+                ("x86_64-apple-darwin", &mac_intel, &s1),
+                ("aarch64-apple-darwin", &mac_arm, &s2),
+            ],
+            &custom_heredoc,
         ),
     ));
     formulae.push((
@@ -8083,5 +8118,68 @@ fn a_formula_with_no_installable_archive_names_every_archive_and_platform() {
         "homebrew formula 'mytool': none of its archives is for a platform Homebrew \
          installs on (macOS, or Linux on x86_64 or arm64): \
          mytool-linux-386.tar.gz (linux/386), mytool-windows-amd64.zip (windows/amd64)"
+    );
+}
+
+/// `reindent_code` moves only the lines that begin in code: a `<<` closer
+/// stays at column 0 where Ruby needs it, and the text of a heredoc body
+/// or a multi-line string is kept byte for byte.
+#[test]
+fn reindent_code_moves_only_the_lines_that_begin_in_code() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "a plain heredoc keeps its body and its closer at column 0",
+            "caveats <<EOS\n    indented body\nEOS\nputs 1",
+            "  caveats <<EOS\n    indented body\nEOS\n  puts 1",
+        ),
+        (
+            "a dash heredoc keeps its body and its closer",
+            "x = <<-EOS\nbody\n  EOS\ny = 2",
+            "  x = <<-EOS\nbody\n  EOS\n  y = 2",
+        ),
+        (
+            "a squiggly heredoc keeps its body and indents its closer",
+            "x = <<~EOS\n  body\nEOS",
+            "  x = <<~EOS\n  body\n  EOS",
+        ),
+        (
+            "a multi-line string keeps its later lines",
+            "desc \"one\ntwo\"\nurl \"x\"",
+            "  desc \"one\ntwo\"\n  url \"x\"",
+        ),
+        (
+            "code after a heredoc is indented",
+            "if true\n  x = <<EOS\nb\nEOS\nend",
+            "  if true\n    x = <<EOS\nb\nEOS\n  end",
+        ),
+        (
+            "a =begin comment stays at column 0",
+            "x = 1\n=begin\nnote\n=end\ny = 2",
+            "  x = 1\n=begin\nnote\n=end\n  y = 2",
+        ),
+        (
+            "past an unreadable line every line is kept",
+            "x = 1\ny = \"open\n  z = 2",
+            "  x = 1\n  y = \"open\n  z = 2",
+        ),
+    ];
+    for (what, block, want) in cases {
+        assert_eq!(super::formula::reindent_code(block, "  "), *want, "{what}");
+    }
+}
+
+/// `indent_code_lines` indents a code line, keeps a heredoc line as
+/// written and leaves a blank line empty.
+#[test]
+fn indent_code_lines_indents_only_code_and_leaves_blank_lines_empty() {
+    assert_eq!(
+        super::formula::indent_code_lines("system <<EOS\n  ls\nEOS\n\nbin.install \"a\"", "    "),
+        [
+            "    system <<EOS",
+            "  ls",
+            "EOS",
+            "",
+            "    bin.install \"a\""
+        ]
     );
 }

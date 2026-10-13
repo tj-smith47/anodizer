@@ -20,7 +20,7 @@ pub(super) fn unwrap_rustdoc_links(s: &str) -> String {
     while i < bytes.len() {
         if bytes[i] == b'`' {
             // A code span is passed over whole, so a `[` or `]` inside one
-            // (`` `[` ``) is never read as a link delimiter.
+            // (`` `[` ``) is not read as a link delimiter.
             let run = backtick_run(bytes, i);
             i = closing_backtick_run(bytes, i + run, run).map_or(i + run, |close| close + run);
             continue;
@@ -89,9 +89,9 @@ fn closing_backtick_run(bytes: &[u8], from: usize, run: usize) -> Option<usize> 
 }
 
 /// True when a markdown link target is a rustdoc item path (`crate::x`,
-/// `super::super::y`, `Self::z`, or a bare identifier) rather than a real
-/// URL, relative file path, or `#anchor` — i.e. when the "link" only means
-/// something to rustdoc and must be unwrapped to inline code.
+/// `super::super::y`, `Self::z`, or a bare identifier). Such a link means
+/// something only to rustdoc and is unwrapped to inline code; a URL, a
+/// relative file path and an `#anchor` are kept as links.
 fn is_rust_path_target(target: &str) -> bool {
     !target.is_empty()
         && target.split("::").all(|seg| {

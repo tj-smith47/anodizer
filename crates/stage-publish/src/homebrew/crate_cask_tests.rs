@@ -530,19 +530,28 @@ fn every_gate_skip_line_prints_once_per_command() {
 /// the verdict itself, so it silences the warning.
 #[test]
 fn an_unreadable_custom_block_warns_once_per_command() {
-    // Both blocks are valid Ruby. The `/` after `when` is a regex the lexer
-    // does not read as one, so its `"` opens a string to the end. `width` is
-    // a local through a nested multiple assignment the lexer does not
-    // track, so `%-2` is a modulo it reads as a percent literal that closes
-    // at the `-` three lines down.
+    // Every block is valid Ruby, so the emission check passes. `width` and
+    // `cond` are words the lexer cannot tell from a local or a method, and
+    // the `<<` follows a block parameter while it is in scope. A literal
+    // left open at the end of a block is not valid Ruby, so that reason
+    // has no case here; `an_unclosed_literal_falls_back_to_the_word_scan`
+    // holds what it reports.
     const CASES: &[(&str, &str)] = &[
         (
-            "case \"a\"\nwhen /\"/ then 1\nend\non_linux do\nend",
-            "line 2 (an unclosed string)",
+            "n = width %-2\non_linux do\nend\n-",
+            "line 1 (the '%' there could open a percent literal or be an operator)",
         ),
         (
-            "a, (width, b) = 1, [3, 4]\nn = width %-2\non_linux do\nend\nn = 3 - 1",
-            "line 2 (the '%' there could open a percent literal or be an operator)",
+            "x = cond ?a, %w[\nb\n]\non_linux do\nend",
+            "line 1 (the '?' there could open a character literal or be an operator)",
+        ),
+        (
+            "x = width /2\non_linux do\nend\n/",
+            "line 1 (the '/' there could open a regex or be an operator)",
+        ),
+        (
+            "[1].each do |caveats|\n  caveats <<~EOS\n  on_linux\n  EOS\nend",
+            "line 2 (the '<<' there could open a heredoc or be an operator)",
         ),
     ];
     for (block, cause) in CASES {
