@@ -690,8 +690,9 @@ pub(super) fn reindent(text: &str, indent: &str) -> String {
 /// the closing tag of a `<<` or `<<-` heredoc, is kept byte for byte:
 /// indenting it would change the literal, and a `<<` heredoc closes only on
 /// a tag at the start of a line. Trailing whitespace is dropped only from a
-/// line that ends in code, so a line that opens a multi-line string keeps
-/// the spaces inside it. Past a line the lexer cannot read, every line is
+/// line that ends in code, and only past its last literal, so a line that
+/// opens a multi-line string keeps the spaces inside it and `?\ ` keeps its
+/// space. Past a line the lexer cannot read, every line is
 /// kept as written.
 pub(super) fn reindent_code(text: &str, indent: &str) -> String {
     reindent_lines(&ruby_lines(text), indent)
@@ -716,11 +717,19 @@ pub(super) fn indent_code_lines(text: &str, indent: &str) -> Vec<String> {
 }
 
 /// Each line of Ruby `text` paired with whether it begins in code and may
-/// move, with its trailing whitespace dropped when it ends in code.
+/// move. A line that ends in code drops its trailing whitespace, a `\r`
+/// before the newline included, up to the end of its last literal; any
+/// other line is kept byte for byte.
 fn ruby_lines(text: &str) -> Vec<(&str, bool)> {
-    text.lines()
+    text.split_inclusive('\n')
+        .map(|l| l.strip_suffix('\n').unwrap_or(l))
         .zip(super::cask_custom_block::line_code_edges(text))
-        .map(|(l, (starts, ends))| (if ends { l.trim_end() } else { l }, starts))
+        .map(|(l, edges)| {
+            let kept = edges
+                .trim_from
+                .map_or(l, |from| &l[..l.trim_end().len().max(from)]);
+            (kept, edges.starts_in_code)
+        })
         .collect()
 }
 

@@ -1085,8 +1085,26 @@ fn a_statement_continued_with_a_backslash_reads_on_into_the_next_line() {
 /// `-> { … }` is the body of a lambda, so a name first assigned inside it
 /// is gone after its `}`.
 #[test]
-fn a_lambda_brace_body_keeps_its_names() {
+fn a_lambda_brace_body_does_not_leak_its_names() {
     assert_facts("f = -> { w = 1 }\nr = w %w[on_linux]", false, false, None);
     assert_facts("f = ->{ w = 1 }\nr = w %w[on_linux]", false, false, None);
     assert_facts("w = 1\nf = -> { w }\nr = w %(on_linux)", true, false, None);
+}
+
+/// A `\` at the end of a body line of a heredoc whose tag is not
+/// single-quoted joins the next line to it, so a tag right after it is body
+/// text. A single-quoted tag joins nothing, and an even run of `\` is an
+/// escaped backslash that joins nothing either.
+#[test]
+fn a_backslash_ending_a_heredoc_body_line_joins_the_next_line() {
+    for opener in ["<<~EOS", "<<-EOS", "<<EOS", "<<~\"EOS\"", "<<~`EOS`"] {
+        assert_facts(
+            &format!("x = {opener}\n  a \\\nEOS\n  on_linux\nEOS"),
+            false,
+            false,
+            None,
+        );
+    }
+    assert_facts("x = <<~'EOS'\n  a \\\nEOS\non_linux", true, false, None);
+    assert_facts("x = <<~EOS\n  a \\\\\nEOS\non_linux", true, false, None);
 }

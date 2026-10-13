@@ -250,11 +250,13 @@ jargon_violations+="$jargon_prose"
 # one of the helpers in AWK_S_CALLS on `s` (`trim`, `length`). An awk program is
 # a whole `.awk` file, a heredoc tagged AWK, or the text a line scan finds
 # between a quote and the quote that matches it. The opening quote is the first
-# one after an `awk`, `gawk`, `mawk` or `nawk` word, its `-v name=value` and
+# one after an `awk`, `gawk`, `mawk` or `nawk` word (with no `.`, `-`, letter,
+# digit or `_` before it, so `my-awk` is no awk), its `-v name=value` and
 # `-F x` options skipped (a quoted value may hold spaces), on the same line or,
 # when the line ends in `\`, on the next one. A quote before a `BEGIN {` opens
-# one too on a line that names awk or already holds a program, and a bare
-# `BEGIN {` opens one on a `'`. Inside a `"` program `\"` is skipped. A quote
+# one too on a line that names awk or already holds a program. A bare
+# `BEGIN {` line is code only inside an open program or an AWK heredoc; in an
+# untagged heredoc it is prose. Inside a `"` program `\"` is skipped. A quote
 # outside a program is not counted, and an `awk -f file` names a program held
 # elsewhere and opens none. The line that opens a heredoc tagged AWK is
 # scanned like any other up to the heredoc. Outside a program, only a line that
@@ -290,7 +292,7 @@ run_scanner plural_prose -v AWK_S_CALLS="$AWK_S_CALLS" -f - \
     # that an awk command continued with `\` still waits for its program.
     function scan(line,    out, i, n, c, start, rest, named) {
         out = ""; i = 1; n = length(line); touched = 0
-        named = line ~ /(^|[^.A-Za-z0-9_])[gmn]?awk([ \t]|$)/
+        named = line ~ /(^|[^-.A-Za-z0-9_])[gmn]?awk([ \t]|$)/
         if (expect) {
             expect = 0
             i = program_start(line, 1)
@@ -316,12 +318,9 @@ run_scanner plural_prose -v AWK_S_CALLS="$AWK_S_CALLS" -f - \
                 if ((named || touched) && substr(rest, 2) ~ /^[ \t]*BEGIN *\{/) {
                     q = c; out = out c; i++; continue
                 }
-            } else if (match(rest, /^[gmn]?awk[ \t]/) && (i == 1 || substr(line, i - 1, 1) !~ /[.A-Za-z0-9_]/)) {
+            } else if (match(rest, /^[gmn]?awk[ \t]/) && (i == 1 || substr(line, i - 1, 1) !~ /[-.A-Za-z0-9_]/)) {
                 start = program_start(line, i + RLENGTH - 1)
                 out = out substr(line, i, start - i); i = start
-                continue
-            } else if (rest ~ /^BEGIN *\{/ && out ~ /^[ \t]*$/) {
-                q = "'"
                 continue
             }
             out = out c; i++

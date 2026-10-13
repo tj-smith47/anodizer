@@ -8189,6 +8189,40 @@ fn only_a_line_that_ends_in_code_is_trimmed() {
     );
 }
 
+/// A rendered cask keeps the whitespace that belongs to a literal: a
+/// delimiter or content that is whitespace on a line that ends in code, the
+/// body of a heredoc whose line ends in `\`, and a `\r` before the newline
+/// inside a heredoc body. Only the whitespace past the last literal of a
+/// code line is dropped.
+#[test]
+fn a_rendered_custom_block_keeps_the_whitespace_of_its_literals() {
+    let cases: &[(&str, &str)] = &[
+        ("sep = ?\\ ", "\n  sep = ?\\ \n"),
+        ("s = % a ", "\n  s = % a \n"),
+        ("s = %\ta\t", "\n  s = %\ta\t\n"),
+        ("x = [%\nabc   \n]", "\n  x = [%\nabc   \n  ]\n"),
+        ("s = \"a\"   ", "\n  s = \"a\"\n"),
+        (
+            "x = <<~EOS\n  a \\\nEOS\n  on_linux\nEOS",
+            "\n  x = <<~EOS\n  a \\\nEOS\n  on_linux\n  EOS\n",
+        ),
+        (
+            "x = <<-EOS\n  a \\\nEOS\n  on_linux\nEOS",
+            "\n  x = <<-EOS\n  a \\\nEOS\n  on_linux\nEOS\n",
+        ),
+        (
+            "x = <<~EOS\n  body  \r\nEOS\r\ny = 1  \r\n",
+            "\n  x = <<~EOS\n  body  \r\n  EOS\r\n  y = 1\n",
+        ),
+    ];
+    for (block, want) in cases {
+        let mut params = empty_cask_params("mytool", "1.2.3");
+        params.custom_block = Some(block);
+        let cask = super::cask::generate_cask(&params).unwrap();
+        assert!(cask.contains(want), "{block:?} rendered as:\n{cask}");
+    }
+}
+
 /// `indent_code_lines` indents a code line, keeps a heredoc line as
 /// written and leaves a blank line empty.
 #[test]

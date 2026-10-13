@@ -247,8 +247,9 @@ into the following lines until it closes:
   ends at its last `"`, and `#$"` interpolates the global `$"`.
 - A heredoc body, opened by `<<~TAG`, `<<-TAG` or `<<TAG` (the tag bare or
   quoted) and closed by a line holding the tag alone, indented for `<<~` and
-  `<<-`, matched case-sensitively. A `<<` followed by a space or a digit is a
-  shift.
+  `<<-`, matched case-sensitively. Unless the tag is single-quoted, a body
+  line ending in an odd run of `\` joins the next line, so a tag on that
+  line does not close the heredoc. A `<<` followed by a space or a digit is a shift.
 - A `%()`, `%q`, `%Q`, `%w`, `%W`, `%i`, `%I`, `%r`, `%s` or `%x` literal
   delimited by `()`, `[]`, `{}` or `<>` (which nest) or by one repeated
   punctuation character (`%q|…|`). A typed one also takes a space as its

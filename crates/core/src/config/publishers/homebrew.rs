@@ -352,7 +352,9 @@ pub struct HomebrewCaskConfig {
     /// strings (inside `"…"` and `` `…` ``, `#{…}` is read as code, so the
     /// string ends at its own quote, and `#$"` interpolates `$"`); heredoc
     /// bodies (`<<~TAG`, `<<-TAG`, `<<TAG`, a `<<` before a space or a digit
-    /// being a shift); `%()`, `%q`, `%Q`, `%w`, `%W`, `%i`, `%I`, `%r`, `%s`
+    /// being a shift; unless the tag is single-quoted, a body line ending in
+    /// an odd run of `\` joins the next one, so a tag there does not close
+    /// it); `%()`, `%q`, `%Q`, `%w`, `%W`, `%i`, `%I`, `%r`, `%s`
     /// and `%x` literals delimited by nesting brackets or one repeated
     /// punctuation character, a typed one also by a space, and a bare `%`
     /// with nothing before it on its statement but an operator also by a

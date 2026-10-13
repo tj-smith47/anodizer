@@ -6,6 +6,7 @@ use anodizer_core::log::StageLogger;
 
 use super::cask::CaskParams;
 
+mod heredoc;
 mod lexer;
 mod names;
 mod words;
@@ -66,8 +67,10 @@ pub(super) enum UnreadReason {
 ///   string closes at its own quote, and `#$"` interpolates the global `$"`;
 /// - a heredoc body, opened by `<<~TAG`, `<<-TAG` or `<<TAG` with the tag
 ///   bare or quoted and closed by a line holding the tag alone (indented
-///   for `<<~` and `<<-`), case-sensitive; `<<` followed by a space or a
-///   digit is a shift;
+///   for `<<~` and `<<-`), case-sensitive; unless the tag is
+///   single-quoted, a body line ending in an odd run of `\` joins the next
+///   line, so a tag on that line does not close the heredoc; `<<` followed
+///   by a space or a digit is a shift;
 /// - a `%(…)`, `%q`, `%Q`, `%w`, `%W`, `%i`, `%I`, `%r`, `%s` or `%x`
 ///   literal delimited by `()`, `[]`, `{}` or `<>` (which nest) or by one
 ///   repeated punctuation character; a typed one also by a space, and a
@@ -192,22 +195,36 @@ pub(super) fn custom_block_os_facts(block: Option<&str>) -> CustomBlockOsFacts {
     }
 }
 
-/// Per line of `block`, whether the line begins in code, so it may be
-/// re-indented without changing what it means, and whether it ends in
-/// code, so its trailing whitespace may be dropped. A line that begins
-/// inside a string, percent literal, regex, heredoc body or `=begin`
-/// comment, and the closing tag of a `<<` or `<<-` heredoc, does not begin
-/// in code; a line that ends inside one of them does not end in code.
-/// Every line after the place the block cannot be read past is neither.
-pub(super) fn line_code_edges(block: &str) -> Vec<(bool, bool)> {
+/// How one line of a `custom_block` may be laid out again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct LineEdges {
+    /// The line begins in code, so it may be re-indented without changing
+    /// what it means. A line that begins inside a string, percent literal,
+    /// regex, heredoc body or `=begin` comment, and the closing tag of a
+    /// `<<` or `<<-` heredoc, does not.
+    pub(super) starts_in_code: bool,
+    /// The line ends in code, and whitespace at or past this byte offset
+    /// is trailing and may be dropped. The offset is past the last literal
+    /// on the line, so a delimiter or content that is whitespace (`?\ `,
+    /// `% a `) is kept. `None` for a line that ends inside a literal,
+    /// heredoc body or `=begin` comment, which is kept as written.
+    pub(super) trim_from: Option<usize>,
+}
+
+/// How each line of `block` may be laid out again. Every line after the
+/// place the block cannot be read past is kept as written.
+pub(super) fn line_code_edges(block: &str) -> Vec<LineEdges> {
     let lexed = lex_block(block);
     let readable = lexed.unread.map_or(usize::MAX, |u| u.line);
     lexed
         .starts
         .into_iter()
-        .zip(lexed.ends)
+        .zip(lexed.code_ends)
         .enumerate()
-        .map(|(n, (starts, ends))| (starts && n < readable, ends && n < readable))
+        .map(|(n, (starts, end))| LineEdges {
+            starts_in_code: starts && n < readable,
+            trim_from: end.filter(|_| n < readable),
+        })
         .collect()
 }
 

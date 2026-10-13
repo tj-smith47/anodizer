@@ -223,9 +223,11 @@ fn the_misspelled_tool_name_is_reported_and_the_config_alias_is_not() {
 /// first. An `awk -f lib.awk` line opens no program, so an apostrophe in its
 /// comment hides no later line, and a quote before `BEGIN {` opens one only
 /// on a line that names awk, so `echo "BEGIN { length(s) of the rows }"` is a
-/// count. Outside a program only a line defining `function <name>(s) {` is
-/// code, so `the function file(s) are missing` and `length(s) of the files`
-/// are counts.
+/// count. A bare `BEGIN {` line in an untagged heredoc is prose and opens no
+/// program, so a count after it is still read, and `my-awk` is no awk word.
+/// Outside a program only a line defining `function <name>(s) {` is code,
+/// so `the function file(s) are missing` and `length(s) of the files` are
+/// counts.
 #[test]
 fn a_plural_in_parentheses_in_a_script_a_workflow_or_the_taskfile_is_reported() {
     let taskfile = "tasks:\n  demo:\n    desc: \"Guard: every categor(ies) entry is read.\"\n";
@@ -262,6 +264,8 @@ fn a_plural_in_parentheses_in_a_script_a_workflow_or_the_taskfile_is_reported() 
         "the length(s) after a grep",
         "the length(s) after a column",
         "BEGIN { length(s) of the rows",
+        "the length(s) of the generated rows",
+        "my-awk '{ print length(s) }'",
     ]
     .iter()
     .map(|needle| {
@@ -312,6 +316,7 @@ fn a_script_whose_counts_go_through_plural_passes_the_plural_scan() {
                 "length(s) of",
                 "length(s) after",
                 "tolower(s) is prose",
+                "my-awk",
             ]
             .iter()
             .any(|f| l.contains(f))

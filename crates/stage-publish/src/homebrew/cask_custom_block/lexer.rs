@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
+use super::heredoc::{Heredoc, heredoc_opener};
 use super::names::{
     LevelKind, Scopes, assigned_names, bind_statement, capture_names, for_names, param_names,
 };
@@ -26,9 +27,10 @@ pub(super) struct Lexed {
     /// body and `=begin` comment. The closing line of a `<<~` heredoc
     /// counts as code, since its indentation is free.
     pub(super) starts: Vec<bool>,
-    /// Per line, whether it ends in code: outside every literal, heredoc
-    /// body and `=begin` comment.
-    pub(super) ends: Vec<bool>,
+    /// Per line that ends in code, outside every literal, heredoc body and
+    /// `=begin` comment, the byte offset where its last literal ends, so
+    /// only the whitespace past it is trailing. `None` for any other line.
+    pub(super) code_ends: Vec<Option<usize>>,
     /// The first place the block cannot be read with confidence.
     pub(super) unread: Option<Unreadable>,
 }
@@ -54,29 +56,6 @@ enum Frame {
     },
     /// `#{…}` code, ended by the `}` that matches no `{` opened inside it.
     Interpolation { braces: usize },
-}
-
-/// A heredoc whose body begins on the line after its opener.
-struct Heredoc {
-    tag: String,
-    /// Opened by `<<~` or `<<-`: the closing tag may be indented.
-    indented: bool,
-    /// Opened by `<<~`.
-    squiggly: bool,
-    /// The line of the opener.
-    line: usize,
-    /// It was opened on its line after an ambiguous opener.
-    guessed: bool,
-}
-
-impl Heredoc {
-    fn closes_on(&self, line: &str) -> bool {
-        if self.indented {
-            line.trim_start() == self.tag
-        } else {
-            line == self.tag
-        }
-    }
 }
 
 /// What the code before a `<<`, `%`, `?` or `/` makes of it.
@@ -152,10 +131,10 @@ pub(super) fn lex_block(block: &str) -> Lexed {
     let mut carry = Carry::default();
     let mut out = Vec::with_capacity(lines.len());
     let mut starts = Vec::with_capacity(lines.len());
-    let mut ends = Vec::with_capacity(lines.len());
+    let mut code_ends = Vec::with_capacity(lines.len());
     for (n, line) in lines.iter().enumerate() {
-        ends.push(false);
-        if let Some(heredoc) = carry.heredocs.front() {
+        code_ends.push(None);
+        if let Some(heredoc) = carry.heredocs.front_mut() {
             let closes = heredoc.closes_on(line);
             starts.push(closes && heredoc.squiggly);
             if closes {
@@ -179,8 +158,8 @@ pub(super) fn lex_block(block: &str) -> Lexed {
             continue;
         }
         starts.push(carry.stack.is_empty());
-        let code = lex_line(line, n + 1, &mut carry);
-        ends[n] = !code.open;
+        let (code, end) = lex_line(line, n + 1, &mut carry);
+        code_ends[n] = (!code.open).then_some(end);
         out.push(code);
     }
     let unclosed = |line: usize, kind| Unreadable {
@@ -227,7 +206,7 @@ pub(super) fn lex_block(block: &str) -> Lexed {
     Lexed {
         lines: out,
         starts,
-        ends,
+        code_ends,
         unread,
     }
 }
@@ -338,7 +317,9 @@ fn end_statement(code: &str, st: &Statement, scopes: &mut Scopes) {
 
 /// Read line `number` of a block on top of what the lines before it left
 /// in `carry`.
-fn lex_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
+/// Read one line of a block: its code, and the byte offset where the last
+/// literal read on it ends, 0 when it has none.
+fn lex_line(line: &str, number: usize, carry: &mut Carry) -> (CodeLine, usize) {
     let Carry {
         stack,
         heredocs,
@@ -383,6 +364,9 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
     // The first ambiguous opener on this line: its operator and the kind
     // of literal it opened. Every literal opened after it is guessed.
     let mut guess: Option<(&'static str, &'static str)> = None;
+    // Past the last literal read, whose delimiter or content may be
+    // whitespace that trimming the line must keep.
+    let mut literal_end = 0;
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
@@ -432,6 +416,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
                 }
                 i += 1;
                 if closes {
+                    literal_end = i;
                     let frame = stack.pop();
                     if stack.is_empty() {
                         text.push_str("\"\"");
@@ -562,6 +547,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
                 };
             }
             i += len;
+            literal_end = i;
             if let Some(mut h) = heredoc {
                 h.guessed = guess.is_some();
                 heredocs.push_back(h);
@@ -725,6 +711,7 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
         && *opened < number
     {
         stack.pop();
+        literal_end = chars.len();
         if stack.is_empty() {
             text.push_str("\"\"");
         }
@@ -763,10 +750,15 @@ fn lex_line(line: &str, number: usize, carry: &mut Carry) -> CodeLine {
             });
         }
     }
-    CodeLine {
+    let end = chars[..literal_end.min(chars.len())]
+        .iter()
+        .map(|c| c.len_utf8())
+        .sum();
+    let code = CodeLine {
         text: code,
         open: !stack.is_empty(),
-    }
+    };
+    (code, end)
 }
 
 /// Read the code character `c`, just added to `text`, into the parameter
@@ -958,32 +950,4 @@ fn char_literal_len(text: &[char]) -> Option<usize> {
         return None;
     }
     Some(len.min(text.len()))
-}
-
-/// The heredoc opened by the text after a `<<` on line `line`: the length
-/// of that text and the heredoc, or `None` when the `<<` is a shift.
-fn heredoc_opener(text: &[char], line: usize) -> Option<(usize, Heredoc)> {
-    let indented = matches!(text.first(), Some('~' | '-'));
-    let squiggly = text.first() == Some(&'~');
-    let at = usize::from(indented);
-    let first = *text.get(at)?;
-    let (tag, end) = if matches!(first, '\'' | '"' | '`') {
-        let len = text[at + 1..].iter().position(|&c| c == first)?;
-        (&text[at + 1..at + 1 + len], at + len + 2)
-    } else if first.is_ascii_alphabetic() || first == '_' {
-        let len = text[at..].iter().take_while(|&&c| is_word_char(c)).count();
-        (&text[at..at + len], at + len)
-    } else {
-        return None;
-    };
-    Some((
-        end,
-        Heredoc {
-            tag: tag.iter().collect(),
-            indented,
-            squiggly,
-            line,
-            guessed: false,
-        },
-    ))
 }

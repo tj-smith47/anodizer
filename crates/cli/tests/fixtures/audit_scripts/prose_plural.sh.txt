@@ -47,3 +47,9 @@ awk -v n=1 \
   '{ print length(s) }' /dev/null
 echo "BEGIN { length(s) of the rows }"
 x=$(awk -v n=1 "BEGIN { print length(s) }")
+cat > gen.awk <<EOF
+BEGIN { n = 0 }
+EOF
+echo "the length(s) of the generated rows"
+awk '{ print length(s) }' f
+my-awk '{ print length(s) }' f
