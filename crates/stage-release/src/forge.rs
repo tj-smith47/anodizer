@@ -331,7 +331,8 @@ pub(crate) async fn run_upload_loop<C: ForgeAssetClient>(
 /// The text comparison cannot see a repeat whose volatile field (a download
 /// count) changed between the two reads. Against a server that ignores the
 /// page parameter, sends no numeric ids and changes such a field, the sweep
-/// therefore keeps requesting pages until the retry deadline. Real Gitea and
+/// therefore keeps requesting pages until the retry deadline, or the
+/// page-counter limit when no deadline is set. Real Gitea and
 /// GitLab always send numeric ids, so they are compared by id.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ListingPageKey {

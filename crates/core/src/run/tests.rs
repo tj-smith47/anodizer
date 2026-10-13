@@ -688,3 +688,113 @@ fn slow_subprocess_heartbeats_fast_subprocess_does_not() {
         "an instant child must not emit a heartbeat"
     );
 }
+
+/// Every verbose record saying that reading a child's output was stopped.
+#[cfg(unix)]
+fn drain_cut_off_lines(cap: &crate::log::LogCapture) -> Vec<String> {
+    cap.all_messages()
+        .into_iter()
+        .filter(|(lvl, msg)| *lvl == LogLevel::Verbose && msg.contains("stopped using the pipes"))
+        .map(|(_, msg)| msg)
+        .collect()
+}
+
+/// A child that exits 0 while a backgrounded grandchild still holds its
+/// stdout and stderr must not keep the call blocked for the grandchild's whole
+/// life. `run_capture` has no timeout, so no watchdog reaps the grandchild:
+/// the reader threads are abandoned once `POST_EXIT_DRAIN_WINDOW` has passed
+/// since the child exited, and the call returns the child's status with what
+/// was captured, saying so at verbose.
+#[test]
+#[cfg(unix)]
+fn a_grandchild_holding_the_pipes_ends_the_drain_after_the_window() {
+    let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+    let start = Instant::now();
+    let out = run_capture(
+        &mut sh("sleep 30 & echo started; exit 0"),
+        &log,
+        "grandchild-holds-pipes",
+    )
+    .expect("a clean child exit must yield Ok(Output)");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= POST_EXIT_DRAIN_WINDOW
+            && elapsed < POST_EXIT_DRAIN_WINDOW + Duration::from_secs(5),
+        "the drain must end one window after the child exited, not when the \
+         grandchild does ({elapsed:?})"
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "started\n");
+    assert_eq!(
+        drain_cut_off_lines(&cap),
+        vec![format!(
+            "stopped using the pipes of grandchild-holds-pipes {}s after it exited: \
+             a process it started still holds them",
+            POST_EXIT_DRAIN_WINDOW.as_secs()
+        )]
+    );
+}
+
+/// A grandchild that releases the pipes inside the window is waited for: what
+/// it wrote after the direct child exited is captured, and no cut-off line is
+/// printed.
+#[test]
+#[cfg(unix)]
+fn a_grandchild_that_exits_inside_the_window_keeps_all_output() {
+    let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+    let out = run_checked(
+        &mut sh("(sleep 1; echo late; echo late-err >&2) & echo early; exit 0"),
+        &log,
+        "short-grandchild",
+    )
+    .expect("the child must succeed");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "early\nlate\n");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "late-err\n");
+    assert!(
+        drain_cut_off_lines(&cap).is_empty(),
+        "no cut-off line when the pipes closed inside the window"
+    );
+}
+
+/// The stdin writer is bounded by the same window as the readers. A payload
+/// larger than the pipe buffer, fed to a child that exits while a grandchild
+/// holds stdin unread, blocks the writer; the call still returns one window
+/// after the child exited, with the child's own status.
+#[test]
+#[cfg(unix)]
+fn a_grandchild_holding_stdin_unread_ends_the_write_after_the_window() {
+    let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+    let payload = vec![b'x'; 1024 * 1024];
+    let start = Instant::now();
+    let out = run_checked_with_stdin(
+        &mut sh("sleep 30 & exit 0"),
+        &payload,
+        &log,
+        "grandchild-holds-stdin",
+    )
+    .expect("a clean child exit must yield Ok(Output)");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= POST_EXIT_DRAIN_WINDOW
+            && elapsed < POST_EXIT_DRAIN_WINDOW + Duration::from_secs(5),
+        "the write must end one window after the child exited ({elapsed:?})"
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(drain_cut_off_lines(&cap).len(), 1);
+}
+
+/// A child that reads all of a payload larger than the pipe buffer receives
+/// every byte: the chunked writer loses nothing.
+#[test]
+#[cfg(unix)]
+fn a_child_reading_a_large_stdin_receives_every_byte() {
+    let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+    let payload = vec![b'x'; 1024 * 1024];
+    let out =
+        run_checked_with_stdin(&mut sh("wc -c"), &payload, &log, "count").expect("wc must succeed");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        payload.len().to_string()
+    );
+    assert!(drain_cut_off_lines(&cap).is_empty());
+}

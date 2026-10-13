@@ -20,6 +20,18 @@
 //!   step outputs, JSON payloads) that a teed child stream would corrupt. The
 //!   verbose tee is an anodizer-only superset: GoReleaser never streams live.
 //!
+//! - **After the child exits** — reading stdout and stderr, and writing any
+//!   stdin payload, stop once the pipes close, or [`POST_EXIT_DRAIN_WINDOW`]
+//!   (5 seconds) after the child exited, whichever comes first. A process the
+//!   child started that still holds its stdin, stdout or stderr (`tool &`, a
+//!   daemon it launched) therefore cannot keep the call waiting: the helper
+//!   returns the child's own exit status with the output read so far and
+//!   prints `stopped using the pipes of <label> 5s after it exited: a process
+//!   it started still holds them` at verbose.
+//!   The window applies to every `run_*` helper, with or without a timeout,
+//!   on every platform; a timeout-bounded helper additionally kills the
+//!   leftover process tree after its own shorter grace.
+//!
 //! This module does **not** construct a [`std::process::Command`] — that would
 //! make `core` a subprocess-spawn surface, which the module-boundary rule
 //! forbids. It runs an already-built command supplied by the caller (`&mut
@@ -39,7 +51,7 @@ mod process_tree;
 mod tests;
 
 pub use exec::{
-    run_capture, run_capture_timeout, run_checked, run_checked_timeout, run_checked_with_stdin,
-    run_checked_with_stdin_timeout,
+    POST_EXIT_DRAIN_WINDOW, run_capture, run_capture_timeout, run_checked, run_checked_timeout,
+    run_checked_with_stdin, run_checked_with_stdin_timeout,
 };
 pub use process_tree::install_termination_handler;

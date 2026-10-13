@@ -6,10 +6,11 @@
 //! only marks a timeout-bounded child for group isolation, registers the
 //! spawned tree, and asks for a reap when a deadline expires.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
@@ -36,6 +37,24 @@ const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 /// the pipe and the readers EOF, instead of the drain hanging for the
 /// grandchild's full lifetime and blowing past the deadline.
 const POST_EXIT_DRAIN_GRACE: Duration = Duration::from_secs(3);
+
+/// How long every `run_*` helper keeps reading a child's stdout and stderr,
+/// and writing its stdin payload, after the child itself has exited: 5
+/// seconds.
+///
+/// The pipes normally close the moment the child exits. They stay open when
+/// the child started a process that inherited them and outlived it (a tool
+/// ending in `something &`, a daemon it launched). Once this window has passed
+/// the helper stops reading and writing, returns the child's own exit status with the
+/// output captured so far, and says so in one verbose line. The process that
+/// still holds the pipes is left running; the next thing it writes fails with
+/// a broken pipe.
+///
+/// The window is not a deadline on the child: a child that runs for an hour
+/// is read for an hour. It only starts when the child has exited. It is long
+/// enough that output still buffered in the pipe when the child exits is read
+/// in full.
+pub const POST_EXIT_DRAIN_WINDOW: Duration = Duration::from_secs(5);
 
 /// Run an already-constructed `cmd`, capturing stdout and stderr, and route
 /// the result through [`StageLogger::check_output`].
@@ -209,11 +228,13 @@ fn wait_or_kill(
 /// stdin cannot deadlock, because the readers keep draining. At verbose, each
 /// output line is also teed live (redacted) to stderr.
 ///
-/// All work happens inside one `std::thread::scope`: the optional stdin writer,
-/// the stdout reader, and the stderr reader are scoped threads that borrow
-/// `log` / `stdin` without `'static` / `Arc`, and all join before the scope
-/// returns. `wait()` runs after the readers hit EOF, so the captured buffers
-/// are complete before the success/failure decision.
+/// The stdout and stderr readers are detached threads; the optional stdin
+/// writer, the watchdog and the heartbeat are scoped threads that borrow
+/// `log` / `stdin` and join before the scope returns. The calling thread waits
+/// until both readers hit EOF, or until [`POST_EXIT_DRAIN_WINDOW`] has passed
+/// since the child exited, and only then takes the captured buffers, so they
+/// are complete before the success/failure decision in every case but the
+/// cut-off one.
 ///
 /// When `timeout` is `Some`, a fourth scoped thread watches the child: if it
 /// outlives the deadline it is **killed**, which closes its pipes so the reader
@@ -310,21 +331,21 @@ fn capture_inner(
         .with_context(|| format!("{label}: child has no stderr pipe"))?;
 
     // Shared with the watchdog (which reaps on the runtime deadline or at the
-    // post-exit drain grace) and the post-scope reaping wait. Never held across a
-    // sleep, so both sides keep making progress. The lock IS briefly held across
-    // the reap: both kill edges in `wait_or_kill` call `kill_child_tree` under
-    // this guard. On Windows that reap is `TerminateJobObject` — a fast,
+    // post-exit drain grace), the calling thread's `try_wait` in
+    // `await_readers`, and the post-scope reaping wait. Never held across a
+    // sleep, so every side keeps making progress. The lock IS briefly held
+    // across the reap: both kill edges in `wait_or_kill` call `kill_child_tree`
+    // under this guard. On Windows that reap is `TerminateJobObject` — a fast,
     // non-blocking syscall — except in the rare fallback where the child could
-    // not be assigned to a job, which spawns a blocking `taskkill`. Either way no
-    // contender can be waiting: the only other acquirer is the main thread, and
-    // whenever the watchdog reaches a reap the main thread is parked in
-    // `join_capture` draining the readers, never reaching for this lock. (Unix
-    // reaps are an async-signal-safe `libc::kill`, which never blocks.)
+    // not be assigned to a job, which spawns a blocking `taskkill`; a `try_wait`
+    // contending with that waits for the `taskkill` to finish, which delays the
+    // drain check by that long and nothing else. (Unix reaps are an
+    // async-signal-safe `libc::kill`, which never blocks.)
     let child = Mutex::new(child);
 
     let mut out_buf: Vec<u8> = Vec::new();
     let mut err_buf: Vec<u8> = Vec::new();
-    // Carries a non-fatal stdin-write I/O error out of the writer thread.
+    // Carries a stdin-write I/O error out of the writer thread.
     let mut stdin_err: Option<std::io::Error> = None;
     // Set by the watchdog when it killed the child for exceeding `timeout`.
     let mut timed_out = false;
@@ -337,31 +358,43 @@ fn capture_inner(
     // returned. The watchdog watches this so that, once the direct child has
     // exited, it can tell "readers drained, return promptly" from "readers still
     // blocked on a leaked grandchild's pipe, reap the group at the drain grace".
-    let readers_done = AtomicUsize::new(0);
-    let readers_done_ref = &readers_done;
+    let readers_done = Arc::new(AtomicUsize::new(0));
+    let readers_done_ref: &AtomicUsize = &readers_done;
+    // The readers and the stdin writer are detached threads rather than scoped
+    // ones: a thread blocked on a pipe that a leftover grandchild holds cannot
+    // be interrupted, and a scope would wait for it. Setting `abandon` tells
+    // each of them to stop at its next read or write, which drops its end of
+    // the pipe.
+    let abandon = Arc::new(AtomicBool::new(false));
+    let (reader_tx, reader_rx) = std::sync::mpsc::channel::<()>();
+    // The writer runs concurrently with the readers, so a child that fills its
+    // stdout pipe while still being fed a large stdin cannot deadlock.
+    let stdin_writer = child_stdin.map(|pipe| {
+        let bytes = stdin.expect("child_stdin is Some only when stdin is Some");
+        spawn_writer(pipe, bytes, &abandon, reader_tx.clone())
+    });
+    let pipe_threads = 2 + usize::from(stdin_writer.is_some());
+    let out_reader = spawn_reader(
+        child_stdout,
+        log,
+        false,
+        verbose,
+        &abandon,
+        &readers_done,
+        reader_tx.clone(),
+    );
+    let err_reader = spawn_reader(
+        child_stderr,
+        log,
+        true,
+        verbose,
+        &abandon,
+        &readers_done,
+        reader_tx,
+    );
+    let mut drain_cut_off = false;
+    let mut drain_wait_err: Option<std::io::Error> = None;
     std::thread::scope(|s| {
-        // Stdin writer (only when there is stdin): own thread so the readers
-        // below drain concurrently and a full stdout pipe cannot wedge the write
-        // mid-write. Dropping `pipe` after `write_all` closes stdin → EOF.
-        let stdin_handle = child_stdin.map(|mut pipe| {
-            let bytes = stdin.expect("child_stdin is Some only when stdin is Some");
-            s.spawn(move || -> std::io::Result<()> {
-                pipe.write_all(bytes)?;
-                Ok(())
-            })
-        });
-
-        let out_handle = s.spawn(move || {
-            let buf = tee_stream(child_stdout, log, false, verbose);
-            readers_done_ref.fetch_add(1, Ordering::Release);
-            buf
-        });
-        let err_handle = s.spawn(move || {
-            let buf = tee_stream(child_stderr, log, true, verbose);
-            readers_done_ref.fetch_add(1, Ordering::Release);
-            buf
-        });
-
         // Bounded-wait watchdog: kills the child (and, at the drain grace, a
         // leaked grandchild holding the inherited pipe) so the readers EOF and
         // this scope can exit. `reader_count` = 2 (stdout + stderr always piped).
@@ -397,8 +430,23 @@ fn capture_inner(
         // A reader-thread panic must not vanish the captured stream (it drives
         // the failure embed). Warn loudly and fall back to an empty buffer
         // instead of silently swallowing it.
-        out_buf = join_capture(out_handle, log, "stdout");
-        err_buf = join_capture(err_handle, log, "stderr");
+        match await_readers(child_ref, &reader_rx, pipe_threads, POST_EXIT_DRAIN_WINDOW) {
+            Ok(cut_off) => drain_cut_off = cut_off,
+            Err(e) => {
+                abandon.store(true, Ordering::Release);
+                drain_wait_err = Some(e);
+            }
+        }
+        if drain_cut_off {
+            abandon.store(true, Ordering::Release);
+            log.verbose(&format!(
+                "stopped using the pipes of {label} {}s after it exited: \
+                 a process it started still holds them",
+                POST_EXIT_DRAIN_WINDOW.as_secs()
+            ));
+        }
+        out_buf = out_reader.take(log, "stdout");
+        err_buf = err_reader.take(log, "stderr");
 
         if let Some(h) = watchdog {
             match h.join() {
@@ -409,14 +457,14 @@ fn capture_inner(
             }
         }
 
-        if let Some(h) = stdin_handle {
-            match h.join() {
-                // A broken-pipe write (child exited before reading all stdin)
-                // is benign — surface only as the captured error, not a hard
-                // fail, since the child's own exit status governs success.
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => stdin_err = Some(e),
-                Err(_) => log.warn(&format!("{label}: stdin writer thread panicked")),
+        // A broken-pipe write (child exited before reading all stdin) is
+        // benign and filtered below, since the child's own exit status governs
+        // success.
+        if let Some(w) = &stdin_writer {
+            if w.panicked.load(Ordering::Acquire) {
+                log.warn(&format!("{label}: stdin writer thread panicked"));
+            } else {
+                stdin_err = w.err.lock().unwrap_or_else(|p| p.into_inner()).take();
             }
         }
 
@@ -434,7 +482,7 @@ fn capture_inner(
         guard.wait()
     };
 
-    if let Some(e) = watchdog_err {
+    if let Some(e) = watchdog_err.or(drain_wait_err) {
         return Err(anyhow::Error::new(e).context(format!("{label}: failed to wait for child")));
     }
 
@@ -534,27 +582,152 @@ fn capture_impl(
     capture_inner(cmd, None, log, label, timeout)
 }
 
-/// Join a reader thread, returning its captured buffer. On a thread panic,
-/// warn via `log` (naming the `stream`) and return an empty buffer rather than
-/// silently dropping the capture — the non-crash policy is kept, but the loss
-/// is no longer invisible.
-fn join_capture(
-    handle: std::thread::ScopedJoinHandle<'_, Vec<u8>>,
-    log: &StageLogger,
-    stream: &str,
-) -> Vec<u8> {
-    match handle.join() {
-        Ok(buf) => buf,
-        Err(_) => {
+/// One output reader running on its own thread: the bytes it has captured so
+/// far, and whether it ended in a panic.
+struct StreamReader {
+    buf: Arc<Mutex<Vec<u8>>>,
+    panicked: Arc<AtomicBool>,
+}
+
+impl StreamReader {
+    /// The captured bytes. On a reader panic, warn via `log` (naming the
+    /// `stream`) and return an empty buffer, so the loss is visible.
+    fn take(&self, log: &StageLogger, stream: &str) -> Vec<u8> {
+        if self.panicked.load(Ordering::Acquire) {
             log.warn(&format!(
                 "internal: {stream} capture thread panicked; output for this step is lost"
             ));
-            Vec::new()
+            return Vec::new();
+        }
+        std::mem::take(&mut *self.buf.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+}
+
+/// Signals that a reader or the stdin writer has returned, on every exit edge
+/// including a panic.
+struct ThreadFinished {
+    done: Arc<AtomicUsize>,
+    panicked: Arc<AtomicBool>,
+    tx: Sender<()>,
+}
+
+impl Drop for ThreadFinished {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.panicked.store(true, Ordering::Release);
+        }
+        self.done.fetch_add(1, Ordering::Release);
+        let _ = self.tx.send(());
+    }
+}
+
+/// Start a detached thread draining `reader` through [`tee_stream`].
+fn spawn_reader<R: Read + Send + 'static>(
+    reader: R,
+    log: &StageLogger,
+    is_stderr: bool,
+    tee: bool,
+    abandon: &Arc<AtomicBool>,
+    done: &Arc<AtomicUsize>,
+    tx: Sender<()>,
+) -> StreamReader {
+    let buf = Arc::new(Mutex::new(Vec::new()));
+    let panicked = Arc::new(AtomicBool::new(false));
+    let finished = ThreadFinished {
+        done: Arc::clone(done),
+        panicked: Arc::clone(&panicked),
+        tx,
+    };
+    let (log, sink, abandon) = (log.clone(), Arc::clone(&buf), Arc::clone(abandon));
+    std::thread::spawn(move || {
+        let _finished = finished;
+        tee_stream(reader, &log, is_stderr, tee, &sink, &abandon);
+    });
+    StreamReader { buf, panicked }
+}
+
+/// Bytes the stdin writer hands the pipe per write, so it can notice `abandon`
+/// between writes of a payload larger than the pipe buffer.
+const STDIN_CHUNK: usize = 16 * 1024;
+
+/// The stdin writer running on its own thread: the write error it hit, if
+/// any, and whether it ended in a panic.
+struct StdinWriter {
+    err: Arc<Mutex<Option<std::io::Error>>>,
+    panicked: Arc<AtomicBool>,
+}
+
+/// Start a detached thread writing `bytes` to `pipe`. Dropping the pipe when
+/// the thread ends closes the child's stdin, which the child reads as EOF.
+fn spawn_writer(
+    mut pipe: std::process::ChildStdin,
+    bytes: &[u8],
+    abandon: &Arc<AtomicBool>,
+    tx: Sender<()>,
+) -> StdinWriter {
+    let err = Arc::new(Mutex::new(None));
+    let panicked = Arc::new(AtomicBool::new(false));
+    let finished = ThreadFinished {
+        // The watchdog counts readers only; the writer's count goes nowhere.
+        done: Arc::new(AtomicUsize::new(0)),
+        panicked: Arc::clone(&panicked),
+        tx,
+    };
+    // Copied because the thread may outlive the call that borrowed `bytes`.
+    let (bytes, sink, abandon) = (bytes.to_vec(), Arc::clone(&err), Arc::clone(abandon));
+    std::thread::spawn(move || {
+        let _finished = finished;
+        for chunk in bytes.chunks(STDIN_CHUNK) {
+            if abandon.load(Ordering::Acquire) {
+                return;
+            }
+            if let Err(e) = pipe.write_all(chunk) {
+                *sink.lock().unwrap_or_else(|p| p.into_inner()) = Some(e);
+                return;
+            }
+        }
+    });
+    StdinWriter { err, panicked }
+}
+
+/// Wait until all `reader_count` pipe threads have returned, or until
+/// `drain_window` has passed since `child` exited. Returns `true` when the
+/// window ran out with a thread still blocked, which happens only when a
+/// process the child started still holds the pipes.
+fn await_readers(
+    child: &Mutex<Child>,
+    finished: &Receiver<()>,
+    reader_count: usize,
+    drain_window: Duration,
+) -> std::io::Result<bool> {
+    let mut returned = 0;
+    let mut cut_off_at: Option<Instant> = None;
+    loop {
+        match finished.recv_timeout(WAIT_POLL_INTERVAL) {
+            Ok(()) => {
+                returned += 1;
+                if returned >= reader_count {
+                    return Ok(false);
+                }
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => return Ok(false),
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        match cut_off_at {
+            None => {
+                let mut guard = child.lock().unwrap_or_else(|p| p.into_inner());
+                if guard.try_wait()?.is_some() {
+                    cut_off_at = Some(Instant::now() + drain_window);
+                }
+            }
+            Some(at) if Instant::now() >= at => return Ok(true),
+            Some(_) => {}
         }
     }
 }
 
-/// Drain `reader` line-by-line into the returned capture buffer, appending the
+/// Drain `reader` line-by-line into `capture`, appending the
 /// raw bytes (line terminator included). When `tee` is set, each line is also
 /// streamed live (redacted) to stderr — `is_stderr` selects the capture level
 /// (stdout→Verbose, stderr→Error). At non-verbose verbosity `tee` is `false`,
@@ -562,17 +735,19 @@ fn join_capture(
 /// nothing, leaving the captured buffer for `check_output` to surface only on
 /// failure.
 ///
-/// Returns whatever was captured even if a mid-stream read errors, so a
+/// Keeps whatever was captured even if a mid-stream read errors, so a
 /// transient pipe hiccup never loses the bytes already read (the buffer
-/// still drives the failure embed).
-fn tee_stream<R: std::io::Read>(
+/// still drives the failure embed). Stops at the first read that completes
+/// after `abandon` is set.
+fn tee_stream<R: Read>(
     reader: R,
     log: &StageLogger,
     is_stderr: bool,
     tee: bool,
-) -> Vec<u8> {
+    capture: &Mutex<Vec<u8>>,
+    abandon: &AtomicBool,
+) {
     let mut buf = BufReader::new(reader);
-    let mut capture: Vec<u8> = Vec::new();
     let mut line: Vec<u8> = Vec::new();
     // One redacter for the whole stream: a secret split across two reads is
     // only recognisable to something that remembers the first half.
@@ -584,8 +759,14 @@ fn tee_stream<R: std::io::Read>(
         line.clear();
         match buf.read_until(b'\n', &mut line) {
             Ok(0) => break,
+            // The caller has already returned without this stream: neither
+            // capture nor print what a leftover process wrote afterwards.
+            Ok(_) if abandon.load(Ordering::Acquire) => return,
             Ok(_) => {
-                capture.extend_from_slice(&line);
+                capture
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .extend_from_slice(&line);
                 if let Some(r) = redacter.as_mut() {
                     // The child's REAL bytes, terminator included: a secret
                     // whose value carries `\r\n` is only recognisable to a
@@ -606,7 +787,6 @@ fn tee_stream<R: std::io::Read>(
             log.stream_child_chunk("\n", is_stderr);
         }
     }
-    capture
 }
 
 /// Emit already-masked child output, collapsing every `\r\n` terminator to a
