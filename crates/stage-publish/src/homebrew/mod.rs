@@ -8,7 +8,8 @@
 //!   krew, nix, aur_source publishers as well).
 //! - `publish_formula` — `publish_to_homebrew` (per-crate formula + optional
 //!   same-tap cask).
-//! - `publish_cask` — `publish_cask` (standalone per-crate cask).
+//! - `publish_cask` — `CrateCask` (where a crate's cask is published), its
+//!   render, and `publish_cask` (a cask pushed to its own tap).
 //! - `publish_top` — `publish_top_level_homebrew_casks` (top-level
 //!   `homebrew_casks:` config).
 
@@ -22,6 +23,8 @@ mod publish_top;
 pub mod publisher;
 
 #[cfg(test)]
+mod crate_cask_tests;
+#[cfg(test)]
 mod publisher_tests;
 #[cfg(test)]
 mod tests;
@@ -29,18 +32,18 @@ mod tests;
 pub use cask::{
     CaskArchEntry, CaskParams, CaskPlatformBlock, generate_cask, render_generate_completions,
 };
-pub(crate) use cask_scope::{CaskGenResult, crate_has_macos_cask_artifact};
+pub(crate) use cask_scope::{
+    CaskGenResult, cask_render_key, crate_has_macos_cask_artifact, formula_render_key,
+};
 pub(crate) use commit_msg::{render_commit_msg, render_commit_msg_with_prev};
 pub use formula::{
     FormulaOptions, build_completion_and_manpage_install_lines, generate_formula,
     generate_formula_with_opts, render_formula_license, render_livecheck,
 };
 pub use publish_cask::publish_cask;
-pub(crate) use publish_cask::render_homebrew_cask_for_crate;
+pub(crate) use publish_cask::{CrateCask, render_homebrew_cask_for_crate};
 pub use publish_formula::publish_to_homebrew;
-pub(crate) use publish_formula::{
-    crate_has_homebrew_archives, render_homebrew_formula_for_crate, render_same_tap_cask_for_crate,
-};
+pub(crate) use publish_formula::{crate_has_homebrew_archives, render_homebrew_formula_for_crate};
 pub use publish_top::publish_top_level_homebrew_casks;
 pub(crate) use publish_top::render_top_level_homebrew_casks;
 pub(crate) use publisher::is_homebrew_per_crate_configured;

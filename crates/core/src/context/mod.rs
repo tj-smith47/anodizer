@@ -211,6 +211,10 @@ pub struct Context {
     /// [`Context::render_is_strict`] ORs this with `is_strict()`, so the user's
     /// global `--strict` also makes every render strict everywhere.
     render_strict: std::cell::Cell<bool>,
+    /// The renders that have already logged this run, by the key each
+    /// caller of [`Context::claim_render_log`] names. A `RefCell` for the
+    /// same reason as `render_strict`: the render path holds `&Context`.
+    render_log_claims: std::cell::RefCell<std::collections::HashSet<String>>,
     /// When true, announce message BODIES are treated as already-final text and
     /// are NOT run through Tera at send time. Set by `anodizer notify` so an
     /// operator-supplied (possibly untrusted) message — e.g. an on_error error
@@ -277,6 +281,7 @@ impl Context {
             #[cfg(feature = "test-helpers")]
             private_dist: None,
             render_strict: std::cell::Cell::new(false),
+            render_log_claims: std::cell::RefCell::new(std::collections::HashSet::new()),
             tree_mutations: std::collections::BTreeSet::new(),
             literal_message: false,
             redact_body: true,

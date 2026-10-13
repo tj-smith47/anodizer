@@ -11465,3 +11465,268 @@ fn archive_top_level_dir_follows_the_trailing_slash() {
     assert_eq!(SourceConfig::archive_top_level_dir("foo/bar/"), "foo/bar");
     assert_eq!(SourceConfig::archive_top_level_dir(""), "");
 }
+
+/// Every reader of a crate's cask asks `PublishConfig::homebrew_cask`, so
+/// `publish.homebrew_cask:` and `publish.homebrew.cask:` publish
+/// identically. A production function that reads either field directly
+/// would see only one spelling. The functions named here are the accessor
+/// and the code that writes or merges the fields themselves.
+#[test]
+fn every_crate_cask_read_goes_through_the_accessor() {
+    use crate::test_helpers::test_sources::{
+        function_bodies, production_half, workspace_production_sources,
+    };
+    const OWNERS: &[&str] = &[
+        "fn homebrew_cask(",
+        "fn homebrew_cask_mut(",
+        "fn homebrew_cask_slots(",
+        "fn merge_publish_defaults(",
+    ];
+    // Receivers that hold a `HomebrewConfig` in this workspace's spelling.
+    const FORMULA_RECEIVERS: &[&str] = &["homebrew", "hb_cfg", "hb_cfg_owned", "hb", "h"];
+
+    fn is_ident(c: char) -> bool {
+        c.is_ascii_alphanumeric() || c == '_'
+    }
+    /// The line with string literals and a trailing comment removed, so
+    /// a message or doc naming the fields is not a read.
+    fn code_of(line: &str) -> String {
+        let mut code = String::new();
+        let mut in_string = false;
+        let mut escaped = false;
+        let mut chars = line.chars().peekable();
+        while let Some(c) = chars.next() {
+            if in_string {
+                match (escaped, c) {
+                    (false, '\\') => escaped = true,
+                    (false, '"') => in_string = false,
+                    _ => escaped = false,
+                }
+                continue;
+            }
+            match c {
+                '"' => in_string = true,
+                '/' if chars.peek() == Some(&'/') => break,
+                _ => code.push(c),
+            }
+        }
+        code
+    }
+    fn reads_field(line: &str) -> bool {
+        let code = code_of(line);
+        let code = code.as_str();
+        for (at, _) in code.match_indices(".homebrew_cask") {
+            let next = code[at + ".homebrew_cask".len()..].chars().next();
+            if !next.is_some_and(|c| is_ident(c) || c == '(') {
+                return true;
+            }
+        }
+        for (at, _) in code.match_indices(".cask") {
+            if code[at + ".cask".len()..]
+                .chars()
+                .next()
+                .is_some_and(is_ident)
+            {
+                continue;
+            }
+            let before = &code[..at];
+            let receiver: String = before
+                .chars()
+                .rev()
+                .take_while(|c| is_ident(*c))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            if FORMULA_RECEIVERS.contains(&receiver.as_str())
+                || (receiver.is_empty() && before.contains("homebrew"))
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    for read in [
+        "let cask = hb_cfg.cask.as_ref();",
+        ".and_then(|p| p.homebrew.as_ref()?.cask.as_ref())",
+        "if publish.homebrew_cask.is_some() {",
+        "h.cask = Some(cask);",
+    ] {
+        assert!(reads_field(read), "{read}");
+    }
+    for not_read in [
+        "publish.homebrew_cask()",
+        "dep.cask.as_deref()",
+        "c.cask.clone()",
+        "ctx.config.homebrew_casks.as_ref()",
+        "format!(\"{name}.publish.homebrew_cask\")",
+        "let x = 1; // hb_cfg.cask",
+    ] {
+        assert!(!reads_field(not_read), "{not_read}");
+    }
+
+    let mut strays = Vec::new();
+    for source in workspace_production_sources() {
+        let text = std::fs::read_to_string(&source).expect("read source");
+        for body in function_bodies(production_half(&text)) {
+            let head = body.lines().next().unwrap_or("");
+            if OWNERS.iter().any(|owner| head.contains(owner)) {
+                continue;
+            }
+            for line in body.lines().filter(|l| reads_field(l)) {
+                strays.push(format!("{}: {}", source.display(), line.trim()));
+            }
+        }
+    }
+    assert!(
+        strays.is_empty(),
+        "read a crate's cask through `PublishConfig::homebrew_cask` (or \
+         `CrateCask` in stage-publish), never the `homebrew_cask` field or the \
+         `homebrew.cask` sub-block directly: {strays:#?}"
+    );
+}
+
+/// `PublishConfig::homebrew_cask` answers for either spelling and prefers
+/// `homebrew_cask:` when a hand-built config carries both.
+#[test]
+fn the_cask_accessor_reads_either_spelling() {
+    use super::{HomebrewCaskConfig, HomebrewConfig, PublishConfig};
+    let cask = |name: &str| HomebrewCaskConfig {
+        name: Some(name.to_string()),
+        ..Default::default()
+    };
+    let legacy = PublishConfig {
+        homebrew: Some(HomebrewConfig {
+            cask: Some(cask("legacy")),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let canonical = PublishConfig {
+        homebrew_cask: Some(cask("canonical")),
+        ..Default::default()
+    };
+    let both = PublishConfig {
+        homebrew_cask: Some(cask("canonical")),
+        ..legacy.clone()
+    };
+    let name = |p: &PublishConfig| p.homebrew_cask().and_then(|c| c.name.clone());
+    assert_eq!(name(&legacy).as_deref(), Some("legacy"));
+    assert_eq!(name(&canonical).as_deref(), Some("canonical"));
+    assert_eq!(name(&both).as_deref(), Some("canonical"));
+    assert_eq!(name(&PublishConfig::default()), None);
+}
+
+/// The loader moves `publish.homebrew.cask:` into `publish.homebrew_cask:`
+/// on every axis, so a crate's own cask wins over a `defaults:` cask
+/// whichever spelling either side used.
+#[test]
+fn the_cask_sub_block_folds_into_homebrew_cask_on_every_axis() {
+    let yaml = r#"
+project_name: test
+defaults:
+  publish:
+    homebrew_cask:
+      name: from-defaults
+      description: default description
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ Version }}"
+    publish:
+      homebrew:
+        repository: { owner: acme, name: homebrew-tap }
+        cask:
+          name: from-crate
+workspaces:
+  - name: ws
+    crates:
+      - name: tool
+        path: "tool"
+        tag_template: "tool-v{{ Version }}"
+        publish:
+          homebrew:
+            cask:
+              name: from-workspace
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).expect("parses");
+    super::fold_homebrew_cask_sub_block(&mut config).expect("one spelling per block");
+    crate::defaults_merge::apply_defaults(&mut config);
+
+    let app = config.crates[0].publish.as_ref().unwrap();
+    assert!(app.homebrew.as_ref().unwrap().cask.is_none());
+    let app_cask = app.homebrew_cask().expect("app keeps its cask");
+    assert_eq!(app_cask.name.as_deref(), Some("from-crate"));
+    assert_eq!(
+        app_cask.description.as_deref(),
+        Some("default description"),
+        "unset fields still come from the defaults cask"
+    );
+    let tool = config.workspaces.as_ref().unwrap()[0].crates[0]
+        .publish
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        tool.homebrew_cask().and_then(|c| c.name.as_deref()),
+        Some("from-workspace")
+    );
+}
+
+/// A `publish:` block that sets both `homebrew_cask:` and `homebrew.cask:`
+/// is rejected, naming the block.
+#[test]
+fn both_cask_spellings_in_one_block_are_rejected() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ Version }}"
+    publish:
+      homebrew:
+        cask: { name: one }
+      homebrew_cask: { name: two }
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).expect("parses");
+    let err = super::fold_homebrew_cask_sub_block(&mut config).unwrap_err();
+    assert_eq!(
+        err,
+        "crates[app].publish.homebrew_cask: both `homebrew_cask:` and `homebrew.cask:` are \
+         set. They configure the same cask; keep one of them."
+    );
+}
+
+/// `homebrew.arm_variant:` still parses and gets its own deprecation warning
+/// beside the formula one; an empty value is no setting and warns nothing.
+#[test]
+fn homebrew_arm_variant_is_deprecated_and_still_parses() {
+    let yaml = |arm: &str| {
+        format!(
+            r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{{{ .Version }}}}"
+    publish:
+      homebrew:
+        arm_variant: "{arm}"
+        repository:
+          owner: o
+          name: tap
+"#
+        )
+    };
+    let config: Config = serde_yaml_ng::from_str(&yaml("7")).unwrap();
+    let warnings = super::legacy_homebrew_formula_warnings(&config);
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert_eq!(
+        warnings[1],
+        "DEPRECATION: crate 'a': `homebrew.arm_variant:` is deprecated and ignored; Homebrew \
+         has no 32-bit ARM variant, so a formula never carries a 32-bit ARM archive. Remove \
+         the field."
+    );
+    let config: Config = serde_yaml_ng::from_str(&yaml("")).unwrap();
+    assert_eq!(super::legacy_homebrew_formula_warnings(&config).len(), 1);
+}

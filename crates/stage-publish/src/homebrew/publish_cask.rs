@@ -1,10 +1,74 @@
-//! `publish_cask` — standalone cask publisher (used when the cask needs its
-//! own tap repo, distinct from the formula tap).
-use super::cask_scope::{CaskGenResult, generate_cask_from_context, publisher_render_log};
+//! `publish_cask` — a crate's cask: where it is published
+//! ([`CrateCask`]), its render, and the push for a cask that does not ride
+//! the formula's tap commit (no formula, or its own tap repo).
+use super::cask_scope::{CaskGenResult, cask_render_key, generate_cask_from_context};
 use super::commit_msg::render_commit_msg;
+use anodizer_core::config::{HomebrewCaskConfig, HomebrewConfig, PublishConfig, RepositoryConfig};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
+
+/// The formula block a cask falls back to when the crate has none: no
+/// skip gate, no URL template, no description of its own.
+static NO_FORMULA: std::sync::LazyLock<HomebrewConfig> =
+    std::sync::LazyLock::new(HomebrewConfig::default);
+
+/// A crate's Homebrew Cask, read through [`PublishConfig::homebrew_cask`]
+/// so `publish.homebrew_cask:` and `publish.homebrew.cask:` take one path.
+#[derive(Clone, Copy)]
+pub(crate) struct CrateCask<'a> {
+    /// The crate's `publish.homebrew:` formula block, when it has one.
+    pub(crate) formula: Option<&'a HomebrewConfig>,
+    /// The cask settings.
+    pub(crate) cask: &'a HomebrewCaskConfig,
+}
+
+impl<'a> CrateCask<'a> {
+    /// The crate's cask, or `None` when it configures none.
+    pub(crate) fn of(publish: &'a PublishConfig) -> Option<Self> {
+        Some(Self {
+            formula: publish.homebrew.as_ref(),
+            cask: publish.homebrew_cask()?,
+        })
+    }
+
+    /// The crate's cask, looked up by crate name.
+    pub(crate) fn for_crate(ctx: &'a Context, crate_name: &str) -> Option<Self> {
+        Self::of(
+            crate::util::find_crate_in_universe(ctx, crate_name)?
+                .publish
+                .as_ref()?,
+        )
+    }
+
+    /// The formula block whose tap commit carries this cask, or `None` when
+    /// the cask is pushed on its own: the crate has no formula, or the
+    /// cask's `repository:` names a different tap.
+    pub(crate) fn same_tap(&self) -> Option<&'a HomebrewConfig> {
+        let formula = self.formula?;
+        let Some(own) = self.cask.repository.as_ref() else {
+            return Some(formula);
+        };
+        let own = crate::util::resolve_repo_owner_name(Some(own));
+        let formula_tap = crate::util::resolve_repo_owner_name(formula.repository.as_ref());
+        (own == formula_tap).then_some(formula)
+    }
+
+    /// The block the cask falls back to for unset gates, URL template,
+    /// description, homepage and commit settings: the formula, else nothing.
+    pub(crate) fn parent(&self) -> &'a HomebrewConfig {
+        self.formula.unwrap_or(&NO_FORMULA)
+    }
+
+    /// The tap the cask is pushed to: its own `repository:`, else the
+    /// formula's.
+    pub(crate) fn repository(&self) -> Option<&'a RepositoryConfig> {
+        self.cask
+            .repository
+            .as_ref()
+            .or(self.parent().repository.as_ref())
+    }
+}
 
 /// True when the standalone cask's effective skip gates trip for `crate_name`:
 /// the cask `skip_upload` (per-cask wins, else the formula's `skip_upload`) is
@@ -54,50 +118,49 @@ pub(super) fn cask_skip_gates_trip(
     Ok(false)
 }
 
-/// Render the standalone Ruby cask a live publish would write for
-/// `crate_name`, honoring the cask's effective `skip_upload` (per-cask wins,
-/// else the formula's) and effective `if:` condition.
+/// Render the Ruby cask a live publish would write for `crate_name`,
+/// whether it rides the formula's tap commit or is pushed on its own,
+/// honoring the cask's effective `skip_upload` and `if:` (the cask's own,
+/// else the formula's).
 ///
 /// Returns `Ok(None)` when no cask is configured or the publisher would skip
-/// it. The live publish path and the offline schema validator both render the
-/// cask through the same [`generate_cask_from_context`] so the validated
-/// document is byte-for-byte what a release pushes.
+/// it. The live publish paths and the offline schema validator all render
+/// through this one function so the validated document is byte-for-byte what
+/// a release pushes.
 pub(crate) fn render_homebrew_cask_for_crate(
     ctx: &Context,
     crate_name: &str,
     log: &StageLogger,
 ) -> Result<Option<CaskGenResult>> {
-    let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "homebrew")?;
-    let Some(hb_cfg) = publish.homebrew.as_ref() else {
+    let Some(crate_cask) = CrateCask::for_crate(ctx, crate_name) else {
         return Ok(None);
     };
-    let Some(cask_cfg) = hb_cfg.cask.as_ref() else {
-        return Ok(None);
-    };
-
-    if cask_skip_gates_trip(ctx, hb_cfg, cask_cfg, crate_name, log)? {
+    let parent = crate_cask.parent();
+    if cask_skip_gates_trip(ctx, parent, crate_cask.cask, crate_name, log)? {
         return Ok(None);
     }
-
-    let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg, log)?;
+    let cask_result = generate_cask_from_context(ctx, crate_name, parent, crate_cask.cask, log)?;
     Ok(Some(cask_result))
 }
 
-pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<()> {
+/// Push `crate_name`'s cask to its own tap: the cask's `repository:`, else
+/// the formula's. Returns `Ok(true)` when a commit reached the tap.
+pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "homebrew")?;
-
-    // Cloned so the push site can record into `ctx` while the config is in use.
-    let hb_cfg = publish
-        .homebrew
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("homebrew cask: no homebrew config for '{}'", crate_name))?
-        .clone();
-    let hb_cfg = &hb_cfg;
-
-    let cask_cfg = hb_cfg
-        .cask
-        .as_ref()
+    let crate_cask = CrateCask::of(publish)
         .ok_or_else(|| anyhow::anyhow!("homebrew cask: no cask config for '{}'", crate_name))?;
+    // Cloned so the push site can record into `ctx` while the config is in use.
+    let hb_cfg = &crate_cask.parent().clone();
+    let cask_cfg = &crate_cask.cask.clone();
+    let repository = crate_cask.repository().cloned();
+    let commit_author = cask_cfg
+        .commit_author
+        .as_ref()
+        .or(hb_cfg.commit_author.as_ref());
+    let commit_msg_template = cask_cfg
+        .commit_msg_template
+        .as_deref()
+        .or(hb_cfg.commit_msg_template.as_deref());
 
     // Evaluate the cask's effective skip gates (per-cask wins, else the
     // formula's) before resolving the tap repo so a skipped cask with no
@@ -105,7 +168,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
     // `render_homebrew_cask_for_crate` evaluates the same gates over the same
     // `generate_cask_from_context` render.
     if cask_skip_gates_trip(ctx, hb_cfg, cask_cfg, crate_name, log)? {
-        return Ok(());
+        return Ok(false);
     }
 
     // Resolve repository owner/name from `repository:` (RepositoryConfig).
@@ -114,24 +177,24 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         log,
         "homebrew-cask",
         crate_name,
-        crate::util::resolve_repo_owner_name(hb_cfg.repository.as_ref()).ok_or_else(|| {
+        crate::util::resolve_repo_owner_name(repository.as_ref()).ok_or_else(|| {
             anodizer_core::pipe_skip::entry_skip(
                 crate::publisher_helpers::MISSING_REPOSITORY_REASON,
             )
         }),
     )?
     else {
-        return Ok(());
+        return Ok(false);
     };
     let Some(pr_token) = crate::publisher_helpers::absorb_entry_skip(
         ctx,
         log,
         "homebrew-cask",
         crate_name,
-        crate::publisher_helpers::pr_token_before_push(ctx, hb_cfg.repository.as_ref()),
+        crate::publisher_helpers::pr_token_before_push(ctx, repository.as_ref()),
     )?
     else {
-        return Ok(());
+        return Ok(false);
     };
 
     let version = ctx.version();
@@ -142,7 +205,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
             "(dry-run) would update Homebrew cask {}/{} for '{}'",
             repo_owner, repo_name, cask_name
         ));
-        return Ok(());
+        return Ok(false);
     }
 
     let cask_result = generate_cask_from_context(
@@ -150,21 +213,18 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         crate_name,
         hb_cfg,
         cask_cfg,
-        &publisher_render_log(ctx, log),
+        &ctx.claim_render_log(&cask_render_key(crate_name), log),
     )?;
 
     // Clone tap repo, write cask, commit, push.
     let tmp_dir = tempfile::tempdir().context("homebrew cask: create temp dir")?;
     let repo_path = tmp_dir.path();
 
-    let token = crate::util::resolve_repo_token(
-        ctx,
-        hb_cfg.repository.as_ref(),
-        Some("HOMEBREW_TAP_TOKEN"),
-    );
+    let token =
+        crate::util::resolve_repo_token(ctx, repository.as_ref(), Some("HOMEBREW_TAP_TOKEN"));
     crate::util::clone_repo(
         ctx,
-        hb_cfg.repository.as_ref(),
+        repository.as_ref(),
         &repo_owner,
         &repo_name,
         token.as_deref(),
@@ -210,7 +270,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
     }
 
     let commit_msg = render_commit_msg(
-        hb_cfg.commit_msg_template.as_deref(),
+        commit_msg_template,
         &cask_result.cask_name,
         &version,
         "cask",
@@ -223,10 +283,10 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         .map(|p| p.to_string_lossy().to_string())
         .collect();
     let path_refs: Vec<&str> = path_strings.iter().map(String::as_str).collect();
-    let commit_opts = crate::util::resolve_commit_opts(ctx, hb_cfg.commit_author.as_ref(), log)?;
+    let commit_opts = crate::util::resolve_commit_opts(ctx, commit_author, log)?;
     let branch = crate::util::resolve_branch_or_versioned(
         ctx,
-        hb_cfg.repository.as_ref(),
+        repository.as_ref(),
         &cask_result.cask_name,
         &version,
     );
@@ -272,14 +332,9 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
 
     // Submit a PR if pull_request.enabled is set.
     let pr_branch = branch.as_deref().unwrap_or("main");
-    // Clone the repository config so the `maybe_submit_pr` call no
-    // longer borrows from `ctx.config` (via `hb_cfg`). NLL then drops
-    // the immutable borrow, making the subsequent `&mut ctx` call legal.
-    let repo_for_pr = hb_cfg.repository.clone();
-
     let pr_outcome = crate::util::maybe_submit_pr(
         repo_path,
-        repo_for_pr.as_ref(),
+        repository.as_ref(),
         &crate::util::PrOrigin {
             repo_owner: &repo_owner,
             repo_name: &repo_name,
@@ -305,5 +360,5 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         ctx.record_publisher_outcome(outcome);
     }
 
-    Ok(())
+    Ok(matches!(outcome, crate::util::CommitOutcome::Pushed { .. }))
 }

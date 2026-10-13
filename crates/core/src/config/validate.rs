@@ -346,6 +346,9 @@ pub fn validate_format_overrides(config: &Config) -> Result<(), String> {
 /// - `crates[].publish.homebrew_cask:`
 /// - `workspaces[].crates[].publish.homebrew_cask:`
 /// - `defaults.publish.homebrew_cask:`
+///
+/// A `homebrew.cask:` sub-block on any of those axes is checked as the
+/// `homebrew_cask:` it configures.
 pub fn validate_homebrew_cask_url_template(config: &Config) -> Result<(), String> {
     let check = |location: &str, cask: &HomebrewCaskConfig| -> Result<(), String> {
         let has_url_template = cask.url_template.is_some();

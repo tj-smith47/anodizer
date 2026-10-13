@@ -174,10 +174,12 @@ pub struct PublishConfig {
     pub cargo: Option<CargoPublishConfig>,
     /// Homebrew formula publishing configuration.
     pub homebrew: Option<HomebrewConfig>,
-    /// Homebrew Cask publishing configuration (macOS .app bundles).
-    ///
-    /// Uses the unified `HomebrewCaskConfig` which carries all fields from both
-    /// the per-crate cask config and the top-level `homebrew_casks:` config.
+    /// Homebrew Cask for this crate (macOS `.app` bundles and binaries),
+    /// with the same fields as a top-level `homebrew_casks:` entry. Beside a
+    /// `homebrew:` formula block the cask goes into the formula's tap in the
+    /// same commit, unless its own `repository:` names a different tap;
+    /// without one it is pushed to its own `repository:`. `homebrew.cask:` is
+    /// the same setting; set one of the two.
     pub homebrew_cask: Option<HomebrewCaskConfig>,
     /// Scoop manifest publishing configuration.
     pub scoop: Option<ScoopConfig>,
@@ -378,6 +380,20 @@ pub struct CargoPublishConfig {
     /// When `true`, a triggered rollback leaves this publisher's work in
     /// place rather than attempting to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
+}
+
+impl PublishConfig {
+    /// The crate's Homebrew Cask: `publish.homebrew_cask:`, else the
+    /// `cask:` sub-block of `publish.homebrew:`. The two spellings configure
+    /// the same cask, and every reader asks this accessor so they publish
+    /// identically. A loaded config carries at most one of them: the loader
+    /// rejects a block that sets both and moves the sub-block into
+    /// `homebrew_cask`, so defaults merge into one field.
+    pub fn homebrew_cask(&self) -> Option<&HomebrewCaskConfig> {
+        self.homebrew_cask
+            .as_ref()
+            .or_else(|| self.homebrew.as_ref()?.cask.as_ref())
+    }
 }
 
 impl CargoPublishConfig {

@@ -111,7 +111,7 @@ pub(super) fn build_cask_platform_blocks(
     version: &str,
     url_template: Option<&str>,
     error_scope_label: &str,
-    log: &anodizer_core::log::StageLogger,
+    log: &StageLogger,
 ) -> Result<Vec<CaskPlatformBlock>> {
     use std::collections::BTreeMap;
     // Each entry keeps its artifact's build id, which decides whether the
@@ -287,16 +287,22 @@ pub(super) fn download_count(blocks: &[CaskPlatformBlock]) -> usize {
     blocks.iter().map(|p| p.arches.len()).sum()
 }
 
-/// The logger a publisher renders its cask through. Emission validation
-/// renders every cask first and prints the render's `-v` lines, so the
-/// publisher keeps only its warnings and status lines. A `--publish-only`
-/// run has no emission validation, and there the publisher prints them.
-pub(super) fn publisher_render_log(ctx: &Context, log: &StageLogger) -> StageLogger {
-    if ctx.is_publish_only() {
-        log.clone()
-    } else {
-        log.capped_at(anodizer_core::log::Verbosity::Normal)
-    }
+/// The [`Context::claim_render_log`] key of a crate's formula render.
+pub(crate) fn formula_render_key(crate_name: &str) -> String {
+    format!("homebrew formula '{crate_name}'")
+}
+
+/// The [`Context::claim_render_log`] key of a crate's cask render. The
+/// same-tap and the standalone path render one `cask:` block, so they share
+/// it.
+pub(crate) fn cask_render_key(crate_name: &str) -> String {
+    format!("homebrew cask '{crate_name}'")
+}
+
+/// The [`Context::claim_render_log`] key of the `homebrew_casks:` entry at
+/// `index`.
+pub(super) fn top_level_cask_render_key(index: usize) -> String {
+    format!("homebrew_casks[{index}]")
 }
 
 /// Generate a Homebrew Cask `.rb` file string from the project context.
@@ -309,7 +315,7 @@ pub(super) fn generate_cask_from_context(
     crate_name: &str,
     hb_cfg: &anodizer_core::config::HomebrewConfig,
     cask_cfg: &anodizer_core::config::HomebrewCaskConfig,
-    log: &anodizer_core::log::StageLogger,
+    log: &StageLogger,
 ) -> Result<CaskGenResult> {
     let version = ctx.version();
     let cask_name = cask_name_for(cask_cfg.name.as_deref().unwrap_or(crate_name));
@@ -489,6 +495,7 @@ pub(super) fn generate_cask_from_context(
         },
         depends_on: &cask_depends,
         conflicts_with: &cask_conflicts,
+        depends_on_macos: cask_cfg.depends_on_macos,
         preflight: cask_cfg
             .hooks
             .as_ref()
@@ -580,6 +587,7 @@ pub(super) fn clone_cask_params<'a>(p: &'a CaskParams<'a>) -> CaskParams<'a> {
         platforms: p.platforms.clone(),
         depends_on: p.depends_on,
         conflicts_with: p.conflicts_with,
+        depends_on_macos: p.depends_on_macos,
         preflight: p.preflight,
         postflight: p.postflight,
         uninstall_preflight: p.uninstall_preflight,

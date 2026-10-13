@@ -175,7 +175,13 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
         // A `required: true` anywhere (formula or cask config) wins, so a
         // cask-only setup with no per-crate publish block still escalates.
         let (req, retain) = merge_collapsed(
-            collapse_per_crate_overrides(ctx, crate::homebrew::publisher::block),
+            merge_collapsed(
+                collapse_per_crate_overrides(ctx, crate::homebrew::publisher::block),
+                collapse_per_crate_overrides(
+                    ctx,
+                    anodizer_core::config::PublishConfig::homebrew_cask,
+                ),
+            ),
             collapse_entry_overrides(ctx.config.homebrew_casks.as_ref()),
         );
         v.push(Box::new(
@@ -418,14 +424,14 @@ fn is_winget_configured(ctx: &Context) -> bool {
     crate::publisher_helpers::is_any_crate_block_configured(ctx, crate::winget::block)
 }
 
-/// True when ANY crate in the full crate universe has `publish.homebrew`
-/// OR the top-level `homebrew_casks:` block is non-empty — the same
-/// universe + accessor the per-crate dispatch keys on.
+/// True when ANY crate in the full crate universe has a `publish.homebrew`
+/// formula or a per-crate cask, OR the top-level `homebrew_casks:` block is
+/// non-empty — the same universe + accessor the per-crate dispatch keys on.
 fn is_homebrew_configured(ctx: &Context) -> bool {
-    crate::publisher_helpers::is_any_crate_block_configured(ctx, crate::homebrew::publisher::block)
-        || crate::publisher_helpers::is_top_level_block_configured(
-            ctx.config.homebrew_casks.as_ref(),
-        )
+    crate::publisher_helpers::is_any_crate_block_configured(
+        ctx,
+        crate::homebrew::publisher::crate_surface,
+    ) || crate::publisher_helpers::is_top_level_block_configured(ctx.config.homebrew_casks.as_ref())
 }
 
 /// True when at least one crate in the full crate universe has a

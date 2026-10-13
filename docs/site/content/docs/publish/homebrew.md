@@ -133,7 +133,30 @@ crates:
 
 ## Homebrew Cask config fields
 
-Casks are configured under `publish.homebrew.cask:` (per-crate) or `homebrew_casks:` (top-level array). Both axes use the same `HomebrewCaskConfig` shape.
+A per-crate cask is configured under `publish.homebrew_cask:`, or under the
+`cask:` sub-block of `publish.homebrew:`. The two spellings are the same
+setting and publish identically; set one of them per crate (a block that sets
+both is a config error). Top-level casks go in `homebrew_casks:`. All three use
+the same `HomebrewCaskConfig` shape.
+
+Where a per-crate cask is pushed:
+
+| Config | Tap | Commit and PR |
+|---|---|---|
+| a `homebrew:` formula and a cask with no `repository:` of its own (or the formula's) | the formula's tap | one commit and one PR for the formula and the cask |
+| a `homebrew:` formula and a cask whose `repository:` names another tap | the cask's `repository:` | its own commit and PR |
+| a cask and no `homebrew:` formula | the cask's `repository:` | its own commit and PR |
+
+```yaml
+crates:
+  - name: myapp
+    publish:
+      homebrew_cask:            # no formula: the cask is pushed on its own
+        repository:
+          owner: myorg
+          name: homebrew-tap
+        binaries: [myapp]
+```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -159,7 +182,7 @@ The token can also be set via `repository.token` in the config.
 
 - **Branch protection**: if your tap repo has branch protection enabled, direct push will fail. Use a fork + PR workflow via `repository.pull_request`.
 - **Multiple platforms**: anodizer auto-generates `on_macos` / `on_linux` / `on_intel` / `on_arm` stanzas from the build targets. If your build only produces one platform, the formula contains a single `url` block instead of the multi-platform form.
-- **Cask vs formula**: formulae install from archives; casks install macOS `.app` bundles. A crate can have both if `publish.homebrew` (formula) and `publish.homebrew.cask` (or top-level `homebrew_casks:`) are both configured.
+- **Cask vs formula**: formulae install from archives; casks install macOS `.app` bundles. A crate can have both if `publish.homebrew` (formula) and `publish.homebrew_cask` (or `publish.homebrew.cask`, or a top-level `homebrew_casks:` entry) are both configured.
 
 ## Republish / update behavior
 
@@ -182,11 +205,10 @@ existing branch using `--force-with-lease`, so the open PR picks up the new
 content without creating a duplicate:
 
 ```yaml
-# per-crate cask
+# per-crate cask (either spelling)
 publish:
-  homebrew:
-    cask:
-      update_existing_pr: true
+  homebrew_cask:
+    update_existing_pr: true
 
 # top-level homebrew_casks array
 homebrew_casks:
@@ -309,11 +331,27 @@ The stanzas follow Homebrew's formula component order, the order
 `license`, `livecheck`, `depends_on`, `on_macos`, `on_linux`,
 `conflicts_with`, `custom_block`, `def install`, `def post_install`,
 `def caveats`, `plist`, `service`, `test`. One top-level `def install`
-serves every platform, and each per-platform `url` sits under an
-architecture block inside `on_macos` or `on_linux`. An archive that serves
-every Mac (a universal build, or an Intel-only build that Apple Silicon runs
-under Rosetta) is listed under both `on_arm` and `on_intel`; for the
-Intel-only build, `def caveats` adds a note shown on Apple Silicon.
+serves every platform.
+
+Homebrew loads a formula on macOS and Linux, each on arm64 and x86_64
+(`brew readall` checks all four), and each of them needs a `url`. The
+downloads are placed like this:
+
+| Archives released | Formula |
+|---|---|
+| macOS and Linux | `on_macos` and `on_linux` blocks, each with an `on_arm` and an `on_intel` block |
+| one OS | a top-level `url`, plus `depends_on :macos` or `depends_on :linux`; an Intel download that differs goes in an `on_intel` block inside that OS's block |
+| one CPU for an OS (arm64 macOS, or one Linux CPU) | that archive serves both CPUs of the OS, with `depends_on arch: :arm64` or `arch: :x86_64`, so `brew install` refuses the other CPU with Homebrew's own message |
+| Intel-only macOS | the Intel build serves Apple Silicon too, which runs it under Rosetta, and `def caveats` adds a note shown there |
+| universal macOS | the universal build serves both CPUs |
+
+Homebrew on Linux runs on x86_64 and arm64 only. A 32-bit archive (`i686`,
+`armv6`, `armv7`), any other CPU, and an OS other than macOS and Linux are
+left out of the formula, each with a `-v` line:
+
+```text
+skipped archive 'myapp-linux-armv7.tar.gz' — Homebrew on Linux has no armv7 variant
+```
 
 `caveats`, `custom_block`, `plist` and `service` are free-form Ruby. Their
 shared indentation is removed and each line is indented for its place in
@@ -321,7 +359,10 @@ the formula, so a flush-left YAML block scalar and a pre-indented one render
 the same. Two stanzas raise a `brew style` offence that comes from the
 config itself: `post_install` renders as `def post_install`, which Homebrew
 now asks to be written as `post_install_steps`, and `plist` renders the
-deprecated `def plist`, which `service` replaces.
+deprecated `def plist`, which `service` replaces. Homebrew 7 removed the
+`plist_options` stanza that went with `def plist`, so the formula carries
+`def plist` alone, and the render logs a deprecation warning pointing to
+`service`.
 
 ## Full example
 
@@ -363,14 +404,26 @@ class Myapp < Formula
   end
 
   on_macos do
+    depends_on arch: :arm64
+
     on_arm do
+      url "https://github.com/myorg/myapp/releases/download/v1.2.3/myapp-darwin-arm64.tar.gz"
+      sha256 "1111111111111111111111111111111111111111111111111111111111111111"
+    end
+    on_intel do
       url "https://github.com/myorg/myapp/releases/download/v1.2.3/myapp-darwin-arm64.tar.gz"
       sha256 "1111111111111111111111111111111111111111111111111111111111111111"
     end
   end
 
   on_linux do
-    if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
+    depends_on arch: :x86_64
+
+    on_arm do
+      url "https://github.com/myorg/myapp/releases/download/v1.2.3/myapp-linux-amd64.tar.gz"
+      sha256 "2222222222222222222222222222222222222222222222222222222222222222"
+    end
+    on_intel do
       url "https://github.com/myorg/myapp/releases/download/v1.2.3/myapp-linux-amd64.tar.gz"
       sha256 "2222222222222222222222222222222222222222222222222222222222222222"
     end
@@ -397,7 +450,7 @@ release rather than emitting an empty formula. See
 [Artifact eligibility](./selecting-publishers.md#artifact-eligibility) for how
 this compares to the other install aggregators.
 
-**Cask:** the embedded same-tap cask (`cask:`/`homebrew_casks:`) is
+**Cask:** the per-crate cask (`homebrew_cask:` / `cask:`) is
 **macOS-only** — anodizer generates it only when the build produces a genuine
 macOS artifact (`*-apple-darwin`), never from a Linux archive, matching the
 standalone [Homebrew Casks](./homebrew-casks.md#artifact-eligibility) publisher.

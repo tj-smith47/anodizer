@@ -142,12 +142,11 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 
 /// Final summary emitted at publisher exit.
 ///
-/// `considered` is the count of crates the publisher invoked
-/// `publish_to_homebrew` on for the per-crate FORMULA surface (not the
-/// count of successful tap pushes — `publish_to_homebrew` has its own skip
-/// paths for skip_upload/dry-run/etc., each of which logs its own status
-/// line). `casks` is the number of in-scope top-level `homebrew_casks:`
-/// entries the run rendered.
+/// `considered` is the count of crates the publisher dispatched for their
+/// per-crate formula and/or cask (not the count of successful tap pushes —
+/// each per-crate publish has its own skip paths for skip_upload/dry-run/etc.,
+/// each of which logs its own status line). `casks` is the number of in-scope
+/// top-level `homebrew_casks:` entries the run rendered.
 ///
 /// Both surfaces count toward the unit total: a cask-only project (the
 /// recommended path, zero formula blocks) would otherwise report
@@ -158,7 +157,9 @@ pub(crate) fn run_done_message(considered: usize, casks: usize) -> String {
         "homebrew",
         considered + casks,
         "unit",
-        Some(&format!("{considered} formula crate(s), {casks} cask(s)")),
+        Some(&format!(
+            "{considered} crate(s), {casks} homebrew_casks entr(y|ies)"
+        )),
     )
 }
 
@@ -260,6 +261,35 @@ fn active_homebrew_cask_configs(ctx: &Context) -> Vec<&anodizer_core::config::Ho
         .collect()
 }
 
+/// Per-crate casks pushed to their own tap (see
+/// [`CrateCask::same_tap`](super::CrateCask::same_tap)) over the `--crate` /
+/// `--all` selection, whose effective `skip_upload:`/`if:` (the cask's own,
+/// else the formula's) is active right now. A cask that rides its formula's
+/// tap commit is covered by [`active_homebrew_formula_configs`].
+fn active_own_tap_crate_casks(ctx: &Context) -> Vec<(String, super::CrateCask<'_>)> {
+    ctx.config
+        .selected_crates(&ctx.options.selected_crates)
+        .into_iter()
+        .filter_map(|c| Some((c.name.clone(), super::CrateCask::of(c.publish.as_ref()?)?)))
+        .filter(|(_, c)| c.same_tap().is_none() && own_tap_cask_active(ctx, c))
+        .collect()
+}
+
+/// True when a per-crate cask's effective gates (the cask's own
+/// `skip_upload:`/`if:`, else the formula's) leave it active.
+fn own_tap_cask_active(ctx: &Context, crate_cask: &super::CrateCask<'_>) -> bool {
+    use anodizer_core::config::active_if_gate;
+    let parent = crate_cask.parent();
+    let cask = crate_cask.cask;
+    !crate::publisher_helpers::entry_inactive(
+        ctx,
+        None,
+        cask.skip_upload.as_ref().or(parent.skip_upload.as_ref()),
+        active_if_gate(cask.if_condition.as_deref())
+            .or(active_if_gate(parent.if_condition.as_deref())),
+    )
+}
+
 /// Build the open-PR reconcile target for `crate_name`. A formula and its
 /// same-tap cask co-publish through a SINGLE pull request, so this is one
 /// target whose title names both when a cask is in play — the same title
@@ -299,8 +329,12 @@ pub(crate) fn build_homebrew_crate_reconcile_target(
     let package = crate::util::render_or_warn(ctx, log, "brew.name", formula_name_raw)?;
 
     // A cask whose gates trip never reaches the PR, so naming it in the
-    // expected title would strand this publisher at Absent forever.
-    let cask_name = match hb_cfg.cask.as_ref() {
+    // expected title would strand this publisher at Absent forever. A cask
+    // pushed to its own tap opens its own PR, probed separately.
+    let same_tap_cask = super::CrateCask::for_crate(ctx, crate_name)
+        .filter(|c| c.same_tap().is_some())
+        .map(|c| c.cask);
+    let cask_name = match same_tap_cask {
         Some(cask_cfg)
             if !super::publish_cask::cask_skip_gates_trip(
                 ctx, hb_cfg, cask_cfg, crate_name, log,
@@ -337,25 +371,60 @@ pub(crate) fn build_homebrew_top_cask_reconcile_target(
     cask_cfg: &anodizer_core::config::HomebrewCaskConfig,
     log: &anodizer_core::log::StageLogger,
 ) -> anyhow::Result<Option<crate::util::PrReconcileTarget>> {
-    if !crate::publisher_helpers::pull_request_enabled(cask_cfg.repository.as_ref()) {
-        return Ok(None);
-    }
-    let Some((fork_owner, fork_name)) =
-        crate::util::resolve_repo_owner_name(cask_cfg.repository.as_ref())
-    else {
+    let cask_name_raw = cask_cfg.name.as_deref().unwrap_or(&ctx.config.project_name);
+    cask_reconcile_target(
+        ctx,
+        cask_cfg.repository.as_ref(),
+        cask_name_raw,
+        "homebrew_casks.name",
+        log,
+    )
+}
+
+/// Build the open-PR reconcile target for `crate_name`'s cask when it is
+/// pushed to its own tap. Called inside the crate's own version scope, like
+/// [`build_homebrew_crate_reconcile_target`].
+pub(crate) fn build_homebrew_own_tap_cask_reconcile_target(
+    ctx: &Context,
+    crate_name: &str,
+    log: &anodizer_core::log::StageLogger,
+) -> anyhow::Result<Option<crate::util::PrReconcileTarget>> {
+    let Some(crate_cask) = super::CrateCask::for_crate(ctx, crate_name) else {
         return Ok(None);
     };
-    let (upstream_owner, upstream_repo) = crate::util::resolve_upstream_coords(
-        cask_cfg.repository.as_ref(),
-        &fork_owner,
-        &fork_name,
-        &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
-    );
-    let cask_name_raw = cask_cfg.name.as_deref().unwrap_or(&ctx.config.project_name);
+    let cask_name_raw = crate_cask.cask.name.as_deref().unwrap_or(crate_name);
+    cask_reconcile_target(
+        ctx,
+        crate_cask.repository(),
+        cask_name_raw,
+        "homebrew_cask.name",
+        log,
+    )
+}
+
+/// The open-PR reconcile target for a cask PR against `repository`, titled
+/// as [`cask_pr_title`](super::publish_top::cask_pr_title) opens it.
+fn cask_reconcile_target(
+    ctx: &Context,
+    repository: Option<&anodizer_core::config::RepositoryConfig>,
+    cask_name_raw: &str,
+    name_field: &str,
+    log: &anodizer_core::log::StageLogger,
+) -> anyhow::Result<Option<crate::util::PrReconcileTarget>> {
+    if !crate::publisher_helpers::pull_request_enabled(repository) {
+        return Ok(None);
+    }
+    let Some((fork_owner, fork_name)) = crate::util::resolve_repo_owner_name(repository) else {
+        return Ok(None);
+    };
+    let (upstream_owner, upstream_repo) =
+        crate::util::resolve_upstream_coords(repository, &fork_owner, &fork_name, &|s| {
+            ctx.render_template(s).unwrap_or_else(|_| s.to_string())
+        });
     let package = super::cask::cask_name_for(&crate::util::render_or_warn(
         ctx,
         log,
-        "homebrew_casks.name",
+        name_field,
         cask_name_raw,
     )?);
     let version = ctx.version();
@@ -366,11 +435,7 @@ pub(crate) fn build_homebrew_top_cask_reconcile_target(
         upstream_repo,
         package,
         version,
-        token: crate::util::resolve_repo_token(
-            ctx,
-            cask_cfg.repository.as_ref(),
-            Some("HOMEBREW_TAP_TOKEN"),
-        ),
+        token: crate::util::resolve_repo_token(ctx, repository, Some("HOMEBREW_TAP_TOKEN")),
     }))
 }
 
@@ -402,6 +467,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
     fn config_fully_inactive(&self, ctx: &Context) -> bool {
         active_homebrew_formula_configs(ctx).is_empty()
             && active_homebrew_cask_configs(ctx).is_empty()
+            && active_own_tap_crate_casks(ctx).is_empty()
     }
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
@@ -412,7 +478,9 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         let cask_repos = active_homebrew_cask_configs(ctx)
             .into_iter()
             .map(|c| c.repository.as_ref());
-        for repo in formula_repos.chain(cask_repos) {
+        let crate_casks = active_own_tap_crate_casks(ctx);
+        let crate_cask_repos = crate_casks.iter().map(|(_, c)| c.repository());
+        for repo in formula_repos.chain(cask_repos).chain(crate_cask_repos) {
             out.extend(crate::publisher_helpers::git_repo_requirements(
                 ctx,
                 repo,
@@ -434,7 +502,12 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         let cask_repos = active_homebrew_cask_configs(ctx)
             .into_iter()
             .map(|c| c.repository.as_ref());
-        let repos: Vec<_> = formula_repos.chain(cask_repos).collect();
+        let crate_casks = active_own_tap_crate_casks(ctx);
+        let crate_cask_repos = crate_casks.iter().map(|(_, c)| c.repository());
+        let repos: Vec<_> = formula_repos
+            .chain(cask_repos)
+            .chain(crate_cask_repos)
+            .collect();
         if repos.is_empty() {
             return Vec::new();
         }
@@ -490,7 +563,11 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             .map(|c| c.name.clone())
             .collect();
         let top_cask_count = active_homebrew_cask_configs(ctx).len();
-        if crate_names.is_empty() && top_cask_count == 0 {
+        let own_tap_casks: Vec<String> = active_own_tap_crate_casks(ctx)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        if crate_names.is_empty() && top_cask_count == 0 && own_tap_casks.is_empty() {
             return Ok(ReconcileState::Absent);
         }
         for crate_name in &crate_names {
@@ -513,6 +590,18 @@ impl anodizer_core::Publisher for HomebrewPublisher {
                 crate_name,
                 &anodizer_core::crate_scope::resolve_crate_tag,
                 |ctx| build_homebrew_crate_reconcile_target(ctx, crate_name, &log),
+            )?;
+            match scoped {
+                Some(t) => targets.push(t),
+                None => return Ok(ReconcileState::Absent),
+            }
+        }
+        for crate_name in &own_tap_casks {
+            let scoped = crate::publisher_helpers::with_published_crate_scope(
+                ctx,
+                crate_name,
+                &anodizer_core::crate_scope::resolve_crate_tag,
+                |ctx| build_homebrew_own_tap_cask_reconcile_target(ctx, crate_name, &log),
             )?;
             match scoped {
                 Some(t) => targets.push(t),
@@ -581,7 +670,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
                 ctx,
                 crate_name,
                 &anodizer_core::crate_scope::resolve_crate_tag,
-                |ctx| super::publish_to_homebrew(ctx, crate_name, &log),
+                |ctx| publish_crate(ctx, crate_name, &log),
             );
             // Each push was recorded as it went through (`record_tap_push`),
             // so an error here leaves the pushed taps in the pending
@@ -673,6 +762,18 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             },
             |h| h.repository.as_ref(),
         );
+        let crate_casks = crate::publisher_preflight::for_each_active_github_repo(
+            ctx,
+            &policy,
+            "HOMEBREW_TAP_TOKEN",
+            ctx.config
+                .crate_universe()
+                .into_iter()
+                .filter_map(|c| super::CrateCask::of(c.publish.as_ref()?))
+                .filter(|c| c.same_tap().is_none()),
+            |c| own_tap_cask_active(ctx, &c),
+            |c| c.repository(),
+        );
         let casks = crate::publisher_preflight::for_each_active_github_repo(
             ctx,
             &policy,
@@ -689,21 +790,51 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             },
             |cask| cask.repository.as_ref(),
         );
-        Ok(formulae.merge(casks))
+        Ok(formulae.merge(crate_casks).merge(casks))
     }
 }
 
-/// The crate-level `publish.homebrew` block — the single accessor the
-/// registry gate, the gate-override collapse, and the per-crate dispatch
-/// predicate all key on.
+/// Publish one crate's formula (with a cask that rides its tap commit) and
+/// its cask when that is pushed to its own tap. Returns `true` when either
+/// push reached a tap.
+fn publish_crate(
+    ctx: &mut Context,
+    crate_name: &str,
+    log: &anodizer_core::log::StageLogger,
+) -> anyhow::Result<bool> {
+    let publish =
+        crate::util::find_crate_in_universe(ctx, crate_name).and_then(|c| c.publish.as_ref());
+    let has_formula = publish.and_then(block).is_some();
+    let own_tap_cask = publish
+        .and_then(super::CrateCask::of)
+        .is_some_and(|c| c.same_tap().is_none());
+    let mut pushed = false;
+    if has_formula {
+        pushed |= super::publish_to_homebrew(ctx, crate_name, log)?;
+    }
+    if own_tap_cask {
+        pushed |= super::publish_cask(ctx, crate_name, log)?;
+    }
+    Ok(pushed)
+}
+
+/// The crate-level `publish.homebrew` formula block.
 pub(crate) fn block(
     p: &anodizer_core::config::PublishConfig,
 ) -> Option<&anodizer_core::config::HomebrewConfig> {
     p.homebrew.as_ref()
 }
 
+/// A crate's homebrew publish surface: its formula block, else its cask
+/// (`publish.homebrew_cask:` or `publish.homebrew.cask:`). The single
+/// accessor the registry gate and the per-crate dispatch predicate key on,
+/// so a cask-only crate is published.
+pub(crate) fn crate_surface(p: &anodizer_core::config::PublishConfig) -> Option<&()> {
+    (p.homebrew.is_some() || p.homebrew_cask().is_some()).then_some(&())
+}
+
 pub(crate) fn is_homebrew_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
-    crate::publisher_helpers::is_per_crate_block_configured(ctx, crate_name, block)
+    crate::publisher_helpers::is_per_crate_block_configured(ctx, crate_name, crate_surface)
 }
 
 #[cfg(test)]
@@ -1121,8 +1252,8 @@ mod publisher_tests {
         assert!(msg.starts_with("finished homebrew publish"), "{msg}");
         // Two formula crates, no casks → total unit count is 2.
         assert!(msg.contains("2 configured unit(s) considered"), "{msg}");
-        assert!(msg.contains("2 formula crate(s)"), "{msg}");
-        assert!(msg.contains("0 cask(s)"), "{msg}");
+        assert!(msg.contains("2 crate(s)"), "{msg}");
+        assert!(msg.contains("0 homebrew_casks entr(y|ies)"), "{msg}");
     }
 
     /// A cask-only run (zero formula crates, one published cask) must report
@@ -1135,7 +1266,7 @@ mod publisher_tests {
             msg.contains("1 configured unit(s) considered"),
             "cask-only run must report 1 unit, not 0; got: {msg}"
         );
-        assert!(msg.contains("1 cask(s)"), "{msg}");
+        assert!(msg.contains("1 homebrew_casks entr(y|ies)"), "{msg}");
         // Mixed: 1 formula + 2 casks → 3 units total.
         let mixed = run_done_message(1, 2);
         assert!(mixed.contains("3 configured unit(s) considered"), "{mixed}");

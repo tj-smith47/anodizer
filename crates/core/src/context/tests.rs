@@ -2170,3 +2170,30 @@ fn the_skip_error_quoted_in_the_hooks_docs_is_what_the_validator_produces() {
     assert_eq!(quoted, vec![produced], "the page's Error lines");
     assert_eq!(quoted.len(), 1, "the errors the page quotes");
 }
+
+/// The first claim of a render key gets the caller's logger and every later
+/// claim of it a logger that prints nothing but errors; another key is
+/// claimed on its own.
+#[test]
+fn only_the_first_claim_of_a_render_logs() {
+    use crate::log::{LogCapture, LogLevel};
+    let mut ctx = Context::new(
+        Config::default(),
+        ContextOptions {
+            verbose: true,
+            ..Default::default()
+        },
+    );
+    let cap = LogCapture::new();
+    ctx.with_log_capture(cap.clone());
+    let log = ctx.logger("publish");
+    for (key, line) in [("a", "a1"), ("a", "a2"), ("b", "b1"), ("a", "a3")] {
+        let claimed = ctx.claim_render_log(key, &log);
+        claimed.verbose(line);
+        claimed.warn(line);
+        claimed.status(line);
+    }
+    for level in [LogLevel::Verbose, LogLevel::Warn, LogLevel::Status] {
+        assert_eq!(cap.printed_messages(level), ["a1", "b1"], "{level:?}");
+    }
+}

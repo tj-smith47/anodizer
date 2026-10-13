@@ -92,18 +92,35 @@ declare -A STEP_TARGETS=()
 value_flags=" -d --dir -t --taskfile -o --output -C --concurrency -I --interval --sort --output-group-begin --output-group-end --cacert --cert --cert-key --completion --expiry --remote-cache-dir --temp-dir --timeout --trusted-hosts "
 task_name='^[A-Za-z][A-Za-z0-9:_.-]*$'
 # Words that may precede the command of a segment without being it.
-lead_words=" if then else elif do while until ! time "
+lead_words=" if then else elif do while until ! time { } "
+# Commands that run the rest of their words as a command, each with the
+# options that take the next word as their value. `timeout` also takes the
+# duration before the command.
+declare -A WRAPPER_VALUE_FLAGS=(
+    [env]=" -u --unset -C --chdir -S --split-string "
+    [sudo]=" -u --user -g --group -h --host -p --prompt -C --close-from -D --chdir -r --role -t --type -U --other-user -T --command-timeout "
+    [exec]=" -a "
+    [command]=" "
+    [nice]=" -n --adjustment "
+    [timeout]=" -s --signal -k --kill-after "
+)
+# The marker the splitter puts in place of whitespace inside quotes, so a
+# quoted word stays one word.
+quoted_space=$'\001'
 
 # One left-to-right pass over each line, so an apostrophe inside a double
 # quoted string (`echo "don't"`) cannot open a single-quoted one. Quote
-# characters are dropped and their contents kept as words, with the shell's
-# separators inside them blanked; an unquoted `#` starting a word ends the
-# line; `;`, `&`, `|`, `(`, `)`, `<` and `>` end a command segment, and a
-# file-descriptor number before a redirection is dropped with it. A
-# `${{ … }}` expression is kept as one word with its spaces removed.
+# characters are dropped and their contents kept as one word, with the
+# whitespace inside them marked; an unquoted `#` starting a word ends the
+# line; `;`, `&`, `|`, `(`, `)`, a backtick, `<` and `>` end a command
+# segment, and a file-descriptor number before a redirection is dropped with
+# it. A `$(` or a backtick inside double quotes opens an unquoted command
+# that its closing `)` or backtick ends, and the double-quoted string goes on
+# after it. A `${{ … }}` expression is kept as one word with its spaces
+# removed.
 SPLIT_SEGMENTS=$(cat <<'AWK'
     {
-        out = ""; q = ""; n = length($0); i = 1
+        out = ""; q = ""; n = length($0); i = 1; depth = 0
         while (i <= n) {
             c = substr($0, i, 1)
             if (substr($0, i, 3) == "${{") {
@@ -114,18 +131,34 @@ SPLIT_SEGMENTS=$(cat <<'AWK'
             }
             if (q == "'") {
                 if (c == "'") q = ""
-                else out = out (c ~ /[;&|()<>]/ ? " " : c)
+                else out = out (c ~ /[[:space:]]/ ? "\001" : c)
             } else if (q == "\"") {
                 if (c == "\\" && i < n) { i++; out = out substr($0, i, 1) }
                 else if (c == "\"") q = ""
-                else out = out (c ~ /[;&|()<>]/ ? " " : c)
+                else if (substr($0, i, 2) == "$(") {
+                    depth++; saved[depth] = q; kind[depth] = "("; q = ""
+                    out = out "$\n"; i += 2; continue
+                } else if (c == "`") {
+                    depth++; saved[depth] = q; kind[depth] = "`"; q = ""
+                    out = out "\n"
+                } else out = out (c ~ /[[:space:]]/ ? "\001" : c)
             } else if (c == "\\" && i < n) {
                 i++; out = out substr($0, i, 1)
             } else if (c == "'" || c == "\"") {
                 q = c
             } else if (c == "#" && (out == "" || substr(out, length(out), 1) ~ /[[:space:]]/)) {
                 break
-            } else if (c ~ /[;&|()]/) {
+            } else if (c == "`") {
+                if (depth && kind[depth] == "`") { q = saved[depth]; depth-- }
+                else { depth++; saved[depth] = ""; kind[depth] = "`" }
+                out = out "\n"
+            } else if (c == "(") {
+                depth++; saved[depth] = ""; kind[depth] = "("
+                out = out "\n"
+            } else if (c == ")") {
+                if (depth && kind[depth] == "(") { q = saved[depth]; depth-- }
+                out = out "\n"
+            } else if (c ~ /[;&|]/) {
                 out = out "\n"
             } else if (c ~ /[<>]/) {
                 sub(/[0-9]+$/, "", out)
@@ -144,6 +177,7 @@ AWK
 joined_runs=$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba}' <<< "$step_runs")
 run_scanner segments "$SPLIT_SEGMENTS" <<< "$joined_runs"
 expression_targets=""
+spaced_targets=""
 while IFS= read -r segment; do
     read -ra words <<< "$segment"
     first=0
@@ -151,6 +185,25 @@ while IFS= read -r segment; do
         word="${words[first]}"
         if [[ "$lead_words" == *" $word "* || "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
             first=$((first + 1))
+        elif [[ -n "${WRAPPER_VALUE_FLAGS[$word]+set}" ]]; then
+            flags="${WRAPPER_VALUE_FLAGS[$word]}"
+            wrapper="$word"
+            first=$((first + 1))
+            while ((first < ${#words[@]})); do
+                option="${words[first]}"
+                if [[ "$option" == -- ]]; then
+                    first=$((first + 1))
+                    break
+                elif [[ "$option" == -?* ]]; then
+                    [[ "$option" != *=* && "$flags" == *" $option "* ]] && first=$((first + 1))
+                    first=$((first + 1))
+                elif [[ "$wrapper" == env || "$wrapper" == sudo ]] && [[ "$option" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+                    first=$((first + 1))
+                else
+                    break
+                fi
+            done
+            [[ "$wrapper" == timeout ]] && first=$((first + 1))
         else
             break
         fi
@@ -167,8 +220,13 @@ while IFS= read -r segment; do
             [[ "$word" != *=* && "$value_flags" == *" $word "* ]] && skip_value=1
             continue
         fi
-        if [[ "$word" == *'${{'* ]]; then
-            expression_targets+="  ${CI_WORKFLOW}: a step runs 'task ${word}' — cannot resolve expression target."$'\n'
+        shown="${word//$quoted_space/ }"
+        if [[ "$word" == *'$'* ]]; then
+            expression_targets+="  ${CI_WORKFLOW}: a step runs 'task ${shown}' — cannot resolve expression target."$'\n'
+            continue
+        fi
+        if [[ "$word" == *"$quoted_space"* ]]; then
+            spaced_targets+="  ${CI_WORKFLOW}: a step runs 'task \"${shown}\"' — target name contains a space."$'\n'
             continue
         fi
         [[ "$word" == *=* ]] && continue
@@ -177,11 +235,16 @@ while IFS= read -r segment; do
 done <<< "$segments"
 
 if [[ -n "$expression_targets" ]]; then
-    echo "audit-gate-mirror: FAIL — a ci.yml step names its task target through a GitHub expression, which this audit cannot resolve to a target." >&2
+    echo "audit-gate-mirror: FAIL — a ci.yml step names its task target through a GitHub expression or a shell expansion, which this audit cannot resolve to a target." >&2
     echo "" >&2
     printf '%s' "$expression_targets" >&2
-    exit 2
 fi
+if [[ -n "$spaced_targets" ]]; then
+    echo "audit-gate-mirror: FAIL — a ci.yml step names a quoted task target holding a space, which no Taskfile target can be." >&2
+    echo "" >&2
+    printf '%s' "$spaced_targets" >&2
+fi
+[[ -z "$expression_targets" && -z "$spaced_targets" ]] || exit 2
 
 # Reachability: does every mapped local target, and every target a ci.yml
 # step runs, actually run as part of `task gate`? Prefer `task -n -v gate` (a

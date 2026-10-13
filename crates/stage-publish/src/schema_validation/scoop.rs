@@ -14,8 +14,7 @@ use anodizer_core::context::Context;
 use anyhow::Result;
 
 use super::{
-    PublisherSchemaValidator, SchemaFinding, SchemaPass, TagResolver, validate_crate_scoped,
-    validate_json,
+    PublisherSchemaValidator, SchemaFinding, TagResolver, validate_crate_scoped, validate_json,
 };
 use crate::scoop::{
     crate_has_scoop_artifacts, is_scoop_per_crate_configured, reject_unsupported_use,
@@ -39,7 +38,6 @@ impl PublisherSchemaValidator for ScoopSchemaValidator {
         &self,
         ctx: &mut Context,
         resolve_tag: TagResolver<'_>,
-        _pass: SchemaPass,
     ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
         let mut findings = Vec::new();
@@ -279,7 +277,6 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -367,7 +364,6 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -411,7 +407,6 @@ mod tests {
             .validate(
                 &mut ctx_a,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -438,7 +433,6 @@ mod tests {
             .validate(
                 &mut ctx_b,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -493,7 +487,6 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs without erroring on the absent Windows artifact");
         assert!(
@@ -537,7 +530,6 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect_err("a full build with scoop configured but no Windows archive must error");
         let msg = format!("{err:#}");
@@ -596,7 +588,6 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect_err(
                 "a present-but-broken Windows archive (missing sha256) must surface as an \
@@ -704,7 +695,6 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -760,7 +750,6 @@ mod tests {
                 .validate(
                     ctx,
                     &crate::schema_validation::test_current_version_resolver(),
-                    crate::schema_validation::SchemaPass::EmissionValidate,
                 )
                 .expect_err(&format!(
                     "{mode}: check-time validation must reject `use: msi` for scoop"

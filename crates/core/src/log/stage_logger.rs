@@ -211,13 +211,17 @@ impl StageLogger {
     /// Warning message — shown at Normal and above. Renders the `Warning`
     /// status label gutter-aligned beneath the current section.
     pub fn warn(&self, msg: &str) {
-        if self.verbosity >= Verbosity::Normal {
+        let shown = self.verbosity >= Verbosity::Normal;
+        if shown {
             flush_pending();
             eprintln!("{}", render_warning(msg));
         }
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
             cap.record(LogLevel::Warn, msg);
+            if shown {
+                cap.record_printed(LogLevel::Warn, msg);
+            }
         }
     }
 
@@ -230,7 +234,8 @@ impl StageLogger {
     /// clean blank even inside a group. For an explicit register, prefer
     /// [`Self::detail`] / [`Self::success`] / [`Self::failure`].
     pub fn status(&self, msg: &str) {
-        if self.verbosity >= Verbosity::Normal {
+        let shown = self.verbosity >= Verbosity::Normal;
+        if shown {
             if msg.is_empty() {
                 // A marker on a "blank" line would render as a stray bullet;
                 // emit a truly empty line to preserve the caller's rhythm.
@@ -248,6 +253,9 @@ impl StageLogger {
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
             cap.record(LogLevel::Status, msg);
+            if shown {
+                cap.record_printed(LogLevel::Status, msg);
+            }
         }
     }
 
@@ -446,7 +454,7 @@ impl StageLogger {
         if let Some(cap) = &self.capture {
             cap.record(LogLevel::Verbose, msg);
             if shown {
-                cap.record_printed_verbose(msg);
+                cap.record_printed(LogLevel::Verbose, msg);
             }
         }
     }

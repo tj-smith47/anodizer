@@ -111,6 +111,11 @@ pub struct CaskParams<'a> {
     pub completions_fish: Option<&'a str>,
     /// depends_on directives (e.g. `cask: "other-app"`).
     pub depends_on: &'a [String],
+    /// The `depends_on_macos:` override. `None` takes the verdict of
+    /// [`custom_block_os_facts`]; `Some(true)` renders `depends_on :macos`
+    /// with a flat download, `Some(false)` renders neither and places a flat
+    /// download inside `on_macos`.
+    pub depends_on_macos: Option<bool>,
     /// Names of the casks this cask conflicts with, unescaped. Rendered as
     /// one `conflicts_with cask: …` stanza; build via [`conflicting_casks`].
     pub conflicts_with: &'a [String],
@@ -602,38 +607,38 @@ fn render_platform_blocks(
 /// What a `custom_block` contributes to the `depends_on :macos` decision.
 #[derive(Default, Debug, PartialEq, Eq)]
 pub(super) struct CustomBlockOsFacts {
-    /// A statement opening with `on_linux`, `on_system` or the Linux-only
-    /// `app_image`, at any depth: the cask has a Linux side.
+    /// The word `on_linux`, `on_system` or the Linux-only `app_image`
+    /// appears in the block: the cask has a Linux side.
     pub(super) other_os_block: bool,
-    /// The block mentions `depends_on` and any of `:macos`, `macos:`
-    /// (which `maximum_macos:` contains), `:linux` or `linux:`.
+    /// The word `depends_on` appears together with any of `:macos`,
+    /// `macos:` (which `maximum_macos:` contains), `:linux` or `linux:`.
     pub(super) os_dependency: bool,
 }
 
 /// Read a `custom_block` for the facts `Homebrew/OSDependsOn` and
-/// `Cask#supports_linux?` look at, at any depth, over the raw text. A
-/// statement starts a line or follows a `;`, and its first word decides
-/// whether it opens a Linux side; a `depends_on` names an OS when the word
-/// and any of the OS tokens appear anywhere in the block, so a call spread
-/// over several lines still counts.
-// The scan reads strings and comments as code on purpose. An over-match
-// only drops the auto-added `depends_on :macos` or wraps the download in
-// `on_macos`, both of which Homebrew still loads; an under-match adds
-// `depends_on :macos` beside a real `on_linux`, which Homebrew refuses to
-// load. So the scan errs toward matching.
+/// `Cask#supports_linux?` look at. A fact holds when its word appears
+/// anywhere in the raw text as a whole word, so a receiver
+/// (`self.on_linux do`), a parenthesis or a one-line nesting still counts.
+// A wrong verdict in either direction renders a cask that Homebrew refuses
+// on Linux only. Without `depends_on :macos`, a cask whose downloads all sit
+// in `on_macos` and that has no real Linux block leaves the Linux `sha256`
+// nil and fails to load there; with it, a cask whose real `on_linux` the
+// scan missed loads everywhere and a Linux install stops at "This cask
+// requires macOS." Strings, comments and heredoc bodies are read as code,
+// so the scan over-matches a block that names its stanzas literally, and it
+// misses only a stanza built at runtime. `depends_on_macos:` overrides the
+// verdict for both cases.
 pub(super) fn custom_block_os_facts(block: Option<&str>) -> CustomBlockOsFacts {
     let Some(block) = block else {
         return CustomBlockOsFacts::default();
     };
-    let other_os_block = block.split(['\n', ';']).any(|statement| {
-        let first = statement
-            .trim_start()
+    let words = || {
+        block
             .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .next()
-            .unwrap_or("");
-        matches!(first, "on_linux" | "on_system" | "app_image")
-    });
-    let os_dependency = block.contains("depends_on")
+            .filter(|w| !w.is_empty())
+    };
+    let other_os_block = words().any(|w| matches!(w, "on_linux" | "on_system" | "app_image"));
+    let os_dependency = words().any(|w| w == "depends_on")
         && [":macos", "macos:", ":linux", "linux:"]
             .iter()
             .any(|token| block.contains(token));
@@ -660,10 +665,16 @@ fn render_do_block(name: &str, body: &str) -> String {
 /// `brew style` accepts.
 pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
     let custom = custom_block_os_facts(non_blank(params.custom_block));
+    // `depends_on_macos: false` declares a Linux side the scan cannot see,
+    // such as one a `custom_block` builds at runtime, and `true` says the
+    // one it saw is not real.
+    let custom_linux_side = params
+        .depends_on_macos
+        .map_or(custom.other_os_block, |macos_only| !macos_only);
     // A flat download beside a Linux side the `custom_block` declares moves
     // into `on_macos`, so a Linux host never downloads the macOS archive.
     let flat_in_on_macos;
-    let platforms: &[CaskPlatformBlock] = if params.platforms.is_empty() && custom.other_os_block {
+    let platforms: &[CaskPlatformBlock] = if params.platforms.is_empty() && custom_linux_side {
         flat_in_on_macos = [CaskPlatformBlock {
             os_block: "macos".to_string(),
             arches: vec![CaskArchEntry {
@@ -677,7 +688,7 @@ pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
         &params.platforms
     };
     let has_platforms = !platforms.is_empty();
-    let has_linux_block = platforms.iter().any(|p| p.os_block == "linux") || custom.other_os_block;
+    let has_linux_block = platforms.iter().any(|p| p.os_block == "linux") || custom_linux_side;
     // A cask with downloads for both systems keeps its macOS-only stanzas
     // inside `on_macos`, as `Homebrew/OSDependsOn` asks of a cross-platform
     // cask.
@@ -691,7 +702,9 @@ pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
     // (`Cask#supports_linux?`), so a cask with no Linux side says so. Beside
     // an OS dependency the `custom_block` already declares, a second one is
     // redundant (`Homebrew/OSDependsOn`).
-    let depends_on_macos = !has_linux_block && !custom.os_dependency;
+    let depends_on_macos = params
+        .depends_on_macos
+        .unwrap_or(!has_linux_block && !custom.os_dependency);
     let mut groups: Vec<String> = Vec::new();
 
     if let Some(block) = non_blank(params.custom_block) {

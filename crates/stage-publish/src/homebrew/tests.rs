@@ -279,16 +279,15 @@ fn test_integration_formula_multi_arch_complete_structure() {
         "the formula should define install once, got:\n{}",
         formula
     );
-    // Linux blocks should use Hardware::CPU guards
+    // Linux picks its download with the same `on_arm` / `on_intel` blocks as
+    // macOS: a `Hardware::CPU` condition reads the machine running brew, so
+    // `brew readall` and every simulated platform would see the host's CPU.
+    assert!(!formula.contains("Hardware::CPU"), "got:\n{formula}");
     assert!(
-        formula.contains("if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?"),
-        "linux amd64 should use Hardware::CPU guard, got:\n{}",
-        formula
-    );
-    assert!(
-        formula.contains("if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?"),
-        "linux arm64 should use Hardware::CPU guard, got:\n{}",
-        formula
+        formula.contains(
+            "  on_linux do\n    on_arm do\n      url \"https://example.com/my-cli-2.0.0-linux-arm64.tar.gz\"\n      sha256 \"sha_linux_arm64\"\n    end\n    on_intel do\n      url \"https://example.com/my-cli-2.0.0-linux-amd64.tar.gz\"\n      sha256 \"sha_linux_amd64\"\n    end\n  end\n"
+        ),
+        "got:\n{formula}"
     );
     // Verify test block is still present
     assert!(formula.contains("  test do\n"));
@@ -382,13 +381,23 @@ fn test_formula_multi_arch_darwin_intel_and_arm() {
     )
     .unwrap();
 
-    assert_eq!(formula.matches("on_macos do").count(), 1);
-    assert!(formula.contains("on_intel do"));
-    assert!(formula.contains("on_arm do"));
-    assert!(formula.contains("hash_intel"));
-    assert!(formula.contains("hash_arm"));
-    // No on_linux block since no linux archives
-    assert!(!formula.contains("on_linux"));
+    // A macOS-only formula takes the Apple Silicon download as its top-level
+    // url, which every platform `brew readall` loads then has, and overrides
+    // it for Intel Macs inside `on_macos`.
+    assert!(
+        formula.contains(
+            "  url \"https://example.com/myapp-darwin-arm64.tar.gz\"\n  version \"1.0.0\"\n  sha256 \"hash_arm\"\n"
+        ),
+        "{formula}"
+    );
+    assert!(
+        formula.contains(
+            "  depends_on :macos\n\n  on_macos do\n    on_intel do\n      url \"https://example.com/myapp-darwin-amd64.tar.gz\"\n      sha256 \"hash_intel\"\n    end\n  end\n"
+        ),
+        "{formula}"
+    );
+    assert!(!formula.contains("on_arm"), "{formula}");
+    assert!(!formula.contains("on_linux"), "{formula}");
 }
 
 #[test]
@@ -523,6 +532,7 @@ fn test_formula_custom_homepage() {
             test: "system \"#{bin}/mytool\"",
         },
         &opts,
+        &test_log(),
     )
     .unwrap();
     assert!(formula.contains("homepage \"https://example.com/mytool\""));
@@ -569,6 +579,7 @@ fn test_formula_homepage_fallback_with_github_slug() {
             test: "system \"#{bin}/mytool\"",
         },
         &opts,
+        &test_log(),
     )
     .unwrap();
     assert!(formula.contains("homepage \"https://github.com/myorg/mytool\""));
@@ -608,6 +619,7 @@ fn test_formula_dependencies_global() {
             test: "system \"#{bin}/mytool\"",
         },
         &opts,
+        &test_log(),
     )
     .unwrap();
     assert!(formula.contains("depends_on \"openssl\""));
@@ -649,6 +661,7 @@ fn test_formula_dependencies_os_specific() {
             test: "system \"#{bin}/mytool\"",
         },
         &opts,
+        &test_log(),
     )
     .unwrap();
     // macos dep wrapped in on_macos block
@@ -698,6 +711,7 @@ fn test_formula_dependencies_sorted_alphabetically() {
             test: "system \"#{bin}/mytool\"",
         },
         &opts,
+        &test_log(),
     )
     .unwrap();
     let autoconf_pos = formula
@@ -759,6 +773,7 @@ fn formula_dependencies_sort_by_type_then_name_without_regard_to_case() {
             test: "system \"#{bin}/mytool\"",
         },
         &opts,
+        &test_log(),
     )
     .unwrap();
     let rendered: Vec<&str> = formula
@@ -840,6 +855,7 @@ fn os_dependencies_join_the_existing_per_os_block() {
                 test: "system \"#{bin}/mytool\"",
             },
             &opts,
+            &test_log(),
         )
         .unwrap();
         assert_eq!(
@@ -895,6 +911,7 @@ fn formula_dependency_type_takes_precedence_over_version() {
             test: "system \"#{bin}/mytool\"",
         },
         &opts,
+        &test_log(),
     )
     .unwrap();
     assert!(
@@ -961,6 +978,7 @@ fn test_formula_conflicts() {
             test: "system \"#{bin}/mytool\"",
         },
         &opts,
+        &test_log(),
     )
     .unwrap();
     assert!(formula.contains("conflicts_with \"old-tool\""));
@@ -988,6 +1006,7 @@ fn test_formula_caveats() {
             test: "system \"#{bin}/mytool\"",
         },
         &opts,
+        &test_log(),
     )
     .unwrap();
     assert!(formula.contains("def caveats"));
@@ -1046,6 +1065,7 @@ fn test_formula_all_new_fields_together() {
             test: "system \"#{bin}/mytool\"",
         },
         &opts,
+        &test_log(),
     )
     .unwrap();
     assert!(formula.contains("homepage \"https://example.com\""));
@@ -1112,7 +1132,7 @@ fn test_render_commit_msg_custom_template() {
 }
 
 // -----------------------------------------------------------------------
-// Cask tests (Q1.1 sha256/url ordering, Q1.2 generate_completions)
+// Cask tests: sha256/url ordering, generate_completions
 // -----------------------------------------------------------------------
 
 use super::cask::{
@@ -1152,11 +1172,11 @@ fn empty_cask_params<'a>(name: &'a str, version: &'a str) -> CaskParams<'a> {
         uninstall_postflight: None,
         platforms: Vec::new(),
         generate_completions: None,
+        depends_on_macos: None,
     }
 }
 
-/// Q1.1 — per-arch blocks must emit `sha256` before `url` (upstream commit
-/// 87b542b). Drift back to `url`-then-`sha256` will trip this regression.
+/// Per-arch blocks emit `sha256` before `url`, the order `brew style` wants.
 #[test]
 fn test_cask_per_arch_emits_sha256_before_url() {
     let mut params = empty_cask_params("test", "0.1.0");
@@ -2216,9 +2236,9 @@ fn publish_to_homebrew_dry_run_returns_false() {
 }
 
 /// publish_to_homebrew: no archive artifacts => bail with actionable error
-/// mentioning the filter knobs (ids / amd64_variant / arm_variant). With
-/// neither variant configured, both hints carry the `<default …>` marker so
-/// the operator can tell a fallback apart from an explicit setting.
+/// mentioning the filter knobs (ids / amd64_variant) and the CPUs a formula
+/// serves. With no variant configured, the hint carries the `<default …>`
+/// marker so the operator can tell a fallback apart from an explicit setting.
 /// Prevents a broken formula with empty url/sha256 from being written.
 #[test]
 fn publish_to_homebrew_no_archives_errors() {
@@ -2236,10 +2256,14 @@ fn publish_to_homebrew_no_archives_errors() {
     assert!(msg.contains("no archives matched filters"), "{msg}");
     assert!(msg.contains("mytool"));
     assert!(msg.contains("amd64_variant=<default v1>"), "{msg}");
-    assert!(msg.contains("arm_variant=<default 6>"), "{msg}");
+    assert!(
+        msg.contains("a formula serves arm64, x86_64 and universal archives only"),
+        "{msg}"
+    );
+    assert!(!msg.contains("arm_variant"), "{msg}");
 }
 
-/// publish_to_homebrew: when the variant selectors ARE configured, the
+/// publish_to_homebrew: when the variant selector IS configured, the
 /// no-archives error prints the configured values plainly — no `<default …>`
 /// marker that would misattribute an operator choice to a fallback.
 #[test]
@@ -2258,14 +2282,14 @@ fn publish_to_homebrew_no_archives_errors_configured_variants() {
     let err = super::publish_to_homebrew(&mut ctx, "mytool", &quiet_log()).unwrap_err();
     let msg = format!("{err}");
     assert!(msg.contains("no archives matched filters"), "{msg}");
-    assert!(msg.contains("amd64_variant=v3,"), "{msg}");
-    assert!(msg.contains("arm_variant=7)"), "{msg}");
+    assert!(msg.contains("amd64_variant=v3)"), "{msg}");
+    assert!(!msg.contains("arm_variant"), "{msg}");
     assert!(!msg.contains("<default"), "{msg}");
 }
 
-/// publish_cask: missing `publish.homebrew` => error.
+/// publish_cask: no `publish.homebrew` and no `publish.homebrew_cask` => error.
 #[test]
-fn publish_cask_missing_homebrew_config_errors() {
+fn publish_cask_without_any_cask_errors() {
     let config = Config {
         crates: vec![CrateConfig {
             name: "mytool".to_string(),
@@ -2279,7 +2303,7 @@ fn publish_cask_missing_homebrew_config_errors() {
     let mut ctx = Context::new(config, ContextOptions::default());
     let err = super::publish_cask(&mut ctx, "mytool", &quiet_log()).unwrap_err();
     let msg = format!("{err}");
-    assert!(msg.contains("no homebrew config"), "{msg}");
+    assert!(msg.contains("no cask config"), "{msg}");
 }
 
 /// publish_cask: homebrew set but `cask:` block absent => error.
@@ -2595,7 +2619,7 @@ fn publish_top_level_homebrew_casks_no_macos_with_ids_skips_not_errors() {
 
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 
-fn art_with_url_sha(
+pub(super) fn art_with_url_sha(
     kind: ArtifactKind,
     name: &str,
     target: &str,
@@ -2781,6 +2805,7 @@ fn generate_cask_multi_platform_emits_per_arch_blocks_without_top_level_url() {
             },
         ],
         generate_completions: None,
+        depends_on_macos: None,
     };
     let cask = super::cask::generate_cask(&params).unwrap();
     // on_macos / on_linux scaffolding present.
@@ -2961,6 +2986,7 @@ fn generate_cask_emits_alternative_names() {
         uninstall_postflight: None,
         platforms: Vec::new(),
         generate_completions: None,
+        depends_on_macos: None,
     };
     let cask = super::cask::generate_cask(&params).unwrap();
     assert!(cask.contains("name \"MyTool\""));
@@ -3133,6 +3159,7 @@ fn generate_cask_emits_manpages() {
         uninstall_postflight: None,
         platforms: Vec::new(),
         generate_completions: None,
+        depends_on_macos: None,
     };
     let cask = super::cask::generate_cask(&params).unwrap();
     assert!(cask.contains("manpage \"share/man/man1/x.1\""));
@@ -3175,6 +3202,7 @@ fn generate_cask_emits_completion_lines_only_for_set_shells() {
         uninstall_postflight: None,
         platforms: Vec::new(),
         generate_completions: None,
+        depends_on_macos: None,
     };
     let cask = super::cask::generate_cask(&params).unwrap();
     assert!(cask.contains("bash_completion \"share/bash-completion/mytool\""));
@@ -3220,6 +3248,7 @@ fn generate_cask_emits_all_hooks() {
         uninstall_postflight: Some("    puts 'unpost'"),
         platforms: Vec::new(),
         generate_completions: None,
+        depends_on_macos: None,
     };
     let cask = super::cask::generate_cask(&params).unwrap();
     assert!(cask.contains("preflight do"));
@@ -3269,6 +3298,7 @@ fn generate_cask_emits_service_stanza() {
         uninstall_postflight: None,
         platforms: Vec::new(),
         generate_completions: None,
+        depends_on_macos: None,
     };
     let cask = super::cask::generate_cask(&params).unwrap();
     assert!(
@@ -3316,6 +3346,7 @@ fn generate_cask_emits_depends_and_conflicts() {
         uninstall_postflight: None,
         platforms: Vec::new(),
         generate_completions: None,
+        depends_on_macos: None,
     };
     let cask = super::cask::generate_cask(&params).unwrap();
     assert!(
@@ -3444,12 +3475,93 @@ fn a_flat_cask_beside_a_custom_linux_block_puts_its_download_inside_on_macos() {
     }
 }
 
-/// What `custom_block_os_facts` reads from a `custom_block`, case by case:
-/// a statement counts at any depth when its first word opens a Linux side,
-/// and the raw text is scanned with strings, comments and heredoc bodies
-/// read as code, so the scan matches more than Ruby would and never less.
+/// `depends_on_macos:` decides both halves of the scan's verdict: `true`
+/// renders `depends_on :macos` beside a flat top-level download, `false`
+/// renders no dependency and moves a flat download into `on_macos`, and an
+/// unset field keeps what the scan decided.
 #[test]
-fn custom_block_os_facts_reads_statements_at_any_depth() {
+fn depends_on_macos_overrides_the_custom_block_scan() {
+    let flat_top_level =
+        "  version \"1.0.0\"\n  sha256 \"deadbeef\"\n\n  url \"https://e.com/x.tar.gz\"\n";
+    let flat_in_on_macos = "  version \"1.0.0\"\n\n  on_macos do\n    sha256 \"deadbeef\"\n\n    url \"https://e.com/x.tar.gz\"\n  end\n";
+    // (custom_block, override, depends_on :macos rendered, download layout)
+    let cases: &[(Option<&str>, Option<bool>, bool, &str)] = &[
+        (None, None, true, flat_top_level),
+        (None, Some(false), false, flat_in_on_macos),
+        (None, Some(true), true, flat_top_level),
+        // The scan reads `on_linux` inside a caveat string as a Linux side.
+        (Some("caveats \"on_linux\""), None, false, flat_in_on_macos),
+        (
+            Some("caveats \"on_linux\""),
+            Some(true),
+            true,
+            flat_top_level,
+        ),
+        (
+            Some("on_linux do\n  binary \"x\"\nend"),
+            None,
+            false,
+            flat_in_on_macos,
+        ),
+        (
+            Some("on_linux do\n  binary \"x\"\nend"),
+            Some(false),
+            false,
+            flat_in_on_macos,
+        ),
+    ];
+    for (custom, over, macos, layout) in cases {
+        let mut params = empty_cask_params("mytool", "1.0.0");
+        params.url = "https://e.com/x.tar.gz";
+        params.custom_block = *custom;
+        params.depends_on_macos = *over;
+        let cask = generate_cask(&params).unwrap();
+        let want: &[&str] = if *macos {
+            &["  depends_on :macos"]
+        } else {
+            &[]
+        };
+        assert_eq!(
+            depends_on_lines(&cask),
+            want,
+            "{custom:?} {over:?}:\n{cask}"
+        );
+        assert!(cask.contains(layout), "{custom:?} {over:?}:\n{cask}");
+    }
+
+    // Beside per-arch macOS downloads, `false` drops the dependency and
+    // leaves the blocks as they were.
+    let mut params = empty_cask_params("mytool", "1.0.0");
+    params.platforms = vec![CaskPlatformBlock {
+        os_block: "macos".to_string(),
+        arches: vec![CaskArchEntry {
+            arch_block: "arm".to_string(),
+            url: "https://e.com/arm.tar.gz".to_string(),
+            sha256: "aa".to_string(),
+        }],
+    }];
+    let with_scan = generate_cask(&params).unwrap();
+    params.depends_on_macos = Some(false);
+    let overridden = generate_cask(&params).unwrap();
+    assert_eq!(depends_on_lines(&with_scan), ["  depends_on :macos"]);
+    assert!(depends_on_lines(&overridden).is_empty(), "{overridden}");
+    assert_eq!(
+        overridden,
+        with_scan.replace("\n\n  depends_on :macos", ""),
+        "only the dependency differs"
+    );
+}
+
+/// What `custom_block_os_facts` reads from a `custom_block`, case by case.
+/// A fact holds when its word appears anywhere as a whole word, so the raw
+/// text is scanned with strings, comments and heredoc bodies read as code.
+/// For literal stanzas the scan matches more than Ruby would, never less,
+/// and a stanza built at runtime is the one it misses. A wrong verdict in
+/// either direction renders a cask Homebrew refuses on Linux only, so the
+/// over-matches below are the cases `depends_on_macos: true` exists for and
+/// the runtime-built stanza is the case for `depends_on_macos: false`.
+#[test]
+fn custom_block_os_facts_reads_whole_words_anywhere() {
     use super::cask::{CustomBlockOsFacts, custom_block_os_facts};
     let facts = |other_os_block: bool, os_dependency: bool| CustomBlockOsFacts {
         other_os_block,
@@ -3525,7 +3637,23 @@ fn custom_block_os_facts_reads_statements_at_any_depth() {
             "caveats \"a; on_linux\"; on_linux do\nend",
             facts(true, false),
         ),
-        // Over-matches the scan accepts: Homebrew still loads the cask.
+        (
+            "on_linux behind a receiver",
+            "self.on_linux do\nend",
+            facts(true, false),
+        ),
+        (
+            "on_linux inside parentheses",
+            "(on_linux do\nend)",
+            facts(true, false),
+        ),
+        (
+            "on_linux nested on one line",
+            "on_arm do on_linux do binary \"x\" end end",
+            facts(true, false),
+        ),
+        // Over-matches: no Linux side in Ruby, so the rendered cask loads on
+        // macOS and fails on Linux until `depends_on_macos: true` is set.
         (
             "on_linux inside a %w[] list",
             "%w[\n on_linux\n]",
@@ -3547,13 +3675,18 @@ fn custom_block_os_facts_reads_statements_at_any_depth() {
             facts(false, true),
         ),
         (
-            "on_linux not leading its statement",
-            "x.on_linux\nfoo on_linux\n\"on_linux\"\n# on_linux",
+            "on_linux in a string and in a comment",
+            "caveats \"on_linux\"\n# on_linux",
+            facts(true, false),
+        ),
+        (
+            "a longer word holding on_linux or depends_on",
+            "end_foo\non_linux_helper\nmy_on_system\ndepends_on_x :macos\n",
             facts(false, false),
         ),
         (
-            "end_foo is not on_linux",
-            "end_foo\non_linux_helper\n",
+            "an on_linux built at runtime",
+            "send(:\"on_#{\"lin\"}ux\") do\n  url \"https://e.com/l.tar.gz\"\nend\n",
             facts(false, false),
         ),
     ];
@@ -3869,45 +4002,188 @@ fn universal_beside_both_arches_ctx() -> (
 
 const BOTH_ARCHES_SKIP_LINE: &str = "skipped universal artifact 'mytool-darwin-universal.tar.gz' — both macOS architectures have their own download";
 
-/// Under `-v`, emission validation and the pre-publish guard render the same
-/// cask, and the universal skip line reaches stderr once.
-#[test]
-fn the_universal_skip_line_prints_once_across_emission_validation_and_the_guard() {
-    use crate::schema_validation::{
-        SchemaPass, test_current_version_resolver, validate_publisher_schemas,
-    };
-    let (mut ctx, _cask_cfg, cap) = universal_beside_both_arches_ctx();
-    let log = ctx.logger("publish");
-    for pass in [SchemaPass::EmissionValidate, SchemaPass::PrepublishGuard] {
-        validate_publisher_schemas(&mut ctx, &log, &test_current_version_resolver(), pass)
-            .expect("the cask validates");
-    }
-    let printed: Vec<String> = cap
-        .printed_verbose_messages()
-        .into_iter()
-        .filter(|m| m.starts_with("skipped universal artifact"))
-        .collect();
-    assert_eq!(printed, [BOTH_ARCHES_SKIP_LINE]);
+/// One of the passes that render a homebrew manifest in a run.
+#[derive(Clone, Copy, Debug)]
+enum RenderPass {
+    /// The `emission-validate` stage.
+    Emission,
+    /// The pre-publish guard, which renders strict.
+    Guard,
+    /// The publisher itself.
+    Publisher,
 }
 
-/// The publisher's own render prints none of the render's `-v` lines, which
-/// emission validation printed already, except on a `--publish-only` run,
-/// which has no emission validation.
+/// The passes each command runs, in pipeline order: a release runs all
+/// three, `--publish-only`, `publish` and `continue` have no emission
+/// validation, and `--snapshot` / `--dry-run` publish nothing.
+const COMMAND_PASSES: &[(&str, &[RenderPass])] = &[
+    (
+        "release",
+        &[
+            RenderPass::Emission,
+            RenderPass::Guard,
+            RenderPass::Publisher,
+        ],
+    ),
+    (
+        "release --publish-only / publish / continue",
+        &[RenderPass::Guard, RenderPass::Publisher],
+    ),
+    ("release --snapshot / --dry-run", &[RenderPass::Emission]),
+];
+
+/// Run `pass` the way its stage does: the guard flips strict rendering on
+/// around the schema pass, and the publisher runs `publish`.
+fn run_render_pass(
+    ctx: &mut Context,
+    pass: RenderPass,
+    publish: &dyn Fn(&mut Context, &StageLogger),
+) {
+    use crate::schema_validation::{test_current_version_resolver, validate_publisher_schemas};
+    let log = ctx.logger("publish");
+    match pass {
+        RenderPass::Emission => {
+            validate_publisher_schemas(ctx, &log, &test_current_version_resolver())
+                .expect("emission validation passes");
+        }
+        RenderPass::Guard => {
+            let was = ctx.set_render_strict(true);
+            validate_publisher_schemas(ctx, &log, &test_current_version_resolver())
+                .expect("the guard passes");
+            ctx.set_render_strict(was);
+        }
+        RenderPass::Publisher => publish(ctx, &log),
+    }
+}
+
+/// Under `-v`, every command prints the universal skip line of a top-level
+/// cask once, whichever of its passes renders the cask first.
 #[test]
-fn the_publisher_render_prints_the_universal_skip_line_only_on_a_publish_only_run() {
-    for (publish_only, want) in [(false, &[][..]), (true, &[BOTH_ARCHES_SKIP_LINE][..])] {
-        let (mut ctx, cask_cfg, cap) = universal_beside_both_arches_ctx();
-        ctx.options.publish_only = publish_only;
-        let log = ctx.logger("publish");
-        let render_log = super::cask_scope::publisher_render_log(&ctx, &log);
-        super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &render_log)
-            .expect("top-level cask render")
-            .expect("top-level cask applicable");
-        assert_eq!(
-            cap.printed_verbose_messages(),
-            want,
-            "publish_only: {publish_only}"
+fn the_universal_skip_line_prints_once_per_command() {
+    for (command, passes) in COMMAND_PASSES {
+        let (bare_url, bare) = make_bare_cask_tap("main");
+        let (mut ctx, _cask_cfg, cap) = universal_beside_both_arches_ctx();
+        ctx.config.homebrew_casks.as_mut().unwrap()[0].repository =
+            local_cask_cfg(&bare_url, "main").repository;
+        ctx.template_vars_mut().set("RawVersion", "1.2.3");
+        for pass in *passes {
+            run_render_pass(&mut ctx, *pass, &|ctx, log| {
+                let got =
+                    super::publish_top_level_homebrew_casks(ctx, log).expect("the cask publishes");
+                assert!(got.pushed_any, "{got:?}");
+            });
+        }
+        let printed: Vec<String> = cap
+            .printed_messages(anodizer_core::log::LogLevel::Verbose)
+            .into_iter()
+            .filter(|m| m.starts_with("skipped universal artifact"))
+            .collect();
+        assert_eq!(printed, [BOTH_ARCHES_SKIP_LINE], "{command}");
+        drop(bare);
+    }
+}
+
+/// A warning the formula render emits (an archive dropped for a duplicate
+/// platform) prints once per command, and so does the same-tap cask's
+/// universal skip line beside it.
+#[test]
+fn a_formula_render_warning_prints_once_per_command() {
+    let dropped = "homebrew: crate 'mytool': ";
+    for (command, passes) in COMMAND_PASSES {
+        let (bare_url, bare) = make_bare_cask_tap("main");
+        let mut hb = HomebrewConfig {
+            repository: local_cask_cfg(&bare_url, "main").repository,
+            cask: Some(HomebrewCaskConfig {
+                name: Some("mytool".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        hb.repository.as_mut().unwrap().name = Some("homebrew-tap".to_string());
+        let config = Config {
+            project_name: "mytool".to_string(),
+            crates: vec![CrateConfig {
+                name: "mytool".to_string(),
+                path: ".".to_string(),
+                tag_template: Some("v{{ .Version }}".to_string()),
+                publish: Some(PublishConfig {
+                    homebrew: Some(hb),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                verbose: true,
+                ..Default::default()
+            },
         );
+        ctx.template_vars_mut().set("Version", "1.2.3");
+        ctx.template_vars_mut().set("RawVersion", "1.2.3");
+        ctx.template_vars_mut().set("Tag", "v1.2.3");
+        for (name, target, format) in [
+            (
+                "mytool-darwin-universal.tar.gz",
+                "darwin-universal",
+                "tar.gz",
+            ),
+            (
+                "mytool-darwin-arm64.tar.gz",
+                "aarch64-apple-darwin",
+                "tar.gz",
+            ),
+            (
+                "mytool-darwin-amd64.tar.gz",
+                "x86_64-apple-darwin",
+                "tar.gz",
+            ),
+            (
+                "mytool-linux-amd64.tar.gz",
+                "x86_64-unknown-linux-gnu",
+                "tar.gz",
+            ),
+            ("mytool-linux-amd64.zip", "x86_64-unknown-linux-gnu", "zip"),
+        ] {
+            let mut art = art_with_url_sha(
+                ArtifactKind::Archive,
+                name,
+                target,
+                &format!("https://e.com/v1.2.3/{name}"),
+                &"c".repeat(64),
+            );
+            art.metadata
+                .insert("format".to_string(), format.to_string());
+            ctx.artifacts.add(art);
+        }
+        let cap = anodizer_core::log::LogCapture::new();
+        ctx.with_log_capture(cap.clone());
+        for pass in *passes {
+            run_render_pass(&mut ctx, *pass, &|ctx, log| {
+                assert!(
+                    super::publish_to_homebrew(ctx, "mytool", log).expect("the formula publishes")
+                );
+            });
+        }
+        let warned: Vec<String> = cap
+            .printed_messages(anodizer_core::log::LogLevel::Warn)
+            .into_iter()
+            .filter(|m| m.starts_with(dropped))
+            .collect();
+        assert_eq!(warned.len(), 1, "{command}: {warned:?}");
+        assert!(
+            warned[0].contains("dropped 'https://e.com/v1.2.3/mytool-linux-amd64.zip'"),
+            "{command}: {warned:?}"
+        );
+        let skipped: Vec<String> = cap
+            .printed_messages(anodizer_core::log::LogLevel::Verbose)
+            .into_iter()
+            .filter(|m| m.starts_with("skipped universal artifact"))
+            .collect();
+        assert_eq!(skipped, [BOTH_ARCHES_SKIP_LINE], "{command}");
+        drop(bare);
     }
 }
 
@@ -4109,6 +4385,7 @@ fn generate_cask_emits_custom_block() {
         uninstall_postflight: None,
         platforms: Vec::new(),
         generate_completions: None,
+        depends_on_macos: None,
     };
     let cask = super::cask::generate_cask(&params).unwrap();
     assert!(cask.contains("auto_updates true"));
@@ -4437,7 +4714,7 @@ fn publish_top_level_homebrew_casks_skip_then_missing_repository_records_both() 
 /// Seed a bare "cask tap fork" repo with one commit on `branch`; the publish
 /// path clones it (a plain `git clone <localpath>`), writes the cask `.rb`,
 /// commits, and pushes back here. Returns `(bare_url, holder)`.
-fn make_bare_cask_tap(branch: &str) -> (String, tempfile::TempDir) {
+pub(super) fn make_bare_cask_tap(branch: &str) -> (String, tempfile::TempDir) {
     let bare = tempfile::tempdir().expect("bare tempdir");
     let seed = tempfile::tempdir().expect("seed tempdir");
     let git_ok =
@@ -4985,6 +5262,7 @@ fn cask_ruby_escapes_user_values_and_passes_ruby_c() {
         uninstall_postflight: None,
         platforms: Vec::new(),
         generate_completions: None,
+        depends_on_macos: None,
     };
     let cask = super::cask::generate_cask(&params).unwrap();
 
@@ -5353,6 +5631,7 @@ fn the_apple_silicon_caveat_follows_the_configured_caveats() {
             test: "system \"#{bin}/monotool\"",
         },
         &opts,
+        &test_log(),
     )
     .unwrap();
     assert!(
@@ -5411,12 +5690,13 @@ fn a_universal_macos_archive_is_listed_for_both_architectures_without_a_caveat()
     assert!(!formula.contains("def caveats"), "{formula}");
 }
 
-/// A 32-bit linux ARM target (`armv7`) selects the
-/// `Hardware::CPU.arm? && !Hardware::CPU.is_64_bit?` guard, distinct from
-/// the 64-bit arm and intel guards.
+/// Homebrew on Linux runs on x86_64 and arm64 only, so a 32-bit ARM or x86
+/// archive is left out with a `-v` line naming it, and the x86_64 archive
+/// beside it serves Linux alone, requiring that CPU.
 #[test]
-fn test_formula_linux_armv7_uses_32bit_arm_guard() {
-    let formula = generate_formula(
+fn test_formula_linux_32_bit_archives_are_left_out() {
+    let (log, capture) = StageLogger::with_capture("publish", Verbosity::Verbose);
+    let formula = generate_formula_with_opts(
         &super::formula::FormulaCore {
             name: "pitool",
             version: "1.0.0",
@@ -5425,12 +5705,17 @@ fn test_formula_linux_armv7_uses_32bit_arm_guard() {
         },
         &[
             (
-                "linux-armv7",
+                "armv7-unknown-linux-gnueabihf",
                 "https://example.com/pitool-linux-armv7.tar.gz",
                 "armv7hash",
             ),
             (
-                "linux-amd64",
+                "i686-unknown-linux-gnu",
+                "https://example.com/pitool-linux-i686.tar.gz",
+                "i686hash",
+            ),
+            (
+                "x86_64-unknown-linux-gnu",
                 "https://example.com/pitool-linux-amd64.tar.gz",
                 "amd64hash",
             ),
@@ -5439,21 +5724,40 @@ fn test_formula_linux_armv7_uses_32bit_arm_guard() {
             install: "bin.install \"pitool\"",
             test: "system \"#{bin}/pitool\"",
         },
+        &FormulaOptions::default(),
+        &log,
     )
     .unwrap();
-    assert!(formula.contains("if Hardware::CPU.arm? && !Hardware::CPU.is_64_bit?"));
-    assert!(formula.contains("if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?"));
-    assert!(formula.contains("armv7hash"));
-    assert!(formula.contains("amd64hash"));
+    assert!(!formula.contains("armv7hash"), "{formula}");
+    assert!(!formula.contains("i686hash"), "{formula}");
+    assert_eq!(formula.matches("  url ").count(), 1, "{formula}");
+    assert!(formula.contains("  sha256 \"amd64hash\"\n"), "{formula}");
+    assert!(
+        formula.contains("  depends_on arch: :x86_64\n  depends_on :linux\n"),
+        "{formula}"
+    );
+    assert!(!formula.contains("Hardware::CPU"), "{formula}");
+    let verbose: Vec<String> = capture
+        .all_messages()
+        .into_iter()
+        .filter(|(level, _)| *level == anodizer_core::log::LogLevel::Verbose)
+        .map(|(_, m)| m)
+        .collect();
+    assert_eq!(
+        verbose,
+        [
+            "skipped archive 'pitool-linux-armv7.tar.gz' — Homebrew on Linux has no armv7 variant",
+            "skipped archive 'pitool-linux-i686.tar.gz' — Homebrew on Linux has no 386 variant",
+        ]
+    );
 }
 
-/// Multi-archive entries whose platform tag is neither darwin nor linux
-/// render through the `unknown_entries` branch as a flat
-/// `# platform: <tag>` + url/sha256 trio, without any `on_macos`/`on_linux`
-/// wrapper.
+/// An archive for an OS Homebrew does not run on is left out with a `-v`
+/// line; the Linux archive beside it is the whole formula.
 #[test]
-fn test_formula_unknown_platform_emits_commented_flat_entry() {
-    let formula = generate_formula(
+fn test_formula_unknown_platform_is_left_out() {
+    let (log, capture) = StageLogger::with_capture("publish", Verbosity::Verbose);
+    let formula = generate_formula_with_opts(
         &super::formula::FormulaCore {
             name: "xtool",
             version: "1.0.0",
@@ -5476,14 +5780,26 @@ fn test_formula_unknown_platform_emits_commented_flat_entry() {
             install: "bin.install \"xtool\"",
             test: "system \"#{bin}/xtool\"",
         },
+        &FormulaOptions::default(),
+        &log,
     )
     .unwrap();
-    assert!(formula.contains("# platform: freebsd-amd64"));
-    assert!(formula.contains("url \"https://example.com/xtool-freebsd-amd64.tar.gz\""));
-    assert!(formula.contains("sha256 \"bsdhash\""));
-    // The linux entry still wraps in on_linux.
-    assert!(formula.contains("on_linux do"));
-    assert!(formula.contains("linuxhash"));
+    assert!(!formula.contains("freebsd"), "{formula}");
+    assert!(!formula.contains("bsdhash"), "{formula}");
+    assert!(
+        formula.contains(
+            "  url \"https://example.com/xtool-linux-amd64.tar.gz\"\n  version \"1.0.0\"\n  sha256 \"linuxhash\"\n"
+        ),
+        "{formula}"
+    );
+    assert_eq!(
+        capture.all_messages(),
+        [(
+            anodizer_core::log::LogLevel::Verbose,
+            "skipped archive 'xtool-freebsd-amd64.tar.gz' — Homebrew has no freebsd variant"
+                .to_string()
+        )]
+    );
 }
 
 /// `download_strategy` + `custom_require` + `url_headers` all splice into
@@ -5513,6 +5829,7 @@ fn test_formula_download_strategy_custom_require_and_headers() {
             test: "system \"#{bin}/privtool\"",
         },
         &opts,
+        &test_log(),
     )
     .unwrap();
     assert!(formula.contains("require_relative \"private_strategy\""));
@@ -5556,17 +5873,63 @@ fn test_formula_extra_install_post_install_custom_block_plist_service() {
             test: "system \"#{bin}/fulltool\"",
         },
         &opts,
+        &test_log(),
     )
     .unwrap();
     assert!(formula.contains("chmod 0755, bin/\"extra\""));
     assert!(formula.contains("def post_install"));
     assert!(formula.contains("system \"#{bin}/setup\""));
     assert!(formula.contains("# custom ruby here"));
-    assert!(formula.contains("plist_options startup: true"));
+    // Homebrew 7 has no `plist_options`; a formula naming it fails to load.
+    assert!(!formula.contains("plist_options"), "{formula}");
     assert!(formula.contains("def plist"));
     assert!(formula.contains("<plist>stub</plist>"));
     assert!(formula.contains("service do"));
     assert!(formula.contains("run [opt_bin/\"svc\"]"));
+}
+
+/// A `plist` is written as `def plist` alone, the form Homebrew 7 still
+/// loads, and the render warns that `service` replaces it.
+#[test]
+fn test_formula_plist_warns_that_service_replaces_it() {
+    let (log, capture) = StageLogger::with_capture("publish", Verbosity::Normal);
+    let opts = FormulaOptions {
+        plist: Some("<plist>stub</plist>"),
+        ..Default::default()
+    };
+    let formula = generate_formula_with_opts(
+        &super::formula::FormulaCore {
+            name: "svctool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
+        &[(
+            "aarch64-apple-darwin",
+            "https://example.com/svctool.tar.gz",
+            "abc",
+        )],
+        &super::formula::FormulaCode {
+            install: "bin.install \"svctool\"",
+            test: "system \"#{bin}/svctool\"",
+        },
+        &opts,
+        &log,
+    )
+    .unwrap();
+    assert!(
+        formula.contains("\n  def plist\n    <<~EOS\n      <plist>stub</plist>\n    EOS\n  end\n"),
+        "{formula}"
+    );
+    assert_eq!(
+        capture.warn_messages(),
+        [
+            "DEPRECATION: homebrew formula 'svctool': `plist:` is deprecated; Homebrew \
+          deprecated `def plist` in favour of `service do`, and Homebrew 7 removed the \
+          `plist_options` stanza that went with it. anodizer writes `def plist` without \
+          it; move the launchd settings to `service:`."
+        ]
+    );
 }
 
 /// A dependency carrying an explicit `version` pin renders
@@ -5598,6 +5961,7 @@ fn test_formula_dependency_with_version_pin() {
             test: "system \"#{bin}/vertool\"",
         },
         &opts,
+        &test_log(),
     )
     .unwrap();
     assert!(formula.contains("depends_on \"openssl@3\" => \"3.2.0\""));
@@ -7176,13 +7540,17 @@ fn rendered_casks_pass_brew_style_opt_in() {
 // -----------------------------------------------------------------------
 
 /// The formulae the `brew style` check renders, one per layout the renderer
-/// has: a single archive, macOS per-arch, an Intel-only macOS build (which
-/// carries the Apple Silicon caveat, alone and beside configured caveats), a
-/// universal macOS archive, Linux per-arch, macOS + Linux carrying every
-/// optional stanza, OS-scoped dependencies with no archive for that OS, a
-/// private download strategy, and the legacy `plist`. `custom_block` is
-/// placed after `conflicts_with`, so the full fixture's block holds a stanza
-/// Homebrew orders there. Returned as `(file stem, rendered formula)`.
+/// has: a lone archive for each of Apple Silicon, an Intel Mac and Linux,
+/// macOS per-arch, an Intel-only macOS build (which carries the Apple
+/// Silicon caveat, alone and beside configured caveats), an Apple
+/// Silicon-only macOS build beside one Linux CPU, a universal macOS archive,
+/// Linux per-arch beside a 32-bit archive that is left out, macOS + Linux
+/// carrying every optional stanza, OS-scoped dependencies with no archive
+/// for that OS, an archive for an OS Homebrew does not run on, a
+/// `custom_block` that defines a method, a private download strategy, and
+/// the legacy `plist`. `custom_block` is placed after `conflicts_with`, so
+/// the full fixture's block holds a stanza Homebrew orders there. Returned
+/// as `(file stem, rendered formula)`.
 fn style_fixture_formulae() -> Vec<(&'static str, String)> {
     use super::formula::{FormulaCode, FormulaCore, render_formula_license};
     use anodizer_core::config::{HomebrewConflict, HomebrewDependency};
@@ -7242,13 +7610,62 @@ fn style_fixture_formulae() -> Vec<(&'static str, String)> {
     ];
     let headers = vec!["Accept: application/octet-stream".to_string()];
     let render = |archives: &[(&str, &str, &str)], opts: &FormulaOptions<'_>| {
-        generate_formula_with_opts(&core, archives, &code, opts).expect("render formula")
+        generate_formula_with_opts(&core, archives, &code, opts, &test_log())
+            .expect("render formula")
     };
 
-    let mut formulae = Vec::new();
+    let mut formulae = vec![
+        (
+            "single_apple_silicon",
+            render(&[("aarch64-apple-darwin", &mac_arm, &s1)], &base()),
+        ),
+        (
+            "single_intel_mac",
+            render(&[("x86_64-apple-darwin", &mac_intel, &s1)], &base()),
+        ),
+        (
+            "single_linux",
+            render(&[("x86_64-unknown-linux-gnu", &linux_intel, &s1)], &base()),
+        ),
+        (
+            "apple_silicon_only_and_linux_intel",
+            render(
+                &[
+                    ("aarch64-apple-darwin", &mac_arm, &s1),
+                    ("x86_64-unknown-linux-gnu", &linux_intel, &s2),
+                ],
+                &base(),
+            ),
+        ),
+        (
+            "unknown_os_entry",
+            render(
+                &[
+                    (
+                        "x86_64-unknown-freebsd",
+                        &url("mytool-freebsd-amd64.tar.gz"),
+                        &s1,
+                    ),
+                    ("aarch64-apple-darwin", &mac_arm, &s2),
+                    ("x86_64-unknown-linux-gnu", &linux_intel, &s3),
+                    ("aarch64-unknown-linux-gnu", &linux_arm, &s4),
+                ],
+                &base(),
+            ),
+        ),
+    ];
+    let mut custom_def = base();
+    custom_def.custom_block =
+        Some("def shell_completions\n  bash_completion.install \"completions/mytool.bash\"\nend");
     formulae.push((
-        "single_archive",
-        render(&[("aarch64-apple-darwin", &mac_arm, &s1)], &base()),
+        "custom_block_with_def",
+        render(
+            &[
+                ("x86_64-apple-darwin", &mac_intel, &s1),
+                ("aarch64-apple-darwin", &mac_arm, &s2),
+            ],
+            &custom_def,
+        ),
     ));
     formulae.push((
         "macos_per_arch",
@@ -7330,7 +7747,7 @@ fn style_fixture_formulae() -> Vec<(&'static str, String)> {
         ),
     ));
     let mut private = base();
-    private.custom_require = Some("lib/private_strategy");
+    private.custom_require = Some("../lib/private_strategy");
     private.download_strategy = Some("GitHubPrivateRepositoryReleaseDownloadStrategy");
     private.url_headers = Some(&headers);
     formulae.push((
@@ -7359,7 +7776,9 @@ fn style_fixture_formulae() -> Vec<(&'static str, String)> {
 /// `ANODIZER_BREW_STYLE=1` opt-in. Each fixture is written into a throwaway
 /// tap, because `brew style` holds a tap formula to the tap rules, and the
 /// tap is removed afterwards. `brew readall` then loads each one on every
-/// OS and architecture Homebrew knows.
+/// OS and architecture Homebrew knows. Homebrew skips a tap nobody trusts,
+/// so the tap is trusted for the test and untrusted afterwards, and a
+/// readall that skipped anything fails.
 ///
 /// Two offences are allowed, each where its cause is the config's own Ruby:
 ///
@@ -7415,9 +7834,27 @@ fn rendered_formulae_pass_brew_style_opt_in() {
     let tap = format!("{owner_name}/check");
     let owner = brew_repo.join("Library/Taps").join(&owner_name);
     let _tap = RemoveTreeOnDrop(owner.clone());
-    let formula_dir = owner.join("homebrew-check/Formula");
+    let tap_dir = owner.join("homebrew-check");
+    let formula_dir = tap_dir.join("Formula");
     std::fs::create_dir_all(&formula_dir).expect("create the throwaway tap");
     let formula_path = formula_dir.join("mytool.rb");
+    // The `private_download_strategy` fixture loads the strategy class
+    // through `require_relative`, so the tap carries that file, outside
+    // `Formula/`, where readall would load it as a formula.
+    let strategy = tap_dir.join("lib/private_strategy.rb");
+    std::fs::create_dir_all(strategy.parent().expect("lib dir")).expect("create lib");
+    std::fs::write(
+        &strategy,
+        "# typed: false\n# frozen_string_literal: true\n\nclass GitHubPrivateRepositoryReleaseDownloadStrategy < CurlDownloadStrategy\nend\n",
+    )
+    .expect("write the download strategy");
+    let trust = brew(&["trust", "--tap", &tap]);
+    assert!(
+        trust.status.success(),
+        "brew trust --tap {tap} failed:\n{}",
+        String::from_utf8_lossy(&trust.stderr)
+    );
+    let _trust = UntrustTapOnDrop(tap.clone());
 
     // Every fixture is linted before the test fails, so one run reports
     // the offences of all of them.
@@ -7458,11 +7895,15 @@ fn rendered_formulae_pass_brew_style_opt_in() {
             ));
         }
         let load = brew(&["readall", "--os=all", "--arch=all", &tap]);
-        if !load.status.success() {
+        let load_report = format!(
+            "{}{}",
+            String::from_utf8_lossy(&load.stdout),
+            String::from_utf8_lossy(&load.stderr)
+        );
+        println!("--- readall {stem}\n{load_report}");
+        if !load.status.success() || load_report.contains("Skipping") {
             failures.push(format!(
-                "{stem}: brew readall failed:\n{}{}\n--- formula ---\n{body}",
-                String::from_utf8_lossy(&load.stdout),
-                String::from_utf8_lossy(&load.stderr)
+                "{stem}: brew readall failed or skipped:\n{load_report}\n--- formula ---\n{body}"
             ));
         }
     }
@@ -7474,9 +7915,24 @@ fn rendered_formulae_pass_brew_style_opt_in() {
     );
 }
 
+/// Runs `brew untrust --tap` on the named tap when dropped, on a panic as
+/// well as on return.
+struct UntrustTapOnDrop(String);
+
+impl Drop for UntrustTapOnDrop {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("brew")
+            .args(["untrust", "--tap", &self.0])
+            .env("HOMEBREW_NO_AUTO_UPDATE", "1")
+            .stdin(std::process::Stdio::null())
+            .output();
+    }
+}
+
 /// Homebrew's formula component order (`FORMULA_COMPONENT_PRECEDENCE_LIST`
 /// in Homebrew's `ast_constants.rb`, enforced by `FormulaAudit/ComponentsOrder`)
-/// for the top-level stanzas the renderer emits.
+/// for the stanzas the renderer emits, at the top level and inside an
+/// `on_macos` / `on_linux` block alike.
 const FORMULA_COMPONENT_ORDER: &[&str] = &[
     "desc ",
     "homepage ",
@@ -7488,30 +7944,45 @@ const FORMULA_COMPONENT_ORDER: &[&str] = &[
     "depends_on ",
     "on_macos do",
     "on_linux do",
+    "on_arm do",
+    "on_intel do",
     "conflicts_with ",
     "def install",
     "def post_install",
     "def caveats",
-    "plist_options ",
     "def plist",
     "service do",
     "test do",
 ];
 
-/// Every formula layout fixture lists its top-level stanzas in Homebrew's
-/// component order and defines each method once at the top level of the
-/// class, the two rules `brew style` holds a formula to that the renderer
+/// Every formula layout fixture lists its stanzas in Homebrew's component
+/// order, at the top level of the class and inside each `on_macos` /
+/// `on_linux` block, and defines each method once at the top level of the
+/// class, the rules `brew style` holds a formula to that the renderer
 /// decides. Runs without Homebrew, so the order holds where the opt-in
 /// `brew style` check is not run.
 #[test]
 fn every_formula_layout_follows_the_homebrew_component_order() {
     for (stem, body) in style_fixture_formulae() {
-        let mut last = 0;
+        // The rank last seen at each indentation, the class body at 2 and an
+        // OS block's body at 4. Leaving a block forgets the ranks inside it,
+        // so the next block's order is checked on its own.
+        let mut last: Vec<(usize, usize)> = Vec::new();
+        let mut top_level = "";
+        let mut os_block_stanzas = 0;
         for line in body.lines() {
-            let Some(stanza) = line.strip_prefix("  ") else {
+            let stanza = line.trim_start();
+            let indent = line.len() - stanza.len();
+            if stanza.is_empty() {
                 continue;
-            };
-            if stanza.starts_with(' ') {
+            }
+            last.retain(|&(at, _)| at <= indent);
+            if indent == 2 {
+                top_level = stanza;
+            }
+            let in_os_block =
+                indent == 4 && (top_level == "on_macos do" || top_level == "on_linux do");
+            if indent != 2 && !in_os_block {
                 continue;
             }
             let Some(rank) = FORMULA_COMPONENT_ORDER
@@ -7520,12 +7991,22 @@ fn every_formula_layout_follows_the_homebrew_component_order() {
             else {
                 continue;
             };
+            os_block_stanzas += usize::from(in_os_block);
+            if let Some(&(_, prev)) = last.iter().find(|&&(at, _)| at == indent) {
+                assert!(
+                    rank >= prev,
+                    "{stem}: `{stanza}` follows `{}`:\n{body}",
+                    FORMULA_COMPONENT_ORDER[prev]
+                );
+            }
+            last.retain(|&(at, _)| at != indent);
+            last.push((indent, rank));
+        }
+        if body.contains("\n  on_macos do\n") || body.contains("\n  on_linux do\n") {
             assert!(
-                rank >= last,
-                "{stem}: `{stanza}` follows `{}`:\n{body}",
-                FORMULA_COMPONENT_ORDER[last]
+                os_block_stanzas > 0,
+                "{stem}: no OS block stanza was checked:\n{body}"
             );
-            last = rank;
         }
         for line in body.lines().filter(|l| l.trim_start().starts_with("def ")) {
             assert!(
@@ -7592,10 +8073,12 @@ fn every_ruby_example_in_the_cask_docs_is_what_the_renderer_produces() {
         "aarch64-unknown-linux-gnu",
     ];
     // The builds released beside each ```ruby block, in page order: the
-    // dependencies and livecheck fragments, the multi-arch cask, the
-    // single-arch cask, and the universal binary beside Linux.
+    // dependencies fragment, the `depends_on_macos:` cask, the livecheck
+    // fragment, the multi-arch cask, the single-arch cask, and the universal
+    // binary beside Linux.
     let releases = [
         both_macs,
+        apple_silicon,
         both_macs,
         both_macs,
         apple_silicon,

@@ -295,8 +295,8 @@ pub struct NpmConfig {
 
     /// ARM version filter (e.g. `6`, `7`). When set, a 32-bit ARM artifact is
     /// included only when its `arm_variant` metadata matches (artifacts without
-    /// the metadata always pass). Mirrors the homebrew/winget/krew/nix/aur
-    /// peers; defaults to `6` when unset.
+    /// the metadata always pass). The krew and pypi selectors read the same
+    /// way; defaults to `6` when unset.
     pub arm_variant: Option<String>,
 
     /// Additional files to include in the published package alongside the

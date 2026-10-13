@@ -17,14 +17,11 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::Result;
 
-use super::{
-    PublisherSchemaValidator, SchemaFinding, SchemaPass, TagResolver, validate_crate_scoped,
-};
+use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, validate_crate_scoped};
 use crate::homebrew::{
-    CaskGenResult, crate_has_homebrew_archives, crate_has_macos_cask_artifact,
-    is_homebrew_per_crate_configured, render_homebrew_cask_for_crate,
-    render_homebrew_formula_for_crate, render_same_tap_cask_for_crate,
-    render_top_level_homebrew_casks,
+    CaskGenResult, cask_render_key, crate_has_homebrew_archives, crate_has_macos_cask_artifact,
+    formula_render_key, is_homebrew_per_crate_configured, render_homebrew_cask_for_crate,
+    render_homebrew_formula_for_crate, render_top_level_homebrew_casks,
 };
 
 /// Which kind of artifact a rendered Ruby string is — drives the stanza set the
@@ -47,7 +44,6 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
         &self,
         ctx: &mut Context,
         resolve_tag: TagResolver<'_>,
-        pass: SchemaPass,
     ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
         // Threaded into the `ruby -c` layer: a homebrew tap publish is a git
@@ -55,14 +51,6 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
         // `strict` leaves a missing `ruby` a warn+skip — wired uniformly.
         let strict = ctx.render_is_strict();
         let mut findings = Vec::new();
-        // Emission validation renders in every mode, snapshot and dry-run
-        // included, so its render prints the cask's `-v` lines once; the
-        // guard and the publisher render the same casks again and keep only
-        // their warnings and status lines.
-        let render_log = match pass {
-            SchemaPass::EmissionValidate => log.clone(),
-            SchemaPass::PrepublishGuard => log.capped_at(anodizer_core::log::Verbosity::Normal),
-        };
 
         // Walk exactly the crate set the live homebrew publisher's `run`
         // iterates (honoring `--crate` selection, else every
@@ -122,40 +110,31 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
                                 "no macOS/Linux (homebrew-eligible) archive in this \
                              target-restricted shard",
                             );
-                        } else if let Some(rendered) =
-                            render_homebrew_formula_for_crate(ctx, crate_name, &log)?
-                        {
+                        } else if let Some(rendered) = render_homebrew_formula_for_crate(
+                            ctx,
+                            crate_name,
+                            &ctx.claim_render_log(&formula_render_key(crate_name), &log),
+                        )? {
                             findings.extend(validate_ruby_structural(
                                 RubyKind::Formula,
                                 &rendered.formula,
                             ));
                             findings.extend(validate_ruby_syntax(&rendered.formula, strict, &log)?);
                         }
-
-                        // SAME-TAP CASK path. The render needs a macOS artifact. Gate
-                        // the not-applicable skip on darwin-artifact PRESENCE, then
-                        // call the render and propagate any `Err` — a missing
-                        // url/sha256 on a present artifact is a real defect, not a
-                        // not-applicable skip.
-                        if hb_cfg.cask.is_some()
-                            && crate_has_macos_cask_artifact(ctx, crate_name)
-                            && let Some(cask) = render_same_tap_cask_for_crate(
-                                ctx,
-                                hb_cfg,
-                                crate_name,
-                                &render_log,
-                            )?
-                        {
-                            validate_cask_and_versioned(&mut findings, &cask, strict, &log)?;
-                        }
                     }
 
-                    // STANDALONE CASK path. Same darwin-presence gate over a render
-                    // whose `Err` propagates: a present-but-broken macOS artifact
-                    // must surface, only true absence skips.
+                    // CASK path: one render whether the cask rides the
+                    // formula's tap commit or is pushed on its own. The render
+                    // needs a macOS artifact, so the not-applicable skip is
+                    // gated on darwin-artifact PRESENCE and any render `Err`
+                    // propagates: a missing url/sha256 on a present artifact
+                    // is a real defect, only true absence skips.
                     if crate_has_macos_cask_artifact(ctx, crate_name)
-                        && let Some(cask) =
-                            render_homebrew_cask_for_crate(ctx, crate_name, &render_log)?
+                        && let Some(cask) = render_homebrew_cask_for_crate(
+                            ctx,
+                            crate_name,
+                            &ctx.claim_render_log(&cask_render_key(crate_name), &log),
+                        )?
                     {
                         validate_cask_and_versioned(&mut findings, &cask, strict, &log)?;
                     }
@@ -166,7 +145,7 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
 
         // Top-level `homebrew_casks:` (not per-crate). Empty when unconfigured
         // or no entry is applicable in this shard.
-        for ruby in render_top_level_homebrew_casks(ctx, &render_log)? {
+        for ruby in render_top_level_homebrew_casks(ctx, &log)? {
             findings.extend(validate_ruby_structural(RubyKind::Cask, &ruby));
             findings.extend(validate_ruby_syntax(&ruby, strict, &log)?);
         }
@@ -580,7 +559,6 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("windows shard: homebrew must self-skip, not render a windows-url formula");
         assert!(
@@ -608,7 +586,6 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect_err(
                 "a full build with homebrew configured but only a windows archive must error",
@@ -642,7 +619,6 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("a linux archive renders a valid formula");
         assert!(
@@ -676,7 +652,8 @@ mod tests {
         let err = HomebrewSchemaValidator
             .validate(
                 &mut ctx,
-                &crate::schema_validation::test_current_version_resolver(), crate::schema_validation::SchemaPass::EmissionValidate)
+                &crate::schema_validation::test_current_version_resolver(),
+            )
             .expect_err(
                 "a present macOS artifact missing sha256 must error, not be skipped by the OS filter",
             );
@@ -703,7 +680,6 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -730,8 +706,7 @@ mod tests {
             "license stanza carries the configured SPDX id, got: {ruby}"
         );
 
-        let hb_cfg = every_option_homebrew_cfg();
-        let cask = render_same_tap_cask_for_crate(&ctx, &hb_cfg, "widget", &log)
+        let cask = render_homebrew_cask_for_crate(&ctx, "widget", &log)
             .expect("render ok")
             .expect("cask configured");
         let cask_ruby = &cask.content;
@@ -797,7 +772,6 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -853,7 +827,6 @@ mod tests {
             .validate(
                 &mut ctx_a,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -880,7 +853,6 @@ mod tests {
             .validate(
                 &mut ctx_b,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -924,7 +896,6 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs without erroring on the absent archive");
         assert!(
@@ -960,7 +931,6 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -992,7 +962,7 @@ mod tests {
         scope_version(&mut ctx, "1.0.0");
         add_macos_archive(&mut ctx, "widget", "1.0.0");
 
-        let cask = render_same_tap_cask_for_crate(&ctx, &hb_cfg, "widget", &ctx.logger("publish"))
+        let cask = render_homebrew_cask_for_crate(&ctx, "widget", &ctx.logger("publish"))
             .expect("render ok");
         assert!(
             cask.is_none(),
@@ -1150,8 +1120,7 @@ end
             "the every-option formula must pass ruby -c, got: {formula_findings:?}"
         );
 
-        let hb_cfg = every_option_homebrew_cfg();
-        let cask = render_same_tap_cask_for_crate(&ctx, &hb_cfg, "widget", &log)
+        let cask = render_homebrew_cask_for_crate(&ctx, "widget", &log)
             .expect("render ok")
             .expect("cask configured");
         let cask_findings = validate_ruby_syntax(&cask.content, false, &log).expect("ruby -c runs");
@@ -1276,7 +1245,6 @@ end
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -1339,7 +1307,6 @@ end
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -1415,7 +1382,6 @@ end
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs without erroring");
         assert!(
@@ -1459,7 +1425,6 @@ end
         let result = HomebrewSchemaValidator.validate(
             &mut ctx,
             &crate::schema_validation::test_current_version_resolver(),
-            crate::schema_validation::SchemaPass::EmissionValidate,
         );
         let err = result.expect_err(
             "a present-but-broken archive (missing sha256) must surface as an error, \

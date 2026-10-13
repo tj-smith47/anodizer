@@ -417,6 +417,7 @@ fn render_top_level_cask_inner(
         completions_fish,
         depends_on: &depends_directives,
         conflicts_with: &conflicts_directives,
+        depends_on_macos: cask_cfg.depends_on_macos,
         preflight,
         postflight,
         uninstall_preflight,
@@ -475,8 +476,10 @@ pub(crate) fn render_top_level_homebrew_casks(
         _ => return Ok(Vec::new()),
     };
     let mut out: Vec<String> = Vec::new();
-    for cask_cfg in &entries {
-        let Some(rendered) = render_top_level_cask_entry(ctx, cask_cfg, log)? else {
+    for (index, cask_cfg) in entries.iter().enumerate() {
+        let render_log =
+            ctx.claim_render_log(&super::cask_scope::top_level_cask_render_key(index), log);
+        let Some(rendered) = render_top_level_cask_entry(ctx, cask_cfg, &render_log)? else {
             continue;
         };
         out.push(rendered.content);
@@ -508,7 +511,7 @@ pub fn publish_top_level_homebrew_casks(
     let mut pushed_any = false;
     let mut applicable = 0usize;
 
-    for cask_cfg in &entries {
+    for (index, cask_cfg) in entries.iter().enumerate() {
         let project_name = &ctx.config.project_name;
         let cask_name =
             super::cask::cask_name_for(cask_cfg.name.as_deref().unwrap_or(project_name));
@@ -591,7 +594,8 @@ pub fn publish_top_level_homebrew_casks(
         // return is a config-vs-scope mismatch — no in-scope macOS artifact —
         // which is not-applicable, not a failure. Same render the offline
         // schema validator drives.
-        let render_log = super::cask_scope::publisher_render_log(ctx, log);
+        let render_log =
+            ctx.claim_render_log(&super::cask_scope::top_level_cask_render_key(index), log);
         let Some(rendered) = render_top_level_cask_inner(ctx, cask_cfg, &cask_name, &render_log)?
         else {
             continue;

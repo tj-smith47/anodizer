@@ -92,15 +92,20 @@ pub struct HomebrewConfig {
     /// `brew livecheck` cannot meaningfully poll). Set `strategy:` /
     /// `regex:`/`url:` to opt into active version detection instead.
     pub livecheck: Option<HomebrewLivecheck>,
-    /// Homebrew Cask configuration (macOS .app bundles).
+    /// Homebrew Cask for this crate, the same setting as
+    /// `publish.homebrew_cask:` (set one of the two). The cask is written into
+    /// this formula's tap in the same commit, unless its own `repository:`
+    /// names a different tap.
     pub cask: Option<HomebrewCaskConfig>,
     /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`).
     /// Only artifacts matching this variant are included. Default: `v1`.
     /// Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is
     /// rejected when the config is parsed.
     pub amd64_variant: Option<Amd64Variant>,
-    /// ARM version filter (e.g. "6", "7"). Only artifacts matching this
-    /// variant are included.
+    /// **Deprecated.** Ignored. Homebrew has no 32-bit ARM variant, so a
+    /// formula leaves out every 32-bit ARM archive whatever this says. The
+    /// field still parses so existing configs keep loading, and a
+    /// deprecation warning names it at config-load time.
     pub arm_variant: Option<String>,
     /// Override whether this publisher failing should fail the overall release.
     ///
@@ -337,6 +342,16 @@ pub struct HomebrewCaskConfig {
     pub dependencies: Option<Vec<HomebrewCaskDependencyEntry>>,
     /// Conflicting casks or formulae.
     pub conflicts: Option<Vec<HomebrewCaskConflictEntry>>,
+    /// Whether the cask renders `depends_on :macos`. When unset, anodizer
+    /// decides from the downloads and the `custom_block`: a cask with no
+    /// Linux download gets `depends_on :macos` unless its `custom_block`
+    /// mentions `on_linux`, `on_system`, `app_image` or an OS `depends_on`.
+    /// That scan reads strings and comments as code, so a `custom_block`
+    /// that only mentions `on_linux` in a caveat drops the dependency, and
+    /// an `on_linux` built at runtime (through `send`) is not seen.
+    /// `true` renders `depends_on :macos` with a flat download; `false`
+    /// renders no dependency and places a flat download inside `on_macos`.
+    pub depends_on_macos: Option<bool>,
 
     // ----- Lifecycle hooks -----
     /// Pre/post install/uninstall hooks.

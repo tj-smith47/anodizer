@@ -1,4 +1,3 @@
-use super::super::cask_scope::generate_cask_from_context;
 use super::super::commit_msg::render_commit_msg;
 use super::super::formula::{FormulaOptions, generate_formula_with_opts};
 use anodizer_core::config::HomebrewConfig;
@@ -103,54 +102,34 @@ struct CaskInTapOutcome {
     /// included in the commit set so the tap commit covers every file
     /// touched by this publish.
     versioned_paths: Vec<PathBuf>,
+    /// The cask's rendered `update_existing_pr:`, which governs the one pull
+    /// request the formula and cask share. Rendered before the push, so a
+    /// template error cannot come after a commit already reached the tap.
+    update_existing_pr: bool,
 }
 
-/// Render the same-tap cask that accompanies a formula, honoring the cask's
-/// own `skip_upload`. Returns `Ok(None)` when no cask is configured or the
-/// cask's `skip_upload` is truthy — the formula still publishes on its own.
-///
-/// Splits the cask's skip gate (evaluated here, once) from the pure
-/// [`generate_cask_from_context`] render so the live publish path and the
-/// offline schema validator share one render without double-warning.
-pub(crate) fn render_same_tap_cask_for_crate(
-    ctx: &Context,
-    hb_cfg: &HomebrewConfig,
-    crate_name: &str,
-    log: &StageLogger,
-) -> Result<Option<super::super::cask_scope::CaskGenResult>> {
-    let Some(cask_cfg) = hb_cfg.cask.as_ref() else {
-        return Ok(None);
-    };
-    if crate::util::should_skip_upload(
-        cask_cfg.skip_upload.as_ref(),
-        ctx,
-        log,
-        Some(&format!("homebrew cask for '{crate_name}'")),
-    )? {
-        return Ok(None);
-    }
-    let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg, log)?;
-    Ok(Some(cask_result))
-}
-
-/// When a cask config is present alongside the formula config, generate and
-/// write the cask into the same tap clone so the commit/push covers both
-/// files in a single round-trip.
+/// When the crate's cask rides the formula's tap (see
+/// [`CrateCask::same_tap`](super::super::publish_cask::CrateCask::same_tap)),
+/// generate and write it into the same tap clone so the commit/push covers
+/// both files in a single round-trip.
 fn maybe_write_cask_into_tap(
     ctx: &Context,
-    hb_cfg: &HomebrewConfig,
     crate_name: &str,
     repo_path: &Path,
     log: &StageLogger,
 ) -> Result<CaskInTapOutcome> {
-    let render_log = super::super::cask_scope::publisher_render_log(ctx, log);
-    let Some(cask_result) = render_same_tap_cask_for_crate(ctx, hb_cfg, crate_name, &render_log)?
+    let Some(crate_cask) = super::super::publish_cask::CrateCask::for_crate(ctx, crate_name)
+        .filter(|c| c.same_tap().is_some())
     else {
         return Ok(CaskInTapOutcome::default());
     };
-    let cask_cfg = hb_cfg.cask.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("homebrew cask: cask config vanished for '{}'", crate_name)
-    })?;
+    let cask_cfg = crate_cask.cask;
+    let render_log = ctx.claim_render_log(&super::super::cask_render_key(crate_name), log);
+    let Some(cask_result) =
+        super::super::render_homebrew_cask_for_crate(ctx, crate_name, &render_log)?
+    else {
+        return Ok(CaskInTapOutcome::default());
+    };
 
     // Honor `cask.directory:` so a tap can place
     // casks in a sub-tree. Defaults to "Casks". The cask config field
@@ -186,10 +165,18 @@ fn maybe_write_cask_into_tap(
         versioned_paths.push(alt_path);
     }
 
+    let update_existing_pr = match cask_cfg.update_existing_pr.as_ref() {
+        Some(v) => v
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+            .context("homebrew cask: render update_existing_pr condition")?,
+        None => false,
+    };
+
     Ok(CaskInTapOutcome {
         cask_name: Some(cask_result.cask_name),
         cask_path: Some(cask_path),
         versioned_paths,
+        update_existing_pr,
     })
 }
 
@@ -287,12 +274,13 @@ fn submit_homebrew_pr(
     repo_for_pr: Option<anodizer_core::config::RepositoryConfig>,
     ident: &FormulaIdentity<'_>,
     tap: &TapLocation<'_>,
-    cask_name: Option<&str>,
+    cask: &CaskInTapOutcome,
     pr_branch: &str,
     pr_token: Option<&str>,
     pushed_commit: Option<&str>,
     log: &StageLogger,
 ) -> Result<()> {
+    let cask_name = cask.cask_name.as_deref();
     let formula_name = ident.formula_name;
     let version = ident.version;
     let (pr_title, pr_body) = if let Some(cask_name) = cask_name {
@@ -326,11 +314,9 @@ fn submit_homebrew_pr(
             repo_owner: tap.repo_owner,
             repo_name: tap.repo_name,
             branch_name: pr_branch,
-            // Homebrew formula publishes commit directly to the tap
-            // branch; the optional PR is informational. The cask/winget/krew
-            // `update_existing_pr:` flag has no analogue on `HomebrewConfig`
-            // because there's no real "blocked queue" to recover from here.
-            update_existing_pr: false,
+            // `HomebrewConfig` has no `update_existing_pr:`; a cask written
+            // into this commit rides this PR, so its flag governs it.
+            update_existing_pr: cask.update_existing_pr,
         },
         &pr_title,
         &pr_body,
@@ -533,6 +519,7 @@ pub(super) fn render_formula_inner(
             test: &code.test,
         },
         &opts,
+        log,
     )?;
 
     // Final-text chokepoint shared by the live publish path and the offline
@@ -635,7 +622,13 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
     // The skip / `if` / dry-run gates above already ran, so render via the
     // skip-unaware inner — re-running the gate here would double every
     // resolved-with-warning value's log line.
-    let rendered = render_formula_inner(ctx, &hb_cfg_owned, crate_name, github_slug, log)?;
+    let rendered = render_formula_inner(
+        ctx,
+        &hb_cfg_owned,
+        crate_name,
+        github_slug,
+        &ctx.claim_render_log(&super::super::formula_render_key(crate_name), log),
+    )?;
     let formula = rendered.formula;
     let formula_name = rendered.formula_name.as_str();
 
@@ -654,7 +647,7 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
     let formula_path =
         clone_tap_and_write_formula(ctx, &hb_cfg_owned, &tap, formula_name, &formula, log)?;
 
-    let cask = maybe_write_cask_into_tap(ctx, &hb_cfg_owned, crate_name, tap.repo_path, log)?;
+    let cask = maybe_write_cask_into_tap(ctx, crate_name, tap.repo_path, log)?;
 
     let branch = crate::util::resolve_branch_or_versioned(
         ctx,
@@ -680,7 +673,7 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         hb_cfg_owned.repository.clone(),
         &ident,
         &tap,
-        cask.cask_name.as_deref(),
+        &cask,
         pr_branch,
         pr_token.as_deref(),
         outcome.commit(),

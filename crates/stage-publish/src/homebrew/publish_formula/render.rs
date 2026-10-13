@@ -233,8 +233,8 @@ pub(super) fn render_install_and_test_blocks(
 /// Filter `crate_name`'s `Archive` + `UploadableBinary` artifacts down to the
 /// set a homebrew formula would draw from: keep only macOS/Linux targets (the
 /// only OSes Homebrew installs on), drop universal-binary leftovers and raw
-/// `gz` blobs, apply the `ids:` allow-list, and apply the `amd64_variant` /
-/// `arm_variant` microarch selectors. Reads no url/sha256 metadata, so it only
+/// `gz` blobs, apply the `ids:` allow-list, and apply the `amd64_variant`
+/// microarch selector. Reads no url/sha256 metadata, so it only
 /// answers "does a candidate exist" — a presence probe that is `bail!`-free,
 /// distinct from [`collect_archive_entries`]'s render path (which errors when a
 /// matched artifact is missing url/sha256).
@@ -259,8 +259,6 @@ pub(super) fn homebrew_matching_artifacts<'a>(
 ) -> Vec<&'a anodizer_core::artifact::Artifact> {
     let ids_filter = hb_cfg.ids.as_deref();
     let amd64_variant = hb_cfg.amd64_variant.map_or("v1", |v| v.as_str());
-    // Goarm defaults to "6" for Homebrew.
-    let arm_variant = hb_cfg.arm_variant.as_deref().or(Some("6"));
     let mut all_artifacts = ctx
         .artifacts
         .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::Archive, crate_name);
@@ -296,23 +294,13 @@ pub(super) fn homebrew_matching_artifacts<'a>(
                 true
             }
         })
-        // Filter by amd64_variant/arm_variant microarchitecture variant.
         .filter(|a| {
             let target = a.target.as_deref().unwrap_or("");
             let (_, arch) = anodizer_core::target::map_target(target);
-            if arch == "amd64" {
-                return a
-                    .metadata
+            arch != "amd64"
+                || a.metadata
                     .get("amd64_variant")
-                    .is_none_or(|v| v == amd64_variant);
-            }
-            if arch.starts_with("arm")
-                && arch != "arm64"
-                && let Some(want) = arm_variant
-            {
-                return a.metadata.get("arm_variant").is_none_or(|v| v == want);
-            }
-            true
+                    .is_none_or(|v| v == amd64_variant)
         })
         .collect()
 }
@@ -392,13 +380,13 @@ pub(super) fn collect_archive_entries(
         // defaulted selector reads `<default …>` while a configured one
         // prints plainly.
         let amd64_hint = hb_cfg.amd64_variant.map_or("<default v1>", |v| v.as_str());
-        let arm_hint = hb_cfg.arm_variant.as_deref().unwrap_or("<default 6>");
         anyhow::bail!(
             "homebrew: no archives matched filters for '{crate_name}' — \
              formula would have empty url/sha256. Check your archive \
              configuration and homebrew filters ({ids_hint}, \
-             amd64_variant={amd64_hint}, arm_variant={arm_hint}). At least one \
-             Archive or UploadableBinary artifact must match."
+             amd64_variant={amd64_hint}). At least one macOS or Linux Archive \
+             or UploadableBinary artifact must match; a formula serves arm64, \
+             x86_64 and universal archives only."
         );
     }
     Ok(archive_data)

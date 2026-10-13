@@ -39,7 +39,7 @@ pub enum LogLevel {
 #[derive(Clone, Default)]
 pub struct LogCapture {
     inner: Arc<Mutex<Vec<(LogLevel, String)>>>,
-    printed_verbose: Arc<Mutex<Vec<String>>>,
+    printed: Arc<Mutex<Vec<(LogLevel, String)>>>,
 }
 
 #[cfg(feature = "test-helpers")]
@@ -57,22 +57,26 @@ impl LogCapture {
         }
     }
 
-    /// Append a verbose line the logger printed, which happens only at
-    /// `-v` or above. [`Self::record`] keeps every line whatever the
-    /// verbosity.
-    pub(crate) fn record_printed_verbose(&self, msg: &str) {
-        if let Ok(mut guard) = self.printed_verbose.lock() {
-            guard.push(msg.to_string());
+    /// Append a line the logger wrote to stderr. [`Self::record`] keeps
+    /// every line whatever the verbosity; this keeps only the ones a
+    /// logger at its verbosity really printed.
+    pub(crate) fn record_printed(&self, level: LogLevel, msg: &str) {
+        if let Ok(mut guard) = self.printed.lock() {
+            guard.push((level, msg.to_string()));
         }
     }
 
-    /// Every [`LogLevel::Verbose`] line that reached stderr, in order: the
-    /// lines a logger whose verbosity is below `Verbose` recorded are left
-    /// out.
-    pub fn printed_verbose_messages(&self) -> Vec<String> {
-        self.printed_verbose
+    /// Every line of `level` that reached stderr, in order. The lines a
+    /// logger below that level's threshold recorded are left out.
+    pub fn printed_messages(&self, level: LogLevel) -> Vec<String> {
+        self.printed
             .lock()
-            .map(|g| g.clone())
+            .map(|g| {
+                g.iter()
+                    .filter(|(l, _)| *l == level)
+                    .map(|(_, m)| m.clone())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 

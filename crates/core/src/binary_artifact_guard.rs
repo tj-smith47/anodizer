@@ -155,7 +155,7 @@ fn binary_requiring_publishers(publish: &PublishConfig) -> Vec<&'static str> {
     if publish.homebrew.is_some() {
         names.push("homebrew");
     }
-    if publish.homebrew_cask.is_some() {
+    if publish.homebrew_cask().is_some() {
         names.push("homebrew_cask");
     }
     if publish.scoop.is_some() {

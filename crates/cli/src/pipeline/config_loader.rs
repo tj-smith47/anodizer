@@ -227,6 +227,11 @@ pub(crate) fn load_config_from_str(path: &Path, content: &str) -> Result<Config>
     // warnings. Done before validation so unique-id checks see the
     // post-fold state.
     anodizer_core::config::apply_archive_legacy_aliases(&mut config);
+    // Move a `publish.homebrew.cask:` sub-block into `publish.homebrew_cask:`
+    // before the singular folds and before defaults merge, so every later
+    // reader sees one spelling.
+    anodizer_core::config::fold_homebrew_cask_sub_block(&mut config)
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Fold the singular `binary:` cask field into the canonical `binaries:`
     // list (deprecated rename) and emit a deprecation warning per occurrence.
     anodizer_core::config::apply_homebrew_cask_legacy_singulars(&mut config);

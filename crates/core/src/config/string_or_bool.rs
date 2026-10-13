@@ -891,7 +891,7 @@ mod tests {
              no gate and must not win a fallback: {strays:#?}"
         );
         assert_eq!(
-            population, 3,
+            population, 4,
             "the walk must still find the sites that test an `if:` for \
              presence; a rename that empties it would pass vacuously"
         );

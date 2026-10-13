@@ -119,6 +119,9 @@ pub fn validate_no_docker_v1(raw_yaml: &serde_yaml_ng::Value) -> Result<(), Stri
 /// upstream deprecation so users following the change-log see the
 /// same migration prompt.
 ///
+/// A formula that sets `arm_variant:` gets a second warning: the field still
+/// parses, and nothing reads it.
+///
 /// Covers three placement axes (matching how `publish.homebrew` may appear):
 ///   * `crates[].publish.homebrew`
 ///   * `workspaces[].crates[].publish.homebrew`
@@ -149,8 +152,21 @@ pub(crate) fn legacy_homebrew_formula_warnings(config: &Config) -> Vec<String> {
     let mut warnings = Vec::new();
 
     for_each_crate_publish(config, |axis, publish| {
-        if publish.homebrew().is_some() {
-            warnings.push(formula_warning(&axis.location()));
+        let Some(formula) = publish.homebrew() else {
+            return;
+        };
+        let location = axis.location();
+        warnings.push(formula_warning(&location));
+        if formula
+            .arm_variant
+            .as_deref()
+            .is_some_and(|v| !v.is_empty())
+        {
+            warnings.push(format!(
+                "DEPRECATION: {location}: `homebrew.arm_variant:` is deprecated and ignored; \
+                 Homebrew has no 32-bit ARM variant, so a formula never carries a 32-bit ARM \
+                 archive. Remove the field."
+            ));
         }
     });
 
@@ -588,4 +604,38 @@ pub fn homebrew_cask_legacy_warnings(config: &mut Config) -> Vec<String> {
     });
 
     warnings
+}
+
+/// Move every `publish.homebrew.cask:` sub-block into its block's
+/// `publish.homebrew_cask:` field, across `crates[]`, `workspaces[].crates[]`
+/// and `defaults.publish`.
+///
+/// The two spellings configure the same cask. Folding them before
+/// `defaults:` merge means a crate's own cask always wins over a default
+/// one, whichever spelling either side used. A block that sets both is
+/// rejected, naming the block, because neither can be preferred silently.
+pub fn fold_homebrew_cask_sub_block(config: &mut Config) -> Result<(), String> {
+    let mut conflicts = Vec::new();
+    for_each_crate_publish_mut(config, |axis, mut publish| {
+        let (canonical, sub_block) = publish.homebrew_cask_slots();
+        let Some(sub_block) = sub_block else {
+            return;
+        };
+        if sub_block.is_none() {
+            return;
+        }
+        if canonical.is_some() {
+            conflicts.push(axis.homebrew_cask_location());
+            return;
+        }
+        *canonical = sub_block.take();
+    });
+    if conflicts.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{}: both `homebrew_cask:` and `homebrew.cask:` are set. They configure the \
+         same cask; keep one of them.",
+        conflicts.join(", ")
+    ))
 }

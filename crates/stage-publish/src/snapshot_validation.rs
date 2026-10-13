@@ -204,12 +204,7 @@ fn validate_emissions_with_resolver(
     // aggregation (the nix root flake) stays under the global scope since it is
     // version-independent. The resolver is threaded through so tests can drive
     // the version dimension without a git fixture.
-    crate::schema_validation::validate_publisher_schemas(
-        ctx,
-        log,
-        resolve_tag,
-        crate::schema_validation::SchemaPass::EmissionValidate,
-    )?;
+    crate::schema_validation::validate_publisher_schemas(ctx, log, resolve_tag)?;
 
     let skipped = ctx.emission_skips.len().saturating_sub(skips_before);
     if ctx.is_target_restricted_build() && (validated > 0 || skipped > 0) {

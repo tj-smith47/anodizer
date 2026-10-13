@@ -116,4 +116,26 @@ impl Context {
         }
         log
     }
+
+    /// The logger a render of `render` writes through. Emission validation,
+    /// the pre-publish guard and the publisher can each render the same
+    /// manifest in one run, and which of them runs first differs per
+    /// command, so the first render of a key gets `log` and every later one
+    /// gets a logger that prints no verbose, warning or status line. An
+    /// error still reaches the caller through its `Result`.
+    ///
+    /// `render` names one rendered document, for example
+    /// `homebrew cask 'mytool'`: a key per publisher would silence the
+    /// second crate's render in the same pass.
+    pub fn claim_render_log(&self, render: &str, log: &StageLogger) -> StageLogger {
+        if self
+            .render_log_claims
+            .borrow_mut()
+            .insert(render.to_string())
+        {
+            log.clone()
+        } else {
+            log.capped_at(Verbosity::Quiet)
+        }
+    }
 }

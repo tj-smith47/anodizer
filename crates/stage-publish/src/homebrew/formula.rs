@@ -15,28 +15,23 @@ require_relative "{{ custom_require | ruby_escape }}"
 class {{ class_name }} < Formula
   desc "{{ description | ruby_escape }}"
   homepage "{{ homepage | ruby_escape }}"
-{% if single_archive %}  url "{{ single_url | ruby_escape }}"{{ url_args }}
+{% if flat %}  url "{{ flat.url | ruby_escape }}"{{ url_args }}
   version "{{ version | ruby_escape }}"
-  sha256 "{{ single_sha256 | ruby_escape }}"
+  sha256 "{{ flat.sha256 | ruby_escape }}"
 {% else %}  version "{{ version | ruby_escape }}"
 {% endif %}{% if license_stanza %}  {{ license_stanza }}
 {% elif license %}  license "{{ license | ruby_escape }}"
-{% endif %}{% for entry in unknown_entries %}  # platform: {{ entry.platform }}
-  url "{{ entry.url | ruby_escape }}"{{ url_args }}
-  sha256 "{{ entry.sha256 | ruby_escape }}"
-{% endfor %}{% if has_livecheck %}
+{% endif %}{% if has_livecheck %}
   livecheck do
 {% for line in livecheck_lines %}    {{ line }}
 {% endfor %}  end
-{% endif %}{% if global_deps or depends_on_macos or depends_on_linux %}
-{% endif %}{% for dep in global_deps %}  depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
-{% endfor %}{% if depends_on_macos %}  depends_on :macos
-{% endif %}{% if depends_on_linux %}  depends_on :linux
-{% endif %}{% for os in os_blocks %}
+{% endif %}{% if top_deps %}
+{% endif %}{% for dep in top_deps %}  depends_on {{ dep }}
+{% endfor %}{% for os in os_blocks %}
   {{ os.opener }} do
-{% for dep in os.deps %}    depends_on "{{ dep.name | ruby_escape }}"{% if dep.dep_type %} => :{{ dep.dep_type }}{% elif dep.version %} => "{{ dep.version | ruby_escape }}"{% endif %}
+{% for dep in os.deps %}    depends_on {{ dep }}
 {% endfor %}{% if os.deps and os.entries %}
-{% endif %}{% for entry in os.entries %}    {{ entry.opener }}
+{% endif %}{% for entry in os.entries %}    {{ entry.opener }} do
       url "{{ entry.url | ruby_escape }}"{{ nested_url_args }}
       sha256 "{{ entry.sha256 | ruby_escape }}"
     end
@@ -74,8 +69,6 @@ class {{ class_name }} < Formula
     EOS
 {% endif %}  end
 {% endif %}{% if has_plist %}
-  plist_options startup: true
-
   def plist
     <<~EOS
 {{ plist }}
@@ -117,7 +110,8 @@ pub struct FormulaOptions<'a> {
     pub custom_require: Option<&'a str>,
     /// Custom Ruby code block in the formula body.
     pub custom_block: Option<&'a str>,
-    /// Launchd plist content.
+    /// Launchd plist content, written as the deprecated `def plist` with a
+    /// deprecation warning. `service` replaces it.
     pub plist: Option<&'a str>,
     /// Homebrew service block content.
     pub service: Option<&'a str>,
@@ -155,24 +149,36 @@ pub struct FormulaCode<'a> {
 
 /// Generate a Homebrew Ruby formula string.
 ///
-/// `archives` is a slice of `(platform_tag, url, sha256)` tuples.
-/// When there is a single archive entry (no `on_` OS block needed) the formula
-/// uses a flat `url`/`sha256` pair; otherwise it emits an `on_macos`/`on_linux`
-/// block per entry.
+/// `archives` is a slice of `(platform_tag, url, sha256)` tuples. A formula
+/// that serves one OS takes a top-level `url`/`sha256` pair; one that serves
+/// macOS and Linux emits an `on_macos`/`on_linux` block per OS. See
+/// [`generate_formula_with_opts`] for how each platform is served.
 pub fn generate_formula(
     core: &FormulaCore<'_>,
     archives: &[(&str, &str, &str)],
     code: &FormulaCode<'_>,
 ) -> Result<String> {
-    generate_formula_with_opts(core, archives, code, &FormulaOptions::default())
+    let log =
+        anodizer_core::log::StageLogger::new("homebrew", anodizer_core::log::Verbosity::Normal);
+    generate_formula_with_opts(core, archives, code, &FormulaOptions::default(), &log)
 }
 
 /// Generate a Homebrew Ruby formula string with extended options.
+///
+/// Every OS and CPU `brew readall` loads the formula on (macOS and Linux,
+/// each on arm64 and x86_64) gets a `url`. A platform no archive was built
+/// for gets the nearest download and a `depends_on :macos` / `:linux` /
+/// `arch:` requirement, so `brew install` refuses it there; an Intel-only
+/// macOS build is served to Apple Silicon under Rosetta with a caveat.
+/// Archives Homebrew cannot install (another OS, a 32-bit or other CPU) are
+/// left out with a `-v` line on `log`, which also carries the deprecation
+/// warning for `plist`.
 pub fn generate_formula_with_opts(
     core: &FormulaCore<'_>,
     archives: &[(&str, &str, &str)],
     code: &FormulaCode<'_>,
     opts: &FormulaOptions<'_>,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<String> {
     let FormulaCore {
         name,
@@ -248,147 +254,9 @@ pub fn generate_formula_with_opts(
     let homepage = opts.homepage.unwrap_or(&default_homepage);
     ctx.insert("homepage", homepage);
 
-    // Determine archive layout
-    let single_archive = archives.len() == 1;
-    ctx.insert("single_archive", &single_archive);
-
-    if single_archive {
-        ctx.insert("single_url", archives[0].1);
-        ctx.insert("single_sha256", archives[0].2);
-    } else {
-        ctx.insert("single_url", "");
-        ctx.insert("single_sha256", "");
-    }
-
-    // Build per-OS entry lists only for multi-archive layout
-    let mut unknown_vals: Vec<std::collections::HashMap<&str, &str>> = Vec::new();
-    let mut macos_vals: Vec<ArchEntry> = Vec::new();
-    let mut linux_vals: Vec<ArchEntry> = Vec::new();
-    let mut arm_caveat = String::new();
-    if !single_archive {
-        let has_arch = |entries: &[(&str, &str, &str)]| -> bool {
-            entries.iter().any(|(p, _, _)| {
-                p.contains("arm64")
-                    || p.contains("aarch64")
-                    || p.contains("amd64")
-                    || p.contains("x86_64")
-            })
-        };
-
-        // Defensive fallback for a triple that classifies as neither
-        // macOS(darwin) nor linux. Unreachable in production: the upstream
-        // `homebrew_matching_artifacts` filter admits only `is_macos`
-        // (`*-apple-darwin`) or `is_linux` triples, so windows and the
-        // apple-non-macOS targets (`*-apple-ios`/`-tvos`/`-watchos`, which do NOT
-        // contain "darwin") are already excluded before this render — an iOS
-        // archive can no longer reach this `# platform:` url block. Retained so a
-        // future eligibility widening cannot silently drop an unclassified entry.
-        unknown_vals = archives
-            .iter()
-            .filter(|(p, _, _)| {
-                !p.contains("darwin") && !p.contains("macos") && !p.contains("linux")
-            })
-            .map(|(platform, url, sha256)| {
-                let mut m = std::collections::HashMap::new();
-                m.insert("platform", *platform);
-                m.insert("url", *url);
-                m.insert("sha256", *sha256);
-                m
-            })
-            .collect();
-
-        let macos_archives: Vec<_> = archives
-            .iter()
-            .filter(|(p, _, _)| p.contains("darwin") || p.contains("macos"))
-            .copied()
-            .collect();
-        let only_intel_macos = macos_archives.len() == 1
-            && !macos_archives[0].0.contains("arm64")
-            && !macos_archives[0].0.contains("aarch64")
-            && has_arch(&macos_archives);
-        if only_intel_macos {
-            arm_caveat = format!(
-                "      The darwin_arm64 architecture is not supported for the {name}\n      \
-                 formula at this time. The darwin_amd64 binary may work in compatibility\n      \
-                 mode, but it might not be fully supported."
-            );
-        }
-        // Homebrew allows `url` inside `on_macos` only under an architecture
-        // block, so an archive that serves every Mac (a universal build, or
-        // the Intel build an Apple Silicon Mac runs under Rosetta) is listed
-        // under both.
-        if !has_arch(&macos_archives) || only_intel_macos {
-            macos_vals = macos_archives
-                .iter()
-                .flat_map(|(_, url, sha256)| {
-                    [ON_ARM, ON_INTEL].map(|opener| ArchEntry::new(opener, url, sha256))
-                })
-                .collect();
-        } else {
-            macos_vals = macos_archives
-                .iter()
-                .map(|(platform, url, sha256)| {
-                    let opener = if platform.contains("arm64") || platform.contains("aarch64") {
-                        ON_ARM
-                    } else {
-                        ON_INTEL
-                    };
-                    ArchEntry::new(opener, url, sha256)
-                })
-                .collect();
-        }
-
-        let is_32_bit_arm = |p: &str| {
-            p.contains("armv6") || p.contains("armv7") || {
-                let l = p.to_lowercase();
-                (l.contains("-arm") || l.contains("_arm"))
-                    && !l.contains("arm64")
-                    && !l.contains("aarch64")
-            }
-        };
-        let linux_archives: Vec<_> = archives
-            .iter()
-            .filter(|(p, _, _)| p.contains("linux"))
-            .copied()
-            .collect();
-        let linux_has_arch = linux_archives
-            .iter()
-            .any(|(p, _, _)| has_arch(&[(*p, "", "")]) || is_32_bit_arm(p));
-        if linux_has_arch {
-            linux_vals = linux_archives
-                .iter()
-                .map(|(platform, url, sha256)| {
-                    let opener = if platform.contains("arm64") || platform.contains("aarch64") {
-                        "if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?"
-                    } else if platform.contains("amd64") || platform.contains("x86_64") {
-                        "if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?"
-                    } else if is_32_bit_arm(platform) {
-                        "if Hardware::CPU.arm? && !Hardware::CPU.is_64_bit?"
-                    } else {
-                        "if Hardware::CPU.intel?"
-                    };
-                    ArchEntry::new(opener, url, sha256)
-                })
-                .collect();
-        } else {
-            linux_vals = linux_archives
-                .iter()
-                .flat_map(|(_, url, sha256)| {
-                    [ON_ARM, ON_INTEL].map(|opener| ArchEntry::new(opener, url, sha256))
-                })
-                .collect();
-        }
-    }
-
-    let has_macos = !macos_vals.is_empty();
-    let has_linux = !linux_vals.is_empty();
-    let depends_on_macos = has_macos && !has_linux;
-    let depends_on_linux = has_linux && !has_macos;
-
-    ctx.insert("unknown_entries", &unknown_vals);
-    ctx.insert("depends_on_macos", &depends_on_macos);
-    ctx.insert("depends_on_linux", &depends_on_linux);
-    ctx.insert("arm_caveat", &arm_caveat);
+    let layout = archive_layout(name, archives, log)?;
+    ctx.insert("flat", &layout.flat);
+    ctx.insert("arm_caveat", &layout.arm_caveat);
 
     let url_strategy = opts.download_strategy.unwrap_or("");
     let url_headers: Vec<&str> = opts
@@ -398,61 +266,36 @@ pub fn generate_formula_with_opts(
     ctx.insert("url_args", &url_args(url_strategy, &url_headers, 6));
     ctx.insert("nested_url_args", &url_args(url_strategy, &url_headers, 10));
 
-    // Dependencies: split into global (no OS), macos-only, and linux-only.
-    #[derive(serde::Serialize)]
-    struct DepEntry {
-        name: String,
-        dep_type: Option<String>,
-        version: Option<String>,
-    }
-
-    let (global_deps, macos_deps, linux_deps) = if let Some(deps) = opts.dependencies {
-        let mut global = Vec::new();
-        let mut mac = Vec::new();
-        let mut linux = Vec::new();
-        for d in deps {
-            let entry = DepEntry {
-                name: d.name.clone(),
-                dep_type: d.dep_type.clone(),
-                version: d.version.clone(),
-            };
-            match d.os.as_deref() {
-                Some("mac") | Some("macos") => mac.push(entry),
-                Some("linux") => linux.push(entry),
-                _ => global.push(entry),
-            }
+    let mut top_deps = layout.top_deps;
+    let mut macos_deps = layout.macos.deps;
+    let mut linux_deps = layout.linux.deps;
+    for d in opts.dependencies.unwrap_or_default() {
+        let entry = Dependency::package(d);
+        match d.os.as_deref() {
+            Some("mac") | Some("macos") => macos_deps.push(entry),
+            Some("linux") => linux_deps.push(entry),
+            _ => top_deps.push(entry),
         }
-        let order = |a: &DepEntry, b: &DepEntry| {
-            dependency_type_priority(a.dep_type.as_deref())
-                .cmp(&dependency_type_priority(b.dep_type.as_deref()))
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        };
-        global.sort_by(order);
-        mac.sort_by(order);
-        linux.sort_by(order);
-        (global, mac, linux)
-    } else {
-        (Vec::new(), Vec::new(), Vec::new())
-    };
-    ctx.insert("global_deps", &global_deps);
+    }
+    ctx.insert("top_deps", &Dependency::sorted(top_deps));
 
     // Homebrew allows one `on_macos` and one `on_linux` block, and orders
     // them that way, so each OS's dependencies and downloads share its block.
     #[derive(serde::Serialize)]
     struct OsBlock {
         opener: &'static str,
-        deps: Vec<DepEntry>,
+        deps: Vec<String>,
         entries: Vec<ArchEntry>,
     }
     let os_blocks: Vec<OsBlock> = [
-        ("on_macos", macos_deps, macos_vals),
-        ("on_linux", linux_deps, linux_vals),
+        ("on_macos", macos_deps, layout.macos.entries),
+        ("on_linux", linux_deps, layout.linux.entries),
     ]
     .into_iter()
     .filter(|(_, deps, entries)| !deps.is_empty() || !entries.is_empty())
     .map(|(opener, deps, entries)| OsBlock {
         opener,
-        deps,
+        deps: Dependency::sorted(deps),
         entries,
     })
     .collect();
@@ -514,8 +357,17 @@ pub fn generate_formula_with_opts(
         &reindent(opts.custom_block.unwrap_or(""), "  "),
     );
 
-    // Plist
+    // Homebrew 7 removed `plist_options`, so only `def plist` is written;
+    // Homebrew still loads it, and `service` replaces it.
     let has_plist = opts.plist.is_some();
+    if has_plist {
+        log.warn(&format!(
+            "DEPRECATION: homebrew formula '{name}': `plist:` is deprecated; Homebrew \
+             deprecated `def plist` in favour of `service do`, and Homebrew 7 removed the \
+             `plist_options` stanza that went with it. anodizer writes `def plist` without \
+             it; move the launchd settings to `service:`."
+        ));
+    }
     ctx.insert("has_plist", &has_plist);
     ctx.insert("plist", &reindent(opts.plist.unwrap_or(""), "      "));
 
@@ -548,14 +400,15 @@ pub fn generate_formula_with_opts(
 
     anodizer_core::template::render_static(&tera, "formula", &ctx, "homebrew")
 }
-/// The opener of a block whose `url` is fetched on Apple Silicon or
-/// 64-bit ARM Linux.
-const ON_ARM: &str = "on_arm do";
-/// The opener of a block whose `url` is fetched on an Intel CPU.
-const ON_INTEL: &str = "on_intel do";
+/// One `url`/`sha256` pair.
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize)]
+struct Download<'a> {
+    url: &'a str,
+    sha256: &'a str,
+}
 
 /// One download inside an `on_macos` / `on_linux` block, under the
-/// architecture block or condition that `opener` opens.
+/// `on_arm` / `on_intel` block named by `opener`.
 #[derive(serde::Serialize)]
 struct ArchEntry {
     opener: &'static str,
@@ -564,13 +417,232 @@ struct ArchEntry {
 }
 
 impl ArchEntry {
-    fn new(opener: &'static str, url: &str, sha256: &str) -> Self {
+    fn new(opener: &'static str, download: Download<'_>) -> Self {
         Self {
             opener,
-            url: url.to_string(),
-            sha256: sha256.to_string(),
+            url: download.url.to_string(),
+            sha256: download.sha256.to_string(),
         }
     }
+}
+
+/// One `depends_on` argument with the key `FormulaAudit/DependencyOrder`
+/// sorts it by: the dependency type, then the lower-cased name. A symbol
+/// requirement sorts under its own name, so `arch:` comes before
+/// `"bash"` and `:macos` after `"git"`.
+struct Dependency {
+    priority: u8,
+    key: String,
+    rendered: String,
+}
+
+impl Dependency {
+    fn package(d: &anodizer_core::config::HomebrewDependency) -> Self {
+        let mut rendered = format!("\"{}\"", ruby_escape_str(&d.name));
+        if let Some(dep_type) = d.dep_type.as_deref() {
+            rendered.push_str(&format!(" => :{dep_type}"));
+        } else if let Some(version) = d.version.as_deref() {
+            rendered.push_str(&format!(" => \"{}\"", ruby_escape_str(version)));
+        }
+        Self {
+            priority: dependency_type_priority(d.dep_type.as_deref()),
+            key: d.name.to_lowercase(),
+            rendered,
+        }
+    }
+
+    fn requirement(key: &str, rendered: String) -> Self {
+        Self {
+            priority: dependency_type_priority(None),
+            key: key.to_string(),
+            rendered,
+        }
+    }
+
+    fn sorted(mut deps: Vec<Self>) -> Vec<String> {
+        deps.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.key.cmp(&b.key)));
+        deps.into_iter().map(|d| d.rendered).collect()
+    }
+}
+
+/// The downloads and requirements of one OS block.
+#[derive(Default)]
+struct OsLayout {
+    deps: Vec<Dependency>,
+    entries: Vec<ArchEntry>,
+}
+
+/// Where each download of the formula goes.
+#[derive(Default)]
+struct ArchiveLayout<'a> {
+    /// The top-level `url`, present when the formula serves one OS.
+    flat: Option<Download<'a>>,
+    top_deps: Vec<Dependency>,
+    macos: OsLayout,
+    linux: OsLayout,
+    arm_caveat: String,
+}
+
+/// The archives found for one OS, by the CPU each one runs on. `any` is an
+/// archive that runs on both: a universal macOS build, or one whose platform
+/// names no architecture.
+#[derive(Default)]
+struct CpuSlots<'a> {
+    arm: Option<Download<'a>>,
+    intel: Option<Download<'a>>,
+    any: Option<Download<'a>>,
+}
+
+/// What one OS block downloads on each CPU, and the CPU it requires when
+/// only one was built for.
+struct Served<'a> {
+    arm: Download<'a>,
+    intel: Download<'a>,
+    required_arch: Option<&'static str>,
+    rosetta: bool,
+}
+
+impl<'a> CpuSlots<'a> {
+    fn served(&self, os: &str) -> Option<Served<'a>> {
+        let arm = self.arm.or(self.any);
+        let intel = self.intel.or(self.any);
+        Some(match (arm, intel) {
+            (Some(arm), Some(intel)) => Served {
+                arm,
+                intel,
+                required_arch: None,
+                rosetta: false,
+            },
+            (Some(arm), None) => Served {
+                arm,
+                intel: arm,
+                required_arch: Some(":arm64"),
+                rosetta: false,
+            },
+            // An Apple Silicon Mac runs an Intel build under Rosetta; an ARM
+            // Linux machine has nothing that would.
+            (None, Some(intel)) => Served {
+                arm: intel,
+                intel,
+                required_arch: (os == "linux").then_some(":x86_64"),
+                rosetta: os == "darwin",
+            },
+            (None, None) => return None,
+        })
+    }
+}
+
+/// Place every archive on the platform Homebrew downloads it for.
+///
+/// `brew readall` loads a formula once per OS and CPU Homebrew supports
+/// (macOS and Linux, each on arm64 and x86_64) and fails a variant that has
+/// no `url`, so every one gets a download. A platform no archive was built
+/// for gets the nearest one, together with the requirement that makes
+/// `brew install` refuse it there with Homebrew's own message:
+/// `depends_on :macos` / `:linux` for the other OS, `depends_on arch:` for
+/// the other CPU. An Intel-only macOS build is the exception: Apple Silicon
+/// runs it under Rosetta, so it is served there with a caveat instead.
+///
+/// A formula that serves one OS takes its download as the top-level `url`,
+/// and an Intel download that differs from it goes in an `on_intel` block
+/// inside that OS's block, because Homebrew allows a `url` inside `on_arm` /
+/// `on_intel` only under an OS block. A formula that serves both OSes lists
+/// both CPUs in each OS block.
+///
+/// Archives Homebrew cannot install are left out with a `-v` line: an OS
+/// other than macOS and Linux, a CPU other than arm64 and x86_64, and a
+/// second archive for a CPU an earlier one already serves.
+fn archive_layout<'a>(
+    name: &str,
+    archives: &[(&'a str, &'a str, &'a str)],
+    log: &anodizer_core::log::StageLogger,
+) -> Result<ArchiveLayout<'a>> {
+    let mut macos = CpuSlots::default();
+    let mut linux = CpuSlots::default();
+    for &(platform, url, sha256) in archives {
+        let file = url.rsplit('/').next().unwrap_or(url);
+        let skip = |why: &str| log.verbose(&format!("skipped archive '{file}' — {why}"));
+        let (os, arch) = anodizer_core::target::map_target(platform);
+        let (slots, os_name) = match os.as_str() {
+            "darwin" => (&mut macos, "macOS"),
+            "linux" => (&mut linux, "Linux"),
+            _ => {
+                skip(&format!("Homebrew has no {os} variant"));
+                continue;
+            }
+        };
+        let (slot, cpu) = match arch.as_str() {
+            "arm64" => (&mut slots.arm, "arm64"),
+            "amd64" => (&mut slots.intel, "x86_64"),
+            a if a == "all" || a == os => (&mut slots.any, "every CPU"),
+            other => {
+                skip(&format!("Homebrew on {os_name} has no {other} variant"));
+                continue;
+            }
+        };
+        if let Some(first) = slot {
+            let first = first.url.rsplit('/').next().unwrap_or(first.url);
+            skip(&format!(
+                "'{first}' already serves Homebrew on {os_name} for {cpu}"
+            ));
+            continue;
+        }
+        *slot = Some(Download { url, sha256 });
+    }
+    for (slots, os_name) in [(&macos, "macOS"), (&linux, "Linux")] {
+        if let (Some(any), Some(_), Some(_)) = (slots.any, slots.arm, slots.intel) {
+            let file = any.url.rsplit('/').next().unwrap_or(any.url);
+            log.verbose(&format!(
+                "skipped archive '{file}' — the arm64 and x86_64 archives already serve Homebrew on {os_name}"
+            ));
+        }
+    }
+
+    let mut layout = ArchiveLayout::default();
+    let served = [
+        ("darwin", macos.served("darwin")),
+        ("linux", linux.served("linux")),
+    ];
+    let served_count = served.iter().filter(|(_, s)| s.is_some()).count();
+    if served_count == 0 && !archives.is_empty() {
+        anyhow::bail!(
+            "homebrew formula '{name}': none of its archives is for a platform Homebrew \
+             installs on (macOS, or Linux on x86_64 or arm64)"
+        );
+    }
+    for (os, served) in served {
+        let Some(served) = served else { continue };
+        let (block, os_symbol) = if os == "darwin" {
+            (&mut layout.macos, "macos")
+        } else {
+            (&mut layout.linux, "linux")
+        };
+        if served.rosetta {
+            layout.arm_caveat = format!(
+                "      The darwin_arm64 architecture is not supported for the {name}\n      \
+                 formula at this time. The darwin_amd64 binary may work in compatibility\n      \
+                 mode, but it might not be fully supported."
+            );
+        }
+        let arch_requirement = served
+            .required_arch
+            .map(|arch| Dependency::requirement("arch", format!("arch: {arch}")));
+        if served_count == 1 {
+            layout.flat = Some(served.arm);
+            layout
+                .top_deps
+                .push(Dependency::requirement(os_symbol, format!(":{os_symbol}")));
+            layout.top_deps.extend(arch_requirement);
+            if served.intel != served.arm {
+                block.entries.push(ArchEntry::new("on_intel", served.intel));
+            }
+        } else {
+            block.deps.extend(arch_requirement);
+            block.entries.push(ArchEntry::new("on_arm", served.arm));
+            block.entries.push(ArchEntry::new("on_intel", served.intel));
+        }
+    }
+    Ok(layout)
 }
 
 /// The keyword arguments that follow a formula `url "…"`, each on its own

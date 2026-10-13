@@ -404,20 +404,7 @@ pub(crate) trait PublisherSchemaValidator: Send + Sync {
         &self,
         ctx: &mut Context,
         resolve_tag: TagResolver<'_>,
-        pass: SchemaPass,
     ) -> Result<Vec<SchemaFinding>>;
-}
-
-/// Which pass renders the publisher artifacts. Emission validation runs in
-/// every mode, snapshot and dry-run included; the pre-publish guard renders
-/// the same artifacts again right before the publishers do, so a render's
-/// `-v` lines print on the emission pass only.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SchemaPass {
-    /// The `emission-validate` stage.
-    EmissionValidate,
-    /// The pre-publish guard.
-    PrepublishGuard,
 }
 
 /// The registered set of per-publisher schema validators.
@@ -455,7 +442,6 @@ pub fn validate_publisher_schemas(
     ctx: &mut Context,
     log: &StageLogger,
     resolve_tag: TagResolver<'_>,
-    pass: SchemaPass,
 ) -> Result<()> {
     let mut findings: Vec<SchemaFinding> = Vec::new();
     for validator in validators() {
@@ -471,7 +457,7 @@ pub fn validate_publisher_schemas(
             continue;
         }
         let outcome = validator
-            .validate(ctx, resolve_tag, pass)
+            .validate(ctx, resolve_tag)
             .with_context(|| format!("schema-validate publisher '{publisher}' artifacts"));
         // A whole-publisher render that disqualifies itself (a project-wide
         // manifest with nothing to name) is a skip for that publisher, not the
@@ -759,12 +745,7 @@ mod tests {
         );
 
         // The pass itself still completes over the remaining publishers.
-        validate_publisher_schemas(
-            &mut ctx,
-            &log,
-            &test_current_version_resolver(),
-            SchemaPass::EmissionValidate,
-        )
-        .expect("the pass runs to completion");
+        validate_publisher_schemas(&mut ctx, &log, &test_current_version_resolver())
+            .expect("the pass runs to completion");
     }
 }

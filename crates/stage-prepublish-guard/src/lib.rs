@@ -123,12 +123,7 @@ fn guard_checks(
     // here): gating each check on its stage keeps the guard a clean no-op there
     // while still firing on a real release where none of these are skipped.
     if !ctx.should_skip("publish")
-        && let Err(e) = anodizer_stage_publish::validate_publisher_schemas(
-            ctx,
-            log,
-            resolve_tag,
-            anodizer_stage_publish::SchemaPass::PrepublishGuard,
-        )
+        && let Err(e) = anodizer_stage_publish::validate_publisher_schemas(ctx, log, resolve_tag)
     {
         errors.push(format!("{e:#}"));
     }

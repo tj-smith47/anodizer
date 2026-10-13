@@ -112,10 +112,15 @@ impl PublishRef<'_> {
         }
     }
 
+    /// The block's cask under either spelling, with the same precedence as
+    /// [`PublishConfig::homebrew_cask`].
     pub(crate) fn homebrew_cask(&self) -> Option<&HomebrewCaskConfig> {
         match self {
-            PublishRef::Crate(p) => p.homebrew_cask.as_ref(),
-            PublishRef::Defaults(p) => p.homebrew_cask.as_ref(),
+            PublishRef::Crate(p) => p.homebrew_cask(),
+            PublishRef::Defaults(p) => p
+                .homebrew_cask
+                .as_ref()
+                .or_else(|| p.homebrew.as_ref()?.cask.as_ref()),
         }
     }
 }
@@ -135,6 +140,26 @@ impl PublishMut<'_> {
         match self {
             PublishMut::Crate(p) => p.homebrew_cask.as_mut(),
             PublishMut::Defaults(p) => p.homebrew_cask.as_mut(),
+        }
+    }
+
+    /// The block's two cask slots: `homebrew_cask:` and, when a
+    /// `homebrew:` block is present, its `cask:` sub-block.
+    pub(crate) fn homebrew_cask_slots(
+        &mut self,
+    ) -> (
+        &mut Option<HomebrewCaskConfig>,
+        Option<&mut Option<HomebrewCaskConfig>>,
+    ) {
+        match self {
+            PublishMut::Crate(p) => (
+                &mut p.homebrew_cask,
+                p.homebrew.as_mut().map(|h| &mut h.cask),
+            ),
+            PublishMut::Defaults(p) => (
+                &mut p.homebrew_cask,
+                p.homebrew.as_mut().map(|h| &mut h.cask),
+            ),
         }
     }
 }

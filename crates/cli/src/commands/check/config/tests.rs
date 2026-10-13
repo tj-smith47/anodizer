@@ -3949,3 +3949,82 @@ fn a_target_variant_call_with_the_wrong_argument_is_an_error() {
         "the check is part of the pass and fails it"
     );
 }
+
+/// `depends_on_macos:` is accepted on every cask block a config can carry:
+/// a top-level `homebrew_casks[]` entry, a per-crate `homebrew.cask:` and a
+/// per-crate `homebrew_cask:`.
+#[test]
+fn depends_on_macos_is_accepted_on_every_cask_block() {
+    let yaml = r#"
+project_name: test
+homebrew_casks:
+  - name: mytool
+    depends_on_macos: true
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ Version }}"
+    publish:
+      homebrew:
+        cask:
+          depends_on_macos: false
+  - name: tool
+    path: "."
+    tag_template: "tool-v{{ Version }}"
+    publish:
+      homebrew_cask:
+        depends_on_macos: true
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).expect("the loader accepts it");
+    assert_eq!(
+        config.homebrew_casks.as_ref().unwrap()[0].depends_on_macos,
+        Some(true)
+    );
+    run_checks(
+        &config,
+        false,
+        &test_logger(),
+        std::path::Path::new(NO_WORKSPACE_BASE),
+    )
+    .expect("check config passes");
+}
+
+/// `check config --publishers homebrew` accepts a crate whose only homebrew
+/// config is a cask, under either spelling, and rejects a block that sets
+/// both.
+#[test]
+fn check_config_counts_a_crate_cask_under_either_spelling_as_homebrew() {
+    let write = |publish: &str| {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(".anodizer.yaml");
+        std::fs::write(
+            &path,
+            format!(
+                "project_name: fixture\ncrates:\n  - name: app\n    path: .\n    \
+                 tag_template: \"v{{{{ .Version }}}}\"\n    publish:\n{publish}"
+            ),
+        )
+        .unwrap();
+        (tmp, path)
+    };
+    let homebrew = ["homebrew".to_string()];
+    for publish in [
+        "      homebrew_cask:\n        repository: { owner: acme, name: homebrew-tap }\n",
+        "      homebrew:\n        repository: { owner: acme, name: homebrew-tap }\n        \
+         cask: { name: app }\n",
+    ] {
+        let (_tmp, path) = write(publish);
+        run(Some(&path), None, &homebrew, false, false, true)
+            .unwrap_or_else(|e| panic!("{publish}: {e:#}"));
+    }
+
+    let (_tmp, path) =
+        write("      homebrew:\n        cask: { name: one }\n      homebrew_cask: { name: two }\n");
+    let err = run(Some(&path), None, &[], false, false, true).expect_err("both spellings");
+    assert!(
+        format!("{err:#}").contains(
+            "crates[app].publish.homebrew_cask: both `homebrew_cask:` and `homebrew.cask:` are set"
+        ),
+        "{err:#}"
+    );
+}

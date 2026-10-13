@@ -203,6 +203,6 @@ homebrew_casks:
 | `conflicts[]` (string or `{name, because}`) | `conflicts[].cask` | Casks can only conflict with casks; `conflicts[].formula` is deprecated and dropped |
 | `install`, `extra_install`, `post_install`, `test` | `hooks.pre.install`, `hooks.post.install` (preflight / postflight) + `generate_completions_from_executable` | Cask uses Ruby DSL hooks instead of formula install/test blocks |
 | `plist`, `service` | _(no equivalent)_ | A cask `service` installs a macOS Services bundle (`service "MyTool.workflow"`), not a launchd service |
-| `amd64_variant`, `arm_variant` | _(no upstream equivalent on `homebrew_casks`)_ | Variant filters were Formula-only on GoReleaser |
+| `amd64_variant`, `arm_variant` | _(no upstream equivalent on `homebrew_casks`)_ | Variant filters were Formula-only on GoReleaser. On an anodizer formula `arm_variant` is deprecated and ignored: Homebrew has no 32-bit ARM variant, so a formula never carries a 32-bit ARM archive |
 | `custom_require` | _(not applicable)_ | Custom Ruby `require` is a Formula download-strategy concern; Casks use `url.using` instead |
-| `cask:` (sub-block under `publish.homebrew`) | _(top-level field — promote the sub-block to its own entry)_ | The legacy `publish.homebrew.cask:` sub-block was a transitional shape; write `homebrew_casks:` or `publish.homebrew_cask:` directly |
+| `cask:` (sub-block under `publish.homebrew`) | `publish.homebrew_cask:` | `publish.homebrew.cask:` is the same setting as `publish.homebrew_cask:`; set one of the two |

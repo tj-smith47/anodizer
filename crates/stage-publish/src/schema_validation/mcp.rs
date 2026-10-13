@@ -23,7 +23,7 @@
 use anodizer_core::context::Context;
 use anyhow::{Context as _, Result};
 
-use super::{PublisherSchemaValidator, SchemaFinding, SchemaPass, TagResolver, validate_json};
+use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, validate_json};
 
 /// The MCP registry's vendored `server.json` schema (draft-07). Pinned to the
 /// `$schema` version anodizer stamps onto every published document
@@ -44,7 +44,6 @@ impl PublisherSchemaValidator for McpSchemaValidator {
         &self,
         ctx: &mut Context,
         _resolve_tag: TagResolver<'_>,
-        _pass: SchemaPass,
     ) -> Result<Vec<SchemaFinding>> {
         // MCP is a single project-wide `server.json` (not per-crate), so it
         // renders under the global version the stage scoped — no per-crate
@@ -162,7 +161,6 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -225,7 +223,6 @@ mod tests {
                 .validate(
                     &mut ctx,
                     &crate::schema_validation::test_current_version_resolver(),
-                    crate::schema_validation::SchemaPass::EmissionValidate,
                 )
                 .expect("validation runs");
             assert!(
@@ -259,7 +256,6 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(
@@ -412,7 +408,6 @@ mod tests {
             .validate(
                 &mut ctx,
                 &crate::schema_validation::test_current_version_resolver(),
-                crate::schema_validation::SchemaPass::EmissionValidate,
             )
             .expect("validation runs");
         assert!(

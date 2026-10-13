@@ -6975,6 +6975,14 @@
             "$ref": "#/definitions/HomebrewCaskDependencyEntry"
           }
         },
+        "depends_on_macos": {
+          "description": "Whether the cask renders `depends_on :macos`. When unset, anodizer decides from the downloads and the `custom_block`: a cask with no Linux download gets `depends_on :macos` unless its `custom_block` mentions `on_linux`, `on_system`, `app_image` or an OS `depends_on`. That scan reads strings and comments as code, so a `custom_block` that only mentions `on_linux` in a caveat drops the dependency, and an `on_linux` built at runtime (through `send`) is not seen. `true` renders `depends_on :macos` with a flat download; `false` renders no dependency and places a flat download inside `on_macos`.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "description": {
           "description": "Cask description.",
           "default": null,
@@ -7506,7 +7514,7 @@
           ]
         },
         "arm_variant": {
-          "description": "ARM version filter (e.g. \"6\", \"7\"). Only artifacts matching this variant are included.",
+          "description": "**Deprecated.** Ignored. Homebrew has no 32-bit ARM variant, so a formula leaves out every 32-bit ARM archive whatever this says. The field still parses so existing configs keep loading, and a deprecation warning names it at config-load time.",
           "default": null,
           "type": [
             "string",
@@ -7514,7 +7522,7 @@
           ]
         },
         "cask": {
-          "description": "Homebrew Cask configuration (macOS .app bundles).",
+          "description": "Homebrew Cask for this crate, the same setting as `publish.homebrew_cask:` (set one of the two). The cask is written into this formula's tap in the same commit, unless its own `repository:` names a different tap.",
           "default": null,
           "anyOf": [
             {
@@ -11700,7 +11708,7 @@
           ]
         },
         "arm_variant": {
-          "description": "ARM version filter (e.g. `6`, `7`). When set, a 32-bit ARM artifact is included only when its `arm_variant` metadata matches (artifacts without the metadata always pass). Mirrors the homebrew/winget/krew/nix/aur peers; defaults to `6` when unset.",
+          "description": "ARM version filter (e.g. `6`, `7`). When set, a 32-bit ARM artifact is included only when its `arm_variant` metadata matches (artifacts without the metadata always pass). The krew and pypi selectors read the same way; defaults to `6` when unset.",
           "default": null,
           "type": [
             "string",
@@ -12533,7 +12541,7 @@
           ]
         },
         "homebrew_cask": {
-          "description": "Homebrew Cask publishing configuration (macOS .app bundles).\n\nUses the unified `HomebrewCaskConfig` which carries all fields from both the per-crate cask config and the top-level `homebrew_casks:` config.",
+          "description": "Homebrew Cask for this crate (macOS `.app` bundles and binaries), with the same fields as a top-level `homebrew_casks:` entry. Beside a `homebrew:` formula block the cask goes into the formula's tap in the same commit, unless its own `repository:` names a different tap; without one it is pushed to its own `repository:`. `homebrew.cask:` is the same setting; set one of the two.",
           "default": null,
           "anyOf": [
             {
