@@ -88,6 +88,51 @@ Not applicable as a config flag — the stage removes any existing manifest befo
 - Uses exponential backoff retry for transient registry errors
 - Both `create_flags` and `push_flags` are template-rendered
 
+## Push flags
+
+`push_flags` are rendered as templates and placed after the manifest name on
+the push command:
+
+```yaml
+docker_manifests:
+  - name_template: "ghcr.io/myorg/myapp:{{ Version }}"
+    image_templates:
+      - "ghcr.io/myorg/myapp:{{ Version }}-amd64"
+    push_flags: ["--purge", "--annotation=tag={{ .Tag }}"]
+```
+
+For tag `v1.2.3` this runs:
+
+```text
+docker manifest push ghcr.io/myorg/myapp:1.2.3 --purge --annotation=tag=v1.2.3
+```
+
+## Manifests with no images
+
+An `image_templates` entry that renders empty (a conditional template, for
+example) is left out of the manifest, with a warning naming the template:
+
+```text
+skipped image_template '{{ if .IsSnapshot }}ghcr.io/myorg/myapp:snap{{ end }}' for manifest 'ghcr.io/myorg/myapp:1.2.3' — rendered empty
+```
+
+When every entry renders empty, or the
+list itself is empty, the manifest is skipped: no `manifest create` or
+`manifest push` runs, no artifact is registered, the docker/podman binary is
+not needed, and the release continues. The skip is listed in the end-of-run
+summary, under the manifest's `id` (or `index <N>` when it has none):
+
+```text
+1 intentional skip:
+  ↳ [docker-manifest] multi-arch — manifest has no images
+```
+
+Under `--show-skipped` the stage prints the skip as it happens as well:
+
+```text
+skipped docker manifest 'multi-arch' — manifest has no images
+```
+
 ## Skip push
 
 Control when manifests are pushed:

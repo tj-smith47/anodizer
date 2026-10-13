@@ -425,18 +425,13 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
     }
 
     // --annotation KEY=VALUE
-    // For multi-platform builds, annotation keys are prefixed with "index:"
-    // so they target the manifest index rather than individual platform images.
+    // A multi-platform build scopes an unscoped key to the image index, so
+    // `docker buildx imagetools inspect` shows it; a key that names its own
+    // buildx scope passes through as written.
     for (key, value) in annotations {
         cmd.push("--annotation".to_string());
-        if multi_platform {
-            // Add "index:" prefix, but avoid double-prefixing if already present
-            let prefixed_key = if key.starts_with("index:") {
-                key.clone()
-            } else {
-                format!("index:{}", key)
-            };
-            cmd.push(format!("{}={}", prefixed_key, value));
+        if multi_platform && !has_annotation_scope(key) {
+            cmd.push(format!("index:{}={}", key, value));
         } else {
             cmd.push(format!("{}={}", key, value));
         }
@@ -495,6 +490,32 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
     cmd.push(staging_dir.to_string());
 
     Ok(cmd)
+}
+
+/// The annotation types `docker buildx build --annotation` accepts.
+const ANNOTATION_SCOPES: &[&str] = &[
+    "index",
+    "manifest",
+    "index-descriptor",
+    "manifest-descriptor",
+];
+
+/// Whether an annotation key already carries a buildx scope prefix.
+///
+/// buildx reads `--annotation` as `[types:]key=value`, cutting at the first
+/// `:`, where `types` is a comma-separated list of [`ANNOTATION_SCOPES`],
+/// each optionally qualified with a platform (`manifest[linux/amd64]`). A
+/// key whose prefix holds any other entry (`bogus:foo`) has no scope, and is
+/// scoped to the index like an unscoped key, since buildx rejects an unknown
+/// annotation type.
+pub(crate) fn has_annotation_scope(key: &str) -> bool {
+    let Some((scopes, _)) = key.split_once(':') else {
+        return false;
+    };
+    scopes.split(',').all(|scope| {
+        let kind = scope.split_once('[').map_or(scope, |(kind, _)| kind);
+        ANNOTATION_SCOPES.contains(&kind)
+    })
 }
 
 // ---------------------------------------------------------------------------

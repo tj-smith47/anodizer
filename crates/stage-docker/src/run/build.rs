@@ -103,24 +103,33 @@ pub(crate) fn prepare_v2_config(
         stage_extra_files(extra_files, &staging_dir, None, dry_run, log, "dockers_v2")?;
     }
 
+    // Build args render before the base image resolves: they choose it (an
+    // `ARG BASE` default replaced by `build_args: { BASE: … }`), so they
+    // cannot reference `BaseImage` themselves.
+    let rendered_build_args = render_v2_kv_map(ctx, v2_cfg.build_args.as_ref(), "build_arg")?;
+
     // Resolve the Dockerfile's final-stage base image so the two template
     // vars `BaseImage` and `BaseImageDigest` are visible to every downstream
-    // render (image tags, labels, annotations, build args, flags, hooks).
+    // render (image tags, labels, annotations, flags, hooks).
     // Failures are soft — a missing annotation is better than a hard build
     // failure when, say, `docker buildx imagetools inspect` is unreachable.
     // Vars are cleared at the end of this function so they don't leak into
     // the next config.
-    let base_image_info =
-        match get_base_image(std::path::Path::new(&rendered_dockerfile), dry_run, log) {
-            Ok(opt) => opt,
-            Err(e) => {
-                log.warn(&format!(
-                    "could not parse base image for dockers_v2[{}] from {}: {:#}",
-                    idx, rendered_dockerfile, e
-                ));
-                None
-            }
-        };
+    let base_image_info = match get_base_image(
+        std::path::Path::new(&rendered_dockerfile),
+        &rendered_build_args,
+        dry_run,
+        log,
+    ) {
+        Ok(opt) => opt,
+        Err(e) => {
+            log.warn(&format!(
+                "could not parse base image for dockers_v2[{}] from {}: {:#}",
+                idx, rendered_dockerfile, e
+            ));
+            None
+        }
+    };
     let (base_image_name, base_image_digest) = base_image_info
         .map(|b| (b.name, b.digest))
         .unwrap_or_default();
@@ -228,6 +237,7 @@ pub(crate) fn prepare_v2_config(
             snapshot_plats,
             &rendered_tags,
             &rendered_images,
+            &rendered_build_args,
             &staging_str,
             &staging_dir,
             dist,
@@ -293,6 +303,7 @@ fn queue_v2_build_for_platforms(
     snapshot_plats: &[String],
     rendered_tags: &[String],
     rendered_images: &[String],
+    rendered_build_args: &[(String, String)],
     staging_str: &str,
     staging_dir: &std::path::Path,
     dist: &std::path::Path,
@@ -322,7 +333,6 @@ fn queue_v2_build_for_platforms(
         return Ok(());
     }
 
-    let rendered_build_args = render_v2_kv_map(ctx, v2_cfg.build_args.as_ref(), "build_arg")?;
     let rendered_annotations = render_v2_kv_map(ctx, v2_cfg.annotations.as_ref(), "annotation")?;
     let user_labels = render_v2_kv_map(ctx, v2_cfg.labels.as_ref(), "label")?;
     // Auto-inject the standard predefined OCI image labels (default on),
@@ -433,7 +443,7 @@ fn queue_v2_build_for_platforms(
         staging_dir: staging_str,
         platforms: &platform_refs,
         image_tags: &image_tags,
-        build_args: &rendered_build_args,
+        build_args: rendered_build_args,
         annotations: &rendered_annotations,
         labels: &rendered_labels,
         flags: &rendered_flags,

@@ -161,10 +161,10 @@ image. There is no `replace_existing_*` flag — registry semantics handle it.
 | `tags` | list | — | Tag suffixes — one full image ref per (image × tag) |
 | `labels` | map | none | OCI labels via `--label key=value`. Merged over the auto-injected `org.opencontainers.image.*` set; user keys win. |
 | `oci_labels` | bool/template | `true` | Auto-inject the predefined `org.opencontainers.image.*` labels. Set `false` to opt out. See [Auto-injected OCI labels](#auto-injected-oci-labels). |
-| `annotations` | map | none | OCI annotations via `--annotation key=value` |
+| `annotations` | map | none | OCI annotations via `--annotation key=value`. A multi-platform build scopes a key to the image index unless it names its own buildx scope; see [Annotation scopes](#annotation-scopes) |
 | `extra_files` | list | none | Extra files copied into the build context |
 | `platforms` | list | host | Target platforms (`linux/amd64`, `linux/arm64`, ...). `linux/amd64` stages the `v1` build and `linux/amd64/v3` the build whose `amd64_variant` is `v3`, with tag suffix `amd64v3`; `linux/arm64/v8` is `linux/arm64`, since every aarch64 build is the v8 baseline, and is staged under `linux/arm64/`, which is what buildx puts in `$TARGETPLATFORM` for it. A platform with no matching build warns and stages nothing; an amd64 level outside `v1`..`v4` is a `check config` error. Two entries that stage under one directory (`linux/arm64` beside `linux/arm64/v8`, `linux/amd64` beside `linux/amd64/v1`, `linux/arm` beside `linux/arm/v7`) are a `check config` error too |
-| `build_args` | map | none | `--build-arg KEY=VALUE` pairs |
+| `build_args` | map | none | `--build-arg KEY=VALUE` pairs. A key matching a global `ARG` also picks the base image `{{ BaseImage }}` names; see [Base image annotations](#base-image-annotations) |
 | `retry` | object | top-level `retry:` | Per-pipe retry config (deprecated; prefer top-level) |
 | `flags` | list | none | Arbitrary extra `docker buildx build` flags |
 | `skip` | bool/template | `false` | Skip the build. Accepts deprecation-warned `disable:` alias |
@@ -241,6 +241,76 @@ emits one multi-arch OCI image index — no separate
 `docker_manifests[]` is retained only for the niche case of stitching together
 manifest lists from images that were not built by `dockers_v2` in the same run.
 
+## Annotation scopes
+
+buildx reads an annotation as `[types:]key=value`, where `types` is a
+comma-separated list of `index`, `manifest`, `index-descriptor` and
+`manifest-descriptor`, each optionally qualified with a platform. On a
+multi-platform build, a key with no scope of its own is written to the image
+index (`index:`), so `docker buildx imagetools inspect` shows it. A key that
+names a scope is passed as written:
+
+```yaml
+crates:
+  - name: myapp
+    dockers_v2:
+      - dockerfile: Dockerfile
+        images: ["ghcr.io/myorg/myapp"]
+        tags: ["{{ Version }}"]
+        platforms: [linux/amd64, linux/arm64]
+        annotations:
+          org.opencontainers.image.description: "My app"            # index only
+          "manifest:org.opencontainers.image.revision": "{{ FullCommit }}"
+          "index,manifest:org.opencontainers.image.source": "https://github.com/myorg/myapp"
+          "manifest[linux/amd64]:com.example.cpu": "x86-64"
+```
+
+With `FullCommit` at `4f1c2e9a7b3d5c8e0f6a1b2c3d4e5f6a7b8c9d0e`, the build
+command carries:
+
+```text
+--annotation index,manifest:org.opencontainers.image.source=https://github.com/myorg/myapp
+--annotation manifest:org.opencontainers.image.revision=4f1c2e9a7b3d5c8e0f6a1b2c3d4e5f6a7b8c9d0e
+--annotation manifest[linux/amd64]:com.example.cpu=x86-64
+--annotation index:org.opencontainers.image.description=My app
+```
+
+A prefix holding anything else (`bogus:foo`, or `index,bogus:foo`) is part of
+the key, so it gets the `index:` scope too (`index:bogus:foo=…`). A
+single-platform build passes every key as written.
+
+## Base image annotations
+
+`{{ BaseImage }}` and `{{ BaseImageDigest }}` name the Dockerfile's final
+`FROM` image. A global `ARG` (one declared before the first `FROM`) in that
+image reference takes its value from `build_args` when the build arg renders
+non-empty, as `docker build --build-arg` does, and from the `ARG` default
+otherwise. Build args render before the base image resolves, so they cannot
+reference `{{ BaseImage }}` themselves.
+
+```dockerfile
+ARG BASE=gcr.io/distroless/static-debian12
+FROM ${BASE}
+```
+
+```yaml
+crates:
+  - name: myapp
+    dockers_v2:
+      - dockerfile: Dockerfile
+        tags: ["{{ Version }}"]
+        build_args:
+          BASE: "{{ Env.BASE_IMAGE }}"
+        annotations:
+          org.opencontainers.image.base.name: "{{ BaseImage }}"
+          org.opencontainers.image.base.digest: "{{ BaseImageDigest }}"
+```
+
+With `BASE_IMAGE=cgr.dev/chainguard/static:latest`, both annotations name
+the Chainguard image (`BaseImageDigest` is its digest from
+`docker buildx imagetools inspect`); with `BASE_IMAGE` empty, they name the
+distroless default.
+
 ## Hooks
 
 `pre:` runs after the staging context is prepared but before
@@ -254,7 +324,7 @@ addition to the standard template surface, hooks see:
 | `{{ Dockerfile }}` | pre + post | Path to the rendered Dockerfile |
 | `{{ ContextDir }}` | pre + post | Path to the buildx context staging directory |
 | `{{ Digest }}` | post only | The digest the registry stores for the build — the image manifest single-platform, the image index multi-platform. Read from buildx's `--metadata-file` (`containerimage.digest`), or from `podman push --digestfile` under `use: podman`. A build that exports no image at all (neither pushed nor loaded) has no digest to report, and a `post:` hook that needs it then fails the build |
-| `{{ BaseImage }}` / `{{ BaseImageDigest }}` | post only | Final-stage base image |
+| `{{ BaseImage }}` / `{{ BaseImageDigest }}` | pre + post | Final-stage base image |
 
 ## Dockerfile pattern (distroless + dist-tree binary)
 

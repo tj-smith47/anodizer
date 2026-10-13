@@ -86,7 +86,9 @@ static SHA256_HEX_RE: LazyLock<Regex> =
 /// - Comments (`#`-prefixed lines) and blank lines are skipped.
 /// - Global `ARG NAME[=DEFAULT]` directives (those appearing before any
 ///   `FROM`) populate a substitution table consulted by every subsequent
-///   `FROM`.
+///   `FROM`. A non-empty value for the same name in `build_args` replaces the
+///   default, as `docker build --build-arg NAME=VALUE` does; a build arg the
+///   Dockerfile never declares globally does not reach a `FROM`.
 /// - `FROM` keyword is case-insensitive, as are any `AS <alias>` clauses
 ///   and the alias-chain resolution that follows.
 /// - `--platform=...` / `--foo=bar` flags between `FROM` and the image
@@ -97,7 +99,7 @@ static SHA256_HEX_RE: LazyLock<Regex> =
 ///   form is NOT supported (the `:-` separator is matched literally).
 /// - Alias chains (`FROM a AS b` followed by `FROM b`) walk to the root;
 ///   cyclic aliases (`a→b, b→a`) terminate on revisit via a visited set.
-pub fn parse_base_image(content: &str) -> String {
+pub fn parse_base_image(content: &str, build_args: &[(String, String)]) -> String {
     let logical_lines = join_continuations(content);
 
     let mut args: HashMap<String, String> = HashMap::new();
@@ -115,11 +117,14 @@ pub fn parse_base_image(content: &str) -> String {
         {
             let Some(name_m) = caps.get(1) else { continue };
             let name = name_m.as_str().to_string();
-            let default = caps
-                .get(2)
-                .map(|m| trim_quotes(m.as_str()).to_string())
-                .unwrap_or_default();
-            args.insert(name, default);
+            let value = match build_args.iter().find(|(k, v)| *k == name && !v.is_empty()) {
+                Some((_, v)) => v.clone(),
+                None => caps
+                    .get(2)
+                    .map(|m| trim_quotes(m.as_str()).to_string())
+                    .unwrap_or_default(),
+            };
+            args.insert(name, value);
             continue;
         }
 
@@ -366,6 +371,8 @@ fn resolve_expand(token: &str, args: &HashMap<String, String>) -> String {
 /// Read a Dockerfile and resolve its final-stage base image plus the
 /// image's manifest digest. Returns `Ok(None)` when the Dockerfile has
 /// no resolvable base image (empty, no `FROM`, or `FROM scratch`).
+/// `build_args` are the rendered build arguments the image is built with;
+/// they override global `ARG` defaults as described on [`parse_base_image`].
 ///
 /// When the `FROM` already pins a digest (`image@sha256:...`), that
 /// digest is returned without any external lookup. Otherwise — when not
@@ -376,12 +383,13 @@ fn resolve_expand(token: &str, args: &HashMap<String, String>) -> String {
 /// without the digest).
 pub fn get_base_image(
     dockerfile: &Path,
+    build_args: &[(String, String)],
     dry_run: bool,
     log: &StageLogger,
 ) -> Result<Option<BaseImage>> {
     let content = fs::read_to_string(dockerfile)
         .with_context(|| format!("read dockerfile {}", dockerfile.display()))?;
-    let base = parse_base_image(&content);
+    let base = parse_base_image(&content, build_args);
     if base.is_empty() || base.eq_ignore_ascii_case("scratch") {
         return Ok(None);
     }
@@ -552,7 +560,7 @@ mod tests {
     #[test]
     fn parse_base_image_matches_goreleaser_fixtures() {
         for (name, content) in FIXTURES {
-            let got = parse_base_image(content);
+            let got = parse_base_image(content, &[]);
             assert_eq!(got, expected_for_fixture(name), "fixture {name} mismatch");
         }
     }
@@ -562,7 +570,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dockerfile = dir.path().join("Dockerfile");
         std::fs::write(&dockerfile, "FROM scratch\n").unwrap();
-        let got = get_base_image(&dockerfile, true, &test_logger()).unwrap();
+        let got = get_base_image(&dockerfile, &[], true, &test_logger()).unwrap();
         assert!(got.is_none());
     }
 
@@ -571,7 +579,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dockerfile = dir.path().join("Dockerfile");
         std::fs::write(&dockerfile, "").unwrap();
-        let got = get_base_image(&dockerfile, true, &test_logger()).unwrap();
+        let got = get_base_image(&dockerfile, &[], true, &test_logger()).unwrap();
         assert!(got.is_none());
     }
 
@@ -585,7 +593,7 @@ mod tests {
         // `dry_run=false` here is safe because the pinned-digest branch
         // returns before any subprocess spawn — same contract as the
         // case: digest pinned in FROM.
-        let got = get_base_image(&dockerfile, false, &test_logger())
+        let got = get_base_image(&dockerfile, &[], false, &test_logger())
             .unwrap()
             .unwrap();
         assert_eq!(got.name, pinned);
@@ -600,7 +608,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dockerfile = dir.path().join("Dockerfile");
         std::fs::write(&dockerfile, "FROM alpine:3.20\n").unwrap();
-        let got = get_base_image(&dockerfile, true, &test_logger())
+        let got = get_base_image(&dockerfile, &[], true, &test_logger())
             .unwrap()
             .unwrap();
         assert_eq!(got.name, "alpine:3.20");
@@ -612,21 +620,86 @@ mod tests {
     // empty when `VER` is unset, matching `os.Expand` semantics.
     #[test]
     fn parse_base_image_arg_bare_dash_default_resolves_to_empty() {
-        let got = parse_base_image("ARG VER\nFROM alpine:${VER-3.20}\n");
+        let got = parse_base_image("ARG VER\nFROM alpine:${VER-3.20}\n", &[]);
         assert_eq!(got, "alpine:");
     }
 
     #[test]
     fn parse_base_image_arg_overrides_default() {
-        let got = parse_base_image("ARG VER=3.20\nFROM alpine:${VER:-3.19}\n");
+        let got = parse_base_image("ARG VER=3.20\nFROM alpine:${VER:-3.19}\n", &[]);
         assert_eq!(got, "alpine:3.20");
+    }
+
+    fn build_args(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn parse_base_image_build_arg_overrides_global_arg_default() {
+        let args = build_args(&[("BASE", "debian:12")]);
+        assert_eq!(
+            parse_base_image("ARG BASE=alpine:3.20\nFROM ${BASE}\n", &args),
+            "debian:12"
+        );
+        assert_eq!(
+            parse_base_image(
+                "ARG VER\nFROM alpine:${VER:-3.19}\n",
+                &build_args(&[("VER", "3.21")])
+            ),
+            "alpine:3.21"
+        );
+    }
+
+    #[test]
+    fn parse_base_image_empty_build_arg_keeps_the_default() {
+        let args = build_args(&[("BASE", "")]);
+        assert_eq!(
+            parse_base_image("ARG BASE=alpine:3.20\nFROM ${BASE}\n", &args),
+            "alpine:3.20"
+        );
+    }
+
+    #[test]
+    fn parse_base_image_build_arg_without_a_global_arg_is_ignored() {
+        let args = build_args(&[("BASE", "debian:12")]);
+        assert_eq!(
+            parse_base_image("FROM ${BASE:-alpine:3.20}\n", &args),
+            "alpine:3.20"
+        );
+        assert_eq!(
+            parse_base_image(
+                "FROM alpine:3.20\nARG BASE=x\nFROM ${BASE:-alpine:3.19}\n",
+                &args
+            ),
+            "alpine:3.19"
+        );
+    }
+
+    #[test]
+    fn get_base_image_applies_build_args() {
+        let dir = tempfile::tempdir().unwrap();
+        let dockerfile = dir.path().join("Dockerfile");
+        std::fs::write(&dockerfile, "ARG BASE=alpine:3.20\nFROM ${BASE}\n").unwrap();
+        let got = get_base_image(
+            &dockerfile,
+            &build_args(&[("BASE", "debian:12")]),
+            true,
+            &test_logger(),
+        )
+        .unwrap()
+        .expect("a base image");
+        assert_eq!(got.name, "debian:12");
+        assert_eq!(got.digest, "");
     }
 
     #[test]
     fn parse_base_image_unclosed_brace_is_literal() {
         // `${UNCLOSED` with no `}` is emitted as-is; this guards against
         // an infinite-loop or panic regression in `substitute_args`.
-        let got = parse_base_image("FROM alpine:${UNCLOSED\n");
+        let got = parse_base_image("FROM alpine:${UNCLOSED\n", &[]);
         assert_eq!(got, "alpine:${UNCLOSED");
     }
 
@@ -634,13 +707,13 @@ mod tests {
     // expander without Latin-1 corruption. `imáge` survives.
     #[test]
     fn parse_base_image_preserves_utf8() {
-        let got = parse_base_image("FROM imáge:3.20\n");
+        let got = parse_base_image("FROM imáge:3.20\n", &[]);
         assert_eq!(got, "imáge:3.20");
     }
 
     #[test]
     fn parse_base_image_preserves_utf8_in_arg_default() {
-        let got = parse_base_image("ARG IMG=imáge:3.20\nFROM ${IMG}\n");
+        let got = parse_base_image("ARG IMG=imáge:3.20\nFROM ${IMG}\n", &[]);
         assert_eq!(got, "imáge:3.20");
     }
 
@@ -649,7 +722,7 @@ mod tests {
     // the greedy `(.*)` in `ARG_RE` would swallow the FROM.
     #[test]
     fn parse_base_image_continuation_does_not_swallow_from() {
-        let got = parse_base_image("ARG VER=3.20 \\\nFROM alpine:${VER}\n");
+        let got = parse_base_image("ARG VER=3.20 \\\nFROM alpine:${VER}\n", &[]);
         assert_eq!(got, "alpine:3.20");
     }
 
@@ -659,7 +732,7 @@ mod tests {
     // first after the cycle is detected.
     #[test]
     fn parse_base_image_alias_cycle_terminates() {
-        let got = parse_base_image("FROM alpine:3.20 AS a\nFROM a AS b\nFROM b AS a\n");
+        let got = parse_base_image("FROM alpine:3.20 AS a\nFROM a AS b\nFROM b AS a\n", &[]);
         // Final FROM is `b AS a`. Walking aliases: a→b, b→a. From base
         // `a` the walk goes a→b, then b→a (revisit `a`) → stop. The walk
         // halts without panic or hang.

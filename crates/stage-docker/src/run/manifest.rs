@@ -53,10 +53,10 @@ pub(crate) fn process_docker_manifest(
             )
         })?;
         if img.trim().is_empty() {
-            log.warn(&format!(
-                "skipped manifest — image_template '{}' rendered to empty string",
-                tmpl
-            ));
+            log.warn(&job_log.redact(&format!(
+                "skipped image_template '{}' for manifest '{}' — rendered empty",
+                tmpl, manifest_name
+            )));
             continue;
         }
         rendered_images.push(img);

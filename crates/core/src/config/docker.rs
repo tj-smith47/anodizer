@@ -80,6 +80,14 @@ pub struct DockerV2Config {
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub oci_labels: Option<StringOrBool>,
     /// OCI annotations to apply via `--annotation key=value` flags.
+    ///
+    /// On a multi-platform build a key is written to the image index
+    /// (`index:key=value`) unless it already names a buildx scope: a
+    /// comma-separated list of `index`, `manifest`, `index-descriptor` and
+    /// `manifest-descriptor`, each optionally platform-qualified, as in
+    /// `manifest:key`, `index,manifest:key` or `manifest[linux/amd64]:key`.
+    /// A prefix holding any other entry is part of the key and is scoped to
+    /// the index too. A single-platform build passes every key as written.
     pub annotations: Option<HashMap<String, String>>,
     /// Extra files to copy into the Docker build context.
     pub extra_files: Option<Vec<String>>,
@@ -92,6 +100,12 @@ pub struct DockerV2Config {
     /// `{{ Env.VAR }}` over raw user-config strings for secrets — buildx
     /// records build-args in image history by default, so plaintext values
     /// here propagate into the image metadata.
+    ///
+    /// A key naming a global `ARG` (one declared before the first `FROM`)
+    /// also replaces that `ARG`'s default when resolving the base image
+    /// behind `{{ BaseImage }}` and `{{ BaseImageDigest }}`, when its value
+    /// renders non-empty. Build args render before the base image resolves,
+    /// so they cannot reference `{{ BaseImage }}` themselves.
     pub build_args: Option<HashMap<String, String>>,
     /// Retry configuration for docker push operations.
     pub retry: Option<DockerRetryConfig>,

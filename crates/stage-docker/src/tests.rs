@@ -7942,3 +7942,247 @@ fn the_refusals_quoted_in_the_podman_docs_are_what_the_checks_produce() {
     assert_eq!(quoted, produced, "the page's Error lines");
     assert_eq!(quoted.len(), 2, "the errors the page quotes");
 }
+
+// ---------------------------------------------------------------------------
+// dockers_v2 annotation scopes
+// ---------------------------------------------------------------------------
+
+fn v2_annotation_flags(platforms: &[&str], annotations: &[(&str, &str)]) -> Vec<String> {
+    let annotations: Vec<(String, String)> = annotations
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "ctx",
+        platforms,
+        image_tags: &["img:latest".to_string()],
+        build_args: &[],
+        annotations: &annotations,
+        labels: &[],
+        flags: &[],
+        sbom: false,
+        push: false,
+        load: false,
+        backend: None,
+    })
+    .unwrap();
+    cmd.iter()
+        .enumerate()
+        .filter(|(_, t)| *t == "--annotation")
+        .map(|(i, _)| cmd[i + 1].clone())
+        .collect()
+}
+
+/// Configured annotation pairs and the `--annotation` values they produce.
+type AnnotationCase<'a> = (&'a [(&'a str, &'a str)], &'a [&'a str]);
+
+#[test]
+fn a_multi_platform_annotation_keeps_its_own_buildx_scope() {
+    let multi = ["linux/amd64", "linux/arm64"];
+    let cases: &[AnnotationCase] = &[
+        (&[("foo", "bar")], &["index:foo=bar"]),
+        (&[("index:foo", "bar")], &["index:foo=bar"]),
+        (&[("manifest:foo", "bar")], &["manifest:foo=bar"]),
+        (
+            &[("index,manifest:foo", "bar")],
+            &["index,manifest:foo=bar"],
+        ),
+        (
+            &[("manifest[linux/amd64]:foo", "bar")],
+            &["manifest[linux/amd64]:foo=bar"],
+        ),
+        (
+            &[
+                ("index-descriptor:foo", "bar"),
+                ("manifest-descriptor:baz", "qux"),
+            ],
+            &["index-descriptor:foo=bar", "manifest-descriptor:baz=qux"],
+        ),
+        (
+            &[("foo", "https://example.com")],
+            &["index:foo=https://example.com"],
+        ),
+        (&[("bogus:foo", "bar")], &["index:bogus:foo=bar"]),
+        (
+            &[("index,bogus:foo", "bar")],
+            &["index:index,bogus:foo=bar"],
+        ),
+    ];
+    for (annotations, expect) in cases {
+        assert_eq!(
+            v2_annotation_flags(&multi, annotations),
+            *expect,
+            "annotations {annotations:?}"
+        );
+    }
+}
+
+#[test]
+fn a_single_platform_annotation_is_passed_as_written() {
+    assert_eq!(
+        v2_annotation_flags(&["linux/amd64"], &[("foo", "bar"), ("manifest:baz", "qux")]),
+        ["foo=bar", "manifest:baz=qux"]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// dockers_v2 base image from build-arg overrides
+// ---------------------------------------------------------------------------
+
+/// A `build_args` entry that replaces the Dockerfile's `ARG BASE` default
+/// decides the base image the `BaseImage` / `BaseImageDigest` annotations
+/// name, the literal and the templated value alike.
+#[test]
+fn the_base_image_annotations_follow_a_build_arg_override() {
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    const DEFAULT_REF: &str =
+        "alpine@sha256:1111111111111111111111111111111111111111111111111111111111111111";
+    const OVERRIDE_REF: &str =
+        "busybox@sha256:2222222222222222222222222222222222222222222222222222222222222222";
+    const OVERRIDE_DIGEST: &str =
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+
+    for build_arg in [OVERRIDE_REF, "{{ .Env.BASE }}"] {
+        let tmp = TempDir::new().unwrap();
+        let dockerfile = tmp.path().join("Dockerfile");
+        fs::write(
+            &dockerfile,
+            format!("ARG BASE={DEFAULT_REF}\nFROM ${{BASE}}\n"),
+        )
+        .unwrap();
+        let v2_cfg = DockerV2Config {
+            id: Some("b".to_string()),
+            images: vec!["ghcr.io/foo/bar".to_string()],
+            tags: vec!["latest".to_string()],
+            dockerfile: dockerfile.to_string_lossy().into_owned(),
+            platforms: Some(vec!["linux/amd64".to_string()]),
+            build_args: Some(HashMap::from([("BASE".to_string(), build_arg.to_string())])),
+            annotations: Some(HashMap::from([
+                (
+                    "org.opencontainers.image.base.name".to_string(),
+                    "{{ .BaseImage }}".to_string(),
+                ),
+                (
+                    "org.opencontainers.image.base.digest".to_string(),
+                    "{{ .BaseImageDigest }}".to_string(),
+                ),
+            ])),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "bar".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "bar".to_string(),
+            path: ".".to_string(),
+            dockers_v2: Some(vec![v2_cfg]),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set_env("BASE", OVERRIDE_REF);
+        let capture = anodizer_core::log::LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+
+        DockerStage::new().run(&mut ctx).unwrap();
+
+        let lines: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+        let cmd = lines
+            .iter()
+            .find(|l| l.starts_with("(dry-run) would run: docker buildx build"))
+            .unwrap_or_else(|| panic!("no dry-run build line: {lines:?}"));
+        assert!(
+            cmd.contains(&format!(
+                " --build-arg BASE={OVERRIDE_REF} --annotation org.opencontainers.image.base.digest={OVERRIDE_DIGEST} --annotation org.opencontainers.image.base.name={OVERRIDE_REF} "
+            )),
+            "build arg {build_arg:?}: {cmd}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// docker_manifests push_flags
+// ---------------------------------------------------------------------------
+
+/// `push_flags` render as templates and follow the manifest name on the
+/// `manifest push` command, after `create_flags` went to `manifest create`.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(path_env)]
+fn manifest_push_flags_are_rendered_onto_the_push_command() {
+    use anodizer_core::config::{Config, CrateConfig, DockerManifestConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+    let tools = FakeToolDir::new();
+    tools.tool("docker").install();
+    let _path = tools.activate();
+
+    let manifest_cfg = DockerManifestConfig {
+        name_template: "ghcr.io/owner/app:{{ .Version }}".to_string(),
+        image_templates: vec!["ghcr.io/owner/app:{{ .Version }}-amd64".to_string()],
+        create_flags: Some(vec!["--amend".to_string()]),
+        push_flags: Some(vec![
+            "--purge".to_string(),
+            "--annotation=tag={{ .Tag }}".to_string(),
+        ]),
+        ..Default::default()
+    };
+    let krate = CrateConfig {
+        name: "app".to_string(),
+        path: ".".to_string(),
+        docker_manifests: Some(vec![manifest_cfg.clone()]),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "app".to_string();
+    config.crates = vec![krate.clone()];
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Version", "1.2.3");
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    let log = ctx.logger("docker");
+    super::run::process_docker_manifest(
+        &mut ctx,
+        &log,
+        &krate,
+        0,
+        &manifest_cfg,
+        &std::collections::HashSet::new(),
+        &HashMap::new(),
+        false,
+        &mut Vec::new(),
+    )
+    .expect("manifest run");
+
+    let calls = tools.calls("docker");
+    let expect = |argv: &[&str]| -> Vec<String> { argv.iter().map(|s| s.to_string()).collect() };
+    assert!(
+        calls.contains(&expect(&[
+            "manifest",
+            "create",
+            "ghcr.io/owner/app:1.2.3",
+            "ghcr.io/owner/app:1.2.3-amd64",
+            "--amend",
+        ])),
+        "{calls:?}"
+    );
+    assert!(
+        calls.contains(&expect(&[
+            "manifest",
+            "push",
+            "ghcr.io/owner/app:1.2.3",
+            "--purge",
+            "--annotation=tag=v1.2.3",
+        ])),
+        "{calls:?}"
+    );
+}
