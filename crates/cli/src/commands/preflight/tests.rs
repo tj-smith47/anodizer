@@ -1262,7 +1262,14 @@ fn every_preflight_half_runs_inside_the_one_engine() {
             if rest.contains("run_env_preflight(") || calls_publisher_half(&rest) {
                 half_callers.push((file.clone(), name.clone()));
             }
-            if rest.contains("release_preflight(") {
+            let calls_release_preflight =
+                rest.match_indices("release_preflight(").any(|(at, _)| {
+                    !rest[..at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                });
+            if calls_release_preflight {
                 let tail = file.rsplit("crates/").next().unwrap_or(&file);
                 release_callers.push(format!("{tail}::{name}"));
             }

@@ -1361,7 +1361,7 @@
           }
         },
         "wrap_in_directory": {
-          "description": "When set, wrap archive contents in a top-level directory. Accepts `true` (use archive stem as directory name), `false` (no wrapping), or a string template for a custom directory name.",
+          "description": "When set, wrap archive contents in a top-level directory. Accepts `true` (use archive stem as directory name), `false` (no wrapping), or a string template for a custom directory name. An unquoted `1` / `0` is `true` / `false`; a quoted `\"1\"` is a directory name.",
           "anyOf": [
             {
               "$ref": "#/definitions/WrapInDirectory"
@@ -5702,15 +5702,19 @@
         "skip_push": {
           "description": "Skip push: true, false, or \"auto\" (skip for prereleases).",
           "default": null,
-          "oneOf": [
+          "anyOf": [
             {
-              "type": "string",
+              "type": "boolean"
+            },
+            {
+              "type": "integer",
               "enum": [
-                "auto"
+                0,
+                1
               ]
             },
             {
-              "type": "boolean"
+              "type": "string"
             }
           ]
         },
@@ -11285,15 +11289,19 @@
         "make_latest": {
           "description": "Override `release.make_latest` for nightly runs only. Default: `false` — a rolling nightly must not displace the newest stable release in the GitHub UI, in `releases/latest`, or for the install scripts and `gh release download` invocations that resolve it.\n\n`None` does not fall through to `release.make_latest` for the same reason as [`Self::prerelease`]: unset there means GitHub's own default, which IS latest.",
           "default": null,
-          "oneOf": [
+          "anyOf": [
             {
-              "type": "string",
+              "type": "boolean"
+            },
+            {
+              "type": "integer",
               "enum": [
-                "auto"
+                0,
+                1
               ]
             },
             {
-              "type": "boolean"
+              "type": "string"
             }
           ]
         },
@@ -13452,15 +13460,19 @@
         "make_latest": {
           "description": "Mark release as latest: true, false, or \"auto\" (latest non-prerelease).",
           "default": null,
-          "oneOf": [
+          "anyOf": [
             {
-              "type": "string",
+              "type": "boolean"
+            },
+            {
+              "type": "integer",
               "enum": [
-                "auto"
+                0,
+                1
               ]
             },
             {
-              "type": "boolean"
+              "type": "string"
             }
           ]
         },
@@ -13511,11 +13523,22 @@
             {
               "type": "string",
               "enum": [
-                "auto"
+                "auto",
+                "true",
+                "false",
+                "1",
+                "0"
               ]
             },
             {
               "type": "boolean"
+            },
+            {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
             }
           ]
         },
@@ -17465,6 +17488,13 @@
         },
         {
           "type": "string"
+        },
+        {
+          "type": "integer",
+          "enum": [
+            0,
+            1
+          ]
         }
       ]
     }

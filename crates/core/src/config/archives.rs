@@ -177,6 +177,7 @@ where
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(untagged)]
+#[schemars(transform = super::string_or_bool::accept_one_or_zero)]
 pub enum WrapInDirectory {
     Bool(bool),
     Name(String),
@@ -188,7 +189,17 @@ impl<'de> serde::Deserialize<'de> for WrapInDirectory {
         match value {
             serde_yaml_ng::Value::Bool(b) => Ok(WrapInDirectory::Bool(b)),
             serde_yaml_ng::Value::String(s) => Ok(WrapInDirectory::Name(s)),
-            _ => Err(serde::de::Error::custom("expected bool or string")),
+            // A quoted "1" stays a directory name; only the unquoted integer
+            // spells a bool.
+            serde_yaml_ng::Value::Number(n) if n.as_u64() == Some(1) => {
+                Ok(WrapInDirectory::Bool(true))
+            }
+            serde_yaml_ng::Value::Number(n) if n.as_u64() == Some(0) => {
+                Ok(WrapInDirectory::Bool(false))
+            }
+            _ => Err(serde::de::Error::custom(
+                "expected a bool, 1, 0 or a string",
+            )),
         }
     }
 }
@@ -235,7 +246,8 @@ pub struct ArchiveConfig {
     pub binaries: Option<Vec<String>>,
     /// When set, wrap archive contents in a top-level directory.
     /// Accepts `true` (use archive stem as directory name), `false` (no wrapping),
-    /// or a string template for a custom directory name.
+    /// or a string template for a custom directory name. An unquoted `1` / `0`
+    /// is `true` / `false`; a quoted `"1"` is a directory name.
     pub wrap_in_directory: Option<WrapInDirectory>,
     /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
@@ -849,6 +861,15 @@ mod tests {
     }
 
     // --- WrapInDirectory ---------------------------------------------------
+
+    #[test]
+    fn wrap_in_directory_reads_an_unquoted_one_or_zero_as_a_bool() {
+        let load = |yaml: &str| serde_yaml_ng::from_str::<WrapInDirectory>(yaml);
+        assert_eq!(load("1").unwrap(), WrapInDirectory::Bool(true));
+        assert_eq!(load("0").unwrap(), WrapInDirectory::Bool(false));
+        assert_eq!(load("\"1\"").unwrap(), WrapInDirectory::Name("1".into()));
+        assert!(load("2").is_err());
+    }
 
     #[test]
     fn wrap_in_directory_bool_true_uses_default_name() {

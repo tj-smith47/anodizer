@@ -301,26 +301,24 @@ fn gitlab(ctx: &Context, targets: Vec<Target<'_>>) -> PreflightCheck {
                 "no GitLab token available (set GITLAB_TOKEN, or pass --token); cannot create the \
                  release in {project}"
             )),
-            Some(token)
-                if crate::gitlab::resolve_use_job_token_with_env(
-                    urls.use_job_token.unwrap_or(false),
-                    token,
-                    ctx.env_source(),
-                ) =>
-            {
-                // A CI job token may create releases but may not read
-                // `GET /projects/:id` (it is not among the endpoints GitLab
-                // lets a job token call), so the refusal would say nothing
-                // about whether the release can be created.
-                ctx.logger("preflight").verbose(&format!(
-                    "skipped the GitLab access check for {project}: a CI job token cannot read \
-                     the project"
-                ));
-                PreflightCheck::Pass
-            }
             Some(token) => probed
                 .entry((project.clone(), token.to_string()))
                 .or_insert_with(|| {
+                    // A CI job token may create releases but may not read
+                    // `GET /projects/:id` (GitLab does not list it among the
+                    // endpoints a job token can call), so its refusal would
+                    // say nothing about whether the release can be created.
+                    if crate::gitlab::resolve_use_job_token_with_env(
+                        urls.use_job_token.unwrap_or(false),
+                        token,
+                        ctx.env_source(),
+                    ) {
+                        ctx.logger("preflight").status(&format!(
+                            "skipped the GitLab access check for {project}: a CI job token \
+                             cannot read the project"
+                        ));
+                        return PreflightCheck::Pass;
+                    }
                     let url = format!(
                         "{api}/projects/{}",
                         crate::gitlab::encode_project_id(&project)
@@ -332,7 +330,7 @@ fn gitlab(ctx: &Context, targets: Vec<Target<'_>>) -> PreflightCheck {
                             auth: (crate::gitlab::auth_header(false), token.to_string()),
                             skip_tls,
                             subject: &format!("GitLab project {project}"),
-                            forge: Forge::GitLab,
+                            label: "gitlab project probe",
                         },
                         |v| gitlab_access(&project, v),
                     )
@@ -397,7 +395,7 @@ fn gitea(ctx: &Context, targets: Vec<Target<'_>>) -> PreflightCheck {
                             auth: ("Authorization", format!("token {token}")),
                             skip_tls,
                             subject: &format!("Gitea repository {owner}/{repo}"),
-                            forge: Forge::Gitea,
+                            label: "gitea repo probe",
                         },
                         |v| match v.get("permissions").filter(|p| !p.is_null()) {
                             Some(p) if p.get("push").and_then(Value::as_bool) != Some(true) => {
@@ -424,43 +422,13 @@ struct ForgeRequest<'a> {
     auth: (&'static str, String),
     skip_tls: bool,
     subject: &'a str,
-    forge: Forge,
-}
-
-#[derive(Clone, Copy)]
-enum Forge {
-    GitLab,
-    Gitea,
-}
-
-impl Forge {
     /// The name a retry line gives the request.
-    fn probe_label(self) -> &'static str {
-        match self {
-            Forge::GitLab => "gitlab project probe",
-            Forge::Gitea => "gitea repo probe",
-        }
-    }
-
-    /// Whether a 401 / 403 is the forge's rate limit rather than a refused
-    /// token. GitLab sends `RateLimit-Remaining: 0` or `Retry-After` with a
-    /// throttled request; Gitea sends `Retry-After`.
-    fn rate_limited(self, headers: &reqwest::header::HeaderMap) -> bool {
-        let exhausted = || {
-            headers
-                .get("ratelimit-remaining")
-                .and_then(|v| v.to_str().ok())
-                .is_some_and(|v| v.trim() == "0")
-        };
-        headers.contains_key(reqwest::header::RETRY_AFTER)
-            || (matches!(self, Forge::GitLab) && exhausted())
-    }
+    label: &'static str,
 }
 
 /// `GET` a GitLab project or Gitea repository and read the token's access
-/// from the body with `read`. A 404 or a refused token blocks; a rate limit
-/// (429, or a 401 / 403 the forge marks as one), a 5xx or a failed connection
-/// warns (blocks under strict preflight).
+/// from the body with `read`. A 404, 401 or 403 blocks; a 429, a 5xx or a
+/// failed connection warns (blocks under strict preflight).
 fn forge_probe(
     ctx: &Context,
     req: ForgeRequest<'_>,
@@ -492,13 +460,15 @@ fn forge_probe(
     };
     let log = ctx.logger("preflight");
     let probe = anodizer_core::git::repo_probe(
-        req.forge.probe_label(),
+        req.label,
         || {
             client
                 .get(req.url)
                 .header(reqwest::header::ACCEPT, "application/json")
         },
-        |headers| req.forge.rate_limited(headers),
+        // GitLab throttles with a 429 and Gitea sheds load with a 503, so a
+        // 401 or 403 from either is a refused token whatever its headers say.
+        |_| false,
         &RetryPolicy::PREFLIGHT,
         ctx.retry_deadline(),
         &log,
@@ -723,9 +693,9 @@ mod tests {
     #[test]
     fn repo_push_check_warns_on_rate_limited_403() {
         use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
-        // A secondary-rate-limit 403 carries `X-RateLimit-Remaining: 0`; it is
-        // transient (RepoProbe::RateLimited) and must NOT block a release whose
-        // token is actually valid.
+        // A GitHub secondary rate limit is a 403 carrying
+        // `X-RateLimit-Remaining: 0`. It clears with time and says nothing
+        // about the token, so it warns.
         let (addr, _c) = spawn_oneshot_http_responder(vec![http_with_header(
             "403 Forbidden",
             "X-RateLimit-Remaining: 0",
@@ -741,9 +711,8 @@ mod tests {
     #[test]
     fn repo_push_check_warns_on_inconclusive_5xx() {
         use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
-        // A 5xx is host-reachable-but-not-answering-cleanly
-        // (RepoProbe::Inconclusive); it must warn rather than abort a release
-        // whose token is fine.
+        // A 5xx means the host answered without a verdict on the token
+        // (RepoProbe::Inconclusive), so it warns.
         let (addr, _c) = spawn_oneshot_http_responder(vec![http("503 Service Unavailable", "")]);
         let url = format!("http://{addr}/repos/acme/widget");
         match repo_push_check_at(&url, &probe("tok", &one_attempt_policy()), tlog()) {

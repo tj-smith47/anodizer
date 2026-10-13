@@ -20,9 +20,42 @@ pub enum StringOrBool {
 
 /// The loader reads an unquoted `1` / `0` as a bool, so the schema accepts
 /// those two integers beside the derived bool and string.
-fn accept_one_or_zero(schema: &mut schemars::Schema) {
+pub(crate) fn accept_one_or_zero(schema: &mut schemars::Schema) {
     if let Some(any_of) = schema.get_mut("anyOf").and_then(|v| v.as_array_mut()) {
-        any_of.push(serde_json::json!({ "type": "integer", "enum": [0, 1] }));
+        any_of.push(one_or_zero_schema());
+    }
+}
+
+/// The schema of an unquoted `1` or `0`, which every bool-or-template field
+/// loads as a bool.
+pub(crate) fn one_or_zero_schema() -> serde_json::Value {
+    serde_json::json!({ "type": "integer", "enum": [0, 1] })
+}
+
+/// The bool an unquoted YAML `1` or `0` spells; any other integer is a load
+/// error against `expected`.
+pub(crate) fn bool_from_u64<E: serde::de::Error>(
+    v: u64,
+    expected: &dyn serde::de::Expected,
+) -> Result<bool, E> {
+    match v {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(E::invalid_value(
+            serde::de::Unexpected::Unsigned(v),
+            expected,
+        )),
+    }
+}
+
+/// [`bool_from_u64`] for the signed integer a negative YAML number reads as.
+pub(crate) fn bool_from_i64<E: serde::de::Error>(
+    v: i64,
+    expected: &dyn serde::de::Expected,
+) -> Result<bool, E> {
+    match u64::try_from(v) {
+        Ok(u) => bool_from_u64(u, expected),
+        Err(_) => Err(E::invalid_value(serde::de::Unexpected::Signed(v), expected)),
     }
 }
 
@@ -216,18 +249,11 @@ where
         // boolean the string form already accepts; any other number is not
         // one.
         fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
-            match v {
-                0 => Ok(Some(StringOrBool::Bool(false))),
-                1 => Ok(Some(StringOrBool::Bool(true))),
-                _ => Err(E::invalid_value(de::Unexpected::Unsigned(v), &self)),
-            }
+            bool_from_u64(v, &self).map(|b| Some(StringOrBool::Bool(b)))
         }
 
         fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
-            match u64::try_from(v) {
-                Ok(u) => self.visit_u64(u),
-                Err(_) => Err(E::invalid_value(de::Unexpected::Signed(v), &self)),
-            }
+            bool_from_i64(v, &self).map(|b| Some(StringOrBool::Bool(b)))
         }
 
         fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {

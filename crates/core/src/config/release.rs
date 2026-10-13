@@ -246,7 +246,8 @@ pub struct ReleasePreflightConfig {
     /// A crate's own value wins over the top-level `release:` block's; an
     /// empty value counts as unset. Accepts a bool, an unquoted `1` or `0`,
     /// or a template that renders to `true`, `false`, `1` or `0` (any letter
-    /// case). Any other render, an empty one included, stops the run with an error naming the value.
+    /// case). Any other render, an empty one included, stops the run with an
+    /// error naming the value.
     ///
     /// ```yaml
     /// release:
@@ -384,29 +385,37 @@ impl std::fmt::Display for OnFailureConfig {
     }
 }
 
-/// Schema for prerelease: "auto" or boolean.
+/// Schema for prerelease: `"auto"`, a boolean, or an unquoted `1` / `0`.
 fn prerelease_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    auto_or_bool_schema()
-}
-
-/// Schema for make_latest: "auto" or boolean.
-pub(super) fn make_latest_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    auto_or_bool_schema()
-}
-
-/// Schema for skip_push: "auto" or boolean.
-pub(super) fn skip_push_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    auto_or_bool_schema()
-}
-
-/// A `oneOf` schema accepting the literal string `"auto"` or any boolean — the
-/// shape shared by `prerelease`, `make_latest`, and `skip_push` (each a
-/// tri-state where `"auto"` defers the value to release-time inference).
-fn auto_or_bool_schema() -> schemars::Schema {
     schemars::json_schema!({
         "oneOf": [
-            { "type": "string", "enum": ["auto"] },
-            { "type": "boolean" }
+            { "type": "string", "enum": ["auto", "true", "false", "1", "0"] },
+            { "type": "boolean" },
+            super::string_or_bool::one_or_zero_schema()
+        ]
+    })
+}
+
+/// Schema for make_latest: `"auto"`, a boolean, an unquoted `1` / `0`, or a
+/// template string.
+pub(super) fn make_latest_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    auto_bool_or_template_schema()
+}
+
+/// Schema for skip_push: `"auto"`, a boolean, an unquoted `1` / `0`, or a
+/// template string.
+pub(super) fn skip_push_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    auto_bool_or_template_schema()
+}
+
+/// The shape `make_latest` and `skip_push` share: `"auto"` defers the value to
+/// release time, and any other string is a template rendered then.
+fn auto_bool_or_template_schema() -> schemars::Schema {
+    schemars::json_schema!({
+        "anyOf": [
+            { "type": "boolean" },
+            super::string_or_bool::one_or_zero_schema(),
+            { "type": "string" }
         ]
     })
 }
@@ -521,7 +530,9 @@ pub struct GiteaUrlsConfig {
 // ---------------------------------------------------------------------------
 
 /// Generates `Serialize` and `Deserialize` impls for enums with `Auto` and
-/// `Bool(bool)` variants that accept the string `"auto"` or a boolean in YAML.
+/// `Bool(bool)` variants that accept the string `"auto"`, a boolean, an
+/// unquoted `1` / `0`, or one of the strings `"true"`, `"false"`, `"1"` and
+/// `"0"` in YAML.
 macro_rules! impl_auto_or_bool_serde {
     ($ty:ty, $auto:path, $bool_variant:path) => {
         impl Serialize for $ty {
@@ -544,7 +555,7 @@ macro_rules! impl_auto_or_bool_serde {
                 impl serde::de::Visitor<'_> for Visitor {
                     type Value = $ty;
                     fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                        write!(f, "\"auto\" or a boolean")
+                        write!(f, "\"auto\", a boolean, 1 or 0")
                     }
                     fn visit_bool<E: serde::de::Error>(
                         self,
@@ -552,14 +563,24 @@ macro_rules! impl_auto_or_bool_serde {
                     ) -> std::result::Result<$ty, E> {
                         Ok($bool_variant(v))
                     }
+                    fn visit_u64<E: serde::de::Error>(self, v: u64) -> std::result::Result<$ty, E> {
+                        super::string_or_bool::bool_from_u64(v, &self).map($bool_variant)
+                    }
+                    fn visit_i64<E: serde::de::Error>(self, v: i64) -> std::result::Result<$ty, E> {
+                        super::string_or_bool::bool_from_i64(v, &self).map($bool_variant)
+                    }
                     fn visit_str<E: serde::de::Error>(
                         self,
                         v: &str,
                     ) -> std::result::Result<$ty, E> {
-                        if v == "auto" {
-                            Ok($auto)
-                        } else {
-                            Err(E::custom(format!("expected \"auto\", got \"{}\"", v)))
+                        match v {
+                            "auto" => Ok($auto),
+                            "true" | "1" => Ok($bool_variant(true)),
+                            "false" | "0" => Ok($bool_variant(false)),
+                            _ => Err(E::custom(format!(
+                                "expected \"auto\", true, false, 1 or 0, got \"{}\"",
+                                v
+                            ))),
                         }
                     }
                 }
@@ -583,6 +604,7 @@ impl_auto_or_bool_serde!(
 );
 
 /// `make_latest` can be the string `"auto"`, a boolean, or a template string.
+/// An unquoted `1` / `0` and the strings `"1"` / `"0"` load as booleans.
 /// This field is rendered through the template engine at publish time,
 /// so arbitrary strings are accepted (e.g. `"{{ if .IsSnapshot }}false{{ else }}true{{ end }}"`)
 /// and defer resolution to the release stage.
@@ -615,7 +637,7 @@ impl<'de> Deserialize<'de> for MakeLatestConfig {
         impl serde::de::Visitor<'_> for Visitor {
             type Value = MakeLatestConfig;
             fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "\"auto\", a boolean, or a template string")
+                write!(f, "\"auto\", a boolean, 1, 0, or a template string")
             }
             fn visit_bool<E: serde::de::Error>(
                 self,
@@ -623,14 +645,26 @@ impl<'de> Deserialize<'de> for MakeLatestConfig {
             ) -> std::result::Result<MakeLatestConfig, E> {
                 Ok(MakeLatestConfig::Bool(v))
             }
+            fn visit_u64<E: serde::de::Error>(
+                self,
+                v: u64,
+            ) -> std::result::Result<MakeLatestConfig, E> {
+                super::string_or_bool::bool_from_u64(v, &self).map(MakeLatestConfig::Bool)
+            }
+            fn visit_i64<E: serde::de::Error>(
+                self,
+                v: i64,
+            ) -> std::result::Result<MakeLatestConfig, E> {
+                super::string_or_bool::bool_from_i64(v, &self).map(MakeLatestConfig::Bool)
+            }
             fn visit_str<E: serde::de::Error>(
                 self,
                 v: &str,
             ) -> std::result::Result<MakeLatestConfig, E> {
                 match v {
                     "auto" => Ok(MakeLatestConfig::Auto),
-                    "true" => Ok(MakeLatestConfig::Bool(true)),
-                    "false" => Ok(MakeLatestConfig::Bool(false)),
+                    "true" | "1" => Ok(MakeLatestConfig::Bool(true)),
+                    "false" | "0" => Ok(MakeLatestConfig::Bool(false)),
                     other => Ok(MakeLatestConfig::String(other.to_string())),
                 }
             }
@@ -640,6 +674,7 @@ impl<'de> Deserialize<'de> for MakeLatestConfig {
 }
 
 /// `skip_push` can be `"auto"` (skip for prereleases), a boolean, or a template string.
+/// An unquoted `1` / `0` and the strings `"1"` / `"0"` load as booleans.
 /// Template expressions like `"{{ if .IsSnapshot }}true{{ end }}"` are accepted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkipPushConfig {
@@ -670,7 +705,7 @@ impl<'de> Deserialize<'de> for SkipPushConfig {
         impl serde::de::Visitor<'_> for Visitor {
             type Value = SkipPushConfig;
             fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "\"auto\", a boolean, or a template string")
+                write!(f, "\"auto\", a boolean, 1, 0, or a template string")
             }
             fn visit_bool<E: serde::de::Error>(
                 self,
@@ -678,14 +713,26 @@ impl<'de> Deserialize<'de> for SkipPushConfig {
             ) -> std::result::Result<SkipPushConfig, E> {
                 Ok(SkipPushConfig::Bool(v))
             }
+            fn visit_u64<E: serde::de::Error>(
+                self,
+                v: u64,
+            ) -> std::result::Result<SkipPushConfig, E> {
+                super::string_or_bool::bool_from_u64(v, &self).map(SkipPushConfig::Bool)
+            }
+            fn visit_i64<E: serde::de::Error>(
+                self,
+                v: i64,
+            ) -> std::result::Result<SkipPushConfig, E> {
+                super::string_or_bool::bool_from_i64(v, &self).map(SkipPushConfig::Bool)
+            }
             fn visit_str<E: serde::de::Error>(
                 self,
                 v: &str,
             ) -> std::result::Result<SkipPushConfig, E> {
                 match v {
                     "auto" => Ok(SkipPushConfig::Auto),
-                    "true" => Ok(SkipPushConfig::Bool(true)),
-                    "false" => Ok(SkipPushConfig::Bool(false)),
+                    "true" | "1" => Ok(SkipPushConfig::Bool(true)),
+                    "false" | "0" => Ok(SkipPushConfig::Bool(false)),
                     other => Ok(SkipPushConfig::Template(other.to_string())),
                 }
             }
@@ -720,8 +767,44 @@ mod tests {
 
     #[test]
     fn prerelease_config_rejects_other_strings() {
-        // Unlike the templated siblings, `prerelease` only accepts "auto".
+        // `prerelease` takes no template, so a string must spell a value.
         assert!(serde_yaml_ng::from_str::<PrereleaseConfig>("maybe").is_err());
+    }
+
+    /// Every spelling of a bool each type takes, and the numbers it refuses.
+    fn assert_one_and_zero<T>(t: fn(bool) -> T)
+    where
+        T: for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug,
+    {
+        for (yaml, b) in [
+            ("1", true),
+            ("0", false),
+            ("\"1\"", true),
+            ("\"0\"", false),
+            ("true", true),
+            ("\"false\"", false),
+        ] {
+            assert_eq!(serde_yaml_ng::from_str::<T>(yaml).unwrap(), t(b), "{yaml}");
+        }
+        for bad in ["2", "-1"] {
+            let err = serde_yaml_ng::from_str::<T>(bad).unwrap_err().to_string();
+            assert!(err.contains("invalid value"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn prerelease_config_reads_one_and_zero_as_bools() {
+        assert_one_and_zero(PrereleaseConfig::Bool);
+    }
+
+    #[test]
+    fn make_latest_config_reads_one_and_zero_as_bools() {
+        assert_one_and_zero(MakeLatestConfig::Bool);
+    }
+
+    #[test]
+    fn skip_push_config_reads_one_and_zero_as_bools() {
+        assert_one_and_zero(SkipPushConfig::Bool);
     }
 
     #[test]

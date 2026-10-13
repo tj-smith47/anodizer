@@ -137,8 +137,8 @@ pub struct RepoAccessOutcomes {
 /// budget (attempt ladder plus the invocation's wall-clock deadline) the
 /// probe must stay inside, and the strictness the outcome is graded under.
 ///
-/// Bundled rather than passed loose because every preflight caller threads
-/// the identical set through a base-resolving outer layer down to a
+/// They travel as one value because every preflight caller threads the
+/// identical set through a base-resolving outer layer down to a
 /// `url`-taking inner one, and each field is read by the outcome messages.
 #[derive(Clone, Copy)]
 pub struct GithubRepoProbe<'a> {
@@ -250,10 +250,9 @@ pub fn probe_to_push_check(
             ),
         },
         RepoProbe::Missing | RepoProbe::AuthDenied => outcomes.missing_or_denied,
-        // A secondary-rate-limit 403 is indistinguishable from auth denial by
-        // status alone; the headers prove it transient, so warn (block only
-        // under strict preflight) rather than abort a release whose token is
-        // actually fine.
+        // A secondary-rate-limit 403 has the same status as a refused token;
+        // its headers show it clears with time, so it warns, and blocks only
+        // under strict preflight.
         RepoProbe::RateLimited => indeterminate_check(
             strict,
             format!(
@@ -329,14 +328,14 @@ pub fn repo_probe(
                 let code = resp.status().as_u16();
                 // Capture the rate-limit verdict from headers BEFORE `text()`
                 // consumes the response.
-                let rate_limited = rate_limited(resp.headers());
+                let throttled = rate_limited(resp.headers());
                 if resp.status().is_success() {
                     Ok(RepoProbe::Body(resp.text().unwrap_or_default()))
                 } else if resp.status().is_server_error() {
                     Err(ControlFlow::Continue(RepoProbe::Inconclusive(format!(
                         "HTTP {code}"
                     ))))
-                } else if code == 429 || ((code == 403 || code == 401) && rate_limited) {
+                } else if code == 429 || ((code == 403 || code == 401) && throttled) {
                     Ok(RepoProbe::RateLimited)
                 } else if code == 404 {
                     Ok(RepoProbe::Missing)
@@ -365,10 +364,11 @@ pub fn repo_probe(
 
 #[cfg(test)]
 mod push_check_tests {
-    //! The pure probe→check mapping arms. The HTTP-level probe behavior
-    //! (status/header classification) is pinned by the scripted-responder
-    //! tests at the two preflight call sites; these cover the shared
-    //! severity/parse policy that must not drift between them.
+    //! The probe→check mapping, without HTTP. The status and header
+    //! classification is tested against local HTTP responders in
+    //! `anodizer-stage-release`'s `preflight` tests and in
+    //! `crates/cli/tests/preflight_integration.rs`; these cover the severity
+    //! and parse rules every caller shares.
     use super::*;
 
     fn outcomes() -> RepoAccessOutcomes {
