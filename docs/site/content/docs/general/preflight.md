@@ -100,7 +100,10 @@ for how one publisher grades that), or a missing rollback scope under
 run continue — a rollback scope missing in default mode, a credential probe
 that could not reach a verdict, a publisher that is optional. The
 [rollback scope preflight](@/docs/advanced/release-resilience.md#rollback-scope-preflight)
-lists what is asked of each publisher. A blocker aborts the run with a
+lists what is asked of each publisher. A failed GitHub release check (the
+token cannot push to a release repository) is a blocker unless
+`release.preflight.fail_on_error: false` makes it a warning; see
+[Release preflight](@/docs/publish/github.md#release-preflight). A blocker aborts the run with a
 `preflight: N resilience blockers: …` line naming each one.
 
 ## Reconcile sweep

@@ -748,6 +748,7 @@ const SECOND_LEVEL_SECTIONS: &[(&str, &str, &str)] = &[
     ("crates[].publish.aur_source", "PublishConfig", "aur_source"),
     ("crates[].publish.krew", "PublishConfig", "krew"),
     ("crates[].publish.nix", "PublishConfig", "nix"),
+    ("release.preflight", "ReleaseConfig", "preflight"),
 ];
 
 /// Build a [`NestedSection`] for the schema definition `def_name`, titled

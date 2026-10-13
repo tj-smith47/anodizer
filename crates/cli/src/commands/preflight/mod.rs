@@ -751,6 +751,11 @@ pub(crate) fn run_engine(
         let report = anodizer_stage_publish::preflight::run_preflight(ctx, log)?;
         if report.entries.is_empty() {
             log.verbose("skipped one-way-door preflight — no one-way-door publishers configured");
+            // A blocker reaches the operator through the abort message; a
+            // warning has no other line to appear on.
+            for w in &report.warnings {
+                log.warn(w);
+            }
         } else {
             report.emit(log);
         }

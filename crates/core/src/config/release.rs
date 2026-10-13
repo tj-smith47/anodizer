@@ -202,6 +202,41 @@ pub struct ReleaseConfig {
     /// crate-level `release:` block is rejected at config load
     /// (`validate_on_failure_root_only`).
     pub on_failure: Option<OnFailureConfig>,
+    /// How the release preflight treats a failed check. The release preflight
+    /// runs before anything is built or published and asks whether the
+    /// resolved GitHub token can push to every configured release repository.
+    ///
+    /// ```yaml
+    /// release:
+    ///   preflight:
+    ///     fail_on_error: false   # report a failed check as a warning and keep going
+    /// ```
+    pub preflight: Option<ReleasePreflightConfig>,
+}
+
+/// The `release.preflight:` block.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ReleasePreflightConfig {
+    /// Stop the run when a release preflight check fails. Default: `true`.
+    ///
+    /// With `false`, a failed check (the token is missing or cannot push to
+    /// the release repository, the repository does not exist) is reported as
+    /// a warning and the run continues; the release itself then fails at
+    /// release creation if the problem is real. A check that
+    /// `preflight.strict` turns into a failure is a failed check here too.
+    ///
+    /// A crate's own `release.preflight.fail_on_error` wins over the
+    /// top-level one. Accepts a bool or a template that renders to `true` or
+    /// `false`.
+    ///
+    /// ```yaml
+    /// release:
+    ///   preflight:
+    ///     fail_on_error: "{{ not IsNightly }}"   # warn only on nightly runs
+    /// ```
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub fail_on_error: Option<StringOrBool>,
 }
 
 impl ReleaseConfig {

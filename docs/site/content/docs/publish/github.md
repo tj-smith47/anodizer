@@ -33,6 +33,50 @@ crates:
 
 See [Publish overview — the `required:` field](../) for the full semantics.
 
+## Release preflight
+
+Before anything is built or published, the preflight asks the GitHub API whether the resolved token can push to every release repository the selected crates name. A failed check (no token, a token without `contents:write`, a repository that does not exist or the token cannot see) stops the run by default.
+
+`release.preflight.fail_on_error: false` reports the failure as a warning and lets the run continue:
+
+```yaml
+crates:
+  - name: myapp
+    release:
+      github:
+        owner: myorg
+        name: myapp
+      preflight:
+        fail_on_error: false   # default: true
+```
+
+With the default, `anodizer preflight` (and `anodizer release`, which runs the same check) stops:
+
+```text
+   • 0 preflight checks passed
+   • Reconcile state
+   • github-release  absent — will publish
+       Error preflight: 1 resilience blocker: github-release: GitHub token cannot push to myorg/myapp (needs contents:write); the release create / asset upload will fail
+```
+
+With `fail_on_error: false` the same check prints a warning and the run goes on:
+
+```text
+   • 0 preflight checks passed
+     Warning github-release: GitHub token cannot push to myorg/myapp (needs contents:write); the release create / asset upload will fail; continuing because release.preflight.fail_on_error is false
+   • preflight found 0 publishers clean
+   • Reconcile state
+   • github-release  absent — will publish
+```
+
+If the problem is real, the release then fails when it creates the release. The value:
+
+- is read per crate: a crate's own `release.preflight.fail_on_error` wins over a top-level `release.preflight.fail_on_error`, which applies to every crate that sets none, in a single-crate project, a lockstep workspace and a per-crate workspace alike;
+- accepts a template that renders to `true` or `false`, e.g. `fail_on_error: "{{ not IsNightly }}"` to only warn on nightly runs;
+- also covers a check that [`preflight.strict`](../general/preflight.md) turned into a failure.
+
+The token itself is also an environment requirement of the release stage, so a run with no token at all still stops at the environment check.
+
 ## Minimal config
 
 ```yaml
@@ -79,6 +123,7 @@ $ anodizer check config
 | `skip_upload` | bool | `false` | Create release without uploading assets |
 | `replace_existing_draft` | bool | `false` | Replace existing draft release. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-draft). |
 | `replace_existing_artifacts` | bool | `false` | Overwrite existing assets. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-artifacts). |
+| `preflight.fail_on_error` | bool/template | `true` | Stop the run when the release preflight fails; `false` reports it as a warning. See [Release preflight](#release-preflight). |
 | `on_failure` | string | `hold` | What a pipeline failure leaves behind. `hold` is the only accepted value — `rollback` is a hard config-validation error. See [Release resilience](../advanced/release-resilience.md#release-on-failure). |
 
 ## Full config reference
@@ -105,6 +150,8 @@ release:
   exclude: []                 # drop assets whose name matches a glob
   skip: false
   on_failure: hold             # the only accepted value; also the default
+  preflight:
+    fail_on_error: true        # false: a failed release preflight only warns
 ```
 
 ## Release body layout

@@ -368,11 +368,19 @@ fn preflight_merge(
     acc.merge(next)
 }
 
-/// (owner, repo) per selected, non-skipped crate carrying a `release.github`
+/// One release repository the probe asks about, with the crate's verdict on
+/// whether a failed check stops the run.
+struct PreflightTarget {
+    owner: String,
+    repo: String,
+    fail_on_error: Result<bool, String>,
+}
+
+/// One target per selected, non-skipped crate carrying a `release.github`
 /// (or default release) block. Mirrors [`collect_release_targets`] minus tag
 /// resolution — the probe needs only the repo coordinates and must not depend
 /// on a version being stamped yet (preflight runs before the tag).
-fn release_repo_targets_for_preflight(ctx: &Context) -> Vec<(String, String)> {
+fn release_repo_targets_for_preflight(ctx: &Context) -> Vec<PreflightTarget> {
     use crate::resolve_release_repo;
     let mut out = Vec::new();
     for c in active_release_configs(ctx) {
@@ -383,17 +391,67 @@ fn release_repo_targets_for_preflight(ctx: &Context) -> Vec<(String, String)> {
         if let Ok(Some(ScmRepoConfig { owner, name, .. })) =
             resolve_release_repo(release_cfg, ScmTokenType::GitHub, ctx)
         {
-            out.push((owner, name));
+            out.push(PreflightTarget {
+                owner,
+                repo: name,
+                fail_on_error: preflight_fails_on_error(ctx, release_cfg),
+            });
         }
     }
     out
+}
+
+/// `release.preflight.fail_on_error` for one crate: its own block, else the
+/// top-level `release:` block, else `true`. A template that cannot render is
+/// returned as the error text the run reports.
+fn preflight_fails_on_error(
+    ctx: &Context,
+    release_cfg: &anodizer_core::config::ReleaseConfig,
+) -> Result<bool, String> {
+    let value = release_cfg
+        .preflight
+        .as_ref()
+        .and_then(|p| p.fail_on_error.as_ref())
+        .or_else(|| {
+            ctx.config
+                .release
+                .as_ref()?
+                .preflight
+                .as_ref()?
+                .fail_on_error
+                .as_ref()
+        });
+    match value {
+        None => Ok(true),
+        Some(v) => v
+            .try_evaluates_to_true(|s| ctx.render_template(s))
+            .map_err(|e| format!("release.preflight.fail_on_error: {e:#}")),
+    }
+}
+
+/// Apply a target's `fail_on_error` to its check: with `false` a blocker is
+/// reported as a warning that says the run continues.
+fn apply_fail_on_error(
+    check: anodizer_core::PreflightCheck,
+    fail_on_error: &Result<bool, String>,
+) -> anodizer_core::PreflightCheck {
+    use anodizer_core::PreflightCheck;
+    match (check, fail_on_error) {
+        (PreflightCheck::Blocker(msg), Ok(false)) => PreflightCheck::Warning(format!(
+            "{msg}; continuing because release.preflight.fail_on_error is false"
+        )),
+        (check, Ok(_)) => check,
+        (check, Err(e)) => check.merge(PreflightCheck::Blocker(e.clone())),
+    }
 }
 
 /// Live pre-tag gate for the REQUIRED github-release publisher: prove the
 /// resolved GitHub token can create a release (push access) in every
 /// configured release repo. Pass (no network) when no release is
 /// configured/selected; Blocker when the token is missing or a target repo is
-/// unwritable; Warning on a transient rate-limit / transport blip.
+/// unwritable; Warning on a transient rate-limit / transport blip. Each
+/// crate's `release.preflight.fail_on_error: false` turns its Blocker into a
+/// Warning.
 fn github_release_preflight(ctx: &Context) -> anodizer_core::PreflightCheck {
     use anodizer_core::PreflightCheck;
     let targets = release_repo_targets_for_preflight(ctx);
@@ -404,36 +462,43 @@ fn github_release_preflight(ctx: &Context) -> anodizer_core::PreflightCheck {
         anodizer_core::git::resolve_github_token_with_env(ctx.options.token.as_deref(), &|k| {
             ctx.env_var(k)
         });
-    let Some(token) = token else {
-        let (owner, repo) = &targets[0];
-        return PreflightCheck::Blocker(format!(
-            "no GitHub token resolved ({}); cannot create the release in {owner}/{repo}",
-            anodizer_core::git::github_token_hint()
-        ));
-    };
     let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
-    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    // Crates sharing a release repo share one probe; each still applies its
+    // own `fail_on_error` to the answer.
+    let mut probed: std::collections::HashMap<(String, String), PreflightCheck> =
+        std::collections::HashMap::new();
     let mut acc = PreflightCheck::Pass;
-    for (owner, repo) in targets {
-        if !seen.insert((owner.clone(), repo.clone())) {
-            continue;
-        }
-        acc = preflight_merge(
-            acc,
-            repo_push_check(
-                &anodizer_core::git::GithubRepoProbe {
-                    owner: &owner,
-                    repo: &repo,
-                    token: Some(&token),
-                    policy: &policy,
-                    deadline: ctx.retry_deadline(),
-                    strict: ctx.preflight_is_strict(),
-                },
-                ctx.config.github_urls.as_ref(),
-                ctx.env_source(),
-                &ctx.logger("preflight"),
-            ),
-        );
+    for target in targets {
+        let PreflightTarget {
+            owner,
+            repo,
+            fail_on_error,
+        } = target;
+        let check = match token.as_deref() {
+            None => PreflightCheck::Blocker(format!(
+                "no GitHub token resolved ({}); cannot create the release in {owner}/{repo}",
+                anodizer_core::git::github_token_hint()
+            )),
+            Some(token) => probed
+                .entry((owner.clone(), repo.clone()))
+                .or_insert_with(|| {
+                    repo_push_check(
+                        &anodizer_core::git::GithubRepoProbe {
+                            owner: &owner,
+                            repo: &repo,
+                            token: Some(token),
+                            policy: &policy,
+                            deadline: ctx.retry_deadline(),
+                            strict: ctx.preflight_is_strict(),
+                        },
+                        ctx.config.github_urls.as_ref(),
+                        ctx.env_source(),
+                        &ctx.logger("preflight"),
+                    )
+                })
+                .clone(),
+        };
+        acc = preflight_merge(acc, apply_fail_on_error(check, &fail_on_error));
     }
     acc
 }

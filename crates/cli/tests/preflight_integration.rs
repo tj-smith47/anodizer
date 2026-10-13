@@ -1663,3 +1663,361 @@ fn preflight_reports_unreachable_github_reconciles_as_unknown_without_failing() 
         );
     }
 }
+
+const RELEASE_PREFLIGHT_CONTINUES: &str =
+    "; continuing because release.preflight.fail_on_error is false";
+
+/// A GitHub API that grants push on `myorg/open` and denies it on
+/// `myorg/myapp`, so one fixture can hold a crate that passes the
+/// release preflight beside one that fails it.
+fn push_access_api() -> std::net::SocketAddr {
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+    fn repo(path: &'static str, push: bool) -> ScriptedRoute {
+        let body = format!(r#"{{"permissions":{{"push":{push}}}}}"#);
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: path,
+            response: Box::leak(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .into_boxed_str(),
+            ),
+            times: None,
+        }
+    }
+    let (addr, _log) = spawn_scripted_responder(vec![
+        repo("/repos/myorg/open", true),
+        repo("/repos/myorg/myapp", false),
+    ]);
+    addr
+}
+
+/// The `release:` block of a crate that releases to `myorg/<repo>`,
+/// indented for a `crates:` entry, with `extra` appended inside it.
+fn crate_release(repo: &str, extra: &str) -> String {
+    format!("    release:\n      github:\n        owner: myorg\n        name: {repo}\n{extra}")
+}
+
+/// Commit `.anodizer.yaml` and tag the tree `v0.1.0`, so the preflight asks
+/// about a release that is due.
+fn commit_and_tag(dir: &std::path::Path, yaml: &str) {
+    std::fs::write(dir.join(".anodizer.yaml"), yaml).unwrap();
+    run_git(dir, &["add", "-A"]);
+    run_git(dir, &["commit", "-q", "-m", "release preflight fixture"]);
+    run_git(dir, &["tag", RECONCILE_TAG]);
+    run_git(
+        dir,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/myorg/myapp.git",
+        ],
+    );
+}
+
+/// A one-crate repository whose crate carries `release_block`.
+fn single_crate_release_fixture(release_block: &str) -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    bootstrap_minimal_cargo_repo(tmp.path(), RECONCILE_CRATE_NAME);
+    commit_and_tag(
+        tmp.path(),
+        &format!(
+            "project_name: {RECONCILE_CRATE_NAME}\ncrates:\n  - name: {RECONCILE_CRATE_NAME}\n    path: .\n    tag_template: \"v{{{{ .Version }}}}\"\n{release_block}"
+        ),
+    );
+    tmp
+}
+
+/// A two-crate Cargo workspace (`fx-core`, `fx-cli`). `lockstep` gives it a
+/// shared `[workspace.package].version`; without it each crate keeps its own
+/// version and tags in its own family. `root` is written at the top level and
+/// `core` / `cli` inside each crate's entry.
+fn two_crate_release_fixture(lockstep: bool, root: &str, core: &str, cli: &str) -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let workspace_package = if lockstep {
+        "\n[workspace.package]\nversion = \"0.1.0\"\n"
+    } else {
+        ""
+    };
+    std::fs::write(
+        tmp.path().join("Cargo.toml"),
+        format!(
+            "[workspace]\nmembers = [\"fx-core\", \"fx-cli\"]\nresolver = \"2\"\n{workspace_package}"
+        ),
+    )
+    .unwrap();
+    let version = if lockstep {
+        "version.workspace = true"
+    } else {
+        "version = \"0.1.0\""
+    };
+    for name in ["fx-core", "fx-cli"] {
+        let dir = tmp.path().join(name);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\n{version}\nedition = \"2021\"\n"),
+        )
+        .unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "").unwrap();
+    }
+    run_git(tmp.path(), &["init", "-q", "-b", "master"]);
+    run_git(tmp.path(), &["config", "user.email", "test@test.com"]);
+    run_git(tmp.path(), &["config", "user.name", "Test"]);
+    commit_and_tag(
+        tmp.path(),
+        &format!(
+            "project_name: fx\n{root}crates:\n  - name: fx-core\n    path: fx-core\n{core}  - name: fx-cli\n    path: fx-cli\n{cli}"
+        ),
+    );
+    tmp
+}
+
+/// Run the github-release preflight of the tree at `dir` against `api`,
+/// returning the output and the `--json` report's `publishers` half.
+fn run_release_preflight(
+    dir: &std::path::Path,
+    api: std::net::SocketAddr,
+    json: bool,
+) -> (std::process::Output, Option<serde_json::Value>) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_anodizer"));
+    cmd.current_dir(dir)
+        .args(["preflight", "--publish-only", "--publishers=github-release"])
+        .env("GITHUB_TOKEN", "dummy-token-for-preflight-test")
+        .env("ANODIZER_GITHUB_API_BASE", format!("http://{api}"))
+        .env_remove("GH_TOKEN")
+        .env_remove("ANODIZER_GITHUB_TOKEN");
+    if json {
+        cmd.arg("--json");
+    }
+    let out = cmd.output().expect("spawn anodizer preflight");
+    if !json {
+        return (out, None);
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let json_start = stdout.find('{').unwrap_or_else(|| {
+        panic!(
+            "no JSON object in stdout: {stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
+    let report: serde_json::Value =
+        serde_json::from_str(stdout[json_start..].trim()).expect("valid JSON report");
+    (out, Some(report["publishers"].clone()))
+}
+
+fn strings(report: &serde_json::Value, key: &str) -> Vec<String> {
+    report[key]
+        .as_array()
+        .unwrap_or_else(|| panic!("no {key} array in {report}"))
+        .iter()
+        .map(|v| v.as_str().expect("string").to_string())
+        .collect()
+}
+
+/// The blocker a token without push access to `myorg/myapp` produces.
+fn locked_blocker() -> String {
+    "github-release: GitHub token cannot push to myorg/myapp (needs contents:write); \
+     the release create / asset upload will fail"
+        .to_string()
+}
+
+fn assert_blocked(out: &std::process::Output, report: &serde_json::Value) {
+    assert!(
+        !out.status.success(),
+        "a failed release preflight must stop the run; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(strings(report, "blockers"), vec![locked_blocker()]);
+    assert!(
+        strings(report, "warnings")
+            .iter()
+            .all(|w| !w.contains("fail_on_error")),
+        "{report}"
+    );
+}
+
+fn assert_warned(out: &std::process::Output, report: &serde_json::Value) {
+    assert!(
+        out.status.success(),
+        "fail_on_error: false must let the run continue; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(strings(report, "blockers").is_empty(), "{report}");
+    assert_eq!(
+        strings(report, "warnings"),
+        vec![format!("{}{RELEASE_PREFLIGHT_CONTINUES}", locked_blocker())]
+    );
+}
+
+/// With no `release.preflight` block, a token that cannot push to the
+/// release repository stops the run with the blocker it has always printed.
+#[test]
+fn release_preflight_failure_stops_the_run_by_default() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let tmp = single_crate_release_fixture(&crate_release("myapp", ""));
+    let (out, report) = run_release_preflight(tmp.path(), push_access_api(), true);
+    assert_blocked(&out, &report.unwrap());
+}
+
+#[test]
+fn release_preflight_failure_stops_the_run_when_fail_on_error_is_true() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let tmp = single_crate_release_fixture(&crate_release(
+        "myapp",
+        "      preflight:\n        fail_on_error: true\n",
+    ));
+    let (out, report) = run_release_preflight(tmp.path(), push_access_api(), true);
+    assert_blocked(&out, &report.unwrap());
+}
+
+/// `fail_on_error: false` reports the same failure as a warning, says the run
+/// continues, and exits zero.
+#[test]
+fn release_preflight_failure_only_warns_when_fail_on_error_is_false() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let tmp = single_crate_release_fixture(&crate_release(
+        "myapp",
+        "      preflight:\n        fail_on_error: false\n",
+    ));
+    let (out, report) = run_release_preflight(tmp.path(), push_access_api(), true);
+    assert_warned(&out, &report.unwrap());
+}
+
+/// The `text` blocks of the "Release preflight" section of the GitHub
+/// release docs, one `Vec` of lines per block.
+fn release_preflight_docs_blocks() -> Vec<Vec<String>> {
+    let page = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/site/content/docs/publish/github.md"),
+    )
+    .expect("read publish/github.md");
+    let start = page
+        .find("## Release preflight")
+        .expect("Release preflight section");
+    let rest = &page[start..];
+    let section = &rest[..rest[3..].find("\n## ").map_or(rest.len(), |i| i + 3)];
+    section
+        .split("```text\n")
+        .skip(1)
+        .map(|b| {
+            b[..b.find("```").expect("closed block")]
+                .lines()
+                .map(str::to_string)
+                .collect()
+        })
+        .collect()
+}
+
+/// The two runs the docs quote print exactly the quoted lines: the default
+/// stops with the blocker, `fail_on_error: false` prints it as a warning.
+#[test]
+fn the_lines_quoted_in_the_release_preflight_docs_are_what_the_preflight_prints() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let blocks = release_preflight_docs_blocks();
+    assert_eq!(blocks.len(), 2, "{blocks:?}");
+    let api = push_access_api();
+    for (extra, block, succeeds) in [
+        ("", &blocks[0], false),
+        (
+            "      preflight:\n        fail_on_error: false\n",
+            &blocks[1],
+            true,
+        ),
+    ] {
+        let tmp = single_crate_release_fixture(&crate_release("myapp", extra));
+        let (out, _) = run_release_preflight(tmp.path(), api, false);
+        let printed = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(out.status.success(), succeeds, "{printed}");
+        let lines: Vec<String> = printed
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_string)
+            .collect();
+        assert_eq!(&lines, block, "docs block disagrees with the run");
+    }
+}
+
+/// A template value is rendered: on a tagged release run `{{ IsSnapshot }}`
+/// is false and `{{ not IsNightly }}` is true.
+#[test]
+fn release_preflight_fail_on_error_renders_a_template() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let tmp = single_crate_release_fixture(&crate_release(
+        "myapp",
+        "      preflight:\n        fail_on_error: \"{{ IsSnapshot }}\"\n",
+    ));
+    let api = push_access_api();
+    let (out, report) = run_release_preflight(tmp.path(), api, true);
+    assert_warned(&out, &report.unwrap());
+
+    let tmp = single_crate_release_fixture(&crate_release(
+        "myapp",
+        "      preflight:\n        fail_on_error: \"{{ not IsNightly }}\"\n",
+    ));
+    let (out, report) = run_release_preflight(tmp.path(), api, true);
+    assert_blocked(&out, &report.unwrap());
+}
+
+/// In a lockstep workspace the top-level `release.preflight` reaches every
+/// crate's `release:` block.
+#[test]
+fn root_release_preflight_reaches_every_crate_of_a_lockstep_workspace() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let tmp = two_crate_release_fixture(
+        true,
+        "release:\n  preflight:\n    fail_on_error: false\n",
+        &crate_release("myapp", ""),
+        &crate_release("myapp", ""),
+    );
+    let (out, report) = run_release_preflight(tmp.path(), push_access_api(), true);
+    assert_warned(&out, &report.unwrap());
+}
+
+/// In a per-crate workspace a crate's own `release.preflight` wins over the
+/// top-level one, and decides only for that crate.
+#[test]
+fn a_crate_release_preflight_decides_for_that_crate_in_a_per_crate_workspace() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let root = "release:\n  preflight:\n    fail_on_error: true\n";
+    let lenient = crate_release("myapp", "      preflight:\n        fail_on_error: false\n");
+    let api = push_access_api();
+
+    let tmp = two_crate_release_fixture(false, root, &lenient, &crate_release("open", ""));
+    let (out, report) = run_release_preflight(tmp.path(), api, true);
+    assert_warned(&out, &report.unwrap());
+
+    let tmp = two_crate_release_fixture(false, root, &lenient, &crate_release("myapp", ""));
+    let (out, report) = run_release_preflight(tmp.path(), api, true);
+    assert_blocked(&out, &report.unwrap());
+}
