@@ -203,8 +203,8 @@ pub struct ReleaseConfig {
     /// (`validate_on_failure_root_only`).
     pub on_failure: Option<OnFailureConfig>,
     /// How the release preflight treats a failed check. The release preflight
-    /// runs before anything is built or published and asks whether the
-    /// resolved GitHub token can push to every configured release repository.
+    /// runs before anything is built or published and asks the forge the
+    /// release is created on whether this run can create it.
     ///
     /// ```yaml
     /// release:
@@ -220,15 +220,31 @@ pub struct ReleaseConfig {
 pub struct ReleasePreflightConfig {
     /// Stop the run when a release preflight check fails. Default: `true`.
     ///
-    /// With `false`, a failed check (the token is missing or cannot push to
-    /// the release repository, the repository does not exist) is reported as
-    /// a warning and the run continues; the release itself then fails at
-    /// release creation if the problem is real. A check that
-    /// `preflight.strict` turns into a failure is a failed check here too.
+    /// The checks, per forge:
     ///
-    /// A crate's own `release.preflight.fail_on_error` wins over the
-    /// top-level one. Accepts a bool or a template that renders to `true` or
-    /// `false`.
+    /// - GitHub: the token can push to the release repository, and when a
+    ///   release already exists at the tag it is not immutable. An immutable
+    ///   release cannot be updated and its assets cannot be replaced, so the
+    ///   release would fail.
+    /// - GitLab: the token has Developer access or higher on the project.
+    /// - Gitea: the token can push to the repository.
+    /// - A missing token is a failed check on every forge.
+    ///
+    /// With `false`, a failed check is reported as a warning that ends in
+    /// `continuing because release.preflight.fail_on_error is false`, and
+    /// the run continues; the release then fails at creation if the problem
+    /// is real. The token is also an environment requirement of the release
+    /// (`ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` or `GH_TOKEN`; `GITLAB_TOKEN`;
+    /// `GITEA_TOKEN`; or `--token`), so a missing token still stops the run at
+    /// the environment check whatever this field says, and with `false` the
+    /// release preflight's own report of it is a warning beside that failure.
+    /// A check that `preflight.strict` turns into a failure is a failed check
+    /// here too.
+    ///
+    /// A crate's own value wins over the top-level `release:` block's; an
+    /// empty value counts as unset. Accepts a bool or a template that renders
+    /// to `true`, `false`, `1` or `0` (any letter case). Any other render, an
+    /// empty one included, stops the run with an error naming the value.
     ///
     /// ```yaml
     /// release:
@@ -236,6 +252,7 @@ pub struct ReleasePreflightConfig {
     ///     fail_on_error: "{{ not IsNightly }}"   # warn only on nightly runs
     /// ```
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    #[schemars(extend("default" = true))]
     pub fail_on_error: Option<StringOrBool>,
 }
 

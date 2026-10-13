@@ -23,9 +23,11 @@ mod promote;
 pub use promote::{GithubReleasePromoter, preflight as github_promote_preflight};
 mod dry_run;
 mod flags;
+mod preflight;
 pub mod publisher;
 mod release_body;
 mod run;
+pub use preflight::release_preflight;
 pub use run::{collect_release_upload_candidates, derive_release_urls};
 
 #[cfg(test)]

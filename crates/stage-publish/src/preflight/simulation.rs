@@ -620,5 +620,25 @@ pub(super) fn run_publisher_preflight_extension(
         }
     }
 
+    // The GitHub release check runs as the github-release publisher's own
+    // preflight above. GitLab and Gitea releases have no publisher, so their
+    // check runs here, under the selection name the release stage obeys on
+    // every forge.
+    if live_publisher_preflight
+        && ctx.token_type != anodizer_core::scm::ScmTokenType::GitHub
+        && !ctx.publisher_deselected("github-release")
+    {
+        let _scope = anodizer_core::retry::PublisherRetryScope::enter("release");
+        match anodizer_stage_release::release_preflight(ctx) {
+            anodizer_core::PreflightCheck::Pass => {}
+            anodizer_core::PreflightCheck::Warning(msg) => {
+                report.warnings.push(format!("release: {msg}"));
+            }
+            anodizer_core::PreflightCheck::Blocker(msg) => {
+                report.blockers.push(format!("release: {msg}"));
+            }
+        }
+    }
+
     Ok(())
 }

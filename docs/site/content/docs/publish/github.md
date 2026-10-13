@@ -35,7 +35,16 @@ See [Publish overview — the `required:` field](../) for the full semantics.
 
 ## Release preflight
 
-Before anything is built or published, the preflight asks the GitHub API whether the resolved token can push to every release repository the selected crates name. A failed check (no token, a token without `contents:write`, a repository that does not exist or the token cannot see) stops the run by default.
+Before anything is built or published, the preflight asks the forge the release is created on whether this run can create every release the selected crates name. A failed check stops the run by default.
+
+| Forge | Check |
+|---|---|
+| GitHub | the token can push to the release repository (`contents:write`), and a release that already exists at the tag is not immutable |
+| GitLab | the token has Developer access or higher on the project (the higher of its project and group access) |
+| Gitea | the token can push to the repository |
+| every forge | a token is resolved at all; a repository that does not exist or the token cannot see fails too |
+
+An immutable GitHub release cannot be updated and its assets cannot be replaced, so a run releasing onto one would fail at release creation; the preflight reports it before the build instead. A tag with no release yet passes.
 
 `release.preflight.fail_on_error: false` reports the failure as a warning and lets the run continue:
 
@@ -71,11 +80,13 @@ With `fail_on_error: false` the same check prints a warning and the run goes on:
 
 If the problem is real, the release then fails when it creates the release. The value:
 
-- is read per crate: a crate's own `release.preflight.fail_on_error` wins over a top-level `release.preflight.fail_on_error`, which applies to every crate that sets none, in a single-crate project, a lockstep workspace and a per-crate workspace alike;
-- accepts a template that renders to `true` or `false`, e.g. `fail_on_error: "{{ not IsNightly }}"` to only warn on nightly runs;
+- is read per crate: a crate's own `release.preflight.fail_on_error` wins over a top-level `release.preflight.fail_on_error`, which applies to every crate that sets none, in a single-crate project, a lockstep workspace and a per-crate workspace alike. An empty value (`fail_on_error: ""`) counts as unset;
+- accepts a template that renders to `true`, `false`, `1` or `0` in any letter case, e.g. `fail_on_error: "{{ not IsNightly }}"` to only warn on nightly runs. Any other render, an empty one included (an unset `{{ Env.X }}`), stops the run with an error naming the field and the rendered value, and that error carries the failed check's own message when there is one;
 - also covers a check that [`preflight.strict`](../general/preflight.md) turned into a failure.
 
-The token itself is also an environment requirement of the release stage, so a run with no token at all still stops at the environment check.
+The token is also an environment requirement of the release: `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` or `GH_TOKEN` on GitHub, `GITLAB_TOKEN` on GitLab, `GITEA_TOKEN` on Gitea, or `--token`. A run with no token therefore still stops at the environment check whatever `fail_on_error` says; with `false` the release preflight reports the missing token as a warning beside that failure.
+
+`--quiet` and `--json` keep the warning off stderr; `--json` lists it under `publishers.warnings`.
 
 ## Minimal config
 

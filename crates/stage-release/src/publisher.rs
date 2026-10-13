@@ -216,7 +216,7 @@ impl Default for GithubReleasePublisher {
 /// and `config_fully_inactive` so the three cannot drift.
 ///
 /// [`Publisher::config_fully_inactive`]: anodizer_core::Publisher::config_fully_inactive
-fn active_release_configs(ctx: &Context) -> Vec<&anodizer_core::config::CrateConfig> {
+pub(crate) fn active_release_configs(ctx: &Context) -> Vec<&anodizer_core::config::CrateConfig> {
     let selected = &ctx.options.selected_crates;
     ctx.config
         .selected_crates(selected)
@@ -355,213 +355,6 @@ fn release_evidence(targets: Vec<GithubReleaseTarget>) -> anodizer_core::Publish
     evidence
 }
 
-// ---------------------------------------------------------------------------
-// Pre-tag probe — github-release write-access gate
-// ---------------------------------------------------------------------------
-
-/// Keep the most severe of two outcomes: `Blocker` > `Warning` > `Pass`. The
-/// first-seen message wins within a severity so the operator sees a stable line.
-fn preflight_merge(
-    acc: anodizer_core::PreflightCheck,
-    next: anodizer_core::PreflightCheck,
-) -> anodizer_core::PreflightCheck {
-    acc.merge(next)
-}
-
-/// One release repository the probe asks about, with the crate's verdict on
-/// whether a failed check stops the run.
-struct PreflightTarget {
-    owner: String,
-    repo: String,
-    fail_on_error: Result<bool, String>,
-}
-
-/// One target per selected, non-skipped crate carrying a `release.github`
-/// (or default release) block. Mirrors [`collect_release_targets`] minus tag
-/// resolution — the probe needs only the repo coordinates and must not depend
-/// on a version being stamped yet (preflight runs before the tag).
-fn release_repo_targets_for_preflight(ctx: &Context) -> Vec<PreflightTarget> {
-    use crate::resolve_release_repo;
-    let mut out = Vec::new();
-    for c in active_release_configs(ctx) {
-        let release_cfg = c
-            .release
-            .as_ref()
-            .expect("filtered by active_release_configs");
-        if let Ok(Some(ScmRepoConfig { owner, name, .. })) =
-            resolve_release_repo(release_cfg, ScmTokenType::GitHub, ctx)
-        {
-            out.push(PreflightTarget {
-                owner,
-                repo: name,
-                fail_on_error: preflight_fails_on_error(ctx, release_cfg),
-            });
-        }
-    }
-    out
-}
-
-/// `release.preflight.fail_on_error` for one crate: its own block, else the
-/// top-level `release:` block, else `true`. A template that cannot render is
-/// returned as the error text the run reports.
-fn preflight_fails_on_error(
-    ctx: &Context,
-    release_cfg: &anodizer_core::config::ReleaseConfig,
-) -> Result<bool, String> {
-    let value = release_cfg
-        .preflight
-        .as_ref()
-        .and_then(|p| p.fail_on_error.as_ref())
-        .or_else(|| {
-            ctx.config
-                .release
-                .as_ref()?
-                .preflight
-                .as_ref()?
-                .fail_on_error
-                .as_ref()
-        });
-    match value {
-        None => Ok(true),
-        Some(v) => v
-            .try_evaluates_to_true(|s| ctx.render_template(s))
-            .map_err(|e| format!("release.preflight.fail_on_error: {e:#}")),
-    }
-}
-
-/// Apply a target's `fail_on_error` to its check: with `false` a blocker is
-/// reported as a warning that says the run continues.
-fn apply_fail_on_error(
-    check: anodizer_core::PreflightCheck,
-    fail_on_error: &Result<bool, String>,
-) -> anodizer_core::PreflightCheck {
-    use anodizer_core::PreflightCheck;
-    match (check, fail_on_error) {
-        (PreflightCheck::Blocker(msg), Ok(false)) => PreflightCheck::Warning(format!(
-            "{msg}; continuing because release.preflight.fail_on_error is false"
-        )),
-        (check, Ok(_)) => check,
-        (check, Err(e)) => check.merge(PreflightCheck::Blocker(e.clone())),
-    }
-}
-
-/// Live pre-tag gate for the REQUIRED github-release publisher: prove the
-/// resolved GitHub token can create a release (push access) in every
-/// configured release repo. Pass (no network) when no release is
-/// configured/selected; Blocker when the token is missing or a target repo is
-/// unwritable; Warning on a transient rate-limit / transport blip. Each
-/// crate's `release.preflight.fail_on_error: false` turns its Blocker into a
-/// Warning.
-fn github_release_preflight(ctx: &Context) -> anodizer_core::PreflightCheck {
-    use anodizer_core::PreflightCheck;
-    let targets = release_repo_targets_for_preflight(ctx);
-    if targets.is_empty() {
-        return PreflightCheck::Pass;
-    }
-    let token =
-        anodizer_core::git::resolve_github_token_with_env(ctx.options.token.as_deref(), &|k| {
-            ctx.env_var(k)
-        });
-    let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
-    // Crates sharing a release repo share one probe; each still applies its
-    // own `fail_on_error` to the answer.
-    let mut probed: std::collections::HashMap<(String, String), PreflightCheck> =
-        std::collections::HashMap::new();
-    let mut acc = PreflightCheck::Pass;
-    for target in targets {
-        let PreflightTarget {
-            owner,
-            repo,
-            fail_on_error,
-        } = target;
-        let check = match token.as_deref() {
-            None => PreflightCheck::Blocker(format!(
-                "no GitHub token resolved ({}); cannot create the release in {owner}/{repo}",
-                anodizer_core::git::github_token_hint()
-            )),
-            Some(token) => probed
-                .entry((owner.clone(), repo.clone()))
-                .or_insert_with(|| {
-                    repo_push_check(
-                        &anodizer_core::git::GithubRepoProbe {
-                            owner: &owner,
-                            repo: &repo,
-                            token: Some(token),
-                            policy: &policy,
-                            deadline: ctx.retry_deadline(),
-                            strict: ctx.preflight_is_strict(),
-                        },
-                        ctx.config.github_urls.as_ref(),
-                        ctx.env_source(),
-                        &ctx.logger("preflight"),
-                    )
-                })
-                .clone(),
-        };
-        acc = preflight_merge(acc, apply_fail_on_error(check, &fail_on_error));
-    }
-    acc
-}
-
-/// Probe `GET {api_base}/repos/{owner}/{repo}` for push access, resolving
-/// the base through [`anodizer_core::http::github_api_base_with_config`] —
-/// the probe must contact the same host the release backend will
-/// (`github_urls.api` on GHES), not hardcoded github.com.
-/// See [`repo_push_check_at`] for the status/permission mapping.
-fn repo_push_check<E: anodizer_core::EnvSource + ?Sized>(
-    probe: &anodizer_core::git::GithubRepoProbe<'_>,
-    github_urls: Option<&anodizer_core::config::GitHubUrlsConfig>,
-    env: &E,
-    log: &anodizer_core::log::StageLogger,
-) -> anodizer_core::PreflightCheck {
-    let base = anodizer_core::http::github_api_base_with_config(github_urls, env);
-    let url = format!("{base}/repos/{}/{}", probe.owner, probe.repo);
-    repo_push_check_at(&url, probe, log)
-}
-
-/// `url`-taking core of [`repo_push_check`] so a unit test can drive the
-/// status/permission mapping against a local responder.
-///
-/// github-release is REQUIRED and creates the release + uploads assets, so a
-/// definitively-unwritable target is a hard prerequisite the run cannot
-/// satisfy — those map to Blocker. A transient rate-limit / transport blip must
-/// not abort a release that would otherwise succeed — those warn.
-///
-/// * 200 + `permissions.push == true` ⇒ Pass
-/// * 200 + `permissions.push == false` ⇒ Blocker (token lacks `contents:write`)
-/// * 200 + `permissions` absent ⇒ Warning (push scope undeterminable;
-///   Blocker under strict preflight)
-/// * 404 / 401 / 403 without a rate-limit signal ⇒ Blocker
-/// * 429, or 401 / 403 carrying a rate-limit header ⇒ Warning (Blocker under
-///   strict preflight)
-/// * 5xx / transport failure / unexpected status ⇒ Warning (Blocker under
-///   strict preflight)
-fn repo_push_check_at(
-    url: &str,
-    probe: &anodizer_core::git::GithubRepoProbe<'_>,
-    log: &anodizer_core::log::StageLogger,
-) -> anodizer_core::PreflightCheck {
-    use anodizer_core::PreflightCheck;
-    let (owner, repo) = (probe.owner, probe.repo);
-    anodizer_core::git::github_repo_push_check(
-        url,
-        probe,
-        anodizer_core::git::RepoAccessOutcomes {
-            push_denied: PreflightCheck::Blocker(format!(
-                "GitHub token cannot push to {owner}/{repo} (needs contents:write); \
-                 the release create / asset upload will fail"
-            )),
-            // A missing repo or a token that cannot access it is a hard
-            // prerequisite the release-create path cannot satisfy — block.
-            missing_or_denied: PreflightCheck::Blocker(format!(
-                "release repo {owner}/{repo} not found or the GitHub token lacks access; \
-                 cannot create the release"
-            )),
-        },
-        log,
-    )
-}
-
 impl anodizer_core::Publisher for GithubReleasePublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -584,9 +377,11 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
     }
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        // GitHub release creation + asset upload authenticate via the
-        // same ladder the stage uses: explicit `--token` option, else
-        // ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN. Self-gates on a `release:`
+        // Release creation + asset upload authenticate with the token the
+        // stage resolves for the run's forge: explicit `--token` option, else
+        // the forge's environment variable (the GitHub ladder, GITLAB_TOKEN or
+        // GITEA_TOKEN). This requirement is also the release stage's, so it
+        // names the forge the stage releases on. Self-gates on a `release:`
         // block existing anywhere in the crate universe so ungated
         // requirement collection never demands a token from a config that
         // creates no release.
@@ -598,11 +393,17 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
         if !configured || ctx.options.token.as_deref().is_some_and(|t| !t.is_empty()) {
             return Vec::new();
         }
-        vec![anodizer_core::EnvRequirement::EnvAnyOf {
-            vars: anodizer_core::git::GITHUB_TOKEN_ENV_LADDER
-                .iter()
-                .map(|v| v.to_string())
-                .collect(),
+        let owned = |vars: &[&str]| vars.iter().map(|v| v.to_string()).collect();
+        vec![match ctx.token_type {
+            ScmTokenType::GitHub => anodizer_core::EnvRequirement::EnvAnyOf {
+                vars: owned(anodizer_core::git::GITHUB_TOKEN_ENV_LADDER),
+            },
+            ScmTokenType::GitLab => anodizer_core::EnvRequirement::EnvAllOf {
+                vars: owned(&["GITLAB_TOKEN"]),
+            },
+            ScmTokenType::Gitea => anodizer_core::EnvRequirement::EnvAllOf {
+                vars: owned(&["GITEA_TOKEN"]),
+            },
         }]
     }
 
@@ -773,9 +574,9 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
     /// creation AFTER one-way-door publishers (cargo / chocolatey / …) may have
     /// already fired. Probe every configured release repo for push access
     /// BEFORE the tag is cut. Pass (no network) when no release is
-    /// configured/selected. See `github_release_preflight`.
+    /// configured/selected. See [`crate::preflight::release_preflight`].
     fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
-        Ok(github_release_preflight(ctx))
+        Ok(crate::preflight::release_preflight(ctx))
     }
 
     fn skips_on_nightly(&self) -> bool {
@@ -915,6 +716,7 @@ mod gh_cli_client {
 #[cfg(test)]
 mod publisher_tests {
     use super::*;
+    use crate::preflight::{repo_push_check, repo_push_check_at};
 
     fn tlog() -> &'static anodizer_core::log::StageLogger {
         anodizer_core::test_helpers::test_logger()

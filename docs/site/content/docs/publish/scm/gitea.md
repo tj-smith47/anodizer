@@ -63,6 +63,7 @@ Control how release notes are handled when a release already exists:
 - Asset upload via multipart POST with the file as the `attachment` form field
 - URL segments are percent-encoded for special characters
 - 300-second HTTP timeout
+- Release preflight: before the build, `GET /api/v1/repos/{owner}/{repo}` checks that the token can push (a response with no `permissions` passes). A failed check stops the run unless `release.preflight.fail_on_error` is `false`; see [Release preflight](@/docs/publish/github.md#release-preflight)
 
 ## Self-hosted Gitea
 

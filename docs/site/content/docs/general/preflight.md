@@ -100,8 +100,10 @@ for how one publisher grades that), or a missing rollback scope under
 run continue — a rollback scope missing in default mode, a credential probe
 that could not reach a verdict, a publisher that is optional. The
 [rollback scope preflight](@/docs/advanced/release-resilience.md#rollback-scope-preflight)
-lists what is asked of each publisher. A failed GitHub release check (the
-token cannot push to a release repository) is a blocker unless
+lists what is asked of each publisher. A failed release check (on GitHub the
+token cannot push to the release repository or the tag's release is
+immutable, on GitLab and Gitea the token lacks the access a release needs)
+is a blocker unless
 `release.preflight.fail_on_error: false` makes it a warning; see
 [Release preflight](@/docs/publish/github.md#release-preflight). A blocker aborts the run with a
 `preflight: N resilience blockers: …` line naming each one.

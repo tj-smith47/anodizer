@@ -1294,3 +1294,90 @@ workspaces:
         "the sibling crate must NOT be published under ws-a's overlay, got:\n{merged}"
     );
 }
+
+/// `anodizer release --publish-only` with `release.preflight.fail_on_error:
+/// false` prints the failed release preflight check as a warning and goes
+/// on to the release stage, which then fails creating the release against
+/// the stub API (every write is a 404), so nothing is uploaded.
+#[test]
+fn release_continues_past_a_release_preflight_that_only_warns() {
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+    if !tool_on_path("git") {
+        eprintln!("SKIP release_continues_past_a_release_preflight_that_only_warns: git missing");
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    bootstrap_minimal_cargo_repo(repo, FIXTURE_CRATE_NAME);
+    configure_tag_template(repo);
+    let body = r#"{"permissions":{"push":false}}"#;
+    let (api, log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/repos/test-owner/test-repo",
+        response: Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        ),
+        times: None,
+    }]);
+    // Both the preflight probe and the release backend read
+    // `github_urls`, so the whole run talks to the stub.
+    let config = repo.join(".anodizer.yaml");
+    let yaml = fs::read_to_string(&config).unwrap();
+    fs::write(
+        &config,
+        format!(
+            "github_urls:\n  api: http://{api}/\n  upload: http://{api}/\n{yaml}      preflight:\n        fail_on_error: false\n"
+        ),
+    )
+    .unwrap();
+    run_git(repo, &["commit", "-qam", "release preflight warns only"]);
+    let commit = head_commit(repo);
+    bootstrap_preserved_dist(repo, "0.1.0", &commit);
+    tag_head(repo, "0.1.0");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["release", "--publish-only"])
+        .env("GITHUB_TOKEN", "dummy-token-for-preflight-test")
+        .env_remove("ANODIZER_GITHUB_API_BASE")
+        .env_remove("COSIGN_KEY")
+        .env_remove("GPG_PRIVATE_KEY")
+        .env_remove("GH_TOKEN")
+        .env_remove("ANODIZER_GITHUB_TOKEN")
+        .env_remove("GITLAB_TOKEN")
+        .env_remove("GITEA_TOKEN")
+        .env_remove("ANODIZER_FORCE_TOKEN")
+        .current_dir(repo)
+        .output()
+        .expect("invoking anodizer release --publish-only");
+    let merged = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        merged.contains(
+            "Warning github-release: GitHub token cannot push to test-owner/test-repo \
+             (needs contents:write); the release create / asset upload will fail; continuing \
+             because release.preflight.fail_on_error is false"
+        ),
+        "{merged}"
+    );
+    assert!(!merged.contains("Error preflight:"), "{merged}");
+    let log = log.lock().unwrap();
+    assert!(
+        log.iter()
+            .any(|r| r.method == "POST" && r.path == "/repos/test-owner/test-repo/releases"),
+        "the release stage must have tried to create the release: {log:?}\n{merged}"
+    );
+    assert!(
+        !log.iter().any(|r| r.path.contains("/assets")),
+        "nothing may be uploaded: {log:?}"
+    );
+}

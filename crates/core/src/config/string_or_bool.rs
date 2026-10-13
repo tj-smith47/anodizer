@@ -69,6 +69,36 @@ impl StringOrBool {
     }
 }
 
+impl StringOrBool {
+    /// Evaluate this value as a boolean that has to be spelled as one.
+    ///
+    /// A `Bool` is returned as is. A string is rendered and trimmed, then
+    /// `true` / `1` read as true and `false` / `0` as false, in any letter
+    /// case. Anything else, an empty render included, is an error naming
+    /// `label` and the rendered value, so a template that renders nothing
+    /// (an unset variable, a typo) cannot pass for `false`.
+    pub fn try_evaluate_strict(
+        &self,
+        label: &str,
+        render: impl Fn(&str) -> anyhow::Result<String>,
+    ) -> anyhow::Result<bool> {
+        let StringOrBool::String(s) = self else {
+            return Ok(self.as_bool());
+        };
+        reject_stale_typed_compare(s, label)?;
+        let rendered =
+            render(s).map_err(|e| anyhow::anyhow!("{label}: template render failed: {e:#}"))?;
+        match rendered.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" => Ok(true),
+            "false" | "0" => Ok(false),
+            _ => anyhow::bail!(
+                "{label} rendered {:?}, which is not true, false, 1 or 0",
+                rendered.trim()
+            ),
+        }
+    }
+}
+
 impl Default for StringOrBool {
     fn default() -> Self {
         StringOrBool::Bool(false)
@@ -455,6 +485,48 @@ where
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn strict_evaluation_reads_only_a_boolean_spelling() {
+        let render = |s: &str| Ok(s.to_string());
+        for (raw, want) in [
+            (" TRUE ", true),
+            ("1", true),
+            ("False", false),
+            ("0", false),
+        ] {
+            assert_eq!(
+                StringOrBool::String(raw.into())
+                    .try_evaluate_strict("f", render)
+                    .unwrap(),
+                want,
+                "{raw:?}"
+            );
+        }
+        assert!(
+            StringOrBool::Bool(false)
+                .try_evaluate_strict("f", render)
+                .is_ok_and(|b| !b)
+        );
+        for raw in ["", "  ", "maybe", "yes"] {
+            let err = StringOrBool::String(raw.into())
+                .try_evaluate_strict("f", render)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                err,
+                format!(
+                    "f rendered {:?}, which is not true, false, 1 or 0",
+                    raw.trim()
+                )
+            );
+        }
+        let err = StringOrBool::String("{{ x".into())
+            .try_evaluate_strict("f", |_| anyhow::bail!("boom"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "f: template render failed: boom");
+    }
     use super::*;
     use std::time::Duration;
 

@@ -1667,33 +1667,62 @@ fn preflight_reports_unreachable_github_reconciles_as_unknown_without_failing() 
 const RELEASE_PREFLIGHT_CONTINUES: &str =
     "; continuing because release.preflight.fail_on_error is false";
 
-/// A GitHub API that grants push on `myorg/open` and denies it on
-/// `myorg/myapp`, so one fixture can hold a crate that passes the
-/// release preflight beside one that fails it.
-fn push_access_api() -> std::net::SocketAddr {
+type RequestLogs = std::sync::Arc<
+    std::sync::Mutex<Vec<anodizer_core::test_helpers::scripted_responder::RequestLog>>,
+>;
+
+/// An API answering each `(path, body)` GET with a 200 JSON body, and every
+/// other request with a 404.
+fn json_api(routes: Vec<(&'static str, String)>) -> (std::net::SocketAddr, RequestLogs) {
     use anodizer_core::test_helpers::scripted_responder::{
         ScriptedRoute, spawn_scripted_responder,
     };
-    fn repo(path: &'static str, push: bool) -> ScriptedRoute {
-        let body = format!(r#"{{"permissions":{{"push":{push}}}}}"#);
-        ScriptedRoute {
-            method: "GET",
-            path_pattern: path,
-            response: Box::leak(
-                format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-                    body.len()
-                )
-                .into_boxed_str(),
-            ),
-            times: None,
-        }
-    }
-    let (addr, _log) = spawn_scripted_responder(vec![
-        repo("/repos/myorg/open", true),
-        repo("/repos/myorg/myapp", false),
-    ]);
-    addr
+    spawn_scripted_responder(
+        routes
+            .into_iter()
+            .map(|(path, body)| ScriptedRoute {
+                method: "GET",
+                path_pattern: path,
+                response: Box::leak(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .into_boxed_str(),
+                ),
+                times: None,
+            })
+            .collect(),
+    )
+}
+
+/// A GitHub API that grants push on `myorg/open` and denies it on
+/// `myorg/myapp`, so one fixture can hold a crate that passes the
+/// release preflight beside one that fails it.
+fn push_access_api_logged() -> (std::net::SocketAddr, RequestLogs) {
+    json_api(vec![
+        (
+            "/repos/myorg/open",
+            r#"{"permissions":{"push":true}}"#.to_string(),
+        ),
+        (
+            "/repos/myorg/myapp",
+            r#"{"permissions":{"push":false}}"#.to_string(),
+        ),
+    ])
+}
+
+fn push_access_api() -> std::net::SocketAddr {
+    push_access_api_logged().0
+}
+
+/// How many requests the API saw for `path`.
+fn requests_for(log: &RequestLogs, path: &str) -> usize {
+    log.lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.path == path)
+        .count()
 }
 
 /// The `release:` block of a crate that releases to `myorg/<repo>`,
@@ -1722,12 +1751,18 @@ fn commit_and_tag(dir: &std::path::Path, yaml: &str) {
 
 /// A one-crate repository whose crate carries `release_block`.
 fn single_crate_release_fixture(release_block: &str) -> TempDir {
+    single_crate_release_fixture_with("", release_block)
+}
+
+/// A one-crate repository with `root` at the top level of its config and
+/// `release_block` in its crate.
+fn single_crate_release_fixture_with(root: &str, release_block: &str) -> TempDir {
     let tmp = TempDir::new().unwrap();
     bootstrap_minimal_cargo_repo(tmp.path(), RECONCILE_CRATE_NAME);
     commit_and_tag(
         tmp.path(),
         &format!(
-            "project_name: {RECONCILE_CRATE_NAME}\ncrates:\n  - name: {RECONCILE_CRATE_NAME}\n    path: .\n    tag_template: \"v{{{{ .Version }}}}\"\n{release_block}"
+            "project_name: {RECONCILE_CRATE_NAME}\n{root}crates:\n  - name: {RECONCILE_CRATE_NAME}\n    path: .\n    tag_template: \"v{{{{ .Version }}}}\"\n{release_block}"
         ),
     );
     tmp
@@ -1778,27 +1813,38 @@ fn two_crate_release_fixture(lockstep: bool, root: &str, core: &str, cli: &str) 
     tmp
 }
 
-/// Run the github-release preflight of the tree at `dir` against `api`,
-/// returning the output and the `--json` report's `publishers` half.
-fn run_release_preflight(
+/// Run the release half of `anodizer preflight` on the tree at `dir` with
+/// `env` set and every ambient forge token and forge override removed.
+fn run_forge_preflight(
     dir: &std::path::Path,
-    api: std::net::SocketAddr,
-    json: bool,
-) -> (std::process::Output, Option<serde_json::Value>) {
+    env: &[(&str, String)],
+    args: &[&str],
+) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_anodizer"));
     cmd.current_dir(dir)
         .args(["preflight", "--publish-only", "--publishers=github-release"])
-        .env("GITHUB_TOKEN", "dummy-token-for-preflight-test")
-        .env("ANODIZER_GITHUB_API_BASE", format!("http://{api}"))
-        .env_remove("GH_TOKEN")
-        .env_remove("ANODIZER_GITHUB_TOKEN");
-    if json {
-        cmd.arg("--json");
+        .args(args);
+    for var in [
+        "ANODIZER_GITHUB_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "GITLAB_TOKEN",
+        "GITEA_TOKEN",
+        "CI_JOB_TOKEN",
+        "ANODIZER_FORCE_TOKEN",
+        "GORELEASER_FORCE_TOKEN",
+        "ANODIZER_GITHUB_API_BASE",
+    ] {
+        cmd.env_remove(var);
     }
-    let out = cmd.output().expect("spawn anodizer preflight");
-    if !json {
-        return (out, None);
+    for (k, v) in env {
+        cmd.env(k, v);
     }
+    cmd.output().expect("spawn anodizer preflight")
+}
+
+/// The whole `--json` report a preflight run printed.
+fn json_report(out: &std::process::Output) -> serde_json::Value {
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let json_start = stdout.find('{').unwrap_or_else(|| {
         panic!(
@@ -1806,9 +1852,26 @@ fn run_release_preflight(
             String::from_utf8_lossy(&out.stderr)
         )
     });
-    let report: serde_json::Value =
-        serde_json::from_str(stdout[json_start..].trim()).expect("valid JSON report");
-    (out, Some(report["publishers"].clone()))
+    serde_json::from_str(stdout[json_start..].trim()).expect("valid JSON report")
+}
+
+/// Run the github-release preflight of the tree at `dir` against `api`,
+/// returning the output and the `--json` report's `publishers` half.
+fn run_release_preflight(
+    dir: &std::path::Path,
+    api: std::net::SocketAddr,
+    json: bool,
+) -> (std::process::Output, Option<serde_json::Value>) {
+    let env = [
+        ("GITHUB_TOKEN", "dummy-token-for-preflight-test".to_string()),
+        ("ANODIZER_GITHUB_API_BASE", format!("http://{api}")),
+    ];
+    let out = run_forge_preflight(dir, &env, if json { &["--json"] } else { &[] });
+    if !json {
+        return (out, None);
+    }
+    let report = json_report(&out)["publishers"].clone();
+    (out, Some(report))
 }
 
 fn strings(report: &serde_json::Value, key: &str) -> Vec<String> {
@@ -2020,4 +2083,483 @@ fn a_crate_release_preflight_decides_for_that_crate_in_a_per_crate_workspace() {
     let tmp = two_crate_release_fixture(false, root, &lenient, &crate_release("myapp", ""));
     let (out, report) = run_release_preflight(tmp.path(), api, true);
     assert_blocked(&out, &report.unwrap());
+}
+
+const LENIENT: &str = "      preflight:\n        fail_on_error: false\n";
+
+/// `fail_on_error: <value>` inside a crate's `release:` block.
+fn crate_fail_on_error(value: &str) -> String {
+    format!("      preflight:\n        fail_on_error: {value}\n")
+}
+
+/// The top-level `release.preflight.fail_on_error: <value>`.
+fn root_fail_on_error(value: &str) -> String {
+    format!("release:\n  preflight:\n    fail_on_error: {value}\n")
+}
+
+/// The one blocker of a run whose release preflight stopped it.
+fn single_blocker(out: &std::process::Output, report: &serde_json::Value) -> String {
+    assert!(
+        !out.status.success(),
+        "the run must stop; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let blockers = strings(report, "blockers");
+    assert_eq!(blockers.len(), 1, "{report}");
+    blockers[0].clone()
+}
+
+const NOT_A_BOOL: &str = "github-release: release.preflight.fail_on_error rendered \"maybe\", \
+                          which is not true, false, 1 or 0";
+
+/// A template that cannot render stops the run naming the field, even when
+/// the check it decides on passes.
+#[test]
+fn a_fail_on_error_template_that_cannot_render_stops_the_run() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let tmp =
+        single_crate_release_fixture(&crate_release("open", &crate_fail_on_error("\"{{ nope\"")));
+    let (out, report) = run_release_preflight(tmp.path(), push_access_api(), true);
+    let blocker = single_blocker(&out, &report.unwrap());
+    assert!(
+        blocker.starts_with(
+            "github-release: release.preflight.fail_on_error: template render failed:"
+        ),
+        "{blocker}"
+    );
+}
+
+/// A value that renders to something other than a boolean spelling stops
+/// the run naming the field and the value.
+#[test]
+fn a_fail_on_error_that_renders_a_non_boolean_stops_the_run() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let tmp = single_crate_release_fixture(&crate_release("open", &crate_fail_on_error("maybe")));
+    let (out, report) = run_release_preflight(tmp.path(), push_access_api(), true);
+    assert_eq!(single_blocker(&out, &report.unwrap()), NOT_A_BOOL);
+}
+
+/// A template that renders nothing (here an unset variable) is not `false`.
+#[test]
+fn a_fail_on_error_that_renders_empty_stops_the_run() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let tmp = single_crate_release_fixture(&crate_release(
+        "open",
+        &crate_fail_on_error("\"{{ Env.ANODIZER_FAIL_ON_ERROR_FIXTURE_UNSET }}\""),
+    ));
+    let (out, report) = run_release_preflight(tmp.path(), push_access_api(), true);
+    assert_eq!(
+        single_blocker(&out, &report.unwrap()),
+        "github-release: release.preflight.fail_on_error rendered \"\", which is not true, \
+         false, 1 or 0"
+    );
+}
+
+/// An unreadable value and a failed check are both reported.
+#[test]
+fn an_unreadable_fail_on_error_does_not_hide_the_failed_check() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let tmp = single_crate_release_fixture(&crate_release("myapp", &crate_fail_on_error("maybe")));
+    let (out, report) = run_release_preflight(tmp.path(), push_access_api(), true);
+    let locked = locked_blocker();
+    let locked = locked.strip_prefix("github-release: ").unwrap();
+    assert_eq!(
+        single_blocker(&out, &report.unwrap()),
+        format!("{NOT_A_BOOL}; the check it decides on reported: {locked}")
+    );
+}
+
+/// A crate's empty value is no value: the top-level one decides.
+#[test]
+fn an_empty_crate_fail_on_error_falls_back_to_the_top_level_value() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let tmp = single_crate_release_fixture_with(
+        &root_fail_on_error("false"),
+        &crate_release("myapp", &crate_fail_on_error("\"\"")),
+    );
+    let (out, report) = run_release_preflight(tmp.path(), push_access_api(), true);
+    assert_warned(&out, &report.unwrap());
+}
+
+#[test]
+fn a_crate_fail_on_error_true_wins_over_a_top_level_false() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let tmp = single_crate_release_fixture_with(
+        &root_fail_on_error("false"),
+        &crate_release("myapp", &crate_fail_on_error("true")),
+    );
+    let (out, report) = run_release_preflight(tmp.path(), push_access_api(), true);
+    assert_blocked(&out, &report.unwrap());
+}
+
+#[test]
+fn a_top_level_fail_on_error_false_reaches_every_crate_of_a_per_crate_workspace() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let tmp = two_crate_release_fixture(
+        false,
+        &root_fail_on_error("false"),
+        &crate_release("myapp", ""),
+        &crate_release("myapp", ""),
+    );
+    let (out, report) = run_release_preflight(tmp.path(), push_access_api(), true);
+    assert_warned(&out, &report.unwrap());
+}
+
+/// In a lockstep workspace a crate's own `true` stops the run though the
+/// top-level value is `false`.
+#[test]
+fn a_crate_fail_on_error_overrides_the_top_level_value_in_a_lockstep_workspace() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let tmp = two_crate_release_fixture(
+        true,
+        &root_fail_on_error("false"),
+        &crate_release("myapp", &crate_fail_on_error("true")),
+        &crate_release("myapp", ""),
+    );
+    let (out, report) = run_release_preflight(tmp.path(), push_access_api(), true);
+    assert_blocked(&out, &report.unwrap());
+}
+
+/// Two crates releasing to one repository cost one push probe and one
+/// existing-release probe.
+#[test]
+fn crates_sharing_a_release_repository_share_one_probe() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let (api, log) = push_access_api_logged();
+    let tmp = two_crate_release_fixture(
+        true,
+        "",
+        &crate_release("open", ""),
+        &crate_release("open", ""),
+    );
+    let (out, report) = run_release_preflight(tmp.path(), api, true);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report = report.unwrap();
+    assert!(strings(&report, "blockers").is_empty(), "{report}");
+    assert_eq!(requests_for(&log, "/repos/myorg/open"), 1);
+    assert_eq!(
+        requests_for(&log, "/repos/myorg/open/releases/tags/v0.1.0"),
+        1
+    );
+}
+
+/// The warning reaches stderr in human mode, and neither `--quiet` nor
+/// `--json` prints it there; `--json` carries it in the report.
+#[test]
+fn quiet_and_json_keep_the_release_preflight_warning_off_stderr() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let tmp = single_crate_release_fixture(&crate_release("myapp", LENIENT));
+    let api = push_access_api();
+    let env = [
+        ("GITHUB_TOKEN", "dummy-token-for-preflight-test".to_string()),
+        ("ANODIZER_GITHUB_API_BASE", format!("http://{api}")),
+    ];
+    let stderr = |out: &std::process::Output| String::from_utf8_lossy(&out.stderr).to_string();
+
+    let human = run_forge_preflight(tmp.path(), &env, &[]);
+    assert!(human.status.success(), "{}", stderr(&human));
+    assert!(
+        stderr(&human).contains(RELEASE_PREFLIGHT_CONTINUES),
+        "{}",
+        stderr(&human)
+    );
+
+    let quiet = run_forge_preflight(tmp.path(), &env, &["--quiet"]);
+    assert!(quiet.status.success(), "{}", stderr(&quiet));
+    assert!(
+        !stderr(&quiet).contains(RELEASE_PREFLIGHT_CONTINUES),
+        "{}",
+        stderr(&quiet)
+    );
+
+    let json = run_forge_preflight(tmp.path(), &env, &["--json"]);
+    assert!(json.status.success(), "{}", stderr(&json));
+    assert!(
+        !stderr(&json).contains(RELEASE_PREFLIGHT_CONTINUES),
+        "{}",
+        stderr(&json)
+    );
+    assert_warned(&json, &json_report(&json)["publishers"]);
+}
+
+/// A GitHub release that already exists at the tag and is immutable stops
+/// the run by default and only warns with `false`; a mutable one passes.
+#[test]
+fn an_immutable_github_release_at_the_tag_fails_the_release_preflight() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let push = r#"{"permissions":{"push":true}}"#.to_string();
+    let (api, log) = json_api(vec![
+        ("/repos/myorg/locked", push.clone()),
+        (
+            "/repos/myorg/locked/releases/tags/v0.1.0",
+            r#"{"tag_name":"v0.1.0","immutable":true}"#.to_string(),
+        ),
+        ("/repos/myorg/open", push),
+        (
+            "/repos/myorg/open/releases/tags/v0.1.0",
+            r#"{"tag_name":"v0.1.0","immutable":false}"#.to_string(),
+        ),
+    ]);
+    let immutable = "github-release: release v0.1.0 in myorg/locked already exists and is \
+                     immutable, so it cannot be updated";
+
+    let tmp = single_crate_release_fixture(&crate_release("locked", ""));
+    let (out, report) = run_release_preflight(tmp.path(), api, true);
+    assert_eq!(single_blocker(&out, &report.unwrap()), immutable);
+
+    let tmp = single_crate_release_fixture(&crate_release("locked", LENIENT));
+    let (out, report) = run_release_preflight(tmp.path(), api, true);
+    let report = report.unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(strings(&report, "blockers").is_empty(), "{report}");
+    assert_eq!(
+        strings(&report, "warnings"),
+        vec![format!("{immutable}{RELEASE_PREFLIGHT_CONTINUES}")]
+    );
+
+    let tmp = single_crate_release_fixture(&crate_release("open", ""));
+    let (out, report) = run_release_preflight(tmp.path(), api, true);
+    let report = report.unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(strings(&report, "blockers").is_empty(), "{report}");
+    assert!(strings(&report, "warnings").is_empty(), "{report}");
+    assert_eq!(
+        requests_for(&log, "/repos/myorg/open/releases/tags/v0.1.0"),
+        1
+    );
+}
+
+/// A crate releasing to `myorg/<repo>` on `forge` (`gitlab` or `gitea`).
+fn forge_release(forge: &str, repo: &str, extra: &str) -> String {
+    format!("    release:\n      {forge}:\n        owner: myorg\n        name: {repo}\n{extra}")
+}
+
+/// Drive one forge's release preflight through the three outcomes: a token
+/// without access blocks by default, warns with `false`, and a token with
+/// access passes. Each request carries the auth header `header` = `value`.
+fn assert_forge_release_preflight(
+    forge: &str,
+    root: &str,
+    env: &[(&str, String)],
+    denied: &str,
+    auth: (&str, &str),
+    log: &RequestLogs,
+) {
+    let run = |repo: &str, extra: &str| {
+        let tmp = single_crate_release_fixture_with(root, &forge_release(forge, repo, extra));
+        let out = run_forge_preflight(tmp.path(), env, &["--json"]);
+        let report = json_report(&out)["publishers"].clone();
+        (out, report)
+    };
+
+    let (out, report) = run("myapp", "");
+    assert_eq!(single_blocker(&out, &report), denied);
+
+    let (out, report) = run("myapp", LENIENT);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(strings(&report, "blockers").is_empty(), "{report}");
+    assert_eq!(
+        strings(&report, "warnings"),
+        vec![format!("{denied}{RELEASE_PREFLIGHT_CONTINUES}")]
+    );
+
+    let (out, report) = run("open", "");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(strings(&report, "blockers").is_empty(), "{report}");
+    assert!(strings(&report, "warnings").is_empty(), "{report}");
+
+    let log = log.lock().unwrap();
+    assert_eq!(log.len(), 3, "{log:?}");
+    assert!(
+        log.iter().all(|r| r.header(auth.0) == Some(auth.1)),
+        "{log:?}"
+    );
+}
+
+/// GitLab: Developer access (30) or higher on the project, the higher of
+/// the project and group access counting.
+#[test]
+fn a_gitlab_release_preflight_needs_developer_access() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let (api, log) = json_api(vec![
+        (
+            "/api/v4/projects/myorg%2Fmyapp",
+            r#"{"permissions":{"project_access":{"access_level":20},"group_access":null}}"#
+                .to_string(),
+        ),
+        (
+            "/api/v4/projects/myorg%2Fopen",
+            r#"{"permissions":{"project_access":{"access_level":20},"group_access":{"access_level":30}}}"#
+                .to_string(),
+        ),
+    ]);
+    assert_forge_release_preflight(
+        "gitlab",
+        &format!("gitlab_urls:\n  api: http://{api}/api/v4\n"),
+        &[("GITLAB_TOKEN", "dummy-gitlab-token".to_string())],
+        "release: GitLab token does not have developer or higher permissions for myorg/myapp; \
+         cannot create the release",
+        ("PRIVATE-TOKEN", "dummy-gitlab-token"),
+        &log,
+    );
+}
+
+/// Gitea: push permission on the repository.
+#[test]
+fn a_gitea_release_preflight_needs_push_permission() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let (api, log) = json_api(vec![
+        (
+            "/api/v1/repos/myorg/myapp",
+            r#"{"permissions":{"push":false}}"#.to_string(),
+        ),
+        (
+            "/api/v1/repos/myorg/open",
+            r#"{"permissions":{"push":true}}"#.to_string(),
+        ),
+    ]);
+    assert_forge_release_preflight(
+        "gitea",
+        &format!("gitea_urls:\n  api: http://{api}\n"),
+        &[("GITEA_TOKEN", "dummy-gitea-token".to_string())],
+        "release: Gitea token does not have push permission for myorg/myapp; cannot create the \
+         release",
+        ("Authorization", "token dummy-gitea-token"),
+        &log,
+    );
+}
+
+/// A missing token is a failed release preflight check on every forge: a
+/// blocker by default and a warning with `false`. The token is also an
+/// environment requirement, so both runs stop at the environment check,
+/// which names the forge's variable.
+#[test]
+fn a_missing_token_goes_through_fail_on_error_and_stops_at_the_environment_check() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let cases = [
+        (
+            "github",
+            "github-release: no GitHub token resolved",
+            "none of the 3 env vars [ANODIZER_GITHUB_TOKEN, GITHUB_TOKEN, GH_TOKEN]",
+        ),
+        (
+            "gitlab",
+            "release: no GitLab token available (set GITLAB_TOKEN, or pass --token); cannot \
+             create the release in myorg/myapp",
+            "1 env var missing or empty: GITLAB_TOKEN",
+        ),
+        (
+            "gitea",
+            "release: no Gitea token available (set GITEA_TOKEN, or pass --token); cannot \
+             create the release in myorg/myapp",
+            "1 env var missing or empty: GITEA_TOKEN",
+        ),
+    ];
+    for (forge, missing, env_failure) in cases {
+        let env = [("ANODIZER_FORCE_TOKEN", forge.to_string())];
+        for lenient in [false, true] {
+            let tmp = single_crate_release_fixture(&forge_release(
+                forge,
+                "myapp",
+                if lenient { LENIENT } else { "" },
+            ));
+            let out = run_forge_preflight(tmp.path(), &env, &["--json"]);
+            let report = json_report(&out);
+            assert!(!out.status.success(), "{forge}: {report}");
+            assert!(
+                report["failures"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|f| f.to_string().contains(env_failure)),
+                "{forge}: {report}"
+            );
+            let publishers = &report["publishers"];
+            let (blockers, warnings) = (
+                strings(publishers, "blockers"),
+                strings(publishers, "warnings"),
+            );
+            if lenient {
+                assert!(blockers.is_empty(), "{forge}: {report}");
+                // github-release also warns that its rollback scope is
+                // unavailable without a token; that line is not this check's.
+                let ours: Vec<&String> =
+                    warnings.iter().filter(|w| w.starts_with(missing)).collect();
+                assert_eq!(ours.len(), 1, "{forge}: {report}");
+                assert!(
+                    ours[0].ends_with(RELEASE_PREFLIGHT_CONTINUES),
+                    "{forge}: {report}"
+                );
+            } else {
+                assert_eq!(blockers.len(), 1, "{forge}: {report}");
+                assert!(blockers[0].starts_with(missing), "{forge}: {report}");
+                assert!(
+                    warnings.iter().all(|w| !w.contains("fail_on_error")),
+                    "{forge}: {report}"
+                );
+            }
+        }
+    }
 }
