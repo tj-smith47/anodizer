@@ -2,14 +2,17 @@
 //! `publish.homebrew.cask:` sub-block: both register the publisher, render
 //! and push the same cask.
 
-use super::tests::{art_with_url_sha, make_bare_cask_tap};
-use anodizer_core::Publisher;
+use super::tests::{
+    COMMAND_PASSES, RenderPass, art_with_url_sha, make_bare_cask_tap, run_render_pass,
+};
 use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::config::{
     Config, CrateConfig, GitRepoConfig, HomebrewCaskConfig, HomebrewConfig, PublishConfig,
-    RepositoryConfig, WorkspaceConfig,
+    RepositoryConfig, StringOrBool, WorkspaceConfig,
 };
 use anodizer_core::context::{Context, ContextOptions};
+use anodizer_core::log::{LogCapture, LogLevel, StageLogger};
+use anodizer_core::{EnvRequirement, Publisher};
 use std::path::Path;
 
 fn tap_repository(bare_url: &str) -> RepositoryConfig {
@@ -267,4 +270,559 @@ fn every_spelling_renders_the_same_cask() {
     assert_eq!(rendered[0], rendered[1]);
     assert_eq!(rendered[0], rendered[2]);
     assert!(rendered[0].contains("version \"1.2.3\""), "{}", rendered[0]);
+}
+
+fn commit_count(bare: &str) -> String {
+    anodizer_core::test_helpers::git_test_stdout(Path::new(bare), &["rev-list", "--count", "main"])
+}
+
+/// A tap repository on github.com with no `git.url`, so the preflight probe
+/// runs, carrying a templated token whose env var names this repository in
+/// the requirements.
+fn github_tap(name: &str, token_var: &str) -> RepositoryConfig {
+    RepositoryConfig {
+        owner: Some("myorg".to_string()),
+        name: Some(name.to_string()),
+        branch: Some("main".to_string()),
+        token: Some(format!("{{{{ .Env.{token_var} }}}}")),
+        ..Default::default()
+    }
+}
+
+/// A formula left out by its `skip_upload:` or `if:` does not take its
+/// same-tap cask with it: the cask is pushed alone, in one commit, and the
+/// tap gains no formula.
+#[test]
+fn a_gated_off_formula_still_pushes_its_same_tap_cask() {
+    type Gate = fn(&mut HomebrewConfig, &mut HomebrewCaskConfig);
+    let gates: [(&str, Gate); 2] = [
+        ("skip_upload", |formula, cask| {
+            formula.skip_upload = Some(StringOrBool::Bool(true));
+            cask.skip_upload = Some(StringOrBool::Bool(false));
+        }),
+        ("if", |formula, cask| {
+            formula.if_condition = Some("false".to_string());
+            cask.if_condition = Some("true".to_string());
+        }),
+    ];
+    for (gate, set) in gates {
+        let (bare_url, bare) = make_bare_cask_tap("main");
+        let mut publish = same_tap_publish(&bare_url, "alpha", false);
+        set(
+            publish.homebrew.as_mut().unwrap(),
+            publish.homebrew_cask.as_mut().unwrap(),
+        );
+        let mut ctx = single_crate_ctx(publish);
+        let publisher = homebrew_publisher(&ctx);
+        assert!(!publisher.config_fully_inactive(&ctx), "{gate}");
+        assert!(!publisher.requirements(&ctx).is_empty(), "{gate}");
+        publisher.run(&mut ctx).expect("publish runs");
+        assert_eq!(tap_files(&bare_url), "Casks/alpha.rb\nREADME", "{gate}");
+        assert_eq!(
+            commit_count(&bare_url),
+            "2",
+            "{gate}: one commit over the seed"
+        );
+        drop(bare);
+    }
+}
+
+/// A formula and its same-tap cask that are both gated off push nothing, and
+/// the run prints both skip lines, once each.
+#[test]
+fn a_gated_off_formula_and_cask_push_nothing_and_print_both_skips() {
+    let (bare_url, bare) = make_bare_cask_tap("main");
+    let mut publish = same_tap_publish(&bare_url, "alpha", false);
+    publish.homebrew.as_mut().unwrap().skip_upload = Some(StringOrBool::Bool(true));
+    let mut ctx = single_crate_ctx(publish);
+    let cap = LogCapture::new();
+    ctx.with_log_capture(cap.clone());
+    let publisher = homebrew_publisher(&ctx);
+    assert!(publisher.config_fully_inactive(&ctx));
+    publisher.run(&mut ctx).expect("publish runs");
+    assert_eq!(tap_files(&bare_url), "README");
+    let skipped: Vec<String> = cap
+        .printed_messages(LogLevel::Status)
+        .into_iter()
+        .filter(|m| m.starts_with("skipped homebrew"))
+        .collect();
+    assert_eq!(
+        skipped,
+        [
+            "skipped homebrew for 'alpha' upload — skip_upload is set",
+            "skipped homebrew cask for 'alpha' upload — skip_upload is set",
+        ]
+    );
+    drop(bare);
+}
+
+/// Run every command's passes over a fresh context and count how often
+/// `line` printed: once for a command that publishes, zero times for one
+/// that only validates.
+fn assert_skip_line_prints_once_per_command(
+    site: &str,
+    make_ctx: &dyn Fn(&str) -> Context,
+    publish: &dyn Fn(&mut Context, &StageLogger),
+    line: &str,
+) {
+    for (command, passes) in COMMAND_PASSES {
+        let (bare_url, bare) = make_bare_cask_tap("main");
+        let mut ctx = make_ctx(&bare_url);
+        let cap = LogCapture::new();
+        ctx.with_log_capture(cap.clone());
+        for pass in *passes {
+            run_render_pass(&mut ctx, *pass, publish);
+        }
+        let printed = cap
+            .printed_messages(LogLevel::Status)
+            .into_iter()
+            .filter(|m| m == line)
+            .count();
+        let want = usize::from(passes.iter().any(|p| matches!(p, RenderPass::Publisher)));
+        assert_eq!(printed, want, "{site}, {command}: {line}");
+        drop(bare);
+    }
+}
+
+/// The skip line of each gated homebrew document prints once per command,
+/// from the publisher, for both gates: the same-tap cask beside a pushed
+/// formula, a cask on its own tap, the formula, and a top-level cask.
+#[test]
+fn every_gate_skip_line_prints_once_per_command() {
+    for gate in ["skip_upload", "if"] {
+        let gated = |skip_upload: &mut Option<StringOrBool>, if_condition: &mut Option<String>| {
+            if gate == "skip_upload" {
+                *skip_upload = Some(StringOrBool::Bool(true));
+            } else {
+                *if_condition = Some("false".to_string());
+            }
+        };
+        let skip_line = |label: &str| {
+            if gate == "skip_upload" {
+                format!("skipped {label} upload — skip_upload is set")
+            } else {
+                format!("skipped {label} — `if` condition evaluated falsy")
+            }
+        };
+
+        assert_skip_line_prints_once_per_command(
+            "same-tap cask",
+            &|bare_url| {
+                let mut publish = same_tap_publish(bare_url, "alpha", false);
+                let cask = publish.homebrew_cask.as_mut().unwrap();
+                gated(&mut cask.skip_upload, &mut cask.if_condition);
+                single_crate_ctx(publish)
+            },
+            &|ctx, log| {
+                assert!(super::publish_to_homebrew(ctx, "alpha", log).expect("formula pushes"));
+            },
+            &skip_line("homebrew cask for 'alpha'"),
+        );
+
+        assert_skip_line_prints_once_per_command(
+            "own-tap cask",
+            &|bare_url| {
+                let mut publish = cask_only_publish(bare_url, "alpha");
+                let cask = publish.homebrew_cask.as_mut().unwrap();
+                gated(&mut cask.skip_upload, &mut cask.if_condition);
+                single_crate_ctx(publish)
+            },
+            &|ctx, log| {
+                assert!(!super::publish_cask(ctx, "alpha", log).expect("cask skips"));
+            },
+            &skip_line("homebrew cask for 'alpha'"),
+        );
+
+        assert_skip_line_prints_once_per_command(
+            "formula",
+            &|bare_url| {
+                let mut formula = HomebrewConfig {
+                    repository: Some(tap_repository(bare_url)),
+                    ..Default::default()
+                };
+                gated(&mut formula.skip_upload, &mut formula.if_condition);
+                single_crate_ctx(PublishConfig {
+                    homebrew: Some(formula),
+                    ..Default::default()
+                })
+            },
+            &|ctx, log| {
+                assert!(!super::publish_to_homebrew(ctx, "alpha", log).expect("formula skips"));
+            },
+            &if gate == "skip_upload" {
+                skip_line("homebrew for 'alpha'")
+            } else {
+                "skipped homebrew for 'alpha' — `if` condition evaluated falsy".to_string()
+            },
+        );
+
+        assert_skip_line_prints_once_per_command(
+            "top-level cask",
+            &|bare_url| {
+                let mut top = HomebrewCaskConfig {
+                    repository: Some(tap_repository(bare_url)),
+                    ..cask("mycask")
+                };
+                gated(&mut top.skip_upload, &mut top.if_condition);
+                release_ctx(
+                    Config {
+                        project_name: "alpha".to_string(),
+                        crates: vec![crate_with("alpha", PublishConfig::default())],
+                        homebrew_casks: Some(vec![top]),
+                        ..Default::default()
+                    },
+                    &["alpha"],
+                )
+            },
+            &|ctx, log| {
+                let got = super::publish_top_level_homebrew_casks(ctx, log).expect("casks run");
+                assert!(!got.pushed_any, "{got:?}");
+            },
+            &if gate == "skip_upload" {
+                skip_line("cask for 'mycask'")
+            } else {
+                "skipped cask 'mycask' — `if` condition evaluated falsy".to_string()
+            },
+        );
+    }
+}
+
+/// A crate whose formula and cask each sit on their own tap, with the
+/// formula's gate set by `formula_gate` and the cask's by `cask_gate`.
+fn own_tap_ctx(
+    formula_gate: fn(&mut HomebrewConfig),
+    cask_gate: fn(&mut HomebrewCaskConfig),
+) -> Context {
+    let mut formula = HomebrewConfig {
+        repository: Some(github_tap("homebrew-tap", "FORMULA_TOKEN")),
+        ..Default::default()
+    };
+    formula_gate(&mut formula);
+    let mut own = HomebrewCaskConfig {
+        repository: Some(github_tap("homebrew-casks", "CASK_TOKEN")),
+        ..cask("alpha")
+    };
+    cask_gate(&mut own);
+    single_crate_ctx(PublishConfig {
+        homebrew: Some(formula),
+        homebrew_cask: Some(own),
+        ..Default::default()
+    })
+}
+
+/// The preflight probe count for `ctx` against a responder that grants
+/// push, and the verdict.
+fn probes(mut ctx: Context) -> (bool, u32) {
+    let body = r#"{"permissions":{"push":true}}"#;
+    let (addr, calls) =
+        anodizer_core::test_helpers::responder::spawn_oneshot_http_responder(vec![Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        )]);
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"))
+            .with("CASK_TOKEN", "tok"),
+    );
+    let check = homebrew_publisher(&ctx)
+        .preflight(&ctx)
+        .expect("preflight runs");
+    (
+        matches!(check, anodizer_core::PreflightCheck::Pass),
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+    )
+}
+
+/// A cask on its own tap reads each gate field by field: its own value wins,
+/// and one it leaves unset (or an empty `if: ""`) inherits the formula's. So
+/// a cask `if: ""` under a formula `if: "false"` is inactive, and so is a
+/// cask with no `skip_upload:` under a formula `skip_upload: true`; a cask
+/// that sets its own passing gate is active. `config_fully_inactive`,
+/// `requirements` (the cask's tap token) and `preflight`
+/// (one probe, of the cask's tap) all agree.
+#[test]
+fn an_own_tap_cask_inherits_each_unset_gate_from_the_formula() {
+    type FormulaGate = fn(&mut HomebrewConfig);
+    type CaskGate = fn(&mut HomebrewCaskConfig);
+    let cases: [(&str, FormulaGate, CaskGate, bool); 4] = [
+        (
+            "cask if: \"\" over formula if: \"false\"",
+            |f| f.if_condition = Some("false".to_string()),
+            |c| c.if_condition = Some(String::new()),
+            false,
+        ),
+        (
+            "cask if: \"true\" over formula if: \"false\"",
+            |f| f.if_condition = Some("false".to_string()),
+            |c| c.if_condition = Some("true".to_string()),
+            true,
+        ),
+        (
+            "cask skip_upload unset over formula skip_upload: true",
+            |f| f.skip_upload = Some(StringOrBool::Bool(true)),
+            |_| {},
+            false,
+        ),
+        (
+            "cask skip_upload: false over formula skip_upload: true",
+            |f| f.skip_upload = Some(StringOrBool::Bool(true)),
+            |c| c.skip_upload = Some(StringOrBool::Bool(false)),
+            true,
+        ),
+    ];
+    for (case, formula_gate, cask_gate, active) in cases {
+        let ctx = own_tap_ctx(formula_gate, cask_gate);
+        let publisher = homebrew_publisher(&ctx);
+        assert_eq!(!publisher.config_fully_inactive(&ctx), active, "{case}");
+        let want = if active {
+            vec![
+                EnvRequirement::Tool {
+                    name: "git".to_string(),
+                },
+                EnvRequirement::EnvAllOf {
+                    vars: vec!["CASK_TOKEN".to_string()],
+                },
+            ]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(publisher.requirements(&ctx), want, "{case}");
+        assert_eq!(probes(ctx), (true, u32::from(active)), "{case}");
+    }
+}
+
+/// A cask-only crate needs `git` and the tap token: `HOMEBREW_TAP_TOKEN`,
+/// else the GitHub token ladder.
+#[test]
+fn a_cask_only_crate_requires_the_tap_token() {
+    let ctx = single_crate_ctx(PublishConfig {
+        homebrew_cask: Some(HomebrewCaskConfig {
+            repository: Some(RepositoryConfig {
+                token: None,
+                ..github_tap("homebrew-tap", "UNUSED")
+            }),
+            ..cask("alpha")
+        }),
+        ..Default::default()
+    });
+    let vars = std::iter::once("HOMEBREW_TAP_TOKEN")
+        .chain(anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.iter().copied())
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        homebrew_publisher(&ctx).requirements(&ctx),
+        [
+            EnvRequirement::Tool {
+                name: "git".to_string()
+            },
+            EnvRequirement::EnvAnyOf { vars },
+        ]
+    );
+}
+
+/// A cask names the formula's tap when owner and name match without regard
+/// to case and the branch, token and `pull_request:` agree; any of those
+/// three differing sends the cask to its own commit.
+#[test]
+fn a_cask_shares_the_formula_tap_only_on_the_same_branch_token_and_pull_request() {
+    let formula_tap = github_tap("homebrew-tap", "TAP_TOKEN");
+    let with_cask_repo = |repo: RepositoryConfig| PublishConfig {
+        homebrew: Some(HomebrewConfig {
+            repository: Some(formula_tap.clone()),
+            ..Default::default()
+        }),
+        homebrew_cask: Some(HomebrewCaskConfig {
+            repository: Some(repo),
+            ..cask("alpha")
+        }),
+        ..Default::default()
+    };
+    let cases = [
+        ("the same repository", formula_tap.clone(), true),
+        (
+            "owner and name in another case",
+            RepositoryConfig {
+                owner: Some("MyOrg".to_string()),
+                name: Some("Homebrew-Tap".to_string()),
+                ..formula_tap.clone()
+            },
+            true,
+        ),
+        (
+            "another branch",
+            RepositoryConfig {
+                branch: Some("casks".to_string()),
+                ..formula_tap.clone()
+            },
+            false,
+        ),
+        (
+            "no branch beside the formula's",
+            RepositoryConfig {
+                branch: None,
+                ..formula_tap.clone()
+            },
+            false,
+        ),
+        (
+            "another token",
+            RepositoryConfig {
+                token: Some("{{ .Env.OTHER }}".to_string()),
+                ..formula_tap.clone()
+            },
+            false,
+        ),
+        (
+            "a pull_request block",
+            RepositoryConfig {
+                pull_request: Some(anodizer_core::config::PullRequestConfig {
+                    enabled: Some(true),
+                    ..Default::default()
+                }),
+                ..formula_tap.clone()
+            },
+            false,
+        ),
+        (
+            "another tap",
+            github_tap("homebrew-casks", "TAP_TOKEN"),
+            false,
+        ),
+    ];
+    for (case, repo, shared) in cases {
+        let publish = with_cask_repo(repo);
+        let crate_cask = super::CrateCask::of(&publish).expect("cask configured");
+        assert_eq!(crate_cask.same_tap().is_some(), shared, "{case}");
+    }
+}
+
+/// A cask that spells the formula's tap in another case rides the formula's
+/// commit: one commit holds both files.
+#[test]
+fn a_case_folded_cask_repository_rides_the_formula_commit() {
+    let (bare_url, bare) = make_bare_cask_tap("main");
+    let mut publish = same_tap_publish(&bare_url, "alpha", false);
+    publish.homebrew_cask.as_mut().unwrap().repository = Some(RepositoryConfig {
+        owner: Some("MyOrg".to_string()),
+        name: Some("Homebrew-Tap".to_string()),
+        ..tap_repository(&bare_url)
+    });
+    let mut ctx = single_crate_ctx(publish);
+    homebrew_publisher(&ctx)
+        .run(&mut ctx)
+        .expect("publish runs");
+    assert_eq!(tap_files(&bare_url), "Casks/alpha.rb\nREADME\nalpha.rb");
+    assert_eq!(commit_count(&bare_url), "2", "one commit over the seed");
+    drop(bare);
+}
+
+/// The version `crate_name` publishes under: its own tag scope, the scope
+/// reconcile probes in.
+fn published_version(ctx: &mut Context, crate_name: &str) -> String {
+    crate::publisher_helpers::with_published_crate_scope(
+        ctx,
+        crate_name,
+        &anodizer_core::crate_scope::resolve_crate_tag,
+        |ctx| Ok(ctx.version()),
+    )
+    .expect("crate scope resolves")
+}
+
+/// Reconcile a context against a responder that answers the open-PR search
+/// with `search_body`, returning the verdict and how many searches ran.
+fn reconcile_against(mut ctx: Context, search_body: &str) -> (anodizer_core::ReconcileState, u32) {
+    let response = Box::leak(
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{search_body}",
+            search_body.len()
+        )
+        .into_boxed_str(),
+    );
+    let (addr, calls) =
+        anodizer_core::test_helpers::responder::spawn_oneshot_http_responder(vec![response]);
+    let _lock = anodizer_core::test_helpers::env::env_mutex()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let _base = anodizer_core::test_helpers::env::EnvGuard::set(
+        "ANODIZER_GITHUB_API_BASE",
+        format!("http://{addr}"),
+    );
+    let state = homebrew_publisher(&ctx)
+        .reconcile(&mut ctx)
+        .expect("reconcile runs");
+    (state, calls.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+/// A crate whose formula is gated off by `skip_upload: true` and whose cask
+/// shares the formula's tap, which takes pull requests when `pull_request`
+/// is set.
+fn gated_formula_with_same_tap_cask(bare_url: &str, pull_request: bool) -> Context {
+    let mut publish = same_tap_publish(bare_url, "alpha", false);
+    let formula = publish.homebrew.as_mut().unwrap();
+    formula.skip_upload = Some(StringOrBool::Bool(true));
+    if pull_request {
+        formula.repository.as_mut().unwrap().pull_request =
+            Some(anodizer_core::config::PullRequestConfig {
+                enabled: Some(true),
+                ..Default::default()
+            });
+    }
+    publish.homebrew_cask.as_mut().unwrap().skip_upload = Some(StringOrBool::Bool(false));
+    single_crate_ctx(publish)
+}
+
+/// Reconcile visits a crate whose formula is gated off when its same-tap
+/// cask is active: it searches for the cask's own pull request (the title
+/// `publish_cask` opens) and reads an open one as already published, and a
+/// search that finds none as absent. A tap pushed directly is never
+/// reconciled, since a re-run's push converges on its own, so that case
+/// searches nothing and reads absent.
+#[test]
+fn reconcile_visits_the_same_tap_cask_of_a_gated_off_formula() {
+    let (bare_url, bare) = make_bare_cask_tap("main");
+
+    let mut ctx = gated_formula_with_same_tap_cask(&bare_url, true);
+    let version = published_version(&mut ctx, "alpha");
+    let (state, searches) = reconcile_against(
+        ctx,
+        &format!(
+            r#"{{"total_count":1,"items":[{{"title":"Update alpha cask to {version}","html_url":"https://github.com/myorg/homebrew-tap/pull/9"}}]}}"#
+        ),
+    );
+    match state {
+        anodizer_core::ReconcileState::Complete { note } => {
+            assert_eq!(
+                note,
+                format!(
+                    "open PR for alpha {version}: https://github.com/myorg/homebrew-tap/pull/9"
+                )
+            );
+        }
+        other => panic!("expected Complete, got {other:?} after {searches} searches"),
+    }
+    assert_eq!(searches, 1);
+
+    let (state, searches) = reconcile_against(
+        gated_formula_with_same_tap_cask(&bare_url, true),
+        r#"{"total_count":0,"items":[]}"#,
+    );
+    assert!(
+        matches!(state, anodizer_core::ReconcileState::Absent),
+        "{state:?}"
+    );
+    assert_eq!(searches, 1);
+
+    let (state, searches) = reconcile_against(
+        gated_formula_with_same_tap_cask(&bare_url, false),
+        r#"{"total_count":0,"items":[]}"#,
+    );
+    assert!(
+        matches!(state, anodizer_core::ReconcileState::Absent),
+        "{state:?}"
+    );
+    assert_eq!(searches, 0);
+    drop(bare);
 }

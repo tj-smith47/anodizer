@@ -124,12 +124,17 @@ fn maybe_write_cask_into_tap(
         return Ok(CaskInTapOutcome::default());
     };
     let cask_cfg = crate_cask.cask;
-    let render_log = ctx.claim_render_log(&super::super::cask_render_key(crate_name), log);
-    let Some(cask_result) =
-        super::super::render_homebrew_cask_for_crate(ctx, crate_name, &render_log)?
-    else {
+    let parent = crate_cask.parent();
+    if super::super::publish_cask::cask_skip_gates_trip(ctx, parent, cask_cfg, crate_name, log)? {
         return Ok(CaskInTapOutcome::default());
-    };
+    }
+    let cask_result = super::super::cask_scope::generate_cask_from_context(
+        ctx,
+        crate_name,
+        parent,
+        cask_cfg,
+        &ctx.claim_render_log(&super::super::cask_render_key(crate_name), log),
+    )?;
 
     // Honor `cask.directory:` so a tap can place
     // casks in a sub-tree. Defaults to "Casks". The cask config field
@@ -341,8 +346,40 @@ pub(crate) struct RenderedFormula {
     pub(crate) formula_name: String,
 }
 
+/// True when the formula's `skip_upload:` or `if:` gate trips for
+/// `crate_name`, printing the skip line on `log`. The publisher passes the
+/// stage logger; the render-only [`render_homebrew_formula_for_crate`]
+/// passes a silenced one, so the line prints once per command.
+fn formula_skip_gates_trip(
+    ctx: &Context,
+    hb_cfg: &HomebrewConfig,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<bool> {
+    if crate::util::should_skip_upload(
+        hb_cfg.skip_upload.as_ref(),
+        ctx,
+        log,
+        Some(&format!("homebrew for '{crate_name}'")),
+    )? {
+        return Ok(true);
+    }
+    let proceed = anodizer_core::config::evaluate_if_condition(
+        hb_cfg.if_condition.as_deref(),
+        &format!("homebrew publisher for crate '{}'", crate_name),
+        |t| ctx.render_template(t),
+    )?;
+    if !proceed {
+        log.status(&format!(
+            "skipped homebrew for '{}' — `if` condition evaluated falsy",
+            crate_name
+        ));
+    }
+    Ok(!proceed)
+}
+
 /// Render the Ruby formula a live publish would write for `crate_name`,
-/// honoring `skip_upload` and the `if:` condition.
+/// honoring `skip_upload` and the `if:` condition, evaluated without printing.
 ///
 /// Returns `Ok(None)` when the publisher would skip this crate (`skip_upload`
 /// truthy or a falsy `if`) — nothing to render or validate. The live publish
@@ -365,25 +402,7 @@ pub(crate) fn render_homebrew_formula_for_crate(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("homebrew: no homebrew config for '{}'", crate_name))?;
 
-    if crate::util::should_skip_upload(
-        hb_cfg.skip_upload.as_ref(),
-        ctx,
-        log,
-        Some(&format!("homebrew for '{crate_name}'")),
-    )? {
-        return Ok(None);
-    }
-
-    let proceed = anodizer_core::config::evaluate_if_condition(
-        hb_cfg.if_condition.as_deref(),
-        &format!("homebrew publisher for crate '{}'", crate_name),
-        |t| ctx.render_template(t),
-    )?;
-    if !proceed {
-        log.status(&format!(
-            "skipped homebrew for '{}' — `if` condition evaluated falsy",
-            crate_name
-        ));
+    if formula_skip_gates_trip(ctx, hb_cfg, crate_name, &super::super::silenced(log))? {
         return Ok(None);
     }
 
@@ -535,7 +554,13 @@ pub(super) fn render_formula_inner(
     })
 }
 
-/// Render and push a Homebrew formula/cask for `crate_name`.
+/// Render and push a Homebrew formula, with the crate's cask when it shares
+/// the formula's tap, for `crate_name`.
+///
+/// The formula's gates and the cask's are independent: when the formula's
+/// `skip_upload:` or `if:` leaves it out, a same-tap cask whose own gates
+/// pass is still pushed, on its own commit and pull request
+/// ([`publish_cask`](super::super::publish_cask)).
 ///
 /// Returns `Ok(true)` when an actual git push was made to the tap repo;
 /// `Ok(false)` when the publish was skipped (skip_upload, dry-run, or
@@ -552,25 +577,12 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("homebrew: no homebrew config for '{}'", crate_name))?;
 
-    if crate::util::should_skip_upload(
-        hb_cfg.skip_upload.as_ref(),
-        ctx,
-        log,
-        Some(&format!("homebrew for '{crate_name}'")),
-    )? {
-        return Ok(false);
-    }
-
-    let proceed = anodizer_core::config::evaluate_if_condition(
-        hb_cfg.if_condition.as_deref(),
-        &format!("homebrew publisher for crate '{}'", crate_name),
-        |t| ctx.render_template(t),
-    )?;
-    if !proceed {
-        log.status(&format!(
-            "skipped homebrew for '{}' — `if` condition evaluated falsy",
-            crate_name
-        ));
+    if formula_skip_gates_trip(ctx, hb_cfg, crate_name, log)? {
+        let rides_formula = super::super::publish_cask::CrateCask::of(publish)
+            .is_some_and(|c| c.same_tap().is_some());
+        if rides_formula {
+            return super::super::publish_cask(ctx, crate_name, log);
+        }
         return Ok(false);
     }
 

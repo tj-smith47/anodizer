@@ -153,12 +153,13 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// `0 unit(s) considered` even after pushing its cask, which reads as a
 /// no-op to operators scanning the log.
 pub(crate) fn run_done_message(considered: usize, casks: usize) -> String {
+    let entries = if casks == 1 { "entry" } else { "entries" };
     crate::publisher_helpers::run_done_message_detailed(
         "homebrew",
         considered + casks,
         "unit",
         Some(&format!(
-            "{considered} crate(s), {casks} homebrew_casks entr(y|ies)"
+            "{considered} crate(s), {casks} homebrew_casks {entries}"
         )),
     )
 }
@@ -231,15 +232,28 @@ fn active_homebrew_formula_configs(ctx: &Context) -> Vec<&anodizer_core::config:
         .selected_crates(selected)
         .into_iter()
         .filter_map(|c| c.publish.as_ref()?.homebrew.as_ref())
-        .filter(|h| {
-            !crate::publisher_helpers::entry_inactive(
-                ctx,
-                None,
-                h.skip_upload.as_ref(),
-                h.if_condition.as_deref(),
-            )
-        })
+        .filter(|h| !formula_inactive(ctx, h))
         .collect()
+}
+
+/// True when a `publish.homebrew` formula's `skip_upload:` / `if:` leave it
+/// out of this run.
+fn formula_inactive(ctx: &Context, formula: &anodizer_core::config::HomebrewConfig) -> bool {
+    crate::publisher_helpers::entry_inactive(
+        ctx,
+        None,
+        formula.skip_upload.as_ref(),
+        formula.if_condition.as_deref(),
+    )
+}
+
+/// True when [`publish_cask`](super::publish_cask) pushes this crate's cask
+/// on its own commit: it names its own tap, or the formula whose tap commit
+/// it would ride is gated off this run.
+fn cask_pushed_alone(ctx: &Context, crate_cask: &super::CrateCask<'_>) -> bool {
+    crate_cask
+        .same_tap()
+        .is_none_or(|formula| formula_inactive(ctx, formula))
 }
 
 /// Top-level `homebrew_casks:` entries whose `skip_upload:`/`if:` evaluates
@@ -261,22 +275,25 @@ fn active_homebrew_cask_configs(ctx: &Context) -> Vec<&anodizer_core::config::Ho
         .collect()
 }
 
-/// Per-crate casks pushed to their own tap (see
-/// [`CrateCask::same_tap`](super::CrateCask::same_tap)) over the `--crate` /
-/// `--all` selection, whose effective `skip_upload:`/`if:` (the cask's own,
-/// else the formula's) is active right now. A cask that rides its formula's
-/// tap commit is covered by [`active_homebrew_formula_configs`].
+/// Per-crate casks pushed on their own commit (see [`cask_pushed_alone`])
+/// over the `--crate` / `--all` selection, whose effective
+/// `skip_upload:`/`if:` (the cask's own, else the formula's) is active right
+/// now. A cask that rides its active formula's tap commit is covered by
+/// [`active_homebrew_formula_configs`].
 fn active_own_tap_crate_casks(ctx: &Context) -> Vec<(String, super::CrateCask<'_>)> {
     ctx.config
         .selected_crates(&ctx.options.selected_crates)
         .into_iter()
         .filter_map(|c| Some((c.name.clone(), super::CrateCask::of(c.publish.as_ref()?)?)))
-        .filter(|(_, c)| c.same_tap().is_none() && own_tap_cask_active(ctx, c))
+        .filter(|(_, c)| cask_pushed_alone(ctx, c) && own_tap_cask_active(ctx, c))
         .collect()
 }
 
-/// True when a per-crate cask's effective gates (the cask's own
-/// `skip_upload:`/`if:`, else the formula's) leave it active.
+/// True when a per-crate cask's effective gates leave it active. Each gate
+/// falls back field by field, the way `cask_skip_gates_trip` reads them: the
+/// cask's own `skip_upload:` wins and an unset one inherits the formula's
+/// (so a formula `skip_upload: true` skips a cask that sets none); the
+/// cask's own `if:` wins and an absent or empty one inherits the formula's.
 fn own_tap_cask_active(ctx: &Context, crate_cask: &super::CrateCask<'_>) -> bool {
     use anodizer_core::config::active_if_gate;
     let parent = crate_cask.parent();
@@ -337,7 +354,11 @@ pub(crate) fn build_homebrew_crate_reconcile_target(
     let cask_name = match same_tap_cask {
         Some(cask_cfg)
             if !super::publish_cask::cask_skip_gates_trip(
-                ctx, hb_cfg, cask_cfg, crate_name, log,
+                ctx,
+                hb_cfg,
+                cask_cfg,
+                crate_name,
+                &super::silenced(log),
             )? =>
         {
             let raw = cask_cfg.name.as_deref().unwrap_or(crate_name);
@@ -551,14 +572,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
                 c.publish
                     .as_ref()
                     .and_then(|p| p.homebrew.as_ref())
-                    .is_some_and(|h| {
-                        !crate::publisher_helpers::entry_inactive(
-                            ctx,
-                            None,
-                            h.skip_upload.as_ref(),
-                            h.if_condition.as_deref(),
-                        )
-                    })
+                    .is_some_and(|h| !formula_inactive(ctx, h))
             })
             .map(|c| c.name.clone())
             .collect();
@@ -751,15 +765,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
                 .crate_universe()
                 .into_iter()
                 .filter_map(|c| c.publish.as_ref().and_then(|p| p.homebrew.as_ref())),
-            |h| {
-                // Homebrew formula has no `skip` field; gate on skip_upload + if.
-                !crate::publisher_helpers::entry_inactive(
-                    ctx,
-                    None,
-                    h.skip_upload.as_ref(),
-                    h.if_condition.as_deref(),
-                )
-            },
+            |h| !formula_inactive(ctx, h),
             |h| h.repository.as_ref(),
         );
         let crate_casks = crate::publisher_preflight::for_each_active_github_repo(
@@ -770,7 +776,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
                 .crate_universe()
                 .into_iter()
                 .filter_map(|c| super::CrateCask::of(c.publish.as_ref()?))
-                .filter(|c| c.same_tap().is_none()),
+                .filter(|c| cask_pushed_alone(ctx, c)),
             |c| own_tap_cask_active(ctx, &c),
             |c| c.repository(),
         );
@@ -1253,7 +1259,7 @@ mod publisher_tests {
         // Two formula crates, no casks → total unit count is 2.
         assert!(msg.contains("2 configured unit(s) considered"), "{msg}");
         assert!(msg.contains("2 crate(s)"), "{msg}");
-        assert!(msg.contains("0 homebrew_casks entr(y|ies)"), "{msg}");
+        assert!(msg.contains("0 homebrew_casks entries)"), "{msg}");
     }
 
     /// A cask-only run (zero formula crates, one published cask) must report
@@ -1266,10 +1272,11 @@ mod publisher_tests {
             msg.contains("1 configured unit(s) considered"),
             "cask-only run must report 1 unit, not 0; got: {msg}"
         );
-        assert!(msg.contains("1 homebrew_casks entr(y|ies)"), "{msg}");
+        assert!(msg.contains("1 homebrew_casks entry)"), "{msg}");
         // Mixed: 1 formula + 2 casks → 3 units total.
         let mixed = run_done_message(1, 2);
         assert!(mixed.contains("3 configured unit(s) considered"), "{mixed}");
+        assert!(mixed.contains("2 homebrew_casks entries)"), "{mixed}");
     }
 
     #[test]

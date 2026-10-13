@@ -11482,12 +11482,10 @@ fn every_crate_cask_read_goes_through_the_accessor() {
         "fn homebrew_cask_slots(",
         "fn merge_publish_defaults(",
     ];
-    // Receivers that hold a `HomebrewConfig` in this workspace's spelling.
-    const FORMULA_RECEIVERS: &[&str] = &["homebrew", "hb_cfg", "hb_cfg_owned", "hb", "h"];
+    // The walk covers every production function body in the workspace;
+    // a rename that empties it falls far below this.
+    const MIN_BODIES: usize = 5000;
 
-    fn is_ident(c: char) -> bool {
-        c.is_ascii_alphanumeric() || c == '_'
-    }
     /// The line with string literals and a trailing comment removed, so
     /// a message or doc naming the fields is not a read.
     fn code_of(line: &str) -> String {
@@ -11512,46 +11510,33 @@ fn every_crate_cask_read_goes_through_the_accessor() {
         }
         code
     }
-    fn reads_field(line: &str) -> bool {
-        let code = code_of(line);
-        let code = code.as_str();
-        for (at, _) in code.match_indices(".homebrew_cask") {
-            let next = code[at + ".homebrew_cask".len()..].chars().next();
-            if !next.is_some_and(|c| is_ident(c) || c == '(') {
-                return true;
-            }
-        }
-        for (at, _) in code.match_indices(".cask") {
-            if code[at + ".cask".len()..]
-                .chars()
-                .next()
-                .is_some_and(is_ident)
-            {
-                continue;
-            }
-            let before = &code[..at];
-            let receiver: String = before
-                .chars()
-                .rev()
-                .take_while(|c| is_ident(*c))
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            if FORMULA_RECEIVERS.contains(&receiver.as_str())
-                || (receiver.is_empty() && before.contains("homebrew"))
-            {
-                return true;
-            }
-        }
-        false
+    // A field read: `.homebrew_cask` not called as the accessor, or a
+    // `.cask` reached from a `.homebrew` in the same statement, which is
+    // where the field path to the sub-block puts it.
+    let canonical = regex::Regex::new(r"\.homebrew_cask\b(?:[^(_A-Za-z0-9]|$)").unwrap();
+    let sub_block =
+        regex::Regex::new(r"\.homebrew(\(\))?\s*\.\s*(as_ref\(\)\s*\.)?(.*\.)?\s*cask\b").unwrap();
+    let reads_field = |statement: &str| {
+        let code = code_of(statement);
+        canonical.is_match(&code) || sub_block.is_match(&code)
+    };
+    /// A body as its `;`-separated statements, each flattened onto one line
+    /// with strings and comments removed.
+    fn statements(body: &str) -> Vec<String> {
+        let lines: Vec<String> = body
+            .lines()
+            .map(|l| code_of(l).trim().to_string())
+            .collect();
+        lines.join(" ").split(';').map(str::to_string).collect()
     }
 
     for read in [
-        "let cask = hb_cfg.cask.as_ref();",
         ".and_then(|p| p.homebrew.as_ref()?.cask.as_ref())",
+        "publish.homebrew.as_ref().and_then(|h| h.cask.clone())",
         "if publish.homebrew_cask.is_some() {",
-        "h.cask = Some(cask);",
+        "let c = &p.homebrew_cask;",
+        "p.homebrew().cask",
+        "p.homebrew.cask = None",
     ] {
         assert!(reads_field(read), "{read}");
     }
@@ -11560,25 +11545,53 @@ fn every_crate_cask_read_goes_through_the_accessor() {
         "dep.cask.as_deref()",
         "c.cask.clone()",
         "ctx.config.homebrew_casks.as_ref()",
+        "p.homebrew_cask_slots()",
         "format!(\"{name}.publish.homebrew_cask\")",
-        "let x = 1; // hb_cfg.cask",
+        "let x = 1; // hb_cfg.homebrew.cask",
+        "publish.homebrew.as_ref().map(|h| h.cask_name.clone())",
     ] {
         assert!(!reads_field(not_read), "{not_read}");
     }
+    assert_eq!(
+        statements(
+            "let a = p.homebrew\n    .as_ref() // cask\n    .and_then(|h| h.cask.as_ref());"
+        ),
+        [
+            "let a = p.homebrew .as_ref() .and_then(|h| h.cask.as_ref())",
+            ""
+        ],
+    );
 
+    let mut bodies = 0usize;
+    let mut owners_found = std::collections::BTreeSet::new();
     let mut strays = Vec::new();
     for source in workspace_production_sources() {
         let text = std::fs::read_to_string(&source).expect("read source");
         for body in function_bodies(production_half(&text)) {
+            bodies += 1;
             let head = body.lines().next().unwrap_or("");
-            if OWNERS.iter().any(|owner| head.contains(owner)) {
+            if let Some(owner) = OWNERS.iter().find(|owner| head.contains(**owner)) {
+                owners_found.insert(*owner);
                 continue;
             }
-            for line in body.lines().filter(|l| reads_field(l)) {
-                strays.push(format!("{}: {}", source.display(), line.trim()));
+            for statement in statements(&body).iter().filter(|s| reads_field(s)) {
+                strays.push(format!("{}: {}", source.display(), statement.trim()));
             }
         }
     }
+    assert!(
+        bodies >= MIN_BODIES,
+        "the walk saw only {bodies} function bodies"
+    );
+    assert_eq!(
+        owners_found.into_iter().collect::<Vec<_>>(),
+        {
+            let mut all = OWNERS.to_vec();
+            all.sort_unstable();
+            all
+        },
+        "every owner function is still in the tree"
+    );
     assert!(
         strays.is_empty(),
         "read a crate's cask through `PublishConfig::homebrew_cask` (or \

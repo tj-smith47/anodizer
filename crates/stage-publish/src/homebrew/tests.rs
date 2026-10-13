@@ -3553,13 +3553,16 @@ fn depends_on_macos_overrides_the_custom_block_scan() {
 }
 
 /// What `custom_block_os_facts` reads from a `custom_block`, case by case.
-/// A fact holds when its word appears anywhere as a whole word, so the raw
-/// text is scanned with strings, comments and heredoc bodies read as code.
-/// For literal stanzas the scan matches more than Ruby would, never less,
-/// and a stanza built at runtime is the one it misses. A wrong verdict in
-/// either direction renders a cask Homebrew refuses on Linux only, so the
-/// over-matches below are the cases `depends_on_macos: true` exists for and
-/// the runtime-built stanza is the case for `depends_on_macos: false`.
+/// A Linux side holds when its word appears anywhere as a whole word, so the
+/// raw text is scanned with strings, comments and heredoc bodies read as
+/// code. An OS dependency holds when a `depends_on` statement names an OS
+/// key or symbol before its newline, `;` or `#`, or before the `)` that
+/// closes a `depends_on(` call. The scan can only over-match a literal
+/// stanza word, and a stanza built at runtime is the one it misses. A wrong
+/// verdict in either direction renders a cask Homebrew refuses on Linux
+/// only, so the over-matches below are the cases `depends_on_macos: true`
+/// exists for and the runtime-built stanza is the case for
+/// `depends_on_macos: false`.
 #[test]
 fn custom_block_os_facts_reads_whole_words_anywhere() {
     use super::cask::{CustomBlockOsFacts, custom_block_os_facts};
@@ -3599,6 +3602,36 @@ fn custom_block_os_facts_reads_whole_words_anywhere() {
             "depends_on spread over several lines",
             "depends_on(\n  macos: \">= :big_sur\"\n)",
             facts(false, true),
+        ),
+        (
+            "depends_on macos: with a symbol in its value",
+            "depends_on macos: \">= :big_sur\"",
+            facts(false, true),
+        ),
+        (
+            "an OS name in a comment after a depends_on without one",
+            "depends_on formula: \"jq\" # needs :macos 13",
+            facts(false, false),
+        ),
+        (
+            "an OS name in a comment on the next line",
+            "depends_on formula: \"jq\"\n# needs :macos 13",
+            facts(false, false),
+        ),
+        (
+            "an OS name in the statement after the depends_on",
+            "depends_on formula: \"jq\"; caveats \":macos\"",
+            facts(false, false),
+        ),
+        (
+            "an OS key on a later line of a depends_on( call",
+            "depends_on(\n  formula: \"jq\",\n  linux: :any\n)",
+            facts(false, true),
+        ),
+        (
+            "a constant path is not a symbol",
+            "depends_on formula: Foo::macos",
+            facts(false, false),
         ),
         (
             "maximum_macos: contains macos:",
@@ -3663,11 +3696,6 @@ fn custom_block_os_facts_reads_whole_words_anywhere() {
             "on_linux on a heredoc body line",
             "caveats <<~EOS\n  on_linux\nEOS\n",
             facts(true, false),
-        ),
-        (
-            "an OS name in a trailing comment",
-            "depends_on cask: \"x\" # :macos",
-            facts(false, true),
         ),
         (
             "an OS name inside a string",
@@ -4004,7 +4032,7 @@ const BOTH_ARCHES_SKIP_LINE: &str = "skipped universal artifact 'mytool-darwin-u
 
 /// One of the passes that render a homebrew manifest in a run.
 #[derive(Clone, Copy, Debug)]
-enum RenderPass {
+pub(super) enum RenderPass {
     /// The `emission-validate` stage.
     Emission,
     /// The pre-publish guard, which renders strict.
@@ -4016,7 +4044,7 @@ enum RenderPass {
 /// The passes each command runs, in pipeline order: a release runs all
 /// three, `--publish-only`, `publish` and `continue` have no emission
 /// validation, and `--snapshot` / `--dry-run` publish nothing.
-const COMMAND_PASSES: &[(&str, &[RenderPass])] = &[
+pub(super) const COMMAND_PASSES: &[(&str, &[RenderPass])] = &[
     (
         "release",
         &[
@@ -4034,7 +4062,7 @@ const COMMAND_PASSES: &[(&str, &[RenderPass])] = &[
 
 /// Run `pass` the way its stage does: the guard flips strict rendering on
 /// around the schema pass, and the publisher runs `publish`.
-fn run_render_pass(
+pub(super) fn run_render_pass(
     ctx: &mut Context,
     pass: RenderPass,
     publish: &dyn Fn(&mut Context, &StageLogger),
@@ -8147,4 +8175,41 @@ fn every_ruby_example_in_the_cask_docs_is_what_the_renderer_produces() {
         }
     }
     assert_eq!(ruby_blocks, releases.len(), "the page's ruby blocks");
+}
+
+/// A formula with no archive Homebrew can install names each archive and the
+/// platform it was built for, so the reader sees what was skipped and why.
+#[test]
+fn a_formula_with_no_installable_archive_names_every_archive_and_platform() {
+    let err = generate_formula(
+        &super::formula::FormulaCore {
+            name: "mytool",
+            version: "1.0.0",
+            description: "A tool",
+            license: "MIT",
+        },
+        &[
+            (
+                "i686-unknown-linux-gnu",
+                "https://e.com/mytool-linux-386.tar.gz",
+                "a",
+            ),
+            (
+                "x86_64-pc-windows-msvc",
+                "https://e.com/mytool-windows-amd64.zip",
+                "b",
+            ),
+        ],
+        &super::formula::FormulaCode {
+            install: "bin.install \"mytool\"",
+            test: "system \"#{bin}/mytool\", \"--version\"",
+        },
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "homebrew formula 'mytool': none of its archives is for a platform Homebrew \
+         installs on (macOS, or Linux on x86_64 or arm64): \
+         mytool-linux-386.tar.gz (linux/386), mytool-windows-amd64.zip (windows/amd64)"
+    );
 }

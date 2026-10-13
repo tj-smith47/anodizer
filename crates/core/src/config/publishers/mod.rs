@@ -67,7 +67,7 @@ pub struct GitRepoConfig {
 }
 
 /// Pull request configuration for fork-based publisher workflows.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct PullRequestConfig {
     /// Enable PR creation instead of direct push.
@@ -96,7 +96,7 @@ pub struct PullRequestConfig {
 }
 
 /// Target base for pull requests (upstream repo to PR against).
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct PullRequestBaseConfig {
     /// Owner of the upstream repository to PR against.

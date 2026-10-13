@@ -345,10 +345,14 @@ pub struct HomebrewCaskConfig {
     /// Whether the cask renders `depends_on :macos`. When unset, anodizer
     /// decides from the downloads and the `custom_block`: a cask with no
     /// Linux download gets `depends_on :macos` unless its `custom_block`
-    /// mentions `on_linux`, `on_system`, `app_image` or an OS `depends_on`.
-    /// That scan reads strings and comments as code, so a `custom_block`
-    /// that only mentions `on_linux` in a caveat drops the dependency, and
-    /// an `on_linux` built at runtime (through `send`) is not seen.
+    /// mentions `on_linux`, `on_system` or `app_image`, or holds a
+    /// `depends_on` statement that names an OS: the key `macos:`,
+    /// `maximum_macos:` or `linux:`, or the symbol `:macos` or `:linux`,
+    /// before the statement's newline, `;` or `#` (or its closing `)` for a
+    /// `depends_on(` call). The scan reads strings as code, and comments too
+    /// for the Linux-side words, so a `custom_block` that only mentions
+    /// `on_linux` in a caveat drops the dependency, and an `on_linux` built
+    /// at runtime (through `send`) is not seen.
     /// `true` renders `depends_on :macos` with a flat download; `false`
     /// renders no dependency and places a flat download inside `on_macos`.
     pub depends_on_macos: Option<bool>,

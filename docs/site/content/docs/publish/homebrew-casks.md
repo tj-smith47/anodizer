@@ -236,18 +236,27 @@ host. A cask has a Linux side when the release ships Linux artifacts (an
 `on_linux` block) or its `custom_block` contains the word `on_linux`,
 `on_system` or `app_image` anywhere, as a whole word: `self.on_linux do`,
 `(on_linux do` and a one-line `on_arm do on_linux do … end end` all count.
-The line is also left out when the `custom_block` contains the word
-`depends_on` and any of `:macos`, `macos:` (as in `maximum_macos:`),
-`:linux` or `linux:`, since a second OS dependency is redundant.
+The line is also left out when a `depends_on` statement in the
+`custom_block` names an OS, since a second OS dependency is redundant: the
+word `depends_on` followed, before the next newline, `;` or `#`, by the key
+`macos:`, `maximum_macos:` or `linux:`, or the symbol `:macos` or `:linux`.
+A `depends_on(` call is read up to its closing `)`, across lines.
+
+| `custom_block` text | An OS dependency |
+|---|---|
+| `depends_on macos: ">= :big_sur"` | yes |
+| `depends_on(` / `  macos: ">= :big_sur"` / `)` on three lines | yes |
+| `depends_on formula: "jq" # needs :macos 13` | no: the OS is in the comment |
 
 A flat single-download cask whose `custom_block` gives it a Linux side puts
 its `sha256` / `url` (and `app` / `service`) inside `on_macos`, so a Linux
 host never downloads the macOS archive.
 
-The `custom_block` is scanned as plain text, so a word inside a string, a
-comment or a heredoc body counts as well. For a block that writes its
-stanzas literally, the scan can only find a Linux side or an OS dependency
-that Ruby would not; it misses only a stanza built at runtime. A wrong answer in either
+The `custom_block` is scanned as plain text, so a Linux-side word inside a
+string, a comment or a heredoc body counts as well, and so does an OS key
+or symbol inside a string in a `depends_on` statement. For a block that
+writes its stanzas literally, the scan can only find a Linux side or an OS
+dependency that Ruby would not; it misses only a stanza built at runtime. A wrong answer in either
 direction gives a cask that works on macOS and that Homebrew refuses on
 Linux. A download inside `on_macos` with no real Linux block and no
 `depends_on :macos` fails to load with `Missing Linux stanzas can leave Linux

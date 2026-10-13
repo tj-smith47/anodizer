@@ -559,10 +559,12 @@ fn archive_layout<'a>(
 ) -> Result<ArchiveLayout<'a>> {
     let mut macos = CpuSlots::default();
     let mut linux = CpuSlots::default();
+    let mut seen: Vec<String> = Vec::with_capacity(archives.len());
     for &(platform, url, sha256) in archives {
         let file = url.rsplit('/').next().unwrap_or(url);
         let skip = |why: &str| log.verbose(&format!("skipped archive '{file}' — {why}"));
         let (os, arch) = anodizer_core::target::map_target(platform);
+        seen.push(format!("{file} ({os}/{arch})"));
         let (slots, os_name) = match os.as_str() {
             "darwin" => (&mut macos, "macOS"),
             "linux" => (&mut linux, "Linux"),
@@ -607,7 +609,8 @@ fn archive_layout<'a>(
     if served_count == 0 && !archives.is_empty() {
         anyhow::bail!(
             "homebrew formula '{name}': none of its archives is for a platform Homebrew \
-             installs on (macOS, or Linux on x86_64 or arm64)"
+             installs on (macOS, or Linux on x86_64 or arm64): {}",
+            seen.join(", ")
         );
     }
     for (os, served) in served {

@@ -610,15 +610,20 @@ pub(super) struct CustomBlockOsFacts {
     /// The word `on_linux`, `on_system` or the Linux-only `app_image`
     /// appears in the block: the cask has a Linux side.
     pub(super) other_os_block: bool,
-    /// The word `depends_on` appears together with any of `:macos`,
-    /// `macos:` (which `maximum_macos:` contains), `:linux` or `linux:`.
+    /// A `depends_on` statement names an OS: the word `depends_on` is
+    /// followed, before the next newline, `;` or `#`, by the key `macos:`,
+    /// `maximum_macos:` or `linux:`, or the symbol `:macos` or `:linux`. A
+    /// `depends_on(` call reads up to its closing `)`, across lines.
     pub(super) os_dependency: bool,
 }
 
 /// Read a `custom_block` for the facts `Homebrew/OSDependsOn` and
-/// `Cask#supports_linux?` look at. A fact holds when its word appears
+/// `Cask#supports_linux?` look at. A Linux side holds when its word appears
 /// anywhere in the raw text as a whole word, so a receiver
 /// (`self.on_linux do`), a parenthesis or a one-line nesting still counts.
+/// An OS dependency holds when a `depends_on` statement names an OS key or
+/// symbol, so an OS word in a comment after the statement, or on a line of
+/// its own, does not count.
 // A wrong verdict in either direction renders a cask that Homebrew refuses
 // on Linux only. Without `depends_on :macos`, a cask whose downloads all sit
 // in `on_macos` and that has no real Linux block leaves the Linux `sha256`
@@ -638,14 +643,82 @@ pub(super) fn custom_block_os_facts(block: Option<&str>) -> CustomBlockOsFacts {
             .filter(|w| !w.is_empty())
     };
     let other_os_block = words().any(|w| matches!(w, "on_linux" | "on_system" | "app_image"));
-    let os_dependency = words().any(|w| w == "depends_on")
-        && [":macos", "macos:", ":linux", "linux:"]
-            .iter()
-            .any(|token| block.contains(token));
+    let os_dependency = depends_on_statements(block).any(names_an_os);
     CustomBlockOsFacts {
         other_os_block,
         os_dependency,
     }
+}
+
+/// The argument text of every whole-word `depends_on` in `block`: up to the
+/// matching `)` for a `depends_on(` call, else up to the next newline or
+/// `;`, each line cut at its `#`.
+fn depends_on_statements(block: &str) -> impl Iterator<Item = String> + '_ {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    block
+        .match_indices("depends_on")
+        .filter(move |(at, word)| {
+            let before = block[..*at].chars().next_back();
+            let after = block[at + word.len()..].chars().next();
+            !before.is_some_and(is_word) && !after.is_some_and(is_word)
+        })
+        .map(move |(at, word)| {
+            let rest = &block[at + word.len()..];
+            let trimmed = rest.trim_start_matches([' ', '\t']);
+            let args = match trimmed.strip_prefix('(') {
+                Some(call) => {
+                    let mut depth = 1usize;
+                    let end = call
+                        .char_indices()
+                        .find(|&(_, c)| {
+                            match c {
+                                '(' => depth += 1,
+                                ')' => depth -= 1,
+                                _ => {}
+                            }
+                            depth == 0
+                        })
+                        .map_or(call.len(), |(i, _)| i);
+                    &call[..end]
+                }
+                None => rest.split(['\n', ';']).next().unwrap_or(""),
+            };
+            args.lines()
+                .map(|line| line.split('#').next().unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+}
+
+/// True when `args` names an OS as a whole word: the key `macos:`,
+/// `maximum_macos:` or `linux:`, or the symbol `:macos` or `:linux`.
+fn names_an_os(args: String) -> bool {
+    let bytes = args.as_bytes();
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut start = 0;
+    while start < bytes.len() {
+        if !is_word(bytes[start]) {
+            start += 1;
+            continue;
+        }
+        let mut end = start;
+        while end < bytes.len() && is_word(bytes[end]) {
+            end += 1;
+        }
+        let word = &args[start..end];
+        let symbol = matches!(word, "macos" | "linux")
+            && start >= 1
+            && bytes[start - 1] == b':'
+            && (start < 2 || bytes[start - 2] != b':');
+        let key = matches!(word, "macos" | "maximum_macos" | "linux")
+            && bytes.get(end) == Some(&b':')
+            && bytes.get(end + 1) != Some(&b':');
+        if symbol || key {
+            return true;
+        }
+        start = end;
+    }
+    false
 }
 
 /// A `<name> do … end` stanza around a user-supplied Ruby body.

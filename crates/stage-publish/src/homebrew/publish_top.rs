@@ -123,7 +123,8 @@ pub(crate) struct RenderedTopCask {
 }
 
 /// Render the Ruby cask a live publish would write for one `homebrew_casks:`
-/// entry, honoring `skip_upload` and the `if:` condition, and the macOS-artifact
+/// entry, honoring `skip_upload` and the `if:` condition (evaluated without
+/// printing; the publish loop reports the skip), and the macOS-artifact
 /// applicability check (no darwin artifact in scope ⇒ not applicable).
 ///
 /// Returns `Ok(None)` when the entry is skipped (`skip_upload` / falsy `if`) or
@@ -141,15 +142,30 @@ pub(crate) fn render_top_level_cask_entry(
     let project_name = &ctx.config.project_name;
     let cask_name = super::cask::cask_name_for(cask_cfg.name.as_deref().unwrap_or(project_name));
 
+    if top_cask_skip_gates_trip(ctx, cask_cfg, &cask_name, &super::silenced(log))? {
+        return Ok(None);
+    }
+    render_top_level_cask_inner(ctx, cask_cfg, &cask_name, log)
+}
+
+/// True when a `homebrew_casks:` entry's `skip_upload:` or `if:` gate trips,
+/// printing the skip line on `log`. The publish loop passes the stage
+/// logger; the render-only paths pass a silenced one, so the line prints
+/// once per command.
+fn top_cask_skip_gates_trip(
+    ctx: &Context,
+    cask_cfg: &HomebrewCaskConfig,
+    cask_name: &str,
+    log: &StageLogger,
+) -> Result<bool> {
     if crate::util::should_skip_upload(
         cask_cfg.skip_upload.as_ref(),
         ctx,
         log,
         Some(&format!("cask for '{cask_name}'")),
     )? {
-        return Ok(None);
+        return Ok(true);
     }
-
     let proceed = anodizer_core::config::evaluate_if_condition(
         cask_cfg.if_condition.as_deref(),
         &format!("homebrew_casks entry '{}'", cask_name),
@@ -160,10 +176,8 @@ pub(crate) fn render_top_level_cask_entry(
             "skipped cask '{}' — `if` condition evaluated falsy",
             cask_name
         ));
-        return Ok(None);
     }
-
-    render_top_level_cask_inner(ctx, cask_cfg, &cask_name, log)
+    Ok(!proceed)
 }
 
 /// Skip-unaware top-level cask render: assumes `skip_upload` and `if:` have
@@ -465,8 +479,7 @@ fn render_top_level_cask_inner(
 ///
 /// Skipped / not-applicable / dry-run entries are omitted. An empty config
 /// block yields an empty Vec. This is the render-only path the offline schema
-/// validator drives; the live publish loop calls
-/// [`render_top_level_cask_entry`] per entry for the same Ruby.
+/// validator drives, one [`render_top_level_cask_entry`] per entry.
 pub(crate) fn render_top_level_homebrew_casks(
     ctx: &Context,
     log: &StageLogger,
@@ -517,27 +530,7 @@ pub fn publish_top_level_homebrew_casks(
             super::cask::cask_name_for(cask_cfg.name.as_deref().unwrap_or(project_name));
         let version = ctx.version();
 
-        // Check skip_upload.
-        if crate::util::should_skip_upload(
-            cask_cfg.skip_upload.as_ref(),
-            ctx,
-            log,
-            Some(&format!("cask for '{cask_name}'")),
-        )? {
-            continue;
-        }
-
-        // Cask-level `if:` conditional gate.
-        let proceed = anodizer_core::config::evaluate_if_condition(
-            cask_cfg.if_condition.as_deref(),
-            &format!("homebrew_casks entry '{}'", cask_name),
-            |t| ctx.render_template(t),
-        )?;
-        if !proceed {
-            log.status(&format!(
-                "skipped cask '{}' — `if` condition evaluated falsy",
-                cask_name
-            ));
+        if top_cask_skip_gates_trip(ctx, cask_cfg, &cask_name, log)? {
             continue;
         }
 

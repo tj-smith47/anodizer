@@ -144,8 +144,32 @@ Where a per-crate cask is pushed:
 | Config | Tap | Commit and PR |
 |---|---|---|
 | a `homebrew:` formula and a cask with no `repository:` of its own (or the formula's) | the formula's tap | one commit and one PR for the formula and the cask |
+| the same, with the formula's `skip_upload:` or `if:` leaving it out of the run | the formula's tap | the cask's own commit and PR |
 | a `homebrew:` formula and a cask whose `repository:` names another tap | the cask's `repository:` | its own commit and PR |
+| a `homebrew:` formula and a cask whose `repository:` names the formula's tap with a different `branch:`, `token:` or `pull_request:` | the cask's `repository:` | its own commit and PR |
 | a cask and no `homebrew:` formula | the cask's `repository:` | its own commit and PR |
+
+A cask's `repository:` names the formula's tap when its `owner` and `name`
+match the formula's without regard to case (`MyOrg/Homebrew-Tap` is
+`myorg/homebrew-tap`).
+
+The formula and the cask are gated separately. A cask's own `skip_upload:`
+and `if:` win; one it leaves unset (or an empty `if: ""`) inherits the
+formula's:
+
+```yaml
+crates:
+  - name: myapp
+    publish:
+      homebrew:
+        skip_upload: true       # the formula is not pushed
+        repository:
+          owner: myorg
+          name: homebrew-tap
+      homebrew_cask:
+        skip_upload: false      # the cask is, alone, to homebrew-tap
+        binaries: [myapp]
+```
 
 ```yaml
 crates:
@@ -167,8 +191,31 @@ crates:
 | `binaries` | list | none | Binary stubs to install |
 | `description` | string | Cargo `[package].description` | Cask description. Derived from `Cargo.toml`; set to override. |
 | `homepage` | string | Cargo `[package].homepage` | Project homepage. Derived from `Cargo.toml`; set to override. |
-| `skip_upload` | bool or string | `false` | Skip publishing; `true` always skips, `"auto"` skips for prereleases |
+| `skip_upload` | bool or string | the formula's `skip_upload`, else `false` | Skip publishing; `true` always skips, `"auto"` skips for prereleases |
 | `update_existing_pr` | bool or string | `false` | Force-push to an existing open PR branch instead of skipping. See [Cask existing PR behavior](#cask-existing-pr-behavior). |
+
+`defaults.publish.homebrew_cask:` merges into each crate's cask field by
+field: a field the crate's cask sets wins, a field it leaves unset comes
+from the defaults (nested blocks such as `repository:` merge the same way),
+and a crate with no cask of its own gets the defaults' cask whole.
+
+```yaml
+defaults:
+  publish:
+    homebrew_cask:
+      repository:
+        owner: myorg
+        name: homebrew-tap
+      homepage: https://myorg.example
+
+crates:
+  - name: myapp
+    publish:
+      homebrew_cask:
+        binaries: [myapp]
+        homepage: https://myapp.example   # wins over the defaults
+        # repository: myorg/homebrew-tap, from the defaults
+```
 
 ## Authentication
 

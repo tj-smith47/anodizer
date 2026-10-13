@@ -43,15 +43,26 @@ impl<'a> CrateCask<'a> {
 
     /// The formula block whose tap commit carries this cask, or `None` when
     /// the cask is pushed on its own: the crate has no formula, or the
-    /// cask's `repository:` names a different tap.
+    /// cask's `repository:` names a different tap. Owner and name compare
+    /// without regard to case, as GitHub resolves them; a cask that names the
+    /// formula's tap with another `branch:`, `token:` or `pull_request:`
+    /// block is pushed on its own, because one commit and one pull request
+    /// cannot honor two of those.
     pub(crate) fn same_tap(&self) -> Option<&'a HomebrewConfig> {
         let formula = self.formula?;
         let Some(own) = self.cask.repository.as_ref() else {
             return Some(formula);
         };
-        let own = crate::util::resolve_repo_owner_name(Some(own));
-        let formula_tap = crate::util::resolve_repo_owner_name(formula.repository.as_ref());
-        (own == formula_tap).then_some(formula)
+        let tap = formula.repository.as_ref();
+        let coords = |r: Option<&RepositoryConfig>| {
+            crate::util::resolve_repo_owner_name(r)
+                .map(|(o, n)| (o.to_ascii_lowercase(), n.to_ascii_lowercase()))
+        };
+        let same = coords(Some(own)) == coords(tap)
+            && own.branch == tap.and_then(|t| t.branch.clone())
+            && own.token == tap.and_then(|t| t.token.clone())
+            && own.pull_request == tap.and_then(|t| t.pull_request.clone());
+        same.then_some(formula)
     }
 
     /// The block the cask falls back to for unset gates, URL template,
@@ -70,12 +81,12 @@ impl<'a> CrateCask<'a> {
     }
 }
 
-/// True when the standalone cask's effective skip gates trip for `crate_name`:
+/// True when the crate cask's effective skip gates trip for `crate_name`:
 /// the cask `skip_upload` (per-cask wins, else the formula's `skip_upload`) is
 /// truthy, or the effective `if:` (cask-level wins, else the formula's)
-/// evaluates falsy. Logs the reason. Shared by the live `publish_cask` and the
-/// validator-facing `render_homebrew_cask_for_crate` so the gate is defined
-/// once.
+/// evaluates falsy. Logs the reason on `log`. The publish paths pass the
+/// stage logger, so the skip line prints once, from the publisher; the
+/// render-only callers pass a silenced one.
 pub(super) fn cask_skip_gates_trip(
     ctx: &Context,
     hb_cfg: &anodizer_core::config::HomebrewConfig,
@@ -124,9 +135,10 @@ pub(super) fn cask_skip_gates_trip(
 /// else the formula's).
 ///
 /// Returns `Ok(None)` when no cask is configured or the publisher would skip
-/// it. The live publish paths and the offline schema validator all render
-/// through this one function so the validated document is byte-for-byte what
-/// a release pushes.
+/// it. The offline schema validator renders through this function and the
+/// push paths through the same [`generate_cask_from_context`], so the
+/// validated document is byte-for-byte what a release pushes. The gates are
+/// evaluated without printing: the skip line belongs to the publisher.
 pub(crate) fn render_homebrew_cask_for_crate(
     ctx: &Context,
     crate_name: &str,
@@ -136,15 +148,23 @@ pub(crate) fn render_homebrew_cask_for_crate(
         return Ok(None);
     };
     let parent = crate_cask.parent();
-    if cask_skip_gates_trip(ctx, parent, crate_cask.cask, crate_name, log)? {
+    if cask_skip_gates_trip(
+        ctx,
+        parent,
+        crate_cask.cask,
+        crate_name,
+        &super::silenced(log),
+    )? {
         return Ok(None);
     }
     let cask_result = generate_cask_from_context(ctx, crate_name, parent, crate_cask.cask, log)?;
     Ok(Some(cask_result))
 }
 
-/// Push `crate_name`'s cask to its own tap: the cask's `repository:`, else
-/// the formula's. Returns `Ok(true)` when a commit reached the tap.
+/// Push `crate_name`'s cask on its own: to the cask's `repository:`, else
+/// the formula's. A cask that shares the formula's tap is pushed here when
+/// the formula's gates leave it out. Returns `Ok(true)` when a commit reached
+/// the tap.
 pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "homebrew")?;
     let crate_cask = CrateCask::of(publish)
@@ -164,9 +184,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
 
     // Evaluate the cask's effective skip gates (per-cask wins, else the
     // formula's) before resolving the tap repo so a skipped cask with no
-    // `repository:` block is a no-op rather than an error. The validator-facing
-    // `render_homebrew_cask_for_crate` evaluates the same gates over the same
-    // `generate_cask_from_context` render.
+    // `repository:` block returns quietly with nothing to resolve.
     if cask_skip_gates_trip(ctx, hb_cfg, cask_cfg, crate_name, log)? {
         return Ok(false);
     }
