@@ -10,8 +10,7 @@ use anyhow::Result;
 pub fn nfpm_command(config_path: &str, format: &str, target: &str) -> Vec<String> {
     // nfpm registers no `termux.deb` packager — Termux packages are the deb
     // packager plus the termux arch/prefix overrides carried in the generated
-    // YAML, so the CLI takes the underlying packager name (GoReleaser strips
-    // the same prefix before `nfpm.Get`). The termux-specific filename is
+    // YAML, so the CLI takes the underlying packager name. The termux-specific filename is
     // preserved by `--target`.
     let packager = format.strip_prefix("termux.").unwrap_or(format);
     vec![

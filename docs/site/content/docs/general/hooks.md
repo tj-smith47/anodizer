@@ -223,8 +223,8 @@ script can never overwrite that diagnosis.
 
 Older anodizer configs use `after.post:` instead of `after.hooks:`. The
 old spelling is still accepted (folded into `hooks:` at parse time with
-a deprecation warning) so existing configs keep working, but new
-configs should match GoReleaser Pro and use `hooks:` in every block.
+a deprecation warning) so existing configs keep working; new configs
+should use `hooks:` in every block.
 
 ## Use cases
 

@@ -7,7 +7,7 @@ template = "docs.html"
 
 Anodizer bumps an **existing formula in [`Homebrew/homebrew-core`](https://github.com/Homebrew/homebrew-core)** (or any formula repository you point it at) to your new release — entirely through the GitHub API. It reads the formula file, rewrites its `url` / `sha256` / `version` stanzas (or `tag:` / `revision:` for git-based formulae), commits the change to a branch on your fork, and opens a pull request. There is no `git clone` (the core repo is multiple gigabytes) and no `brew` invocation.
 
-This mirrors the semantics of [`brew bump-formula-pr`](https://docs.brew.sh/Manpage#bump-formula-pr-options-formula) and the [`mislav/bump-homebrew-formula-action`](https://github.com/mislav/bump-homebrew-formula-action) GitHub Action — so a project migrating from that action drops the workflow step and keeps its existing secret. GoReleaser has no homebrew-core formula bump (its `brews` pipe only pushes to a personal tap); anodizer goes beyond it here.
+This mirrors the semantics of [`brew bump-formula-pr`](https://docs.brew.sh/Manpage#bump-formula-pr-options-formula) and the [`mislav/bump-homebrew-formula-action`](https://github.com/mislav/bump-homebrew-formula-action) GitHub Action — so a project migrating from that action drops the workflow step and keeps its existing secret.
 
 ## homebrew-core vs. the Homebrew tap
 

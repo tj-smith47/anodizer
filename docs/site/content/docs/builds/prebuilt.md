@@ -69,8 +69,8 @@ globals like `{{ Version }}` and `{{ ProjectName }}`):
 |---|---|---|
 | `{{ Target }}` | `x86_64-unknown-linux-gnu` | Full Rust target triple. |
 | `{{ Abi }}` | `gnu` | ABI component of the triple (`gnu`, `musl`, `msvc`, `gnueabihf`); empty for a triple that names none, such as `aarch64-apple-darwin`. Example: `path: "output/{{ Os }}_{{ Arch }}_{{ Abi }}/myapp"`. |
-| `{{ Os }}` | `linux` | GoReleaser-style OS slug (`linux`, `darwin`, `windows`, …). |
-| `{{ Arch }}` | `amd64` | GoReleaser-style arch slug (`amd64`, `arm64`, `armv7`, …). |
+| `{{ Os }}` | `linux` | Go-style OS slug (`linux`, `darwin`, `windows`, …). |
+| `{{ Arch }}` | `amd64` | Go-style arch slug (`amd64`, `arm64`, `armv7`, …). |
 | `{{ Amd64 }}` | `v1` | AMD64 micro-arch variant; set for `x86_64-*` triples. Imports default to the `v1` baseline; declare `amd64_variant: "v3"` on the build entry when importing a tuned binary so its metadata and asset names carry the real level. |
 | `{{ Arm64 }}` | `v8` | ARM64 micro-arch variant; set for `aarch64-*` triples. |
 | `{{ Arm }}` | `7` | ARM micro-arch variant; set for `armv6*` / `armv7*` triples. |
@@ -85,7 +85,7 @@ Examples:
 prebuilt:
   path: "target/{{ Target }}/release/myapp"
 
-# Match GoReleaser's documented (Os, Arch) shape
+# Go-style (Os, Arch) layout
 prebuilt:
   path: "output/myapp_{{ Os }}_{{ Arch }}"
 
@@ -97,8 +97,7 @@ prebuilt:
 The rendered path is `stat()`-ed before the import. A missing file, a
 permission error, or any other I/O failure aborts the build with a message
 that names both the rendered path and the originating target triple — anodizer
-will never silently fall through on a missing prebuilt binary, matching
-GoReleaser's "GoReleaser will fail" contract.
+will never silently fall through on a missing prebuilt binary.
 
 ## Required-explicit `targets:`
 
@@ -295,7 +294,7 @@ before a release and aborts a real release before any publisher ships it.
 
 ### Escape hatch: explicit per-target `pkg_url` overrides
 
-Auto-derivation covers the GoReleaser-style asset-name case automatically, so
+Auto-derivation covers the Go-style asset-name case automatically, so
 you rarely need this. Reach for it only when your assets are named in a way
 the archive template can't express — supplying a top-level `pkg_url` **or** any
 `overrides` entry suppresses derivation entirely (manual values always win).

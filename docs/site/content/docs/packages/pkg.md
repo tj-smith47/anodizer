@@ -79,7 +79,7 @@ PKG only processes binary artifacts targeting Darwin (macOS) — the *output* is
 | `use` | string | `binary` | Which artifact type to package: `binary` (the built executable) or `appbundle` (a `.app` bundle from the app-bundles stage). |
 | `min_os_version` | string | | Minimum macOS version (e.g. `10.13`). Forwarded to `pkgbuild --min-os-version`. |
 | `scripts` | string | | Path to a directory containing `preinstall` and/or `postinstall` scripts. Templates allowed. |
-| `extra_files` | list | | Additional files to include in the package payload. Anodizer-additive (not in GoReleaser Pro pkg). |
+| `extra_files` | list | | Additional files to include in the package payload. |
 | `templated_extra_files` | list | | Extra files rendered through the template engine before inclusion. Anodizer-additive. |
 | `replace` | bool | `false` | Remove matching archive artifacts, keeping only the PKG. |
 | `mod_timestamp` | string | | Fixed timestamp for reproducible builds. Templates allowed (e.g. `{{ CommitTimestamp }}`). Applied to the staging directory contents before `pkgbuild` bundles them — timestamps propagate into the pkg payload tar. |

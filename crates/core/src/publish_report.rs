@@ -180,10 +180,8 @@ pub enum SkipReason {
     ConfigSkipped,
     /// At least one entry the publisher iterated disqualified itself — each
     /// one recorded its own reason in the run's intentional-skip summary.
-    /// Mirrors GoReleaser's
-    /// `pipe.SkipMemento.Evaluate()`, which turns a loop ANY of whose items
-    /// returned `pipe.Skip` into a skipped pipe rather than a successful one —
-    /// the entries that did publish are still reported individually.
+    /// A publisher with ANY such entry reports as skipped; the entries that
+    /// did publish are still reported individually.
     /// Distinct from `ConfigSkipped` (decided BEFORE `run()` from `skip:` /
     /// `if:` alone) — here `run()` did execute, and the disqualifications are
     /// per-entry defects (a missing `name:`/`target:`, a half-set credential

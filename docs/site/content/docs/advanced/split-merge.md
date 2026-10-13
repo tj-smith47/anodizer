@@ -229,7 +229,7 @@ Beyond `release --merge` / `continue --merge`, anodizer also accepts
 `--merge` on the publish-only and announce-only commands so the merge
 step can be broken into smaller pieces (for example, one machine signs +
 uploads to GitHub, a second machine fan-outs to package managers, a
-third announces). Mirrors GoReleaser Pro's
+third announces). These match GoReleaser Pro's
 `goreleaser publish --merge` / `goreleaser announce --merge`.
 
 ```bash
@@ -267,9 +267,6 @@ same source tree writes a byte-identical `dist/<subdir>/context.json`
 merge step's loader uses sorted shard iteration so the merged artifact
 order is also deterministic.
 
-The `before:` hook list is skipped during `--merge` (mirrors
-GoReleaser's
-[`customization/general/partial/`](https://goreleaser.com/customization/general/partial/)
-contract: "this step will not run anything that the previous step
-already did") so re-running merge after a transient publish failure
+The `before:` hook list is skipped during `--merge`, since the split
+step already ran it, so re-running merge after a transient publish failure
 does not re-compile.

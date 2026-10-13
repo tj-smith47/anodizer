@@ -455,7 +455,7 @@ mod tests {
                 .map(|c| c.description.as_str())
                 .collect::<Vec<_>>(),
             vec!["squashed PR (#40)"],
-            "without the knob the merge commit is one entry, as GoReleaser reads it"
+            "without the knob the merge commit is one entry"
         );
 
         let plain = fetch_git_commits(repo_path, &None, None, &[], "demo", &log, true).unwrap();

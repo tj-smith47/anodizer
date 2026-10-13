@@ -46,7 +46,7 @@ Four sort modes are accepted:
 
 | Value | Sort surface | When to use |
 |-------|--------------|-------------|
-| `-version:refname` (default) | git-delegated lexicographic version sort | The historical default; matches GoReleaser OSS |
+| `-version:refname` (default) | git-delegated lexicographic version sort | The default |
 | `-version:creatordate` | git-delegated by tag creation date, newest first | When tags are created out of version order and creation order is the source of truth |
 | `semver` | Rust-side strict SemVer 2.0.0 sort | When you want pure-spec ordering with no shell-out; prereleases sort below their release per section 11 |
 | `smartsemver` | Rust-side SemVer + prerelease filter | When you ship release tags after prerelease tags and want changelogs to skip the prereleases automatically |

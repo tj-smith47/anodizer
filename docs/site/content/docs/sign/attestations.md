@@ -140,7 +140,7 @@ anodizer does **not** duplicate the sha256sum file: `checksums.txt` is in
 manifest is the primary deliverable for anodizer-action; reusing
 `checksums.txt` for the stock-action path is a zero-cost bonus.
 
-## Mode `emit` — self-contained (GoReleaser Pro parity)
+## Mode `emit` — self-contained
 
 For users who can't run the Action. anodizer generates an
 [in-toto v1](https://in-toto.io/Statement/v1) statement carrying an

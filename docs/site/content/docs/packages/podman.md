@@ -5,11 +5,11 @@ weight = 5
 template = "docs.html"
 +++
 
-Anodizer supports the `podman` backend as a swap-in alternative to `docker buildx` for both `dockers_v2[]` image builds and `docker_manifests[]` manifest-list publication. Matches GoReleaser Pro's `podman` pipe parity.
+Anodizer supports the `podman` backend as a swap-in alternative to `docker buildx` for both `dockers_v2[]` image builds and `docker_manifests[]` manifest-list publication.
 
 ## Linux-only
 
-The podman backend is **Linux-only**, matching GoReleaser Pro. Anodizer refuses to load a config with `use: podman` on macOS or Windows hosts and reports a clear error rather than failing later with `podman: command not found`.
+The podman backend is **Linux-only**. Anodizer refuses to load a config with `use: podman` on macOS or Windows hosts and reports a clear error rather than failing later with `podman: command not found`.
 
 ```text
 $ anodizer release         # on macOS
@@ -127,8 +127,6 @@ A build that pushes nothing (a snapshot, a dry run, `skip_push:`) records no dig
 
 ## What anodizer does NOT do
 
-Mirrors GoReleaser Pro's caveats verbatim:
-
 - **No auto-install.** Anodizer never installs `podman` for you. CI runners must have `podman` already on `PATH`.
 - **No credential setup.** Push credentials are resolved from the host's `~/.docker/config.json` (or `~/.config/containers/auth.json` for rootless podman). Run `podman login` (or `docker login`) before releasing, or wire `DOCKER_USERNAME` / `DOCKER_PASSWORD` into a `before:` hook.
 - **No rootless / rootful opinion.** Anodizer treats the binary as opaque — whether `podman` runs rootless (default on most distros) or rootful is your runner's choice. Image layers and manifests written under rootless are stored at `$XDG_DATA_HOME/containers/storage`; rootful at `/var/lib/containers/storage`.
@@ -153,4 +151,4 @@ Verify podman image reproducibility out-of-band (re-build the image twice, compa
 
 ## Anodizer extension: `docker_manifests[].use: podman`
 
-GoReleaser's `validateManifester` only accepts `use: docker` on `docker_manifests[]` entries. Anodizer extends the set to include `podman` because `podman manifest create / push` mirrors `docker manifest`. This is an intentional anodizer-only extension — GR-imported configs that already set `use: podman` here continue to work; new configs should be aware they are stepping outside strict parity.
+Anodizer accepts `use: podman` on `docker_manifests[]` entries because `podman manifest create / push` behaves like `docker manifest`. GoReleaser accepts only `use: docker` there, so a config that sets `use: podman` on a manifest entry does not carry back to GoReleaser.

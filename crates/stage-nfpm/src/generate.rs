@@ -47,8 +47,7 @@ fn filter_provides_for_format(
 }
 
 /// Prefix a directory with the Termux filesystem root
-/// (`/data/data/com.termux/files`), mirroring GoReleaser's
-/// `termuxPrefixedDir`: any non-empty path is prefixed unconditionally —
+/// (`/data/data/com.termux/files`): any non-empty path is prefixed unconditionally —
 /// never guarded on `/usr` — and an empty path stays empty.
 fn termux_prefixed_dir(dir: &str) -> String {
     if dir.is_empty() {
@@ -383,8 +382,8 @@ pub fn generate_nfpm_yaml_with_env(
         .map(|r| build_yaml_rpm(r, nfpm_id, format, skip_sign, env_map));
     // Termux's apt rejects Debian arch names: stamp the Termux nomenclature
     // (x86_64/aarch64/i686/arm) into the control file's `Architecture` via
-    // nfpm's `deb.arch` override, which bypasses its Go-arch→Debian mapping
-    // (mirrors GoReleaser setting `Info.Deb.Arch` for termux.deb). This must
+    // nfpm's `deb.arch` override, which bypasses its Go-arch→Debian mapping.
+    // This must
     // materialize a deb block even when the user configured none.
     let termux_deb_arch = (format == Some("termux.deb"))
         .then(|| crate::filename::control_arch("termux.deb", nfpm_arch));

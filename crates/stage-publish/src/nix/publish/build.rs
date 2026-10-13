@@ -436,15 +436,10 @@ pub(super) fn detect_dynamically_linked(ctx: &Context, crate_name: &str) -> anyh
 
 /// Runs the configured `alejandra` / `nixfmt` formatter against the
 /// generated derivation. Formatting is opt-in (no `formatter` set is a
-/// no-op, matching GoReleaser), but once a formatter IS configured it is
+/// no-op), but once a formatter IS configured it is
 /// MANDATORY: a missing binary, a non-zero exit, or an unrecognized name
 /// each `bail!`s so the unformatted derivation is never committed/pushed
 /// to the external nix repo.
-///
-/// This is INTENTIONALLY stricter than GoReleaser, whose `nix.go::format`
-/// only warns on failure — the "no unformatted push" requirement justifies
-/// the divergence; the opt-in gating (format only when a formatter is set)
-/// still matches GR.
 pub(super) fn run_formatter(nix_cfg: &NixConfig, nix_file: &Path, log: &StageLogger) -> Result<()> {
     let Some(ref formatter) = nix_cfg.formatter else {
         return Ok(());

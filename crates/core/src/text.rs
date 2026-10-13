@@ -2,7 +2,6 @@
 //! and spelling a count with the noun its number takes.
 
 /// The marker anodizer appends where it cut an over-long string.
-/// GoReleaser's is the same three-dot ellipsis.
 pub const TRUNCATION_ELLIPSIS: &str = "...";
 
 /// Cut `s` down to at most `max_len` bytes, ending it with

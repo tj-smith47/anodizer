@@ -47,11 +47,8 @@ pub const VALID_SIGN_ARTIFACT_FILTERS: &[&str] = &[
 ///   (`signable_subject_kinds()`: Archive, UploadableBinary, SourceArchive,
 ///   UploadableFile, Makeself, AppImage, LinuxPackage, Flatpak, SourceRpm,
 ///   Installer, DiskImage, MacOsPackage, Sbom) PLUS every `Checksum`
-///   (combined `checksums.txt` AND per-artifact split `.sha256` sidecars) —
-///   GoReleaser's `sign.artifacts: all` is `ReleaseUploadableTypes()` minus
-///   only `Signature, Certificate`, and `Checksum` is in that set
-///   (`internal/pipe/sign/sign.go:103-108`). `Signature` and `Certificate`
-///   ARE excluded: signing a signature is never valid. Signing a checksum
+///   (combined `checksums.txt` AND per-artifact split `.sha256` sidecars).
+///   `Signature` and `Certificate` ARE excluded: signing a signature is never valid. Signing a checksum
 ///   yields one legitimate `X.sha256.sig` and CANNOT recurse — see below.
 /// - `"source"`        → only `ArtifactKind::SourceArchive`
 /// - `"archive"`       → only `ArtifactKind::Archive`
@@ -67,24 +64,20 @@ pub const VALID_SIGN_ARTIFACT_FILTERS: &[&str] = &[
 /// - `"snap"`          → only `ArtifactKind::Snap`
 /// - `"macos_package"` → only `ArtifactKind::MacOsPackage`
 /// - `"checksum"`      → every `ArtifactKind::Checksum`, combined file and
-///   per-artifact split sidecars alike (GoReleaser:
-///   `artifact.ByType(artifact.Checksum)`,
-///   `internal/pipe/sign/sign.go:93-94`). Each yields one `X.sha256.sig`.
+///   per-artifact split sidecars alike. Each yields one `X.sha256.sig`.
 ///
 /// ## Why this cannot recurse into `X.sha256.sig.sha256`
 ///
 /// Signing a checksum produces a `Signature` (`X.sha256.sig`). The
-/// anti-recursion guard is NOT in this filter — it is upstream, mirroring
-/// GoReleaser's `refreshAll` `Not(Checksum, Signature, Certificate)`
-/// (`internal/pipe/checksums/checksums.go:189-190`). Two upstream facts close
+/// anti-recursion guard is NOT in this filter — it is upstream. Two upstream
+/// facts close
 /// the loop: the checksum stage's subject set is
 /// `checksummable_subject_kinds()` (PRIMARY only — it never hashes a `.sig`
 /// or a `.sha256`), and
 /// `refresh_combined_checksums` skips every `is_derived_sidecar_kind`. So a
 /// freshly-produced `X.sha256.sig` is never re-checksummed (no third level
-/// forms) and never re-signed (`Signature` is excluded here). The legit second
-/// level `X.sha256.sig` is GoReleaser-parity; the third level is
-/// unrepresentable.
+/// forms) and never re-signed (`Signature` is excluded here). The second
+/// level `X.sha256.sig` is legitimate; the third level is unrepresentable.
 ///
 /// Any other value returns an error.
 pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<bool> {
@@ -406,7 +399,7 @@ pub(crate) fn lexical_absolute(path: &std::path::Path) -> Option<std::path::Path
 
 /// The on-disk location a rendered `signature:` / `certificate:` template
 /// names. A rendering already under `dist` is kept; any other one is placed
-/// under `dist`, the same rule GoReleaser's `relativeToDist` applies. The two
+/// under `dist`. The two
 /// are compared as absolute paths so `./dist/x` and `dist/x` agree.
 ///
 /// The rendering that gets placed under `dist` has its `.` and `..` folded

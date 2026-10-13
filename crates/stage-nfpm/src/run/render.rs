@@ -350,9 +350,8 @@ pub(crate) fn render_nfpm_config_fields(
         }
     }
     // msix's identity/branding fields are templated (they carry
-    // per-release values like the version or publisher), matching the set
-    // GoReleaser runs through its template engine: publisher, the display
-    // names, the logo path, and the signature's pfx_file.
+    // per-release values like the version or publisher): publisher, the
+    // display names, the logo path, and the signature's pfx_file.
     if let Some(ref mut msix) = rendered_cfg.msix {
         render_in_place(&mut msix.publisher, vars)?;
         if let Some(ref mut props) = msix.properties {

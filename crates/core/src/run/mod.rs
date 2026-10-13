@@ -9,16 +9,14 @@
 //! - **Default (quiet) verbosity** — the child's output is captured silently;
 //!   on success nothing prints, on non-zero exit the logger emits the redacted
 //!   stderr/stdout and `bail!`s with a tail-truncated, redacted stderr tail
-//!   embedded in the error chain. This matches GoReleaser's
-//!   `CombinedOutput()`-then-surface model.
+//!   embedded in the error chain.
 //! - **Verbose / debug** — the child's stdout and stderr are *teed* live to
 //!   this process's **stderr** (after secret redaction) AND captured into
 //!   in-memory buffers, so a long-running tool (cargo, snapcraft, nix-build,
 //!   upx) shows progress as it runs while the failure path keeps the full
 //!   captured output for the error embed. The tee deliberately goes to stderr,
 //!   never stdout — anodizer's stdout is a machine-readable data channel (GHA
-//!   step outputs, JSON payloads) that a teed child stream would corrupt. The
-//!   verbose tee is an anodizer-only superset: GoReleaser never streams live.
+//!   step outputs, JSON payloads) that a teed child stream would corrupt.
 //!
 //! - **After the child exits** — reading stdout and stderr, and writing any
 //!   stdin payload, stop once the pipes close, or `POST_EXIT_DRAIN_WINDOW`

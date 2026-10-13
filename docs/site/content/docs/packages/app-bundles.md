@@ -96,7 +96,7 @@ generated `.app` and then notarizes it through Apple. See the
 | `extra_files` | list | none | Additional files to include in Resources |
 | `templated_extra_files` | list | none | Template-rendered extra files |
 | `mod_timestamp` | string | none | Override mtime for reproducible builds (template) |
-| `replace` | bool | `false` | Remove source archives, keeping only the app bundle (anodizer-additive — not in GoReleaser Pro's `app_bundles:`) |
+| `replace` | bool | `false` | Remove source archives, keeping only the app bundle |
 | `disable` | string/bool | none | Disable this config (bool or template) |
 
 ### `extra_files` shape

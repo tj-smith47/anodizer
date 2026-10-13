@@ -173,15 +173,15 @@ pub(crate) fn collect_upload_artifacts<'a>(
 }
 
 /// Resolve an upload entry's `extra_files` specs into synthetic
-/// [`ArtifactKind::UploadableFile`] artifacts, mirroring GoReleaser's
-/// `extrafiles.Find` (glob expansion, optional per-file `name_template`
-/// override, directory filtering, path de-duplication).
+/// [`ArtifactKind::UploadableFile`] artifacts: glob expansion, optional
+/// per-file `name_template` override, directory filtering, path
+/// de-duplication.
 ///
 /// `publisher` labels any error so the same shared resolver serves both the
 /// Artifactory and the generic `uploads:` publisher with a correct prefix.
 /// The `name_template` (when set) is rendered through the context's template
 /// vars so a user can write `name_template: "{{ .ProjectName }}-extra.txt"`;
-/// when unset, the file's base name is used (GoReleaser's default). The
+/// when unset, the file's base name is used. The
 /// resulting artifacts carry no build target, so the per-artifact URL renders
 /// without `Os`/`Arch`/`Target` bindings — matching how a non-build asset
 /// uploads.
@@ -195,8 +195,7 @@ pub(crate) fn resolve_extra_file_artifacts(
         .with_context(|| format!("{publisher}: resolve extra_files"))?;
     let mut out = Vec::with_capacity(resolved.len());
     for r in resolved {
-        // Render the optional name override; fall back to the file's base name
-        // (GoReleaser's default when no name_template is set).
+        // Render the optional name override; fall back to the file's base name.
         let name = match r.name_template.as_deref() {
             Some(tmpl) => ctx.render_template(tmpl).with_context(|| {
                 format!("{publisher}: render extra_files name_template '{tmpl}'")
@@ -224,9 +223,7 @@ pub(crate) fn resolve_extra_file_artifacts(
 /// release artifacts (plus checksum/signature/meta sidecars) **and** the
 /// entry's `extra_files` specs resolved into uploadable artifacts.
 ///
-/// This is the GoReleaser-parity entry point both HTTP-upload publishers drive
-/// (`uploadWithFilter` in GoReleaser appends `extrafiles.Find` results to the
-/// filtered set on every run). Resolved `extra_files` artifacts are ALWAYS
+/// Both HTTP-upload publishers drive this entry point on every run. Resolved `extra_files` artifacts are ALWAYS
 /// included — with `extra_files_only: true` they are returned alongside any
 /// pre-registered [`ArtifactKind::UploadableFile`] artifacts (e.g. from the
 /// `template_files:` stage) and the mode-filtered release set is skipped;

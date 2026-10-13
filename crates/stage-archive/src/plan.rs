@@ -409,7 +409,7 @@ fn group_binaries_by_target(
             .map(|ids| format!(" matching ids {ids:?}"))
             .unwrap_or_default();
         // A mis-scoped `ids:` filter (or a crate with no binaries) produces
-        // no archive at all; GoReleaser errors here. Hard-fail under
+        // no archive at all. Hard-fail under
         // `--strict` so the config doesn't silently yield nothing, and warn
         // otherwise.
         ctx.strict_guard(
@@ -433,7 +433,7 @@ fn group_binaries_by_target(
     }
 
     // The "binary" format publishes each executable under its own name, so it
-    // is exempt from the equal-count check, as in GoReleaser. The format is
+    // is exempt from the equal-count check. The format is
     // resolved per target through the shared resolver — an entry's own
     // `format_overrides:`, then `defaults.archives.format_overrides`, can make
     // one OS's outputs raw binaries while the rest archive normally, so only

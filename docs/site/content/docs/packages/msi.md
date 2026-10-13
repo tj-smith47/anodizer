@@ -167,11 +167,11 @@ A failing `before:` hook aborts the entire MSI stage for that crate, matching `b
 
 ## WiX v3 extensions behavior
 
-When `extensions:` are configured, anodizer passes them to both `candle` **and** `light` in the v3 workflow (upstream GoReleaser passes them only to `candle`). This is an intentional superset: passing extensions to `light` is harmless when they supply only candle-side transforms, and avoids link-time `ExtensionRequired` errors for extensions that also supply linker transforms.
+When `extensions:` are configured, anodizer passes them to both `candle` **and** `light` in the v3 workflow. Passing extensions to `light` is harmless when they supply only candle-side transforms, and avoids link-time `ExtensionRequired` errors for extensions that also supply linker transforms.
 
-## `if:` condition (anodizer-additive)
+## `if:` condition
 
-The `if:` field is present on this stage as an anodizer extension. GoReleaser Pro's MSI documentation does not include `if:` (it appears on `pkg`, `dmg`, and `appbundle` instead). The field is supported here for consistency with other stages; it is safe to use and will not conflict with GoReleaser config imports.
+An MSI entry accepts `if:` like every other stage; the entry is skipped when the condition renders false.
 
 ## Stable IDs and the upgrade chain
 

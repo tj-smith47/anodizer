@@ -43,7 +43,7 @@ anodizer release --publish-only
 
 `--prepare` runs every artifact-producing stage (build / archive / nfpm / sbom / checksum / sign) and leaves them in `dist/`. `--publish-only` consumes that tree and runs the upload chain.
 
-The `--prepare-only` alias exists for GR-imported scripts; it is a literal alias for `--prepare`.
+The `--prepare-only` alias exists for scripts written for GoReleaser; it is a literal alias for `--prepare`.
 
 ## `release --announce-only` vs `anodizer announce`
 
@@ -59,7 +59,7 @@ anodizer announce --dist /path/to/preserved-dist
 
 `release --announce-only` derives the run id from the current git tag / short commit (matching the writer that produced `<dist>/run-<id>/report.json`); `anodizer announce` does not require the report file and announces fresh from the dist's `artifacts.json`.
 
-Both honor the nightly short-circuit — announcers never fire on a nightly tag, matching GoReleaser's `customization/publish/nightlies.md` rule.
+Both honor the nightly short-circuit — announcers never fire on a nightly tag.
 
 ## `publish` vs `continue`
 

@@ -185,7 +185,7 @@ pub const RISCV64_BASELINE_VARIANT: &str = "rva20u64";
 /// archive-asset policy.
 ///
 /// Where [`seed_target_vars`] arm-splits `Arch` for archive-asset names, this
-/// policy never touches `Arch`; it seeds each family's GoReleaser-default
+/// policy never touches `Arch`; it seeds each family's default
 /// micro-architecture level so a user template referencing `{{ .Amd64 }}` /
 /// `{{ .Arm64 }}` / `{{ .I386 }}` renders the same value in a build binary
 /// name and in a makeself/AppImage filename for the same binary:

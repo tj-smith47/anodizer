@@ -1,7 +1,7 @@
 //! JSON boundary adapter between tera 2.0's engine types and anodizer's
 //! `serde_json`-shaped filter/function bodies.
 //!
-//! The custom filters/functions implement a GoReleaser-parity contract whose
+//! The custom filters/functions implement a contract whose
 //! semantics are JSON-shaped (string/number/bool/null/array/object), so their
 //! bodies stay on `serde_json::Value` permanently. tera 2.0 replaced its 1.x
 //! `serde_json::Value` re-export with an opaque engine-native `tera::Value`,

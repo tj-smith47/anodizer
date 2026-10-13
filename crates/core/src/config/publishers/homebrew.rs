@@ -59,7 +59,8 @@ pub struct HomebrewConfig {
     pub url_template: Option<String>,
     /// HTTP headers to include in download requests (e.g. for private repos).
     pub url_headers: Option<Vec<String>>,
-    /// Custom download strategy class name (e.g. `:using => GitHubPrivateRepositoryReleaseDownloadStrategy`).
+    /// Custom download strategy class name (e.g.
+    /// `:using => GitHubPrivateRepositoryReleaseDownloadStrategy`).
     pub download_strategy: Option<String>,
     /// Ruby `require` statement for custom download strategies.
     pub custom_require: Option<String>,
@@ -347,8 +348,8 @@ pub struct HomebrewCaskConfig {
     /// Linux download gets `depends_on :macos` unless its `custom_block`
     /// gives it a Linux side or declares an OS dependency.
     ///
-    /// The block is read as code, with these set aside, each one carrying
-    /// on into the next lines until it closes: `"…"`, `'…'` and `` `…` ``
+    /// The block is read as code, with these set aside, each one carrying on
+    /// into the next lines until it closes: `"…"`, `'…'` and `` `…` ``
     /// strings (inside `"…"` and `` `…` ``, `#{…}` is read as code, so the
     /// string ends at its own quote, and `#$"` interpolates `$"`); heredoc
     /// bodies (`<<~TAG`, `<<-TAG`, `<<TAG`, a `<<` before a space or a digit
@@ -356,55 +357,62 @@ pub struct HomebrewCaskConfig {
     /// an odd run of `\` joins the next one, so a tag there does not close
     /// it, and `#{…}` in a body line is code, so a heredoc opened there has
     /// its body read from the next line, before the rest of the body around
-    /// it); `%()`, `%q`, `%Q`, `%w`, `%W`, `%i`, `%I`, `%r`, `%s` and `%x`
+    /// it, and a `#{…}` left open at the end of a body line reads on into the
+    /// next); `%()`, `%q`, `%Q`, `%w`, `%W`, `%i`, `%I`, `%r`, `%s` and `%x`
     /// literals delimited by nesting brackets or one repeated punctuation
-    /// character, a typed one also by a space or the end of the line (a
-    /// list, `%w` `%W` `%i` `%I`, splits its words on whitespace, so
-    /// whitespace never closes it), and a bare `%` with nothing before it
-    /// on its statement but an operator also by a space, a tab, `=` or the
-    /// end of the line (a literal delimited by the end of its line holds
-    /// the next line, and the one after while the held line ends in an odd
-    /// run of `\`, and a `%r` closed that way takes the letters that start
-    /// the line after as its options); `?x` character literals (not `?ab`
-    /// or `?"a"`); a `/…/` regex where an operand stands; `#`
-    /// comments; and `=begin` … `=end` comments. The code inside `#{…}` is
-    /// kept apart from the code around it, in every literal that
-    /// interpolates (`"…"` and `` `…` `` strings, `:"…"` symbols, heredocs
-    /// whose tag is not single-quoted, `%()`, `%Q`, `%W`, `%I`, `%r` and
-    /// `%x` literals and `/…/` regexes), and each `#{…}` is read as
-    /// statements of its own: its words count toward the Linux side, a
-    /// `depends_on` opening one of its statements toward the OS
-    /// dependency, and a `;` in it ends no statement around the literal;
-    /// it is read in the scopes around the literal by the rules below, as
-    /// Ruby reads it, so the names it assigns are locals after it and the
-    /// parameters and locals of a block, lambda or `def` inside it end
-    /// with that block, lambda or `def` (`"#{on_linux}"` names a Linux
-    /// side, `'#{on_linux}'` does not). None opens after a `:` that
-    /// makes a symbol, in a special global (`$"`), or where it names a
-    /// method: after `.`, `&.` or `::` (with or without a space, whatever
-    /// the name looks like, so `x. %` and `a&.!~` are method names) or
-    /// `def`, and as the `?` or `!` of a method name. Straight after a name
-    /// Ruby reads as a method call, a `?` opens a character literal
-    /// (`EOS!?"`, `foo?=`, `x&.def??"`, `foo.nil?=`). Ruby reads a name as
-    /// a method call after `.`, `&.` or `::`, whatever it spells, and
-    /// elsewhere unless it is a local variable, a parameter, a number, a
-    /// variable with a sigil, or `self`, `nil`, `true`, `false`, `end`,
-    /// `__FILE__`, `__LINE__` or `__ENCODING__`. A `?` or `!` read as an
-    /// operator ends no word, so a `/` after it opens a regex (`!/a/`).
+    /// character, a typed one also by a space or the end of the line (a list,
+    /// `%w` `%W` `%i` `%I`, splits its words on whitespace, so whitespace
+    /// never closes it), and a bare `%` where an operand must stand (with
+    /// nothing before it on its statement but an operator, or after a label
+    /// `a:`, the `:` of a ternary or a keyword other than `not` and `yield`)
+    /// also by a space, a tab, `=` or the end of the line (a literal
+    /// delimited by the end of its line holds the next line, and the one
+    /// after while the held line ends in an odd run of `\`, and a `%r` closed
+    /// that way takes the letters that start the line after as its options);
+    /// `?x` character literals (not `?ab`, nor `?"a"` after a word that may
+    /// be a local); a `/…/` regex where an operand stands; `#` comments; and
+    /// `=begin` … `=end` comments, opened on any line that starts in code,
+    /// the code of a `#{…}` left open at the end of the line before included.
+    /// The code inside `#{…}` is kept apart from the code around it, in every
+    /// literal that interpolates (`"…"` and `` `…` `` strings, `:"…"`
+    /// symbols, heredocs whose tag is not single-quoted, `%()`, `%Q`, `%W`,
+    /// `%I`, `%r` and `%x` literals and `/…/` regexes), and each `#{…}` is
+    /// read as statements of its own: its words count toward the Linux side,
+    /// a `depends_on` opening one of its statements toward the OS dependency,
+    /// and a `;` in it ends no statement around the literal; it is read in
+    /// the scopes around the literal by the rules below, as Ruby reads it, so
+    /// the names it assigns are locals after it and the parameters and locals
+    /// of a block, lambda or `def` inside it end with that block, lambda or
+    /// `def` (`"#{on_linux}"` names a Linux side, `'#{on_linux}'` does not).
+    /// None opens after a `:` that makes a symbol (one written against a
+    /// method call that heads its statement or follows `.`, `&.` or `::`
+    /// does, as in `` foo:` ``, since such a call takes no label), in a
+    /// special global (`$"`), or where it names a method: after `.`, `&.` or
+    /// `::` (with or without a space, whatever the name looks like, so `x. %`
+    /// and `a&.!~` are method names) or `def`, and as the `?` or `!` of a
+    /// method name. Straight after a name Ruby reads as a method call, a `?`
+    /// opens a character literal (`EOS!?"`, `foo?=`, `x&.def??"`,
+    /// `foo.nil?=`). Ruby reads a name as a method call after `.`, `&.` or
+    /// `::`, whatever it spells, and elsewhere unless it is a local variable,
+    /// a parameter, a number, a variable with a sigil, or `self`, `nil`,
+    /// `true`, `false`, `end`, `__FILE__`, `__LINE__` or `__ENCODING__`. A
+    /// `?` or `!` read as an operator ends no word, so a `/` after it opens a
+    /// regex (`!/a/`).
     ///
     /// A `<<`, `%`, `?` or `/` after a value is a shift, a modulo, a ternary
     /// or a division: after `)`, `]`, `}`, a number, a literal, a symbol (the
     /// operator ones and `:a=`, `:a?`, `:a!` included), `self`, `nil`,
     /// `true`, `false`, `end`, `class`, `def`, an `@` or `$` variable, a
     /// local assigned earlier in its scope (`name =`, `name ||=` and the
-    /// other operator assignments, `a, b =`, `a, (b, c) =`, `(a, b) =`,
-    /// `a, =`, `for a in`, `rescue => a`, a named group before `=~`, a name
-    /// in an `in` pattern, the target of a rightward `=>`), a parameter of a
-    /// block (`|a, b; c|`, also over several lines), method
-    /// (`def name(a, b = 1)`, with or without parentheses; a setter
-    /// `def name=(v)` binds `v` alone) or lambda (`->(x)`, `-> (x)`), or a
-    /// word other than a keyword written straight against a `<<`, `%` or
-    /// `/`. A `def` body sees none of the
+    /// other operator assignments wherever they stand, as in `f(b += 1)`,
+    /// unless the target follows `.`, `&.` or `::` or has a sigil, `a, b =`,
+    /// `a, (b, c) =`, `(a, b) =`, `a, =`, `for a in`, `rescue => a`, a named
+    /// group before `=~` in a regex with no `#{…}`, a name in an `in`
+    /// pattern, the target of a rightward `=>`), a parameter of a block
+    /// (`|a, b; c|`, also over several lines), method (`def name(a, b = 1)`,
+    /// with or without parentheses; a setter `def name=(v)` binds `v` alone)
+    /// or lambda (`->(x)`, `-> (x)`), or a word other than a keyword written
+    /// straight against a `<<`, `%` or `/`. A `def` body sees none of the
     /// locals outside it; a block, a lambda body (`-> { … }`) included, sees
     /// them, and its parameters and the locals first assigned in it end at
     /// its `end` or `}`; `if`, `while`, `case` and `begin` open no scope. A
@@ -414,13 +422,14 @@ pub struct HomebrewCaskConfig {
     /// newline closes, is read as one statement, so the code before the break
     /// decides what the operator, `if` or `until` after it is. After a word,
     /// a `/` followed by a space or `=` divides, and a `:` after a value ends
-    /// a ternary and starts no symbol. The word after a `::` is a constant
-    /// path or a method, also when the `::` ended an earlier line. After an
-    /// operator, `(`, `,`, `;`, the start of a line, a Ruby keyword, any
-    /// method of the cask DSL, a common method such as `puts` or a name
-    /// ending in `?` or `!` followed by a space (no local or parameter is
-    /// spelled that way) the operator opens a literal, and after any other word followed by a space it is
-    /// read as an opener too, which is a guess.
+    /// a ternary and starts no symbol, so an operand stands after it. The
+    /// word after a `::` is a constant path or a method, also when the `::`
+    /// ended an earlier line. After an operator, `(`, `,`, `;`, the start of
+    /// a line, a label, a Ruby keyword, any method of the cask DSL, a common
+    /// method such as `puts` or a name ending in `?` or `!` followed by a
+    /// space (no local or parameter is spelled that way) the operator opens a
+    /// literal, and after any other word followed by a space it is read as an
+    /// opener too, which is a guess.
     ///
     /// A Linux side is the word `on_linux`, `on_system` or `app_image` in
     /// that code. An OS dependency is a statement whose first word is

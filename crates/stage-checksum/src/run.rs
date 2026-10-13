@@ -563,7 +563,7 @@ fn hash_and_emit_sidecars(
             )?;
 
             // `bare` writes only the raw hex hash (no filename, no trailing
-            // newline) for GoReleaser parity; `coreutils` writes
+            // newline); `coreutils` writes
             // `<hash>  <filename>\n` so the sidecar verifies with `shasum -c`.
             if !dry_run {
                 let mut sidecar_file = File::create(&sidecar_path).with_context(|| {

@@ -11,8 +11,6 @@ it to the matching release archive, downloads and (by default) sha256-verifies
 it, extracts the binary, and installs it — defaulting to the latest GitHub
 release, overridable with a `VERSION=` environment variable.
 
-This packager is Rust-additive: it has no GoReleaser equivalent.
-
 There are two ways to ship a `curl | sh` installer:
 
 - **This `install_scripts:` block** — the batteries-included path. Anodizer owns

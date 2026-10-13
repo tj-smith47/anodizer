@@ -28,8 +28,8 @@ static TOKEN_HELP: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
 static PREPARE_HELP: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     format!(
         "Run local build + archive + sign + checksum + sbom stages but skip every \
-         upstream-reaching stage ({}) — GoReleaser Pro parity. Artifacts stay in dist/ \
-         for inspection. `--prepare-only` is accepted as an alias for GR-imported scripts.",
+         upstream-reaching stage ({}). Artifacts stay in dist/ for inspection. \
+         `--prepare-only` is accepted as an alias for scripts written for GoReleaser.",
         anodizer_core::stages::UPSTREAM_STAGES.join(", ")
     )
 });

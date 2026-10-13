@@ -135,8 +135,7 @@ pub(crate) fn check_existing_assets_block_upload(
 /// the transfer mid-flight) is ALWAYS `DeleteAndRetry`, regardless of
 /// `replace_existing_artifacts`: it is this release's own debris, not
 /// published content, and it blocks every same-name retry with
-/// `already_exists` until deleted. GoReleaser's upload path has the
-/// same delete-before-retry recovery.
+/// `already_exists` until deleted.
 ///
 /// For a fully-uploaded asset, a `422 already_exists` means the asset
 /// definitively exists. When GitHub's per-asset `digest` is available on

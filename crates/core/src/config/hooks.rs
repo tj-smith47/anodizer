@@ -48,7 +48,7 @@ impl HooksConfig {
                 tracing::warn!(
                     "DEPRECATION: top-level hooks block has both 'hooks:' and 'post:' \
                      — using 'hooks:' and ignoring 'post:'. The 'post:' spelling is \
-                     renamed to 'hooks:' for GoReleaser parity; remove the 'post:' \
+                     renamed to 'hooks:'; remove the 'post:' \
                      key from your config."
                 );
                 self.post = None;
@@ -56,7 +56,7 @@ impl HooksConfig {
             (false, true) => {
                 tracing::warn!(
                     "DEPRECATION: top-level 'after.post:' / 'before.post:' is renamed to \
-                     'hooks:' for GoReleaser parity. The 'post:' spelling still works \
+                     'hooks:'. The 'post:' spelling still works \
                      but will be removed in a future release; switch to 'hooks:'."
                 );
                 self.hooks = self.post.take();
@@ -156,8 +156,7 @@ pub struct StructuredHook {
     /// the `$ANODIZER_ARTIFACT` channel bound. With `true`, the hook runs a
     /// single time with the run-level template vars (`Version`, `Tag`, ...);
     /// the `ids` / `artifacts` filters and the per-artifact vars do not apply,
-    /// so the command is expected to iterate the dist directory itself. A
-    /// Rust-additive extension with no GoReleaser counterpart.
+    /// so the command is expected to iterate the dist directory itself.
     #[serde(default)]
     pub run_once: bool,
 }

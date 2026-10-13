@@ -86,8 +86,7 @@ pub struct ResolvedExtraFile {
 /// a typo, and silently dropping it (the bare `if p.exists()` in
 /// `resolve_glob_patterns`) would ship an archive missing a demanded file with
 /// no failure — checksum/sbom/publish would then treat the truncated archive as
-/// correct. GoReleaser errors on this; anodizer at least hard-fails under
-/// `--strict` and warns otherwise. `resolve_glob_patterns` stays tolerant for
+/// correct. anodizer hard-fails under `--strict` and warns otherwise. `resolve_glob_patterns` stays tolerant for
 /// the auto LICENSE/README defaults; this guard lives at the explicit-config
 /// call site only.
 fn guard_literal_unmatched(

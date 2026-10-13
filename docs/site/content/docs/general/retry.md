@@ -18,7 +18,7 @@ All release asset uploads (GitHub, GitLab, Gitea) use automatic retry with these
 | Max delay | 30s |
 | Backoff | Exponential (delay × 2^(attempt-1)) |
 
-All upload errors are retried — not just transient HTTP errors. This matches GoReleaser's behavior of wrapping all upload failures as retriable.
+All upload errors are retried, transient HTTP errors and every other upload failure alike.
 
 There is no user-facing configuration for release upload retries; the defaults are always applied.
 

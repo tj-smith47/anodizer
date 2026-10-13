@@ -399,10 +399,10 @@ pub(crate) fn legacy_disable_alias_warnings(raw_yaml: &serde_yaml_ng::Value) -> 
 pub fn validate_no_mcp_github(raw_yaml: &serde_yaml_ng::Value) -> Result<(), String> {
     if raw_yaml.get("mcp").and_then(|m| m.get("github")).is_some() {
         return Err(
-            "config: nested `mcp.github:` block is not supported — anodizer mirrors GoReleaser \
-             v2.13.1+ where registry metadata moved to top-level `mcp:` fields (`mcp.name`, \
-             `mcp.repository.url`, `mcp.repository.source`). Port the nested keys to the \
-             canonical surface."
+            "config: nested `mcp.github:` block is not supported — registry metadata lives in \
+             the top-level `mcp:` fields (`mcp.name`, `mcp.repository.url`, \
+             `mcp.repository.source`), the layout of GoReleaser v2.13.1+. Port the nested \
+             keys to those fields."
                 .to_string(),
         );
     }

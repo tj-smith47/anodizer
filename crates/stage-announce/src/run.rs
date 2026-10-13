@@ -202,7 +202,7 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     // should hear about"). Stage-level skip — bypasses the per-provider
     // dispatch entirely so a misconfigured webhook can't bypass the gate.
     if ctx.is_nightly() {
-        log.status("skipped announce — nightly run (GoReleaser parity)");
+        log.status("skipped announce — nightly run");
         return Ok(());
     }
 
@@ -294,9 +294,8 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     // Best-effort, by design: announce runs AFTER every publisher crossed a
     // one-way door (cargo/crates.io, choco/winget moderation queues, AUR/nix
     // pushes), so a notification failure must NOT flip the release exit code
-    // and strand an already-published release. This intentionally diverges from
-    // GoReleaser, which fails the run on an announce error — here a failed
-    // channel is surfaced as a WARN summary naming each provider and the stage
+    // and strand an already-published release. A failed channel is reported
+    // as a WARN summary naming each provider and the stage
     // returns Ok. The pre-publish template guard (render_only /
     // validate_announce_templates) stays FATAL and catches broken templates
     // BEFORE any publisher fires, so a misconfigured announce still fails fast

@@ -161,8 +161,7 @@ pub fn render_with_env(
     check_block_expressions(template)?;
     check_target_variant_calls(template)?;
     // Shield bash `${#…}` from Tera's `{#` comment-open before parsing, so it
-    // reaches the rendered output literally (GoReleaser's Go templates have no
-    // such collision); the inverse restore runs on the rendered string below.
+    // reaches the rendered output literally; the inverse restore runs on the rendered string below.
     let preprocessed_raw = preprocess(template);
     let preprocessed = protect_shell_param_length(&preprocessed_raw)?;
     // Restore 1.x raw string-literal semantics (`pattern="(\w+)"`) before

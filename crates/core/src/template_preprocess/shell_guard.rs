@@ -2,9 +2,9 @@
 //!
 //! Tera reserves `{#` as a comment-open (paired with `#}`), so a bash
 //! `${#arr[@]}` makes Tera expect a comment terminator that never arrives and
-//! the render fails. Go `text/template` (what GoReleaser uses) spells comments
-//! `{{/* */}}` and has no such collision, so bash `${#…}` flows through it
-//! untouched. To mirror that behavior, `${#` is swapped for an inert sentinel
+//! the render fails. Go `text/template` spells comments `{{/* */}}` and has no
+//! such collision, so a Go-syntax template passes bash `${#…}` through
+//! untouched. To keep that behaviour, `${#` is swapped for an inert sentinel
 //! before the Tera pass and restored afterward, leaving the expansion literal.
 //!
 //! Only the `${#` trigraph is targeted: the leading `$` makes it unambiguously

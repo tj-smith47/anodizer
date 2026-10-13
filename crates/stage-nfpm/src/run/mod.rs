@@ -278,9 +278,9 @@ fn process_nfpm_format(
     validate_format(format).with_context(|| format!("nfpm config for crate {}", crate_name))?;
 
     // msix is the only Windows format, and it only packages Windows binaries
-    // (mirrors GoReleaser's windows↔msix XOR gate). Silent-verbose skip, not
-    // a strict guard: a multi-format config legitimately routes each target
-    // to its matching subset of formats.
+    // The skip logs only at verbose and has no strict guard: a multi-format
+    // config legitimately routes each target to its matching subset of
+    // formats.
     if !format_matches_platform(base_os, format) {
         log.verbose(&format!(
             "skipped nfpm format '{}' for {}/{} — not supported",

@@ -140,7 +140,7 @@ extra_files:
 
 ## Signing
 
-NSIS installers should be Authenticode-signed before distribution so Windows SmartScreen does not flag them. Anodizer (matching GoReleaser) does not run `signtool` automatically; sign after the NSIS stage via an `after:` hook:
+NSIS installers should be Authenticode-signed before distribution so Windows SmartScreen does not flag them. Anodizer does not run `signtool` automatically; sign after the NSIS stage via an `after:` hook:
 
 ```yaml
 hooks:

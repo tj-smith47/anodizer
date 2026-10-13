@@ -225,8 +225,7 @@ feat: preflight improvements (#40)
 * chore: bump deps (#43)
 ```
 
-By default that is one changelog entry, the PR title, which is how GoReleaser
-reads it. To read it as the commits it squashed:
+By default that is one changelog entry, the PR title. To read it as the commits it squashed:
 
 ```yaml
 changelog:

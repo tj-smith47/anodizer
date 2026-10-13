@@ -258,20 +258,24 @@ into the following lines until it closes:
   delimited by `()`, `[]`, `{}` or `<>` (which nest) or by one repeated
   punctuation character (`%q|…|`). A typed one also takes a space or the end
   of the line as its delimiter (`%q a `, `%q` at the end of a line), except
-  that whitespace only separates the words of a list (`%w`, `%W`, `%i`,
-  `%I`), so a list delimited by it never closes. A bare `%` with nothing
-  before it on its statement but an operator also takes a space, a tab, `=`
-  or the end of the line. A literal delimited by the end of its line holds
-  the next line, and the line after that too while the held line ends in an
-  odd run of `\`; the statement reads on past it (`x = [%` then `text` then
-  `]`). A `%r` closed that way takes the letters that start the line after
-  as its options (`x = %r` then `ab` then `ix`), so that line is kept as
-  written.
-- A `?x` character literal, such as `?#`, `?"` or `?'`, unless a word
-  character follows a word character (`?ab`) or a quote (`?"a"`).
+  that whitespace only separates the words of a list (`%w`, `%W`, `%i`, `%I`),
+  so a list delimited by it never closes. A bare `%` where an operand must
+  stand (with nothing before it on its statement but an operator, or after a
+  label `a:`, the `:` of a ternary or a keyword other than `not` and `yield`,
+  as in `if% a `) also takes a space, a tab, `=` or the end of the line. A
+  literal delimited by the end of its line holds the next line, and the line
+  after that too while the held line ends in an odd run of `\`; the statement
+  reads on past it (`x = [%` then `text` then `]`). A `%r` closed that way
+  takes the letters that start the line after as its options (`x = %r` then
+  `ab` then `ix`), so that line is kept as written.
+- A `?x` character literal, such as `?#`, `?"` or `?'`, unless a letter, digit
+  or `_` is followed by a word character (`?ab`), or a quote is after a word
+  that may be a local (`x ?"a"`).
 - A `/…/` regex where an operand stands.
 - A `#` comment, which cuts the rest of the line, so a comment line reads as
-  blank, and an `=begin` … `=end` comment.
+  blank, and an `=begin` … `=end` comment, which opens on any line that starts
+  in code, the code of a `#{…}` left open at the end of the line before
+  included.
 
 The code inside `#{…}` is kept apart from the code around it, in every
 literal that interpolates: a `"…"` or `` `…` `` string, a `:"…"` symbol, a
@@ -286,18 +290,20 @@ block, lambda or `def` inside it end with that block, lambda or `def`. So
 `"#{on_linux}"` names a Linux side, `"#{depends_on macos: :ventura}"` an OS
 dependency, and `'#{on_linux}'` neither.
 
-None of these opens after a `:` that makes a symbol (`:%`, `` :` ``), in a
-special global (`$"`, `$/`), or where it names a method: after `.`, `&.` or
-`::`, with or without a space before the name, whatever the name looks like
-(`x.<<`, `x. %`, `a&.!~`), after `def` (`def /(other)`), and as the `?` or
-`!` of a method name (`then?"a"`). Written straight after a method name
-spelled as an operator, a `<<`, `%` or `/` is an operator (`a&.!~% b` is a
-modulo) and a `?` opens a character literal. Straight after a name Ruby
-reads as a method call, a `?` opens a character literal (`EOS!?"`, `foo?=`,
-`x&.def??"`, `foo.nil?=`). Ruby reads a name as a method call after `.`,
-`&.` or `::`, whatever it spells, and elsewhere unless it is a local
-variable, a parameter, a number, a variable with a sigil, or `self`, `nil`,
-`true`, `false`, `end`, `__FILE__`, `__LINE__` or `__ENCODING__`.
+None of these opens after a `:` that makes a symbol (`:%`, `` :` ``, and
+`` foo:` `` or `x.a:/`, since a method call that heads its statement or
+follows `.`, `&.` or `::` takes no label), in a special global (`$"`, `$/`),
+or where it names a method: after `.`, `&.` or `::`, with or without a space
+before the name, whatever the name looks like (`x.<<`, `x. %`, `a&.!~`), after
+`def` (`def /(other)`), and as the `?` or `!` of a method name (`then?"a"`).
+Written straight after a method name spelled as an operator, a `<<`, `%` or
+`/` is an operator (`a&.!~% b` is a modulo) and a `?` opens a character
+literal. Straight after a name Ruby reads as a method call, a `?` opens a
+character literal (`EOS!?"`, `foo?=`, `x&.def??"`, `foo.nil?=`). Ruby reads a
+name as a method call after `.`, `&.` or `::`, whatever it spells, and
+elsewhere unless it is a local variable, a parameter, a number, a variable
+with a sigil, or `self`, `nil`, `true`, `false`, `end`, `__FILE__`, `__LINE__`
+or `__ENCODING__`.
 
 A `<<`, `%`, `?` or `/` that follows a value is a shift, a modulo, a ternary
 or a division and opens nothing. The code before it ends with a value when,
@@ -309,14 +315,16 @@ or with one of these words:
 - `self`, `nil`, `true`, `false`, `end`, `class` (`class <<self`) or `def`
   (`def /(other)`);
 - an instance, class or global variable (`@args <<extra`, `$stdout <<x`);
-- a local variable, a name assigned earlier in its scope: `name =`,
-  `name ||=` and the other operator assignments (`&&=`, `+=`, `-=`, `*=`,
-  `/=`, `%=`, `**=`, `<<=`, `>>=`, `^=`), `a, b =`, `a, (b, c) =`, `(a, b) =`, `a, =`, `for a in`,
-  `rescue => a`, a named group before `=~` (`/(?<a>\d+)/ =~ s`), a name in
-  an `in` pattern (`in [a, 2]`, `x in {k: a}`) and the target of a rightward
-  `=>` (`2 => a`). `==`, `=~`, `=>`, `!=`, `<=`, `>=` and `obj.name =`
-  assign nothing. So after `y = 1`, the line `x = y <<z` is a shift, and
-  after `cond = true`, `x = cond ?"" : "no"` is a ternary;
+- a local variable, a name assigned earlier in its scope: `name =`, `name ||=`
+  and the other operator assignments (`&&=`, `+=`, `-=`, `*=`, `/=`, `%=`,
+  `**=`, `<<=`, `>>=`, `^=`, `|=`, `&=`) wherever they stand (`a = b ||= 1`,
+  `f(b += 1)`, `x if (b ^= 1)`), unless the target follows `.`, `&.` or `::`
+  or has a sigil, `a, b =`, `a, (b, c) =`, `(a, b) =`, `a, =`, `for a in`,
+  `rescue => a`, a named group before `=~` in a regex with no `#{…}`
+  (`/(?<a>\d+)/ =~ s`), a name in an `in` pattern (`in [a, 2]`, `x in {k: a}`)
+  and the target of a rightward `=>` (`2 => a`). `==`, `=~`, `=>`, `!=`, `<=`,
+  `>=` and `obj.name =` assign nothing. So after `y = 1`, the line `x = y <<z`
+  is a shift, and after `cond = true`, `x = cond ?"" : "no"` is a ternary;
 - a parameter: of a block (`do |a, b; c|`, `{ |a| … }`, a list spread over
   several lines), of a method (`def name(a, b = 1, *rest, k: 1, **kw, &blk)`,
   with or without parentheses; a setter `def name=(v)` binds `v` alone) or of
@@ -327,13 +335,14 @@ or with one of these words:
 A `def` body sees none of the locals outside it. A block sees them, and its
 parameters and the locals first assigned in it end at its `end` or `}`. The
 body of a lambda is a block too, so after `f = -> { w = 1 }` the name `w` is
-gone and `r = w %w[on_linux]` passes `%w[on_linux]` to a method `w`.
-`if`, `while`, `case` and `begin` open no scope. After a word, a `/` followed
-by a space or `=` divides. A `:` after a value ends a ternary and starts no
-symbol (`f ? 1 :+ 2`), and the word after a `::` is a constant path or a
-method, also when the `::` ended an earlier line (`y = A::` then
-`B %(on_linux)` passes a string to `B`). A `?` or `!` read as an operator
-ends no word, so a `/` after it opens a regex (`x = !/on_linux/`).
+gone and `r = w %w[on_linux]` passes `%w[on_linux]` to a method `w`. `if`,
+`while`, `case` and `begin` open no scope. After a word, a `/` followed by a
+space or `=` divides. A `:` after a value ends a ternary and starts no symbol
+(`f ? 1 :+ 2`), so an operand stands after it (`c ? 1 :%(a)`), and the word
+after a `::` is a constant path or a method, also when the `::` ended an
+earlier line (`y = A::` then `B %(on_linux)` passes a string to `B`). A `?` or
+`!` read as an operator ends no word, so a `/` after it opens a regex
+(`x = !/on_linux/`).
 
 A statement continued with a `\` at the end of a line, with a `?\`
 character literal that holds the newline, with a `.`, `&.` or `::` that
@@ -344,13 +353,13 @@ the code before the break decides what comes after it: `y = x.` then
 `m = n \` and `  % 2` are a modulo, and a modifier `if` or `until` on a
 continuation line (`puts "a" \` then `  if ready`) opens no block.
 
-The operator opens a literal after an operator, `(`, `,`, `;`, the start of
-a line, a Ruby keyword, any method of the cask DSL (`caveats <<~EOS`,
-`binary %w[a]`), a common method that takes an argument (`puts %w[a]`) or
-a name ending in `?` or `!` followed by a space (`y = foo? <<E`), since no
-local or parameter is spelled that way. After any other word followed by a space, the scan cannot tell a method from
-a local it did not see assigned, and it reads the operator as an opener; that
-is a guess.
+The operator opens a literal after an operator, `(`, `,`, `;`, the start of a
+line, a label (`a:`), a Ruby keyword, any method of the cask DSL
+(`caveats <<~EOS`, `binary %w[a]`), a common method that takes an argument
+(`puts %w[a]`) or a name ending in `?` or `!` followed by a space
+(`y = foo? <<E`), since no local or parameter is spelled that way. After any
+other word followed by a space, the scan cannot tell a method from a local it
+did not see assigned, and it reads the operator as an opener; that is a guess.
 
 Then:
 

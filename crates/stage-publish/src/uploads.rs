@@ -1,6 +1,6 @@
 //! Generic HTTP upload publisher (`uploads:`).
 //!
-//! GoReleaser's "generic upload" pipe, mirrored: each `uploads:` entry PUTs
+//! Each `uploads:` entry PUTs
 //! (or POSTs) the release artifacts to a templated target URL with optional
 //! basic-auth, mTLS, a checksum header, and custom headers. It shares the
 //! whole HTTP-upload core with the Artifactory publisher
@@ -41,8 +41,8 @@ impl UploadsSummary {
     }
 }
 
-/// Default checksum header for generic uploads — GoReleaser uses
-/// `X-Checksum-Sha256` for both Artifactory and the generic upload pipe.
+/// Default checksum header for generic uploads, the same header Artifactory
+/// reads.
 const DEFAULT_CHECKSUM_HEADER: &str = "X-Checksum-Sha256";
 
 /// Resolve the active collect-flags for one upload entry.
@@ -61,8 +61,8 @@ fn entry_collect_flags(entry: &UploadConfig) -> CollectFlags {
 /// This is a top-level publisher: it reads from `ctx.config.uploads` rather
 /// than from per-crate publish configs. Each entry specifies a target URL
 /// template, optional credentials, artifact filters, and the
-/// checksum/signature/meta inclusion toggles. Mirrors GoReleaser's generic
-/// upload pipe; the per-artifact upload loop is shared with Artifactory.
+/// checksum/signature/meta inclusion toggles. The per-artifact upload loop is
+/// shared with Artifactory.
 pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummary> {
     publish_uploads_recording(ctx, log, &std::sync::Mutex::new(Vec::new()))
 }
@@ -441,9 +441,8 @@ pub(crate) fn target_origin(target: &str) -> Option<String> {
 // dispatch path drives generic HTTP uploads alongside every other publisher.
 //
 // Group: [`anodizer_core::PublisherGroup::Assets`] (uploadable bytes,
-// server-side deletable). `required = false` (GoReleaser's generic upload is
-// non-required; a failure warns rather than aborting the release unless an
-// entry opts in with `required: true`).
+// server-side deletable). `required = false`: a failure warns and the
+// release continues, unless an entry opts in with `required: true`.
 //
 // Rollback shape: per uploaded URL, issue an HTTP DELETE with the same
 // credential cascade `publish_uploads` uses (basic auth from `username` +
@@ -1605,8 +1604,7 @@ mod tests {
     }
 
     /// An `extra_files` glob spec resolves to an uploadable artifact and is
-    /// appended to the normal upload set (GoReleaser's `extrafiles.Find`
-    /// behaviour). Proven through the dry-run per-artifact lines.
+    /// appended to the normal upload set. Proven through the dry-run per-artifact lines.
     #[test]
     fn extra_files_spec_resolves_and_uploads() {
         let tmp = tempfile::TempDir::new().unwrap();

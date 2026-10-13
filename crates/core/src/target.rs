@@ -209,7 +209,7 @@ impl std::error::Error for UnknownDebianArch {}
 /// Map a target triple to its Debian architecture name (the value apt and the
 /// Debian repository index use), e.g. `amd64`, `arm64`, `armhf`, `i386`.
 ///
-/// This differs from [`map_target`]'s GoReleaser-style arch in the names
+/// This differs from [`map_target`]'s Go-style arch in the names
 /// Debian spells differently: `386` → `i386`, `armv7` → `armhf`,
 /// `armv5` → `armel`, `ppc64le` → `ppc64el`. The result is suitable for the
 /// `deb.architecture=` Artifactory matrix param so an uploaded `.deb` ends up in
@@ -231,7 +231,7 @@ pub fn debian_arch_from_target(triple: &str) -> Result<String, UnknownDebianArch
         })
 }
 
-/// Map a GoReleaser-style arch name (as produced by [`map_target`]) to its
+/// Map a Go-style arch name (as produced by [`map_target`]) to its
 /// Debian architecture spelling, or `None` when the arch has no known Debian
 /// equivalent.
 ///
@@ -607,7 +607,7 @@ mod tests {
 
     #[test]
     fn test_debian_arch_from_target() {
-        // Names Debian spells differently from GoReleaser-style arch.
+        // Names Debian spells differently from the Go-style arch.
         assert_eq!(
             debian_arch_from_target("x86_64-unknown-linux-gnu").unwrap(),
             "amd64"

@@ -86,18 +86,15 @@ pub(super) const NON_PUBLISHER_RELEASE_SKIPS: &[&str] = &[
 ///
 /// Skip tokens are stage names plus publisher names. Every publisher's skip
 /// token is its canonical [`crate::Publisher::name`] / [`PublisherKind::token`]
-/// (the same token `--publishers` keys on and the same one GoReleaser's
-/// `--skip` uses), so homebrew is `homebrew` and chocolatey is `chocolatey` —
-/// there are no short aliases (`brew`/`choco`). This keeps one denylist
-/// vocabulary across the `--skip` and `--publishers` selectors and matches
-/// GoReleaser's `--skip` keys, so a single name works on both tools.
+/// (the same token `--publishers` keys on), so homebrew is `homebrew` and
+/// chocolatey is `chocolatey` — there are no short aliases (`brew`/`choco`).
+/// This keeps one denylist vocabulary across the `--skip` and `--publishers`
+/// selectors, and the names are GoReleaser's `--skip` keys, so a single name
+/// works on both tools.
 ///
 /// Deriving the publisher half from [`PublisherKind::iter`] is what makes the
 /// vocabulary drift-proof: a newly added publisher is automatically a valid
-/// `--skip` token. (This closed a real gap — nine publisher tokens
-/// — `npm`, `gemfury`, `cloudsmith`, `artifactory`, `uploads`, `dockerhub`,
-/// `mcp`, `schemastore`, `upstream-aur` — had silently fallen out of the old
-/// hand-maintained literal.)
+/// `--skip` token.
 pub static VALID_RELEASE_SKIPS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     ROOT_HOOK_LANE_SKIPS
         .iter()

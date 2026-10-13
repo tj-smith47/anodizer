@@ -307,8 +307,8 @@ fn render_snap_cfg(
                 .with_context(|| format!("snapcraft: render grade for crate {}", krate_name))?,
         );
     }
-    // The remaining user-supplied string fields are templatable too (GoReleaser
-    // templates these); without rendering, a value like `title: "{{ .Tag }}"`
+    // The remaining user-supplied string fields are templatable too; without
+    // rendering, a value like `title: "{{ .Tag }}"`
     // would ship the literal delimiters into snap.yaml.
     if let Some(ref n) = rendered_cfg.name {
         rendered_cfg.name = Some(
@@ -346,7 +346,7 @@ fn render_snap_cfg(
                 .with_context(|| format!("snapcraft: render title for crate {}", krate_name))?,
         );
     }
-    // App `command`/`args` are user-templatable (GoReleaser renders them, e.g.
+    // App `command`/`args` are user-templatable (e.g.
     // `command: myapp-{{ .Version }}`); without rendering, the literal
     // delimiters would ship into snap.yaml — caught by the residual-delimiter
     // guard at the YAML chokepoint, so failing to render here is a hard error

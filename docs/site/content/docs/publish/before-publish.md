@@ -106,8 +106,7 @@ before_publish:
 ```
 
 Set **`run_once: true`** to run the command a **single time** with the run-level
-template vars (`{{ .Version }}`, `{{ .Tag }}`, …) instead. This is a
-Rust-additive extension with no GoReleaser counterpart — it suits a one-shot
+template vars (`{{ .Version }}`, `{{ .Tag }}`, …) instead. It suits a one-shot
 upload, a single notification, or any step that should fire once regardless of
 how many artifacts the build produced:
 

@@ -1662,7 +1662,7 @@ mod tests {
                 "cfgd",
                 "1.0.0",
             ),
-            "matcher must reject a GoReleaser-style stem against a triple-named asset"
+            "matcher must reject a Go-arch stem against a triple-named asset"
         );
         // And accepts the templated-correct case.
         assert!(

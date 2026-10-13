@@ -8,8 +8,7 @@ use colored::Colorize;
 
 /// A section header that has been opened ([`StageLogger::group`](crate::log::StageLogger::group)) but not yet
 /// printed. The header line is deferred until the section actually emits a
-/// body line, so a stage that does nothing prints nothing at all (matching
-/// GoReleaser, which only prints a section header once the section has output).
+/// body line, so a stage that does nothing prints nothing at all.
 pub(super) struct PendingHeader {
     /// Section depth captured at open time. The header renders at *this* depth,
     /// not the current global depth, so a nested section's deferred header is
@@ -266,9 +265,8 @@ pub fn render_note(msg: &str) -> String {
 
 /// Current indentation prefix (2 spaces per open section). Empty at the
 /// top level. Applied identically everywhere — including under GitHub
-/// Actions, where the indentation (not a collapsible `::group::` block) is
-/// what conveys section nesting, matching the continuous single-stream log
-/// GoReleaser emits.
+/// Actions, where the indentation conveys section nesting in one continuous
+/// log stream (no collapsible `::group::` blocks).
 ///
 /// This is the body-line depth (`•` detail / `success` / `failure` / `kv`
 /// rows). Status labels do NOT use it — they sit one level shallower at the

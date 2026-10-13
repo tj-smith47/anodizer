@@ -141,8 +141,7 @@ fn deb_filename(info: &FileNameInfo<'_>) -> String {
 // termux.deb
 // ---------------------------------------------------------------------------
 
-/// Termux arch translation, keyed on Go-style arch (matching GoReleaser's
-/// `termuxArchReplacer`: `386→i686`, `amd64→x86_64`, `arm64→aarch64`,
+/// Termux arch translation, keyed on Go-style arch (`386→i686`, `amd64→x86_64`, `arm64→aarch64`,
 /// `arm5`/`arm6`/`arm7`→`arm`), plus anodizer's `armvN` aliases for the
 /// `armN` keys.
 ///
@@ -163,8 +162,8 @@ fn termux_arch(arch: &str) -> &str {
 }
 
 /// termux.deb shares deb's version composition but stamps the Termux arch
-/// nomenclature into the filename (mirrors GoReleaser setting `Deb.Arch` to
-/// the termux-replaced arch before deriving the conventional file name).
+/// nomenclature into the filename: the Termux arch replaces the Debian one
+/// before the conventional file name is derived.
 fn termux_deb_filename(info: &FileNameInfo<'_>) -> String {
     let termuxed = FileNameInfo {
         arch_override: Some(info.arch_override.unwrap_or_else(|| termux_arch(info.arch))),
@@ -812,7 +811,7 @@ mod tests {
         }
     }
 
-    /// GoReleaser's `termuxArchReplacer`, verbatim: 386→i686, amd64→x86_64,
+    /// The Termux arch table: 386→i686, amd64→x86_64,
     /// arm64→aarch64, arm5/arm6/arm7→arm — plus anodizer's `armvN` aliases
     /// and the unmapped-passthrough behaviour.
     #[test]

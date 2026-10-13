@@ -298,7 +298,7 @@ pub(crate) fn run_post_pipeline(
     // rolling nightly tag does not correspond to a milestone closure).
     if let Some(ref milestones) = config.milestones {
         if ctx.is_nightly() {
-            log.status("milestone close skipped — nightly run (GoReleaser parity)");
+            log.status("milestone close skipped — nightly run");
         } else {
             milestones::close_milestones(milestones, ctx, dry_run, log)?;
         }

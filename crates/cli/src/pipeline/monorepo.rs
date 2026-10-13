@@ -289,8 +289,8 @@ fn validate_monorepo_tag_prefix(config: &Config) {
     }
     tracing::warn!(
         "monorepo.tag_prefix = '{}' is missing a trailing slash. \
-         GoReleaser convention is `subproject1/` (Category 1) or a short \
-         letter prefix like `v` (Category 2). Tags will be matched as \
+         The usual forms are a directory prefix like `subproject1/` or a short \
+         letter prefix like `v`. Tags will be matched as \
          `{}<version>` — verify this is intentional.",
         prefix,
         prefix

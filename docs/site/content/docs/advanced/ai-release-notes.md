@@ -165,7 +165,7 @@ shape as a `--release-notes-tmpl` file from inside the AI flow.
 
 ## Interaction with `changelog.groups`
 
-**Enabling AI disables changelog grouping** (parity with GoReleaser).
+**Enabling AI disables changelog grouping**.
 When `changelog.ai.use` is set, `changelog.groups` is ignored and the
 AI provider receives a flat commit list, leaving the structural
 decisions (sections, ordering, grouping by topic) to the model.
@@ -195,8 +195,7 @@ re-authoring the section list.
 ## Error policy
 
 By default anodizer is **fail-closed**: any provider error
-(transport, non-2xx status, JSON parse) aborts the release. This
-matches GoReleaser's "any hook failure aborts" pattern — a silent
+(transport, non-2xx status, JSON parse) aborts the release. A silent
 fall-back to the raw notes would ship the wrong body without the
 operator noticing.
 

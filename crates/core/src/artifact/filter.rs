@@ -7,8 +7,8 @@ use super::registry::Artifact;
 /// `binary_signs:` slice rather than the `signs:` slice.
 ///
 /// The marker records PROVENANCE only. A binary signature is an ordinary
-/// release asset — it uploads beside the archive for the same target, exactly
-/// as GoReleaser uploads every `Signature`/`Certificate` artifact — so no
+/// release asset — it uploads beside the archive for the same target, like
+/// every other `Signature`/`Certificate` artifact — so no
 /// publish-time consumer filters on this. It is read where the two slices must
 /// be told apart: the asset NAME of a binary signature is derived from the
 /// target's archive stem, not from the raw binary's basename (which repeats
@@ -144,7 +144,7 @@ pub const SIGNED_VALUE: &str = "true";
 ///
 /// A directory can never be sha256'd, cosign-blob-signed, or uploaded as a
 /// release asset (each opens the path as a file and dies with
-/// `Is a directory`). GoReleaser parity: the raw `.app` is never a
+/// `Is a directory`). The raw `.app` is never a
 /// checksum/sign/upload subject — it is wrapped into a `.dmg`/`.pkg` (both
 /// FILES, kept as subjects) or archived. This is the SINGLE place that rule is
 /// classified, so the subject-collection boundaries (checksum, sign, release

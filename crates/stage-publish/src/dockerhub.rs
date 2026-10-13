@@ -283,8 +283,7 @@ fn publish_to_dockerhub_into(
         // metadata.description so a single source of truth covers every
         // dockerhub entry. Same fallback chain as homebrew (cask +
         // formula), MCP, scoop, krew, etc.
-        // `description` is a templated field (GoReleaser dockerhub parity:
-        // "Templates: allowed"), so render the resolved value — whether it
+        // `description` is a templated field, so render the resolved value — whether it
         // came from the entry or the metadata fallback — before it hits the
         // wire.
         let description_owned: Option<String> = match effective_description(entry, ctx) {

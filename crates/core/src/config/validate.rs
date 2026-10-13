@@ -706,8 +706,7 @@ pub fn validate_changelog_groups_depth(config: &Config) -> Result<(), String> {
                     if sub.groups.as_ref().is_some_and(|s| !s.is_empty()) {
                         return Err(format!(
                             "{location}: changelog group '{}' > '{}' nests further \
-                             subgroups; GoReleaser permits only one level of subgroups \
-                             (see https://goreleaser.com/customization/changelog/). \
+                             subgroups; a changelog group holds only one level of subgroups. \
                              Flatten the inner groups into the parent or split into \
                              sibling top-level groups.",
                             g.title, sub.title

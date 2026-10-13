@@ -299,8 +299,8 @@ pub fn release_uploadable_kinds() -> &'static [ArtifactKind] {
 /// no checksum or sign stage can ever take one as input.
 ///
 /// [`ArtifactKind::Sbom`] IS primary: a primary artifact's SBOM (`X.cdx.json`)
-/// may be checksummed once (→ `X.cdx.json.sha256`) and signed once, matching
-/// GoReleaser (which lists SBOMs in `checksums.txt`). The HARD invariant is
+/// may be checksummed once (→ `X.cdx.json.sha256`) and signed once, so SBOMs
+/// are listed in `checksums.txt`. The HARD invariant is
 /// only that a Checksum/Signature/Certificate/Metadata is NEVER an input — an
 /// SBOM, being a first-class catalog artifact rather than a checksum/signature
 /// of something, is safe to checksum/sign once with no recursion.

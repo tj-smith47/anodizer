@@ -393,8 +393,7 @@ impl StageLogger {
     /// leading verb bold-green and right-aligned in the `VERB_COLUMN`
     /// gutter, then one space and the remaining words — `   Building binaries`,
     /// ` Publishing` for a single-word phrase) is *deferred*: it prints only
-    /// when this section emits its first real body line, matching GoReleaser
-    /// (a section header appears only once the section has output). A stage
+    /// when this section emits its first real body line. A stage
     /// that does nothing therefore prints no header at all — no bare
     /// `Verifying release` over an empty body. The header renders identically
     /// everywhere — locally and under GitHub Actions — because anodizer streams

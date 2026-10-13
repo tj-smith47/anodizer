@@ -723,10 +723,10 @@ pub fn create_config(dir: &Path, content: &str) {
 /// `true` when `name`'s trailing `.sha256` / `.sig` segments form a FORBIDDEN
 /// recursive chain — a checksum or signature applied to a derived sidecar.
 ///
-/// GoReleaser-parity legitimate sidecar terminals (return `false`):
+/// Legitimate sidecar terminals (return `false`):
 ///   - `X.sha256`            — checksum of a primary
 ///   - `X.sig`               — signature of a primary
-///   - `X.sha256.sig`        — signature of a checksum (GR signs checksums)
+///   - `X.sha256.sig`        — signature of a checksum
 ///   - `X.cdx.json.sha256`   — checksum of an SBOM
 ///
 /// Forbidden chains (return `true`) — a derived sidecar fed back as a subject:
@@ -940,7 +940,7 @@ mod tests {
             has_recursive_sidecar_chain("x.cdx.json.sha256.sig.sha256"),
             "checksum of a signature-of-a-checksum"
         );
-        // Legitimate GoReleaser-parity terminals.
+        // Legitimate sidecar terminals.
         assert!(
             !has_recursive_sidecar_chain("x.tar.gz.sha256.sig"),
             "signature of a checksum is GR-legit (the second level)"

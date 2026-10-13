@@ -15,9 +15,8 @@ pub(crate) fn artifact_kind_for_format(format: &str) -> ArtifactKind {
 pub(crate) fn format_extension(format: &str) -> &str {
     match format {
         "deb" => ".deb",
-        // GoReleaser keeps the full format as the extension for Termux
-        // (`ext := "." + format`, explicitly skipping the deb packager's
-        // ConventionalExtension), so Termux repos can distinguish the file.
+        // Termux keeps the full format as the extension so Termux repos can
+        // tell the file apart from a plain deb.
         "termux.deb" => ".termux.deb",
         "rpm" => ".rpm",
         "apk" => ".apk",
@@ -257,9 +256,6 @@ fn resolve_effective_maintainer<'a>(
 /// defect, not a warning. Scoped via [`format_requires_maintainer`]: an
 /// rpm-only or archlinux-only build still succeeds.
 ///
-/// This is a Rust-additive correctness improvement beyond GoReleaser (which
-/// only warns), per the repo rule against advisory/continue-on-error on a
-/// genuinely-broken output.
 /// nfpm's msix packager hard-requires `publisher`, `properties.logo`, and at
 /// least one application with `id` + `executable`, rejecting the package at
 /// pack time otherwise; failing here, before any packaging work, turns those
