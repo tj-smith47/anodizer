@@ -182,8 +182,9 @@ Changelog generation works with no config — it collects all commits since the 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `sort` | string | `asc` | Sort order: `asc` or `desc` |
-| `use` | string | `git` | Source: `git` (commit parsing), `github` (fetch commits via GitHub API), or `github-native` (GitHub's generated notes) |
+| `use` | string | `git` | Source: `git` (commit parsing), `github`, `gitlab` or `gitea` (fetch commits via that forge's API), or `github-native` (GitHub's generated notes) |
 | `abbrev` | int | `0` | Hash length: `0` = full SHA, `N` = truncate to N chars, `-1` = omit the hash |
+| `expand_squash_merges` | bool | `false` | Read a squash-merged pull request as the commits it squashed, for the changelog and the auto-bump (see [Squash-merged pull requests](#squash-merged-pull-requests)) |
 | `skip` | bool/template | `false` | Skip changelog generation (alias: `disable`) |
 | `header` | string | none | Text prepended to changelog |
 | `footer` | string | none | Text appended to changelog. Also the release-body footer when `release.footer` is unset; leave both unset and the release body gets anodizer's default attribution line |
@@ -316,6 +317,13 @@ Commit scoping is **derived** — no config required. A per-crate track collects
 commits that touch its own crate directory; the root aggregate spans every
 crate directory plus the workspace manifests (`Cargo.toml`, `Cargo.lock`). Each
 crate's changelog stays focused on its own history automatically.
+
+Scoping reads each commit's touched files exactly as git records them: a file
+name keeps its leading and trailing spaces, and a non-ASCII name arrives as
+written (anodizer runs git with `core.quotePath=false`), so `changelog.paths`
+and the per-crate scope match it. Commit records are read with NUL separators,
+the one byte git refuses in a message and in a path, so a message holding any
+other byte is read whole, and a commit with an empty message is kept.
 
 `changelog.paths` is an optional advanced **intersect** filter that narrows the
 derived scope further — list extra path globs to additionally restrict which

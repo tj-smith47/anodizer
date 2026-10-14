@@ -21,7 +21,7 @@ docker_signs:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `id` | string | | Unique identifier for this docker sign config (referenced by `ids` filters elsewhere). |
-| `artifacts` | string | `""` | Which Docker artifacts to sign: `all`, `images`, `manifests`, `none`, or `""` (empty — the default — signs the canonical Docker images). The singular `image` / `manifest` are **not** accepted and hard-error at release time. |
+| `artifacts` | string | `""` | Which Docker artifacts to sign: `all`, `images`, `manifests`, `none`, or `""` (empty — the default — signs the canonical Docker images). The singular `image` / `manifest` are **not** accepted and hard-error at release time. `none` skips only this entry: another `docker_signs:` entry still runs, and its failure still fails the stage. |
 | `cmd` | string | `cosign` | Signing command to invoke. |
 | `args` | list | `["sign", "--key=cosign.key", "{{ .Artifact }}@{{ .Digest }}", "--yes"]` | Arguments passed to the signing command. `{{ Artifact }}` is replaced by the digest-pinned image reference and `{{ Signature }}` by the synthesized `<image>@<digest>.sig` name before the rest is rendered as a template; `{{ Digest }}` renders the image digest. The `${artifact}` shell variables the [binary/archive path](@/docs/sign/binaries-archives.md) expands are **not** expanded here and reach the signing command as literal text. |
 | `signature` | string | — | **Ignored.** A container signature is stored in the registry beside the image rather than written to a file, so anodizer synthesizes the `<image>@<digest>.sig` name its argv substitutes and reads this template nowhere. `anodizer check config` warns when it is set. |
@@ -37,3 +37,16 @@ Images are signed one at a time. A keyless config (no `--key` argument) also
 takes the same host-level advisory lock as keyless
 [binary/archive signing](@/docs/sign/binaries-archives.md), so two anodizer processes on
 one host queue on the sigstore TUF trust store instead of colliding on it.
+
+## Job summary
+
+On GitHub Actions, a release appends a `Signed image` line to the job summary
+for every image reference it signed, once per reference, in the order the
+images were registered. An image is listed only after its signing command
+succeeded and, when anodizer verifies the signature it just attached, after
+that verification succeeded too, so a failed sign or a failed verify leaves it
+out. A dry run and a snapshot write no job summary at all.
+
+```text
+Signed image `ghcr.io/acme/app:1.2.3-amd64`
+```

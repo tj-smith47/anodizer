@@ -155,6 +155,12 @@ The bump needs a GitHub token that can fork the formula repository and open pull
 
 Empty values are skipped at every link, so a blank `GITHUB_TOKEN` (GitHub Actions' shape for a missing secret) never masquerades as a real token.
 
+`repository.pull_request.token` and `repository.token` are rendered before any request is made. A template that does not render skips that entry with no fork, branch or pull request created; the entries after it still run, and the run summary names the reason (`pull_request.token does not render: <cause>`) without the template's text. The per-entry line prints under `--show-skipped`:
+
+```bash
+anodizer release --show-skipped
+```
+
 ### Migrating from `mislav/bump-homebrew-formula-action`
 
 ```yaml

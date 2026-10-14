@@ -11,11 +11,11 @@ use std::path::Path;
 /// When configured, tag discovery filters by `tag_prefix` and the working
 /// directory is scoped to `dir`.
 ///
-/// This is DIFFERENT from `TagConfig.tag_prefix`:
-/// - `MonorepoConfig.tag_prefix`: tags in git already HAVE the prefix
+/// The two `tag_prefix` keys work in opposite directions:
+/// - `monorepo.tag_prefix`: tags in git already HAVE the prefix
 ///   (e.g. `subproject1/v1.2.3`). The prefix is STRIPPED for `{{ Tag }}`
 ///   while `{{ PrefixedTag }}` retains the full tag.
-/// - `TagConfig.tag_prefix`: a prefix to PREPEND when constructing
+/// - `tag.tag_prefix`: a prefix to PREPEND when constructing
 ///   `{{ PrefixedTag }}` from a plain tag.
 ///
 /// When `monorepo` is configured, it takes precedence over `tag.tag_prefix`

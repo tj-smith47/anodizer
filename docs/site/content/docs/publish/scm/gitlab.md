@@ -82,10 +82,23 @@ release:
 
 - GitLab does not support draft releases
 - Existing release detection: checks by tag; creates new on 403/404, updates on 200
-- `replace_existing_artifacts`: on conflict (400/422), deletes the link of the same name and creates the new one in the same attempt; a 400 that no existing link explains is reported as the create failure
+- Release links: each uploaded file gets a release link. Creating the link retries on a 5xx or a 429 per the top-level `retry:` policy, and a 429 waits the `Retry-After` or `RateLimit-Reset` GitLab sent (see [Retry](@/docs/general/retry.md))
+- `replace_existing_artifacts`: on conflict (400/422), deletes the link of the same name and creates the new one in the same attempt; a 400 that no existing link explains is reported as the create failure. When the cleanup itself fails, the error prints once, the create failure first and the cleanup failure after it:
+
+  ```text
+  gitlab: create release link for 'myapp_1.2.3_linux_amd64.tar.gz' failed (HTTP 400): …; cleaning up the existing link failed: …
+  ```
+
+- Finding the link to replace reads every page of the release's links, 100 per page. The sweep stops with an error when a page repeats the one before it (a server ignoring the `page` parameter; pages are compared by their link ids when every link has one, else by their raw text) or when the retry deadline passes
+- Server version probe: GitLab 17 renamed the link's `filepath` field to `direct_asset_path`. anodizer reads `CI_SERVER_VERSION` when it is set, else asks `GET /version` once per run (3 attempts, retrying a 5xx or a 429), and parallel uploads share the answer. A probe that gets no answer uploads that asset with `filepath` and the next asset asks again
 - URL-encoded project paths (e.g., `group/subgroup/project` becomes `group%2Fsubgroup%2Fproject`)
 - 300-second HTTP timeout
-- Release preflight: before the build, `GET /projects/{id}` checks that the token has Developer access or higher (the higher of the project and group access; a response with no `permissions` passes). A run that authenticates with a CI job token (`use_job_token`) skips the check, because GitLab does not let a job token read `GET /projects/{id}`. A failed check stops the run unless `release.preflight.fail_on_error` is `false`; see [Release preflight](@/docs/publish/github.md#release-preflight)
+- Release preflight: before the build, `GET /projects/{id}` checks that the token has Developer access or higher (the higher of the project and group access; a response with no `permissions` passes). A 404, 401 or 403 fails the check whatever headers it carries, because GitLab throttles with a 429; a 429, a 5xx or an unreachable server is a warning, or a failure under [`preflight.strict`](@/docs/general/preflight.md). Retries print under the label `gitlab project probe`. A failed check stops the run unless `release.preflight.fail_on_error` is `false`; see [Release preflight](@/docs/publish/github.md#release-preflight)
+- CI job token: a run that authenticates with a CI job token (`use_job_token`) skips the access check, because GitLab does not let a job token read `GET /projects/{id}`. The skip prints once per project at default output:
+
+  ```text
+     • skipped the GitLab access check for mygroup/myproject: a CI job token cannot read the project
+  ```
 
 ## Self-hosted GitLab
 

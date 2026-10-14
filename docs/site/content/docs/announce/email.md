@@ -56,5 +56,5 @@ The `to` field accepts a list. Each address becomes a comma-separated entry in t
 | `encryption` | string | `auto`, `tls`, `starttls` or `none`. Default: `auto`: SMTPS on port 465, plain SMTP on 25, STARTTLS on every other port |
 | `from` | string | Sender address |
 | `to` | list of strings | Recipient addresses |
-| `subject_template` | string | Subject line (templates supported) |
+| `subject_template` | string | Subject line (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out!` |
 | `message_template` | string | Message body (templates supported). Default: `You can view details from: {{ ReleaseURL }}` |

@@ -1,7 +1,7 @@
 use anodizer_cli::{CheckCmd, Cli, Commands, TagSub, num_cpus};
 use anodizer_core::context::{VALID_BUILD_SKIPS, validate_skip_values};
 
-use clap::{CommandFactory, FromArgMatches};
+use clap::FromArgMatches;
 use colored::Colorize;
 
 mod commands;
@@ -321,7 +321,7 @@ fn run() {
     anodizer_core::run::install_termination_handler();
 
     let brontes_cfg = anodizer_cli::mcp::config();
-    let augmented = Cli::command().subcommand(brontes::command(Some(&brontes_cfg)));
+    let augmented = anodizer_cli::build_cli();
     let matches = augmented
         .clone()
         .try_get_matches()
@@ -359,7 +359,7 @@ fn run() {
     let command = match cli.command {
         Some(c) => c,
         None => {
-            let _ = Cli::command().print_help();
+            let _ = augmented.clone().print_help();
             println!();
             return;
         }

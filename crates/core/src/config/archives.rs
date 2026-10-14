@@ -246,7 +246,7 @@ pub struct ArchiveConfig {
     pub formats: Option<Vec<String>>,
     /// Per-OS format overrides for this archive config.
     pub format_overrides: Option<Vec<FormatOverride>>,
-    /// Extra files to include in the archive (glob patterns or detailed src/dst specs).
+    /// Extra files to include in the archive (glob patterns, or objects with `src` and `dst` keys).
     pub files: Option<Vec<ArchiveFileSpec>>,
     /// Binary names to include (defaults to all binaries from matched builds).
     pub binaries: Option<Vec<String>>,
@@ -284,11 +284,13 @@ pub struct ArchiveConfig {
     pub if_condition: Option<String>,
     /// Turnkey shell-completion generation: auto-generate (or harvest, or
     /// copy) completion files and bundle them into every archive produced by
-    /// this entry. See `CompletionsConfig` for the three generation modes.
+    /// this entry. Set exactly one of the three modes: `generate`,
+    /// `from_build_out` or `copy`.
     pub completions: Option<super::CompletionsConfig>,
     /// Turnkey man-page generation: auto-generate (or harvest, or copy) man
-    /// pages and bundle them into every archive produced by this entry. See
-    /// `ManpagesConfig` for the three generation modes.
+    /// pages and bundle them into every archive produced by this entry. Set
+    /// exactly one of the three modes: `generate`, `from_build_out` or
+    /// `copy`.
     pub manpages: Option<super::ManpagesConfig>,
 }
 
@@ -441,15 +443,11 @@ impl<'de> Deserialize<'de> for FormatOverride {
 }
 
 /// Specifies a file to include in archives. Can be a simple glob string or a
-/// detailed object with src/dst/info fields for controlling archive placement
-/// and file metadata.
-///
-/// NOTE: This is intentionally a separate type from [`ExtraFileSpec`] (used for
-/// checksum/release extra_files). `ArchiveFileSpec` needs `src`/`dst`/`info`
-/// fields for archive placement and file metadata (owner, group, mode, mtime),
-/// while `ExtraFileSpec` needs `glob`/`name_template` for checksumming and
-/// upload renaming. The fields and semantics are different enough that a unified
-/// type would be confusing.
+/// detailed object with `src`, `dst` and `info` keys that control where the
+/// file goes in the archive and its file metadata.
+// Kept separate from `ExtraFileSpec` (checksum/release extra_files): this one
+// carries placement and owner/group/mode/mtime metadata, that one carries
+// `glob`/`name_template` for checksumming and upload renaming.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ArchiveFileSpec {
@@ -614,8 +612,7 @@ pub struct ChecksumConfig {
     /// Hash algorithm (default: `sha256`). Accepted values: `sha1`, `sha224`,
     /// `sha256`, `sha384`, `sha512`, `sha3-224`, `sha3-256`, `sha3-384`,
     /// `sha3-512`, `blake2b`, `blake2s`, `blake3`, `crc32`, `md5`. An
-    /// unrecognized value is rejected at checksum-stage entry. The authoritative
-    /// set is [`ChecksumConfig::SUPPORTED_ALGORITHMS`].
+    /// unrecognized value is rejected when the checksum stage starts.
     pub algorithm: Option<String>,
     /// Disable checksums. Accepts bool or template string.
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat.

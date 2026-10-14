@@ -90,6 +90,30 @@ publisher, and operational guidance.
 Independently of both flags, a re-run that would upload byte-identical assets is a no-op on every
 forge (GitHub, GitLab, Gitea) — the flags only govern *differing* bytes and stale drafts.
 
+Two more behaviours keep a single run from failing on a forge's transient
+state:
+
+- **Rate limits.** Every retry ladder, the publishers and the announce
+  clients alike, honours a `429` that carries `Retry-After` or
+  `RateLimit-Reset`: the next attempt waits the time the server asked for in
+  place of the backoff step, and the retry line prints that wait. PyPI,
+  GemFury and Chocolatey uploads, GitLab release links and the GitLab server
+  version probe are included. A wait the run's retry deadline (`retry.max_elapsed`,
+  15 minutes by default) cannot hold ends the retries at once. See
+  [Retry](@/docs/general/retry.md).
+- **Asset reappearance.** A replaced GitHub release asset can come back for a
+  moment after its delete, because GitHub's delete is eventually consistent.
+  The next upload attempt deletes it again and re-uploads; when the attempts
+  run out the error says `asset reappeared after its delete and re-upload`.
+  A delete GitHub refuses fails the upload at once, so the release never
+  keeps another release's bytes under the tag. See
+  [Recovery flags](./recovery-flags.md#release-replace-existing-artifacts).
+
+```yaml
+retry:
+  max_elapsed: "30m"   # room for a forge that asks for a long 429 wait
+```
+
 ## Publisher groups
 
 Every publisher is classified into exactly one group, based on how recoverable
@@ -647,6 +671,27 @@ announce:
 
 When announce is skipped by the gate, the run summary records `announce-gated`.
 
+### Announce retries
+
+Each announcer sends with one retry: the attempts of the top-level `retry:`
+block, capped at 2. A network error, a 5xx or a 429 is retried; any other 4xx
+fails the channel at once. A 429 that carries `Retry-After` (delta-seconds)
+or `RateLimit-Reset` (a unix timestamp) waits the time the server asked for
+before the retry, in place of the backoff step. Every announcer reads those
+headers, the webhook, Slack, Discord, Teams, Mattermost and Telegram posts and
+the API clients (Bluesky, Discourse, LinkedIn, Mastodon, OpenCollective,
+Reddit, Twitter) alike.
+
+`announce.deadline` (default `90s`) still bounds the whole stage: a channel
+still waiting or sending when it passes is abandoned with a warning. A failed
+or abandoned channel is reported in one warning and never fails the run,
+because every publisher has already finished by then.
+
+```yaml
+announce:
+  deadline: "2m"   # room for a server that asks for a long 429 wait
+```
+
 ## Worked example: partial failure
 
 Scenario: a release with github-release (Assets, required), cloudsmith (Assets),
@@ -1121,9 +1166,10 @@ the rest of the trace intact.
 `anodizer check config` also statically warns when an announce **content**
 template literally references a secret-named env var inside a `{{ }}` or
 `{% %}` block. Secret-named means the var ends in `_KEY`, `_SECRET`,
-`_PASSWORD`, or `_TOKEN`. The lint covers the content surfaces a reader
-would template — message / title / subject / body, Slack blocks &
-attachments, Discord author, Reddit title / url:
+`_PASSWORD`, `_TOKEN` or `_PASSPHRASE`. The lint covers the content fields a
+reader would template — message / title / subject / body, every string inside
+Slack `blocks` and `attachments` (each named by its JSON path, such as
+`announce.slack.blocks[0].text.text`), Discord author, Reddit title / url:
 
 ```yaml
 announce:

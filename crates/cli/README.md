@@ -66,7 +66,7 @@ Already know GoReleaser? anodizer's `{{ .Field }}` template syntax will feel rig
 - Build provenance attestations (SLSA-style) for binaries and artifacts
 
 **Publish**
-- GitHub/GitLab/Gitea Releases with asset uploads, draft/prerelease detection, header/footer templates
+- GitHub/GitLab/Gitea Releases with asset uploads, draft/prerelease detection, header/footer templates; the repository owner and name default to the `origin` remote
 - crates.io with dependency-aware ordering and index polling
 - Homebrew formula and cask generation
 - Homebrew-core formula bump PRs (bump an existing `homebrew-core` formula)
@@ -102,6 +102,7 @@ Already know GoReleaser? anodizer's `{{ .Field }}` template syntax will feel rig
 - Version-string file syncing (`version_files`) to keep docs, scripts, and manifests in lockstep at tag
 - Cross-publisher track promotion (`anodizer promote`) — flip an already-published artifact to a stable track (snapcraft channels, npm dist-tags, OCI floating tags, GitHub prerelease) with no rebuild
 - Post-release verification with install smoke tests
+- GitHub Actions job summary listing every release, pull request, package and image the run published
 - JSON Schema for editor autocomplete and validation
 - Built-in MCP server (`anodizer mcp`) exposing the CLI as annotated tools for AI assistants
 
@@ -209,7 +210,7 @@ crates:
         files: [LICENSE, README.md]
     release:
       github:
-        owner: myorg
+        owner: myorg    # optional: read from the origin remote when omitted
         name: myapp
     publish:
       cargo: {}

@@ -179,6 +179,33 @@ non-blank `if:` renders. Notarize's `enabled` reads the same way: a literal
 `enabled: ""` sets no gate and notarizes, while a template that renders empty
 turns notarizing off.
 
+Fields that take a bool without being templates read the same unquoted
+`1` and `0` when the config loads:
+
+| Setting | Accepts | A string `"1"` / `"0"` |
+|---|---|---|
+| `release.prerelease` | `auto`, `true`, `false`, `1`, `0` | a bool |
+| `release.make_latest` | `auto`, `true`, `false`, `1`, `0`, or a template | a bool |
+| `docker_manifests` `skip_push` | `auto`, `true`, `false`, `1`, `0`, or a template | a bool |
+| archive `wrap_in_directory` | `true`, `false`, `1`, `0`, or a directory name | a directory name |
+
+On `prerelease`, `make_latest` and `skip_push`, a quoted `"auto"`, `"true"`,
+`"1"`, `"false"` or `"0"` is read in any letter case, so `prerelease: "TRUE"`
+loads as `true`.
+
+Any other number is refused at load time. A crate's `archives:` takes
+`false` (no archives) or a list of archive entries.
+
+```yaml
+release:
+  prerelease: 1          # true
+  make_latest: 0         # false
+crates:
+  - name: myapp
+    archives:
+      - wrap_in_directory: 1   # true; "1" would name the directory 1
+```
+
 ```yaml
 crates:
   - name: myapp
@@ -305,7 +332,7 @@ If you hit a construct not covered here, open an issue with the failing template
 | `Binary` | Current binary name | `myapp` |
 | `ArtifactName` | Current artifact name | `myapp-1.0.0-linux-amd64.tar.gz` |
 | `ArtifactPath` | Full path to artifact | `/path/to/dist/myapp-1.0.0.tar.gz` |
-| `ArtifactExt` | Artifact extension (compound-aware) | `.tar.gz`, `.exe`, `.deb` |
+| `ArtifactExt` | Artifact extension (compound-aware) | `.tar.gz`, `.exe`, `.deb`, `.pkg.tar.zst` |
 | `Checksums` | Combined checksum file contents | `abc123  myapp.tar.gz\n...` |
 | `SourcePrefix` | Top-level directory inside the source archive (from a `source.prefix_template` ending in `/`); empty for a flat archive. Set by the source stage; useful for an SRPM `%autosetup -n {{ SourcePrefix }}`. | `myapp-1.2.3` |
 

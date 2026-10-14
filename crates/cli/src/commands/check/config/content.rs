@@ -114,11 +114,10 @@ pub(super) fn check_changelog(config: &Config, warnings: &mut Vec<String>) {
 
     if let Some(cl) = &config.changelog
         && let Some(ref use_source) = cl.use_source
-        && use_source != "git"
-        && use_source != "github-native"
+        && !["git", "github", "gitlab", "gitea", "github-native"].contains(&use_source.as_str())
     {
         warnings.push(format!(
-            "unrecognized changelog 'use' value '{}' (valid: git, github-native)",
+            "unrecognized changelog 'use' value '{}' (valid: git, github, gitlab, gitea, github-native)",
             use_source
         ));
     }

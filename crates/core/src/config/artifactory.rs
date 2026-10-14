@@ -30,7 +30,7 @@ pub struct ArtifactoryConfig {
     /// any artifact whose name matches at least one glob from THIS Artifactory
     /// target only. Use it to keep heavy sidecars (checksums, signatures,
     /// SBOMs) off a given repository while archives still upload. Composes with
-    /// `ids:` and `exts:` (all filters apply). `None`/empty keeps everything.
+    /// `ids:` and `exts:` (all filters apply). Unset or empty keeps everything.
     ///
     /// ```yaml
     /// artifactories:

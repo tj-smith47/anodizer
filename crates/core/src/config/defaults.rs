@@ -26,23 +26,23 @@ use crate::packagers::{InstallScriptConfig, MakeselfConfig, SrpmConfig};
 // Defaults
 // ---------------------------------------------------------------------------
 
-/// Workspace-level defaults that path-mirror the `CrateConfig` (and select
-/// top-level `Config`) shape. Each field here is folded into every resolved
-/// crate by `defaults_merge::apply_defaults` according to the deep-merge /
-/// merge-by-identity semantics documented in `defaults_merge`.
+/// Workspace-level defaults. Each key has the same shape as the matching key
+/// under `crates[]` (plus a few top-level keys) and is applied to every crate:
 ///
-/// Multi-publisher fields are single-struct on both sides today: defaults
-/// supplies one struct per publisher, and per-crate `publish.*` fields are
-/// also single-struct. A future change may introduce list-or-scalar via
-/// `OneOrMany<T>` on the per-crate side so a crate can declare multiple
-/// homebrew taps / scoop buckets / etc.; the defaults side would stay
-/// single-struct and merge into the first per-crate entry by identity.
+/// - A block fills every field the crate left unset; a field the crate sets
+///   keeps the crate's value.
+/// - A list entry is merged into the crate's entry with the same identity
+///   (`id`, `name`, `package_name`, or an archive's first format); an entry
+///   with no match is appended after the crate's own entries.
+/// - An empty block (`{}`) in a crate inherits every field from defaults.
+/// - `skip: true` in a crate's block drops the inherited block for that
+///   crate.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Defaults {
     // --- Build axis ---
-    /// Default build settings applied to every crate's builds (deep-merged
-    /// into each `CrateConfig.builds[]` entry by identity on `id`/`binary`).
+    /// Default build settings applied to every crate's builds, merged into
+    /// each `crates[].builds[]` entry that shares its `id` or `binary`.
     pub builds: Option<BuildConfig>,
     /// Default archive settings applied to all crates.
     pub archives: Option<ArchiveConfig>,
@@ -102,24 +102,24 @@ pub struct Defaults {
     /// Default environment variables (`KEY=VALUE` strings) hoisted across crates.
     pub env: Option<Vec<String>>,
     /// Default repo-committed files whose embedded release version is rewritten
-    /// at `tag` time (repo-root-relative path strings). Hoisted across crates;
-    /// folded into each crate's `version_files` by `defaults_merge` when the
-    /// crate does not set its own list. Mirrors `CrateConfig.version_files`,
-    /// including the anchored `path` + `match` entry form.
+    /// at `tag` time (repo-root-relative path strings). Used as a crate's
+    /// `version_files` when the crate does not set its own list. Takes the
+    /// same entries as `crates[].version_files`, including the anchored
+    /// `path` + `match` form.
     pub version_files: Option<Vec<VersionFileEntry>>,
-    /// Default cross-compilation strategy: auto, zigbuild, cross, or cargo.
-    /// Mirrors `CrateConfig.cross` so the strategy can be hoisted to defaults.
+    /// Default cross-compilation strategy for every crate: auto, zigbuild,
+    /// cross, or cargo. Same values as `crates[].cross`.
     pub cross: Option<CrossStrategy>,
-    /// Default checksum settings applied to all crates.
-    /// Mirrors `CrateConfig.checksum` so checksum config can be hoisted to defaults.
+    /// Default checksum settings applied to all crates. Same shape as
+    /// `crates[].checksum`.
     pub checksum: Option<ChecksumConfig>,
 
     // --- Crate-axis vs workspace-axis (mutually exclusive) ---
     /// Crate-axis defaults marker. Only valid when top-level `crates:` is set.
-    /// Reserved for per-crate overrides keyed by crate id (future waves).
+    /// Reserved for per-crate overrides keyed by crate id.
     pub crates: Option<DefaultsCrateBlock>,
     /// Workspace-axis defaults marker. Only valid when top-level `workspaces:` is set.
-    /// Reserved for per-workspace overrides keyed by workspace name (future waves).
+    /// Reserved for per-workspace overrides keyed by workspace name.
     pub workspaces: Option<DefaultsWorkspaceBlock>,
 }
 

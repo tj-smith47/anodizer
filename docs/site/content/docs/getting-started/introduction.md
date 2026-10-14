@@ -48,7 +48,7 @@ crates:
       - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
     release:
       github:
-        owner: myorg
+        owner: myorg         # optional: read from the origin remote when omitted
         name: myapp
     publish:
       cargo: {}              # empty map opts in; cargo publishes to crates.io

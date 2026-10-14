@@ -11,14 +11,15 @@ Packager — generates source archives and software bill of materials (SBOM) fil
 
 ## Minimal config
 
-Both stages are opt-in. Enable each independently:
+Both stages are opt-in. Enable each independently: `source.enabled` turns on
+the source archive, and any entry under `sboms:` turns on SBOM generation.
 
 ```yaml
 source:
   enabled: true        # tar.gz of git-tracked files
 
-sbom:
-  enabled: true        # built-in CycloneDX from Cargo.lock
+sboms:
+  - id: default        # built-in CycloneDX from Cargo.lock
 ```
 
 ## Full config reference
@@ -37,16 +38,15 @@ source:
 ### SBOM generation
 
 ```yaml
-sbom:
-  enabled: false                     # required; opt-in (disabled by default)
-  id: default                        # optional; unique identifier
-  cmd: ""                            # optional; external command (e.g. syft); omit for built-in
-  args: []                           # optional; command-line arguments
-  env: {}                            # optional; environment variables for the command
-  documents: []                      # optional; output document path templates
-  artifacts: archive                 # optional; source | archive | binary | package | diskimage | installer | any
-  ids: []                            # optional; filter by artifact IDs
-  disable: false                     # optional; bool or template string
+sboms:                               # no entry: no SBOM is generated
+  - id: default                      # optional; unique identifier
+    cmd: syft                        # optional; external command; omit cmd and args for built-in mode
+    args: []                         # optional; command-line arguments
+    env: []                          # optional; KEY=VALUE entries for the command
+    documents: []                    # optional; output document path templates
+    artifacts: archive               # optional; source | archive | binary | package | diskimage | installer | any
+    ids: []                          # optional; filter by artifact IDs
+    skip: false                      # optional; bool or template string (alias: disable)
 ```
 
 ---
@@ -172,8 +172,8 @@ Anodizer supports two modes:
 ### Minimal config (built-in)
 
 ```yaml
-sbom:
-  enabled: true
+sboms:
+  - id: default
 ```
 
 When no `cmd` or `args` are specified, anodizer uses built-in mode. It locates `Cargo.lock` by searching from the repository root upward, parses all package entries, and emits a CycloneDX 1.5 JSON file named `<project>-<version>.cdx.json`.
@@ -185,11 +185,11 @@ When no `cmd` or `args` are specified, anodizer uses built-in mode. It locates `
 | `id` | string | `"default"` | Unique identifier for this SBOM config |
 | `cmd` | string | none (built-in mode) | External command to run (e.g., `syft`) |
 | `args` | list | syft defaults | Command-line arguments (supports `$artifact`, `$document` variables) |
-| `env` | map or list | syft defaults | Environment variables for the command |
+| `env` | list | syft defaults | `KEY=VALUE` entries set on the command, in order. Each value is a template that can read the entries above it as `{{ Env.KEY }}`, and `args` read every entry; see [Environment](#environment) |
 | `documents` | list | auto | Output document path templates. In built-in mode (no `cmd:` and no `args:`) the paths only select the format and the stage writes one `<project>-<version>.cdx.json` or `.spdx.json`; the defaults below name the document of each artifact an external command is run for, which needs `cmd:` or `args:` set. There, the default for `artifacts: binary` is `{{ Binary }}_{{ Version }}_{{ Os }}_{{ Arch }}{{ targetVariant . }}.sbom.json` — the binary, version, OS and architecture, then the [target variant](@/docs/general/templates.md#target-variant): the micro-architecture level when it is not the baseline, and the target's ABI (`myapp_1.2.3_linux_amd64_gnu.sbom.json`, `myapp_1.2.3_linux_amd64_musl.sbom.json`, `myapp_1.2.3_darwin_arm64.sbom.json`) — so two `amd64_variant` builds, or a gnu and a musl build, of one binary produce two documents; every other filter defaults to `{{ ArtifactName }}.sbom.json` |
 | `artifacts` | string | `"archive"` | Which artifact type to catalog: `source`, `archive`, `binary`, `package`, `diskimage`, `installer`, `any` |
 | `ids` | list | none | Filter to only catalog artifacts matching these IDs |
-| `disable` | bool or string | `false` | Disable this config (accepts template strings) |
+| `skip` | bool or template | `false` | Skip this config when the value, or what a template renders, is `true` or `1` (any letter case). `disable` is accepted as an alias |
 
 ### Built-in mode
 
@@ -291,7 +291,29 @@ sboms:
       - "--output"
       - "spdx-json=$document"
     env:
-      SYFT_FILE_METADATA_CATALOGER_ENABLED: "true"
+      - SYFT_FILE_METADATA_CATALOGER_ENABLED=true
+```
+
+#### Environment
+
+`env` entries render in order, each against the entries above it, and then
+`args` render against the whole list. The command runs with the dist
+directory as its working directory.
+
+```yaml
+sboms:
+  - id: archive-sbom
+    cmd: syft
+    artifacts: archive
+    env:
+      - SYFT_CONFIG_DIR=.syft
+      - SYFT_CONFIG={{ Env.SYFT_CONFIG_DIR }}/syft.yaml   # reads the entry above
+    args:
+      - "$artifact"
+      - "--config"
+      - "{{ Env.SYFT_CONFIG }}"
+      - "--output"
+      - "spdx-json=$document"
 ```
 
 ### Multiple SBOM configs
@@ -310,7 +332,8 @@ sboms:
       - "{{ ArtifactName }}.sbom.json"
 ```
 
-The config accepts both singular `sbom` (single object) and plural `sboms` (array) forms.
+`sboms:` takes a list of SBOM configs, or a single config object, which is
+read as a one-entry list.
 
 ### Disabling an SBOM config
 
@@ -335,3 +358,15 @@ build -> archive -> source -> sbom -> checksum -> sign -> release -> publish
 ```
 
 Source archives and SBOMs are registered as release artifacts. They appear alongside your binaries and archives in the release, and are included in checksum and signing stages that follow.
+
+### Which release an SBOM is uploaded to
+
+In a workspace that releases several crates, each SBOM is uploaded to one
+crate's release, and `verify-release` expects it there:
+
+| SBOM | Uploaded with |
+|---|---|
+| One document per artifact (external command mode with `artifacts:` other than `any`) | The crate of the artifact it describes |
+| `artifacts: any`, and every built-in document | The release owner: the first crate with a `release:` block, else the primary crate, else `project_name` |
+
+The source archive is uploaded with the release owner too.

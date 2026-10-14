@@ -463,12 +463,12 @@ pub struct SrpmConfig {
     pub compression: Option<String>,
     /// Documentation files to include.
     pub docs: Option<Vec<String>>,
-    /// Additional contents to include in the source RPM. Shares the unified
-    /// [`NfpmContent`] type with nFPM contents; SRPM-style `source:` /
-    /// `destination:` / `type:` keys are accepted via serde aliases.
+    /// Additional contents to include in the source RPM. Takes the same
+    /// entries as `crates[].nfpms[].contents`; the SRPM-style `source:` /
+    /// `destination:` / `type:` keys are accepted as aliases.
     pub contents: Option<Vec<NfpmContent>>,
-    /// RPM signature configuration. Shares the unified
-    /// [`NfpmSignatureConfig`] type with nFPM.
+    /// RPM signature configuration. Takes the same keys as
+    /// `crates[].nfpms[].rpm.signature`.
     pub signature: Option<NfpmSignatureConfig>,
     /// Map of binary name → install path declared in the spec's `%files`
     /// section. Each entry tells the generated
@@ -494,10 +494,8 @@ pub struct SrpmConfig {
     /// transaction have been installed. Path to a script file.
     pub posttrans: Option<String>,
     /// Prerelease suffix appended to the version (e.g. `rc1`, `beta2`).
-    /// Prerelease component of the package version.
     pub prerelease: Option<String>,
     /// Build metadata appended to the version (e.g. git commit hash).
-    /// Version-metadata component of the package version.
     pub version_metadata: Option<String>,
     /// Skip this config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]

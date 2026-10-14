@@ -13,15 +13,18 @@ Packager — creates source RPM packages from your project. Required: not a publ
 
 ## Minimal config
 
+The block is the top-level `srpms:` key. The singular `srpm:` spelling is
+still accepted.
+
 ```yaml
-srpm:
+srpms:
   enabled: true
 ```
 
 ## Full config reference
 
 ```yaml
-srpm:
+srpms:
   enabled: false                     # required; opt-in (disabled by default)
   package_name: ""                   # optional; RPM package name (default: project name)
   file_name_template: ""             # optional; output filename template
@@ -43,6 +46,14 @@ srpm:
   signature:                         # optional; RPM signing config
     key_file: ""
     key_passphrase: ""               # optional; falls back to SRPM_PASSPHRASE env var
+  bins:                              # optional; binary → owned install path (default %{_bindir}/<name>)
+    myapp: /usr/bin/myapp
+  prefixes: [/usr]                   # optional; one Prefix: tag each (relocatable package)
+  build_host: reproducible           # optional; BuildHost: tag
+  pretrans: scripts/pretrans.sh      # optional; %pretrans script, sourced on the installing host
+  posttrans: scripts/posttrans.sh    # optional; %posttrans script, sourced on the installing host
+  prerelease: rc1                    # optional; appended to Version: as ~rc1
+  version_metadata: g1234abc         # optional; appended to Version: as +g1234abc
   skip: false                        # optional
 ```
 
@@ -92,8 +103,8 @@ Not applicable — this is a local packaging stage, not a publisher.
 | `build_host` | string | what rpmbuild records | `BuildHost:` tag written into the spec header |
 | `pretrans` | string | none | Path to a `%pretrans` script, sourced on the installing host before any package in the transaction installs (it must exist there) |
 | `posttrans` | string | none | Path to a `%posttrans` script, sourced on the installing host after every package in the transaction installed (it must exist there) |
-| `prerelease` | string | none | Prerelease component of the package version (e.g. `rc1`) |
-| `version_metadata` | string | none | Build-metadata component of the package version (e.g. a commit hash) |
+| `prerelease` | string | none | Prerelease component of the package version (e.g. `rc1`), appended to the generated spec's `Version:` after a `~` |
+| `version_metadata` | string | none | Build-metadata component of the package version (e.g. a commit hash), appended to the generated spec's `Version:` after a `+` |
 | `skip` | string/bool | none | Skip this config (accepts bool or template string) |
 
 ### Signature config
@@ -119,7 +130,7 @@ The `%prep` step is prefix-aware: it emits `%autosetup -n {{ SourcePrefix }}` to
 Provide your own `.spec` template for full control:
 
 ```yaml
-srpm:
+srpms:
   enabled: true
   spec_file: rpm/myapp.spec
 ```
@@ -135,11 +146,67 @@ The spec file is rendered through the template engine with additional variables:
 | `{{ License }}` | License identifier |
 | `{{ URL }}` | Homepage URL |
 | `{{ Description }}` | Package description |
+| `{{ Bins }}` | Map of binary name → owned install path (`bins:` or the `%{_bindir}/<name>` default) |
+| `{{ Prefixes }}` | One `Prefix: <path>` line per `prefixes` entry |
+| `{{ BuildHost }}` | `build_host` |
+| `{{ Pretrans }}` / `{{ Posttrans }}` | `pretrans` / `posttrans` script paths |
+| `{{ Prerelease }}` / `{{ VersionMetadata }}` | `prerelease` / `version_metadata` |
 
 Use `%autosetup -n {{ SourcePrefix }}` only when the source archive has a
 directory prefix (a `source.prefix_template` ending in `/`). For a flat
 archive (`SourcePrefix` empty), use `%autosetup -c` instead, which creates
 the build directory and extracts the flat sources into it.
+
+## Relocation, scriptlets and version components
+
+```yaml
+srpms:
+  enabled: true
+  prefixes: [/usr, /etc]
+  build_host: reproducible
+  pretrans: /usr/share/myapp/pretrans.sh
+  posttrans: /usr/share/myapp/posttrans.sh
+  prerelease: rc1
+  version_metadata: g1234abc
+```
+
+For version `1.2.0` the generated spec's `Version:` line reads:
+
+```text
+Version:        1.2.0~rc1+g1234abc
+```
+
+the header, after `Source0:`, carries:
+
+```text
+BuildHost:      reproducible
+Prefix:         /usr
+Prefix:         /etc
+```
+
+and the scriptlets follow the `%files` section:
+
+```text
+%pretrans
+. /usr/share/myapp/pretrans.sh
+
+%posttrans
+. /usr/share/myapp/posttrans.sh
+```
+
+The `Version:` value is made RPM-safe after the parts are joined, so a `-` in
+the version, `prerelease` or `version_metadata` never reaches rpmbuild. The
+scriptlets source each path with `.` when the package installs, so the script
+must already exist on the installing host; anodizer does not add it to the
+package. A `bins` entry replaces the default `%{_bindir}/<name>` path for that
+binary in `%files`:
+
+```yaml
+srpms:
+  enabled: true
+  bins:
+    myapp: /opt/myapp/bin/myapp
+```
 
 ## Behavior
 
@@ -150,7 +217,7 @@ the build directory and extracts the flat sources into it.
 ## Full example
 
 ```yaml
-srpm:
+srpms:
   enabled: true
   package_name: myapp
   summary: "A fast CLI tool"

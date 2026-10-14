@@ -100,13 +100,77 @@ for how one publisher grades that), or a missing rollback scope under
 run continue — a rollback scope missing in default mode, a credential probe
 that could not reach a verdict, a publisher that is optional. The
 [rollback scope preflight](@/docs/advanced/release-resilience.md#rollback-scope-preflight)
-lists what is asked of each publisher. A failed release check (on GitHub the
-token cannot push to the release repository or the tag's release is
-immutable, on GitLab and Gitea the token lacks the access a release needs)
-is a blocker unless
-`release.preflight.fail_on_error: false` makes it a warning; see
-[Release preflight](@/docs/publish/github.md#release-preflight). A blocker aborts the run with a
+lists what is asked of each publisher. A blocker aborts the run with a
 `preflight: N resilience blockers: …` line naming each one.
+
+### Release check
+
+The release publisher asks the forge the release is created on whether the
+token can create every release the selected crates name:
+
+| Forge | Request | Fails when |
+|---|---|---|
+| GitHub | the repository's push permission, then the release at the tag | the token cannot push, or a release already exists at the tag and is immutable (an immutable release cannot be updated and its assets cannot be replaced) |
+| GitLab | `GET /projects/{id}` | the token has less than Developer access (the higher of project and group access counts; a response with no `permissions` passes) |
+| Gitea | `GET /api/v1/repos/{owner}/{repo}` | the token cannot push (a response with no `permissions` passes) |
+| every forge | none | no token is available |
+
+On GitLab and Gitea a 401, 403 or 404 is a failed check. Only a 429 counts
+as a rate limit there, since neither forge marks a 401 or 403 as a throttle;
+a 429, a 5xx or a failed connection gives the check no verdict, which is a
+warning unless [strict mode](#strict-mode) is on. Each forge's request
+carries its own retry label (`gitlab project probe`, `gitea repo probe`), so
+a retry line names the forge it came from. Each project is asked once per
+token, however many crates release into it.
+
+A GitLab run that authenticates with a CI job token
+(`gitlab_urls.use_job_token`) skips the access check, because GitLab does not
+let a job token read `GET /projects/{id}`. The skip is printed once per
+project at default output:
+
+```text
+   • skipped the GitLab access check for myorg/myapp: a CI job token cannot read the project
+```
+
+A failed release check is a blocker. `release.preflight.fail_on_error` (a
+bool or template, default `true`, set per crate or in the top-level
+`release:` block) turns it into a warning that ends in `continuing because
+release.preflight.fail_on_error is false`:
+
+```yaml
+release:
+  preflight:
+    fail_on_error: "{{ not IsNightly }}"   # warn only on nightly runs
+```
+
+The field is read strictly: `true`, `false`, `1` or `0` in any letter case.
+Any other render, an empty one included, stops the run with an error naming
+the value. A crate's own value wins over the top-level one, and an empty
+value counts as unset. The full description, with the lines each setting
+prints, is under
+[Release preflight](@/docs/publish/github.md#release-preflight).
+
+## Strict mode
+
+By default a probe that cannot reach a verdict (a 5xx, a 429, a transport
+failure, or a response that hides the permission the publish needs) is a
+warning, so a passing outage upstream cannot stop a release whose
+credentials are valid. `preflight.strict: true` makes every such outcome a
+blocker. A definitive failure (a rejected credential, a missing target)
+keeps its severity either way.
+
+```yaml
+preflight:
+  strict: true   # default: false
+```
+
+The global `--strict` flag has the same effect on one run, and also turns a
+missing rollback scope into a blocker:
+
+```bash
+$ anodizer preflight --strict
+$ anodizer release --strict
+```
 
 ## Reconcile sweep
 

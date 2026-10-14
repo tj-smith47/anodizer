@@ -58,12 +58,16 @@ Control how release notes are handled when a release already exists:
 ## Behavior
 
 - Supports draft and prerelease flags (unlike GitLab)
-- Existing release detection asks `GET /releases/tags/{tag}` first; on a 404 (no release, or a server older than 1.13 without that endpoint) it reads every listing page, 50 per page, and stops on a page that repeats
+- Existing release detection asks `GET /releases/tags/{tag}` first; on a 404 (no release, or a server older than 1.13 without that endpoint) it reads every listing page, 50 per page, with no page cap, so a repository with more than 500 releases still finds the tag's release. The sweep stops with an error when a page repeats the one before it (a server or proxy ignoring the `page` parameter; pages are compared by their release ids when every entry has one, else by their raw text) or when the retry deadline passes:
+
+  ```text
+  gitea: could not enumerate releases for tag 'v1.2.3': the listing served the same page twice (page 2 repeats page 1), so the server is not honoring the page parameter
+  ```
 - `replace_existing_artifacts`: lists attachments, finds by name, deletes, then re-uploads
 - Asset upload via multipart POST with the file as the `attachment` form field
 - URL segments are percent-encoded for special characters
 - 300-second HTTP timeout
-- Release preflight: before the build, `GET /api/v1/repos/{owner}/{repo}` checks that the token can push (a response with no `permissions` passes). A failed check stops the run unless `release.preflight.fail_on_error` is `false`; see [Release preflight](@/docs/publish/github.md#release-preflight)
+- Release preflight: before the build, `GET /api/v1/repos/{owner}/{repo}` checks that the token can push (a response with no `permissions` passes). A 404, 401 or 403 fails the check whatever headers it carries, because Gitea signals load with a 429 or a 503; a 429, a 5xx or an unreachable server is a warning, or a failure under [`preflight.strict`](@/docs/general/preflight.md). Retries print under the label `gitea repo probe`. A failed check stops the run unless `release.preflight.fail_on_error` is `false`; see [Release preflight](@/docs/publish/github.md#release-preflight)
 
 ## Self-hosted Gitea
 

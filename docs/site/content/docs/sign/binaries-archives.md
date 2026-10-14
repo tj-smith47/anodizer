@@ -21,7 +21,7 @@ signs:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `id` | string | none | Identifier for this signing config |
-| `artifacts` | string | `none` | What to sign — one of: `any`, `all`, `none`, `archive`, `binary`, `package`, `checksum`, `source`, `installer`, `diskimage`, `sbom`, `snap`, `macos_package`. (`any` is a synonym for `all`.) |
+| `artifacts` | string | `none` | What to sign — one of: `any`, `all`, `none`, `archive`, `binary`, `package`, `checksum`, `source`, `installer`, `diskimage`, `sbom`, `snap`, `macos_package`. (`any` is a synonym for `all`.) `none` skips only this entry: another entry in the same list still runs, and its failure still fails the stage. This holds on `signs:`, `binary_signs:` and `docker_signs:`. |
 | `cmd` | string | `cosign` (or `gpg`) | Signing command. Defaults to `cosign`; falls back to the `git config gpg.program` value when set. |
 | `args` | list | — | Arguments. Templates supported, plus six `${…}` substitution variables (see below). |
 | `signature` | string | `{{ .Artifact }}.sig` | Signature output filename template. Templates and the `${…}` variables both apply. |

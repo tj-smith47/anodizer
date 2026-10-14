@@ -3276,7 +3276,8 @@ fn changelog_use_warns_on_unrecognized_value() {
     check_changelog(&config, &mut warnings);
     assert_eq!(warnings.len(), 1, "got: {warnings:?}");
     assert!(
-        warnings[0].contains("mercurial") && warnings[0].contains("git, github-native"),
+        warnings[0].contains("mercurial")
+            && warnings[0].contains("git, github, gitlab, gitea, github-native"),
         "warning should name the bad value and valid set: {:?}",
         warnings
     );
@@ -3293,6 +3294,21 @@ fn changelog_use_silent_on_github_native() {
     let mut warnings: Vec<String> = vec![];
     check_changelog(&config, &mut warnings);
     assert!(warnings.is_empty(), "github-native is valid: {warnings:?}");
+}
+
+#[test]
+fn changelog_use_silent_on_every_forge_source() {
+    use anodizer_core::config::ChangelogConfig;
+    for source in ["git", "github", "gitlab", "gitea"] {
+        let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+        config.changelog = Some(ChangelogConfig {
+            use_source: Some(source.to_string()),
+            ..Default::default()
+        });
+        let mut warnings: Vec<String> = vec![];
+        check_changelog(&config, &mut warnings);
+        assert!(warnings.is_empty(), "{source} is valid: {warnings:?}");
+    }
 }
 
 // ---- Checksum-algorithm validation tests ----

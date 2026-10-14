@@ -71,6 +71,12 @@ pub fn documented_bool_row(field: &str) -> DocumentedRow {
         "/../../docs/site/content/docs/general/templates.md"
     ))
     .expect("read the templates docs page");
+    bool_row_in(&page, field)
+}
+
+/// The row whose first cell is `field` in the "Bool-or-template values"
+/// table of `page`, read as [`documented_bool_row`] describes.
+fn bool_row_in(page: &str, field: &str) -> DocumentedRow {
     let section = page
         .split("\n## Bool-or-template values\n")
         .nth(1)
@@ -133,5 +139,107 @@ pub fn documented_bool_row(field: &str) -> DocumentedRow {
         falsy: read(cell(false_col)),
         auto: DocumentedOutcome::from_cell(cell(auto_col)),
         other: DocumentedOutcome::from_cell(cell(other_col)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HEADER: &str = "| Field | Reads as true | Reads as false | `auto` | Any other render |\n|---|---|---|---|---|\n";
+
+    fn page(table: &str) -> String {
+        format!("# T\n\n## Bool-or-template values\n\nText.\n\n{table}\n## Next\n")
+    }
+
+    #[test]
+    fn a_row_reads_its_spellings_and_outcomes() {
+        let row = bool_row_in(
+            &page(&format!(
+                "{HEADER}| `x` | `true`, `1` | `false`, empty | an error | an error, an empty render included; a note |\n"
+            )),
+            "`x`",
+        );
+        assert_eq!(
+            row.truthy,
+            ["true", "TRUE", "True", "  true ", "1", "1", "1", "  1 "]
+        );
+        assert_eq!(row.falsy, ["false", "FALSE", "False", "  false ", ""]);
+        assert_eq!(row.auto, DocumentedOutcome::Error);
+        assert_eq!(row.other, DocumentedOutcome::Error);
+    }
+
+    #[test]
+    fn every_outcome_wording_maps_to_its_variant() {
+        for (cell, outcome) in [
+            ("true", DocumentedOutcome::True),
+            ("false", DocumentedOutcome::False),
+            ("false, with a warning", DocumentedOutcome::FalseWithWarning),
+            ("true on a prerelease", DocumentedOutcome::TrueOnPrerelease),
+            ("true on a snapshot", DocumentedOutcome::TrueOnSnapshot),
+            (
+                "GitHub decides (`legacy`)",
+                DocumentedOutcome::GitHubDecides,
+            ),
+            ("an error", DocumentedOutcome::Error),
+            (
+                "an error, an empty render included",
+                DocumentedOutcome::Error,
+            ),
+            (" true ; a note", DocumentedOutcome::True),
+        ] {
+            assert_eq!(DocumentedOutcome::from_cell(cell), outcome, "{cell:?}");
+        }
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "the bool-or-template table names an outcome with no variant: \"maybe\""
+    )]
+    fn an_unknown_wording_panics() {
+        DocumentedOutcome::from_cell("maybe");
+    }
+
+    #[test]
+    #[should_panic(expected = "the templates page has a `## Bool-or-template values` section")]
+    fn a_missing_section_panics() {
+        bool_row_in("# T\n\n## Other\n", "`x`");
+    }
+
+    #[test]
+    #[should_panic(expected = "the bool-or-template table has a `| Field |` header")]
+    fn a_missing_header_panics() {
+        bool_row_in(&page("| `x` | `true` | `false` | false | false |\n"), "`x`");
+    }
+
+    #[test]
+    #[should_panic(expected = "the bool-or-template table has no \"Any other render\" column")]
+    fn a_missing_column_panics() {
+        bool_row_in(
+            &page(
+                "| Field | Reads as true | Reads as false | `auto` |\n|---|---|---|---|\n| `x` | `true` | `false` | false |\n",
+            ),
+            "`x`",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "no `y` row in the bool-or-template table")]
+    fn a_missing_row_panics() {
+        bool_row_in(
+            &page(&format!(
+                "{HEADER}| `x` | `true` | `false` | false | false |\n"
+            )),
+            "y",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "the `x` row has no cell 4")]
+    fn a_missing_cell_panics() {
+        bool_row_in(
+            &page(&format!("{HEADER}| x | `true` | `false` | false |\n")),
+            "x",
+        );
     }
 }

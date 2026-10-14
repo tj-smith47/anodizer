@@ -149,6 +149,10 @@ aur_sources:
 
 - Generates PKGBUILD and .SRCINFO files for source-based installation
 - The source is the archive the `source:` stage produced and the release uploaded, saved as `${pkgname}_${pkgver}.<format>` with its SHA-256 in `sha256sums`; `url_template` replaces the URL
+- The SHA-256 is the one the source stage recorded, or is hashed from the archive when none was recorded. `<format>` is the archive's recorded format, else the URL's extension
+- In a workspace, the source archive belongs to the crate whose release ships it: the first crate with a `release:` block, else the primary crate. Its download URL is the one that release stamped on it when it uploaded the archive
+- An archive the release has not uploaded yet has no download URL. On `--snapshot` or `--dry-run` the PKGBUILD names it by file name; a live run skips the entry with `source archive '<name>' has no download URL yet; the release stage sets it when the archive is uploaded`. With `source.enabled: true` but no archive registered (`--skip=source`, or a source stage that failed first), the entry is skipped naming that cause
+- The top-level directory the default `build()` and `package()` enter comes from the archive's recorded prefix, so a `--publish-only` run knows it too; an `artifacts.json` written before the prefix was recorded falls back to rendering `source.prefix_template`
 - Version dashes are replaced with underscores for PKGBUILD compatibility
 - `arch=()` is derived from the Linux build targets unless `arches` is set
 - When `git_url` is set, clones the AUR repo, commits the generated files, and pushes

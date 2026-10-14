@@ -144,6 +144,10 @@ crates:
 
 Anodizer resolves a GitHub token from the first source that is set, in this order: `repository.token` in the config, then the `ANODIZER_GITHUB_TOKEN` env var, then the `GITHUB_TOKEN` env var. The token must have push access to your krew-index fork. The pull request itself is opened with `repository.pull_request.token` when that is set, falling back to the same chain; set it when the fork token cannot open PRs against the upstream index.
 
+`repository.pull_request.token` and `repository.token` are rendered before anything is cloned or pushed. A blank render, such as an unset `{{ .Env.X }}`, falls through to the next token in the chain. A template that fails to render skips this crate's krew entry with nothing pushed, and the next crate still publishes. The skip reason names the field and the render error (`pull_request.token does not render: …`), with the template's own text replaced by `<template>` so a token literal in it is never printed.
+
+A pull request that fails after the branch was pushed records the pushed branch on krew's Failed row, so `anodizer tag rollback` still finds it.
+
 ## How plugin manifests are generated
 
 Anodizer discovers all build artifacts for the crate (filtered by `ids`, `amd64_variant`, and `arm_variant`), then generates a Krew plugin manifest YAML file conforming to the `krew.googlecontainertools.github.com/v1alpha2` API.

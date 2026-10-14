@@ -254,6 +254,41 @@ identically. This only matters once a project has more than one crate under
 `crates:` — a single-crate config has no intra-workspace dependency to
 order.
 
+### Release repository per crate
+
+Every crate's `release:` block, top-level and under `workspaces:` alike, may
+name only a token. Anodizer fills an empty `owner` and `name` from the `origin`
+remote, and only from a remote on that forge's host (github.com, gitlab.com,
+or the host `<forge>_urls.api` names), so a crate that publishes to GitLab
+from a GitHub-hosted checkout must spell its repository out:
+
+```yaml
+crates:
+  - name: my-core
+    path: crates/my-core
+    release:
+      github:
+        token: "{{ .Env.CORE_RELEASE_TOKEN }}"   # owner/name from origin
+  - name: my-cli
+    path: crates/my-cli
+    release:
+      gitlab:
+        owner: acme
+        name: my-cli                             # origin is on github.com
+```
+
+A block still missing either field is refused before any API URL is built,
+naming the crate, the forge and the field; under `--snapshot` it is a warning.
+See [GitHub Releases](@/docs/publish/github.md) for the host rules.
+
+The repository-level assets (the source archive, whole-project SBOMs, the
+source RPM, install scripts and templated files) upload with the **release
+owner**: the first crate with a `release:` block, else the first crate
+declared, else `project_name`. In the config above that is `my-core`. Per-artifact
+assets (archives, packages, an SBOM about one archive) upload with their own
+crate's release, and [verify-release](@/docs/advanced/verify-release.md)
+expects each one where it was uploaded.
+
 ### Workspace-membership guard
 
 `anodizer check config` fails when a crate in `crates:` has an active cargo

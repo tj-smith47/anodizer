@@ -30,18 +30,15 @@ pub const MIN_ANNOUNCE_DEADLINE: std::time::Duration = std::time::Duration::from
 // AnnounceConfig
 // ---------------------------------------------------------------------------
 
-/// Announce-stage gate semantics.
-///
-/// Decides whether [`AnnounceStage`] runs based on the `PublishReport`
-/// produced by `PublishStage` (and contributed to by `BlobStage`):
+/// When the announce stage runs, judged from the results of the publishers
+/// and blob uploads earlier in the same run:
 ///
 /// - `required_publishers` (default): announce runs only if every
 ///   `required: true` publisher across the run succeeded.
 /// - `all_publishers`: announce runs only if every configured
-///   publisher succeeded (Submitter gate failures count here too).
+///   publisher succeeded. A publisher skipped because an earlier required
+///   publisher failed counts as not succeeded.
 /// - `none`: announce always runs.
-///
-/// [`AnnounceStage`]: ../../stage-announce/struct.AnnounceStage.html
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AnnounceGate {
@@ -73,19 +70,21 @@ pub struct AnnounceConfig {
     /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
-    /// Selects when AnnounceStage runs vs. skips based on the
-    /// `PublishReport` written by PublishStage/BlobStage. Default is
-    /// `required_publishers` (announce only if every required publisher
-    /// succeeded). See [`AnnounceGate`] for the other variants.
+    /// When the announce stage runs, judged from the results of the
+    /// publishers and blob uploads earlier in the same run:
+    /// `required_publishers` (default) runs it only if every
+    /// `required: true` publisher succeeded, `all_publishers` only if every
+    /// configured publisher succeeded, and `none` always runs it.
     #[serde(default)]
     pub gate_on: AnnounceGate,
     /// Overall wall-clock deadline for the announce stage (e.g. `"90s"`,
-    /// `"2m"`). Optional — defaults to [`DEFAULT_ANNOUNCE_DEADLINE`] (90s).
+    /// `"2m"`). Optional; defaults to `90s`. A value below one second is
+    /// raised to one second.
     ///
     /// Announcers run concurrently; any still running when this deadline
-    /// elapses is abandoned with a warning rather than awaited. This bounds the
-    /// stage so unreachable channels cannot accumulate into a hang that trips
-    /// the pipeline timeout *after* publishers already crossed one-way doors.
+    /// elapses is abandoned with a warning. This bounds the stage so
+    /// unreachable channels cannot add up to a hang that trips the pipeline
+    /// timeout after the publishers have already published.
     /// Raise it only if a slow-but-reachable channel legitimately needs longer.
     pub deadline: Option<HumanDuration>,
     /// Discord announcement configuration.
@@ -234,12 +233,13 @@ pub struct DiscordAnnounce {
     pub webhook_url: Option<String>,
     /// Message template for the Discord embed. Default: "{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}"
     pub message_template: Option<String>,
-    /// Author name displayed in the embed.
+    /// Author name displayed in the embed. Default: `anodizer`.
     pub author: Option<String>,
     /// Embed color as a decimal integer string (default: "3888754", a blue).
     /// Parsed to u32 at runtime. Supports template expressions.
     pub color: Option<String>,
-    /// Icon URL for the embed footer.
+    /// Icon URL shown beside the embed author; sent only when `author`
+    /// renders to a name.
     pub icon_url: Option<String>,
 }
 
@@ -270,7 +270,7 @@ pub struct WebhookConfig {
     /// templated config (`Authorization: "Bearer {{ Env.MY_TOKEN }}"`) for
     /// the cleanest migration.
     pub headers: Option<HashMap<String, String>>,
-    /// Content-Type header value. Default: "application/json".
+    /// Content-Type header value. Default: `application/json; charset=utf-8`.
     pub content_type: Option<String>,
     /// Message body template. Default: "{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}"
     pub message_template: Option<String>,
@@ -454,7 +454,8 @@ pub struct SlackAnnounce {
     pub message_template: Option<String>,
     /// Override the webhook's default channel (e.g. "#releases").
     pub channel: Option<String>,
-    /// Override the webhook's default username (e.g. "release-bot").
+    /// Username the message is posted as (e.g. "release-bot"). Default:
+    /// `anodizer`.
     pub username: Option<String>,
     /// Override the webhook's default icon with an emoji (e.g. ":rocket:").
     pub icon_emoji: Option<String>,

@@ -219,8 +219,8 @@ pub struct PublishConfig {
     pub nix: Option<NixConfig>,
 
     /// Hooks that fire once per FAILED publisher. Each entry is a standard
-    /// hook (`cmd` / `dir` / `env` / `output`); the template surface adds
-    /// `{{ .Publisher }}`,
+    /// hook (`cmd` / `dir` / `env` / `output`), and its templates can also
+    /// read `{{ .Publisher }}`,
     /// `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}`
     /// (Assets/Manager/Submitter), `{{ .Required }}`,
     /// `{{ .RolledBack }}` — always `false` during a release, which never
@@ -357,7 +357,7 @@ pub struct CargoPublishConfig {
     // ----- Authentication -----
     /// Whether the publish authenticates with a long-lived API token
     /// (`CARGO_REGISTRY_TOKEN`) or with GitHub Actions OIDC (crates.io
-    /// Trusted Publishing). Default [`Auto`]: a token when one is present,
+    /// Trusted Publishing). Default `auto`: a token when one is present,
     /// otherwise a Trusted-Publishing exchange when an OIDC context is
     /// available.
     ///
@@ -368,16 +368,11 @@ pub struct CargoPublishConfig {
     /// repository/workflow, so a lockstep workspace creates one token and reuses it
     /// for all crates.
     ///
-    /// When omitted, resolves to [`Auto`]. Optional (rather than a bare enum
-    /// with `#[serde(default)]`) so a `defaults.publish.cargo.auth` value is
-    /// inherited by a per-crate `publish.cargo` block that omits `auth`: a
-    /// bare enum always serializes to a concrete value, and the defaults
-    /// deep-merge (fill-by-missing-key) never overwrites a present scalar, so
-    /// a strict `oidc` default would silently degrade to `auto`. Read through
-    /// [`CargoPublishConfig::resolved_auth`] so every call site agrees on the
-    /// `None` → `Auto` collapse.
-    ///
-    /// [`Auto`]: CargoAuthMode::Auto
+    /// When omitted, `auto` applies. A `defaults.publish.cargo.auth` value is
+    /// inherited by every crate's `publish.cargo` block that omits `auth`.
+    // Optional so the defaults merge, which fills only missing keys, can
+    // fill it: a bare enum always serializes a concrete value, so an `oidc`
+    // default would silently become `auto`. Read through `resolved_auth`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<CargoAuthMode>,
 

@@ -117,7 +117,7 @@ The token can also be set via `repository.token` in the config.
 
 ## Common gotchas
 
-- **macOS only**: only macOS artifacts (`disk_image` or `archive` kind) are included. Linux/Windows targets are ignored.
+- **macOS artifact required**: a cask is generated only when the release has a macOS artifact (`disk_image`, `archive` or uploadable binary). Linux artifacts of the same release join it as an `on_linux` block; Windows and other targets are ignored.
 - **SHA256 required**: cask files require a checksum on every artifact. Ensure the checksum stage runs before the cask publisher.
 - **`update_existing_pr`**: if your tap uses a PR-based workflow, set `update_existing_pr: true` to force-push to an existing open branch rather than opening a duplicate PR. See [Cask existing PR behavior in the Homebrew doc](./homebrew.md#cask-existing-pr-behavior).
 
@@ -161,6 +161,14 @@ Cask files are updated in-place on each release; no recovery flag is required fo
 | `headers` | list | none | Custom HTTP headers |
 | `user_agent` | string | none | Custom user agent string |
 | `data` | map | none | POST data for form submissions |
+
+A config that still sets `url.verified:` loads, and every command that
+loads it prints one warning per cask that sets it, such as
+``DEPRECATION: homebrew_casks[0]: `url.verified:` is deprecated; Homebrew
+removed it (Homebrew/brew#23280) and now uses the default URL verification
+behavior. anodizer no longer writes it into the cask; remove the field.``
+`anodizer check config` then ends with
+`Config is valid, but uses deprecated properties.`
 
 ### Completions (`completions`)
 
@@ -236,150 +244,33 @@ host. A cask has a Linux side when the release ships Linux artifacts (an
 `on_linux` block) or its `custom_block` gives it one. The line is also left
 out when the `custom_block` declares an OS dependency of its own, because
 Homebrew refuses a `depends_on :macos` beside a versioned
-`depends_on macos:`. anodizer reads the `custom_block` by these rules.
+`depends_on macos:`.
 
-The block is first reduced to its code, and the rules below read only that.
-These are set aside, and each one that does not close on its line carries on
-into the following lines until it closes:
+### How anodizer reads `custom_block` {#custom-block}
 
-- A `"…"`, `'…'` or `` `…` `` string. Inside a `"…"` or `` `…` `` string,
-  `#{…}` is read as code with its own braces and strings, so `"a#{'"'}b"`
-  ends at its last `"`, and `#$"` interpolates the global `$"`.
-- A heredoc body, opened by `<<~TAG`, `<<-TAG` or `<<TAG` (the tag bare or
-  quoted) and closed by a line holding the tag alone, indented for `<<~` and
-  `<<-`, matched case-sensitively. Unless the tag is single-quoted, a body
-  line ending in an odd run of `\` joins the next line, so a tag on that
-  line does not close the heredoc, and `#{…}` in a body line is read as
-  code: a heredoc opened there (`#{<<~X}`) has its body read from the next
-  line, before the rest of the body around it, and a `#{…}` left open at
-  the end of a body line reads on into the next. A `<<` followed by a space
-  or a digit is a shift.
-- A `%()`, `%q`, `%Q`, `%w`, `%W`, `%i`, `%I`, `%r`, `%s` or `%x` literal
-  delimited by `()`, `[]`, `{}` or `<>` (which nest) or by one repeated
-  punctuation character (`%q|…|`). A typed one also takes a space or the end
-  of the line as its delimiter (`%q a `, `%q` at the end of a line), except
-  that whitespace only separates the words of a list (`%w`, `%W`, `%i`, `%I`),
-  so a list delimited by it never closes. A bare `%` where an operand must
-  stand (with nothing before it on its statement but an operator, or after a
-  label `a:`, the `:` of a ternary or a keyword that takes an operand (`and`,
-  `begin`, `break`, `case`, `do`, `else`, `elsif`, `ensure`, `if`, `in`,
-  `next`, `or`, `rescue`, `return`, `then`, `unless`, `until`, `when`,
-  `while`), as in `if% a `) also takes a space, a tab, `=` or the end of the
-  line. A literal delimited by the end of its line holds the next line, and
-  the line after that too while the held line ends in an odd run of `\`; the
-  statement reads on past it (`x = [%` then `text` then `]`). A `%r` closed
-  that way takes the letters that start the line after as its options
-  (`x = %r` then `ab` then `ix`), so that line is kept as written.
-- A `?x` character literal, such as `?#`, `?"` or `?'`, unless a letter, digit
-  or `_` is followed by a word character (`?ab`), or a quote is after a word
-  that may be a local (`x ?"a"`).
-- A `/…/` regex where an operand stands.
-- A `#` comment, which cuts the rest of the line, so a comment line reads as
-  blank, and an `=begin` … `=end` comment, which opens on any line that starts
-  in code, the code of a `#{…}` left open at the end of the line before
-  included.
+`custom_block` is raw Ruby, written at the top of the cask body. It may hold
+any Ruby a cask accepts: stanzas, `on_*` blocks, `depends_on` statements,
+locals, methods, heredocs, multi-line strings, percent literals and
+comments. anodizer reads it as Ruby code to answer two questions:
 
-The code inside `#{…}` is kept apart from the code around it, in every
-literal that interpolates: a `"…"` or `` `…` `` string, a `:"…"` symbol, a
-heredoc whose tag is not single-quoted, a `%()`, `%Q`, `%W`, `%I`, `%r` or
-`%x` literal and a `/…/` regex. Each `#{…}`, one line long or several, is
-read as statements of its own: its words count toward the Linux side, a
-`depends_on` that opens one of its statements counts toward the OS
-dependency, and a `;` in it ends no statement around the literal. It is read
-in the scopes around the literal by the rules below, as Ruby reads it: the
-names it assigns are locals after it, and the parameters and locals of a
-block, lambda or `def` inside it end with that block, lambda or `def`. So
-`"#{on_linux}"` names a Linux side, `"#{depends_on macos: :ventura}"` an OS
-dependency, and `'#{on_linux}'` neither.
-
-None of these opens after a `:` that makes a symbol (`:%`, `` :` ``, and
-`` foo:` `` or `x.a:/`, since a method call that heads its statement or
-follows `.`, `&.` or `::` takes no label), in a special global (`$"`, `$/`),
-or where it names a method: after `.`, `&.` or `::`, with or without a space
-before the name, whatever the name looks like (`x.<<`, `x. %`, `a&.!~`), after
-`def` (`def /(other)`), and as the `?` or `!` of a method name (`then?"a"`).
-Written straight after a method name spelled as an operator, a `<<`, `%` or
-`/` is an operator (`a&.!~% b` is a modulo) and a `?` opens a character
-literal. Straight after a name Ruby reads as a method call, a `?` opens a
-character literal (`EOS!?"`, `foo?=`, `x&.def??"`, `foo.nil?=`). Ruby reads a
-name as a method call after `.`, `&.` or `::`, whatever it spells, and
-elsewhere unless it is a local variable, a parameter, a number, a variable
-with a sigil, or `self`, `nil`, `true`, `false`, `end`, `__FILE__`, `__LINE__`
-or `__ENCODING__`.
-
-A `<<`, `%`, `?` or `/` that follows a value is a shift, a modulo, a ternary
-or a division and opens nothing. The code before it ends with a value when,
-spaces aside, it ends with `)`, `]`, `}`, a number, a closed literal or a
-symbol, the ones spelled as an operator or as a name ending in `=`, `?` or
-`!` included (`x = :+ %(on_linux)` is a modulo, as is `x = :a= %(on_linux)`),
-or with one of these words:
-
-- `self`, `nil`, `true`, `false`, `end`, `class` (`class <<self`) or `def`
-  (`def /(other)`);
-- an instance, class or global variable (`@args <<extra`, `$stdout <<x`);
-- a local variable, a name assigned earlier in its scope: `name =`, `name ||=`
-  and the other operator assignments (`&&=`, `+=`, `-=`, `*=`, `/=`, `%=`,
-  `**=`, `<<=`, `>>=`, `^=`, `|=`, `&=`) wherever they stand (`a = b ||= 1`,
-  `f(b += 1)`, `x if (b ^= 1)`), unless the target follows `.`, `&.` or `::`
-  or has a sigil, `a, b =`, `a, (b, c) =`, `(a, b) =`, `a, =`, `for a in`,
-  `rescue => a`, a named group before `=~` in a regex with no `#{…}`
-  (`/(?<a>\d+)/ =~ s`), a name in an `in` pattern (`in [a, 2]`, `x in {k: a}`)
-  and the target of a rightward `=>` (`2 => a`). `==`, `=~`, `=>`, `!=`, `<=`,
-  `>=` and `obj.name =` assign nothing. So after `y = 1`, the line `x = y <<z`
-  is a shift, and after `cond = true`, `x = cond ?"" : "no"` is a ternary;
-- a parameter: of a block (`do |a, b; c|`, `{ |a| … }`, a list spread over
-  several lines), of a method (`def name(a, b = 1, *rest, k: 1, **kw, &blk)`,
-  with or without parentheses; a setter `def name=(v)` binds `v` alone) or of
-  a lambda (`->(x)`, `-> (x)`);
-- any word other than a keyword written straight against a `<<`, `%` or
-  `/` (`a%(b)`, `1<<FLAGS`); `if%w[a]` opens a literal.
-
-A `def` body sees none of the locals outside it. A block sees them, and its
-parameters and the locals first assigned in it end at its `end` or `}`. The
-body of a lambda is a block too, so after `f = -> { w = 1 }` the name `w` is
-gone and `r = w %w[on_linux]` passes `%w[on_linux]` to a method `w`. `if`,
-`while`, `case` and `begin` open no scope. After a word, a `/` followed by a
-space or `=` divides. A `:` after a value ends a ternary and starts no symbol
-(`f ? 1 :+ 2`), so an operand stands after it (`c ? 1 :%(a)`), and the word
-after a `::` is a constant path or a method, also when the `::` ended an
-earlier line (`y = A::` then `B %(on_linux)` passes a string to `B`). A `?` or
-`!` read as an operator ends no word, so a `/` after it opens a regex
-(`x = !/on_linux/`).
-
-A statement continued with a `\` at the end of a line, with a `?\`
-character literal that holds the newline, with a `.`, `&.` or `::` that
-ends a line (past any blank or comment line; a `..` range continues
-nothing) or with a literal the newline closes, is read as one statement, so
-the code before the break decides what comes after it: `y = x.` then
-`%(on_linux)` calls the method `%`, and after `n = 7`, the lines
-`m = n \` and `  % 2` are a modulo, and a modifier `if` or `until` on a
-continuation line (`puts "a" \` then `  if ready`) opens no block.
-
-The operator opens a literal after an operator, `(`, `,`, `;`, the start of a
-line, a label (`a:`), a Ruby keyword, any method of the cask DSL
-(`caveats <<~EOS`, `binary %w[a]`), a common method that takes an argument
-(`puts %w[a]`) or a name ending in `?` or `!` followed by a space
-(`y = foo? <<E`), since no local or parameter is spelled that way. After any
-other word followed by a space, the scan cannot tell a method from a local it
-did not see assigned, and it reads the operator as an opener; that is a guess.
-
-Then:
-
-- A Linux side is the word `on_linux`, `on_system` or `app_image` in the
-  code, as a whole word: `self.on_linux do`, `(on_linux do` and a one-line
+- **Does it give the cask a Linux side?** Yes when `on_linux`, `on_system`
+  or `app_image` appears as a whole word in the code, at any depth:
+  `self.on_linux do`, `(on_linux do` and a one-line
   `on_arm do on_linux do … end end` all count.
-- A `depends_on` statement starts where `depends_on` is the first word of a
-  line or of a `;`-separated statement, in the code around the literals or
-  in a `#{…}`, after any opening `(`, so `(depends_on macos: :ventura)` and
-  `x = "#{depends_on macos: :ventura}"` count.
-- The statement continues onto the next line while the current line ends
-  with `,`, `(`, `[`, `{`, `|`, `.`, `&&`, `||`, `=>` or `\`, while the line
-  ends inside an open string or literal, or while the statement has opened
-  more `(`, `[` and `{` than it has closed. A blank line inside it is passed
-  over, and a line that opens with `depends_on` starts a new statement.
-- The statement is an OS dependency when it names the key `macos:`,
-  `maximum_macos:` or `linux:`, or the symbol `:macos` or `:linux`, as a
-  whole word.
+- **Does it declare an OS dependency?** Yes when a `depends_on` statement
+  names the key `macos:`, `maximum_macos:` or `linux:`, or the symbol
+  `:macos` or `:linux`, as a whole word. A statement starts where
+  `depends_on` is the first word of a line or of a `;`-separated statement,
+  after any opening `(`. It continues onto the next line while the line ends
+  with `,`, `(`, `[`, `{`, `|`, `.`, `&&`, `||`, `=>` or `\`, while a string
+  or literal is still open, or while more brackets are open than closed.
+
+Words inside a string, heredoc body, percent literal (`%q(…)`, `%w[…]` and
+the rest), `?x` character literal, regex or comment (`#` and
+`=begin` … `=end`) do not count. Code inside `#{…}` in a literal that
+interpolates does count, read as statements of its own: `"#{on_linux}"`
+names a Linux side, `"#{depends_on macos: :ventura}"` an OS dependency, and
+`'#{on_linux}'` neither.
 
 | `custom_block` text | An OS dependency |
 |---|---|
@@ -402,24 +293,32 @@ A flat single-download cask whose `custom_block` gives it a Linux side puts
 its `sha256` / `url` (and `app` / `service`) inside `on_macos`, so a Linux
 host never downloads the macOS archive.
 
-Three cases make the scan stop trusting the code from a line on:
+#### When the block cannot be read to its end
 
-- a literal opened there is still open after the last line of the block;
-- a guess there opens a literal that spans several lines (`n = width %-2`
-  with `width` a local the scan did not see assigned, and a `-` further
-  down);
-- a parameter still in scope is followed there by a `<<` whose heredoc tag
-  closes on a later line (`[1].each do |caveats|` then `caveats <<~EOS`
-  inside the block).
+In Ruby, `<<`, `%`, `?` and `/` open a heredoc, a percent literal, a
+character literal or a regex where an operand stands, and are an operator
+after a value. anodizer tracks the locals, parameters and method names the
+block defines to tell the two apart. It stops trusting the code from a line
+on when:
 
-The scan then reads the raw text, comments and strings included, which may
-over-match: a Linux side when `on_linux`, `on_system` or `app_image` appears
-anywhere in the block, and an OS dependency when `depends_on` and an OS key
-or symbol both do. A word scan that finds a Linux-side word leaves
-`depends_on :macos` out and moves a flat download into `on_macos`; one that
-finds a `depends_on` OS key leaves the bare dependency out; one that finds
-neither adds `depends_on :macos`. The render prints one warning per command,
-unless `depends_on_macos:` is set:
+- a string or literal opened on that line is still open after the last
+  line of the block;
+- one of those four characters follows a word and a space that could be a
+  method or a local anodizer did not see assigned, and reading
+  it as an opener would start a literal that spans several lines
+  (`n = width %-2`, with a `-` further down);
+- a block or method parameter still in scope is followed by a `<<` whose
+  heredoc tag closes on a later line (`[1].each do |caveats|` then
+  `caveats <<~EOS` inside the block).
+
+anodizer then reads the whole block as raw text, comments and strings
+included, which may over-match: a Linux side when `on_linux`, `on_system`
+or `app_image` appears anywhere in the block, and an OS dependency when
+`depends_on` and an OS key or symbol both do. A word scan that finds a
+Linux-side word leaves `depends_on :macos` out and moves a flat download
+into `on_macos`; one that finds a `depends_on` OS key leaves the bare
+dependency out; one that finds neither adds `depends_on :macos`. The render
+prints one warning per command, unless `depends_on_macos:` is set:
 `homebrew cask 'mytool': custom_block could not be read past line 2 (the '%'
 there could open a percent literal or be an operator); the Linux-side and
 depends_on checks fell back to a word scan, which may over-match — set
@@ -432,8 +331,22 @@ These are read wrongly, and nothing warns about them:
   made with `define_method`) is not seen;
 - a `depends_on` that follows a `do` on the same line
   (`on_macos do depends_on macos: :ventura end`) is not seen;
-- a guess whose literal closes on the same line (`x = width %(a) + 1`) has
-  that literal set aside.
+- an operator after a word anodizer cannot classify, whose literal would
+  close on the same line (`x = width %(a) + 1`), is read as that literal.
+
+#### Indentation
+
+anodizer moves the block to the cask's indentation: the indentation its
+code lines share is removed and each line that begins in code is indented
+for the cask body, so a flush-left YAML block scalar and a pre-indented one
+render the same. A line that begins inside a multi-line string, percent
+literal, regex, heredoc body or `=begin` comment, and the closing tag of a
+`<<` or `<<-` heredoc, is kept byte for byte, since moving it would change
+the literal or leave the heredoc unclosed. Trailing whitespace is dropped
+only from a line that ends in code. Past a line anodizer cannot read, every
+line is kept as written.
+
+#### A wrong answer
 
 A wrong answer gives a cask that Homebrew refuses:
 
@@ -703,7 +616,7 @@ while the cask serves each Mac its native slice.
 
 ## Behavior
 
-- Looks for macOS artifacts (`disk_image` or `archive` kind)
+- Looks for macOS artifacts (`disk_image`, `archive` or uploadable binary), and Linux ones for an `on_linux` block
 - Requires SHA256 checksum metadata on the artifact
 - Emits per-arch `on_intel` / `on_arm` blocks for multi-arch macOS releases, with a universal binary filling a slot no per-arch build covers; a single macOS arch, or a universal binary alone, renders a flat `url` / `sha256` (inside `on_macos` when the cask also has a Linux side)
 - Clones the tap repository, writes the cask file, commits, and pushes
@@ -734,10 +647,11 @@ homebrew_casks:
 
 ## Artifact eligibility
 
-anodizer folds only genuine macOS targets (`*-apple-darwin`, `darwin-universal`)
-into a cask. Apple **non-macOS** targets (`aarch64-apple-ios`, `*-tvos`,
-`*-watchos`) are excluded — a cask installs macOS apps, so they never appear in
-the generated cask. If the build produces **no** eligible macOS archive,
-anodizer fails the release rather than emitting an empty cask. See
+anodizer generates a cask from genuine macOS targets (`*-apple-darwin`,
+`darwin-universal`), and adds the release's Linux artifacts as an `on_linux`
+block beside them. Apple **non-macOS** targets (`aarch64-apple-ios`, `*-tvos`,
+`*-watchos`) are excluded and never appear in the generated cask. If the build
+produces **no** eligible macOS artifact, anodizer fails the release rather
+than emitting an empty cask. See
 [Artifact eligibility](./selecting-publishers.md#artifact-eligibility) for the
 full rule.

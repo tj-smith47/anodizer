@@ -896,7 +896,9 @@ pub fn num_cpus() -> usize {
         .unwrap_or(4)
 }
 
-/// Build the clap `Command` tree for CLI introspection.
+/// Build the full clap `Command` tree the binary parses, including the
+/// `mcp` subcommand attached from brontes. The CLI reference, the man page
+/// and the argument parser all read this one tree.
 pub fn build_cli() -> clap::Command {
-    <Cli as clap::CommandFactory>::command()
+    <Cli as clap::CommandFactory>::command().subcommand(brontes::command(Some(&mcp::config())))
 }

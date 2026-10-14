@@ -66,8 +66,8 @@ pub struct CompletionsConfig {
 
 /// Man-page generation for an archive entry.
 ///
-/// Same three mutually-exclusive modes as [`CompletionsConfig`], minus the
-/// per-shell `shells` axis (man pages are shell-agnostic).
+/// The same three modes as `completions` (set exactly one), without the
+/// `shells` list, since man pages do not depend on the shell.
 ///
 /// YAML examples:
 /// ```yaml

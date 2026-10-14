@@ -111,7 +111,7 @@ release:
 
 A field written empty (`owner: ""`) counts as omitted and is inferred the same way. The block is filled only from a remote on GitHub's own host: github.com (`ssh.github.com` counts), or the host the top-level `github_urls.api` names, so a GitHub Enterprise remote (`git@github.mycorp.com:acme/widget.git`) is read once `github_urls.api` is `https://github.mycorp.com/api/v3`; a port on the remote or on the API base is ignored when the hosts are compared. A remote on any other host fills nothing, and the refusal names that host and the `github_urls.api` override. The same host rule holds for [`gitlab:`](scm/gitlab.md) and [`gitea:`](scm/gitea.md) blocks; a `gitlab:` block whose `name` is a numeric project id or a full path with an empty `owner` is left as written.
 
-With no `origin` remote to read, a block whose owner or name is still empty is refused:
+The inference runs in the pipeline commands, in `anodizer check config` and in `anodizer promote`. Under `--snapshot` an unfilled block on any forge is a warning, since nothing publishes. With no `origin` remote to read, a block whose owner or name is still empty is refused before any API URL is built:
 
 ```
 $ anodizer check config
@@ -126,7 +126,7 @@ $ anodizer check config
 | `github.name` | string | auto-detected | Repository name |
 | `github.token` | string | pipeline token | Token override for this release repository (templates allowed). Useful when the release repo needs a different token than the build repo — e.g. releasing to another organization. |
 | `draft` | bool | `false` | Create as draft release |
-| `prerelease` | string/bool | `auto` | Mark as prerelease: `auto` (detect from version), `true`, `false` |
+| `prerelease` | string/bool | `auto` | Mark as prerelease: `auto` (detect from version), `true` or `1`, `false` or `0` (unquoted or quoted); any other string is a load error |
 | `make_latest` | string/bool | `auto` | Mark as latest: `auto`, `true` or `1`, `false` or `0`; a template is rendered and read the same way, in any letter case, and any other non-empty render marks it latest (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)) |
 | `name_template` | string | `{{ Tag }}` | Release title |
 | `header` | string | none | Text prepended to release body |
@@ -135,6 +135,7 @@ $ anodizer check config
 | `extra_files` | list | none | Additional files to upload (glob patterns) |
 | `skip_upload` | bool or template | `false` | Create release without uploading assets: `true` or `1` skips, `auto` skips on a snapshot, `false`, `0` or empty uploads, any other render is an error; read in any letter case (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)) |
 | `replace_existing_draft` | bool | `false` | Replace existing draft release. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-draft). |
+| `use_existing_draft` | bool | `false` | Reuse an existing draft release whose title matches the rendered `name_template` and update it in place. See [Reusing a draft](#reusing-a-draft). |
 | `replace_existing_artifacts` | bool | `false` | Overwrite existing assets. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-artifacts). |
 | `preflight.fail_on_error` | bool/template | `true` | Stop the run when the release preflight fails; `false` reports it as a warning. See [Release preflight](#release-preflight). |
 | `on_failure` | string | `hold` | What a pipeline failure leaves behind. `hold` is the only accepted value — `rollback` is a hard config-validation error. See [Release resilience](../advanced/release-resilience.md#release-on-failure). |
@@ -240,17 +241,63 @@ anodizer release
 
 - **Draft vs published**: a draft release is only visible to repo collaborators. Set `draft: false` (the default) for publicly visible releases.
 - **`make_latest: auto`**: by default, anodizer marks a release as latest only when the version is not a prerelease. Override with `make_latest: true` or `make_latest: false`.
-- **Asset name collisions**: if two artifacts have the same filename, the second upload returns a 422. Set `replace_existing_artifacts: true` on the `release:` block to overwrite.
+- **Asset name collisions**: an asset already on the release under the same file name with different bytes fails the upload unless `replace_existing_artifacts: true` is set on the `release:` block. See [Re-uploading onto an existing release](#re-uploading-onto-an-existing-release).
+- **Renamed or transferred repository**: GitHub answers an asset upload for a moved repository with a redirect that names no new location. anodizer does not follow it and fails the upload naming the repository:
+
+  ```text
+  release: upload artifact 'myapp_1.2.3_linux_amd64.tar.gz' to release 'v1.2.3' — GitHub redirected the upload (307); the repository myorg/myapp may have been renamed or transferred, update the git remote or release.github to its current location
+  ```
 
 ## Republish / update behavior
 
 Use `replace_existing_draft: true` and `replace_existing_artifacts: true` on the `release:` block for re-runnable workflows. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-draft) for the full mechanism.
+
+## Re-uploading onto an existing release
+
+A re-run that meets an asset already attached to the release under the same file name decides per asset:
+
+| Asset on the release | `replace_existing_artifacts: false` (default) | `replace_existing_artifacts: true` |
+|---|---|---|
+| same bytes (digest, or size when GitHub reports no digest) | skipped as already uploaded | skipped as already uploaded |
+| a partial upload left by an interrupted run | deleted and uploaded again | deleted and uploaded again |
+| different bytes | the upload fails, naming the asset and the flag | deleted and uploaded again |
+
+```yaml
+release:
+  replace_existing_artifacts: true   # overwrite an asset whose bytes differ
+```
+
+The delete and the second upload happen inside the same attempt, so a conflict met on the last attempt is still replaced. The second upload is judged like the first: a 4xx other than a rate limit fails at once, and a rate limit waits its own slot.
+
+anodizer reads the status of every delete it sends (the conflicting asset, a replaced draft, a nightly retention prune). A delete that GitHub refuses fails the upload naming the asset and the release, since keeping the old asset would leave another release's bytes under this tag.
+
+GitHub's asset delete is eventually consistent, so a deleted asset can reappear moments later. The next attempt deletes it again and uploads, within the upload's attempt budget. When every attempt meets the reappeared asset, the error says so:
+
+```text
+release: upload artifact 'myapp_1.2.3_linux_amd64.tar.gz' to release 'v1.2.3' failed after 10 attempts: asset reappeared after its delete and re-upload: …
+```
 
 ## Draft releases
 
 ```yaml
 release:
   draft: true
+```
+
+### Reusing a draft
+
+`use_existing_draft: true` looks for a draft release whose title is the rendered `name_template` and updates it in place, composing its body per `mode`. A draft whose title is only the tag is passed over when `name_template` renders something else. `replace_existing_draft: true` deletes such a draft before the new release is created.
+
+```yaml
+release:
+  name_template: "{{ ProjectName }} {{ Version }}"
+  use_existing_draft: true   # update the draft titled "myapp 1.2.3"
+```
+
+The run prints the draft it picked:
+
+```text
+   • reusing existing draft release 'myapp 1.2.3' (id=123456)
 ```
 
 ## Prerelease detection

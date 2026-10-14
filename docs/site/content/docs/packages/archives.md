@@ -61,7 +61,7 @@ Not applicable — this is a local packaging stage, not a publisher.
 | `format_overrides` | list | none | Per-OS format overrides (each entry takes `os` plus `formats`) |
 | `files` | list | none | Extra files to include (e.g., `LICENSE`, `README.md`) |
 | `binaries` | list | all | Specific binaries to include (default: all from builds) |
-| `wrap_in_directory` | bool \| string | none | Wrap contents in a subdirectory. `true` (or an unquoted `1`) names it after the archive, `false` (or an unquoted `0`) or `""` leaves the archive flat, and a string is a directory name template. A quoted `"1"` is a directory named `1`. |
+| `wrap_in_directory` | bool \| string | none | Wrap contents in a subdirectory. `true` (or an unquoted `1`) names it after the archive, `false` (or an unquoted `0`) or `""` leaves the archive flat, and a string is a directory name template. A string is always a name, never read as a bool: a quoted `"1"` is a directory named `1`, and a quoted `"true"` one named `true`. Any other number is refused when the config loads. |
 
 ```yaml
 crates:
@@ -75,6 +75,15 @@ crates:
   - name: myapp
     archives:
       - wrap_in_directory: "{{ ProjectName }}-{{ Version }}"   # a directory named by the template
+```
+
+```yaml
+crates:
+  - name: myapp
+    archives:
+      - wrap_in_directory: 1         # the same as true
+      - id: flat
+        wrap_in_directory: 0         # the same as false: a flat archive
 ```
 
 ## Format overrides
@@ -295,6 +304,10 @@ crates:
   - name: myapp
     archives: false    # skip archiving entirely
 ```
+
+`archives:` takes `false` or a list of archive entries, and the published
+schema accepts the same two shapes. `archives: true` is refused when the
+config loads, with `archives: true is not valid; use false or a list`.
 
 ## Full example
 

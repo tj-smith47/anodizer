@@ -7,15 +7,18 @@ template = "docs.html"
 
 ## Config-defined variables
 
-Define custom environment variables in your config's top-level `env` field:
+Define custom environment variables in your config's top-level `env` field, a list of `KEY=VALUE` strings:
 
 ```yaml
 env:
-  MY_VAR: "some_value"
-  BUILD_TYPE: "release"
+  - "MY_VAR=some_value"
+  - "BUILD_TYPE=release"
+  - "OUT_DIR=dist/{{ Env.BUILD_TYPE }}"   # reads the entry above
 ```
 
 These are available in templates as `{{ Env.MY_VAR }}` and are set in the environment for all external commands (cargo, docker, nfpm, etc.).
+
+Each value is rendered as a template, in list order, and an entry can read the entries above it through `Env`. The `env:` lists of hooks, `signs:`, `docker_signs:`, `sboms:` and custom `publishers:` entries render the same way. A hook's `cmd` and `dir`, an SBOM tool's `args`, and a custom publisher's `cmd`, `args` and `dir` can read their own `env:` entries.
 
 ## Per-target build environment
 
@@ -44,6 +47,7 @@ Anodizer respects these environment variables:
 | `GITHUB_TOKEN` | GitHub API token for releases and publishing |
 | `CARGO_REGISTRY_TOKEN` | Token for crates.io publishing |
 | `DOCKER_USERNAME` / `DOCKER_PASSWORD` | Docker registry credentials |
+| `GITHUB_STEP_SUMMARY` | Set by GitHub Actions. `anodizer release` appends one bullet per published release, pull request, package, image or upload to the file it names; nothing is written when it is unset, on `--dry-run` or on `--snapshot`. See [Job summary](@/docs/ci/github-actions.md#job-summary) |
 
 ## GitHub release upload tuning
 

@@ -35,7 +35,7 @@ crates:
           - "myorg/myapp:{{ Version }}-arm64"
         create_flags: []             # optional; extra flags for docker manifest create
         push_flags: []               # optional; extra flags for docker manifest push
-        skip_push: false             # optional; true | false | "auto"
+        skip_push: false             # optional; true | false | 1 | 0 | "auto" | template
         id: ""                       # optional; unique identifier
         use: docker                  # optional; docker | podman
         retry:
@@ -162,6 +162,30 @@ crates:
           - "ghcr.io/myorg/myapp:{{ Version }}-arm64"
         skip_push: auto  # skip push for pre-release versions
 ```
+
+`skip_push` takes `true` or `false`, an unquoted `1` or `0` (loaded as
+`true` and `false`), `auto`, or a template. A template is rendered and
+trimmed, then read in any letter case: `true` or `1` skips the push, `auto`
+skips it on a prerelease, and anything else, including `false`, `0` and an
+empty render, pushes.
+
+```yaml
+crates:
+  - name: myapp
+    docker_manifests:
+      - name_template: "ghcr.io/myorg/myapp:{{ Version }}"
+        image_templates:
+          - "ghcr.io/myorg/myapp:{{ Version }}-amd64"
+        skip_push: "{{ if IsSnapshot }}1{{ end }}"  # skip the push on a snapshot
+      - name_template: "ghcr.io/myorg/myapp:latest"
+        image_templates:
+          - "ghcr.io/myorg/myapp:{{ Version }}-amd64"
+        skip_push: 0  # always push
+```
+
+A snapshot never pushes a manifest, whatever `skip_push` says. A manifest
+whose push is skipped is still created locally, and `verify-release` does not
+probe it on the registry.
 
 ## Full example
 

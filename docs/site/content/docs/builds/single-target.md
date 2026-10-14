@@ -123,6 +123,28 @@ naming them, so nothing is compiled only to be left in `dist/`:
 Error --output requires a single build: 2 builds across 1 crate (myapp) would produce a binary; narrow the selection with --crate, or keep one builds[] entry
 ```
 
+The count covers only the entries the build stage would compile in this run.
+An entry whose `skip:` is true, including a template such as
+`{{ IsSnapshot }}` that renders true for this run, and an entry with no
+targets are left out. `anodizer build` always runs in snapshot mode, so this
+config builds only the `snapshot` entry and `-o` accepts it:
+
+```yaml
+crates:
+  - name: myapp
+    builds:
+      - id: release-only
+        skip: "{{ IsSnapshot }}"
+      - id: snapshot
+```
+
+```bash
+anodizer build --single-target -o ./bin/myapp
+```
+
+`-o` without `--single-target` is refused with
+`--output requires --single-target (only one binary can be copied)`.
+
 A crate whose single build entry yields several binaries is only known after
 the build, and is refused there the same way.
 

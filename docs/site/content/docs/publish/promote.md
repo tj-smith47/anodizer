@@ -173,6 +173,14 @@ per-platform package — so a promoted release is consistent across every instal
 target. docker and github operate on every configured image repo / release repo,
 deduplicated so a lockstep workspace sharing one tag flips it once.
 
+github reads each release repository the way the release does: a
+`release.github` block that leaves `owner` or `name` empty is filled from the
+`origin` remote (see [GitHub Releases](@/docs/publish/github.md#minimal-config)),
+so a token-only block promotes the same repository it released to. A block the
+remote cannot fill is refused before any request is sent, with the same error
+the release prints (shown under
+[GitHub Releases](@/docs/publish/github.md#minimal-config)).
+
 ## Credentials
 
 Promotion needs the same credentials as the original publish:

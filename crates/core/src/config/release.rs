@@ -119,7 +119,7 @@ pub struct ReleaseConfig {
     /// to THIS GitHub release only (a mirror configured elsewhere is
     /// unaffected). Use it to keep heavy sidecars (checksums, signatures,
     /// SBOMs) off the GitHub release while archives still attach. Composes with
-    /// `ids:` (both filters apply). `None`/empty keeps everything.
+    /// `ids:` (both filters apply). Unset or empty keeps everything.
     ///
     /// ```yaml
     /// release:
@@ -136,7 +136,8 @@ pub struct ReleaseConfig {
     /// `dist/artifacts.json` manifest is never uploaded — it stays local to
     /// the dist directory.
     pub include_meta: Option<bool>,
-    /// Reuse an existing draft release instead of creating a new one.
+    /// Reuse an existing draft release whose name matches the rendered
+    /// `name_template` in place of creating a new one.
     pub use_existing_draft: Option<bool>,
     /// Override the release tag (template string). When set, this tag is used
     /// as the `tag_name` in the GitHub release API instead of the crate's
@@ -181,9 +182,9 @@ pub struct ReleaseConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
     /// Explicit publish target — the SCM provider whose `release.<provider>`
-    /// block the publisher uses. When set, overrides the implicit
-    /// token-type fallback chain in
-    /// [`crate::scm::resolve_token_type`].
+    /// block the publisher uses. When unset, the provider is inferred from
+    /// which forge's token is set in the environment (for example
+    /// `GITLAB_TOKEN`), and is GitHub when none is.
     ///
     /// Use this for **cross-platform publishing**
     /// pattern: source repo on one provider (e.g. GitLab) but releases
@@ -210,15 +211,13 @@ pub struct ReleaseConfig {
     /// everything in place for forensics. Recovery is a re-run (publishers
     /// reconcile and self-skip, so an identical command converges on
     /// already-published state) or, for deliberate withdrawal,
-    /// `anodizer tag rollback`. `rollback` is rejected at config load
-    /// (`validate_on_failure_not_rollback`) — automatic rollback was
-    /// removed. Because the value drives no branch, nothing reads this
-    /// field at runtime; it exists so a config carrying the removed policy
-    /// fails loudly instead of being silently downgraded. Root-level policy
-    /// — in workspace configs (lockstep or per-crate) the top-level
-    /// `release.on_failure` governs the whole run; setting it in a
-    /// crate-level `release:` block is rejected at config load
-    /// (`validate_on_failure_root_only`).
+    /// `anodizer tag rollback`. `rollback` is rejected when the config
+    /// loads, because automatic rollback was removed; the field exists so a
+    /// config carrying the removed policy is refused with an error and
+    /// keeps no other meaning. Root-level policy: in workspace configs
+    /// (lockstep or per-crate) the top-level `release.on_failure` governs
+    /// the whole run, and setting it in a crate-level `release:` block is
+    /// rejected when the config loads.
     pub on_failure: Option<OnFailureConfig>,
     /// How the release preflight treats a failed check. The release preflight
     /// runs before anything is built or published and asks the forge the
@@ -403,13 +402,18 @@ impl std::fmt::Display for OnFailureConfig {
     }
 }
 
-/// Schema for prerelease: `"auto"`, a boolean, or an unquoted `1` / `0`.
+/// Schema for prerelease: `"auto"`, a boolean, an unquoted `1` / `0`, or one
+/// of the strings `auto`, `true`, `false`, `1` and `0`, trimmed and in any
+/// letter case, as the loader reads them.
 fn prerelease_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({
         "oneOf": [
             { "type": "boolean" },
             super::string_or_bool::one_or_zero_schema(),
-            { "type": "string", "enum": ["auto", "true", "false", "1", "0"] }
+            {
+                "type": "string",
+                "pattern": r"^\s*([Aa][Uu][Tt][Oo]|[Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|1|0)\s*$"
+            }
         ]
     })
 }
@@ -549,8 +553,8 @@ pub struct GiteaUrlsConfig {
 
 /// Generates `Serialize` and `Deserialize` impls for enums with `Auto` and
 /// `Bool(bool)` variants that accept the string `"auto"`, a boolean, an
-/// unquoted `1` / `0`, or one of the strings `"true"`, `"false"`, `"1"` and
-/// `"0"` in YAML.
+/// unquoted `1` / `0`, or one of the strings `auto`, `true`, `false`, `1`
+/// and `0` (trimmed, any letter case) in YAML.
 macro_rules! impl_auto_or_bool_serde {
     ($ty:ty, $auto:path, $bool_variant:path) => {
         impl Serialize for $ty {
@@ -591,15 +595,13 @@ macro_rules! impl_auto_or_bool_serde {
                         self,
                         v: &str,
                     ) -> std::result::Result<$ty, E> {
-                        match v {
-                            "auto" => Ok($auto),
-                            "true" | "1" => Ok($bool_variant(true)),
-                            "false" | "0" => Ok($bool_variant(false)),
-                            _ => Err(E::custom(format!(
-                                "expected \"auto\", true, false, 1 or 0, got \"{}\"",
-                                v
-                            ))),
-                        }
+                        super::string_or_bool::auto_or_bool_word(v, $auto, $bool_variant)
+                            .ok_or_else(|| {
+                                E::custom(format!(
+                                    "expected \"auto\", true, false, 1 or 0, got \"{}\"",
+                                    v
+                                ))
+                            })
                     }
                 }
                 deserializer.deserialize_any(Visitor)
@@ -608,7 +610,8 @@ macro_rules! impl_auto_or_bool_serde {
     };
 }
 
-/// `prerelease` can be the string `"auto"` or a boolean.
+/// `prerelease` can be the string `"auto"` or a boolean. A quoted `true`,
+/// `false`, `1`, `0` or `auto` loads trimmed and in any letter case.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrereleaseConfig {
     Auto,
@@ -622,7 +625,8 @@ impl_auto_or_bool_serde!(
 );
 
 /// `make_latest` can be the string `"auto"`, a boolean, or a template string.
-/// An unquoted `1` / `0` and the strings `"1"` / `"0"` load as booleans.
+/// An unquoted `1` / `0` loads as a boolean, and a quoted `true`, `false`, `1`,
+/// `0` or `auto` loads trimmed and in any letter case.
 /// This field is rendered through the template engine at publish time,
 /// so arbitrary strings are accepted (e.g. `"{{ if .IsSnapshot }}false{{ else }}true{{ end }}"`)
 /// and defer resolution to the release stage.
@@ -679,12 +683,12 @@ impl<'de> Deserialize<'de> for MakeLatestConfig {
                 self,
                 v: &str,
             ) -> std::result::Result<MakeLatestConfig, E> {
-                match v {
-                    "auto" => Ok(MakeLatestConfig::Auto),
-                    "true" | "1" => Ok(MakeLatestConfig::Bool(true)),
-                    "false" | "0" => Ok(MakeLatestConfig::Bool(false)),
-                    other => Ok(MakeLatestConfig::String(other.to_string())),
-                }
+                Ok(super::string_or_bool::auto_or_bool_word(
+                    v,
+                    MakeLatestConfig::Auto,
+                    MakeLatestConfig::Bool,
+                )
+                .unwrap_or_else(|| MakeLatestConfig::String(v.to_string())))
             }
         }
         deserializer.deserialize_any(Visitor)
@@ -692,14 +696,16 @@ impl<'de> Deserialize<'de> for MakeLatestConfig {
 }
 
 /// `skip_push` can be `"auto"` (skip for prereleases), a boolean, or a template string.
-/// An unquoted `1` / `0` and the strings `"1"` / `"0"` load as booleans.
+/// An unquoted `1` / `0` loads as a boolean, and a quoted `true`, `false`, `1`,
+/// `0` or `auto` loads trimmed and in any letter case.
 /// Template expressions like `"{{ if .IsSnapshot }}true{{ end }}"` are accepted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkipPushConfig {
     Auto,
     Bool(bool),
-    /// Template string rendered at runtime: `true` or `1` skips the push,
-    /// `auto` skips it on a prerelease, anything else pushes.
+    /// Template string rendered at runtime and read trimmed and in any letter
+    /// case: `true` or `1` skips the push, `auto` skips it on a prerelease,
+    /// anything else pushes.
     Template(String),
 }
 
@@ -748,12 +754,12 @@ impl<'de> Deserialize<'de> for SkipPushConfig {
                 self,
                 v: &str,
             ) -> std::result::Result<SkipPushConfig, E> {
-                match v {
-                    "auto" => Ok(SkipPushConfig::Auto),
-                    "true" | "1" => Ok(SkipPushConfig::Bool(true)),
-                    "false" | "0" => Ok(SkipPushConfig::Bool(false)),
-                    other => Ok(SkipPushConfig::Template(other.to_string())),
-                }
+                Ok(super::string_or_bool::auto_or_bool_word(
+                    v,
+                    SkipPushConfig::Auto,
+                    SkipPushConfig::Bool,
+                )
+                .unwrap_or_else(|| SkipPushConfig::Template(v.to_string())))
             }
         }
         deserializer.deserialize_any(Visitor)
@@ -824,6 +830,53 @@ mod tests {
     #[test]
     fn skip_push_config_reads_one_and_zero_as_bools() {
         assert_one_and_zero(SkipPushConfig::Bool);
+    }
+
+    /// A quoted `TRUE`, ` False ` or `AUTO` loads the way the same string
+    /// reads after a render: trimmed and in any letter case. The schema
+    /// accepts what the loader accepts on `prerelease`.
+    #[test]
+    fn a_quoted_bool_word_loads_in_any_letter_case() {
+        let cases = [
+            ("\"TRUE\"", Some(true)),
+            ("\" False \"", Some(false)),
+            ("\"1\"", Some(true)),
+            ("\"0\"", Some(false)),
+            ("\"AUTO\"", None),
+        ];
+        for (yaml, want) in cases {
+            let prerelease: PrereleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+            let make_latest: MakeLatestConfig = serde_yaml_ng::from_str(yaml).unwrap();
+            let skip_push: SkipPushConfig = serde_yaml_ng::from_str(yaml).unwrap();
+            match want {
+                Some(b) => {
+                    assert_eq!(prerelease, PrereleaseConfig::Bool(b), "{yaml}");
+                    assert_eq!(make_latest, MakeLatestConfig::Bool(b), "{yaml}");
+                    assert_eq!(skip_push, SkipPushConfig::Bool(b), "{yaml}");
+                }
+                None => {
+                    assert_eq!(prerelease, PrereleaseConfig::Auto, "{yaml}");
+                    assert_eq!(make_latest, MakeLatestConfig::Auto, "{yaml}");
+                    assert_eq!(skip_push, SkipPushConfig::Auto, "{yaml}");
+                }
+            }
+        }
+        assert!(serde_yaml_ng::from_str::<PrereleaseConfig>("\"yes\"").is_err());
+        assert_eq!(
+            serde_yaml_ng::from_str::<MakeLatestConfig>("\"{{ .IsSnapshot }}\"").unwrap(),
+            MakeLatestConfig::String("{{ .IsSnapshot }}".into())
+        );
+
+        let validator = jsonschema::validator_for(&crate::config::config_schema()).unwrap();
+        for (v, ok) in [
+            ("TRUE", true),
+            (" False ", true),
+            ("AUTO", true),
+            ("yes", false),
+        ] {
+            let instance = serde_json::json!({ "release": { "prerelease": v } });
+            assert_eq!(validator.is_valid(&instance), ok, "schema on {v:?}");
+        }
     }
 
     #[test]

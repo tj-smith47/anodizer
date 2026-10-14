@@ -337,14 +337,11 @@ fn extra_files_zero_match(pattern: &str, ctx: &Context) -> Result<()> {
 
 /// Convert the config's `MakeLatestConfig` into octocrab's `MakeLatest` enum.
 ///
-/// When the config contains a template string (`MakeLatestConfig::String`), it is
-/// rendered through the provided `render` function first, then resolved:
-/// - `"true"` / `"1"` → `MakeLatest::True`
-/// - `"false"` / `"0"` / `""` → `MakeLatest::False`
-/// - `"auto"` → `MakeLatest::Legacy`
-///
-/// `make_latest` is rendered through the template engine at
-/// publish time.
+/// A template string (`MakeLatestConfig::String`) is rendered through `render`
+/// at publish time, then read trimmed and in any letter case:
+/// - `false`, `0` or an empty render → `MakeLatest::False`
+/// - `auto` → `MakeLatest::Legacy`
+/// - `true`, `1` and any other non-empty render → `MakeLatest::True`
 pub(crate) fn resolve_make_latest<F>(
     config: &Option<MakeLatestConfig>,
     render: F,

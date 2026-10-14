@@ -133,8 +133,12 @@ before the release step. In `anodizer-action`, set `docker-registry` /
 - **No legacy `dockers:`**: the top-level GoReleaser V1 `dockers:` block is
   rejected at config-load time with a clear migration error. Port to
   `dockers_v2:` (this page).
-- **`skip: true`** (or `disable: true` via deprecation-warned back-compat alias) builds the
-  image locally but does not push.
+- **`skip: true`** (or `disable: true` via deprecation-warned back-compat
+  alias) skips the entry entirely: nothing is staged, built or pushed, and
+  the stage prints `skipped dockers_v2[<index>] for crate <name> — skip=true`.
+  `skip` is a bool or a template; a render of `true` or `1`, trimmed and in
+  any letter case, skips, and any other render builds (see
+  [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)).
 - **Platform strings**: use Docker platform notation (`linux/amd64`,
   `linux/arm64`), not Rust target triples.
 - **Build-args leak**: buildx records `build_args` in image history by
@@ -159,15 +163,15 @@ image. There is no `replace_existing_*` flag — registry semantics handle it.
 | `dockerfile` | string | — | Path to Dockerfile (required) |
 | `images` | list | `ghcr.io/<owner>/<crate>` | Base image names. Defaults to the per-crate ghcr.io image — owner from `release.github` or the `origin` remote. Empty (no tags emitted) when the owner can't be resolved. Set to override. |
 | `tags` | list | — | Tag suffixes — one full image ref per (image × tag) |
-| `labels` | map | none | OCI labels via `--label key=value`. Merged over the auto-injected `org.opencontainers.image.*` set; user keys win. |
+| `labels` | map | none | OCI labels via `--label key=value`. Merged over the auto-injected `org.opencontainers.image.*` set; user keys win, and user labels are passed after the auto labels; see [Flag order](#flag-order) |
 | `oci_labels` | bool/template | `true` | Auto-inject the predefined `org.opencontainers.image.*` labels. Set `false` to opt out. See [Auto-injected OCI labels](#auto-injected-oci-labels). |
 | `annotations` | map | none | OCI annotations via `--annotation key=value`. A multi-platform build scopes a key to the image index unless it names its own buildx scope; see [Annotation scopes](#annotation-scopes) |
 | `extra_files` | list | none | Extra files copied into the build context |
 | `platforms` | list | host | Target platforms (`linux/amd64`, `linux/arm64`, ...). `linux/amd64` stages the `v1` build and `linux/amd64/v3` the build whose `amd64_variant` is `v3`, with tag suffix `amd64v3`; `linux/arm64/v8` is `linux/arm64`, since every aarch64 build is the v8 baseline, and is staged under `linux/arm64/`, which is what buildx puts in `$TARGETPLATFORM` for it. A platform with no matching build warns and stages nothing; an amd64 level outside `v1`..`v4` is a `check config` error. Two entries that stage under one directory (`linux/arm64` beside `linux/arm64/v8`, `linux/amd64` beside `linux/amd64/v1`, `linux/arm` beside `linux/arm/v7`) are a `check config` error too |
-| `build_args` | map | none | `--build-arg KEY=VALUE` pairs. A key matching a global `ARG` also picks the base image `{{ BaseImage }}` names; see [Base image annotations](#base-image-annotations) |
+| `build_args` | map | none | `--build-arg KEY=VALUE` pairs, passed in the order of their template keys; see [Flag order](#flag-order). A key matching a global `ARG` also picks the base image `{{ BaseImage }}` names; see [Base image annotations](#base-image-annotations) |
 | `retry` | object | top-level `retry:` | Per-pipe retry config (deprecated; prefer top-level) |
 | `flags` | list | none | Arbitrary extra `docker buildx build` flags |
-| `skip` | bool/template | `false` | Skip the build. Accepts deprecation-warned `disable:` alias |
+| `skip` | bool/template | `false` | Skip the entry: nothing is staged, built or pushed. `true` or `1` (an unquoted `1` too, or a template rendering either) skips. Accepts deprecation-warned `disable:` alias |
 | `sbom` | bool/template | `false` | Add `--sbom=true` to buildx |
 | `hooks` | object | none | `pre:` / `post:` hooks; see Hooks below |
 | `use` | string | `buildx` | Backend: `buildx` or `podman` (Linux-only) |
@@ -276,8 +280,56 @@ command carries:
 ```
 
 A prefix holding anything else (`bogus:foo`, or `index,bogus:foo`) is part of
-the key, so it gets the `index:` scope too (`index:bogus:foo=…`). A
-single-platform build passes every key as written.
+the key, so it gets the `index:` scope too (`index:bogus:foo=…`). The key is
+cut at its first `=` before its scope is read, as buildx cuts the flag, so a
+`=` inside a platform qualifier ends the key there and `manifest[a=b]:foo`
+names no scope. A single-platform build passes every key as written.
+
+## Flag order
+
+`build_args`, `labels` and `annotations` are maps, and anodizer passes each
+one's pairs in the order of their keys as written in the config (byte order,
+before rendering), whatever the keys render to. That keeps the build command
+the same from run to run. A pair whose key or value renders empty or only
+whitespace is left out.
+
+Two keys that render the same name are both passed, in that order, so the
+later one is the value docker keeps. `{{ BaseImage }}` reads the same last
+value. With `oci_labels` on, the auto labels the config does not set come
+first, sorted by key, and the `labels:` pairs follow in their own key order.
+
+```yaml
+crates:
+  - name: myapp
+    dockers_v2:
+      - dockerfile: Dockerfile
+        images: ["ghcr.io/myorg/myapp"]
+        tags: ["{{ Version }}"]
+        platforms: [linux/amd64]
+        oci_labels: false
+        build_args:
+          VERSION: "{{ Version }}"
+          BASE: debian:12
+          "{{ if IsSnapshot }}BASE{{ end }}": busybox:1   # overrides BASE on a snapshot
+          CACHE_BUST: ""                                   # renders empty, left out
+        labels:
+          org.opencontainers.image.vendor: "MyOrg"
+          com.example.team: platform
+```
+
+A snapshot build of version `0.0.0-SNAPSHOT-293f00a` passes:
+
+```text
+--build-arg BASE=debian:12
+--build-arg VERSION=0.0.0-SNAPSHOT-293f00a
+--build-arg BASE=busybox:1
+--label com.example.team=platform
+--label org.opencontainers.image.vendor=MyOrg
+```
+
+The templated key sorts after `VERSION` as written, so its `BASE` comes last
+and docker builds from `busybox:1`. Outside a snapshot it renders empty and
+`BASE=debian:12` is the only `BASE`.
 
 ## Base image annotations
 

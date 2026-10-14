@@ -242,6 +242,7 @@ The upload API rejects any filename the index has ever seen. anodizer's semantic
 
 - **`skip_existing: true` (default)** — a duplicate rejection (`400 File already exists` / `409` / `403` re-upload text) logs `skipped '<file>' — already on <repository> (idempotent)` and continues. Re-publishing a tag after a partial failure uploads only the missing files.
 - **`skip_existing: false`** — a duplicate is a hard error naming the fix (bump the version).
+- **Retry** — a transport failure, a `5xx` or a `429` retries each upload per the top-level `retry:` block; a `429` waits the `Retry-After` or `RateLimit-Reset` the index sent in place of the backoff step (see [Retry](@/docs/general/retry.md)). Any other `4xx` fails at once.
 - **Changed bytes, same version** — impossible to ship. A changed file with a published name can never replace the original; fix forward to the next version.
 - **Preflight** — `anodizer preflight` probes the index (`https://pypi.org/pypi/<name>/<version>/json`, or the custom repository's PEP 503 `/simple/<name>/` page) and *warns* when the version already appears, mirroring the run path's idempotent handling.
 

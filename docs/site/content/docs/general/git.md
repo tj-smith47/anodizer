@@ -120,7 +120,7 @@ Anodizer detects the following information from git, all available as template v
 | `{{ TagBody }}` | Tag annotation body |
 | `{{ TagContents }}` | Full tag annotation |
 | `{{ IsSnapshot }}` | Whether this is a snapshot build |
-| `{{ IsGitDirty }}` | Whether the working tree has uncommitted changes |
+| `{{ IsGitDirty }}` | Whether the working tree has uncommitted changes. A tree whose `git status` cannot be read (a corrupt index, a `safe.directory` refusal) counts as dirty, so the release's dirty-tree check refuses it |
 | `{{ IsGitClean }}` | Inverse of `IsGitDirty` |
 | `{{ GitTreeState }}` | `"clean"` or `"dirty"` |
 | `{{ GitURL }}` | Git remote URL (credentials stripped) |

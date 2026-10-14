@@ -360,7 +360,9 @@ pub struct UniversalBinaryConfig {
     pub name_template: Option<String>,
     /// When true, remove the individual arch binaries after creating the universal binary.
     pub replace: Option<bool>,
-    /// Build IDs filter: only combine artifacts from builds whose `id` is in this list.
+    /// Build IDs filter: only combine artifacts from builds whose `id` is in
+    /// this list. A build's `id` defaults to the project name, then the
+    /// crate name.
     pub ids: Option<Vec<String>>,
     /// Pre/post hooks around universal binary creation.
     pub hooks: Option<BuildHooksConfig>,
@@ -388,10 +390,9 @@ pub struct BuildConfig {
     #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
     pub skip: Option<StringOrBool>,
     /// Target triples to build for. When set, REPLACES `defaults.targets`
-    /// for this build (override semantics — the per-build value wins
-    /// outright, no concat). When `None`, this build inherits
-    /// `defaults.targets` verbatim. Both `cli::commands::helpers::
-    /// collect_build_targets` and `stage-build` enforce this rule.
+    /// for this build: the per-build list is used as written and is not
+    /// combined with the default list. When unset, this build uses
+    /// `defaults.targets`.
     pub targets: Option<Vec<String>>,
     /// Cargo features to enable for this build.
     pub features: Option<Vec<String>>,

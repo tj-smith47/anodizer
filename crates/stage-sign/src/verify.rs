@@ -120,8 +120,36 @@ fn has_flag(args: &[String], flag: &str) -> bool {
 
 /// True when the sign argv disabled the transparency-log upload, meaning no
 /// tlog entry exists for the signature and verification must not demand one.
+///
+/// cosign registers `--tlog-upload` as a bool flag, so only the
+/// `--tlog-upload=<value>` spelling carries a value, read with
+/// [`go_parse_bool`]. A bare `--tlog-upload` sets it on, and the word after
+/// it is a positional argument. The last occurrence wins, as it does in
+/// cosign.
 pub(crate) fn tlog_upload_disabled(args: &[String]) -> bool {
-    flag_value(args, "--tlog-upload").is_some_and(|v| v == "false")
+    let mut upload = true;
+    for arg in args {
+        if arg == "--tlog-upload" {
+            upload = true;
+        } else if let Some(value) = arg.strip_prefix("--tlog-upload=")
+            && let Some(on) = go_parse_bool(value)
+        {
+            upload = on;
+        }
+    }
+    !upload
+}
+
+/// A bool flag value as cosign reads it: Go's `strconv.ParseBool`, which
+/// takes `1`, `t`, `T`, `TRUE`, `true` and `True` as true and `0`, `f`, `F`,
+/// `FALSE`, `false` and `False` as false. Any other spelling is `None`, which
+/// cosign refuses.
+pub(crate) fn go_parse_bool(value: &str) -> Option<bool> {
+    match value {
+        "1" | "t" | "T" | "TRUE" | "true" | "True" => Some(true),
+        "0" | "f" | "F" | "FALSE" | "false" | "False" => Some(false),
+        _ => None,
+    }
 }
 
 /// True when `cmd`'s basename is a gpg binary (`gpg`, `gpg2`, absolute
@@ -646,10 +674,38 @@ mod tests {
 
     #[test]
     fn tlog_disabled_detection() {
-        assert!(tlog_upload_disabled(&strs(&["--tlog-upload=false"])));
-        assert!(tlog_upload_disabled(&strs(&["--tlog-upload", "false"])));
-        assert!(!tlog_upload_disabled(&strs(&["--tlog-upload=true"])));
+        for off in ["false", "0", "f", "F", "FALSE", "False"] {
+            let arg = format!("--tlog-upload={off}");
+            assert!(tlog_upload_disabled(&strs(&[&arg])), "{arg}");
+        }
+        for on in ["true", "1", "t", "T", "TRUE", "True"] {
+            let arg = format!("--tlog-upload={on}");
+            assert!(!tlog_upload_disabled(&strs(&[&arg])), "{arg}");
+        }
+        assert!(!tlog_upload_disabled(&strs(&["--tlog-upload", "false"])));
+        assert!(!tlog_upload_disabled(&strs(&[
+            "--tlog-upload=false",
+            "--tlog-upload"
+        ])));
+        assert!(tlog_upload_disabled(&strs(&[
+            "--tlog-upload=true",
+            "--tlog-upload=0"
+        ])));
+        assert!(!tlog_upload_disabled(&strs(&["--tlog-upload=no"])));
         assert!(!tlog_upload_disabled(&strs(&["sign-blob"])));
+    }
+
+    #[test]
+    fn go_parse_bool_takes_the_twelve_go_spellings() {
+        for v in ["1", "t", "T", "TRUE", "true", "True"] {
+            assert_eq!(go_parse_bool(v), Some(true), "{v}");
+        }
+        for v in ["0", "f", "F", "FALSE", "false", "False"] {
+            assert_eq!(go_parse_bool(v), Some(false), "{v}");
+        }
+        for v in ["", "yes", "no", "tRUE", "fAlse", " true", "2"] {
+            assert_eq!(go_parse_bool(v), None, "{v:?}");
+        }
     }
 
     // ---- keyless identity derivation ----

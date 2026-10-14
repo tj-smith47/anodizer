@@ -270,6 +270,34 @@ nfpm:
 A non-empty per-format list replaces the top-level one for that format; an
 empty or absent one leaves the top-level list in force.
 
+## Package file names
+
+With no `file_name_template`, a package is named
+`<package_name>_<version>_<os>_<arch><ext>`. A `file_name_template` is
+rendered and the format's extension is appended unless the render already
+ends with it. Each package artifact records that extension, so
+`{{ ArtifactExt }}` renders it whole in a later template (a sign job's
+`signature:`, an upload name):
+
+| Format | Extension and `{{ ArtifactExt }}` |
+|---|---|
+| `deb` | `.deb` |
+| `termux.deb` | `.termux.deb` |
+| `rpm` | `.rpm` |
+| `apk` | `.apk` |
+| `archlinux` | `.pkg.tar.zst` |
+| `ipk` | `.ipk` |
+| `msix` | `.msix` |
+
+`{{ ConventionalFileName }}` holds the name the packager itself would choose
+(`myapp-1.2.3-1-x86_64.pkg.tar.zst` for `archlinux`):
+
+```yaml
+nfpm:
+  - formats: [archlinux]
+    file_name_template: "{{ ConventionalFileName }}"
+```
+
 ## Termux packages
 
 `termux.deb` builds a `.deb` for [Termux](https://termux.dev/)'s apt
@@ -290,11 +318,15 @@ nfpm:
   - package_name: myapp
     formats: [termux.deb]
     maintainer: "team@example.com"
+    file_name_template: "{{ ConventionalFileName }}"
 ```
 
 ```
-dist/linux/myapp_1.0.0_aarch64.deb   # aarch64-linux-android, Termux arch name
+dist/linux/myapp_1.0.0_aarch64.deb.termux.deb   # aarch64-linux-android, Termux arch name
 ```
+
+The conventional name ends in `.deb`, and the whole `.termux.deb` extension
+is appended after it because the render does not already end with it.
 
 ## MSIX packages
 

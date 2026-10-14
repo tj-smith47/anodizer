@@ -227,6 +227,10 @@ crates:
 
 Anodizer resolves the token from the first source that is set, in this order: `repository.token` in the config, then the `ANODIZER_GITHUB_TOKEN` env var, then the `GITHUB_TOKEN` env var.
 
+The pull request is opened with `repository.pull_request.token`, falling back to `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`, on both the `gh` and the REST API transports.
+
+`repository.pull_request.token` and `repository.token` are rendered before anything is cloned or pushed. A blank render, such as an unset `{{ .Env.X }}`, falls through to the next token in the chain. A template that fails to render skips this crate's winget entry with nothing pushed, and the next crate still publishes. The skip reason names the field and the render error (`pull_request.token does not render: …`), with the template's own text replaced by `<template>` so a token literal in it is never printed.
+
 ## Common gotchas
 
 - **Non-zip archives**: WinGet only accepts `.zip` format for archive installers. `.tar.gz`, `.7z`, and other formats are rejected with a clear error.

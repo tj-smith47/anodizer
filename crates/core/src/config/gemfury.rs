@@ -33,7 +33,7 @@ pub struct GemFuryConfig {
     /// any artifact whose name matches at least one glob from THIS GemFury
     /// target only. Use it to keep heavy sidecars off the account while
     /// packages still upload. Composes with `ids:` and the format filter (all
-    /// filters apply). `None`/empty keeps everything.
+    /// filters apply). Unset or empty keeps everything.
     ///
     /// ```yaml
     /// gemfury:

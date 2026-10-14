@@ -43,13 +43,10 @@ pub struct McpConfig {
     /// nuget, oci).
     pub packages: Vec<McpPackage>,
 
-    /// Top-level transports list. Intentional config-portability
-    /// shim: `McpConfig` carries `deny_unknown_fields`, so a migrated
-    /// an imported config containing `transports:` would fail to parse if
-    /// the field were absent. The list is accepted and discarded — the
-    /// current MCP server schema derives transports per-package via
-    /// `packages[].transport`, so the top-level list is never read after
-    /// deserialization and is intentionally not emitted to the registry.
+    /// Accepted so an imported config that carries a top-level `transports:`
+    /// list still loads, since the `mcp:` block refuses unknown keys. The
+    /// list is ignored and never sent to the registry: each package's
+    /// transport is set by `packages[].transport`.
     pub transports: Vec<McpTransport>,
 
     /// Skip this publisher when the value is, or a Tera template renders,
@@ -136,7 +133,7 @@ pub struct McpAuth {
     pub token: String,
 }
 
-/// MCP auth method. Default is `None` (anonymous).
+/// MCP auth method. Default is `none` (anonymous).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub enum McpAuthMethod {
     /// Anonymous publish — for testing or registries that allow it.

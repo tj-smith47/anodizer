@@ -160,6 +160,22 @@ pub fn is_false_spelling(s: &str) -> bool {
     matches!(s.trim().to_ascii_lowercase().as_str(), "false" | "0")
 }
 
+/// Reads a quoted value of a field that takes `auto` or a bool (`prerelease`,
+/// `make_latest`, `skip_push`) at load time: `auto`, a true spelling or a
+/// false spelling, trimmed and in any letter case, the same way the value is
+/// read after a render. Any other string is `None`.
+pub(crate) fn auto_or_bool_word<T>(v: &str, auto: T, bool_variant: fn(bool) -> T) -> Option<T> {
+    if v.trim().eq_ignore_ascii_case("auto") {
+        Some(auto)
+    } else if is_true_spelling(v) {
+        Some(bool_variant(true))
+    } else if is_false_spelling(v) {
+        Some(bool_variant(false))
+    } else {
+        None
+    }
+}
+
 impl Default for StringOrBool {
     fn default() -> Self {
         StringOrBool::Bool(false)
@@ -304,7 +320,7 @@ where
 /// Accepts `"10m"`, `"15s"`, `"1h30m"`, `"500ms"`, etc. Used by notarize
 /// timeouts so the schema is typed and validation catches malformed values
 /// at config-load time instead of during the notarize stage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct HumanDuration(
     #[serde(serialize_with = "serialize_human_duration")] pub std::time::Duration,
 );
@@ -340,6 +356,27 @@ impl HumanDuration {
         out
     }
 }
+
+/// The schema of a duration is the string the loader parses: one or more
+/// whole numbers each followed by a unit (`ms`, `s`, `m`, `h`, `d`), with
+/// whitespace allowed between the parts.
+impl JsonSchema for HumanDuration {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "HumanDuration".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "pattern": HUMAN_DURATION_PATTERN,
+            "examples": ["90s", "10m", "1h30m", "500ms"],
+        })
+    }
+}
+
+/// The spellings `parse_humantime_duration` accepts, as a JSON Schema
+/// pattern.
+const HUMAN_DURATION_PATTERN: &str = r"^\s*([0-9][0-9\s]*(ms|s|m|h|d)\s*)+$";
 
 impl<'de> Deserialize<'de> for HumanDuration {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -1180,6 +1217,44 @@ mod tests {
     /// `accept_one_or_zero` transform or, on every field of that type, a
     /// `schema_with` function that reaches `one_or_zero_schema`. Rule:
     /// `.claude/rules/bool-or-template-values.md`.
+    /// Whether an enum body line declares a `Bool(bool)` variant: with or
+    /// without the trailing comma, with an attribute written before it on the
+    /// same line, and with any spacing inside the parentheses.
+    fn is_bool_variant_line(line: &str) -> bool {
+        let mut rest = line.trim();
+        while let Some(attr) = rest.strip_prefix("#[") {
+            let Some(close) = attr.find(']') else {
+                return false;
+            };
+            rest = attr[close + 1..].trim_start();
+        }
+        let compact: String = rest.chars().filter(|c| !c.is_whitespace()).collect();
+        compact.trim_end_matches(',') == "Bool(bool)"
+    }
+
+    #[test]
+    fn the_bool_variant_is_found_in_every_shape() {
+        let enum_with = |variant_lines: &[&str]| {
+            let mut body = vec!["pub enum E {", "    Auto,"];
+            body.extend_from_slice(variant_lines);
+            body.push("}");
+            body.iter().any(|l| is_bool_variant_line(l))
+        };
+        assert!(enum_with(&["    Bool(bool),"]), "trailing comma");
+        assert!(enum_with(&["    Bool(bool)"]), "last variant, no comma");
+        assert!(
+            enum_with(&["    #[serde(rename = \"b\")]", "    Bool(bool),"]),
+            "attribute line above"
+        );
+        assert!(
+            enum_with(&["    #[serde(rename = \"b\")] Bool(bool)"]),
+            "attribute on the same line"
+        );
+        assert!(enum_with(&["    Bool( bool ),"]), "spacing");
+        assert!(!enum_with(&["    Bool(String),"]));
+        assert!(!enum_with(&["    MaybeBool(bool),"]));
+    }
+
     #[test]
     fn every_bool_or_template_enum_reads_one_and_zero() {
         use crate::test_helpers::test_sources::{
@@ -1242,7 +1317,7 @@ mod tests {
                 .take_while(|l| **l != "}")
                 .copied()
                 .collect();
-            if body.iter().any(|l| l.trim() == "Bool(bool),") {
+            if body.iter().any(|l| is_bool_variant_line(l)) {
                 enums.push((ident(rest), i));
             }
         }
@@ -1439,6 +1514,54 @@ mod tests {
         assert!(serde_yaml_ng::from_str::<crate::config::Config>(&yaml).is_err());
     }
 
+    /// The published schema takes a duration string such as `"90s"` on a
+    /// duration field, as the loader does, and refuses a value the loader
+    /// refuses. The schema's pattern and the parser agree on every sample.
+    #[test]
+    fn the_published_schema_accepts_a_duration_string_on_a_duration_field() {
+        let validator = published_schema_validator();
+        let pattern = jsonschema::validator_for(
+            &serde_json::json!({ "type": "string", "pattern": super::HUMAN_DURATION_PATTERN }),
+        )
+        .unwrap();
+        for (v, ok) in [
+            ("90s", true),
+            ("10m", true),
+            ("1h30m", true),
+            ("500ms", true),
+            ("2d", true),
+            (" 1h 30m ", true),
+            ("1 0s", true),
+            ("90", false),
+            ("s", false),
+            ("10x", false),
+            ("", false),
+        ] {
+            assert_eq!(
+                super::parse_humantime_duration(v).is_ok(),
+                ok,
+                "parser on {v:?}"
+            );
+            assert_eq!(
+                pattern.is_valid(&serde_json::json!(v)),
+                ok,
+                "pattern on {v:?}"
+            );
+            let yaml = format!("project_name: p\nannounce:\n  deadline: {v:?}\n");
+            let instance: serde_json::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+            let errors: Vec<String> = validator
+                .iter_errors(&instance)
+                .map(|e| e.to_string())
+                .collect();
+            assert_eq!(errors.is_empty(), ok, "schema on {v:?}: {errors:#?}");
+            assert_eq!(
+                serde_yaml_ng::from_str::<crate::config::Config>(&yaml).is_ok(),
+                ok,
+                "loader on {v:?}"
+            );
+        }
+    }
+
     /// The text of `line` up to a `//` comment that sits outside a string.
     fn before_comment(line: &str) -> &str {
         let mut in_string = false;
@@ -1517,108 +1640,20 @@ mod tests {
         assert_eq!(before_comment(r#"u = "http://h""#), r#"u = "http://h""#);
     }
 
-    /// Production code matches a rendered value against `true` / `false`
-    /// only through `is_true_spelling` / `is_false_spelling`, so the
-    /// accepted spellings live in one place (the templates page's
-    /// "Bool-or-template values" table documents them). The functions below
-    /// compare against those words for a reason other than reading a
-    /// bool-or-template value; each entry must still match a comparison.
-    #[test]
-    fn no_production_function_matches_a_rendered_value_against_true_or_false() {
-        use crate::test_helpers::test_sources::{
-            function_bodies, production_half, workspace_production_sources,
-        };
-        use std::collections::{BTreeMap, BTreeSet};
+    /// One allowed comparison: the file, the function that owns it, the
+    /// comparing line as written (trimmed), and why it is not a reading of a
+    /// bool-or-template value.
+    type AllowedComparison = (&'static str, &'static str, &'static str, &'static str);
 
-        const HELPERS: &[&str] = &["is_true_spelling", "is_false_spelling"];
-        const ALLOWED: &[(&str, &str, &str)] = &[
-            (
-                "crates/cli/src/commands/tag/bump_detect.rs",
-                "detect_bump_from_tokens",
-                "default_bump is a bump keyword, `false` being its alias for none",
-            ),
-            (
-                "crates/core/src/artifact/filter.rs",
-                "is_binary_sign_output",
-                "artifact metadata the build writes as exactly `true`",
-            ),
-            (
-                "crates/core/src/artifact/registry.rs",
-                "only_replacing_unibins",
-                "artifact metadata the build writes as exactly `false`",
-            ),
-            (
-                "crates/core/src/config/release.rs",
-                "visit_str",
-                "load-time visitors for a quoted YAML scalar, before any render",
-            ),
-            (
-                "crates/core/src/git/status.rs",
-                "shallow_from_answer",
-                "git rev-parse output",
-            ),
-            (
-                "crates/core/src/redact.rs",
-                "is_boolean_shape",
-                "classifies an env value's shape for redaction",
-            ),
-            (
-                "crates/core/src/test_helpers/bool_spellings.rs",
-                "from_cell",
-                "reads the outcome words of the docs table, a test helper",
-            ),
-            (
-                "crates/core/src/template/render.rs",
-                "build_tera_context",
-                "types a template variable as a bool for the template engine",
-            ),
-            (
-                "crates/stage-archive/src/archive_config.rs",
-                "archive_metadata",
-                "artifact metadata the build writes as exactly `true`",
-            ),
-            (
-                "crates/stage-publish/src/homebrew/cask_custom_block/lexer.rs",
-                "names_a_call",
-                "Ruby keywords in the cask lexer",
-            ),
-            (
-                "crates/stage-publish/src/homebrew/cask_custom_block/names.rs",
-                "pattern_names",
-                "Ruby keywords in the cask lexer",
-            ),
-            (
-                "crates/stage-publish/src/homebrew/cask_custom_block/words.rs",
-                "position",
-                "Ruby keywords in the cask lexer",
-            ),
-            (
-                "crates/stage-publish/src/nix/publish/build.rs",
-                "detect_dynamically_linked",
-                "artifact metadata the build writes as exactly `true`",
-            ),
-            (
-                "crates/stage-publish/src/schema_validation/chocolatey.rs",
-                "validate_nuspec_structural",
-                "the nuspec XML schema's own boolean spellings",
-            ),
-            (
-                "crates/stage-publish/src/util/git_revert.rs",
-                "check_out_branch_with_history",
-                "git rev-parse output",
-            ),
-            (
-                "crates/stage-sign/src/verify.rs",
-                "tlog_upload_disabled",
-                "a cosign flag value in the sign argv",
-            ),
-            (
-                "crates/stage-sign/src/verify.rs",
-                "resolve_keyless_identity",
-                "the GITHUB_ACTIONS env var, which the runner sets to `true`",
-            ),
-        ];
-
+    /// Every line of `text` (the production half of `rel`) that compares
+    /// against `true` / `false`, keyed by (file, trimmed line), with the
+    /// functions holding it. Returns the number of function bodies read.
+    fn bool_word_comparisons(
+        rel: &str,
+        text: &str,
+        hits: &mut std::collections::BTreeMap<(String, String), std::collections::BTreeSet<String>>,
+    ) -> usize {
+        use crate::test_helpers::test_sources::{function_bodies, production_half};
         fn fn_name(body: &str) -> String {
             let first = body.lines().next().unwrap_or_default();
             let after = first.split("fn ").nth(1).unwrap_or_default();
@@ -1628,13 +1663,239 @@ mod tests {
                 .unwrap_or_default()
                 .to_string()
         }
+        let mut bodies_read = 0;
+        for body in function_bodies(production_half(text)) {
+            bodies_read += 1;
+            let name = fn_name(&body);
+            for line in body.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("//") {
+                    continue;
+                }
+                if compares_a_bool_word(before_comment(line)) {
+                    hits.entry((rel.to_string(), trimmed.to_string()))
+                        .or_default()
+                        .insert(name.clone());
+                }
+            }
+        }
+        bodies_read
+    }
+
+    /// The comparisons no helper and no `allowed` entry accounts for, and the
+    /// `allowed` entries that match no comparison. An entry names one line of
+    /// one function, so a second comparison added to an allowed function is
+    /// reported. A line held by nested functions passes when any of them is
+    /// a helper or names it.
+    fn unaccounted_comparisons<'a>(
+        hits: &std::collections::BTreeMap<(String, String), std::collections::BTreeSet<String>>,
+        helpers: &[&str],
+        allowed: &'a [AllowedComparison],
+    ) -> (Vec<String>, Vec<&'a AllowedComparison>) {
+        let mut used = std::collections::BTreeSet::new();
+        let mut failures = Vec::new();
+        for ((file, line), owners) in hits {
+            let mut accounted = owners.iter().any(|n| helpers.contains(&n.as_str()));
+            for (i, (f, n, l, _)) in allowed.iter().enumerate() {
+                if f == file && l == line && owners.contains(*n) {
+                    used.insert(i);
+                    accounted = true;
+                }
+            }
+            if !accounted {
+                failures.push(format!("{file} ({owners:?}): {line}"));
+            }
+        }
+        let stale = allowed
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !used.contains(i))
+            .map(|(_, e)| e)
+            .collect();
+        (failures, stale)
+    }
+
+    /// A function on the allowed list that gains a second comparison is
+    /// reported for the new line, and an entry whose line is gone is stale.
+    #[test]
+    fn a_new_comparison_inside_an_allowed_function_is_reported() {
+        let source = r#"
+            fn reads_git(answer: &str) -> bool {
+                if answer == "true" {
+                    return true;
+                }
+                answer == "false"
+            }
+        "#;
+        let mut hits = std::collections::BTreeMap::new();
+        assert_eq!(bool_word_comparisons("x.rs", source, &mut hits), 1);
+        let allowed: &[AllowedComparison] = &[
+            (
+                "x.rs",
+                "reads_git",
+                r#"if answer == "true" {"#,
+                "git output",
+            ),
+            (
+                "x.rs",
+                "reads_git",
+                r#"answer == "0""#,
+                "a line that is gone",
+            ),
+        ];
+        let (failures, stale) = unaccounted_comparisons(&hits, &[], allowed);
+        assert_eq!(failures, [r#"x.rs ({"reads_git"}): answer == "false""#]);
+        assert_eq!(stale, [&allowed[1]]);
+        let (failures, _) = unaccounted_comparisons(&hits, &["reads_git"], allowed);
+        assert!(
+            failures.is_empty(),
+            "a helper owns every line: {failures:?}"
+        );
+    }
+
+    /// Production code matches a rendered value against `true` / `false`
+    /// only through `is_true_spelling` / `is_false_spelling`, so the
+    /// accepted spellings live in one place (the templates page's
+    /// "Bool-or-template values" table documents them). The lines below
+    /// compare against those words for a reason other than reading a
+    /// bool-or-template value; each entry must still match its line.
+    #[test]
+    fn no_production_function_matches_a_rendered_value_against_true_or_false() {
+        use crate::test_helpers::test_sources::workspace_production_sources;
+
+        const HELPERS: &[&str] = &["is_true_spelling", "is_false_spelling"];
+        const ALLOWED: &[AllowedComparison] = &[
+            (
+                "crates/cli/src/commands/tag/bump_detect.rs",
+                "detect_bump_from_tokens",
+                r#""none" | "false" => BumpKind::None,"#,
+                "default_bump is a bump keyword, `false` being its alias for none",
+            ),
+            (
+                "crates/core/src/artifact/filter.rs",
+                "is_binary_sign_output",
+                r#".is_some_and(|v| v == "true")"#,
+                "artifact metadata the build writes as exactly `true`",
+            ),
+            (
+                "crates/core/src/artifact/registry.rs",
+                "only_replacing_unibins",
+                r#"self.metadata.get("replaces").is_none_or(|v| v != "false")"#,
+                "artifact metadata the build writes as exactly `false`",
+            ),
+            (
+                "crates/core/src/git/status.rs",
+                "shallow_from_answer",
+                r#""false" => false,"#,
+                "git rev-parse output",
+            ),
+            (
+                "crates/core/src/git/status.rs",
+                "shallow_from_answer",
+                r#""true" => true,"#,
+                "git rev-parse output",
+            ),
+            (
+                "crates/core/src/redact.rs",
+                "is_boolean_shape",
+                r#""true" | "false" | "yes" | "no" | "on" | "off" | "0" | "1""#,
+                "classifies an env value's shape for redaction",
+            ),
+            (
+                "crates/core/src/template/render.rs",
+                "build_tera_context",
+                r#""false" => ctx.insert(k.clone(), &false),"#,
+                "types a template variable as a bool for the template engine",
+            ),
+            (
+                "crates/core/src/template/render.rs",
+                "build_tera_context",
+                r#""true" => ctx.insert(k.clone(), &true),"#,
+                "types a template variable as a bool for the template engine",
+            ),
+            (
+                "crates/core/src/test_helpers/bool_spellings.rs",
+                "from_cell",
+                r#""false" => Self::False,"#,
+                "reads the outcome words of the docs table, a test helper",
+            ),
+            (
+                "crates/core/src/test_helpers/bool_spellings.rs",
+                "from_cell",
+                r#""true" => Self::True,"#,
+                "reads the outcome words of the docs table, a test helper",
+            ),
+            (
+                "crates/stage-archive/src/archive_config.rs",
+                "archive_metadata",
+                r#"&& d == "true""#,
+                "artifact metadata the build writes as exactly `true`",
+            ),
+            (
+                "crates/stage-publish/src/homebrew/cask_custom_block/lexer.rs",
+                "names_a_call",
+                r#"| "false""#,
+                "Ruby keywords in the cask lexer",
+            ),
+            (
+                "crates/stage-publish/src/homebrew/cask_custom_block/lexer.rs",
+                "names_a_call",
+                r#"| "true""#,
+                "Ruby keywords in the cask lexer",
+            ),
+            (
+                "crates/stage-publish/src/homebrew/cask_custom_block/names.rs",
+                "pattern_names",
+                r#""nil" | "true" | "false" | "self" | "in" | "and" | "or" | "not""#,
+                "Ruby keywords in the cask lexer",
+            ),
+            (
+                "crates/stage-publish/src/homebrew/cask_custom_block/words.rs",
+                "position",
+                r#""self" | "nil" | "true" | "false" | "end" | "class" | "def""#,
+                "Ruby keywords in the cask lexer",
+            ),
+            (
+                "crates/stage-publish/src/nix/publish/build.rs",
+                "detect_dynamically_linked",
+                r#"if v == "true" {"#,
+                "artifact metadata the build writes as exactly `true`",
+            ),
+            (
+                "crates/stage-publish/src/schema_validation/chocolatey.rs",
+                "validate_nuspec_structural",
+                r#"if !matches!(value, "true" | "false" | "1" | "0") {"#,
+                "the nuspec XML schema's own boolean spellings",
+            ),
+            (
+                "crates/stage-publish/src/util/git_revert.rs",
+                "check_out_branch_with_history",
+                r#"if git_stdout(repo_path, &["rev-parse", "--is-shallow-repository"])?.trim() == "true" {"#,
+                "git rev-parse output",
+            ),
+            (
+                "crates/stage-sign/src/verify.rs",
+                "go_parse_bool",
+                r#""0" | "f" | "F" | "FALSE" | "false" | "False" => Some(false),"#,
+                "Go's strconv.ParseBool spellings, which cosign reads its bool flags with",
+            ),
+            (
+                "crates/stage-sign/src/verify.rs",
+                "go_parse_bool",
+                r#""1" | "t" | "T" | "TRUE" | "true" | "True" => Some(true),"#,
+                "Go's strconv.ParseBool spellings, which cosign reads its bool flags with",
+            ),
+            (
+                "crates/stage-sign/src/verify.rs",
+                "resolve_keyless_identity",
+                r#"let on_github_actions = env.var("GITHUB_ACTIONS").is_some_and(|v| v == "true");"#,
+                "the GITHUB_ACTIONS env var, which the runner sets to `true`",
+            ),
+        ];
 
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let root = root.canonicalize().unwrap();
-        // A hit is one comparing line; it passes when any function body
-        // holding it is a helper or allowed, so a nested fn is judged by the
-        // function that owns the line.
-        let mut hits: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+        let mut hits = std::collections::BTreeMap::new();
         let mut bodies_read = 0;
         for path in workspace_production_sources() {
             let rel = path
@@ -1645,59 +1906,29 @@ mod tests {
                 .to_string_lossy()
                 .replace('\\', "/");
             let text = std::fs::read_to_string(&path).unwrap();
-            for body in function_bodies(production_half(&text)) {
-                bodies_read += 1;
-                let name = fn_name(&body);
-                for line in body.lines() {
-                    let trimmed = line.trim_start();
-                    if trimmed.starts_with("//") {
-                        continue;
-                    }
-                    if compares_a_bool_word(before_comment(line)) {
-                        hits.entry((rel.clone(), trimmed.to_string()))
-                            .or_default()
-                            .insert(name.clone());
-                    }
-                }
-            }
+            bodies_read += bool_word_comparisons(&rel, &text, &mut hits);
         }
         assert!(
             bodies_read > 5000,
             "read only {bodies_read} function bodies"
         );
 
-        let mut used = BTreeSet::new();
-        let mut failures = Vec::new();
-        for ((file, line), owners) in &hits {
-            let allowed = owners.iter().find(|name| {
-                HELPERS.contains(&name.as_str())
-                    || ALLOWED.iter().any(|(f, n, _)| f == file && n == name)
-            });
-            match allowed {
-                Some(name) => {
-                    used.insert((file.clone(), name.clone()));
-                }
-                None => failures.push(format!("{file} ({owners:?}): {line}")),
-            }
-        }
+        let (failures, stale) = unaccounted_comparisons(&hits, HELPERS, ALLOWED);
         assert!(
             failures.is_empty(),
             "match a rendered value through is_true_spelling / is_false_spelling, \
-             or add the function to ALLOWED with its reason:\n{}",
+             or add the line to ALLOWED with its reason:\n{}",
             failures.join("\n")
         );
-        let stale: Vec<_> = ALLOWED
-            .iter()
-            .filter(|(f, n, _)| !used.contains(&(f.to_string(), n.to_string())))
-            .collect();
         assert!(
             stale.is_empty(),
             "ALLOWED entries that match nothing: {stale:#?}"
         );
         for helper in HELPERS {
             assert!(
-                used.iter()
-                    .any(|(f, n)| f == "crates/core/src/config/string_or_bool.rs" && n == helper),
+                hits.iter().any(|((f, _), owners)| {
+                    f == "crates/core/src/config/string_or_bool.rs" && owners.contains(*helper)
+                }),
                 "{helper} no longer matches the words"
             );
         }

@@ -217,6 +217,41 @@ crates:
         # repository: myorg/homebrew-tap, from the defaults
 ```
 
+## Skipped formulae and casks
+
+A gate that leaves a formula or a cask out of the run prints one line for
+it, once per run:
+
+| Gate | Line |
+|---|---|
+| formula `skip_upload:` | `skipped homebrew for 'myapp' upload — skip_upload is set` |
+| formula `if:` | ``skipped homebrew for 'myapp' — `if` condition evaluated falsy`` |
+| cask `skip_upload:` (its own, else the formula's) | `skipped homebrew cask for 'myapp' upload — skip_upload is set` |
+| cask `if:` (its own, else the formula's) | ``skipped homebrew cask for 'myapp' — `if` condition evaluated falsy`` |
+
+When only the formula's gate trips, a cask that shares its tap is still
+pushed, in a commit and pull request of its own (see the table above).
+
+The pull request token (`repository.pull_request.token`, else
+`repository.token`) is rendered before the tap is cloned. A template that
+does not render, or a block with no `repository:`, skips that crate with
+nothing pushed; the crates after it still run, and the run summary names the
+reason (`pull_request.token does not render: <cause>`, or
+`repository.name is not set`). The cause never repeats the template's text,
+so a secret written beside a template stays out of the log. A per-crate
+cask records its skip under `homebrew-cask`, and a top-level `homebrew_casks:`
+entry under `homebrew-cask` with the cask's name. The per-entry line
+`skipped homebrew for 'myapp' — <reason>` prints under `--show-skipped`:
+
+```bash
+anodizer release --show-skipped
+```
+
+In a GitHub Actions job summary, a tap push reads `Updated homebrew <name>
+in <tap URL>`, or `Opened pull request to <owner/repo> (homebrew <name>):
+<url>` in pull request mode, for a formula and a cask alike. See
+[Job summary](../ci/github-actions.md#job-summary).
+
 ## Authentication
 
 | Variable | Description |
@@ -400,10 +435,16 @@ left out of the formula, each with a `-v` line:
 skipped archive 'myapp-linux-armv7.tar.gz' — Homebrew on Linux has no armv7 variant
 ```
 
-`caveats`, `custom_block`, `plist` and `service` are free-form Ruby. Their
+`caveats`, `custom_block`, `plist` and `service` are free-form text. Their
 shared indentation is removed and each line is indented for its place in
 the formula, so a flush-left YAML block scalar and a pre-indented one render
-the same. Two stanzas raise a `brew style` offence that comes from the
+the same. `custom_block` and `service` are read as Ruby code, and only
+their lines that begin in code move: a line inside a multi-line string,
+percent literal, regex, heredoc body or `=begin` comment, and the closing
+tag of a `<<` or `<<-` heredoc, is kept byte for byte, and trailing
+whitespace is dropped only from a line that ends in code. The
+[cask page](./homebrew-casks.md#custom-block) describes
+how anodizer reads that Ruby. Two stanzas raise a `brew style` offence that comes from the
 config itself: `post_install` renders as `def post_install`, which Homebrew
 now asks to be written as `post_install_steps`, and `plist` renders the
 deprecated `def plist`, which `service` replaces. Homebrew 7 removed the
@@ -493,11 +534,15 @@ formula: genuine macOS targets (`*-apple-darwin`, `darwin-universal`) plus the
 Linux archives it supports. Apple **non-macOS** targets (`aarch64-apple-ios`,
 `*-tvos`, `*-watchos`) are excluded — they never appear in the generated
 formula. If the build produces **no** eligible archive, anodizer fails the
-release rather than emitting an empty formula. See
+release with an error that names every archive it looked at, each with its
+OS and CPU (`homebrew formula 'myapp': none of its archives is for a
+platform Homebrew installs on (macOS, or Linux on x86_64 or arm64):
+myapp-freebsd-amd64.tar.gz (freebsd/amd64)`). See
 [Artifact eligibility](./selecting-publishers.md#artifact-eligibility) for how
 this compares to the other install aggregators.
 
 **Cask:** the per-crate cask (`homebrew_cask:` / `cask:`) is
 **macOS-only** — anodizer generates it only when the build produces a genuine
-macOS artifact (`*-apple-darwin`), never from a Linux archive, matching the
+macOS artifact (`*-apple-darwin`), never from a Linux archive alone (Linux
+archives of the same crate join it as an `on_linux` block), matching the
 standalone [Homebrew Casks](./homebrew-casks.md#artifact-eligibility) publisher.

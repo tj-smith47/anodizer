@@ -17,7 +17,8 @@ pub struct SchemastoreConfig {
     pub repository: Option<RepositoryConfig>,
     /// Commit author for the SchemaStore commit (defaults to git config).
     pub commit_author: Option<CommitAuthorConfig>,
-    /// Default for `SchemaEntry::versioned`.
+    /// Default for `schemas[].versioned` on every entry that does not set
+    /// its own. When both are unset, `false`.
     pub versioned: Option<bool>,
     /// Skip the whole publisher. Alias: `disable`.
     #[serde(

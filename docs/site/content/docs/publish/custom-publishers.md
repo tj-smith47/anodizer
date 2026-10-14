@@ -42,7 +42,27 @@ publishers:
     args: []                        # optional; arguments (templates supported)
     ids: []                         # optional; only run on artifacts with these IDs
     artifact_types: []              # optional; binary | archive | checksum | package
-    env: {}                         # optional; extra environment variables
+    env: []                         # optional; KEY=value entries, rendered in order
+    dir: ""                         # optional; working directory for cmd (template)
+    checksum: false                 # optional; include checksum files
+    signature: false                # optional; include signatures
+    meta: false                     # optional; include dist/metadata.json
+    extra_files: []                 # optional; extra files to publish (glob patterns)
+    templated_extra_files: []       # optional; extra files rendered through templates first
+    skip: false                     # optional; true, 1 or a template rendering either skips
+    if: ""                          # optional; skip when the rendered value is false, 0, no or empty
+```
+
+```yaml
+publishers:
+  - name: mirror
+    cmd: ./scripts/mirror.sh
+    dir: "{{ .Env.MIRROR_DIR }}"
+    env:
+      - MIRROR_HOST=mirror.example.com
+      - MIRROR_URL=https://{{ .Env.MIRROR_HOST }}/{{ Version }}   # reads the entry above
+    args: ["{{ ArtifactPath }}", "{{ .Env.MIRROR_URL }}"]
+    if: "{{ not IsSnapshot }}"
 ```
 
 ## Authentication

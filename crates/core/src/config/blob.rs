@@ -57,7 +57,7 @@ pub struct BlobConfig {
     /// any artifact whose name matches at least one glob from THIS blob target
     /// only (other destinations are unaffected). Use it to keep heavy sidecars
     /// off a mirror — e.g. checksums, signatures, and SBOMs — while archives
-    /// still upload. Composes with `ids:` (both filters apply). `None`/empty
+    /// still upload. Composes with `ids:` (both filters apply). Unset or empty
     /// keeps everything.
     ///
     /// ```yaml

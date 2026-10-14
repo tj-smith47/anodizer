@@ -12,7 +12,8 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 pub struct SbomConfig {
     /// Unique identifier for this SBOM config (default: "default").
     pub id: Option<String>,
-    /// Command to run for SBOM generation (default: "syft").
+    /// Command to run for SBOM generation. Defaults to `syft` when `args` is
+    /// set; with neither `cmd` nor `args`, the built-in generator runs.
     pub cmd: Option<String>,
     /// Environment variables to pass to the command, as `KEY=VALUE` strings.
     /// Order is preserved. Values are template-rendered before being set.

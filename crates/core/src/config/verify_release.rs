@@ -76,14 +76,14 @@ pub struct VerifyReleaseConfig {
     /// whenever `retry.max_elapsed` leaves less than that; an absence is
     /// reported when the window closes.
     pub assert_landing: bool,
-    /// Per-package install smoke-test images. When `None`, smoke-testing is
+    /// Per-package install smoke-test images. When unset, smoke-testing is
     /// off. When present, each package type that produced an artifact is
     /// installed in its (configured or default) container and `<bin>
     /// --version` is run.
     pub install_smoke: Option<InstallSmokeConfig>,
     /// glibc version ceiling, e.g. `"2.36"`. When any glibc-linked `.deb`
     /// requires a glibc NEWER than this floor, the gate reports it and exits
-    /// non-zero. `None` (the default) disables the libc check entirely. musl
+    /// non-zero. Unset (the default) disables the libc check entirely. musl
     /// binaries have no glibc requirement and are skipped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub glibc_ceiling: Option<String>,
@@ -124,18 +124,18 @@ impl VerifyReleaseConfig {
 /// Per-package install smoke-test image overrides.
 ///
 /// Each field is the container image used to install + version-check that
-/// package type. A `None` field falls back to its sane default
-/// ([`DEFAULT_DEB_IMAGE`], [`DEFAULT_RPM_IMAGE`], [`DEFAULT_APK_IMAGE`]).
+/// package type. An unset field uses its default image
+/// (`debian:stable-slim`, `fedora:latest`, `alpine:latest`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct InstallSmokeConfig {
-    /// Image override for `.deb` packages. Default [`DEFAULT_DEB_IMAGE`].
+    /// Image override for `.deb` packages. Default `debian:stable-slim`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deb: Option<SmokeImage>,
-    /// Image override for `.rpm` packages. Default [`DEFAULT_RPM_IMAGE`].
+    /// Image override for `.rpm` packages. Default `fedora:latest`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rpm: Option<SmokeImage>,
-    /// Image override for `.apk` packages. Default [`DEFAULT_APK_IMAGE`].
+    /// Image override for `.apk` packages. Default `alpine:latest`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub apk: Option<SmokeImage>,
 }

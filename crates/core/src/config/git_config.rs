@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 /// Git-level tag discovery and sorting settings.
 ///
 /// Controls how anodizer discovers and orders tags when determining the current
-/// and previous versions. This is separate from `TagConfig`, which controls
-/// version *bumping* logic.
+/// and previous versions. Version *bumping* is set in the separate `tag:`
+/// block.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct GitConfig {

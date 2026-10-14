@@ -184,11 +184,9 @@ pub struct PypiConfig {
     pub arm_variant: Option<String>,
 
     /// Whether the upload authenticates with a long-lived API token or with
-    /// GitHub Actions OIDC (PyPI Trusted Publishing). Default [`Auto`]:
+    /// GitHub Actions OIDC (PyPI Trusted Publishing). Default `auto`:
     /// a token when one is available, otherwise a Trusted-Publishing exchange
     /// when an OIDC context is present.
-    ///
-    /// [`Auto`]: PypiAuthMode::Auto
     pub auth: PypiAuthMode,
 
     /// API token for the upload (templated). Falls back to the `PYPI_TOKEN`

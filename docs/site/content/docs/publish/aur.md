@@ -213,7 +213,7 @@ crates:
 ### Generated PKGBUILD
 
 Anodizer generates a PKGBUILD with:
-- Per-architecture source arrays (`source_x86_64`, `source_aarch64`, etc.) with SHA-256 checksums. Each download is saved under a per-architecture alias, `<pkgname>_${pkgver}_<arch>.<format>::<url>`, so two archives that share a file name on the release never overwrite each other in `$srcdir`
+- Per-architecture source arrays (`source_x86_64`, `source_aarch64`, etc.) with SHA-256 checksums. Each download is saved under a per-architecture alias, `<pkgname>_${pkgver}_<arch>.<format>::<url>`, so two archives that share a file name on the release never overwrite each other in `$srcdir`. The `<format>` is the one the archive stage recorded (`tar.zst`, `zip`, …), so a `url_template` whose URL carries no extension still aliases to the real archive name; with no recorded format the URL's extension is used, and a raw binary gets the bare `<pkgname>_${pkgver}_<arch>` alias
 - Automatic architecture detection from your Linux build artifacts (`x86_64`, `aarch64`, `i686`, `armv7h`)
 - Version strings with hyphens replaced by underscores (AUR `pkgver` requirement)
 - Download URLs with the version substituted as `${pkgver}` for AUR compatibility

@@ -27,7 +27,10 @@ use serde::{Deserialize, Serialize};
 pub struct SignConfig {
     /// Unique identifier for this sign config.
     pub id: Option<String>,
-    /// Artifact types to sign: "all", "archive", "binary", "checksum", "package", "sbom" (default: "none").
+    /// Artifact types to sign: "none" (default), "all", "any", "archive",
+    /// "binary", "checksum", "package", "installer", "diskimage",
+    /// "macos_package", "snap", "source", "sbom" or "windows". `none` skips
+    /// only this entry; a failing sibling entry still fails the stage.
     pub artifacts: Option<String>,
     /// Signing command to invoke (default: "cosign" or "gpg").
     pub cmd: Option<String>,
@@ -451,9 +454,9 @@ pub struct DockerSignConfig {
     /// Capture and log stdout/stderr of the docker signing command.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub output: Option<StringOrBool>,
-    /// Post-sign verification knobs — see [`SignVerifyConfig`]. Docker
-    /// signatures are verified with `cosign verify` against the registry
-    /// the sign just pushed to.
+    /// Verification of each signature after signing. Docker signatures are
+    /// verified with `cosign verify` against the registry the signature was
+    /// just pushed to.
     pub verify: Option<SignVerifyConfig>,
     /// Template-conditional: skip this docker sign config when the gate renders `false`,
     /// `0`, `no` or empty (any letter case).

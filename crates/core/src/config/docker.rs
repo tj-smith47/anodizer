@@ -196,18 +196,12 @@ pub struct DockerDigestConfig {
 // DockerManifestConfig
 // ---------------------------------------------------------------------------
 
-/// Deprecated: prefer `dockers_v2` (which produces multi-arch manifests via
-/// the `platforms:` field automatically). `DockerManifestConfig` is retained
-/// for back-compat with imported configs and for the niche case
-/// of stitching together manifest lists from images that were not built by
-/// `dockers_v2` in the same run.
-///
-/// The v1 docker / docker
-/// manifest pipes deprecated in favour of the v2 buildx flow. The rustdoc
-/// here is what carries the deprecation: it flows into the
-/// schemars-generated JSON Schema (consumed by IDEs / editor tooling) and
-/// rustdoc HTML, both of which are how downstream config authors discover
-/// that the v2 pipe is the preferred entry point.
+/// Deprecated: prefer `dockers_v2`, which produces multi-arch manifests from
+/// its `platforms:` field. `docker_manifests` is kept so imported configs
+/// still load, and for stitching together manifest lists from images that
+/// were not built by `dockers_v2` in the same run.
+// This doc comment is where the deprecation reaches config authors: it
+// generates the JSON schema editors read and the configuration reference.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct DockerManifestConfig {
@@ -231,8 +225,8 @@ pub struct DockerManifestConfig {
     /// Unique identifier for this manifest config.
     pub id: Option<String>,
     /// Docker backend for manifest commands: `"docker"` (default) or
-    /// `"podman"`. The `"podman"` backend is **Linux-only** (per
-    /// Pro): configs on macOS or Windows fail at config-validation time with
+    /// `"podman"`. The `"podman"` backend is **Linux-only**:
+    /// configs on macOS or Windows fail at config-validation time with
     /// a clear error rather than blowing up later when `podman` is not on
     /// `PATH`.
     #[serde(rename = "use")]

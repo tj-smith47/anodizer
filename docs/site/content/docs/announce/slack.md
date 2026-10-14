@@ -56,3 +56,19 @@ the newlines a `{{ ReleaseNotes }}` body produces reach Slack as written.
 `message_template` is the fallback text Slack shows where blocks cannot be
 rendered. Block-specific fields (`accessory`, `elements`, `fields`, …) are
 passed through unchanged, and `dist/config.yaml` records them as written.
+
+A string that fails to render stops the run before any publisher fires, and
+the error names its JSON path below the field, for example
+`render announce.slack.blocks[1].text.text`, so the broken leaf is found
+without bisecting the list.
+
+`anodizer check config` reads the same tree: every string in `blocks` and
+`attachments`, the block-specific fields included, is checked for a
+secret-named `{{ Env.* }}` reference, and a warning names the leaf by the same
+path (`announce.slack.attachments[0].fields[0].value`). Outbound redaction
+masks such a value before it reaches Slack; see
+[Notification secret redaction](@/docs/advanced/release-resilience.md#notification-secret-redaction).
+
+```bash
+anodizer check config
+```

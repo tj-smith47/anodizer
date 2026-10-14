@@ -53,11 +53,9 @@ pub struct RetryConfig {
     /// Retrying stops before a backoff sleep would push elapsed time past this
     /// budget, so a long transient storm fails cleanly (with the last error,
     /// resumable on an idempotent re-run) instead of running the full attempt
-    /// ladder. Unset (field default `None`) resolves to a 15-minute budget
-    /// ([`crate::retry::DEFAULT_MAX_ELAPSED`]); set it to raise or lower that
-    /// ceiling. A publisher honors this budget by threading
-    /// [`crate::context::Context::retry_deadline`] into its retry ladder; those whose
-    /// surrounding CI job has a hard timeout should keep it below that timeout.
+    /// ladder. When unset the budget is 15 minutes; set it to raise or lower
+    /// that limit. Publishers apply this budget to their retries, so a release
+    /// whose CI job has a hard timeout should keep it below that timeout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_elapsed: Option<HumanDuration>,
 }

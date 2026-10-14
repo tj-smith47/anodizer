@@ -108,6 +108,15 @@ nightly:
 `tag_name` re-creates one release on one tag every run, so there is never more
 than a single nightly release for `keep_last` to keep.
 
+Each delete in the sweep reads GitHub's answer:
+
+| Delete | GitHub answers 404 | Any other refusal (a 403 from a token without `contents: write`, for example) |
+|---|---|---|
+| the older release | prints `already deleted by a concurrent process` and continues | fails the release stage, naming the release id and repository |
+| that release's git tag | continues; the tag is already gone | prints a warning naming the tag and continues, since the release itself is already deleted |
+
+The live release's own tag is never deleted.
+
 ### Build-counter and base-version template vars
 
 Two template vars support nushell-style nightly versioning

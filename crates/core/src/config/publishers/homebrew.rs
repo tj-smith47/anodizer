@@ -13,8 +13,9 @@ use super::{CommitAuthorConfig, RepositoryConfig};
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct HomebrewConfig {
-    /// Unified repository config with branch, token, PR, git SSH support.
-    /// (Replaces the legacy `tap: TapConfig` owner/name-only form.)
+    /// The tap repository: owner and name, plus branch, token, pull request
+    /// and git SSH settings. Replaces the older `tap:` key, which took only
+    /// an owner and a name and is no longer accepted.
     pub repository: Option<RepositoryConfig>,
     /// Commit author with optional signing.
     pub commit_author: Option<CommitAuthorConfig>,
@@ -48,8 +49,7 @@ pub struct HomebrewConfig {
     pub skip_upload: Option<StringOrBool>,
     /// Custom commit message template. Rendered via Tera with the standard
     /// release template variables (`ProjectName`, `Tag`, `Version`, etc.).
-    /// Default: `"Brew formula update for {{ ProjectName }} version {{ Tag }}"`
-    /// (set in `crates/stage-publish/src/homebrew/commit_msg.rs`).
+    /// Default: `"Brew formula update for {{ ProjectName }} version {{ Tag }}"`.
     pub commit_msg_template: Option<String>,
     // Legacy flat `commit_author_name` / `commit_author_email` fields are
     // gone; use the structured `commit_author: { name, email, signing }`.
@@ -203,8 +203,8 @@ impl HomebrewConflict {
 pub struct HomebrewLivecheck {
     /// Force the `skip "<reason>"` form even when a strategy is set, or set to
     /// `false` to opt out of the default skip and emit an active livecheck.
-    /// When `None` (the default), the formula skips iff no `strategy`/`url`
-    /// is configured.
+    /// When unset (the default), the livecheck skips only when no
+    /// `strategy` or `url` is configured.
     pub skip: Option<bool>,
     /// Reason text for the `skip "<reason>"` form.
     /// Default: `"Auto-generated on release."`.
@@ -222,16 +222,13 @@ pub struct HomebrewLivecheck {
     pub regex: Option<String>,
 }
 
-/// Unified Homebrew Cask configuration.
-///
-/// Used at both call-sites:
-/// - `homebrew_casks:` — top-level array; carries `repository`,
+/// Homebrew Cask configuration, with the same keys in two places:
+/// - `homebrew_casks:`: a top-level list; carries `repository`,
 ///   `commit_author`, `directory`, `ids`, `url`, structured `uninstall`/`zap`, etc.
-/// - `crates[].publish.homebrew_cask:` — per-crate override; same shape, with
-///   `url_template` as the simpler URL alternative.
+/// - `crates[].publish.homebrew_cask:`: a per-crate cask, where
+///   `url_template` is the simpler alternative to `url`.
 ///
-/// Fields from both original types are present; any field may be `None` at either
-/// call-site. The union avoids a two-type bifurcation while keeping both axes.
+/// Every key is optional in both places.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct HomebrewCaskConfig {
@@ -596,7 +593,7 @@ pub enum HomebrewCaskBinary {
         /// Path inside the .app bundle (e.g. `"my-cli"`).
         name: String,
         /// Optional rename target — the symlink name in `/usr/local/bin`.
-        /// When `None`, the symlink uses `name`.
+        /// When unset, the symlink uses `name`.
         #[serde(skip_serializing_if = "Option::is_none")]
         target: Option<String>,
     },
@@ -660,8 +657,9 @@ pub struct HomebrewCaskGeneratedCompletions {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ScoopConfig {
-    /// Unified repository config with branch, token, PR, git SSH support.
-    /// (Replaces the legacy `bucket: BucketConfig` owner/name-only form.)
+    /// The bucket repository: owner and name, plus branch, token, pull
+    /// request and git SSH settings. Replaces the older `bucket:` key, which
+    /// took only an owner and a name and is no longer accepted.
     pub repository: Option<RepositoryConfig>,
     /// Commit author with optional signing.
     pub commit_author: Option<CommitAuthorConfig>,

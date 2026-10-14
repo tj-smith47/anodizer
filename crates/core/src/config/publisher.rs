@@ -20,7 +20,9 @@ pub struct PublisherConfig {
     pub ids: Option<Vec<String>>,
     /// Artifact type filter: only publish artifacts of these types (e.g., "archive", "binary").
     pub artifact_types: Option<Vec<String>>,
-    /// Environment variables passed to the publish command.
+    /// Environment variables passed to the publish command, as `KEY=value`
+    /// strings. Entries render in order, so a later entry can read an
+    /// earlier one.
     #[serde(default)]
     pub env: Option<Vec<String>>,
     /// Working directory for the publisher command.
@@ -49,9 +51,8 @@ pub struct PublisherConfig {
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the publisher is skipped.
-    /// Render failure hard-errors. The
-    /// `customization/publishers/` `if:` field. Distinct from `skip:`
-    /// (which expresses "always skip") and provides config-import parity.
+    /// Render failure hard-errors. Distinct from `skip:`, which expresses
+    /// "always skip".
     /// An absent, empty or blank `if:` imposes no gate and always runs; the
     /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]

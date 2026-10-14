@@ -30,7 +30,21 @@ When publishing a draft release and a draft with the same NAME already exists in
 
 ### `release.replace_existing_artifacts`
 
-Before uploading (Gitea and GitLab probe the release's asset inventory first; GitHub reacts to the server's `422 already_exists`), anodizer compares the existing asset's size to the local file. If they match (likely an outer-retry recovery), the upload is treated as a no-op. If they differ (real conflict), anodizer deletes the existing asset and re-uploads. Applies to GitHub, Gitea, and GitLab. Without this flag, the size-mismatch case bails with a real error.
+Before uploading (Gitea and GitLab probe the release's asset inventory first; GitHub reacts to the server's `422 already_exists`), anodizer compares the existing asset's size to the local file. On GitHub, when the asset carries a sha256 `digest`, a same-size asset must also match the local digest, since a re-signed signature often keeps its size. If they match (likely an outer-retry recovery), the upload is treated as a no-op. If they differ (real conflict), anodizer deletes the existing asset and re-uploads. Applies to GitHub, Gitea, and GitLab. Without this flag, the mismatch case bails with a real error.
+
+```yaml
+release:
+  replace_existing_artifacts: true
+```
+
+On GitHub the delete and the re-upload run inside the same attempt, so a conflict met on the last attempt is still replaced. The rest of the GitHub path:
+
+| Situation | What anodizer does |
+|---|---|
+| A partial asset (GitHub never marked it `uploaded`, debris from an interrupted attempt) | deletes and re-uploads it whatever this flag says |
+| The delete fails (GitHub's answer is read, so a 403 counts as a failure) | fails the upload, naming the asset and the release; posting again would keep another release's bytes under this tag |
+| The re-upload answers `already_exists` again (the asset reappeared behind GitHub's eventually consistent delete) | the next attempt deletes it again and re-uploads; when the attempts run out the error says `asset reappeared after its delete and re-upload` |
+| The re-upload fails with a 4xx other than `already_exists` | fails at once; a rate limit waits its own slot like the first upload |
 
 ### `chocolatey.republish_in_moderation`
 

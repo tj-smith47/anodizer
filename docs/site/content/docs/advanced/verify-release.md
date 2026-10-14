@@ -111,6 +111,9 @@ signature / certificate / SBOM asset names that **should** exist:
 - each `signs:` entry contributes one signature (and one certificate, when
   `certificate:` is set) per artifact its `artifacts:`/`ids:` filters select,
   named by its `signature:` template;
+- each `binary_signs:` entry contributes one signature (and certificate) per
+  raw binary, named the way the sign stage names it (see
+  [Signing binaries](@/docs/sign/binaries-archives.md));
 - each `sboms:` entry contributes its rendered `documents:` names per matched
   artifact.
 
@@ -121,6 +124,23 @@ knows. A release missing them fails with the exact names:
 - crate 'myapp': 2 signature/SBOM assets required by the resolved signs/sboms
   config were never uploaded (the producing stage registered no such artifact):
   myapp_1.0.0_checksums.txt.sig, myapp_1.0.0_linux_amd64.tar.gz.cdx.json
+```
+
+Each expectation is checked on the release that uploads it. An SBOM about one
+artifact (an archive, a package) is expected on the release of that
+artifact's crate. A whole-project SBOM (`artifacts: any`, or the built-in
+generator's single workspace document) is expected on the release owner's
+release (the first crate with a `release:` block, else the primary crate,
+else `project_name`), even in a lockstep workspace whose `project_name` names
+another crate:
+
+```yaml
+project_name: myapp-cli        # not the release owner
+sboms:
+  - id: project
+    artifacts: any             # whole-project document → release owner's release
+  - id: per-archive
+    artifacts: archive         # one document per archive → that archive's crate
 ```
 
 Intentional skips create **no** expectations: a sign config whose `if:`

@@ -122,6 +122,7 @@ The environment variable is used as a fallback when `api_key` is not set in the 
 - **No Windows artifacts**: if no Windows build artifacts exist, anodizer falls back to a placeholder GitHub release download URL and logs a warning. Ensure your build matrix includes at least one `*-pc-windows-*` target.
 - **Rejected versions**: a version rejected by Chocolatey moderation cannot be replaced; the version must be bumped before re-pushing. `republish_in_moderation` does not apply to rejected packages.
 - **Moderation queue lag**: the Chocolatey flat API (`/api/v2/Packages`) only returns approved packages. Checking for an in-moderation version requires scraping `community.chocolatey.org/packages/<name>`.
+- **Retry**: a transport failure, a `5xx` or a `429` retries the push per the top-level `retry:` block, and a `429` waits the `Retry-After` or `RateLimit-Reset` the feed sent in place of the backoff step (see [Retry](@/docs/general/retry.md)). A 403, 502, 503 or 504 answered with an HTML page (a Cloudflare or IIS edge challenge) is retried too; any other `4xx` fails at once.
 - **`skip_publish: true`** skips the entire publisher early — no nuspec is generated. Use `disable: true` if you want to disable without suppressing config validation.
 
 ## Republish / update behavior

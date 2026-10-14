@@ -372,3 +372,256 @@ Send a notification through configured announce integrations
 | `--allow-secrets` | — | — | Send secrets in the message body verbatim (disable outbound redaction). For trusted private channels only; log output stays redacted |
 | `--dry-run` | — | — | Run without sending (dry-run mode) |
 
+
+### `anodizer mcp`
+
+MCP server management
+
+
+### `anodizer mcp start`
+
+Start the MCP server
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--log-level` | — | — | Log level (trace, debug, info, warn, error) |
+| `--group` | — | — | Restrict the tool list to this group's commands (repeat to add groups) |
+| `--command` | — | — | Restrict the tool list to this command and its subcommands, e.g. --command release (repeat to add commands) |
+| `--tool` | — | — | Restrict the tool list to this MCP tool, named as `mcp tools` prints it (repeat to add tools) |
+| `--hide-group` | — | — | Remove this group from the tool list (repeat for several) |
+| `--hide-command` | — | — | Remove this command and its subcommands, e.g. --hide-command secrets (repeat to add commands) |
+| `--hide-tool` | — | — | Remove this MCP tool, by its generated name (repeat for several) |
+| `--all` | — | — | Serve every tool, discarding any exposure this CLI pins by default. Hiding still wins, so --hide-command and friends compose with it |
+
+
+### `anodizer mcp tools`
+
+Export tools as JSON
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--log-level` | — | — | Log level (trace, debug, info, warn, error) |
+| `--groups` | — | — | List the command groups this CLI defines, then exit (cannot be combined with the selection flags) |
+| `--group` | — | — | Restrict the tool list to this group's commands (repeat to add groups) |
+| `--command` | — | — | Restrict the tool list to this command and its subcommands, e.g. --command release (repeat to add commands) |
+| `--tool` | — | — | Restrict the tool list to this MCP tool, named as `mcp tools` prints it (repeat to add tools) |
+| `--hide-group` | — | — | Remove this group from the tool list (repeat for several) |
+| `--hide-command` | — | — | Remove this command and its subcommands, e.g. --hide-command secrets (repeat to add commands) |
+| `--hide-tool` | — | — | Remove this MCP tool, by its generated name (repeat for several) |
+| `--all` | — | — | Serve every tool, discarding any exposure this CLI pins by default. Hiding still wins, so --hide-command and friends compose with it |
+
+
+### `anodizer mcp stream`
+
+Start the MCP server over streamable HTTP
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--host` | — | `` | Host to bind (empty → 0.0.0.0) |
+| `--port` | — | `8080` | TCP port to bind |
+| `--log-level` | — | — | Log level (trace, debug, info, warn, error) |
+| `--allow-host` | — | — | Add a hostname to rmcp's DNS-rebind allow-list (repeat for multiple). Defaults to localhost + 127.0.0.1 + ::1. Specify e.g. --allow-host myhost.local for LAN access. |
+| `--group` | — | — | Restrict the tool list to this group's commands (repeat to add groups) |
+| `--command` | — | — | Restrict the tool list to this command and its subcommands, e.g. --command release (repeat to add commands) |
+| `--tool` | — | — | Restrict the tool list to this MCP tool, named as `mcp tools` prints it (repeat to add tools) |
+| `--hide-group` | — | — | Remove this group from the tool list (repeat for several) |
+| `--hide-command` | — | — | Remove this command and its subcommands, e.g. --hide-command secrets (repeat to add commands) |
+| `--hide-tool` | — | — | Remove this MCP tool, by its generated name (repeat for several) |
+| `--all` | — | — | Serve every tool, discarding any exposure this CLI pins by default. Hiding still wins, so --hide-command and friends compose with it |
+
+
+### `anodizer mcp claude`
+
+Manage Claude Desktop MCP servers
+
+
+### `anodizer mcp claude enable`
+
+Add this CLI as an MCP server in Claude Desktop
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--config-path` | — | — | Path to the editor's MCP config file (overrides per-OS default) |
+| `--server-name` | — | — | Name for the MCP server (default: derived from executable name) |
+| `--env` | `-e` | — | Environment variable (repeatable; e.g. -e KEY1=val1 -e KEY2=val2) |
+| `--log-level` | — | — | Log level for the spawned MCP server (trace, debug, info, warn, error) |
+| `--group` | — | — | Restrict the tool list to this group's commands (repeat to add groups) |
+| `--command` | — | — | Restrict the tool list to this command and its subcommands, e.g. --command release (repeat to add commands) |
+| `--tool` | — | — | Restrict the tool list to this MCP tool, named as `mcp tools` prints it (repeat to add tools) |
+| `--hide-group` | — | — | Remove this group from the tool list (repeat for several) |
+| `--hide-command` | — | — | Remove this command and its subcommands, e.g. --hide-command secrets (repeat to add commands) |
+| `--hide-tool` | — | — | Remove this MCP tool, by its generated name (repeat for several) |
+| `--all` | — | — | Serve every tool, discarding any exposure this CLI pins by default. Hiding still wins, so --hide-command and friends compose with it |
+
+
+### `anodizer mcp claude disable`
+
+Remove this CLI from Claude Desktop's MCP servers
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--config-path` | — | — | Path to the editor's MCP config file (overrides per-OS default) |
+| `--server-name` | — | — | Name for the MCP server (default: derived from executable name) |
+
+
+### `anodizer mcp claude list`
+
+List MCP servers configured in Claude Desktop
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--config-path` | — | — | Path to the editor's MCP config file (overrides per-OS default) |
+
+
+### `anodizer mcp vscode`
+
+Manage VSCode MCP servers
+
+
+### `anodizer mcp vscode enable`
+
+Add server to VSCode config
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--config-path` | — | — | Path to the editor's MCP config file (overrides per-OS default) |
+| `--server-name` | — | — | Name for the MCP server (default: derived from executable name) |
+| `--env` | `-e` | — | Environment variable (repeatable; e.g. -e KEY1=val1 -e KEY2=val2) |
+| `--log-level` | — | — | Log level for the spawned MCP server (trace, debug, info, warn, error) |
+| `--workspace` | — | — | Use the workspace config ($CWD/.vscode/mcp.json) instead of the user config |
+| `--group` | — | — | Restrict the tool list to this group's commands (repeat to add groups) |
+| `--command` | — | — | Restrict the tool list to this command and its subcommands, e.g. --command release (repeat to add commands) |
+| `--tool` | — | — | Restrict the tool list to this MCP tool, named as `mcp tools` prints it (repeat to add tools) |
+| `--hide-group` | — | — | Remove this group from the tool list (repeat for several) |
+| `--hide-command` | — | — | Remove this command and its subcommands, e.g. --hide-command secrets (repeat to add commands) |
+| `--hide-tool` | — | — | Remove this MCP tool, by its generated name (repeat for several) |
+| `--all` | — | — | Serve every tool, discarding any exposure this CLI pins by default. Hiding still wins, so --hide-command and friends compose with it |
+
+
+### `anodizer mcp vscode disable`
+
+Remove server from VSCode config
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--config-path` | — | — | Path to the editor's MCP config file (overrides per-OS default) |
+| `--server-name` | — | — | Name for the MCP server (default: derived from executable name) |
+| `--workspace` | — | — | Use the workspace config ($CWD/.vscode/mcp.json) instead of the user config |
+
+
+### `anodizer mcp vscode list`
+
+Show VSCode MCP servers
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--config-path` | — | — | Path to the editor's MCP config file (overrides per-OS default) |
+| `--workspace` | — | — | Use the workspace config ($CWD/.vscode/mcp.json) instead of the user config |
+
+
+### `anodizer mcp cursor`
+
+Manage Cursor MCP servers
+
+
+### `anodizer mcp cursor enable`
+
+Add this CLI as an MCP server in Cursor
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--config-path` | — | — | Path to the editor's MCP config file (overrides per-OS default) |
+| `--server-name` | — | — | Name for the MCP server (default: derived from executable name) |
+| `--env` | `-e` | — | Environment variable (repeatable; e.g. -e KEY1=val1 -e KEY2=val2) |
+| `--log-level` | — | — | Log level for the spawned MCP server (trace, debug, info, warn, error) |
+| `--workspace` | — | — | Use the workspace config ($CWD/.cursor/mcp.json) instead of the user config |
+| `--group` | — | — | Restrict the tool list to this group's commands (repeat to add groups) |
+| `--command` | — | — | Restrict the tool list to this command and its subcommands, e.g. --command release (repeat to add commands) |
+| `--tool` | — | — | Restrict the tool list to this MCP tool, named as `mcp tools` prints it (repeat to add tools) |
+| `--hide-group` | — | — | Remove this group from the tool list (repeat for several) |
+| `--hide-command` | — | — | Remove this command and its subcommands, e.g. --hide-command secrets (repeat to add commands) |
+| `--hide-tool` | — | — | Remove this MCP tool, by its generated name (repeat for several) |
+| `--all` | — | — | Serve every tool, discarding any exposure this CLI pins by default. Hiding still wins, so --hide-command and friends compose with it |
+
+
+### `anodizer mcp cursor disable`
+
+Remove this CLI from Cursor's MCP servers
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--config-path` | — | — | Path to the editor's MCP config file (overrides per-OS default) |
+| `--server-name` | — | — | Name for the MCP server (default: derived from executable name) |
+| `--workspace` | — | — | Use the workspace config ($CWD/.cursor/mcp.json) instead of the user config |
+
+
+### `anodizer mcp cursor list`
+
+List MCP servers configured in Cursor
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--config-path` | — | — | Path to the editor's MCP config file (overrides per-OS default) |
+| `--workspace` | — | — | Use the workspace config ($CWD/.cursor/mcp.json) instead of the user config |
+
+
+### `anodizer mcp zed`
+
+Manage Zed MCP servers
+
+
+### `anodizer mcp zed enable`
+
+Add this CLI as an MCP server in Zed
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--config-path` | — | — | Path to the editor's MCP config file (overrides per-OS default) |
+| `--server-name` | — | — | Name for the MCP server (default: derived from executable name) |
+| `--env` | `-e` | — | Environment variable (repeatable; e.g. -e KEY1=val1 -e KEY2=val2) |
+| `--log-level` | — | — | Log level for the spawned MCP server (trace, debug, info, warn, error) |
+| `--workspace` | — | — | Use the workspace config ($CWD/.zed/settings.json) instead of the user config |
+| `--group` | — | — | Restrict the tool list to this group's commands (repeat to add groups) |
+| `--command` | — | — | Restrict the tool list to this command and its subcommands, e.g. --command release (repeat to add commands) |
+| `--tool` | — | — | Restrict the tool list to this MCP tool, named as `mcp tools` prints it (repeat to add tools) |
+| `--hide-group` | — | — | Remove this group from the tool list (repeat for several) |
+| `--hide-command` | — | — | Remove this command and its subcommands, e.g. --hide-command secrets (repeat to add commands) |
+| `--hide-tool` | — | — | Remove this MCP tool, by its generated name (repeat for several) |
+| `--all` | — | — | Serve every tool, discarding any exposure this CLI pins by default. Hiding still wins, so --hide-command and friends compose with it |
+
+
+### `anodizer mcp zed disable`
+
+Remove this CLI from Zed's MCP context_servers
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--config-path` | — | — | Path to the editor's MCP config file (overrides per-OS default) |
+| `--server-name` | — | — | Name for the MCP server (default: derived from executable name) |
+| `--workspace` | — | — | Use the workspace config ($CWD/.zed/settings.json) instead of the user config |
+
+
+### `anodizer mcp zed list`
+
+List MCP servers configured in Zed
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--config-path` | — | — | Path to the editor's MCP config file (overrides per-OS default) |
+| `--workspace` | — | — | Use the workspace config ($CWD/.zed/settings.json) instead of the user config |
+

@@ -35,19 +35,16 @@ pub struct MacOSSignNotarizeConfig {
     /// `skip:` (inverted semantic) to align with every other publisher /
     /// pipe in anodizer.
     ///
-    /// Back-compat: the upstream uses `enabled:` (opt-in, default false).
-    /// A YAML carrying `enabled:` is accepted via the wire-level
-    /// `enabled:` alias that inverts the bool — `enabled: true` becomes
-    /// `skip: false`, `enabled: false` becomes `skip: true`. The
-    /// canonical field at runtime is `skip:`.
+    /// The older `enabled:` key is still accepted and inverted:
+    /// `enabled: true` becomes `skip: false`, `enabled: false` becomes
+    /// `skip: true`.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
-    /// Back-compat `enabled:` alias (opt-in, default false). Inverted into
-    /// [`Self::skip`] at deserialize time. Surfaced here purely so the
-    /// generated JSON schema documents the field — editors/IDEs validating
-    /// against the schema must recognize `enabled:` rather than flag it as
-    /// unknown. Always `None` at runtime (the deserializer folds it into
-    /// `skip`); runtime logic never reads it.
+    /// Older spelling of `skip:`, inverted (opt-in, default false):
+    /// `enabled: true` is `skip: false` and `enabled: false` is
+    /// `skip: true`.
+    // Listed so the generated schema accepts `enabled:`; the deserializer
+    // folds it into `skip` and leaves this field empty.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub enabled: Option<StringOrBool>,
     /// `true` when [`Self::skip`] holds a templated `enabled:` value that
@@ -222,10 +219,11 @@ pub struct MacOSNativeSignNotarizeConfig {
     /// inverts it into `skip:` so both spellings work.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
-    /// Back-compat `enabled:` alias (opt-in, default false). Inverted into
-    /// [`Self::skip`] at deserialize time. Surfaced here only so the
-    /// generated JSON schema documents the field; always `None` at runtime.
-    /// See [`MacOSSignNotarizeConfig::enabled`].
+    /// Older spelling of `skip:`, inverted (opt-in, default false):
+    /// `enabled: true` is `skip: false` and `enabled: false` is
+    /// `skip: true`.
+    // Listed so the generated schema accepts `enabled:`; the deserializer
+    // folds it into `skip` and leaves this field empty.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub enabled: Option<StringOrBool>,
     /// `true` when [`Self::skip`] holds a templated `enabled:` value to be
@@ -384,15 +382,15 @@ fn invert_enabled(v: StringOrBool) -> ResolvedSkip {
 /// A `Bool` short-circuits without rendering. A template renders first, then:
 ///
 /// - **direct `skip:`** (`inverts_enabled == false`) → skip when the rendered
-///   value is truthy under the sibling convention ([`StringOrBool::try_evaluates_to_true`]:
-///   `"true"`/`"1"` are truthy). This keeps notarize's `skip:` evaluation
-///   identical to `should_skip_upload` and every other publisher gate.
+///   value is `true` or `1`, trimmed and in any letter case
+///   ([`StringOrBool::try_evaluates_to_true`]); any other render runs. This
+///   keeps notarize's `skip:` evaluation identical to `should_skip_upload`
+///   and every other publisher gate.
 /// - **inverted `enabled:`** (`inverts_enabled == true`) → the value is a
-///   templated `enabled:` kept verbatim; skip when its rendered value is
-///   FALSY under the shared `if:`-style convention (`""`/`false`/`0`/`no` =
-///   falsy, so any other rendered value means "enabled → run"). The wider
-///   falsy set is required here so an `enabled: "{{ … }}"` rendering to
-///   `yes`/`on`/`1`/etc. correctly enables.
+///   templated `enabled:` kept verbatim; skip when its render is empty or
+///   `false`, `0` or `no`, trimmed and in any letter case (the `if:` reading,
+///   [`evaluate_if_condition`]). Any other render enables, so an
+///   `enabled: "{{ … }}"` rendering to `yes`, `on` or `1` runs.
 ///
 /// A render failure propagates as `Err` — callers FAIL CLOSED (treat the
 /// entry as skipped) rather than silently signing/notarizing a stage the

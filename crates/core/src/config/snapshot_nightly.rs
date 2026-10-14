@@ -83,13 +83,13 @@ pub struct NightlyConfig {
     /// release" is not a claim it can make.
     pub skip_if_no_changes: Option<bool>,
     /// Publish the nightly release to a DIFFERENT repository than the source
-    /// repo, in `"owner/repo"` form (e.g. `"nushell/nightly"`). Default
-    /// (`None`) publishes to the configured `release.github` repo, unchanged.
+    /// repo, in `"owner/repo"` form (e.g. `"nushell/nightly"`). When unset,
+    /// the nightly publishes to the configured `release.github` repo.
     ///
     /// When set, the nightly release create, asset upload, AND retention
     /// (`keep_single_release` / `retention.keep_last`) delete calls all
     /// target this repo. The active SCM token is assumed to have write
-    /// access to `publish_repo`. GitHub-only (the nushell adoption target).
+    /// access to `publish_repo`. GitHub-only.
     pub publish_repo: Option<String>,
     /// Delete the prior release that points at the same tag before
     /// creating the new one. Default: `false`. Set `true` to maintain a
@@ -104,20 +104,20 @@ pub struct NightlyConfig {
     /// `keep_single_release` (which is `keep_last: 1`): keeps the N newest
     /// nightly releases matching the nightly tag/name and deletes the rest
     /// (releases + the tags anodizer created for them). Operates on
-    /// `publish_repo` when set. Default (`None`): no retention sweep.
+    /// `publish_repo` when set. When unset, no old nightly is deleted.
     pub retention: Option<RetentionConfig>,
     /// Override `release.draft` for nightly runs only.
-    /// `None` falls through to `release.draft`; `Some(v)` overrides it.
+    /// When unset, `release.draft` applies; when set, this value is used.
     pub draft: Option<bool>,
     /// Mark the nightly release as a prerelease. Default: `true`.
     ///
-    /// Unlike [`Self::draft`], `None` does NOT fall through to
-    /// `release.prerelease`: that field resolves to `false` for a nightly, so
-    /// falling through would publish every nightly as a stable release. An
+    /// An unset value means `true`, and `release.prerelease` is not
+    /// consulted: that field resolves to `false` for a nightly, so
+    /// using it would publish every nightly as a stable release. An
     /// unset `release.prerelease` is `false`, and `prerelease: auto` does not
-    /// rescue it either — `auto` reads the tag the run cuts, which answers
+    /// help either: `auto` reads the tag the run cuts, which answers
     /// `true` only while that tag parses as a semver carrying a prerelease
-    /// part, and a pinned [`Self::tag_name`] (`nightly`, `edge`) parses as no
+    /// part, and a fixed `tag_name` (`nightly`, `edge`) parses as no
     /// semver at all. Set `false` to opt out.
     pub prerelease: Option<bool>,
     /// Override `release.make_latest` for nightly runs only, with the same
@@ -126,9 +126,9 @@ pub struct NightlyConfig {
     /// release in the GitHub UI, in `releases/latest`, or for the install
     /// scripts and `gh release download` invocations that resolve it.
     ///
-    /// `None` does not fall through to `release.make_latest` for the same
-    /// reason as [`Self::prerelease`]: unset there means GitHub's own
-    /// default, which IS latest.
+    /// An unset value means `false`, and `release.make_latest` is not
+    /// consulted, for the same reason as `prerelease`: unset there means
+    /// GitHub's own default, which IS latest.
     #[schemars(schema_with = "super::release::make_latest_schema")]
     pub make_latest: Option<MakeLatestConfig>,
 }
@@ -233,8 +233,8 @@ pub struct MetadataConfig {
     /// FromUrl is resolved lazily (requires the release stage); FromFile is resolved
     /// at context-populate time with template-rendered path.
     pub full_description: Option<ContentSource>,
-    /// Commit author identity for commit workflows.
-    /// Reuses the shared `CommitAuthorConfig` (name + email + optional signing).
+    /// Commit author identity for commit workflows: `name`, `email` and
+    /// optional `signing`, the same keys as a publisher's `commit_author`.
     /// Exposed as `{{ Metadata.CommitAuthor.Name }}` / `{{ Metadata.CommitAuthor.Email }}`.
     pub commit_author: Option<CommitAuthorConfig>,
 }

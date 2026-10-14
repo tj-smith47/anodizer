@@ -145,6 +145,15 @@ caller's single skip list does not have to vary by command.
   (`{{ .Success }}`, `{{ .Error }}`). `{{ .Success }}` is a real boolean, so
   `{% if Success %}` branches correctly
 - Each hook is executed via `sh -c "<command>"`
+- A hook that leaves a background process running (`./sidecar.sh &`, a
+  daemon it launches) does not hold the run: anodizer stops reading the
+  hook's output 5 seconds after its shell exits, keeps the output read so
+  far, uses the shell's own exit status, and prints `stopped using the pipes
+  of <label> 5s after it exited: a process it started still holds them`
+  under `-v`. Redirect the background process's output (`>/dev/null 2>&1`)
+  to keep that wait out of the run. The same window applies to every tool
+  anodizer runs. On Windows, a stdin payload the leftover process never
+  reads keeps its pipe open until that process reads or exits
 - If any `before` or `before_publish` hook fails (non-zero exit), the
   pipeline aborts before any subsequent stage runs
 - Hooks are skipped in `--dry-run` mode (logged but not executed)
@@ -155,12 +164,18 @@ caller's single skip list does not have to vary by command.
 
 ```yaml
 before:
-  - cmd: "./scripts/stage.sh {{ .Env.STAGE_DIR }}"
-    dir: "{{ .Env.WORK }}"
-    env:
-      - "WORK=/srv/build"
-      - "STAGE_DIR={{ .Env.WORK }}/stage-{{ .Version }}"
+  hooks:
+    - cmd: "./scripts/stage.sh {{ .Env.STAGE_DIR }}"
+      dir: "{{ .Env.WORK }}"
+      env:
+        - "WORK=/srv/build"
+        - "STAGE_DIR={{ .Env.WORK }}/stage-{{ .Version }}"
 ```
+
+The same in-order rendering holds for the top-level `env:` list and for the
+`env:` of `signs:`, `docker_signs:`, `sboms:` and custom `publishers:`
+entries. A custom publisher's `cmd`, `args` and `dir` and an SBOM tool's
+`args` read the entries of their own `env:`.
 
 ## `always` and multi-host releases
 

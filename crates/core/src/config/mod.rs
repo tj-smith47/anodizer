@@ -364,8 +364,8 @@ pub struct Config {
     pub aur_sources: Option<Vec<AurSourceConfig>>,
     /// Top-level retry configuration applied to network-bound operations
     /// (announcers, git providers, HTTP uploads, docker pipes). When omitted,
-    /// `RetryConfig::default()` is used (10 attempts, 10s base, 5m cap —
-    /// the project-level retry policy).
+    /// the defaults apply: 10 attempts, a 10s first delay and a 5m cap on
+    /// each delay.
     pub retry: Option<RetryConfig>,
     /// MCP (Model Context Protocol) server registry publishing
     /// configuration. When `name` is empty (the default), the publisher is

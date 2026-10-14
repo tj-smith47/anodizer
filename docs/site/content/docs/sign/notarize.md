@@ -31,7 +31,7 @@ notarize:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `ids` | list | project name | Build IDs to filter |
-| `skip` | string/bool | `true` | Skip this config. **Canonical** field — notarization is off until you set `skip: false`. The upstream-style `enabled:` is accepted as an inverting back-compat alias (`enabled: true` ⇒ `skip: false`). |
+| `skip` | string/bool | `true` | Skip this config. Notarization is off until you set `skip: false`. `enabled:` is accepted as an inverted alias (`enabled: true` is `skip: false`); see [Enabling with `enabled`](#enabling-with-enabled) for how its value is read. |
 
 #### Sign config (`sign`)
 
@@ -74,7 +74,7 @@ notarize:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `ids` | list | project name | Build IDs to filter |
-| `skip` | string/bool | `true` | Skip this config. **Canonical** field — set `skip: false` to enable. The upstream-style `enabled:` is accepted as an inverting back-compat alias. |
+| `skip` | string/bool | `true` | Skip this config. Set `skip: false` to enable. `enabled:` is accepted as an inverted alias; see [Enabling with `enabled`](#enabling-with-enabled). |
 | `use` | string | `dmg` | Artifact type to sign: `"dmg"` or `"pkg"` |
 
 #### Sign config (`sign`)
@@ -101,8 +101,27 @@ notarize:
 - Notarization status is differentiated: accepted, invalid, rejected, and timeout
 - Timeouts are treated as non-fatal (the submission may still be processing)
 - Sensitive values (P12 password, API key file path) are redacted from log output
+- In cross-platform mode, a `sign.certificate` or `notarize.key` given as base64 contents is decoded into a temporary file whose path is passed to `rcodesign`. The file is deleted when the config's notarization finishes, whether it succeeded or failed. A value that is a file path is passed through as it is and never deleted.
 - In native mode, when `wait` is enabled, the notarization ticket is automatically stapled to the artifact — both DMG (`use: dmg`) and PKG (`use: pkg`) are stapled
 - Skippable with `--skip notarize`
+
+## Enabling with `enabled`
+
+`enabled:` is the inverse of `skip:` and takes a boolean or a template. A
+template is rendered and read in any letter case: `false`, `0`, `no` or an
+empty render turns the config off, and `true`, `1`, `yes` or any other render
+turns it on. A literal `enabled: ""` is not a template, sets no gate, and
+notarizes. The [bool-or-template table](@/docs/general/templates.md#bool-or-template-values)
+lists this reading beside the other fields.
+
+```yaml
+notarize:
+  macos:
+    - enabled: "{{ if IsSnapshot }}false{{ else }}true{{ end }}"  # notarize real releases only
+      sign:
+        certificate: "{{ Env.P12_CERTIFICATE }}"
+        password: "{{ Env.P12_PASSWORD }}"
+```
 
 ## Both modes together
 

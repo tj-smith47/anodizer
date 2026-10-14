@@ -240,15 +240,19 @@ Each published thing becomes one bullet, with a link when there is one:
 - Opened pull request to `Homebrew/homebrew-core` (homebrew formula `app` 1.2.3): https://github.com/Homebrew/homebrew-core/pull/12
 - Opened pull request to `microsoft/winget-pkgs` (winget package `Acme.App` 1.2.3) from `acme:Acme.App-1.2.3`: https://github.com/microsoft/winget-pkgs/pull/9
 - Published `@acme/app@1.2.3` to npm (https://registry.npmjs.org)
+- Published `app` 1.2.3 to crates.io
+- Uploaded 6 files to https://upload.pypi.org/legacy/
+- Pushed `app` 1.2.3 to Chocolatey
+- Pushed AUR package `app-bin` to `ssh://aur@aur.archlinux.org/app-bin.git`
 - Uploaded 8 objects to `s3://my-bucket`
 - Ran custom publisher `mirror` on 8 artifacts
 ```
 
-A tap publisher (homebrew, scoop, nix) that pushed straight to its repository reports `Updated <kind> <name> in <repo>`; one that opened a pull request reports the upstream repository and the pull request's URL. The winget, krew, homebrew-core and SchemaStore publishers always open a pull request and append its URL when the transport named one (`gh pr create` prints it; the REST API returns it). An image is listed as signed only after `docker_signs:` attached its signature and, where `verify:` is on, verified it.
+A tap publisher (homebrew, scoop, nix) that pushed straight to its repository reports `Updated <kind> <name> in <repo>`, where the kind is `homebrew` for a tap push whether it carried a formula, a cask or both, `scoop manifest` or `nix package`; one that opened a pull request reports the upstream repository and the pull request's URL. The winget, krew, homebrew-core and SchemaStore publishers always open a pull request and append its URL when the transport named one (`gh pr create` prints it; the REST API returns it). An image is listed as signed only after `docker_signs:` attached its signature and, where `verify:` is on, verified it.
 
 A bullet is written only for an action that completed, read off the same run report `anodizer tag rollback` consumes: the forge release (with its asset count and URL), pull requests opened and taps updated by the package-manager publishers, packages pushed to npm, crates.io, PyPI, Chocolatey, the Snap Store, GemFury and Cloudsmith, container images pushed, files uploaded to blob storage, Artifactory and HTTP upload targets, MCP registry entries, SchemaStore registrations, Docker Hub descriptions and every custom `publishers:` entry that ran. A publisher that failed after pushing part of its work still lists the part that is live.
 
-Nothing is written when `GITHUB_STEP_SUMMARY` is unset, so runs outside GitHub Actions produce no extra output. Nothing is written either on `--dry-run`, on `--snapshot`, for a publisher that was skipped (already published, deselected, gated) or for a draft release, which nobody can download from until it is published by hand. GitLab has no draft state, so a GitLab release is reported whatever `release.draft` says.
+Nothing is written when `GITHUB_STEP_SUMMARY` is unset or empty, so runs outside GitHub Actions produce no extra output. Nothing is written either on `--dry-run`, on `--snapshot`, for a publisher that was skipped (already published, deselected, gated) or for a draft release, which nobody can download from until it is published by hand. GitLab has no draft state, so a GitLab release is reported whatever `release.draft` says.
 
 ## See also
 

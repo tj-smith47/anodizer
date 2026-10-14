@@ -77,8 +77,9 @@ pub struct WingetConfig {
     pub tags: Option<Vec<String>>,
     /// Package dependencies.
     pub dependencies: Option<Vec<WingetDependency>>,
-    /// Unified repository config with branch, token, PR, git SSH support.
-    /// (Replaces the legacy `manifests_repo: WingetManifestsRepoConfig`.)
+    /// The manifests repository: owner and name, plus branch, token, pull
+    /// request and git SSH settings. Replaces the older `manifests_repo:`
+    /// key, which is no longer accepted.
     pub repository: Option<RepositoryConfig>,
     /// Commit author with optional signing.
     pub commit_author: Option<CommitAuthorConfig>,

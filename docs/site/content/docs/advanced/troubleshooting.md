@@ -92,11 +92,41 @@ This catches issues like:
 
 ### Timeout issues
 
-The default pipeline timeout is 60 minutes. If your release consistently times out:
+The default pipeline timeout is `3h`, a backstop; per-stage bounds such as `announce.deadline` catch a hung stage much sooner. To change it:
 
 ```bash
-anodizer release --timeout 1h
+anodizer release --timeout 90m
 ```
+
+### "git repository is dirty" with nothing to commit
+
+The release refuses a dirty working tree unless the run is `--snapshot`, nightly or `--dry-run`. A working tree whose status git cannot read counts as dirty, so a corrupt index or git's `safe.directory` refusal (a checkout owned by another user, common in containers) stops the release with an empty "Dirty files" list. `anodizer bump` refuses the same tree, and `--auto-snapshot` switches to snapshot mode on it. Run git yourself to see the cause:
+
+```bash
+git status --porcelain
+# fatal: detected dubious ownership in repository at '/work'
+git config --global --add safe.directory /work
+```
+
+### A command returns while a background process keeps running
+
+When a command anodizer runs (a hook, a build or sign tool) starts a process of its own that keeps its stdout, stderr or stdin open (`tool &`, a daemon it launched), anodizer stops reading those pipes 5 seconds after the command itself exits. The command's own exit status and the output read until then are kept, a last line without a trailing newline included, and the step carries on. Under `--verbose` the cut-off is printed:
+
+```text
+stopped using the pipes of <label> 5s after it exited: a process it started still holds them
+```
+
+The background process is not killed by this, except under a step that has its own timeout, which ends the leftover process tree after a short grace. On Windows the stdin writer is the one exception: it can only check between 16 KiB writes, so a write the leftover process never reads keeps that pipe open until the process reads or exits. Redirect the background process's streams (`tool >/dev/null 2>&1 </dev/null &`) to keep its output out of the step.
+
+### Retry lines and rate limits
+
+Every retried HTTP call prints one line per failed attempt, with the wait before the next one:
+
+```text
+upload of 'app.tar.gz' attempt 1/10 failed (<cause>); retrying in 2m
+```
+
+A `429 Too Many Requests` that carries `Retry-After` or `RateLimit-Reset` waits the time the server asked for, so a long wait on that line is the server's request. When the run's retry deadline cannot hold that wait, the retries end at once. An error ending in `exhausted retry attempts` means every attempt was spent; a 4xx other than 429 fails on its first attempt and never says so. See [Retry](@/docs/general/retry.md).
 
 ### Dry-run mode
 

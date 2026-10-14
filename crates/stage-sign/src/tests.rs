@@ -7549,8 +7549,8 @@ mod cosign_retry_policy {
     }
 
     /// The host-lock discriminator: keyless always contends the TUF store;
-    /// keyed contends unless the argv pins `--tlog-upload=false` in either
-    /// spelling; a non-cosign signer never does.
+    /// keyed contends unless the argv turns the upload off with
+    /// `--tlog-upload=<false>`; a non-cosign signer never does.
     #[test]
     fn tuf_store_contention_classifier() {
         use crate::process::contends_tuf_store;
@@ -7583,14 +7583,23 @@ mod cosign_retry_policy {
             "--tlog-upload=false".to_string(),
         ];
         assert!(!contends_tuf_store("cosign", &keyed_offline_eq));
-        let keyed_offline_split = vec![
+        let keyed_offline_go_spelling = vec![
+            "sign-blob".to_string(),
+            "--key".to_string(),
+            "cosign.key".to_string(),
+            "--tlog-upload=0".to_string(),
+        ];
+        assert!(!contends_tuf_store("cosign", &keyed_offline_go_spelling));
+        // cosign's bool flag takes no separate value: `--tlog-upload false`
+        // leaves the upload on and passes `false` as a positional argument.
+        let keyed_split = vec![
             "sign-blob".to_string(),
             "--key".to_string(),
             "cosign.key".to_string(),
             "--tlog-upload".to_string(),
             "false".to_string(),
         ];
-        assert!(!contends_tuf_store("cosign", &keyed_offline_split));
+        assert!(contends_tuf_store("cosign", &keyed_split));
 
         assert!(!contends_tuf_store("gpg", &keyless));
         assert!(!contends_tuf_store("osslsigncode", &keyed));

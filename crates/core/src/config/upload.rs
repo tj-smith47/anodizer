@@ -20,7 +20,7 @@ pub struct UploadConfig {
     /// any artifact whose name matches at least one glob from THIS upload
     /// target only. Use it to keep heavy sidecars (checksums, signatures,
     /// SBOMs) off a given endpoint while archives still upload. Composes with
-    /// `ids:` and `exts:` (all filters apply). `None`/empty keeps everything.
+    /// `ids:` and `exts:` (all filters apply). Unset or empty keeps everything.
     ///
     /// ```yaml
     /// uploads:

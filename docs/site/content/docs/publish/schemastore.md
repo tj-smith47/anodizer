@@ -264,6 +264,8 @@ Anodizer resolves a GitHub token from the first source that is set, in this orde
 
 The pull request itself is opened with `repository.pull_request.token` when that is set, falling back to the same chain; set it when the fork token cannot open PRs against `SchemaStore/schemastore`.
 
+Both tokens are rendered before the fork is cloned. A blank render falls through to the next token in the chain. A template that fails to render fails the publisher before anything is cloned or pushed, with an error naming the field and the render error and the template's own text replaced by `<template>` (`pull_request.token does not render: …`).
+
 The token needs push access to your fork (`contents:write`) and permission to open a pull request against the upstream `SchemaStore/schemastore` (`pull_request:write`).
 
 See the anodizer-action docs for how to wire the fork token in GitHub Actions alongside other publisher tokens.

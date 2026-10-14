@@ -49,7 +49,7 @@ pub struct CloudSmithConfig {
     /// any artifact whose name matches at least one glob from THIS CloudSmith
     /// target only. Use it to keep heavy sidecars off a given repository while
     /// packages still upload. Composes with `ids:` and `formats:` (all filters
-    /// apply). `None`/empty keeps everything.
+    /// apply). Unset or empty keeps everything.
     ///
     /// ```yaml
     /// cloudsmiths:

@@ -446,11 +446,14 @@ fn non_null_variants(variants: &[Value]) -> Vec<&Value> {
 ///
 /// Handles:
 /// - direct `$ref` → the shape of the definition it names: a struct is
-///   `object` (linked to its section when `section_anchors` has one), a
+///   `object` (linked to its section when `anchors` has one for `section`), a
 ///   string enum is `string`, a union definition such as `StringOrBool` is
 ///   its members, and a scalar newtype is the scalar;
+/// - a `const` or an `enum` of scalars → its values as literals (`false`,
+///   `0 | 1`, `"v1" | "v2"`);
 /// - `anyOf`/`oneOf` (the `Option<T>` pattern: `[T, {"type":"null"}]`) → the
-///   single non-null variant's type, or a `T | U` join for a true union;
+///   single non-null variant's type, or a `T | U` join for a true union, with
+///   any `list of …` member last so it cannot read as a list of the union;
 /// - `allOf` (the `#[serde(default)]`-wrapper pattern) → the first entry's type;
 /// - array → `list of <inner>` (or bare `list` when the element type is
 ///   inexpressible);
@@ -458,7 +461,8 @@ fn non_null_variants(variants: &[Value]) -> Vec<&Value> {
 fn resolve_type_name(
     prop: &Value,
     defs: &Map<String, Value>,
-    section_anchors: &HashMap<String, String>,
+    anchors: &SectionAnchors,
+    section: &str,
 ) -> String {
     let Some(obj) = prop.as_object() else {
         return "object".into();
@@ -472,31 +476,28 @@ fn resolve_type_name(
             return "object".into();
         };
         if def.get("properties").is_some() {
-            return match section_anchors.get(&name) {
+            return match anchors.for_field(&name, section) {
                 Some(anchor) => format!("[object](#{anchor})"),
                 None => "object".into(),
             };
         }
-        return resolve_type_name(def, defs, section_anchors);
+        return resolve_type_name(def, defs, anchors, section);
     }
 
-    // An enum or a `const`, inline or behind a `$ref`, shows the type of its
-    // values (`archives: false` is a `bool`).
-    if obj.contains_key("enum") || obj.contains_key("const") {
-        if let Some(Value::String(t)) = obj.get("type") {
-            return format_instance_type(t);
-        }
-        let first = obj.get("const").or_else(|| {
-            obj.get("enum")
-                .and_then(Value::as_array)
-                .and_then(|v| v.first())
-        });
-        return match first {
-            Some(Value::Bool(_)) => "bool".into(),
-            Some(Value::Number(n)) if n.is_f64() => "number".into(),
-            Some(Value::Number(_)) => "integer".into(),
-            _ => "string".into(),
-        };
+    // A `const` or an `enum` of scalars lists every value the field takes
+    // (`archives: false`, an integer that is `0` or `1`), so the cell shows
+    // those values.
+    let values: Option<Vec<&Value>> = match (obj.get("const"), obj.get("enum")) {
+        (Some(c), _) => Some(vec![c]),
+        (None, Some(Value::Array(e))) if !e.is_empty() => Some(e.iter().collect()),
+        _ => None,
+    };
+    if let Some(literals) = values.and_then(|v| {
+        v.into_iter()
+            .map(scalar_literal)
+            .collect::<Option<Vec<_>>>()
+    }) {
+        return literals.join(" | ");
     }
 
     // An `anyOf` is how an `Option<T>`/nullable field renders
@@ -507,13 +508,15 @@ fn resolve_type_name(
     if let Some(Value::Array(variants)) = obj.get("anyOf").or_else(|| obj.get("oneOf")) {
         let non_null = non_null_variants(variants);
         if let [single] = non_null.as_slice() {
-            return resolve_type_name(single, defs, section_anchors);
+            return resolve_type_name(single, defs, anchors, section);
         }
         let mut names: Vec<String> = non_null
             .iter()
-            .map(|s| resolve_type_name(s, defs, section_anchors))
+            .map(|s| resolve_type_name(s, defs, anchors, section))
             .collect();
-        names.sort();
+        names.sort_by(|a, b| {
+            (a.starts_with("list"), a.as_str()).cmp(&(b.starts_with("list"), b.as_str()))
+        });
         names.dedup();
         if !names.is_empty() {
             return names.join(" | ");
@@ -523,10 +526,10 @@ fn resolve_type_name(
     if let Some(Value::Array(all_of)) = obj.get("allOf")
         && let Some(first) = all_of.first()
     {
-        return resolve_type_name(first, defs, section_anchors);
+        return resolve_type_name(first, defs, anchors, section);
     }
 
-    // A struct written inline rather than behind a `$ref`.
+    // A struct written inline has no definition to link to.
     if obj.get("properties").is_some() {
         return "object".into();
     }
@@ -536,7 +539,7 @@ fn resolve_type_name(
     // so the field shows `list of <inner>` rather than a bare `list`.
     if schema_has_type(prop, "array") {
         if let Some(item) = array_item(prop) {
-            let inner = resolve_type_name(item, defs, section_anchors);
+            let inner = resolve_type_name(item, defs, anchors, section);
             // A union item type is grouped so `list of (object | string)` does
             // not read as a list of objects or a bare string.
             if inner.contains(" | ") {
@@ -563,6 +566,15 @@ fn resolve_type_name(
             }
         }
         _ => "object".into(),
+    }
+}
+
+/// A JSON scalar as the reference writes it: `false`, `3`, `"v2"`.
+fn scalar_literal(v: &Value) -> Option<String> {
+    match v {
+        Value::Bool(_) | Value::Number(_) => Some(v.to_string()),
+        Value::String(s) => Some(format!("\"{s}\"")),
+        _ => None,
     }
 }
 
@@ -698,9 +710,11 @@ fn html_escape_cell(s: &str) -> String {
 
 /// Extract `ConfigField` entries from a properties map, sorted by field name.
 /// `defs` is the schema's definitions map, consulted to inline scalar newtype
-/// `$ref`s to their underlying type. `section_anchors` maps a definition name to
-/// the anchor of the section documenting it, so a composite default can point at
-/// that section instead of inlining its serialization.
+/// `$ref`s to their underlying type. `anchors` maps a definition name to the
+/// sections documenting it, so a struct type and a composite default can point
+/// at a section instead of inlining its serialization. `parent` is the section
+/// the fields belong to (`None` for the top-level table), which names each
+/// field's own section (`crates[].publish` + `cargo`).
 ///
 /// The map is keyed by DEFINITION name, not field name: a nested `repository`
 /// field resolves to `McpRepository`, which has no section, while a top-level
@@ -710,7 +724,8 @@ fn html_escape_cell(s: &str) -> String {
 fn extract_fields(
     props: &Map<String, Value>,
     defs: &Map<String, Value>,
-    section_anchors: &HashMap<String, String>,
+    anchors: &SectionAnchors,
+    parent: Option<&str>,
 ) -> Vec<ConfigField> {
     let mut fields: Vec<ConfigField> = props
         .iter()
@@ -723,14 +738,17 @@ fn extract_fields(
                     description: String::new(),
                 };
             }
-            let anchor = resolve_ref_type_name(schema)
-                .and_then(|def| section_anchors.get(&def))
-                .map(String::as_str);
+            let section = match parent {
+                Some(p) => format!("{p}.{name}"),
+                None => name.clone(),
+            };
+            let anchor =
+                resolve_ref_type_name(schema).and_then(|def| anchors.for_field(&def, &section));
             ConfigField {
                 name: name.clone(),
                 // A union type joins its members with `|`, which would end
                 // the table cell.
-                field_type: resolve_type_name(schema, defs, section_anchors).replace('|', "\\|"),
+                field_type: resolve_type_name(schema, defs, anchors, &section).replace('|', "\\|"),
                 default: format_default(schema.as_object().and_then(|o| o.get("default")), anchor),
                 description: schema_description(schema),
             }
@@ -786,7 +804,7 @@ fn build_nested_section(
     defs: &Map<String, Value>,
     def_name: &str,
     section_name: &str,
-    section_anchors: &HashMap<String, String>,
+    anchors: &SectionAnchors,
 ) -> Option<NestedSection> {
     let def_schema = defs.get(def_name)?.as_object()?;
     let def_props = match def_schema.get("properties").and_then(Value::as_object) {
@@ -802,24 +820,55 @@ fn build_nested_section(
         name: section_name.to_string(),
         anchor_attr: format!("{{#{}}}", section_anchor(section_name)),
         description,
-        fields: extract_fields(def_props, defs, section_anchors),
+        fields: extract_fields(def_props, defs, anchors, Some(section_name)),
     })
 }
 
-/// Definition name → anchor of the section that documents it, for every section
-/// the reference will emit.
+/// Definition name → every section that documents it, in the order the
+/// reference emits them. Several fields can share one struct (`before`,
+/// `after`, `always` and `on_error` are all hook blocks), and each of those
+/// fields has a section of its own.
+#[derive(Default)]
+struct SectionAnchors(HashMap<String, Vec<(String, String)>>);
+
+impl SectionAnchors {
+    fn push(&mut self, def_name: String, section_name: &str) {
+        self.0
+            .entry(def_name)
+            .or_default()
+            .push((section_name.to_string(), section_anchor(section_name)));
+    }
+
+    /// The anchor a field of type `def_name` links to: the field's own
+    /// section (`section` is its qualified name, such as `crates[].before`),
+    /// else a section named for the same field (`before`), else the first
+    /// section documenting the type.
+    fn for_field(&self, def_name: &str, section: &str) -> Option<&str> {
+        let sections = self.0.get(def_name)?;
+        let field = section.rsplit('.').next().unwrap_or(section);
+        sections
+            .iter()
+            .find(|(name, _)| name == section)
+            .or_else(|| sections.iter().find(|(name, _)| name == field))
+            .or_else(|| sections.first())
+            .map(|(_, anchor)| anchor.as_str())
+    }
+}
+
+/// Every section the reference will emit, keyed by the definition it
+/// documents.
 ///
 /// Resolved in its own pass before any field is rendered: a field's Default cell
 /// links to the section for its type, and sections are themselves built from
 /// fields, so the mapping cannot be a by-product of building them. Mirrors the
 /// two section passes in `generate_config_reference` exactly — auto-discovered
-/// top-level sections first, then [`SECOND_LEVEL_SECTIONS`] — so a definition
-/// reachable both ways resolves to the same anchor the heading gets.
+/// top-level sections first, then [`SECOND_LEVEL_SECTIONS`] — so every anchor
+/// recorded is one a heading gets.
 fn collect_section_anchors(
     root_props: &Map<String, Value>,
     defs: &Map<String, Value>,
-) -> HashMap<String, String> {
-    let mut anchors: HashMap<String, String> = HashMap::new();
+) -> SectionAnchors {
+    let mut anchors = SectionAnchors::default();
 
     let documentable = |def_name: &str| {
         defs.get(def_name)
@@ -839,9 +888,7 @@ fn collect_section_anchors(
             continue;
         };
         if documentable(&def_name) {
-            anchors
-                .entry(def_name)
-                .or_insert_with(|| section_anchor(field_name));
+            anchors.push(def_name, field_name);
         }
     }
 
@@ -857,9 +904,7 @@ fn collect_section_anchors(
             continue;
         };
         if documentable(&def_name) {
-            anchors
-                .entry(def_name)
-                .or_insert_with(|| section_anchor(section_name));
+            anchors.push(def_name, section_name);
         }
     }
 
@@ -892,7 +937,7 @@ fn generate_config_reference(tera: &Tera) -> Result<String, String> {
     let section_anchors = collect_section_anchors(root_props, defs);
 
     // Build top-level field list
-    let top_level_fields = extract_fields(root_props, defs, &section_anchors);
+    let top_level_fields = extract_fields(root_props, defs, &section_anchors, None);
 
     // Build nested sections: for every top-level field that references a
     // definition, expand that definition's properties into a section. Iterate
@@ -1063,6 +1108,8 @@ mod tests {
                     shape = rest;
                 }
                 SHAPES.contains(&shape)
+                    || serde_json::from_str::<Value>(shape)
+                        .is_ok_and(|v| !v.is_object() && !v.is_array())
             });
             if !named_only_shapes {
                 bad.push(line.chars().take(120).collect::<String>());
@@ -1077,7 +1124,7 @@ mod tests {
     }
 
     /// A `$ref` resolves to the shape of what it names: a union definition
-    /// to its sorted members, a string enum to `string`, a struct to
+    /// to its sorted members, a string enum to its values, a struct to
     /// `object` linked to the section that documents it.
     #[test]
     fn a_referenced_definition_renders_as_its_json_shape() {
@@ -1099,20 +1146,287 @@ mod tests {
             "f": { "anyOf": [{ "const": false }, { "type": "array", "items": { "type": "string" } }, { "type": "null" }] }
         }))
         .unwrap();
-        let anchors = HashMap::from([("HooksConfig".to_string(), "after".to_string())]);
-        let fields = extract_fields(&props, &defs, &anchors);
+        let mut anchors = SectionAnchors::default();
+        anchors.push("HooksConfig".into(), "after");
+        let fields = extract_fields(&props, &defs, &anchors, None);
         let types: Vec<&str> = fields.iter().map(|f| f.field_type.as_str()).collect();
         assert_eq!(
             types,
             [
-                "bool \\| integer \\| string",
-                "string",
+                "0 \\| 1 \\| bool \\| string",
+                "\"v1\" \\| \"v2\"",
                 "[object](#after)",
                 "list of object",
                 "list of (object \\| string)",
-                "bool \\| list of string"
+                "false \\| list of string"
             ]
         );
+    }
+
+    /// A union with a list member puts the list last, so `object | list of
+    /// string` cannot read as a list whose item is the union, and a list
+    /// whose item is a union groups the item.
+    #[test]
+    fn a_union_with_a_list_member_lists_it_last() {
+        let props: Map<String, Value> = serde_json::from_value(serde_json::json!({
+            "a": { "anyOf": [{ "type": "array", "items": { "type": "string" } }, { "type": "object" }] },
+            "b": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "object" }] } },
+            "c": { "anyOf": [
+                { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "type": "integer" }] } },
+                { "type": "boolean" }
+            ] }
+        }))
+        .unwrap();
+        let fields = extract_fields(&props, &Map::new(), &SectionAnchors::default(), None);
+        let types: Vec<&str> = fields.iter().map(|f| f.field_type.as_str()).collect();
+        assert_eq!(
+            types,
+            [
+                "map \\| list of string",
+                "list of (map \\| string)",
+                "bool \\| list of (integer \\| string)"
+            ]
+        );
+    }
+
+    /// No type cell in the reference puts a `|` after a `list of …` member
+    /// outside parentheses, which would make the list read as a list of the
+    /// whole union.
+    #[test]
+    fn no_configuration_reference_type_cell_reads_as_a_list_of_its_union() {
+        let md = generate_config_reference(&load_templates()).expect("render");
+        let mut bad = Vec::new();
+        for line in md.lines().filter(|l| l.starts_with("| `")) {
+            let type_cell = line.split(" | ").nth(1).unwrap_or_default();
+            let mut depth = 0usize;
+            let mut members = vec![String::new()];
+            let mut chars = type_cell.chars().peekable();
+            while let Some(c) = chars.next() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => depth = depth.saturating_sub(1),
+                    '\\' if depth == 0 && chars.peek() == Some(&'|') => {
+                        chars.next();
+                        members.push(String::new());
+                        continue;
+                    }
+                    _ => {}
+                }
+                members.last_mut().unwrap().push(c);
+            }
+            let last = members.len() - 1;
+            if members
+                .iter()
+                .enumerate()
+                .any(|(i, m)| i < last && m.trim().starts_with("list of"))
+            {
+                bad.push(line.chars().take(120).collect::<String>());
+            }
+        }
+        assert!(bad.is_empty(), "ambiguous list unions:\n{}", bad.join("\n"));
+    }
+
+    /// A `const` scalar, and every value of an `enum` of scalars, renders as
+    /// its literal.
+    #[test]
+    fn a_const_scalar_renders_as_its_literal() {
+        let props: Map<String, Value> = serde_json::from_value(serde_json::json!({
+            "a": { "const": false },
+            "b": { "const": true, "type": "boolean" },
+            "c": { "const": 3 },
+            "d": { "const": "v2", "type": "string" },
+            "e": { "enum": [false] }
+        }))
+        .unwrap();
+        let fields = extract_fields(&props, &Map::new(), &SectionAnchors::default(), None);
+        let types: Vec<&str> = fields.iter().map(|f| f.field_type.as_str()).collect();
+        assert_eq!(types, ["false", "true", "3", "\"v2\"", "false"]);
+    }
+
+    /// A struct shared by several fields links each field to its own
+    /// section, else to a section named for the same field, else to the
+    /// first section of the struct.
+    #[test]
+    fn a_shared_struct_links_each_field_to_its_own_section() {
+        let defs: Map<String, Value> = serde_json::from_value(serde_json::json!({
+            "HooksConfig": { "type": "object", "properties": { "cmd": { "type": "string" } } }
+        }))
+        .unwrap();
+        let hook = serde_json::json!({ "$ref": "#/definitions/HooksConfig" });
+        let props: Map<String, Value> = ["after", "before", "on_error", "cleanup"]
+            .into_iter()
+            .map(|n| (n.to_string(), hook.clone()))
+            .collect();
+        let mut anchors = SectionAnchors::default();
+        for section in ["after", "before", "on_error"] {
+            anchors.push("HooksConfig".into(), section);
+        }
+        let row = |fields: &[ConfigField], name: &str| {
+            fields
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap()
+                .field_type
+                .clone()
+        };
+        let top = extract_fields(&props, &defs, &anchors, None);
+        assert_eq!(row(&top, "after"), "[object](#after)");
+        assert_eq!(row(&top, "before"), "[object](#before)");
+        assert_eq!(row(&top, "on_error"), "[object](#on-error)");
+        assert_eq!(row(&top, "cleanup"), "[object](#after)");
+        let nested = extract_fields(&props, &defs, &anchors, Some("crates[]"));
+        assert_eq!(row(&nested, "before"), "[object](#before)");
+
+        let md = generate_config_reference(&load_templates()).expect("render");
+        for (name, anchor) in [
+            ("before", "before"),
+            ("always", "always"),
+            ("on_error", "on-error"),
+        ] {
+            let prefix = format!("| `{name}` | ");
+            let rows: Vec<&str> = md
+                .lines()
+                .filter(|l| l.starts_with(&prefix) && l.contains("[object](#"))
+                .collect();
+            assert!(!rows.is_empty(), "no `{name}` row links a section");
+            for line in rows {
+                assert!(
+                    line.starts_with(&format!("{prefix}[object](#{anchor})")),
+                    "{}",
+                    line.chars().take(80).collect::<String>()
+                );
+            }
+        }
+    }
+
+    /// The Rust names in a description: a `::` path, a type name ending in
+    /// `Config`, `Entry`, `Stage` or `Report`, a `DEFAULT_` constant, a source
+    /// path (`src/…` or a snake-case `.rs` file), and `None` or `Some(…)`
+    /// written as code. A reader of the
+    /// reference writes YAML and cannot look any of them up.
+    fn rust_names_in(desc: &str) -> Vec<String> {
+        // A `{{ … }}` expression names template variables the config can
+        // read, whatever their spelling.
+        let mut prose = String::new();
+        let mut rest = desc;
+        while let Some(open) = rest.find("{{") {
+            prose.push_str(&rest[..open]);
+            rest = rest[open..]
+                .find("}}")
+                .map_or("", |close| &rest[open + close + 2..]);
+        }
+        prose.push_str(rest);
+        let desc = prose.as_str();
+        let mut found = Vec::new();
+        for code in ["`None`", "`Some(", "src/"] {
+            if desc.contains(code) {
+                found.push(code.to_string());
+            }
+        }
+        let is_rust_type = |seg: &str| {
+            seg.starts_with(|c: char| c.is_ascii_uppercase())
+                && seg.chars().any(|c| c.is_ascii_lowercase())
+                && ["Config", "Entry", "Stage", "Report"]
+                    .iter()
+                    .any(|suffix| seg.len() > suffix.len() && seg.ends_with(suffix))
+        };
+        for token in desc
+            .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '.')))
+            .map(|t| t.trim_matches(|c| c == '.' || c == ':'))
+        {
+            let path =
+                token.split("::").count() > 1 && token.split("::").all(|seg| !seg.is_empty());
+            if path
+                || (token.ends_with(".rs") && token.contains('_'))
+                || token
+                    .split(['.', ':'])
+                    .any(|seg| is_rust_type(seg) || seg.starts_with("DEFAULT_"))
+            {
+                found.push(token.to_string());
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn rust_names_in_reads_each_shape() {
+        assert_eq!(rust_names_in("Always `None` after parsing"), ["`None`"]);
+        assert_eq!(rust_names_in("set to `Some(v)` here"), ["`Some("]);
+        assert_eq!(
+            rust_names_in("see `HooksConfig::merge_hook_aliases`."),
+            ["HooksConfig::merge_hook_aliases"]
+        );
+        assert_eq!(
+            rust_names_in("the `CompletionsConfig` block"),
+            ["CompletionsConfig"]
+        );
+        assert_eq!(rust_names_in("a `SchemaEntry`"), ["SchemaEntry"]);
+        assert_eq!(
+            rust_names_in("runs in PublishStage, writes RunReport"),
+            ["PublishStage", "RunReport"]
+        );
+        assert_eq!(
+            rust_names_in("defaults to `DEFAULT_ANNOUNCE_DEADLINE`"),
+            ["DEFAULT_ANNOUNCE_DEADLINE"]
+        );
+        assert_eq!(
+            rust_names_in("mirrors `CrateConfig.cross`"),
+            ["CrateConfig.cross"]
+        );
+        assert_eq!(rust_names_in("see crates/stage-x/src/lib.rs"), ["src/"]);
+        assert_eq!(rust_names_in("see commit_msg.rs"), ["commit_msg.rs"]);
+        assert_eq!(
+            rust_names_in("reads `{{ .RunReport }}`, unlike RunReport"),
+            ["RunReport"]
+        );
+        assert!(rust_names_in(
+            "`Programming Language :: Rust`, `{{ .ProjectName }}`, `Config`, `publishConfig.provenance`, e.g. `90s`, `GITHUB_TOKEN`, Cargo.toml, docs.rs"
+        )
+        .is_empty());
+    }
+
+    /// No description in the configuration reference, in a field row or
+    /// under a section heading, names the Rust source: every one is written
+    /// for the person writing the config.
+    #[test]
+    fn no_configuration_reference_description_names_a_rust_item() {
+        let md = generate_config_reference(&load_templates()).expect("render");
+        let mut section = "";
+        let mut bad = Vec::new();
+        for line in md.lines() {
+            if line.starts_with('#') {
+                section = line;
+                continue;
+            }
+            let (field, text) = match line.strip_prefix("| `") {
+                Some(_) => {
+                    let cells: Vec<&str> = line.split(" | ").collect();
+                    (cells[0], cells[3..].join(" | "))
+                }
+                None => ("", line.to_string()),
+            };
+            let names = rust_names_in(&text);
+            if !names.is_empty() {
+                bad.push(format!("{section} {field}: {names:?}"));
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "descriptions naming Rust items:\n{}",
+            bad.join("\n")
+        );
+    }
+
+    /// A duration field reads as a string in the reference, never as the
+    /// object a derived schema of `std::time::Duration` would describe.
+    #[test]
+    fn a_duration_field_renders_as_a_string() {
+        let md = generate_config_reference(&load_templates()).expect("render");
+        let row = md
+            .lines()
+            .find(|l| l.starts_with("| `deadline` | "))
+            .expect("announce.deadline row");
+        assert!(row.starts_with("| `deadline` | string | "), "{row}");
     }
 
     #[test]
@@ -1122,7 +1436,7 @@ mod tests {
             "g": { "description": "d", "oneOf": [{ "type": "boolean" }, { "type": "integer" }] }
         }))
         .unwrap();
-        let fields = extract_fields(&props, &Map::new(), &HashMap::new());
+        let fields = extract_fields(&props, &Map::new(), &SectionAnchors::default(), None);
         let types: Vec<&str> = fields.iter().map(|f| f.field_type.as_str()).collect();
         assert_eq!(types, ["bool \\| string", "bool \\| integer"]);
     }
@@ -1393,6 +1707,19 @@ mod tests {
     }
 
     #[test]
+    fn gen_docs_includes_the_mcp_subcommand_tree() {
+        let cmd = anodizer_cli::build_cli();
+        let commands = collect_all_commands(&cmd);
+        let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
+        for name in ["mcp", "mcp start", "mcp tools", "mcp stream"] {
+            assert!(
+                names.contains(&name),
+                "`{name}` is parsed by the binary and must be documented: {names:?}"
+            );
+        }
+    }
+
+    #[test]
     fn gen_docs_omits_simulate_failure_flag() {
         let cmd = anodizer_cli::build_cli();
         let commands = collect_all_commands(&cmd);
@@ -1482,7 +1809,7 @@ mod tests {
             if schema.as_bool().is_some() {
                 continue;
             }
-            let type_str = super::resolve_type_name(schema, defs, &HashMap::new());
+            let type_str = super::resolve_type_name(schema, defs, &SectionAnchors::default(), name);
             assert!(
                 !type_str.is_empty(),
                 "field `{name}` resolved to an empty type string"

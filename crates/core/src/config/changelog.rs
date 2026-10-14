@@ -38,8 +38,9 @@ pub struct ChangelogConfig {
         alias = "disable"
     )]
     pub skip: Option<StringOrBool>,
-    /// Changelog source: `"git"` (default), `"github"`, or `"github-native"`.
-    /// `"github"` fetches commits via the GitHub API, enriching entries with
+    /// Changelog source: `"git"` (default), `"github"`, `"gitlab"`, `"gitea"`,
+    /// or `"github-native"`. `"github"`, `"gitlab"` and `"gitea"` fetch commits
+    /// through that forge's API; `"github"` also enriches entries with
     /// author login information (available as the `{{ Logins }}` per-entry
     /// template variable and the `{{ AllLogins }}` release-wide variable).
     /// `"github-native"` delegates entirely to GitHub's auto-generated notes.
@@ -85,24 +86,20 @@ pub struct ChangelogConfig {
     pub divider: Option<String>,
     /// AI-powered changelog enhancement configuration.
     pub ai: Option<ChangelogAiConfig>,
-    /// When `true`, render the changelog even in snapshot mode. Anodizer
-    /// matches the default (skip changelog on snapshot) and
-    /// lets users opt back in here for local preview / draft generation.
-    /// Wired in `crates/stage-changelog/src/lib.rs::ChangelogStage::run`.
+    /// When `true`, render the changelog in snapshot mode too, for a local
+    /// preview or a draft. By default a snapshot run skips the changelog.
     pub snapshot: Option<bool>,
-    /// Changelog file-layout controls: which `CHANGELOG.md` files a release
-    /// writes (per-crate vs the aggregate root). Separate from the
-    /// content-generation keys above (`use`, `format`, `groups`, `filters`,
-    /// `paths`, `sort`, ...) so file management and content concerns stay
-    /// orthogonal. See [`ChangelogFilesConfig`].
+    /// Which `CHANGELOG.md` files a release writes: one per crate, the
+    /// aggregate root file, or both. The keys that decide the changelog's
+    /// content (`use`, `format`, `groups`, `filters`, `paths`, `sort`, ...)
+    /// stay at the `changelog:` level. See the `changelog.files` section.
     pub files: Option<ChangelogFilesConfig>,
 }
 
-/// Changelog file-layout controls: which `CHANGELOG.md` files a release writes.
+/// Which `CHANGELOG.md` files a release writes.
 ///
-/// Nested under `changelog.files` to keep file-management keys distinct from
-/// the content-generation keys on [`ChangelogConfig`] (`use`, `format`,
-/// `groups`, `filters`, `paths`, `sort`, ...).
+/// The keys that decide the changelog's content (`use`, `format`, `groups`,
+/// `filters`, `paths`, `sort`, ...) sit one level up, under `changelog:`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ChangelogFilesConfig {

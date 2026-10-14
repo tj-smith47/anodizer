@@ -12,23 +12,19 @@ use crate::artifact::ArtifactKind;
 /// run around the entire pipeline (not individual stages); which block a
 /// list sits under decides when it fires.
 ///
-/// The canonical key is `hooks:` in every block, matching the conventional
-/// spelling. The `post:` spelling is accepted
-/// as a serde alias on `hooks` for back-compat with the previous
-/// anodizer spelling; users with `after: { post: [...] }` keep working
-/// and a deprecation warning is logged when both spellings appear in
-/// the same block (see `HooksConfig::merge_hook_aliases`).
+/// The key is `hooks:` in every block. The older `post:` spelling is still
+/// accepted, so `after: { post: [...] }` keeps working, with a deprecation
+/// warning. When a block sets both, `hooks:` is used and `post:` is ignored.
 #[derive(Debug, Clone, PartialEq, Default, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HooksConfig {
-    /// Commands to run when the block fires. The wire format accepts
-    /// either `hooks:` (canonical) or the legacy
-    /// `post:` spelling; both fold into this field at parse time.
+    /// Commands to run when the block fires. The older `post:` key is read
+    /// as this list.
     pub hooks: Option<Vec<HookEntry>>,
-    /// Legacy alias for `hooks:` (anodizer pre-v0.4). Always `None`
-    /// after parsing — `merge_hook_aliases` collapses it into `hooks`.
-    /// Present on the struct only because `Deserialize` writes through
-    /// it before the fold step.
+    /// Deprecated spelling of `hooks:` (anodizer before v0.4). Its commands
+    /// run as the `hooks:` list, and it is ignored when `hooks:` is also set.
+    // Deserialization writes the legacy key here; `merge_hook_aliases` moves
+    // it into `hooks` and leaves this field empty.
     #[doc(hidden)]
     pub post: Option<Vec<HookEntry>>,
 }
@@ -135,17 +131,15 @@ pub struct StructuredHook {
     /// those entries: a skipped hook's env is never rendered and cannot fail.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
-    /// Artifact-id allow-list (`before_publish:` only). When `Some`, the
-    /// per-artifact iteration only fires for artifacts whose
-    /// `metadata["id"]` matches one of these strings. `None` (the default)
-    /// imposes no id constraint. Ignored by lifecycle hook sites
+    /// Artifact-id allow-list (`before_publish:` only). When set, the hook
+    /// fires only for artifacts whose id matches one of these strings.
+    /// Unset (the default) imposes no id constraint. Ignored by lifecycle hook sites
     /// (`before:` / `after:` / per-build / per-archive) — those run once
     /// per pipeline tick, not per artifact.
     pub ids: Option<Vec<String>>,
-    /// Artifact-kind filter (`before_publish:` only). When `Some`, the
-    /// per-artifact iteration only fires for artifacts whose
-    /// [`ArtifactKind`] matches the filter. `None` is equivalent to
-    /// [`BeforePublishArtifactFilter::All`] (every registered artifact).
+    /// Artifact-kind filter (`before_publish:` only). When set, the hook
+    /// fires only for artifacts whose kind matches the filter. Unset is the
+    /// same as `all` (every artifact).
     /// Ignored by lifecycle hook sites for the same reason as `ids`.
     pub artifacts: Option<BeforePublishArtifactFilter>,
     /// Run the hook exactly once before the publish stage instead of once
