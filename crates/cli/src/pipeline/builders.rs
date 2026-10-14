@@ -115,10 +115,9 @@ fn push_artifact_stages(p: &mut Pipeline) {
     p.add(Box::new(NsisStage));
     p.add(Box::new(NotarizeStage));
 
-    // ── Changelog ────────────────────────────────────────────────────────
     p.add(Box::new(ChangelogStage));
 
-    // ── Packaging ────────────────────────────────────────────────────────
+    // Packaging
     p.add(Box::new(ArchiveStage));
     p.add(Box::new(SourceStage));
     p.add(Box::new(NfpmStage));
@@ -135,7 +134,7 @@ fn push_artifact_stages(p: &mut Pipeline) {
     p.add(Box::new(SbomStage));
     p.add(Box::new(TemplateFilesStage));
 
-    // ── Integrity ────────────────────────────────────────────────────────
+    // Integrity
     p.add(Box::new(ChecksumStage));
     // AttestStage runs after Checksum (so subject digests reuse the computed
     // sha256) and before Sign: in `emit` mode it registers the in-toto
@@ -165,7 +164,7 @@ pub fn build_release_pipeline() -> Pipeline {
     let mut p = Pipeline::new();
     p.expect_binaries();
 
-    // ── Per-crate lifecycle: before ────────────────────────────────────────
+    // Per-crate lifecycle: before
     // BeforeCrateStage runs each selected crate's `crates[].before` hooks at
     // the pipeline HEAD, after version/tag anchoring (done in the dispatcher
     // before `p.run`) and before the build. A full release runs as ONE
@@ -177,17 +176,17 @@ pub fn build_release_pipeline() -> Pipeline {
     // does NOT get these stages, so neither path double-fires.
     p.add(Box::new(anodizer_core::hooks::BeforeCrateStage));
 
-    // ── Build ────────────────────────────────────────────────────────────
+    // Build
     p.add(Box::new(BuildStage));
     p.add(Box::new(UpxStage));
 
-    // ── Artifacts + integrity (shared with merge) ────────────────────────
+    // Artifacts + integrity (shared with merge)
     push_artifact_stages(&mut p);
 
-    // ── Publish ──────────────────────────────────────────────────────────
+    // Publish
     push_publish_tail(&mut p);
 
-    // ── Per-crate lifecycle: after ──────────────────────────────────────────
+    // Per-crate lifecycle: after
     // AfterCrateStage runs each selected crate's `crates[].after` hooks at the
     // pipeline TAIL — after publish + post-publish verification — mirroring the
     // top-level `after:` (which fires once after the whole release) and the

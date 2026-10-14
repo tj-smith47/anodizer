@@ -761,7 +761,7 @@ fn dispatcher_args_are_consumed() {
     };
 }
 
-// ── resolve_child_snapshot ────────────────────────────────────────────
+// resolve_child_snapshot
 
 #[test]
 fn resolve_child_snapshot_auto_off_when_head_at_tag() {
@@ -799,7 +799,7 @@ fn resolve_child_snapshot_explicit_no_snapshot_beats_auto() {
     assert!(!resolve_child_snapshot(false, true, true));
 }
 
-// ── read_project_version ──────────────────────────────────────────────
+// read_project_version
 
 #[test]
 fn read_project_version_returns_none_when_cargo_toml_missing() {

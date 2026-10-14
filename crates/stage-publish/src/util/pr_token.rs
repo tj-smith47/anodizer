@@ -144,7 +144,9 @@ fn first_configured_tracked(
 /// `config_key` prefixes the config fields (`homebrew_cores[]` renders
 /// `` `homebrew_cores[].repository.token` ``), and `publisher_vars` are the
 /// publisher's own variables. The run token is listed only on a GitHub run,
-/// the one run whose token the resolvers read.
+/// the one run whose token the resolvers read, and there its item names
+/// `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`, which are then not
+/// listed again.
 pub(crate) fn token_order_hint(
     ctx: &anodizer_core::context::Context,
     order: &[TokenLink],
@@ -158,6 +160,7 @@ pub(crate) fn token_order_hint(
             .map(|n| TokenSource::EnvVar((*n).to_string()).to_string())
             .collect::<Vec<_>>()
     };
+    let github_run = ctx.token_type == anodizer_core::scm::ScmTokenType::GitHub;
     let mut items: Vec<String> = Vec::new();
     for link in order {
         match link {
@@ -165,7 +168,7 @@ pub(crate) fn token_order_hint(
             TokenLink::RepositoryToken => items.push(field("repository.token")),
             TokenLink::PublisherVariable => items.extend(vars(publisher_vars)),
             TokenLink::RunToken => {
-                if ctx.token_type == anodizer_core::scm::ScmTokenType::GitHub {
+                if github_run {
                     items.push(format!(
                         "{} (`--token`, or {} read at startup when `--token` is unset)",
                         TokenSource::RunToken,
@@ -173,12 +176,168 @@ pub(crate) fn token_order_hint(
                     ));
                 }
             }
+            // On a GitHub run the run token's item already names these
+            // variables: the CLI read the run token from them, so when it is
+            // unset they are unset too.
             TokenLink::GithubVariables => {
-                items.extend(vars(anodizer_core::git::GITHUB_TOKEN_ENV_LADDER));
+                if !(github_run && order.contains(&TokenLink::RunToken)) {
+                    items.extend(vars(anodizer_core::git::GITHUB_TOKEN_ENV_LADDER));
+                }
             }
         }
     }
     items.join(", then ")
+}
+
+/// Drives a token resolver through every source it can read, for tests that
+/// hold a missing-token hint to the order the resolver really reads.
+#[cfg(test)]
+pub(crate) mod hint_probe {
+    use super::TokenSource;
+    use anodizer_core::config::{PullRequestConfig, RepositoryConfig};
+    use anodizer_core::context::Context;
+    use anodizer_core::git::GITHUB_TOKEN_ENV_LADDER;
+    use anodizer_core::scm::ScmTokenType;
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    /// A resolver under test: the context to read and the `repository:`
+    /// block to hand it, giving the token it resolved.
+    pub(crate) type Resolve<'a> =
+        &'a dyn Fn(&mut Context, RepositoryConfig) -> anyhow::Result<Option<String>>;
+
+    /// The sources `resolve` reads, in its order: set every source to a
+    /// value naming it, resolve, record the source whose value came back,
+    /// take that source away, repeat until nothing resolves.
+    pub(crate) fn read_order(
+        token_type: ScmTokenType,
+        publisher_vars: &[&str],
+        resolve: Resolve<'_>,
+    ) -> Vec<TokenSource> {
+        let mut left: Vec<TokenSource> =
+            [TokenSource::PullRequestField, TokenSource::RepositoryField]
+                .into_iter()
+                .chain(std::iter::once(TokenSource::RunToken))
+                .chain(
+                    publisher_vars
+                        .iter()
+                        .chain(GITHUB_TOKEN_ENV_LADDER)
+                        .map(|v| TokenSource::EnvVar((*v).to_string())),
+                )
+                .collect();
+        let value = |s: &TokenSource| match s {
+            TokenSource::PullRequestField => "pull-request-value".to_string(),
+            TokenSource::RepositoryField => "repository-value".to_string(),
+            TokenSource::RunToken => "run-value".to_string(),
+            TokenSource::EnvVar(name) => format!("{name}-value"),
+        };
+        let mut order = Vec::new();
+        loop {
+            let mut builder = TestContextBuilder::new().sealed_env();
+            let mut repo = RepositoryConfig {
+                pull_request: Some(PullRequestConfig::default()),
+                ..Default::default()
+            };
+            for source in &left {
+                match source {
+                    TokenSource::PullRequestField => {
+                        repo.pull_request = Some(PullRequestConfig {
+                            token: Some(value(source)),
+                            ..Default::default()
+                        });
+                    }
+                    TokenSource::RepositoryField => repo.token = Some(value(source)),
+                    TokenSource::RunToken => builder = builder.token(Some(value(source))),
+                    TokenSource::EnvVar(name) => builder = builder.env(name, value(source)),
+                }
+            }
+            let mut ctx = builder.build();
+            ctx.token_type = token_type;
+            let Some(got) = resolve(&mut ctx, repo).expect("renders") else {
+                return order;
+            };
+            let at = left
+                .iter()
+                .position(|s| value(s) == got)
+                .unwrap_or_else(|| panic!("{got:?} is no source's value"));
+            order.push(left.remove(at));
+        }
+    }
+
+    /// How a hint names a source, with `config_key` before a config field.
+    fn label(config_key: &str, source: &TokenSource) -> String {
+        match source {
+            TokenSource::PullRequestField => {
+                format!("`{config_key}.repository.pull_request.token`")
+            }
+            TokenSource::RepositoryField => format!("`{config_key}.repository.token`"),
+            other => other.to_string(),
+        }
+    }
+
+    /// Asserts `hint` lists `order`, the sources a resolver read, one item per
+    /// source in that order. On a GitHub run the run token's item names the
+    /// GitHub variables, read after it, so each of them is named once and
+    /// has no item of its own.
+    pub(crate) fn assert_hint_lists(
+        name: &str,
+        token_type: ScmTokenType,
+        hint: &str,
+        order: &[TokenSource],
+        config_key: &str,
+    ) {
+        let github = token_type == ScmTokenType::GitHub;
+        assert_eq!(
+            order.contains(&TokenSource::RunToken),
+            github,
+            "{name} on {token_type:?}: {order:?}"
+        );
+        let is_ladder = |s: &TokenSource| matches!(s, TokenSource::EnvVar(v) if GITHUB_TOKEN_ENV_LADDER.contains(&v.as_str()));
+        let listed: Vec<&TokenSource> = if github {
+            let run = order
+                .iter()
+                .position(|s| *s == TokenSource::RunToken)
+                .expect("run token read");
+            assert!(
+                order[..run].iter().all(|s| !is_ladder(s)),
+                "{name}: a GitHub variable is read before the run token: {order:?}"
+            );
+            order.iter().filter(|s| !is_ladder(s)).collect()
+        } else {
+            order.iter().collect()
+        };
+        let items: Vec<&str> = hint.split(", then ").collect();
+        assert_eq!(
+            items.len(),
+            listed.len(),
+            "{name} on {token_type:?}: the hint {hint:?} lists every source read, {order:?}"
+        );
+        for (item, source) in items.iter().zip(&listed) {
+            assert!(
+                item.starts_with(&label(config_key, source)),
+                "{name} on {token_type:?}: the item {item:?} is {source:?}; hint: {hint}"
+            );
+        }
+        for var in GITHUB_TOKEN_ENV_LADDER {
+            let named = hint
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|w| w == var)
+                .count();
+            assert_eq!(
+                named, 1,
+                "{name} on {token_type:?}: {var} is named once: {hint}"
+            );
+        }
+        if github {
+            assert!(
+                hint.contains(
+                    "the run's GitHub token (`--token`, or \
+                     ANODIZER_GITHUB_TOKEN/GITHUB_TOKEN/GH_TOKEN read at startup when \
+                     `--token` is unset)"
+                ),
+                "{name}: the run token's item names where it came from: {hint}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

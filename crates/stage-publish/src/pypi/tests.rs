@@ -223,7 +223,7 @@ fn windows_targets_map_to_win_tags() {
 
 #[test]
 fn macosx_minor_clamps_to_zero_for_major_ge_11() {
-    // C1: pip/packaging only enumerate `macosx_<major>_0` for macOS 11+, so a
+    // pip/packaging only enumerate `macosx_<major>_0` for macOS 11+, so a
     // real minos of 11.2 must tag `macosx_11_0`, not `macosx_11_2` (which is
     // uninstallable). maturin/cibuildwheel apply the same clamp.
     assert_eq!(
@@ -243,7 +243,7 @@ fn macosx_minor_clamps_to_zero_for_major_ge_11() {
 
 #[test]
 fn manylinux_floors_below_baseline_glibc() {
-    // C2: `GLIBC_2.2.5` (the ancient x86_64 baseline symbol) truncates to
+    // `GLIBC_2.2.5` (the ancient x86_64 baseline symbol) truncates to
     // (2, 2); `manylinux_2_2` is below every recognized manylinux platform,
     // so the tag floors to the manylinux1 baseline `manylinux_2_5`.
     assert_eq!(
@@ -284,7 +284,7 @@ fn manylinux_floors_below_baseline_glibc() {
 
 #[test]
 fn darwin_non_macho_bytes_error() {
-    // C3: a non-Mach-O artifact routed under a darwin triple is the wrong
+    // A non-Mach-O artifact routed under a darwin triple is the wrong
     // binary and must hard-error (not silently ship a guessed fallback tag) —
     // the Mach-O analogue of the gnu "no GLIBC_*" error. A healthy Mach-O
     // missing its load command still falls back.
@@ -578,7 +578,7 @@ fn duplicate_rejection_shapes_are_matched_generously() {
         "File already exists. See https://pypi.org/help/#file-name-reuse"
     ));
     assert!(is_duplicate_rejection(403, "this file already exists"));
-    // C6: Warehouse's deleted-file rejection burns the slot but does not
+    // Warehouse's deleted-file rejection burns the slot but does not
     // repeat "already exists" — skip_existing must fold it too.
     assert!(is_duplicate_rejection(
         400,
@@ -993,7 +993,7 @@ fn author_and_project_urls_render_through_templates() {
     );
 }
 
-// P4: per-target platform-tag overrides (all three config modes)
+// Per-target platform-tag overrides (all three config modes)
 
 fn override_cfg(repo: String, extra: impl FnOnce(&mut PypiConfig)) -> PypiConfig {
     let mut overrides = std::collections::BTreeMap::new();
@@ -1079,7 +1079,7 @@ fn no_override_keeps_auto_detected_tag() {
     assert_eq!(files[0].platform_tag, "musllinux_1_2_aarch64");
 }
 
-// F7: microarch variant selection
+// Microarch variant selection
 
 #[test]
 fn amd64_variant_selects_matching_microarch_build() {
@@ -1708,7 +1708,7 @@ fn version_probe_maps_known_hosts_to_json_api() {
     assert_eq!(version_probe("not a url", "my-tool", "1.2.3"), None);
 }
 
-// C8 — anchored simple-index probe
+// Anchored simple-index probe
 
 #[test]
 fn simple_index_probe_matches_exact_version_only() {
@@ -1827,7 +1827,7 @@ fn a_non_distribution_filename_is_unverifiable_not_absent() {
     );
 }
 
-// C7 — sdist upload echoes PKG-INFO's own metadata_version + version
+// Sdist upload echoes PKG-INFO's own metadata_version + version
 
 /// Build a minimal sdist `.tar.gz` carrying `<name>-<version>/PKG-INFO` with
 /// the given headers.
@@ -2006,7 +2006,7 @@ fn sdist_upload_form_carries_pkg_info_metadata_version() {
     assert!(body.contains("name=\"filetype\"\r\n\r\nsdist"), "{body}");
 }
 
-// C15 — per-entry metadata scoped to the entry's crate (ids)
+// Per-entry metadata scoped to the entry's crate (ids)
 
 #[test]
 fn metadata_scopes_to_entry_crate_via_ids() {
@@ -2086,7 +2086,7 @@ fn metadata_scopes_to_entry_crate_via_ids() {
     );
 }
 
-// C19 — metadata template errors propagate (never ship raw source)
+// Metadata template errors propagate (never ship raw source)
 
 #[test]
 fn metadata_template_error_aborts_publish() {
@@ -2114,7 +2114,7 @@ fn metadata_template_error_aborts_publish() {
     assert!(files.is_empty());
 }
 
-// C11 — config-time platform-tag collision preflight
+// Config-time platform-tag collision preflight
 
 fn crate_with_targets(name: &str, path: &str, targets: &[&str]) -> CrateConfig {
     use anodizer_core::config::BuildConfig;

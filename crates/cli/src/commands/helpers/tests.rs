@@ -1362,6 +1362,18 @@ fn resolve_force_token_anodizer_var_takes_precedence_over_compat_alias() {
 }
 
 #[test]
+fn resolve_force_token_blank_anodizer_var_falls_back_to_the_compat_alias() {
+    let config = Config::default();
+    let env = anodizer_core::MapEnvSource::new()
+        .with("ANODIZER_FORCE_TOKEN", "  ")
+        .with("GORELEASER_FORCE_TOKEN", " gitlab\n");
+    assert_eq!(
+        resolve_force_token_with_env(&config, &env),
+        Some(ForceTokenKind::GitLab)
+    );
+}
+
+#[test]
 fn resolve_force_token_unrecognized_backend_is_none() {
     let config = Config::default();
     let env = anodizer_core::MapEnvSource::new().with("ANODIZER_FORCE_TOKEN", "bitbucket");

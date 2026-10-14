@@ -6128,9 +6128,9 @@ fn test_release_skip_announce_still_writes_summary_json() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // The audit-trail contract: summary.json reaches disk even though
-    // announce was operator-skipped. Pre-I1 this assertion would fail
-    // because emit_summary lived inside AnnounceStage::run.
+    // summary.json is the audit trail, so it reaches disk even though
+    // announce was operator-skipped: emit_summary runs outside
+    // AnnounceStage::run.
     assert!(
         summary_path.exists(),
         "summary.json must be written even when announce is operator-skipped.\nstderr:\n{}",

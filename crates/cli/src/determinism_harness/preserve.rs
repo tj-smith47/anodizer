@@ -492,7 +492,7 @@ pub(super) fn write_preserved_dist_context(
 ) -> Result<()> {
     let report = inputs.report;
 
-    // ── dist/artifacts.json: rich per-artifact metadata ──────────────
+    // dist/artifacts.json: rich per-artifact metadata
     // Optional + tolerant of corruption — fall back to defaults so a
     // malformed sibling JSON can't kill the manifest write.
     let artifacts_json: Option<serde_json::Value> =
@@ -528,7 +528,7 @@ pub(super) fn write_preserved_dist_context(
         targets = sorted.into_iter().collect();
     }
 
-    // ── dist/metadata.json: { project_name, tag, version, commit } ───
+    // dist/metadata.json: { project_name, tag, version, commit }
     let version: String =
         match read_optional_json(&dest.join(anodizer_core::dist::METADATA_JSON), log) {
             Some(v) => v
@@ -540,7 +540,7 @@ pub(super) fn write_preserved_dist_context(
             None => inputs.version_hint.to_string(),
         };
 
-    // ── Per-file walk of <dest>/** ───────────────────────────────────
+    // Each file under <dest>/**
     // Use the report's recorded hashes when available (the harness
     // already hashed every artifact it discovered; re-hashing here
     // would waste cycles). Index by `ArtifactRow::name`, which is the
@@ -1500,7 +1500,7 @@ mod tests {
         );
     }
 
-    // ── Per-crate subdir layout tests ─────────────────────────────────────────
+    // Per-crate subdir layout tests
 
     /// When the harness computes an effective_preserve_dest of `<base>/<crate>/`
     /// and calls write_preserved_dist_context with that dest, context.json

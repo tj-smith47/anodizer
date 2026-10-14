@@ -218,7 +218,7 @@ pub(super) fn redact_args(args: &[String], log: &anodizer_core::log::StageLogger
     result
 }
 
-// M6: retry policy for the network-touching subprocess calls in notarize
+// Retry policy for the network-touching subprocess calls in notarize
 //
 // The notarize stage shells out to Apple-hosted services (rcodesign
 // notary-submit and xcrun notarytool submit); a transient blip

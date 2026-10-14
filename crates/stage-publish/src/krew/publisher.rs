@@ -126,12 +126,38 @@ pub(super) fn collect_krew_target(
 /// of the crate `target` names), so a `pull_request.token` or
 /// `repository.token` the publish used is used again. A crate no longer in
 /// the config falls back to the environment chain.
-fn rollback_pr_token(ctx: &Context, target: &KrewPrTarget) -> anyhow::Result<Option<String>> {
+pub(super) fn rollback_pr_token(
+    ctx: &Context,
+    target: &KrewPrTarget,
+) -> anyhow::Result<Option<String>> {
     let repo = ctx
         .config
         .find_crate(&target.target)
         .and_then(|c| block(c.publish.as_ref()?)?.repository.as_ref());
-    util::resolve_pr_token(ctx, repo, target.token_env_var.as_deref())
+    util::resolve_pr_token(ctx, repo, Some(publisher_variable(target)))
+}
+
+/// The publisher variable `target` recorded, or `KREW_INDEX_TOKEN`.
+fn publisher_variable(target: &KrewPrTarget) -> &str {
+    target
+        .token_env_var
+        .as_deref()
+        .unwrap_or("KREW_INDEX_TOKEN")
+}
+
+/// The warning a rollback prints when no token closes the pull request of
+/// `target`: the sources [`rollback_pr_token`] read, in its order.
+pub(super) fn rollback_no_token_warning(ctx: &Context, target: &KrewPrTarget) -> String {
+    format!(
+        "skipped rollback for {} — no krew token resolvable (the rollback read {})",
+        target.target,
+        util::token_order_hint(
+            ctx,
+            util::PR_TOKEN_ORDER,
+            "krew",
+            &[publisher_variable(target)],
+        ),
+    )
 }
 
 /// The crate-level `publish.krew` block — the single accessor the
@@ -452,16 +478,10 @@ impl anodizer_core::Publisher for KrewPublisher {
                 }
             };
             let Some(token) = token else {
-                log.warn(&format!(
-                    "skipped rollback for {} — no krew token resolvable (env var ${} / \
-                     {} all unset)",
-                    t.target,
-                    t.token_env_var.as_deref().unwrap_or("KREW_INDEX_TOKEN"),
-                    anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.join(" / "),
-                ));
+                log.warn(&rollback_no_token_warning(ctx, t));
                 continue;
             };
-            let env_hint_for_target = t.token_env_var.as_deref().unwrap_or("KREW_INDEX_TOKEN");
+            let env_hint_for_target = publisher_variable(t);
             let pr_numbers = match crate::util::find_open_pr_numbers_for_head_with_env(
                 &t.upstream_owner,
                 &t.upstream_repo,
@@ -509,8 +529,7 @@ impl anodizer_core::Publisher for KrewPublisher {
 
         let env_hint = targets
             .first()
-            .and_then(|t| t.token_env_var.as_deref())
-            .unwrap_or("KREW_INDEX_TOKEN");
+            .map_or("KREW_INDEX_TOKEN", publisher_variable);
 
         // Three-bucket count: (closed, already_closed, failed).
         // `already_closed` is a success bucket — 404 / 410 / 422 from

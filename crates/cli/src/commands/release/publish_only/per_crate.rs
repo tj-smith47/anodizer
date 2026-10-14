@@ -436,7 +436,7 @@ pub(super) fn run_one_crate_dist(
     root_after: RootAfterHooks,
     dist: PathBuf,
 ) -> Result<()> {
-    // ── Load preserved-dist context ────────────────────────────────────
+    // Load preserved-dist context
     // Two manifest families live in `<dist>/`:
     //   - `artifacts.json` / `artifacts-<shard>.json`: the canonical
     //     in-process registry shape (`kind` / `target` / `metadata`),
@@ -507,7 +507,7 @@ pub(super) fn run_one_crate_dist(
         );
     }
 
-    // ── Rehydrate ctx.artifacts ────────────────────────────────────────
+    // Rehydrate ctx.artifacts
     // Delegates to the same loader `anodizer publish` uses so the two
     // entry points stay in lockstep (one parser to maintain). Each
     // shard's manifest contributes its artifacts to the registry.
@@ -555,7 +555,7 @@ pub(super) fn run_one_crate_dist(
     // produce double-emit confusion in SignStage / ReleaseStage.
     detect_duplicate_artifact_paths(ctx)?;
 
-    // ── Strip ephemeral signatures / certificates ──────────────────────
+    // Strip ephemeral signatures / certificates
     // Defensive: the harness skips SignStage when production keys are
     // exported on the runner, so preserved-dist usually has no `.sig`
     // / `.asc` files. But re-signing on top of an existing chain (e.g.
@@ -625,7 +625,7 @@ pub(super) fn run_one_crate_dist(
         &dist,
     )?;
 
-    // ── Materialize metadata.json for the release upload ───────────────
+    // Materialize metadata.json for the release upload
     // The release upload set includes the `Metadata` artifact (when
     // `include_meta` is on), whose path resolves to
     // `<dist>/metadata.json`. The preserve-dist flow rehydrates the
@@ -637,7 +637,7 @@ pub(super) fn run_one_crate_dist(
     // entry already points here; no `add` needed.
     crate::commands::helpers::write_metadata_json(ctx, config, log)?;
 
-    // ── Run the extended publish pipeline ──────────────────────────────
+    // Run the extended publish pipeline
     // `build_publish_only_pipeline` prepends `SignStage` ahead of the
     // usual release / blob / publish / snapcraft-publish chain — the
     // head SignStage is the production-keys re-sign pass that overlays
@@ -684,24 +684,6 @@ pub(super) fn run_one_crate_dist(
     result
 }
 
-/// Strip `Signature` / `Certificate` artifacts the harness may have
-/// left behind (with ephemeral keys). `SignStage`'s own
-/// `should_sign_artifact` already filters Signature/Certificate kinds
-/// out of the `all`/`any` artifacts set so a no-op re-sign wouldn't
-/// emit `.sig.sig`, but the resulting registry would still include
-/// the ephemeral artifacts — which then get UPLOADED by `ReleaseStage`.
-/// They must be removed at the source.
-///
-/// Symmetry note: any non-signature/certificate artifact remains
-/// untouched, including any `Checksum` entries — re-signing produces
-/// a new signature blob but the underlying archive bytes (which the
-/// checksums are computed from) are unchanged, so the checksums
-/// still match. `ChecksumStage` nonetheless runs in the publish-only
-/// pipeline right after the head `SignStage`
-/// (see `pipeline::builders::build_publish_only_pipeline`): the
-/// byte-deterministic recompute refreshes the checksum manifest over
-/// the production-signed tree and backfills the `sha256` metadata
-/// that the determinism-stripped `artifacts.json` omits.
 /// Whether `a` is a raw binary the determinism harness did not preserve.
 ///
 /// `preserve_raw_binaries` copies each raw binary to
@@ -721,6 +703,24 @@ pub(super) fn is_unpreserved_raw_binary(a: &anodizer_core::artifact::Artifact) -
         .any(|c| c.as_os_str() == crate::determinism_harness::PRESERVED_BIN_SUBDIR)
 }
 
+/// Strip `Signature` / `Certificate` artifacts the harness may have
+/// left behind (with ephemeral keys). `SignStage`'s own
+/// `should_sign_artifact` already filters Signature/Certificate kinds
+/// out of the `all`/`any` artifacts set so a no-op re-sign wouldn't
+/// emit `.sig.sig`, but the resulting registry would still include
+/// the ephemeral artifacts — which then get UPLOADED by `ReleaseStage`.
+/// They must be removed at the source.
+///
+/// Symmetry note: any non-signature/certificate artifact remains
+/// untouched, including any `Checksum` entries — re-signing produces
+/// a new signature blob but the underlying archive bytes (which the
+/// checksums are computed from) are unchanged, so the checksums
+/// still match. `ChecksumStage` nonetheless runs in the publish-only
+/// pipeline right after the head `SignStage`
+/// (see `pipeline::builders::build_publish_only_pipeline`): the
+/// byte-deterministic recompute refreshes the checksum manifest over
+/// the production-signed tree and backfills the `sha256` metadata
+/// that the determinism-stripped `artifacts.json` omits.
 pub(super) fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
     use anodizer_core::artifact::ArtifactKind;
     let stale_paths: Vec<std::path::PathBuf> = ctx

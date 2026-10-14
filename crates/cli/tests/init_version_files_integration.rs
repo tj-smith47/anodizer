@@ -266,7 +266,7 @@ fn missing_config_errors() {
     );
 }
 
-/// (M2a) The enrolled config must be loadable through the SAME loader the
+/// The enrolled config must be loadable through the SAME loader the
 /// release pipeline uses, with the enrolled paths present under version_files.
 #[test]
 fn enrolled_config_loads_via_check_command() {
@@ -291,7 +291,7 @@ fn enrolled_config_loads_via_check_command() {
     );
 }
 
-/// (M2b) A flow-style `version_files: [...]` is rejected with an actionable
+/// A flow-style `version_files: [...]` is rejected with an actionable
 /// error and the config is left untouched — never corrupted into mixed style.
 #[test]
 fn flow_style_list_is_rejected_without_corrupting() {
@@ -317,7 +317,7 @@ fn flow_style_list_is_rejected_without_corrupting() {
     assert_eq!(read(root, ".anodizer.yaml"), before);
 }
 
-/// (M2c) An existing 4-space-indented block gets new items at the SAME indent,
+/// An existing 4-space-indented block gets new items at the SAME indent,
 /// and the result is valid YAML that loads.
 #[test]
 fn four_space_block_indent_is_matched() {
@@ -352,7 +352,7 @@ fn four_space_block_indent_is_matched() {
     );
 }
 
-/// (M2d) A candidate path containing a space is double-quoted and round-trips:
+/// A candidate path containing a space is double-quoted and round-trips:
 /// it is enrolled quoted, and a second run treats it as already-enrolled.
 #[test]
 fn path_with_space_is_quoted_and_round_trips() {
@@ -394,7 +394,7 @@ fn path_with_space_is_quoted_and_round_trips() {
     );
 }
 
-/// (M2e) A `version_files:` block that is NOT at EOF (a top-level key follows
+/// A `version_files:` block that is NOT at EOF (a top-level key follows
 /// it) gets new items inserted within the block, leaving the trailing key in
 /// place — and the document stays valid.
 #[test]

@@ -127,7 +127,7 @@ pub(crate) fn yaml_to_json(yaml: &str) -> Result<Value> {
 /// Each language/registry publisher (aur via `bash -n`, nix via
 /// `nix-instantiate --parse`, homebrew via `ruby -c`, chocolatey via
 /// `xmllint --schema`) shells out to the real tool to catch a defect the
-/// structural floor cannot. The scaffold around the spawn — tool-presence gate,
+/// minimum structural check cannot. The scaffold around the spawn — tool-presence gate,
 /// hermetic tempdir, file write, success short-circuit, and the
 /// never-silent-pass empty fallback — is identical; only these fields differ.
 pub(crate) struct ExternalValidator<'a> {
@@ -145,19 +145,19 @@ pub(crate) struct ExternalValidator<'a> {
     /// the schema first. Publishers that validate a single rendered artifact
     /// pass one entry.
     pub files: &'a [(&'a str, &'a str)],
-    /// `warn` line logged when `tool` is absent (or unprobeable) and the floor
-    /// is NOT escalating — a lenient local `check`/dry-run, or a reversible
-    /// publisher. There the structural floor stands and a dev missing the tool
-    /// gets a skip, not a failure. When `tool_required` is set AND the floor
-    /// runs strict, a missing tool shows up as a finding instead — see
-    /// [`run_external_validator`].
+    /// `warn` line logged when `tool` is absent (or unprobeable) and the
+    /// validation gate is NOT escalating — a lenient local `check`/dry-run, or
+    /// a reversible publisher. There the minimum structural check stands and a
+    /// dev missing the tool gets a skip, not a failure. When `tool_required` is
+    /// set AND the validation gate runs strict, a missing tool shows up as a
+    /// finding instead — see [`run_external_validator`].
     pub skip_message: &'a str,
     /// `(root)` finding expectation when the tool fails but emits no parseable
     /// diagnostic. Returning empty here would silently report a failed
     /// validator as PASS, so a real failure must always be reported.
     pub empty_fallback: &'a str,
     /// Whether a MISSING (or unprobeable) `tool` is itself a reported finding
-    /// when the floor runs strict, rather than a silent skip.
+    /// when the validation gate runs strict, and is not skipped in silence.
     ///
     /// Set `true` only for moderation one-way-door publishers (chocolatey):
     /// their submission queue is irreversible, so a missing validator on the
@@ -187,11 +187,11 @@ fn first_absence_of(tool: &str) -> bool {
 /// `strict` and `cfg.tool_required`:
 /// - `strict && cfg.tool_required` (a moderation one-way-door publisher on the
 ///   real publish/preflight gate): the missing tool is a `(root)`
-///   [`SchemaFinding`] that fails the floor — a malformed artifact must not
+///   [`SchemaFinding`] that fails the validation gate — a malformed artifact must not
 ///   clear this gate and show up only in the registry's irreversible queue.
 /// - otherwise (lenient local check/dry-run, or a reversible publisher): notes
 ///   `cfg.skip_message` under `-v`, once per tool per process, and returns no
-///   findings; the structural floor stands. Preflight has already named the
+///   findings; the minimum structural check stands. Preflight has already named the
 ///   absent tool once as a recommendation.
 ///
 /// A probe *error* is never silently coerced into "tool absent" — it routes
@@ -218,7 +218,7 @@ where
 
     // A missing validator drops real schema coverage. For a moderation
     // one-way-door publisher (chocolatey) on the strict gate that gap is
-    // unacceptable — a malformed artifact would clear this floor unchecked and
+    // unacceptable — a malformed artifact would clear this gate unchecked and
     // show up only in the irreversible queue — so escalate it to a finding.
     // Clean absence uses the curated skip_message; a GENUINE probe I/O
     // failure (permissions, exec-format, …) gets the louder "could not
@@ -244,7 +244,7 @@ where
             ));
         } else if first_absence_of(tool) {
             // Preflight already reported the recommended tool once at default
-            // verbosity; the floor standing in is detail, said once per tool
+            // verbosity; the minimum structural check standing in is detail, said once per tool
             // however many entries (or passes) render through it.
             log.verbose(cfg.skip_message);
         }
@@ -291,7 +291,7 @@ where
 /// one-way-door publisher's strict gate, or `None` (warn+skip) otherwise.
 ///
 /// `detail` describes why the tool is unavailable (absent, or the probe error).
-/// Returns `Some` only when BOTH the floor runs strict and the publisher marks
+/// Returns `Some` only when BOTH the validation gate runs strict and the publisher marks
 /// its validator required — the irreversible-submit case where an unvalidated
 /// artifact must fail here rather than in the registry's moderation queue.
 fn missing_required_tool_finding(
@@ -607,7 +607,7 @@ mod tests {
             tool: ABSENT_TOOL,
             flags: &[],
             files: &[("artifact", "<x/>")],
-            skip_message: "tool absent — relying on the structural floor",
+            skip_message: "tool absent — relying on the minimum structural check",
             empty_fallback: "validator failed with no parseable diagnostic",
             tool_required,
         }
@@ -628,7 +628,7 @@ mod tests {
     /// `(root)` finding, which fails the validation gate. This is the moderation
     /// one-way-door case where an unchecked artifact must not clear here.
     #[test]
-    fn missing_required_tool_under_strict_surfaces_a_root_finding() {
+    fn missing_required_tool_under_strict_is_a_root_finding() {
         let findings = run_missing(true, true);
         assert_eq!(
             findings.len(),
@@ -645,9 +645,9 @@ mod tests {
         );
     }
 
-    /// F2: the SAME required validator missing in a LENIENT local check/dry-run
+    /// The SAME required validator missing in a LENIENT local check/dry-run
     /// (not strict) is a warn+skip — a dev without the tool installed is never
-    /// blocked, and the structural floor still stands.
+    /// blocked, and the minimum structural check still stands.
     #[test]
     fn missing_required_tool_when_lenient_skips_without_a_finding() {
         assert!(
@@ -656,7 +656,7 @@ mod tests {
         );
     }
 
-    /// F2: an OPTIONAL (reversible-publisher) validator missing is a warn+skip in
+    /// An OPTIONAL (reversible-publisher) validator missing is a warn+skip in
     /// BOTH modes — strictness only escalates a `tool_required` validator.
     #[test]
     fn missing_optional_tool_skips_in_both_modes() {

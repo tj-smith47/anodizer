@@ -497,7 +497,7 @@ fn registers_install_script_artifact() {
 
 #[test]
 fn install_script_is_a_checksummed_and_signed_subject() {
-    // W3: the installer must be checksummed AND signed like makeself, so its
+    // The installer must be checksummed AND signed like makeself, so its
     // kind must be a primary subject kind.
     assert!(
         anodizer_core::artifact::primary_subject_kinds().contains(&ArtifactKind::InstallScript),

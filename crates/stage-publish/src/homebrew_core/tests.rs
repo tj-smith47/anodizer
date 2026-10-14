@@ -915,19 +915,10 @@ fn read_order(token_type: anodizer_core::scm::ScmTokenType, resolve: Resolver) -
     }
 }
 
-/// How the hint names a source.
-fn hint_label(source: &TokenSource) -> String {
-    match source {
-        TokenSource::PullRequestField => "`homebrew_cores[].repository.pull_request.token`".into(),
-        TokenSource::RepositoryField => "`homebrew_cores[].repository.token`".into(),
-        other => other.to_string(),
-    }
-}
-
 /// The missing-token hints list the sources the resolvers read, in the order
 /// they read them, on a GitHub run and on a GitLab run, whose run token the
 /// resolvers never read. On a GitHub run the run token's item says where the
-/// CLI took it from.
+/// CLI took it from and the GitHub variables are named only there.
 #[test]
 fn the_token_hints_list_the_sources_in_the_order_the_resolvers_read() {
     use anodizer_core::scm::ScmTokenType;
@@ -942,35 +933,14 @@ fn the_token_hints_list_the_sources_in_the_order_the_resolvers_read() {
         ];
         for (name, resolve, hint) in cases {
             let order = read_order(token_type, resolve);
-            assert_eq!(
-                order.contains(&TokenSource::RunToken),
-                token_type == ScmTokenType::GitHub,
-                "{name} on {token_type:?}: {order:?}"
-            );
             let (ctx, _) = TokenSources::all().build(token_type);
-            let hint = hint(&ctx);
-            let items: Vec<&str> = hint.split(", then ").collect();
-            assert_eq!(
-                items.len(),
-                order.len(),
-                "{name} on {token_type:?}: the hint {hint:?} lists every source read, {order:?}"
+            crate::util::hint_probe::assert_hint_lists(
+                name,
+                token_type,
+                &hint(&ctx),
+                &order,
+                "homebrew_cores[]",
             );
-            for (item, source) in items.iter().zip(&order) {
-                assert!(
-                    item.starts_with(&hint_label(source)),
-                    "{name} on {token_type:?}: the item {item:?} is {source:?}; hint: {hint}"
-                );
-            }
-            if token_type == ScmTokenType::GitHub {
-                assert!(
-                    hint.contains(
-                        "the run's GitHub token (`--token`, or \
-                         ANODIZER_GITHUB_TOKEN/GITHUB_TOKEN/GH_TOKEN read at startup when \
-                         `--token` is unset)"
-                    ),
-                    "the run token's item names where it came from: {hint}"
-                );
-            }
         }
     }
 }
@@ -1038,8 +1008,8 @@ fn the_rollback_warning_names_the_source_the_bump_used() {
             .unwrap_or_else(|| panic!("the warning states the order: {warning}"));
         assert!(said.ends_with(want), "{source:?}: {warning}");
         assert_eq!(
-            order.trim_end_matches(')'),
-            super::resolve::pr_token_order_hint(&ctx),
+            order.strip_suffix(')'),
+            Some(super::resolve::pr_token_order_hint(&ctx).as_str()),
             "{source:?}: {warning}"
         );
     }
@@ -1678,7 +1648,6 @@ fn rollback_decodes_evidence_and_closes_the_pr() {
                     direct_commit: false,
                     pr_url: Some("https://github.com/Homebrew/homebrew-core/pull/42".into()),
                     token_source: Some(TokenSource::EnvVar(TOKEN_ENV_VARS[0].into())),
-                    token_env_var: None,
                 },
             ],
         },
@@ -1717,7 +1686,6 @@ fn hbc_target(
         pr_url: (!direct_commit)
             .then(|| "https://github.com/Homebrew/homebrew-core/pull/42".to_string()),
         token_source,
-        token_env_var: None,
     }
 }
 
@@ -1982,7 +1950,6 @@ fn snapshot_serde_round_trips_without_token_value() {
         direct_commit: false,
         pr_url: Some("https://x/42".into()),
         token_source: Some(TokenSource::EnvVar(TOKEN_ENV_VARS[0].into())),
-        token_env_var: None,
     };
     let json = serde_json::to_string(&snap).unwrap();
     // The env-var NAME is carried; no token VALUE field exists on the type.

@@ -243,7 +243,7 @@ pub(super) fn merge_preserved_contexts(
     }
     merged.targets = targets.into_iter().collect();
 
-    // ── Cross-checks (fail closed) ────────────────────────────────────
+    // Cross-checks (fail closed)
     // Empty merged `commit` means NO shard recorded one. Re-signing
     // without a commit anchor breaks the determinism guarantee: nothing
     // can prove the preserved bytes match the current release.

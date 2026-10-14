@@ -5566,9 +5566,9 @@ line two\n\
     // Multitrack root aggregate (PerCrate)
     //
     // These exercise the topology-driven root aggregate: a fresh/empty/foreign
-    // root must NOT lose any crate's commits (R3), must omit empty crates (R4),
-    // nest groups as `#### Group` under `### <crate>` (R5), classify by crate
-    // name (R2), and be idempotent (R6). The caller's sequential threading
+    // root must NOT lose any crate's commits, must omit empty crates,
+    // nest groups as `#### Group` under `### <crate>`, classify by crate
+    // name, and be idempotent. The caller's sequential threading
     // (`existing_override`) is mirrored by `refresh_root_multitrack`.
 
     /// Commit `subject` after writing a file under `crates/<crate>/`, so the
@@ -5607,7 +5607,7 @@ line two\n\
         working.unwrap_or_default()
     }
 
-    /// R3 + R4 + R5: a FRESH (absent) root must bootstrap one `### <crate>`
+    /// A FRESH (absent) root must bootstrap one `### <crate>`
     /// subsection per non-empty crate with NO data loss, omit the empty crate,
     /// and nest group headings as `#### <Group>`.
     #[test]
@@ -5619,7 +5619,7 @@ line two\n\
         commit_in_crate(root, "cfgd-core", "b.rs", "fix: core bug");
         commit_in_crate(root, "cfgd", "c.rs", "feat: cfgd feature");
         commit_in_crate(root, "cfgd-csi", "d.rs", "fix: csi repair");
-        // cfgd-operator: NO commit → must be omitted (R4).
+        // cfgd-operator: NO commit → must be omitted.
 
         let crate_names = vec![
             "cfgd-core".to_string(),
@@ -5629,7 +5629,7 @@ line two\n\
         ];
         let out = refresh_root_multitrack(root, &crate_names, None);
 
-        // R3: every non-empty crate present, NONE lost.
+        // Every non-empty crate present, NONE lost.
         assert!(out.contains("### cfgd-core"), "cfgd-core lost:\n{out}");
         assert!(out.contains("### cfgd"), "cfgd lost:\n{out}");
         assert!(out.contains("### cfgd-csi"), "cfgd-csi lost:\n{out}");
@@ -5637,12 +5637,12 @@ line two\n\
         assert!(out.contains("core bug"), "core fix lost:\n{out}");
         assert!(out.contains("cfgd feature"), "cfgd commit lost:\n{out}");
         assert!(out.contains("csi repair"), "csi commit lost:\n{out}");
-        // R4: empty crate omitted.
+        // Empty crate omitted.
         assert!(
             !out.contains("### cfgd-operator"),
             "empty crate must be omitted:\n{out}"
         );
-        // R5: groups nest one level deeper under the crate subsection.
+        // Groups nest one level deeper under the crate subsection.
         assert!(
             out.contains("#### Features"),
             "group headings must be `#### Group` under a crate subsection:\n{out}"
@@ -5653,7 +5653,7 @@ line two\n\
         );
     }
 
-    /// R3: a FRESH-EMPTY `## [Unreleased]` (the exact last-writer-wins trigger)
+    /// A FRESH-EMPTY `## [Unreleased]` (the exact last-writer-wins trigger)
     /// must accumulate every crate's subsection rather than the flat path
     /// replacing the whole body each iteration.
     #[test]
@@ -5681,7 +5681,7 @@ line two\n\
         assert!(out.contains("cfgd thing"));
     }
 
-    /// R2: a FOREIGN (git-cliff-style) flat `[Unreleased]` leading with
+    /// A FOREIGN (git-cliff-style) flat `[Unreleased]` leading with
     /// `### Added` must NOT be misclassified as a crate subsection. In
     /// multitrack mode the crate's `### <crate>` subsection is appended; the
     /// foreign content is preserved (not duplicated under a spurious crate).
@@ -5728,7 +5728,7 @@ line two\n\
         );
     }
 
-    /// R6: re-running the multitrack refresh with no new commits is
+    /// Re-running the multitrack refresh with no new commits is
     /// byte-identical (idempotent).
     #[test]
     fn multitrack_refresh_is_idempotent() {
@@ -5745,7 +5745,7 @@ line two\n\
         assert_eq!(first, second, "second pass must be byte-identical");
     }
 
-    /// R4 (data-loss guard): an EXISTING `### <crate>` subsection with content,
+    /// Data-loss guard: an EXISTING `### <crate>` subsection with content,
     /// refreshed over a range that yields NO new commits, must be left untouched
     /// — not blanked. The whole file is byte-identical and the sibling
     /// subsection survives verbatim.

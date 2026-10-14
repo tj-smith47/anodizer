@@ -35,6 +35,8 @@ mod parallelism;
 mod pr;
 mod pr_submission;
 mod pr_token;
+#[cfg(test)]
+pub(crate) use pr_token::hint_probe;
 mod template;
 
 #[cfg(test)]

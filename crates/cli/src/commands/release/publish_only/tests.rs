@@ -51,7 +51,7 @@ fn load_preserved_context_tolerates_missing_fields() {
     assert_eq!(parsed.commit, "");
 }
 
-// ── discover_sharded_manifests / .tmp skip ────────────────────────
+// discover_sharded_manifests / .tmp skip
 
 #[test]
 fn discover_sharded_manifests_skips_tmp_siblings_uniformly() {
@@ -86,7 +86,7 @@ fn discover_sharded_manifests_skips_tmp_siblings_uniformly() {
     );
 }
 
-// ── un-suffixed + suffixed coexistence ────────────────────────────
+// un-suffixed + suffixed coexistence
 
 #[test]
 fn collision_check_errors_when_unsuffixed_and_suffixed_both_present_context() {
@@ -147,7 +147,7 @@ fn collision_check_ignores_tmp_sibling_of_suffixed() {
         .expect(".tmp sibling must not trigger collision");
 }
 
-// ── merge_preserved_contexts cross-checks ─────────────────────────
+// merge_preserved_contexts cross-checks
 
 fn ctx_entry(version: &str, commit: &str) -> PreservedDistContext {
     PreservedDistContext {
@@ -254,7 +254,7 @@ fn merge_preserved_contexts_tolerates_one_shard_with_empty_commit() {
     assert_eq!(merged.commit, "deadbeefcafe");
 }
 
-// ── detect_duplicate_paths_in ──────────────────────────────────────
+// detect_duplicate_paths_in
 
 #[test]
 fn detect_duplicate_paths_in_passes_on_unique_set() {
@@ -285,7 +285,7 @@ fn detect_duplicate_paths_in_flags_repeated_path() {
     );
 }
 
-// ── detect_missing_files_in ────────────────────────────────────────
+// detect_missing_files_in
 
 #[test]
 fn detect_missing_files_in_passes_when_all_present() {
@@ -344,7 +344,7 @@ fn detect_missing_files_in_ignores_files_not_in_manifest() {
         .expect("unreferenced dist files must not trigger the check");
 }
 
-// ── hash_verify_preserved_dist ─────────────────────────────────────
+// hash_verify_preserved_dist
 
 /// `sha256("hello world")` — pinned literal so the matching-bytes
 /// test doesn't recompute the hash via the very function under test.
@@ -654,7 +654,7 @@ fn missing_file_check_skips_only_unpreserved_raw_binaries() {
     );
 }
 
-// ── detect_dist_layout tests ──────────────────────────────────────────────
+// detect_dist_layout tests
 
 fn write_context_file(dir: &std::path::Path, name: &str) {
     let content = r#"{"artifacts":[],"targets":[],"version":"0.0.0","commit":"abc"}"#;
@@ -746,7 +746,7 @@ fn detect_layout_subdir_without_context_is_ignored() {
     );
 }
 
-// ── merge_workspace_skip ─────────────────────────────────────────
+// merge_workspace_skip
 
 #[test]
 fn merge_workspace_skip_appends_new_entries() {
@@ -793,7 +793,7 @@ fn merge_workspace_skip_propagates_cfgd_core_announce_skip() {
     );
 }
 
-// ── run_per_crate dist restore ───────────────────────────────────
+// run_per_crate dist restore
 
 /// Regression: `run_per_crate` re-anchors `ctx.config.dist` onto
 /// the per-crate preserved subdir for the duration of each
@@ -1503,7 +1503,7 @@ fn per_crate_overlay_does_not_leak_across_workspaces() {
     );
 }
 
-// ── per-crate Tag restore (the lockstep-workspace title/changelog bug) ──
+// per-crate Tag restore (the lockstep-workspace title/changelog bug)
 
 mod per_crate_tag {
     use super::*;
@@ -1966,7 +1966,7 @@ mod per_crate_tag {
     }
 }
 
-// ── --crate dispatch: per-crate-subdir layout awareness ────
+// --crate dispatch: per-crate-subdir layout awareness
 
 fn subdir_test_log() -> StageLogger {
     StageLogger::new("subdir-test", anodizer_core::log::Verbosity::Quiet)
@@ -2007,7 +2007,7 @@ fn crate_subdir_has_manifest_false_for_flat_layout() {
     );
 }
 
-// ── per-crate before / after lifecycle hooks ────────────────────────
+// per-crate before / after lifecycle hooks
 
 use anodizer_core::config::{CrateConfig, HookEntry, HooksConfig};
 use anodizer_core::context::ContextOptions;

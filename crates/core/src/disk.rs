@@ -452,7 +452,7 @@ impl HeadroomShortfall {
 /// Project a measured peak forward into a required-free-space figure:
 /// `peak × safety_factor`, saturating at `u64::MAX`.
 ///
-/// Pulled out so the saturation intent is explicit (S1): an absurd peak ×
+/// Pulled out so the saturation intent is explicit: an absurd peak ×
 /// factor saturates to `u64::MAX`, which makes the guard always-abort —
 /// the safe direction (never under-provision), and unreachable in
 /// practice (a real peak is bounded by disk size).

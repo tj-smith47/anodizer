@@ -1450,7 +1450,7 @@ mod tests {
         );
     }
 
-    // ── per-crate before_publish ────────────────────────────────────────
+    // per-crate before_publish
 
     use crate::artifact::{Artifact, ArtifactKind};
     use crate::config::{Config, CrateConfig, HooksConfig};
@@ -2054,7 +2054,7 @@ mod tests {
         let _ = std::fs::remove_file(&out);
     }
 
-    // ── per-crate before / after lifecycle stages ───────────────────────────
+    // per-crate before / after lifecycle stages
 
     /// A crate config carrying a per-crate `before` (or `after`) lifecycle
     /// hook that appends `<phase>:<name>:{{ Version }}` to `out_file`, so a

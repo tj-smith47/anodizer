@@ -470,6 +470,5 @@ fn push_target(
         direct_commit,
         pr_url,
         token_source,
-        token_env_var: None,
     });
 }

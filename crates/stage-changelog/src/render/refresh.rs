@@ -460,9 +460,9 @@ pub(crate) fn replace_crate_subsection_body(
 
     match sub_start {
         Some(_) if nested_body.is_empty() => {
-            // Existing subsection, no new commits in range: leave it untouched
-            // (R4). Returning the input unchanged makes the no-op detectable
-            // (merged == existing).
+            // Existing subsection, no new commits in range: leave it
+            // untouched. Returning the input unchanged makes the no-op
+            // detectable (merged == existing).
             return existing.to_string();
         }
         Some(start) => {

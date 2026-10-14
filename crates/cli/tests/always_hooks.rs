@@ -337,7 +337,7 @@ fn build_command_fires_always_when_before_hooks_fail() {
     );
 }
 
-// ── `--skip` tokens: one per root lane, on both commands ──
+// `--skip` tokens: one per root lane, on both commands
 
 /// Fixture whose `before:` hook labels itself like the other three lanes, so
 /// a lane-skip assertion can name the exact set that fired.

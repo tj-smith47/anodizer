@@ -176,7 +176,7 @@ fn inject_drift_hidden_from_help() {
     );
 }
 
-// ── Drift-injection round-trip — fast (~1s with warm cache) ──────────────
+// Drift-injection round-trip — fast (~1s with warm cache)
 //
 // A fast integration test that synthesizes a tiny cargo workspace, runs
 // the harness with `--runs=2 --inject-drift=archive`, and asserts the
@@ -196,7 +196,7 @@ fn inject_drift_hidden_from_help() {
 mod common;
 use common::{bootstrap_minimal_cargo_repo, host_triple, run_git, tool_on_path};
 
-/// End-to-end drift-injection integration test (I12). Synthesizes a
+/// End-to-end drift-injection integration test. Synthesizes a
 /// minimal cargo workspace, drives the harness with `--runs=2
 /// --inject-drift=archive`, and asserts the JSON report records drift.
 ///

@@ -50,6 +50,44 @@ fn dedup_targets(targets: Vec<SchemastoreTargetSnapshot>) -> Vec<SchemastoreTarg
     out
 }
 
+/// The token a rollback closes the pull request of `t` with: the one the
+/// publish opened it with, read from the one `schemastore.repository` block
+/// through [`crate::util::resolve_pr_token`].
+fn rollback_pr_token(
+    ctx: &Context,
+    t: &SchemastoreTargetSnapshot,
+) -> anyhow::Result<Option<String>> {
+    crate::util::resolve_pr_token(
+        ctx,
+        ctx.config.schemastore.repository.as_ref(),
+        Some(publisher_variable(t)),
+    )
+}
+
+/// The publisher variable `t` recorded, or [`TOKEN_ENV_VAR`].
+fn publisher_variable(t: &SchemastoreTargetSnapshot) -> &str {
+    t.token_env_var.as_deref().unwrap_or(TOKEN_ENV_VAR)
+}
+
+/// The warning a rollback prints when no token closes the pull request of
+/// `t`: the sources [`rollback_pr_token`] read, in its order.
+fn rollback_no_token_warning(ctx: &Context, t: &SchemastoreTargetSnapshot) -> String {
+    format!(
+        "skipped rollback for head {}:{} — no schemastore token resolvable for {}/{} (the \
+         rollback read {})",
+        t.fork_owner,
+        t.branch,
+        t.upstream_owner,
+        t.upstream_repo,
+        crate::util::token_order_hint(
+            ctx,
+            crate::util::PR_TOKEN_ORDER,
+            "schemastore",
+            &[publisher_variable(t)],
+        ),
+    )
+}
+
 /// Roll back a SchemaStore publish by closing the registration PRs it opened.
 ///
 /// Best-effort: closing a PR does not undo a merge, so an already-merged PR
@@ -78,20 +116,13 @@ pub(crate) fn rollback_publish(
     // it. The publish opened the pull request with the token of the one
     // `schemastore.repository` block, so the rollback reads the same chain.
     let env = ctx.env_source();
-    let resolve_token = |t: &SchemastoreTargetSnapshot| {
-        crate::util::resolve_pr_token(
-            ctx,
-            ctx.config.schemastore.repository.as_ref(),
-            t.token_env_var.as_deref(),
-        )
-    };
 
     let (mut closed, mut already_closed, mut failed) = (0usize, 0usize, 0usize);
     for t in &targets {
         let label = format!("{}/{}", t.upstream_owner, t.upstream_repo);
-        let env_hint = t.token_env_var.as_deref().unwrap_or(TOKEN_ENV_VAR);
+        let env_hint = publisher_variable(t);
 
-        let token = match resolve_token(t) {
+        let token = match rollback_pr_token(ctx, t) {
             Ok(token) => token,
             Err(e) => {
                 log.warn(&format!(
@@ -103,13 +134,7 @@ pub(crate) fn rollback_publish(
             }
         };
         let Some(token) = token else {
-            log.warn(&format!(
-                "skipped rollback for head {}:{} — no schemastore token resolvable for \
-                 {label} (env var ${env_hint} / {} all unset)",
-                t.fork_owner,
-                t.branch,
-                anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.join(" / ")
-            ));
+            log.warn(&rollback_no_token_warning(ctx, t));
             continue;
         };
 
@@ -504,5 +529,35 @@ mod tests {
                 && m.contains("failed 0")),
             "no-token skip must leave every counter at zero; got: {all:?}"
         );
+    }
+
+    /// The rollback's no-token warning lists the sources
+    /// [`rollback_pr_token`] reads, in its order, on a GitHub run and on a
+    /// GitLab run.
+    #[test]
+    fn the_rollback_no_token_warning_lists_the_sources_the_rollback_reads() {
+        use anodizer_core::scm::ScmTokenType;
+        let t = target("schemastore-v6.0.0");
+        for token_type in [ScmTokenType::GitHub, ScmTokenType::GitLab] {
+            let order =
+                crate::util::hint_probe::read_order(token_type, &[TOKEN_ENV_VAR], &|ctx, repo| {
+                    ctx.config.schemastore.repository = Some(repo);
+                    rollback_pr_token(ctx, &t)
+                });
+            let mut ctx = TestContextBuilder::new().sealed_env().build();
+            ctx.token_type = token_type;
+            let warning = rollback_no_token_warning(&ctx, &t);
+            let hint = warning
+                .split_once("(the rollback read ")
+                .and_then(|(_, rest)| rest.strip_suffix(')'))
+                .unwrap_or_else(|| panic!("the warning states the order: {warning}"));
+            crate::util::hint_probe::assert_hint_lists(
+                "schemastore rollback",
+                token_type,
+                hint,
+                &order,
+                "schemastore",
+            );
+        }
     }
 }

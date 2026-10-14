@@ -28,6 +28,11 @@
 //! - [`workspace_sources`] is every `.rs` file the workspace ships, production
 //!   and test halves and integration tests alike, for a pin that must see all
 //!   of them.
+//! - [`item_initializers`] splits a source into its `static` and `const`
+//!   items outside function bodies, whose initializers run code no body holds.
+//! - [`production_corpus`] is [`workspace_production_sources`] read and split
+//!   once per test binary, and [`cached_regex`] compiles a pattern once, for
+//!   the scans that read the whole workspace.
 
 use std::path::{Path, PathBuf};
 
@@ -153,6 +158,98 @@ pub fn function_bodies(src: &str) -> Vec<String> {
         bodies.push(lines[i..=end].join("\n"));
     }
     bodies
+}
+
+/// Split Rust source into its `static` and `const` items outside every
+/// function body: each item from its keyword line to the `;` that ends it,
+/// outside brackets and string literals. A `const fn` is a function, so it is
+/// left to [`function_bodies`], and so is an item declared inside a body.
+///
+/// A scan that asks what code computes needs these too: an initializer such
+/// as `static T: LazyLock<…> = LazyLock::new(|| …)` runs code no function
+/// body holds.
+///
+/// ```
+/// # use anodizer_core::test_helpers::test_sources::item_initializers;
+/// let src = "const A: &str = \"x;y\";\nconst fn f() {\n    const B: u8 = 1;\n}\npub static C: [u8; 2] = [\n    1, 2,\n];\n";
+/// assert_eq!(
+///     item_initializers(src),
+///     vec!["const A: &str = \"x;y\";", "pub static C: [u8; 2] = [\n    1, 2,\n];"],
+/// );
+/// ```
+pub fn item_initializers(src: &str) -> Vec<String> {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut in_fn = vec![false; lines.len()];
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if !opens_fn_item(trimmed) {
+            continue;
+        }
+        let closing = format!("{}}}", " ".repeat(line.len() - trimmed.len()));
+        let end = lines[i + 1..]
+            .iter()
+            .position(|l| *l == closing)
+            .map_or(lines.len() - 1, |p| i + 1 + p);
+        in_fn[i..=end].iter_mut().for_each(|f| *f = true);
+    }
+    let mut items = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if in_fn[i] || !opens_value_item(line.trim_start()) {
+            continue;
+        }
+        let text = lines[i..].join("\n");
+        let (mut depth, mut in_str, mut prev) = (0usize, false, '\0');
+        let mut end = text.len();
+        for (at, c) in text.char_indices() {
+            match c {
+                '"' if prev != '\\' => in_str = !in_str,
+                _ if in_str => {}
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth = depth.saturating_sub(1),
+                ';' if depth == 0 => {
+                    end = at + 1;
+                    break;
+                }
+                _ => {}
+            }
+            prev = c;
+        }
+        items.push(text[..end].to_string());
+    }
+    items
+}
+
+/// Whether `trimmed` opens a `static` or `const` item: the keyword, after an
+/// optional visibility, followed by a name.
+fn opens_value_item(trimmed: &str) -> bool {
+    let mut rest = trimmed;
+    if let Some(after_pub) = rest.strip_prefix("pub") {
+        rest = match after_pub.strip_prefix('(') {
+            Some(scoped) => match scoped.split_once(')') {
+                Some((_, tail)) => tail,
+                None => return false,
+            },
+            None => after_pub,
+        };
+        rest = rest.trim_start();
+    }
+    let Some(tail) = rest
+        .strip_prefix("static ")
+        .or_else(|| rest.strip_prefix("const "))
+    else {
+        return false;
+    };
+    let tail = tail
+        .trim_start()
+        .strip_prefix("mut ")
+        .unwrap_or(tail)
+        .trim_start();
+    tail.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && !opens_fn_item(trimmed)
+        && !tail.starts_with("fn ")
+        && !tail.starts_with("unsafe ")
+        && !tail.starts_with("async ")
+        && !tail.starts_with("extern ")
 }
 
 /// Whether `path` is a whole test source file by name, exactly as
@@ -710,6 +807,68 @@ pub fn workspace_sources() -> Vec<PathBuf> {
     }
     assert!(!out.is_empty(), "the workspace ships no source");
     out
+}
+
+/// One production source of the workspace, read and split once.
+pub struct ProductionSource {
+    /// The file's path.
+    pub path: PathBuf,
+    /// Its production half ([`production_half`]).
+    pub text: String,
+    /// That half split into function bodies ([`function_bodies`]).
+    pub bodies: Vec<String>,
+    /// That half's `static` and `const` items ([`item_initializers`]).
+    pub items: Vec<String>,
+}
+
+/// Every production source of the workspace ([`workspace_production_sources`])
+/// with its production half, function bodies and items, read and split once
+/// per test binary.
+///
+/// Every structural scan that reads the whole workspace asks the same
+/// question of the same files, so the read and the split are shared: two
+/// scans that each read the workspace took a minute between them.
+pub fn production_corpus() -> &'static [ProductionSource] {
+    static CORPUS: std::sync::LazyLock<Vec<ProductionSource>> = std::sync::LazyLock::new(|| {
+        workspace_production_sources()
+            .into_iter()
+            .map(|path| {
+                let whole = std::fs::read_to_string(&path).expect("readable source");
+                let text = production_half(&whole).to_string();
+                let bodies = function_bodies(&text);
+                let items = item_initializers(&text);
+                ProductionSource {
+                    path,
+                    text,
+                    bodies,
+                    items,
+                }
+            })
+            .collect()
+    });
+    &CORPUS
+}
+
+/// `pattern` compiled once for the whole test binary.
+///
+/// A structural scan asks the same few patterns of every function body in
+/// the workspace, and a shared `Regex` keeps its match caches warm between
+/// bodies, where a fresh copy would rebuild them on every search.
+pub fn cached_regex(pattern: impl Into<String>) -> &'static regex::Regex {
+    static CACHE: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::BTreeMap<String, &'static regex::Regex>>,
+    > = std::sync::LazyLock::new(Default::default);
+    let mut cache = CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let pattern = pattern.into();
+    if let Some(re) = cache.get(&pattern) {
+        return re;
+    }
+    let re: &'static regex::Regex =
+        Box::leak(Box::new(regex::Regex::new(&pattern).expect("valid regex")));
+    cache.insert(pattern, re);
+    re
 }
 
 #[cfg(test)]

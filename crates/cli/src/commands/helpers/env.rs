@@ -1,5 +1,6 @@
 use anodizer_core::config::{Config, ForceTokenKind};
 use anodizer_core::context::Context;
+use anodizer_core::git::non_blank_token;
 use anyhow::Context as _;
 
 /// Set a process-level environment variable.
@@ -19,8 +20,9 @@ pub(super) fn set_env_var_single_threaded(key: &str, value: &str) {
 
 /// Resolve the effective `force_token` kind — config field first, then the
 /// `ANODIZER_FORCE_TOKEN` env var, then the `GORELEASER_FORCE_TOKEN` compat
-/// fallback. Returns `None` if nothing is set (or the value isn't a recognised
-/// backend).
+/// fallback. Each value is trimmed, and a blank one counts as unset, so an
+/// empty `ANODIZER_FORCE_TOKEN` falls through to the fallback. Returns
+/// `None` if nothing is set (or the value isn't a recognised backend).
 ///
 /// Extracted so `setup_env` and `resolve_scm_token_type` can't drift — adding
 /// a new backend only needs to be wired in this one place. Reads env vars
@@ -30,9 +32,9 @@ pub(super) fn resolve_force_token_with_env<E: anodizer_core::env_source::EnvSour
     env: &E,
 ) -> Option<ForceTokenKind> {
     config.force_token.as_ref().cloned().or_else(|| {
-        let env_val = env
-            .var("ANODIZER_FORCE_TOKEN")
-            .or_else(|| env.var("GORELEASER_FORCE_TOKEN"))?;
+        let env_val = ["ANODIZER_FORCE_TOKEN", "GORELEASER_FORCE_TOKEN"]
+            .iter()
+            .find_map(|name| env.var(name).as_deref().and_then(non_blank_token))?;
         match env_val.to_lowercase().as_str() {
             "github" => Some(ForceTokenKind::GitHub),
             "gitlab" => Some(ForceTokenKind::GitLab),

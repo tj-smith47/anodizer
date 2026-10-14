@@ -1628,7 +1628,7 @@ fn test_resolve_target_env_empty_map_returns_none() {
 
 #[test]
 fn test_resolve_target_env_alphabetic_not_specific() {
-    // Pins the documented merge contract (W1): when two glob keys both
+    // The documented merge contract: when two glob keys both
     // legitimately apply, ASCII order — not pattern specificity — decides.
     // Here `*-linux-*` and `*-linux-gnu` both match. ASCII: `*` is 0x2A,
     // `g` is 0x67; so `*-linux-*` sorts before `*-linux-gnu`. The later

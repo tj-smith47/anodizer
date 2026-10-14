@@ -73,7 +73,7 @@ fn three_managers_middle_required_failure_gates_later_sibling() {
     // gate wasn't closed yet when A dispatched — but the sibling AFTER it (C)
     // is now gated. A required failure in a one-way-door group (Manager here)
     // closes the gate, and no later one-way door may fire against an
-    // incomplete release (F1). Contrast `three_managers_middle_fails_siblings_
+    // incomplete release. Contrast `three_managers_middle_fails_siblings_
     // still_run`, where B is OPTIONAL, the gate stays open, and C runs.
     let publishers: Vec<Box<dyn Publisher>> = vec![
         fake("a", PublisherGroup::Manager, false, FakeOutcome::Succeed),

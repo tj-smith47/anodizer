@@ -4579,7 +4579,7 @@ esac
     );
 }
 
-/// M4: a missing platform binary must abort the optional-deps publish with
+/// A missing platform binary must abort the optional-deps publish with
 /// NOTHING published — the staging pass reads every binary BEFORE the first
 /// `npm publish`, so a binary that is not on disk fails fast and no irreversible
 /// publish fires. A fake `npm` records every `publish` invocation; the counter

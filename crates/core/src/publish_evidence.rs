@@ -539,7 +539,7 @@ pub struct SchemastoreExtra {
 /// where the bump's token came from, so a rollback that finds none can say
 /// so.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "HomebrewCoreTargetWire", into = "HomebrewCoreTargetWire")]
 pub struct HomebrewCoreTargetSnapshot {
     /// Formula name that was bumped (e.g. `my-tool`).
     pub formula: String,
@@ -559,28 +559,71 @@ pub struct HomebrewCoreTargetSnapshot {
     /// (`direct_commit: true`) — nothing to close on rollback.
     pub direct_commit: bool,
     /// URL of the opened pull request, when one was opened.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_url: Option<String>,
     /// Where the bump's token came from. Never the token value.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// On the wire a variable is written as `token_env_var`, the field
+    /// releases before `token_source` existed read and write, and any other
+    /// source as `token_source`. A report carrying `token_env_var` decodes
+    /// to [`TokenSource::EnvVar`] here, so a report read and written again
+    /// keeps its source, and an old and a new record of the same bump are
+    /// equal.
     pub token_source: Option<TokenSource>,
-    /// The variable that supplied the bump's token, as written by a build
-    /// that recorded no [`token_source`](Self::token_source). Read only so
-    /// such a report still decodes; [`Self::bump_token_source`] turns it
-    /// into a [`TokenSource::EnvVar`].
-    #[serde(default, skip_serializing)]
-    pub token_env_var: Option<String>,
 }
 
-impl HomebrewCoreTargetSnapshot {
-    /// Where the bump's token came from: [`token_source`](Self::token_source),
-    /// else the variable an older report recorded, else `None`.
-    pub fn bump_token_source(&self) -> Option<TokenSource> {
-        self.token_source.clone().or_else(|| {
-            self.token_env_var
-                .as_ref()
-                .map(|name| TokenSource::EnvVar(name.clone()))
-        })
+/// The JSON shape of [`HomebrewCoreTargetSnapshot`].
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HomebrewCoreTargetWire {
+    formula: String,
+    version: String,
+    upstream_owner: String,
+    upstream_repo: String,
+    head_owner: String,
+    branch: String,
+    direct_commit: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pr_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token_env_var: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token_source: Option<TokenSource>,
+}
+
+impl From<HomebrewCoreTargetWire> for HomebrewCoreTargetSnapshot {
+    fn from(w: HomebrewCoreTargetWire) -> Self {
+        Self {
+            formula: w.formula,
+            version: w.version,
+            upstream_owner: w.upstream_owner,
+            upstream_repo: w.upstream_repo,
+            head_owner: w.head_owner,
+            branch: w.branch,
+            direct_commit: w.direct_commit,
+            pr_url: w.pr_url,
+            token_source: w.token_source.or(w.token_env_var.map(TokenSource::EnvVar)),
+        }
+    }
+}
+
+impl From<HomebrewCoreTargetSnapshot> for HomebrewCoreTargetWire {
+    fn from(s: HomebrewCoreTargetSnapshot) -> Self {
+        let (token_env_var, token_source) = match s.token_source {
+            Some(TokenSource::EnvVar(name)) => (Some(name), None),
+            other => (None, other),
+        };
+        Self {
+            formula: s.formula,
+            version: s.version,
+            upstream_owner: s.upstream_owner,
+            upstream_repo: s.upstream_repo,
+            head_owner: s.head_owner,
+            branch: s.branch,
+            direct_commit: s.direct_commit,
+            pr_url: s.pr_url,
+            token_env_var,
+            token_source,
+        }
     }
 }
 
@@ -1275,6 +1318,62 @@ mod tests {
         let via_enum: PublishEvidenceExtra =
             serde_json::from_str(blob).expect("untagged dispatch must tolerate orphan key");
         assert!(matches!(via_enum, PublishEvidenceExtra::Krew(_)));
+    }
+
+    /// A report from a release that wrote the bump's variable as
+    /// `token_env_var` decodes to that source, keeps it when written again,
+    /// and merges with a new record of the same bump into one target.
+    #[test]
+    fn a_homebrew_core_token_env_var_decodes_as_the_token_source() {
+        let old = r#"{"schema_version":2,"publisher":"homebrew-core","artifact_paths":[],
+            "extra":{"homebrew_core_targets":[{"formula":"my-tool","version":"1.2.3",
+            "upstream_owner":"Homebrew","upstream_repo":"homebrew-core","head_owner":"forkuser",
+            "branch":"bump-my-tool-1.2.3","direct_commit":false,
+            "pr_url":"https://github.com/Homebrew/homebrew-core/pull/1",
+            "token_env_var":"COMMITTER_TOKEN"}]}}"#;
+        let source = |e: &PublishEvidence| match &e.extra {
+            PublishEvidenceExtra::HomebrewCore(x) => x
+                .homebrew_core_targets
+                .iter()
+                .map(|t| t.token_source.clone())
+                .collect::<Vec<_>>(),
+            other => panic!("decoded as {other:?}"),
+        };
+        let decoded: PublishEvidence = serde_json::from_str(old).expect("old report decodes");
+        let want = Some(TokenSource::EnvVar("COMMITTER_TOKEN".into()));
+        assert_eq!(source(&decoded), vec![want.clone()]);
+
+        let rewritten = serde_json::to_string(&decoded).expect("serialize");
+        assert!(
+            rewritten.contains(r#""token_env_var":"COMMITTER_TOKEN""#),
+            "{rewritten}"
+        );
+        assert!(!rewritten.contains("token_source"), "{rewritten}");
+        let again: PublishEvidence = serde_json::from_str(&rewritten).expect("decode");
+        assert_eq!(source(&again), vec![want.clone()]);
+
+        let mut current = decoded.clone();
+        let PublishEvidenceExtra::HomebrewCore(x) = &mut current.extra else {
+            unreachable!()
+        };
+        x.homebrew_core_targets[0].token_source = want.clone();
+        current.primary_ref = Some("new run".into());
+        assert!(current.absorb_prior(&decoded));
+        assert_eq!(source(&current), vec![want]);
+
+        let mut field = decoded;
+        let PublishEvidenceExtra::HomebrewCore(x) = &mut field.extra else {
+            unreachable!()
+        };
+        x.homebrew_core_targets[0].token_source = Some(TokenSource::RepositoryField);
+        let json = serde_json::to_string(&field).expect("serialize");
+        assert!(
+            json.contains(r#""token_source":{"kind":"repository_field"}"#)
+                && !json.contains("token_env_var"),
+            "{json}"
+        );
+        let back: PublishEvidence = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, field);
     }
 
     #[test]

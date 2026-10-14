@@ -7,7 +7,7 @@
 //! renders that Ruby per crate (formula, same-tap cask, standalone cask) and per
 //! top-level `homebrew_casks:` entry; this validator renders the exact Ruby a
 //! live publish would push — via the same render path — and checks it two ways:
-//! an always-on structural floor (pure-Rust stanza scanning) and, when `ruby` is
+//! an always-on minimum structural check (pure-Rust stanza scanning) and, when `ruby` is
 //! on `PATH`, a real `ruby -c` syntax check. A structural defect (a missing
 //! required stanza, an unbalanced template that produced broken Ruby) shows up
 //! in the emission-validate pass rather than after a tap commit ships an
@@ -25,7 +25,7 @@ use crate::homebrew::{
 };
 
 /// Which kind of artifact a rendered Ruby string is — drives the stanza set the
-/// structural floor asserts.
+/// minimum structural check asserts.
 #[derive(Clone, Copy)]
 enum RubyKind {
     Formula,
@@ -154,7 +154,7 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
     }
 }
 
-/// The always-on, hermetic structural floor: scan the rendered Ruby for the
+/// The always-on, hermetic minimum structural check: scan the rendered Ruby for the
 /// stanzas Homebrew requires and assert each is present and
 /// non-empty. Returns one [`SchemaFinding`] per violation; an empty Vec means
 /// the document clears the floor. Runs with no external tools, so it holds even
@@ -170,7 +170,7 @@ fn validate_ruby_structural(kind: RubyKind, ruby: &str) -> Vec<SchemaFinding> {
     }
 }
 
-/// Run both layers (structural floor + `ruby -c`) over a rendered cask's
+/// Run both layers (minimum structural check + `ruby -c`) over a rendered cask's
 /// primary body and every versioned alt-name body, appending each finding to
 /// `findings`. Shared by the same-tap and standalone cask paths.
 fn validate_cask_and_versioned(
@@ -328,7 +328,7 @@ fn validate_cask_structural(ruby: &str) -> Vec<SchemaFinding> {
 /// the generated Ruby — parse each `…:<line>: <message>` stderr line into a
 /// [`SchemaFinding`]. A non-zero exit with no parseable line still yields a
 /// `(root)` finding (never silent-pass). When `ruby` is absent, log a visible
-/// skip marker and return no findings — the structural floor stands; a missing
+/// skip marker and return no findings — the minimum structural check stands; a missing
 /// tool is never a manifest defect.
 fn validate_ruby_syntax(ruby: &str, strict: bool, log: &StageLogger) -> Result<Vec<SchemaFinding>> {
     super::run_external_validator(
@@ -664,7 +664,7 @@ mod tests {
     }
 
     /// (a) Single-crate mode: one crate, every option set, formula AND same-tap
-    /// cask. Both rendered Ruby files must clear the structural floor with zero
+    /// cask. Both rendered Ruby files must clear the minimum structural check with zero
     /// findings, and each option must end up in its expected stanza.
     #[test]
     fn single_crate_every_option_validates_and_lands_in_stanzas() {
@@ -970,7 +970,7 @@ mod tests {
         );
     }
 
-    /// The structural floor must BITE for a FORMULA: a Ruby body missing the
+    /// The minimum structural check must BITE for a FORMULA: a Ruby body missing the
     /// `sha256` stanza is reported with a named finding. The corrected body
     /// produces zero findings, proving the test bites rather than always-failing.
     #[test]
@@ -1004,7 +1004,7 @@ end
         );
     }
 
-    /// The structural floor must BITE for a CASK: a Ruby body missing every
+    /// The minimum structural check must BITE for a CASK: a Ruby body missing every
     /// artifact stanza is reported. Adding a `binary` stanza clears it.
     #[test]
     fn cask_missing_artifact_is_reported_and_fix_clears_it() {
@@ -1171,7 +1171,7 @@ end
         );
     }
 
-    /// B3: the structural floor must NOT false-reject a VALID formula that omits
+    /// The minimum structural check must NOT false-reject a VALID formula that omits
     /// the optional `license` stanza (template-gated `{% if license %}`; a
     /// licenseless formula is valid Ruby and installable). It must clear the
     /// floor with zero findings.
@@ -1196,7 +1196,7 @@ end
         );
     }
 
-    /// B3: the structural floor must NOT false-reject a VALID cask that omits
+    /// The minimum structural check must NOT false-reject a VALID cask that omits
     /// the optional `desc` / `homepage` stanzas (template-gated `{% if %}`; a
     /// cask without them is valid Ruby and installable). It must clear the floor
     /// with zero findings.
@@ -1390,7 +1390,7 @@ end
         );
     }
 
-    /// B1/B2: a PRESENT formula archive whose metadata is broken (missing
+    /// A PRESENT formula archive whose metadata is broken (missing
     /// sha256) is a REAL defect the live publish would refuse to push — the
     /// validator must SURFACE it (an `Err` from the render propagates), NOT
     /// collapse it to a not-applicable skip. Guards the regression where every

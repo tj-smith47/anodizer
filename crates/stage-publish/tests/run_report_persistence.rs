@@ -2,11 +2,9 @@
 //! and `rollback::run` reads it back without a "report not found"
 //! error.
 //!
-//! Closes the writer/reader gap reported by the 2026-05-15 release-
-//! resilience audit (finding C1): before B4, no production code wrote
-//! `report.json`, so `anodizer tag rollback` was structurally
-//! unreachable. This test pins the round-trip via the production
-//! writer (`write_report_to_run_dir`, doc-hidden + pub for the same
+//! Without a production writer of `report.json`, `anodizer tag rollback`
+//! has nothing to read. This test holds the round-trip through the
+//! production writer (`write_report_to_run_dir`, doc-hidden + pub for the same
 //! test-injection reason as `run_with_publishers`) and the production
 //! reader (`rollback::run`).
 

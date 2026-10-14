@@ -1026,3 +1026,44 @@ fn missing_repository_skips_the_entry_and_keeps_the_next_one() {
         "the entry after the skipped one must still run; got: {logged}"
     );
 }
+
+/// The rollback's no-token warning lists the sources [`rollback_pr_token`]
+/// reads, in its order, on a GitHub run and on a GitLab run.
+#[test]
+fn the_rollback_no_token_warning_lists_the_sources_the_rollback_reads() {
+    use anodizer_core::scm::ScmTokenType;
+    let target = KrewPrTarget {
+        pr_url: None,
+        target: "demo".into(),
+        upstream_owner: "kubernetes-sigs".into(),
+        upstream_repo: "krew-index".into(),
+        fork_owner: "acme".into(),
+        branch: "demo-v1.2.3".into(),
+        token_env_var: Some("KREW_INDEX_TOKEN".into()),
+    };
+    for token_type in [ScmTokenType::GitHub, ScmTokenType::GitLab] {
+        let order =
+            crate::util::hint_probe::read_order(token_type, &["KREW_INDEX_TOKEN"], &|ctx, repo| {
+                let mut c = krew_crate("demo");
+                if let Some(krew) = c.publish.as_mut().and_then(|p| p.krew.as_mut()) {
+                    krew.repository = Some(repo);
+                }
+                ctx.config.crates = vec![c];
+                rollback_pr_token(ctx, &target)
+            });
+        let mut ctx = TestContextBuilder::new().sealed_env().build();
+        ctx.token_type = token_type;
+        let warning = rollback_no_token_warning(&ctx, &target);
+        let hint = warning
+            .split_once("(the rollback read ")
+            .and_then(|(_, rest)| rest.strip_suffix(')'))
+            .unwrap_or_else(|| panic!("the warning states the order: {warning}"));
+        crate::util::hint_probe::assert_hint_lists(
+            "krew rollback",
+            token_type,
+            hint,
+            &order,
+            "krew",
+        );
+    }
+}

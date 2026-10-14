@@ -94,19 +94,18 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
-    /// Per active entry: the bump token — any one of a templated
-    /// `repository.token`'s env refs or the ladder it falls through to
-    /// (`HOMEBREW_CORE_GITHUB_TOKEN` / `COMMITTER_TOKEN` /
-    /// `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`), nothing for a
-    /// literal token.
     fn config_fully_inactive(&self, ctx: &Context) -> bool {
         active_homebrew_core_configs(ctx).is_empty()
     }
 
+    /// Per active entry: the bump token — any one of a templated
+    /// `repository.token`'s env refs or the ladder it falls through to
+    /// (`HOMEBREW_CORE_GITHUB_TOKEN` / `COMMITTER_TOKEN` /
+    /// `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`), nothing for a
+    /// literal token. On a GitHub run that has a run token nothing is
+    /// required: the bump reads that token after the publisher variables and
+    /// before `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`.
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        // The bump reads the run's GitHub token after the publisher
-        // variables and before `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` /
-        // `GH_TOKEN`, so a run that has one needs no variable at all.
         if crate::util::run_github_token(ctx).is_some() {
             return Vec::new();
         }
@@ -278,7 +277,8 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
                 continue;
             };
             let token_hint = t
-                .bump_token_source()
+                .token_source
+                .as_ref()
                 .map_or_else(|| "the bump token".to_string(), |s| s.to_string());
             let pr_numbers = match crate::util::find_open_pr_numbers_for_head_with_env(
                 &t.upstream_owner,
@@ -499,7 +499,7 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
 /// request: the source the bump's token came from, as the snapshot recorded
 /// it, and the order the rollback read.
 pub(crate) fn rollback_no_token_warning(ctx: &Context, t: &HomebrewCoreTargetSnapshot) -> String {
-    let read = match t.bump_token_source() {
+    let read = match &t.token_source {
         Some(source) => format!("the bump's token came from {source}"),
         None => "the bump recorded no token source".to_string(),
     };

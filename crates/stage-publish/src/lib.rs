@@ -1666,7 +1666,7 @@ mod tests {
         assert!(PublishStage.run(&mut ctx).is_ok());
     }
 
-    // ── Config-to-behavior wiring tests ──
+    // Config-to-behavior wiring tests
 
     #[test]
     fn test_no_publish_config_is_noop() {

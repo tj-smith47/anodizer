@@ -195,7 +195,7 @@ mod tests {
         ctx.template_vars_mut().set("Tag", &format!("v{version}"));
     }
 
-    // ── Announce dry-render (single-crate) ────────────────────────────────
+    // Announce dry-render (single-crate)
 
     /// (1) A broken announce `{{ ReleaseURL }}`-class template fails the guard,
     /// naming the announcer. The exact ReleaseURL-bug regression.
@@ -224,7 +224,7 @@ mod tests {
         assert!(msg.contains("discord"), "names the announcer: {msg}");
     }
 
-    // ── Snapshot / nightly are no-ops ─────────────────────────────────────
+    // Snapshot / nightly are no-ops
 
     /// (7) Snapshot → guard is a no-op even with a broken template.
     #[test]
@@ -314,7 +314,7 @@ mod tests {
             .expect("a skipped announce stage must not be guarded");
     }
 
-    // ── Publisher manifest render (all three config modes) ────────────────
+    // Publisher manifest render (all three config modes)
 
     fn scoop_cfg(name: &str) -> ScoopConfig {
         ScoopConfig {
@@ -620,7 +620,7 @@ mod tests {
         );
     }
 
-    // ── ReleaseURL derivation (the guard runs before the release) ─────────
+    // ReleaseURL derivation (the guard runs before the release)
 
     /// The guard derives `ReleaseURL` from the crate's repo block and tag, so
     /// an announce template that renders it passes with no release created.
