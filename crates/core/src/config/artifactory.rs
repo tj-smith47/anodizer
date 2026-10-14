@@ -78,7 +78,7 @@ pub struct ArtifactoryConfig {
     /// Include `dist/metadata.json` in uploaded artifacts. The sibling
     /// `dist/artifacts.json` manifest is never uploaded.
     pub meta: Option<bool>,
-    /// Use custom artifact naming instead of default.
+    /// Use custom artifact naming in place of the default naming.
     pub custom_artifact_name: Option<bool>,
     /// When true, upload only extra_files (skip normal artifacts).
     pub extra_files_only: Option<bool>,
@@ -89,7 +89,7 @@ pub struct ArtifactoryConfig {
     ///
     /// With the default, a re-run that finds the same version's artifact
     /// already uploaded with a matching SHA-256 records an idempotent SKIP
-    /// rather than re-PUTting it — so re-running a partially-failed release is
+    /// and does not PUT it again, so re-running a partially-failed release is
     /// safe. A path that already holds a *different* artifact for the same
     /// version still hard-errors (immutable-version drift) unless `overwrite`
     /// is set. With `overwrite: true`, every artifact is PUT unconditionally
@@ -118,6 +118,6 @@ pub struct ArtifactoryConfig {
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in
-    /// place rather than attempting to undo it. Default `false`.
+    /// place and does not try to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
 }

@@ -5,7 +5,7 @@ weight = 50
 template = "docs.html"
 +++
 
-When a release fails partway through, several publishers leave durable state behind that blocks a clean re-run. Each publisher exposes a flag that lets anodizer take the appropriate recovery action — delete-and-recreate, force-push, or re-submit — instead of failing with a conflict.
+When a release fails partway through, several publishers leave durable state behind that blocks a clean re-run. Each publisher exposes a flag that lets anodizer take the appropriate recovery action — delete-and-recreate, force-push, or re-submit — where it would otherwise fail with a conflict.
 
 These flags are all **defaults-off**. Set them when you want anodizer to overwrite prior state on conflict; leave them off when you want the conflict surfaced as an error so an operator can review.
 
@@ -26,7 +26,7 @@ These flags are all **defaults-off**. Set them when you want anodizer to overwri
 
 ### `release.replace_existing_draft`
 
-When publishing a draft release and a draft with the same NAME already exists in the repo, anodizer deletes it via the GitHub API (`DELETE /repos/:owner/:repo/releases/:id`) and creates a fresh draft. The deletion is unconditional — if you only want to *reuse* the existing draft rather than replace it, use `release.use_existing_draft` instead (the two flags are mutually exclusive; setting both is a config error).
+When publishing a draft release and a draft with the same NAME already exists in the repo, anodizer deletes it via the GitHub API (`DELETE /repos/:owner/:repo/releases/:id`) and creates a fresh draft. The deletion is unconditional — to *reuse* the existing draft and keep it, use `release.use_existing_draft` instead (the two flags are mutually exclusive; setting both is a config error).
 
 ### `release.replace_existing_artifacts`
 
@@ -56,7 +56,7 @@ When `gh pr create` reports a PR for the same head branch already exists, the de
 
 ### `cloudsmith.republish`
 
-Cloudsmith treats versions as immutable by default. Setting `republish: true` opts into the Cloudsmith API's explicit replace-prior-version path. This is the only flag in the recovery set that maps to a single upstream API operation rather than a delete-then-create or force-push.
+Cloudsmith treats versions as immutable by default. Setting `republish: true` opts into the Cloudsmith API's explicit replace-prior-version path. This is the only flag in the recovery set that maps to a single upstream API operation; the others delete then create, or force-push.
 
 ### `artifactories[].overwrite`
 

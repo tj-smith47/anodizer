@@ -89,9 +89,10 @@ crates:
           branch: main                       # optional; default: repo default branch (versioned <name>-<version> when pull_request.enabled)
           token: "{{ Env.NIX_PKGS_TOKEN }}" # optional; default: NIX_PKGS_TOKEN, then the GitHub token chain
           pull_request:
-            enabled: false                   # optional; open PR instead of direct push
+            enabled: false                   # optional; true opens a PR in place of a direct push
             token: ""                        # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
-            base: master                     # optional
+            base:
+              branch: master                 # optional; PR target branch
         dependencies:                        # optional; runtime deps as Nix attr paths
           - name: openssl                    # Nix attribute path
           - name: libiconv
@@ -110,17 +111,20 @@ The push to your nixpkgs-style repository uses the first token that is set:
 The pull request is opened with `repository.pull_request.token`, then `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. With none of these set, the `gh` CLI's own login opens it; with neither a token nor `gh`, the publish fails.
 
 ```yaml
-nix:
-  repository:
-    owner: myorg
-    name: nixpkgs
-    token: "{{ .Env.NIX_PKGS_TOKEN }}"
-    pull_request:
-      enabled: true
-      token: "{{ .Env.PR_TOKEN }}"
+crates:
+  - name: myapp
+    publish:
+      nix:
+        repository:
+          owner: myorg
+          name: nixpkgs
+          token: "{{ .Env.NIX_PKGS_TOKEN }}"
+          pull_request:
+            enabled: true
+            token: "{{ .Env.PR_TOKEN }}"
 ```
 
-`repository.pull_request.token` and `repository.token` are rendered before anything is cloned or pushed. A blank render, such as an unset `{{ .Env.X }}`, falls through to the next token in the chain. A template that fails to render skips this crate's nix entry with nothing pushed, and the next crate still publishes. The skip reason names the field and the render error (`pull_request.token does not render: …`), with the template's own text replaced by `<template>` so a token literal in it is never printed.
+`repository.pull_request.token` and `repository.token` are rendered before anything is cloned or pushed. On both the push and the pull request chain, a render that is empty or only whitespace, such as an unset `{{ .Env.X }}`, falls through to the next token, and a token is sent with its surrounding whitespace removed. A template that fails to render skips this crate's nix entry with nothing pushed, and the next crate still publishes. The skip reason names the field and the render error (`pull_request.token does not render: …`), with the template's own text replaced by `<template>` so a token literal in it is never printed.
 
 ## Common gotchas
 
@@ -148,7 +152,7 @@ nix:
 | `long_description` | string | | Expanded blurb for `meta.longDescription` — the multi-sentence text nixpkgs search and `nix-env -qa --description` show. Use a YAML block scalar for multi-line text. |
 | `homepage` | string | | Project homepage URL for `meta.homepage`. |
 | `changelog` | string | | URL for `meta.changelog` — links the release history into the derivation (e.g. the GitHub Releases page or a per-tag URL). |
-| `maintainers` | list of strings | | nixpkgs maintainer handles rendered as `meta.maintainers = with lib.maintainers; [ ... ];`. Use your registered nixpkgs handles, not full names. |
+| `maintainers` | list of strings | | nixpkgs maintainer handles rendered as `meta.maintainers = with lib.maintainers; [ ... ];`. Use your registered nixpkgs handles; full names do not work. |
 | `license` | string | Cargo SPDX | `lib.licenses` attribute (`mit`, `asl20`) or an SPDX id (`MIT`, `Apache-2.0`); SPDX is mapped to the nix attribute. Derived from `Cargo.toml [package].license` when omitted. Compound SPDX requires an explicit single attribute. |
 | `dependencies` | list | | Runtime dependencies as Nix package names. |
 | `formatter` | string | | Nix formatter to run on the generated file: `alejandra` or `nixfmt`. |
@@ -156,15 +160,20 @@ nix:
 ### Repository config
 
 ```yaml
-repository:
-  owner: my-org
-  name: nixpkgs
-  branch: main           # target branch
-  token: "{{ Env.GITHUB_TOKEN }}"
-  pull_request:
-    enabled: true        # open a PR instead of pushing directly
-    token: ""            # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
-    base: master
+crates:
+  - name: myapp
+    publish:
+      nix:
+        repository:
+          owner: my-org
+          name: nixpkgs
+          branch: main           # target branch
+          token: "{{ Env.GITHUB_TOKEN }}"
+          pull_request:
+            enabled: true        # open a PR; no direct push
+            token: ""            # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
+            base:
+              branch: master
 ```
 
 ### Dependencies
@@ -177,12 +186,16 @@ Dependencies are added to the derivation's `nativeBuildInputs`. When any depende
 | `os` | string | Restrict to `linux` or `darwin`. Empty means all platforms. |
 
 ```yaml
-dependencies:
-  - name: openssl
-  - name: libiconv
-    os: darwin
-  - name: pkg-config
-    os: linux
+crates:
+  - name: myapp
+    publish:
+      nix:
+        dependencies:
+          - name: openssl
+          - name: libiconv
+            os: darwin
+          - name: pkg-config
+            os: linux
 ```
 
 ## `meta` fields: changelog, longDescription, maintainers
@@ -222,7 +235,7 @@ renders into the derivation's `meta` block:
 ```
 
 `maintainers` entries are nixpkgs **handles** (the keys under
-`lib.maintainers`), not free-form names — they render verbatim inside
+`lib.maintainers`); a free-form name does not work, since they render verbatim inside
 `with lib.maintainers; [ ... ]`.
 
 ## Auto-installed completions and man pages
@@ -232,7 +245,7 @@ When the archive bundles shell completions (under `completions/`) or man pages
 `nativeBuildInputs` and emits `installShellCompletion` / `installManPage` lines
 in the install phase automatically — no extra config. Use `extra_install:` to
 add install lines the archive doesn't cover (e.g. `installManPage` for a man
-page that rides the GitHub Release rather than the archive).
+page that ships on the GitHub Release outside the archive).
 
 ## Generated derivation format
 
@@ -380,10 +393,14 @@ case.
 Run `anodizer check` to validate the resolved license identifier before
 releasing.
 
-## Skipping prereleases
+## Prerelease skipping
 
 ```yaml
-skip_upload: auto   # skip for prereleases; publish stable releases
+crates:
+  - name: myapp
+    publish:
+      nix:
+        skip_upload: auto   # skip for prereleases; publish stable releases
 ```
 
 ## Full example
@@ -416,7 +433,7 @@ anodizer packages only the archives nix can install: genuine macOS targets
 (`*-apple-darwin`, `darwin-universal`) plus the Linux archives it supports. Apple
 **non-macOS** targets (`aarch64-apple-ios`, `*-tvos`, `*-watchos`) are excluded —
 they never appear in the generated derivation. If the build produces **no**
-eligible archive, anodizer fails the release rather than emitting an empty
+eligible archive, the nix publisher fails with an error and writes no
 derivation. See
 [Artifact eligibility](./selecting-publishers.md#artifact-eligibility) for the
 full rule.

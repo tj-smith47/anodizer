@@ -38,7 +38,7 @@ attestations:
 |---|---|---|---|
 | `enabled` | bool | `false` | Enable the stage. When false, no-op. |
 | `mode` | `subjects` \| `emit` | `subjects` | Participation mode (see below). |
-| `artifacts` | list | *all release artifacts* | Which produced-artifact **kinds** to attest. The concrete subject set (filenames + sha256) is derived from the artifacts anodizer already produced — never hand-listed. |
+| `artifacts` | list | *all release artifacts* | Which produced-artifact **kinds** to attest. anodizer derives the subject set (file names + sha256) from the artifacts it produced; nothing is listed by hand. |
 | `skip` | bool \| template | — | Skip the stage (also `--skip=attest`). |
 
 ### What gets attested
@@ -46,20 +46,24 @@ attestations:
 When `artifacts:` is **omitted**, anodizer attests **every release artifact** —
 the full set that reaches the GitHub release, minus signatures/certificates
 (which sign other artifacts) and the attestation outputs themselves (no
-self-attestation). A `.deb`, SBOM, or installer you ship is attested by default
-rather than silently dropped.
+self-attestation). A `.deb`, SBOM or installer you ship is attested by default.
 
-To narrow the set, list one or more KINDS (not files):
+To narrow the set, list one or more kinds. A kind names a class of artifact; a file name is not accepted:
 
 | Kind | Covers |
 |---|---|
-| `archive` | packaged archives (`.tar.gz`, `.zip`) + self-extracting archives |
+| `archive` | packaged archives (`.tar.gz`, `.zip`), self-extracting archives and AppImages |
 | `binary` | raw uploadable binaries |
 | `checksum` | checksum files (`checksums.txt` + split sidecars) |
 | `package` | Linux packages (`.deb` / `.rpm` / `.apk`) + source RPMs |
 | `source` | source archive tarball |
 | `sbom` | generated SBOM documents |
 | `installer` | Windows MSI/NSIS, macOS DMG, macOS PKG |
+| `flatpak` | Flatpak bundles (`.flatpak`) |
+| `install_script` | generated install scripts (`install.sh`, `install.ps1`) |
+| `file` | other uploadable files: rendered `template_files` outputs and AppImage `.zsync` update files |
+
+Together the ten kinds cover the default set.
 
 ```yaml
 # Example: attest only Linux packages and their checksums
@@ -69,7 +73,7 @@ attestations:
 ```
 
 If `attestations` is enabled but the selected kinds match no produced
-artifacts, the stage emits a warning (it does not silently produce nothing).
+artifacts, the stage prints a warning.
 
 ## Mode `subjects` (default) — the OIDC path
 

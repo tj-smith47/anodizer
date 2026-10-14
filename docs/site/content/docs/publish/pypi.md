@@ -7,7 +7,7 @@ template = "docs.html"
 
 Anodizer publishes your compiled binaries as **native Python wheels**, letting users install your CLI via `pip install <name>` (or `pipx install <name>`). Each built target becomes one `py3-none-<platform>` wheel carrying the prebuilt executable under the wheel's `.data/scripts/` directory, so pip drops it straight onto the console-script `PATH` — the same layout maturin's `bindings = "bin"` mode emits, with no Python code and no compilation on the user's machine.
 
-The platform tag is **derived by inspecting each binary**, never guessed:
+The platform tag is **derived by inspecting each binary**:
 
 | Built target | Inspection | Wheel platform tag |
 |---|---|---|
@@ -26,7 +26,7 @@ The platform tag is **derived by inspecting each binary**, never guessed:
 
 Because the `manylinux` tag comes from the binary's *real* glibc floor, a wheel never claims broader compatibility than the executable actually has.
 
-**Fully-static gnu binaries** (anodizer's default linux build — no `PT_INTERP`, no dynamic loader, no glibc dependency) legitimately declare no `GLIBC_*` requirement, so they cannot derive a glibc floor. They run on *any* glibc host, so anodizer tags them at the arch's lowest recognized `manylinux` profile: `manylinux_2_5` (the manylinux1 baseline) for x86_64/i686, and `manylinux_2_17` (manylinux2014, the first profile to include aarch64) for aarch64. A *dynamically linked* gnu binary that declares no glibc requirement is still a hard error — that means the wrong binary (or one with a stripped version-needed table) ended up under that target. Likewise a darwin-target artifact that is **not** a Mach-O object is a hard error (the Mach-O analogue of the missing-glibc case). When a Mach-O carries no version load command, the tag falls back to `10_12` (x86_64) / `11_0` (arm64 and universal). macOS 11+ deployment targets always tag `macosx_<major>_0` (e.g. an 11.2 minos wheel tags `macosx_11_0`), matching what pip/packaging enumerate. A binary whose only glibc requirement is the ancient x86_64 baseline (`GLIBC_2.2.5`) floors to `manylinux_2_5` rather than the unrecognized `manylinux_2_2`.
+**Fully-static gnu binaries** (anodizer's default linux build — no `PT_INTERP`, no dynamic loader, no glibc dependency) legitimately declare no `GLIBC_*` requirement, so they cannot derive a glibc floor. They run on *any* glibc host, so anodizer tags them at the arch's lowest recognized `manylinux` profile: `manylinux_2_5` (the manylinux1 baseline) for x86_64/i686, and `manylinux_2_17` (manylinux2014, the first profile to include aarch64) for aarch64. A *dynamically linked* gnu binary that declares no glibc requirement is still a hard error — that means the wrong binary (or one with a stripped version-needed table) ended up under that target. Likewise a darwin-target artifact that is **not** a Mach-O object is a hard error (the Mach-O analogue of the missing-glibc case). When a Mach-O carries no version load command, the tag falls back to `10_12` (x86_64) / `11_0` (arm64 and universal). macOS 11+ deployment targets always tag `macosx_<major>_0` (e.g. an 11.2 minos wheel tags `macosx_11_0`), matching what pip/packaging enumerate. A binary whose only glibc requirement is the ancient x86_64 baseline (`GLIBC_2.2.5`) floors to `manylinux_2_5`, since `manylinux_2_2` is not a recognized profile.
 
 ### One binary per platform per entry
 
@@ -42,7 +42,7 @@ pypis:
 
 `anodizer preflight` warns when the selected crates would build the same triple more than once, and the publish itself hard-errors on an actual duplicate platform tag.
 
-### Publishing a subset of targets
+### Target subsets
 
 `targets:` restricts this entry to a subset of the built target triples — only binaries whose triple is listed become wheels; the rest are silently skipped. It is orthogonal to `ids:` (both filters apply). Besides trimming what ships, it resolves a same-platform-tag collision without splitting into separate entries: `x86_64-pc-windows-gnu` and `x86_64-pc-windows-msvc` both tag `win_amd64`, so building both would collide on one `.whl` — list only the one you publish:
 
@@ -118,7 +118,7 @@ pypis:
 |---|---|---|
 | `id` | — | CLI selector for `--id=...` |
 | `ids` | all crates | Only include binaries built from these crates |
-| `targets` | all built | Target-triple allowlist: build wheels only for these triples. See [Publishing a subset of targets](#publishing-a-subset-of-targets) |
+| `targets` | all built | Target-triple allowlist: build wheels only for these triples. See [Publishing a subset of targets](#target-subsets) |
 | `name` | crate name | PyPI project name; any PEP 508 form (`My.Tool`, `my_tool`) — PyPI normalizes per PEP 503, wheel filenames escape per PEP 427 |
 | `sdist` | `false` | Also build + upload a source distribution via `maturin sdist` |
 | `sdist_manifest` | — | Templated. Directory containing `pyproject.toml`; **required** when `sdist: true` |

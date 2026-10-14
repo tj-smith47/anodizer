@@ -74,7 +74,7 @@ git:
 
 `smartsemver` prevents the common pitfall where shipping `v0.2.0` after a `v0.2.0-beta.3` tag would pick the beta as the previous tag and produce an empty changelog.
 
-## Ignoring tags
+## Ignored tags
 
 Filter out tags that should not be considered for version detection:
 

@@ -18,10 +18,8 @@ pub struct ChangelogConfig {
     /// Groups for organizing changelog entries by commit message prefix.
     pub groups: Option<Vec<ChangelogGroup>>,
     /// Text prepended to the changelog. Inline string, `from_file: <path>`,
-    /// or `from_url: <url>` — symmetric with the release block's header/footer
-    /// so users can compose headers from a templated file or remote endpoint
-    /// (the upstream uses a plain string here; anodizer extends to ContentSource
-    /// for consistency with `release.header`).
+    /// or `from_url: <url>`, the same shapes `release.header` takes, so a
+    /// header can come from a templated file or a remote endpoint.
     pub header: Option<ContentSource>,
     /// Text appended to the changelog. Same shape as `header`.
     pub footer: Option<ContentSource>,
@@ -40,9 +38,13 @@ pub struct ChangelogConfig {
     pub skip: Option<StringOrBool>,
     /// Changelog source: `"git"` (default), `"github"`, `"gitlab"`, `"gitea"`,
     /// or `"github-native"`. `"github"`, `"gitlab"` and `"gitea"` fetch commits
-    /// through that forge's API; `"github"` also enriches entries with
-    /// author login information (available as the `{{ Logins }}` per-entry
-    /// template variable and the `{{ AllLogins }}` release-wide variable).
+    /// through that forge's API. `"github"` and `"gitea"` also read each
+    /// commit's author login (the `{{ Login }}` / `{{ Logins }}` per-entry
+    /// template variables and the `{{ AllLogins }}` release-wide variable).
+    /// GitLab's API returns no logins, so under `"gitlab"` `{{ AllLogins }}`
+    /// holds only the co-author names from `Co-authored-by` trailers. Under
+    /// `"git"`, logins are looked up through the GitHub API when the release
+    /// targets GitHub and a token is available.
     /// `"github-native"` delegates entirely to GitHub's auto-generated notes.
     #[serde(rename = "use")]
     pub use_source: Option<String>,
@@ -66,7 +68,7 @@ pub struct ChangelogConfig {
     /// commits (a per-crate track to its crate directory; the aggregate to the
     /// union of every crate directory plus the workspace manifests). When set,
     /// `paths` further restricts that derived scope to commits whose touched
-    /// files match these globs; it can only ever drop commits, never widen to
+    /// files match these globs; it can only ever drop commits and cannot widen to
     /// another track's directory. A `paths` value that is a superset of the
     /// derived scope (e.g. `["crates/**", "Cargo.toml", "Cargo.lock"]` over a
     /// workspace) is therefore a no-op — and so is the recommended default of
@@ -104,7 +106,7 @@ pub struct ChangelogConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct ChangelogFilesConfig {
     /// When `true`, write a per-crate `crates/<name>/CHANGELOG.md` for each
-    /// crate instead of (or in addition to) the single root `CHANGELOG.md`.
+    /// crate, alone or beside the single root `CHANGELOG.md`.
     /// Default: `false`. With `per_crate: true` and no `root:` block, only the
     /// per-crate files are produced; add a `root:` block to keep the aggregate
     /// root changelog as well.
@@ -161,7 +163,7 @@ impl ChangelogConfig {
     /// Resolve the `sort` mode, falling back to [`Self::DEFAULT_SORT`]
     /// (empty = preserve commit order). Returns an error when the user
     /// supplied a value outside [`Self::VALID_SORT`] so the invalid mode
-    /// surfaces at the call site.
+    /// fails at the call site.
     pub fn resolved_sort(&self) -> anyhow::Result<&str> {
         let value = self.sort.as_deref().unwrap_or(Self::DEFAULT_SORT);
         if Self::VALID_SORT.contains(&value) {
@@ -400,7 +402,7 @@ pub struct ContentFromFile {
 /// Regex-based commit filters for the changelog stage.
 ///
 /// Patterns are NOT compile-validated at config-load — a malformed regex
-/// only surfaces when the changelog stage runs, which on a release pipeline
+/// only fails when the changelog stage runs, which on a release pipeline
 /// is well past the point of cheap failure. Test patterns locally
 /// (`anodizer changelog --check` or any external regex tool) before
 /// committing config changes.
@@ -429,7 +431,7 @@ pub struct ChangelogFilters {
     pub include: Option<Vec<String>>,
     /// Exclude anodizer's own version-sync bump commits
     /// (`chore(release): bump …`, optionally ` [skip ci]`) from the generated
-    /// changelog. They are release machinery, not user-facing changes, so this
+    /// changelog. They are release machinery with no user-facing change, so this
     /// defaults to `true`. Set `false` to keep them. No effect in include mode
     /// (`include` already drops anything that does not match a pattern).
     pub exclude_version_sync_commits: Option<bool>,

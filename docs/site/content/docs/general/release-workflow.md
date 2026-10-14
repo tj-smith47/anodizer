@@ -23,7 +23,7 @@ Anodizer's release pipeline is one ordered list of stages. Most operators run it
 | `anodizer continue` | release, blob, publish, snapcraft-publish, announce, after-hooks | build, archive, nfpm, sbom, checksum, sign | single-host stage-resume (paused release, transient publish failure) |
 | `anodizer continue --merge` | shard-merge → sign, checksum, sbom, release, blob, publish, snapcraft-publish, announce | build, archive, nfpm | multi-host split-merge resume (mirrors GR Pro `goreleaser continue --merge`) |
 
-`anodizer tag rollback` is the deliberate-withdrawal command for the post-failure recovery flow; see [Release Resilience](@/docs/advanced/release-resilience.md#recovering-a-poisoned-tag-with-tag-rollback) for the full flag matrix and [recovery flags](@/docs/advanced/recovery-flags.md) for the surrounding context.
+`anodizer tag rollback` is the deliberate-withdrawal command for the post-failure recovery flow; see [Release Resilience](@/docs/advanced/release-resilience.md#poisoned-tag-recovery-with-tag-rollback) for the full flag matrix and [recovery flags](@/docs/advanced/recovery-flags.md) for the surrounding context.
 
 For composition with the `--skip=` flag (used to drop individual stages from any invocation above), see the inline help on `anodizer release --skip --help`.
 

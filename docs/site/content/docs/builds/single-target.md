@@ -1,6 +1,6 @@
 +++
 title = "Single-Target Builds"
-description = "Build only for a specific target instead of the full matrix"
+description = "Build only one target of the full matrix"
 weight = 3
 template = "docs.html"
 +++

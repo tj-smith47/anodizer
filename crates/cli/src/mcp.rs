@@ -151,7 +151,7 @@ pub fn config() -> Config {
         .description(
             "release",
             "Run the full release pipeline. Re-running the identical command converges \
-             on already-published state instead of double-publishing, so a re-run is \
+             on already-published state and publishes nothing twice, so a re-run is \
              how a failed release is recovered.",
         );
 

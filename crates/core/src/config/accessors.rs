@@ -6,14 +6,14 @@ impl Config {
     /// so a top-level entry shadows a same-named workspace entry).
     ///
     /// Single source of the read-only "all crates that can carry per-crate
-    /// config" walk. Publisher registration, required/retain gate
+    /// config" listing. Publisher registration, required/retain gate
     /// collapsing, per-crate dispatch, requirement derivation,
     /// `--crate`/`--all` selection, tool-need detection, artifact guards,
     /// and default-naming decisions must all resolve through this walker so
     /// a workspace-only crate carrying a publisher block is either visible
     /// everywhere or nowhere — a consumer iterating `config.crates`
     /// directly silently excludes workspace crates and hides their
-    /// publishes. Only two shapes may keep a raw chained walk: mutation
+    /// publishes. Only two shapes may keep a raw chained iteration: mutation
     /// passes (`&mut` access — this walker hands out shared borrows) and
     /// validation/diagnostics that must see every entry as written,
     /// including the shadowed duplicates this walker dedups away.
@@ -49,12 +49,12 @@ impl Config {
     /// config mistake (two distinct crates sharing a name). The legitimate
     /// duplicate (the same crate referenced from both top-level and a
     /// workspace) dedups silently. Emitted by the publish stage at entry so
-    /// the warning appears once per run rather than once per universe walk.
+    /// the warning appears once per run.
     pub fn crate_universe_collision_warnings(&self) -> Vec<String> {
         self.crate_universe_walk().1
     }
 
-    /// The one walk both [`Self::crate_universe`] and
+    /// The one iteration both [`Self::crate_universe`] and
     /// [`Self::crate_universe_collision_warnings`] derive from, so the
     /// merge/dedup policy and its diagnostics cannot diverge.
     fn crate_universe_walk(&self) -> (Vec<&CrateConfig>, Vec<String>) {
@@ -108,7 +108,7 @@ impl Config {
     /// set a family matcher needs so a narrower family reclaims the tags a broader
     /// one would otherwise swallow.
     ///
-    /// Keyed by TEMPLATE, not crate name: a caller holding a resolved family (a
+    /// Keyed by TEMPLATE; the crate name plays no part: a caller holding a resolved family (a
     /// nightly base taken from a sibling track, a previous-tag look-back) has no
     /// crate name to key on, and `excluded_sibling_prefixes` only ever keeps
     /// strictly-longer prefixes, so a sibling that shares this family contributes
@@ -155,8 +155,8 @@ impl Config {
     /// The build targets compiled when neither a per-build `targets` nor
     /// `defaults.targets` is set: `defaults.targets` (when non-empty), else the
     /// canonical `DEFAULT_TARGETS`. Single source of truth for the target-set
-    /// fallback — every target enumeration MUST resolve through this rather than
-    /// re-deriving the fallback, so they never diverge.
+    /// fallback — every target enumeration MUST resolve through this, so no copy of the
+    /// fallback can diverge.
     pub fn effective_default_targets(&self) -> Vec<String> {
         self.defaults
             .as_ref()
@@ -521,7 +521,7 @@ impl Config {
 
 /// Whether a crate named `name` is in a run's `--crate` selection.
 ///
-/// The predicate half of [`Config::selected_crates`], for the few walks whose
+/// The predicate half of [`Config::selected_crates`], for the few iterations whose
 /// source is not the crate universe (an aggregate changelog set, a Cargo member
 /// list). An EMPTY selection means every crate.
 pub fn crate_is_selected(selected: &[String], name: &str) -> bool {
@@ -616,7 +616,7 @@ mod tests {
     /// test on the SAME path, whose subject is a crate `name`. Either
     /// polarity counts.
     ///
-    /// Keyed on the shape rather than on what the local binding is called. A
+    /// Keyed on the shape of the predicate; the local binding's name plays no part. A
     /// check that looked for the name `selected` was blind to the same
     /// predicate written over `selected_crates` or over
     /// `ctx.options.selected_crates`, which is how four sites survived the
@@ -647,7 +647,7 @@ mod tests {
 
     /// The four sites that survived the first sweep, spelled as they were
     /// before they were converted. Each must be visible to the shape check,
-    /// or the pin guards a naming habit instead of the rule.
+    /// or the test guards a naming habit and misses the rule.
     #[test]
     fn the_shape_check_sees_the_predicate_under_any_binding_name() {
         for line in [
@@ -673,8 +673,8 @@ mod tests {
     /// "Is this crate in the run's selection" is one question with one answer.
     /// It was re-typed at nearly fifty production sites, in two spellings and
     /// two polarities, so a change to what `--crate` selects had to be made
-    /// fifty times. Every walk now asks [`Config::selected_crates`] or
-    /// [`crate_is_selected`]; this walk fails the moment a new one does not.
+    /// fifty times. Every iteration now asks [`Config::selected_crates`] or
+    /// [`crate_is_selected`]; this test fails the moment a new one does not.
     /// The repository-level artifacts — the source archive, the SBOM
     /// documents, the source RPM, the install scripts, the templated files —
     /// are uploaded by whichever crate's release `release_owner_crate_name`
@@ -713,7 +713,7 @@ mod tests {
         /// text before it is `{` or `,`), so a `by_kind:` label is not read
         /// as one. Comments are kept in the flattened text, so one spelling
         /// `, kind:` or `{ kind:` is read as a field; that direction fails
-        /// the walk loudly and is fixed by rewording the comment.
+        /// the scan loudly and is fixed by rewording the comment.
         fn names_a_variable_kind(flat: &str) -> bool {
             flat.match_indices("kind").any(|(i, _)| {
                 let field = i == 0 || matches!(&flat[i - 1..i], "{" | ",");

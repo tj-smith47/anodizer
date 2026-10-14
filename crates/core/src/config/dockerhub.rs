@@ -9,20 +9,20 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 // DockerHub description sync
 // ---------------------------------------------------------------------------
 
-/// DockerHub description sync configuration.
-/// Pushes image descriptions and README content to DockerHub repositories.
+/// Docker Hub description sync configuration.
+/// Pushes image descriptions and README content to Docker Hub repositories.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct DockerHubConfig {
-    /// DockerHub username for authentication.
+    /// Docker Hub username for authentication.
     pub username: Option<String>,
-    /// Environment variable name containing the DockerHub token.
+    /// Environment variable name containing the Docker Hub token.
     pub secret_name: Option<String>,
-    /// DockerHub image names to update (e.g. `myorg/myapp`).
+    /// Docker Hub image names to update (e.g. `myorg/myapp`).
     pub images: Option<Vec<String>>,
-    /// Short description for the DockerHub repository (max 100 chars).
+    /// Short description for the Docker Hub repository (max 100 chars).
     pub description: Option<String>,
-    /// Full description (README) source for the DockerHub repository.
+    /// Full description (README) source for the Docker Hub repository.
     pub full_description: Option<DockerHubFullDescription>,
     /// Skip this publisher. Accepts bool or template string.
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat
@@ -40,7 +40,7 @@ pub struct DockerHubConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
-    /// (`"false"` / `"0"` / `"no"` / empty), the DockerHub publisher is
+    /// (`"false"` / `"0"` / `"no"` / empty), the Docker Hub publisher is
     /// skipped. Render failure hard-errors. Exposes the `dockerhub[].if:`
     /// conditional gate; distinct from `skip:` (which expresses "always
     /// skip") and provides config-import parity.
@@ -49,11 +49,11 @@ pub struct DockerHubConfig {
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in
-    /// place rather than attempting to undo it. Default `false`.
+    /// place and does not try to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
 }
 
-/// Full description source for DockerHub: either from a URL or a local file.
+/// Full description source for Docker Hub: either from a URL or a local file.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct DockerHubFullDescription {
@@ -63,7 +63,7 @@ pub struct DockerHubFullDescription {
     pub from_file: Option<DockerHubFromFile>,
 }
 
-/// Fetch DockerHub full description content from a URL.
+/// Fetch Docker Hub full description content from a URL.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct DockerHubFromUrl {
@@ -73,7 +73,7 @@ pub struct DockerHubFromUrl {
     pub headers: Option<HashMap<String, String>>,
 }
 
-/// Read DockerHub full description content from a local file.
+/// Read Docker Hub full description content from a local file.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct DockerHubFromFile {

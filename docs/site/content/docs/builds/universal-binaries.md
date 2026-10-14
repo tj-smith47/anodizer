@@ -115,7 +115,7 @@ Each entry needs its own `id`, and with `ids` unset the `id` is the build id
 it combines.
 
 Listing both ids in one entry puts two slices on each target, and the step
-fails as described under [How it works](#how-it-works).
+fails as described under [How it works](#build-process).
 
 ### Hooks
 
@@ -160,17 +160,17 @@ crates:
       - ids: [myapp]
 ```
 
-## How it works
+## Build process
 
 1. Anodizer builds both `x86_64-apple-darwin` and `aarch64-apple-darwin` targets as normal build artifacts.
 2. After all builds complete, anodizer iterates over each crate's `universal_binaries` entries.
 3. For each entry, it locates the matching `aarch64-apple-darwin` and `x86_64-apple-darwin` binary artifacts. If the `ids` filter is set, only binaries whose name appears in the list are considered.
-   Two binaries on one of those targets (a baseline and a `v3` amd64 build of the same binary) are two slices of one CPU type, which a universal binary cannot hold, so the step fails instead of merging whichever was built first. The error names both paths with their `builds[].id`, adding the amd64 level (`v1` when unset) on an `x86_64-apple-darwin` slice; an `aarch64-apple-darwin` slice has no amd64 level. Give each build its own `builds[].id` and narrow `ids` to one of them; two builds without an `id` share the binary name as their id, which `ids` cannot tell apart.
+   Two binaries on one of those targets (a baseline and a `v3` amd64 build of the same binary) are two slices of one CPU type, which a universal binary cannot hold, so the step fails; it does not merge whichever was built first. The error names both paths with their `builds[].id`, adding the amd64 level (`v1` when unset) on an `x86_64-apple-darwin` slice; an `aarch64-apple-darwin` slice has no amd64 level. Give each build its own `builds[].id` and narrow `ids` to one of them; two builds without an `id` share the binary name as their id, which `ids` cannot tell apart.
 4. If both architecture binaries are found, anodizer runs `lipo -create -output <output> <arm64> <x86_64>`.
 5. The universal binary is placed in `dist/<crate_name>_darwin_all/` and registered as an artifact with kind `UniversalBinary` and target `darwin-universal`.
 6. When `replace: true`, the individual per-architecture artifacts are removed from the registry so downstream stages (archives, checksums, release uploads, package publishers) only see the universal binary.
 
-If either architecture binary is missing, anodizer notes it at verbose (`-v`) and skips universal binary creation for that crate rather than failing the build.
+If either architecture binary is missing, anodizer notes it at verbose (`-v`) and skips universal binary creation for that crate; the build does not fail.
 
 ## Limitations
 

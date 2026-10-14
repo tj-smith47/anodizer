@@ -75,7 +75,9 @@ pub struct Config {
     /// - A list of `.env` file paths: `[".env", ".release.env"]`
     /// - A struct with token file paths: `{ github_token: "~/.config/goreleaser/github_token" }`
     pub env_files: Option<EnvFilesConfig>,
-    /// Default values applied to all crates unless overridden.
+    /// Workspace-level defaults that fill what each crate, and a few
+    /// top-level blocks, leave unset. The `defaults` section lists where
+    /// each key applies.
     pub defaults: Option<Defaults>,
     /// Hooks run before the release pipeline starts.
     ///
@@ -236,20 +238,18 @@ pub struct Config {
     /// Custom template variables accessible as `{{ Var.<key> }}` in templates.
     /// Provides a way to define reusable values, especially useful with config includes.
     ///
-    /// Stored as a `BTreeMap` so rendering iterates in deterministic
-    /// (sorted) key order — without this guarantee, a value that references
-    /// another variable (`b: "{{ Var.a }}_v2"`) could render before its
-    /// dependency on a different process / host. The current resolver is
-    /// single-pass (one render per value), so cross-variable references
-    /// only resolve when the referenced key sorts earlier.
+    /// Variables render once each, in alphabetical key order on every host,
+    /// so a value that references another variable
+    /// (`b: "{{ Var.a }}_v2"`) resolves only when the referenced key sorts
+    /// earlier. A reference to a key that sorts later logs a warning.
     pub variables: Option<BTreeMap<String, String>>,
     /// Generic artifact publisher configurations.
     pub publishers: Option<Vec<PublisherConfig>>,
-    /// DockerHub description sync configurations.
+    /// Docker Hub description sync configurations.
     pub dockerhub: Option<Vec<DockerHubConfig>>,
     /// Artifactory upload configurations.
     pub artifactories: Option<Vec<ArtifactoryConfig>>,
-    /// CloudSmith publisher configurations.
+    /// Cloudsmith publisher configurations.
     pub cloudsmiths: Option<Vec<CloudSmithConfig>>,
     /// Top-level Homebrew Cask configurations.
     /// `homebrew_casks` is a top-level array with its own
@@ -304,8 +304,11 @@ pub struct Config {
     pub gitlab_urls: Option<GitLabUrlsConfig>,
     /// Custom Gitea API/download URLs for self-hosted Gitea installations.
     pub gitea_urls: Option<GiteaUrlsConfig>,
-    /// Force a specific token type for authentication.
-    /// When set, overrides automatic token detection from environment variables.
+    /// Force a specific token type for authentication: `github`, `gitlab`
+    /// or `gitea`. `release.provider` wins over it; when set, it wins over
+    /// the `ANODIZER_FORCE_TOKEN` and `GORELEASER_FORCE_TOKEN` environment
+    /// variables and over detection from `GITLAB_TOKEN` / `GITEA_TOKEN`.
+    /// The full order is on `release.provider`.
     pub force_token: Option<ForceTokenKind>,
     /// macOS code signing and notarization configuration.
     pub notarize: Option<NotarizeConfig>,
@@ -360,12 +363,13 @@ pub struct Config {
     pub milestones: Option<Vec<MilestoneConfig>>,
     /// Generic HTTP upload configurations.
     pub uploads: Option<Vec<UploadConfig>>,
-    /// AUR source package publishing configurations (source-only PKGBUILD, not -bin).
+    /// AUR source package publishing configurations (source-only PKGBUILD; no -bin package).
     pub aur_sources: Option<Vec<AurSourceConfig>>,
     /// Top-level retry configuration applied to network-bound operations
     /// (announcers, git providers, HTTP uploads, docker pipes). When omitted,
-    /// the defaults apply: 10 attempts, a 10s first delay and a 5m cap on
-    /// each delay.
+    /// the defaults apply: 10 attempts, a 10s first delay, a 5m cap on
+    /// each delay and a 15-minute `max_elapsed` budget for each publisher
+    /// run.
     pub retry: Option<RetryConfig>,
     /// MCP (Model Context Protocol) server registry publishing
     /// configuration. When `name` is empty (the default), the publisher is
@@ -383,7 +387,7 @@ pub struct Config {
     /// `postinstall` mode it emits a download shim (the `npms:`
     /// parity).
     pub npms: Option<Vec<NpmConfig>>,
-    /// GemFury (fury.io) deb/rpm/apk publishing configurations. Mirrors
+    /// Gemfury (fury.io) deb/rpm/apk publishing configurations. Mirrors
     /// The `gemfury:` block. The legacy spelling
     /// `furies:` is accepted via serde alias; a one-time deprecation
     /// warning is emitted by [`warn_on_legacy_furies_alias`].
@@ -423,7 +427,7 @@ pub struct Config {
     /// `binary_signs`, `docker_signs`). NOT a user-facing YAML field — once
     /// the fold has run a filled slice is indistinguishable from one the
     /// operator wrote, so a diagnostic that must name the block they DID
-    /// write reads this instead of guessing from a matching value. All three
+    /// write reads this and does not guess from a matching value. All three
     /// slices are recorded whichever ones a diagnostic reads, so the record
     /// does not have to be extended alongside a new check.
     #[serde(skip)]

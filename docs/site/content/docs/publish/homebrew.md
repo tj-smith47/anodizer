@@ -25,8 +25,8 @@ Anodizer generates Ruby Homebrew formulae with multi-platform support and pushes
 > **Tap vs. homebrew-core:** this publisher pushes a formula to **your own tap**
 > (`youruser/homebrew-tap`). To bump a formula that has already been accepted into
 > `Homebrew/homebrew-core`, use the [Homebrew Core](./homebrew-core.md) publisher
-> (`homebrew_cores`), which opens a fork-based pull request against the core repo
-> instead of pushing to a tap you control.
+> (`homebrew_cores`), which opens a fork-based pull request against the core repo;
+> this publisher pushes to a tap you control.
 
 ## Classification
 
@@ -192,7 +192,7 @@ crates:
 | `description` | string | Cargo `[package].description` | Cask description. Derived from `Cargo.toml`; set to override. |
 | `homepage` | string | Cargo `[package].homepage` | Project homepage. Derived from `Cargo.toml`; set to override. |
 | `skip_upload` | bool or string | the formula's `skip_upload`, else `false` | Skip publishing; `true` or `1` always skips, `auto` skips for prereleases, `false`, `0` or empty publishes; a template is rendered and read the same way, in any letter case (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)) |
-| `update_existing_pr` | bool or string | `false` | Force-push to an existing open PR branch instead of skipping. See [Cask existing PR behavior](#cask-existing-pr-behavior). |
+| `update_existing_pr` | bool or string | `false` | Force-push to an existing open PR branch. When `false`, an existing PR is skipped. See [Cask existing PR behavior](#cask-existing-pr-behavior). |
 
 `defaults.publish.homebrew_cask:` merges into each crate's cask field by
 field: a field the crate's cask sets wins, a field it leaves unset comes
@@ -264,27 +264,30 @@ The push to your tap repository uses the first token that is set:
 The pull request is opened with `repository.pull_request.token`, then `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. With none of these set, the `gh` CLI's own login opens it; with neither a token nor `gh`, the publish fails. The token needs push access to the tap, and `pull_request:write` when `pull_request.enabled` is set.
 
 ```yaml
-homebrew:
-  repository:
-    owner: myorg
-    name: homebrew-tap
-    token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    pull_request:
-      enabled: true
-      token: "{{ .Env.PR_TOKEN }}"
+crates:
+  - name: myapp
+    publish:
+      homebrew:
+        repository:
+          owner: myorg
+          name: homebrew-tap
+          token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+          pull_request:
+            enabled: true
+            token: "{{ .Env.PR_TOKEN }}"
 ```
 
 ## Common gotchas
 
 - **Branch protection**: if your tap repo has branch protection enabled, direct push will fail. Use a fork + PR workflow via `repository.pull_request`.
-- **Multiple platforms**: anodizer auto-generates `on_macos` / `on_linux` / `on_intel` / `on_arm` stanzas from the build targets. If your build only produces one platform, the formula contains a single `url` block instead of the multi-platform form.
+- **Multiple platforms**: anodizer auto-generates `on_macos` / `on_linux` / `on_intel` / `on_arm` stanzas from the build targets. If your build only produces one platform, the formula contains a single `url` block with no platform stanzas.
 - **Cask vs formula**: formulae install from archives; casks install macOS `.app` bundles. A crate can have both if `publish.homebrew` (formula) and `publish.homebrew_cask` (or `publish.homebrew.cask`, or a top-level `homebrew_casks:` entry) are both configured.
 
 ## Republish / update behavior
 
 Formula files are updated in-place on each release; re-cutting the same version overwrites the formula in the tap (prior commit stays in git history). The Manager group rollback reverts via `git revert HEAD --no-edit` + push.
 
-Casks open a PR per version. Set `update_existing_pr: true` on the cask config to force-push to an existing open PR rather than opening a duplicate — full detail in the next section.
+Casks open a PR per version. Set `update_existing_pr: true` on the cask config to force-push to an existing open PR, so no duplicate is opened — full detail in the next section.
 
 ## Cask existing PR behavior
 
@@ -302,9 +305,11 @@ content without creating a duplicate:
 
 ```yaml
 # per-crate cask (either spelling)
-publish:
-  homebrew_cask:
-    update_existing_pr: true
+crates:
+  - name: myapp
+    publish:
+      homebrew_cask:
+        update_existing_pr: true
 
 # top-level homebrew_casks array
 homebrew_casks:
@@ -361,13 +366,16 @@ install block:
   `fish_completion.install`).
 
 ```yaml
-homebrew:
-  generate_completions_from_executable:
-    executable: myapp
-    args: [completion]
-    shells: [bash, zsh, fish]
-  manpages:
-    - myapp.1
+crates:
+  - name: myapp
+    publish:
+      homebrew:
+        generate_completions_from_executable:
+          executable: myapp
+          args: [completion]
+          shells: [bash, zsh, fish]
+        manpages:
+          - myapp.1
 ```
 
 ## Dependencies
@@ -379,13 +387,17 @@ formula's one `on_macos do` or `on_linux do` block, the same block that carries 
 `optional`), then by name without regard to case, the names written as given.
 
 ```yaml
-dependencies:
-  - name: Azure/kubelogin/kubelogin
-  - name: aws-iam-authenticator
-  - name: pkg-config
-    type: build
-  - name: fzf
-    type: optional
+crates:
+  - name: myapp
+    publish:
+      homebrew:
+        dependencies:
+          - name: Azure/kubelogin/kubelogin
+          - name: aws-iam-authenticator
+          - name: pkg-config
+            type: build
+          - name: fzf
+            type: optional
 ```
 
 ```ruby
@@ -402,16 +414,18 @@ Every generated formula carries a `test do` block (`brew test` runs it). When
 binary; set `test:` to supply your own Ruby assertions:
 
 ```yaml
-homebrew:
-  test: |
-    assert_match "myapp #{version}", shell_output("#{bin}/myapp --version")
+crates:
+  - name: myapp
+    publish:
+      homebrew:
+        test: |
+          assert_match "myapp #{version}", shell_output("#{bin}/myapp --version")
 ```
 
 ## Dual-license rendering
 
 When the resolved license is a compound SPDX expression (`MIT OR Apache-2.0`),
-anodizer renders Homebrew's `any_of` license form rather than a single
-`license "MIT"` — so the formula declares both licenses the way Homebrew audits
+anodizer renders Homebrew's `any_of` license form (`license any_of: [...]`), so the formula declares both licenses the way Homebrew audits
 expect. A single-license crate renders the plain `license "<spdx>"` line.
 
 ## Generated formula
@@ -469,21 +483,23 @@ deprecated `def plist`, which `service` replaces. Homebrew 7 removed the
 ## Full example
 
 ```yaml
-publish:
-  homebrew:
-    repository:
-      owner: myorg
-      name: homebrew-tap
-    directory: Formula
-    description: "Fast CLI tool"
-    license: MIT
-    install: |
-      bin.install "myapp"
-    test: |
-      system "#{bin}/myapp", "--version"
-    livecheck:
-      strategy: github_latest
-      url: stable
+crates:
+  - name: myapp
+    publish:
+      homebrew:
+        repository:
+          owner: myorg
+          name: homebrew-tap
+        directory: Formula
+        description: "Fast CLI tool"
+        license: MIT
+        install: |
+          bin.install "myapp"
+        test: |
+          system "#{bin}/myapp", "--version"
+        livecheck:
+          strategy: github_latest
+          url: stable
 ```
 
 For a release of `myapp` with an Apple Silicon archive and a Linux x86_64
@@ -557,6 +573,6 @@ this compares to the other install aggregators.
 
 **Cask:** the per-crate cask (`homebrew_cask:` / `cask:`) is
 **macOS-only** — anodizer generates it only when the build produces a genuine
-macOS artifact (`*-apple-darwin`), never from a Linux archive alone (Linux
+macOS artifact (`*-apple-darwin`); a Linux archive alone produces no cask (Linux
 archives of the same crate join it as an `on_linux` block), matching the
 standalone [Homebrew Casks](./homebrew-casks.md#artifact-eligibility) publisher.

@@ -9,7 +9,7 @@ Nightly mode creates a commit-immutable prerelease version off the newest releas
 
 ## Classification
 
-Not applicable — this is a workflow page, not a publisher. Nightly mode is a release-time flag that changes the version string and tag policy; the publishers that fire are the same ones configured for normal releases.
+Not applicable — this page describes a workflow; it has no publisher of its own. Nightly mode is a release-time flag that changes the version string and tag policy; the publishers that fire are the same ones configured for normal releases.
 
 ## Minimal config
 
@@ -25,7 +25,7 @@ No YAML changes required for the default behavior.
 nightly:
   version_template: "{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"  # optional
   name_template: "{{ ProjectName }} nightly"  # optional; names the nightly release
-  tag_name: nightly           # optional; pin ONE rolling tag instead of a per-commit tag
+  tag_name: nightly           # optional; ONE rolling tag, moved on each run
   publish_release: true       # default true — create a GitHub Release for each nightly run
   keep_single_release: false  # default false — set true to keep only the newest nightly release
   retention:

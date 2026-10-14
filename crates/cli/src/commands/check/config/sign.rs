@@ -829,8 +829,8 @@ fn docker_sign_block(config: &Config, idx: usize) -> String {
 
 /// Warn that a `docker_signs:` entry's `signature:` names nothing.
 ///
-/// A container signature is stored in the registry beside the image rather
-/// than written to disk, so the docker sign stage synthesizes the
+/// A container signature is stored in the registry beside the image, and no
+/// file is written, so the docker sign stage synthesizes the
 /// `<image>@<digest>.sig` name its argv substitutes and reads this template
 /// nowhere. An operator who sets it gets the synthesized name with no error
 /// at all — and no two entries can resolve one output file, which is why the
@@ -840,7 +840,7 @@ pub(super) fn check_docker_sign_signature_templates(config: &Config, warnings: &
         if cfg.signature.is_some() {
             warnings.push(format!(
                 "{}.signature is set but a docker signature is stored in the \
-                registry rather than written to a file (it will be ignored)",
+                registry and no file is written (it will be ignored)",
                 docker_sign_block(config, idx)
             ));
         }

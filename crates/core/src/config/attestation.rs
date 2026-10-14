@@ -2,6 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{StringOrBool, deserialize_string_or_bool_opt};
+use crate::artifact::{ArtifactKind, release_uploadable_kinds};
 
 // ---------------------------------------------------------------------------
 // AttestationConfig
@@ -38,11 +39,16 @@ pub struct AttestationConfig {
     /// `actions/attest-build-provenance`; `emit` generates and signs an
     /// in-toto SLSA provenance statement as a release asset.
     pub mode: Option<AttestationMode>,
-    /// Which produced-artifact kinds to attest. Each entry selects a KIND
-    /// (`archive`, `binary`, `checksum`); the concrete subject set (filenames
-    /// + sha256) is DERIVED from the artifacts anodizer already produced.
+    /// Which produced-artifact kinds to attest. Each entry selects a kind;
+    /// the concrete subjects (file names and sha256) come from the
+    /// artifacts anodizer produced. The kinds are `archive`, `binary`,
+    /// `checksum`, `package`, `source`, `sbom`, `installer`, `flatpak`,
+    /// `install_script` and `file`.
     ///
-    /// Defaults to `[archive, binary, checksum]` when omitted.
+    /// When omitted, every artifact uploaded to the release is attested
+    /// except signatures and certificates, which are themselves signatures
+    /// over other artifacts. That is the same set all ten kinds select
+    /// together.
     pub artifacts: Option<Vec<AttestationArtifactKind>>,
     /// Skip the attestation stage. Accepts a bool or a template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -60,8 +66,8 @@ pub enum AttestationMode {
 }
 
 /// A kind of artifact to attest. Each kind covers one or more of the
-/// artifact types anodizer produces, and together they cover every artifact
-/// that can be uploaded to a release, so any of them can be attested.
+/// artifact types anodizer produces. Together they cover every artifact
+/// uploaded to a release except signatures and certificates.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum AttestationArtifactKind {
@@ -79,6 +85,71 @@ pub enum AttestationArtifactKind {
     Sbom,
     /// OS installers: Windows MSI/NSIS, macOS DMG (disk image), and macOS PKG.
     Installer,
+    /// Flatpak bundles (`.flatpak`).
+    Flatpak,
+    /// Generated install scripts (`install.sh`, `install.ps1`).
+    InstallScript,
+    /// Other uploadable files: rendered `template_files` outputs and AppImage
+    /// `.zsync` update files.
+    File,
+}
+
+impl AttestationArtifactKind {
+    /// Every selectable kind, in the order the `artifacts` doc lists them.
+    pub const ALL: [AttestationArtifactKind; 10] = [
+        AttestationArtifactKind::Archive,
+        AttestationArtifactKind::Binary,
+        AttestationArtifactKind::Checksum,
+        AttestationArtifactKind::Package,
+        AttestationArtifactKind::Source,
+        AttestationArtifactKind::Sbom,
+        AttestationArtifactKind::Installer,
+        AttestationArtifactKind::Flatpak,
+        AttestationArtifactKind::InstallScript,
+        AttestationArtifactKind::File,
+    ];
+
+    /// The concrete artifact kinds this selection attests.
+    pub fn concrete_kinds(self) -> &'static [ArtifactKind] {
+        match self {
+            // AppImage and makeself are single self-contained bundles, the
+            // same shape as an archive.
+            AttestationArtifactKind::Archive => &[
+                ArtifactKind::Archive,
+                ArtifactKind::Makeself,
+                ArtifactKind::AppImage,
+            ],
+            // The bare-binary release asset; the intermediate build output
+            // never reaches the release.
+            AttestationArtifactKind::Binary => &[ArtifactKind::UploadableBinary],
+            AttestationArtifactKind::Checksum => &[ArtifactKind::Checksum],
+            AttestationArtifactKind::Package => {
+                &[ArtifactKind::LinuxPackage, ArtifactKind::SourceRpm]
+            }
+            AttestationArtifactKind::Source => &[ArtifactKind::SourceArchive],
+            AttestationArtifactKind::Sbom => &[ArtifactKind::Sbom],
+            AttestationArtifactKind::Installer => &[
+                ArtifactKind::Installer,
+                ArtifactKind::DiskImage,
+                ArtifactKind::MacOsPackage,
+            ],
+            AttestationArtifactKind::Flatpak => &[ArtifactKind::Flatpak],
+            AttestationArtifactKind::InstallScript => &[ArtifactKind::InstallScript],
+            AttestationArtifactKind::File => &[ArtifactKind::UploadableFile],
+        }
+    }
+}
+
+/// The concrete artifact kinds attested when `artifacts:` is omitted: every
+/// release-uploadable kind except signatures and certificates. Derived from
+/// [`release_uploadable_kinds`] so a kind added to the release is attested
+/// by default.
+pub fn default_attestable_kinds() -> Vec<ArtifactKind> {
+    release_uploadable_kinds()
+        .iter()
+        .copied()
+        .filter(|k| !matches!(k, ArtifactKind::Signature | ArtifactKind::Certificate))
+        .collect()
 }
 
 impl AttestationConfig {
@@ -98,11 +169,10 @@ impl AttestationConfig {
     /// The configured artifact-kind selection, or `None` when `artifacts:` is
     /// omitted.
     ///
-    /// `None` is NOT a hand-curated subset — the stage interprets it as "attest
-    /// every release-uploadable artifact" (the full `release_uploadable_kinds()`
-    /// set minus signatures/certificates and the attestation outputs
-    /// themselves), so a `.deb`/`.rpm`/SBOM/installer the user ships is attested
-    /// by default rather than silently dropped.
+    /// The stage reads `None` as "attest every release-uploadable artifact"
+    /// ([`default_attestable_kinds`], less the attestation outputs
+    /// themselves), so a `.deb`, `.rpm`, SBOM or installer the user ships is
+    /// attested by default.
     pub fn resolved_artifacts(&self) -> Option<Vec<AttestationArtifactKind>> {
         self.artifacts.clone()
     }
@@ -139,6 +209,87 @@ mod tests {
                 AttestationArtifactKind::Installer,
             ])
         );
+    }
+
+    #[test]
+    fn the_selectable_kinds_together_are_the_default_set() {
+        let mut selectable: Vec<ArtifactKind> = AttestationArtifactKind::ALL
+            .iter()
+            .flat_map(|k| k.concrete_kinds())
+            .copied()
+            .collect();
+        let mut default = default_attestable_kinds();
+        selectable.sort_by_key(|k| k.as_str());
+        default.sort_by_key(|k| k.as_str());
+        let before = selectable.len();
+        selectable.dedup();
+        assert_eq!(before, selectable.len(), "two selections share a kind");
+        assert_eq!(selectable, default);
+    }
+
+    #[test]
+    fn the_artifacts_doc_lists_every_selectable_kind_in_order() {
+        let schema = schemars::schema_for!(AttestationConfig);
+        let doc = schema
+            .as_value()
+            .pointer("/properties/artifacts/description")
+            .and_then(|v| v.as_str())
+            .expect("artifacts carries a description")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let names: Vec<String> = AttestationArtifactKind::ALL
+            .iter()
+            .map(|k| {
+                serde_json::to_value(k)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        let listed = names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>();
+        let sentence = format!(
+            "{} and {}",
+            listed[..listed.len() - 1].join(", "),
+            listed[listed.len() - 1]
+        );
+        assert!(
+            doc.contains(&sentence),
+            "the artifacts doc must list exactly {sentence}; got: {doc}"
+        );
+        // ALL holds every variant the schema publishes.
+        let def = schema
+            .as_value()
+            .pointer("/$defs/AttestationArtifactKind")
+            .expect("kind definition");
+        let mut published: Vec<String> = Vec::new();
+        let mut stack = vec![def];
+        while let Some(v) = stack.pop() {
+            if let Some(c) = v.get("const").and_then(|c| c.as_str()) {
+                published.push(c.to_string());
+            }
+            for key in ["enum", "oneOf", "anyOf"] {
+                if let Some(items) = v.get(key).and_then(|i| i.as_array()) {
+                    for item in items {
+                        match item.as_str() {
+                            Some(s) => published.push(s.to_string()),
+                            None => stack.push(item),
+                        }
+                    }
+                }
+            }
+        }
+        let mut sorted_names = names.clone();
+        sorted_names.sort();
+        published.sort();
+        assert_eq!(published, sorted_names, "ALL and the enum disagree");
+        // Every variant parses from the name the doc gives it.
+        for (name, kind) in names.iter().zip(AttestationArtifactKind::ALL) {
+            let parsed: AttestationArtifactKind =
+                serde_yaml_ng::from_str(name).expect("documented kind parses");
+            assert_eq!(parsed, kind);
+        }
     }
 
     #[test]

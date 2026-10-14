@@ -42,13 +42,14 @@ aur_sources:
 > the publisher is classified as Submitter because it modifies a shared namespace on an
 > external service with no programmatic rollback path.
 >
-> Setting `required: true` has no meaningful effect in the common case because the
-> failure mode it guards against (SSH push rejection) happens at push time — the same
-> moment the publisher either succeeds or fails. However, anodizer still emits a
-> config-validation warning to match the consistent submitter policy:
+> `required: true` fails the release when the SSH push fails. The AUR has no
+> later review, so the push is the whole outcome.
+>
+> With `-v`, anodizer prints this line when it loads a config that sets
+> `required: true` on this publisher:
 >
 > ```
-> <location>: publisher 'aur_source' is a submitter (external moderation queue); `required: true` has no meaningful effect — the submitter gate evaluates at push time, not at approval time.
+> <location>: publisher 'aur_source' submits to an external moderation queue; `required: true` fails the release when the submission itself fails, but the eventual moderation outcome happens outside the release run and cannot be gated.
 > ```
 >
 > See [Publish overview — the `required:` field](../) for the full submitter-publisher

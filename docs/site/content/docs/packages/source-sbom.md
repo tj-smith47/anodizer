@@ -64,7 +64,7 @@ Not applicable — source archive and SBOM generation are local build steps with
 
 ## Republish / update behavior
 
-Not applicable — these are local packaging stages, not publishers.
+Not applicable — these are local packaging stages with no remote to publish to.
 
 ## Source archives
 
@@ -89,7 +89,7 @@ This produces a `tar.gz` archive named `<project>-<version>.tar.gz` containing a
 | `prefix_template` | string | none (no prefix) | Directory prefix inside the archive (supports templates) |
 | `files` | list | none | Extra files to include beyond git-tracked files |
 
-### How it works
+### Generation process
 
 1. Anodizer runs `git archive` against the current commit (or HEAD) to create an archive of all tracked files.
 2. If `prefix_template` is set, all paths inside the archive are nested under that directory (e.g., `myapp-1.0.0/src/main.rs`).
@@ -335,7 +335,7 @@ sboms:
 `sboms:` takes a list of SBOM configs, or a single config object, which is
 read as a one-entry list.
 
-### Disabling an SBOM config
+### Disabled SBOM configs
 
 Skip with a boolean or a template expression:
 
@@ -359,7 +359,7 @@ build -> archive -> source -> sbom -> checksum -> sign -> release -> publish
 
 Source archives and SBOMs are registered as release artifacts. They appear alongside your binaries and archives in the release, and are included in checksum and signing stages that follow.
 
-### Which release an SBOM is uploaded to
+### Release that receives an SBOM
 
 In a workspace that releases several crates, each SBOM is uploaded to one
 crate's release, and `verify-release` expects it there:

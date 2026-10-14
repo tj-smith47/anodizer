@@ -39,7 +39,7 @@ pub struct BlobConfig {
     /// AWS's `log-delivery-write` is intentionally omitted because it is only
     /// valid on `S3LogBucket` targets and would silently fail on a normal bucket.
     /// **GCS**: pass the camelCase predefined-ACL name (e.g. `publicRead`,
-    /// `bucketOwnerFullControl`); not validated up-front, so a typo surfaces
+    /// `bucketOwnerFullControl`); not validated up-front, so a typo shows up
     /// as a 400 from the GCS API at upload time.
     pub acl: Option<String>,
     /// HTTP Cache-Control header values, joined with ", " when uploading.
@@ -92,7 +92,7 @@ pub struct BlobConfig {
     pub parallelism: Option<usize>,
     /// When `true`, a failed blob upload counts as a required-publisher
     /// failure: trips the submitter gate (chocolatey/winget/snapcraft/aur
-    /// don't run if blob failed) and surfaces in
+    /// don't run if blob failed) and appears in
     /// `report.required_failures()` so the CLI exits non-zero.
     ///
     /// Default: `false`. Snapshot release pipelines typically don't
@@ -112,6 +112,6 @@ pub struct BlobConfig {
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in
-    /// place rather than attempting to undo it. Default `false`.
+    /// place and does not try to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
 }

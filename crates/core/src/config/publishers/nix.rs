@@ -53,7 +53,7 @@ pub struct NixConfig {
     /// to `lib.licenses.<attr>`; an `OR`/`AND` list of known ids maps to
     /// `with lib.licenses; [ … ]`. An unknown id or an unparseable compound
     /// (e.g. a `WITH` exception) degrades to a quoted-string `license` in
-    /// `meta` — never rejected, never an invalid attr-path. When unset, the
+    /// `meta`; it is not rejected and never yields an invalid attr-path. When unset, the
     /// license is derived from the crate's `Cargo.toml [package].license`.
     pub license: Option<String>,
     /// nixpkgs maintainer handles (from `lib.maintainers`) rendered as
@@ -107,7 +107,7 @@ pub struct NixConfig {
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in
-    /// place rather than attempting to undo it. Default `false`.
+    /// place and does not try to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
 }
 

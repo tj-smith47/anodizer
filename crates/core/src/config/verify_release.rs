@@ -4,7 +4,7 @@
 //! the release pipeline — *after* the release is created and every publisher
 //! has run. Because it runs after the irreversible publish, it does NOT
 //! block or undo anything: it REPORTS post-publish defects (and exits
-//! non-zero so CI surfaces them), but the release is already live.
+//! non-zero so CI reports them), but the release is already live.
 //!
 //! Four independently-toggleable checks:
 //!
@@ -12,12 +12,12 @@
 //!   has a matching UPLOADED asset on the published release. Catches the
 //!   partial uploads GitHub silently tolerates.
 //! - **install smoke-test** (`Self::install_smoke`) — installs each Linux
-//!   package (`.deb` / `.rpm` / `.apk`) in a pinned container and runs
+//!   package (`.deb` / `.rpm` / `.apk`) in a fixed-version container and runs
 //!   `<bin> --version`. Skipped with a notice when Docker is unavailable.
 //! - **libc ceiling** (`Self::glibc_ceiling`) — fails if any glibc-linked
 //!   `.deb` requires a glibc newer than the configured floor. musl binaries
 //!   have no glibc requirement and are skipped — which is the whole point:
-//!   musl hides a glibc-floor regression that this check is meant to surface.
+//!   musl hides a glibc-floor regression that this check is meant to find.
 //! - **publisher landing** (`Self::assert_landing`) — every publisher that
 //!   succeeded this run, and every docker image tag the run pushed, is probed
 //!   upstream to confirm consumers can see what it published.

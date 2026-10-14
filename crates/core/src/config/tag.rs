@@ -18,14 +18,14 @@ pub struct TagConfig {
     pub default_bump: Option<String>,
     /// While the current major version is `0`, demote a conventional breaking
     /// change (`feat!:` / `BREAKING CHANGE`) from a major bump to a minor bump
-    /// (e.g. `0.5.0` → `0.6.0` instead of `1.0.0`). Honors the SemVer rule that
+    /// (e.g. `0.5.0` → `0.6.0`, where the bump would otherwise give `1.0.0`). Honors the SemVer rule that
     /// anything may change in the `0.y.z` range. An explicit `#major`/`#minor`
     /// token, a `custom_tag`, or a manually-ahead `Cargo.toml` version always
     /// wins over this demotion. No-op once a real tag reaches `1.x`. Default false.
     pub bump_minor_pre_major: Option<bool>,
     /// While the current major version is `0`, demote a conventional feature
-    /// (`feat:`) from a minor bump to a patch bump (e.g. `0.5.0` → `0.5.1`
-    /// instead of `0.6.0`). Independent of `bump_minor_pre_major`. An explicit
+    /// (`feat:`) from a minor bump to a patch bump (e.g. `0.5.0` → `0.5.1`,
+    /// where the bump would otherwise give `0.6.0`). Independent of `bump_minor_pre_major`. An explicit
     /// token / `custom_tag` / ahead `Cargo.toml` always wins. No-op at `1.x`.
     /// Default false.
     pub bump_patch_for_minor_pre_major: Option<bool>,
@@ -47,7 +47,7 @@ pub struct TagConfig {
     pub tag_prefix: Option<String>,
     /// Branch name patterns (supports wildcards) that trigger releases (default: ["master", "main"]).
     pub release_branches: Option<Vec<String>>,
-    /// Custom version tag to use instead of auto-incrementing.
+    /// Custom version tag. When set, no auto-increment happens.
     pub custom_tag: Option<String>,
     /// Source for determining the previous tag: "repo" (default) or "branch".
     pub tag_context: Option<String>,
@@ -71,15 +71,15 @@ pub struct TagConfig {
     pub patch_string_token: Option<String>,
     /// Conventional commit token suppressing a version bump entirely (default: "none").
     pub none_string_token: Option<String>,
-    /// When true, use the GitHub/GitLab API for tagging instead of git CLI.
+    /// When true, use the GitHub/GitLab API for tagging. When false, the git CLI creates the tag.
     ///
     /// Mutually exclusive with `sign` on a pushed tag: the API creates the tag
     /// object server-side and cannot apply your local GPG/SSH signature, so
-    /// anodizer errors rather than shipping a silently-unsigned tag. Use local
+    /// anodizer errors and ships no silently-unsigned tag. Use local
     /// tagging (drop `git_api_tagging`) to create signed tags.
     pub git_api_tagging: Option<bool>,
     /// When true, anodizer creates the version tag with `git tag -s` (a
-    /// cryptographically signed annotated tag) instead of the default `git tag
+    /// cryptographically signed annotated tag). The default is `git tag
     /// -a` (unsigned annotated tag). The signing key and method are taken
     /// entirely from the user's git configuration (`user.signingkey`, and
     /// `gpg.format` to select GPG vs SSH signing) — anodizer adds no key field
@@ -96,7 +96,7 @@ pub struct TagConfig {
     /// tagging and with `--push-tags-only` (both cut the tag locally first).
     pub sign: Option<bool>,
     /// When true, `anodizer tag` also pushes the version-sync bump commit to the
-    /// release branch (atomically with the tag), not just the tag. CLI `--push` /
+    /// release branch (atomically with the tag) as well as the tag. CLI `--push` /
     /// `--no-push` override this. Default false preserves the "push the tag,
     /// inspect the branch locally before pushing" workflow.
     pub push: Option<bool>,

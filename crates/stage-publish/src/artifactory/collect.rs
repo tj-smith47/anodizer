@@ -51,8 +51,8 @@ const EXTRA_UPLOADABLE_KINDS: &[ArtifactKind] = &[ArtifactKind::Snap];
 /// uploadable artifact kind.
 ///
 /// The `archive` set is derived from
-/// [`anodizer_core::artifact::release_uploadable_kinds`] rather than written
-/// out again here: a third hand-kept list drifted from the core one, so an
+/// [`anodizer_core::artifact::release_uploadable_kinds`], with no copy kept
+/// here: a third hand-kept list drifted from the core one, so an
 /// AppImage or an install script that reached the GitHub release reached no
 /// `artifactory:` or `uploads:` target.
 pub(crate) fn artifact_kinds_for_mode(mode: &str) -> Vec<ArtifactKind> {

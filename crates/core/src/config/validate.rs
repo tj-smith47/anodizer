@@ -175,8 +175,8 @@ pub fn validate_on_failure_root_only(config: &Config) -> Result<(), String> {
 ///
 /// Automatic rollback (delete the run's release tags, revert the
 /// version-bump commit) was removed in favor of convergent reconcile:
-/// re-running `anodizer release` now converges on already-published state
-/// instead of needing to unwind it. `hold` is the only accepted policy.
+/// re-running `anodizer release` now converges on already-published state,
+/// with nothing to unwind. `hold` is the only accepted policy.
 pub fn validate_on_failure_not_rollback(config: &Config) -> Result<(), String> {
     let is_rollback = |r: &ReleaseConfig| r.on_failure == Some(OnFailureConfig::Rollback);
     let root_is_rollback = config.release.as_ref().is_some_and(is_rollback);
@@ -203,9 +203,8 @@ pub fn validate_on_failure_not_rollback(config: &Config) -> Result<(), String> {
 }
 
 /// Marker prefix for the axis-mismatch validation error class. Existing
-/// validators in this module return `Result<(), String>` rather than a
-/// typed enum, so this constant (instead of a `ConfigError`
-/// variant) for callers that want to recognise the error class
+/// validators in this module return `Result<(), String>`, so this constant
+/// marks the class for callers that want to recognise the error class
 /// programmatically.
 ///
 /// The prefix is emitted at the start of every error returned by
@@ -418,8 +417,8 @@ pub fn validate_winget_upgrade_behavior(config: &Config) -> Result<(), String> {
 /// outside the canonical set ([`WINGET_ARCHITECTURES`]: `x64`, `arm64`, `x86`)
 /// therefore matches
 /// no installer, so the dependency would silently disappear from the generated
-/// manifest. Reject it at config-validate instead of shipping a manifest that
-/// quietly omits a declared dependency. An empty list (or absent
+/// manifest. Rejecting it at config-validate stops a manifest from shipping
+/// that quietly omits a declared dependency. An empty list (or absent
 /// `architectures`) means "all installers" and is valid.
 pub fn validate_winget_dependency_architectures(config: &Config) -> Result<(), String> {
     let check = |location: &str, winget: &WingetConfig| -> Result<(), String> {

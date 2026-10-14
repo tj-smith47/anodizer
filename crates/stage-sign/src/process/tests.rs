@@ -92,7 +92,7 @@ mod faked_time_tests {
 
 #[cfg(test)]
 mod harden_cosign_tests {
-    use super::harden_cosign_args_for_harness;
+    use super::{harden_cosign_args_for_harness, is_keyless_cosign};
     use anodizer_core::MapEnvSource;
     use anodizer_core::config::Config;
     use anodizer_core::context::{Context, ContextOptions};
@@ -171,10 +171,17 @@ mod harden_cosign_tests {
             eq_true
         );
 
+        // cosign reads `--tlog-upload false` as the bare flag (upload on) and
+        // a positional `false`, so the operator's explicit choice here is on.
         let two_token = args(&["sign-blob", "--key=k", "--tlog-upload", "false", "a"]);
         assert_eq!(
             harden_cosign_args_for_harness("cosign", two_token.clone(), &ctx),
             two_token
+        );
+        assert_eq!(
+            crate::verify::tlog_upload_setting(&two_token),
+            Some(true),
+            "the hardener and the verify leg read the same value"
         );
 
         let eq_false = args(&["sign-blob", "--key=k", "--tlog-upload=false", "a"]);
@@ -185,6 +192,39 @@ mod harden_cosign_tests {
                 .count(),
             1,
             "no duplicate when already pinned false: {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_flag_after_the_terminator_is_not_an_operator_choice() {
+        let ctx = ctx_with_harness(true);
+        let out = harden_cosign_args_for_harness(
+            "cosign",
+            args(&["sign-blob", "--key=k", "--", "--tlog-upload=true"]),
+            &ctx,
+        );
+        assert_eq!(
+            out,
+            args(&[
+                "sign-blob",
+                "--key=k",
+                "--tlog-upload=false",
+                "--",
+                "--tlog-upload=true"
+            ]),
+            "the flag goes before the terminator so cosign reads it"
+        );
+        assert!(crate::verify::tlog_upload_disabled(&out));
+    }
+
+    #[test]
+    fn a_key_after_the_terminator_leaves_the_invocation_keyless() {
+        let ctx = ctx_with_harness(true);
+        let input = args(&["sign-blob", "--yes", "--", "--key=k"]);
+        assert!(is_keyless_cosign("cosign", &input));
+        assert_eq!(
+            harden_cosign_args_for_harness("cosign", input.clone(), &ctx),
+            input
         );
     }
 

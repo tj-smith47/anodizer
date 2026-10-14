@@ -49,7 +49,7 @@ on_error: { hooks: ["./notify.sh failed"] }    # failure only
 always:   { hooks: ["./teardown-staging.sh"] } # finally — both, runs last
 ```
 
-## Which commands run which lanes
+## Lanes per command
 
 | Lane | `anodizer release` | `anodizer build` | `anodizer publish` |
 |---|---|---|---|
@@ -79,7 +79,7 @@ which is where build teardown belongs.
 Every other command (`publish`, `announce`, `check`, `tag`, ...) runs no root
 lane at all — `publish` runs only the mid-pipeline `before_publish` hooks.
 
-## Suppressing a lane with `--skip`
+## Lane suppression with `--skip`
 
 Every root lane has a `--skip` token, and `release` and `build` accept the
 same four, so one skip list works on whichever command a job runs:
@@ -104,7 +104,7 @@ the root `before:` block AND every `crates[].before:` block, and
 `--skip=on-error` suppresses the root `on_error:` block AND every
 `publish.on_error:` block.
 
-`--skip=always` is deliberate, not an oversight. `always` is the run's
+`--skip=always` is deliberate. `always` is the run's
 `finally`, but `--skip=before` already suppresses the lane it pairs with, and
 a teardown hook firing against state nothing staged is the incoherent half of
 that pair. The cost is the obvious one: **teardown does not run**, so
@@ -198,8 +198,7 @@ exactly why teardown belongs in `always` — a shard that staged something in
 The four root blocks are one **global** lane. Each fires **once per
 invocation** — never once per crate — including a per-crate publish
 (`anodizer release --publish-only` over a `dist/<crate>/` tree), where the
-root `after` block fires once after the last crate rather than once per
-crate.
+root `after` block fires once, after the last crate.
 
 Per-crate hooks are a separate surface with per-crate cardinality:
 
@@ -236,7 +235,7 @@ script can never overwrite that diagnosis.
 
 ## Back-compat alias: `post:`
 
-Older anodizer configs use `after.post:` instead of `after.hooks:`. The
+Older anodizer configs use `after.post:` where newer ones use `after.hooks:`. The
 old spelling is still accepted (folded into `hooks:` at parse time with
 a deprecation warning) so existing configs keep working; new configs
 should use `hooks:` in every block.

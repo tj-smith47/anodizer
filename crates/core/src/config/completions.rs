@@ -23,9 +23,9 @@ use serde::{Deserialize, Serialize};
 
 /// Shell-completion generation for an archive entry.
 ///
-/// Exactly one of `generate` / `from_build_out` / `copy` must be set
-/// (validated at deserialize time). Setting none is a no-op; setting more
-/// than one is a config error.
+/// At most one of `generate` / `from_build_out` / `copy` may be set
+/// (checked when the config loads). Setting none generates nothing; setting
+/// more than one is a config error.
 ///
 /// YAML examples:
 /// ```yaml
@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 /// `{{ Binary }}` resolves to the host-native binary's recorded name; when
 /// no host artifact exists (modes B/C on a pure cross build) it falls back to
 /// the crate name. If your binary name differs from the crate name, spell it
-/// literally in the glob rather than relying on `{{ Binary }}` in that case.
+/// literally in the glob in that case.
 #[derive(Debug, Clone, Serialize, Default, JsonSchema, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct CompletionsConfig {
@@ -54,8 +54,8 @@ pub struct CompletionsConfig {
     pub from_build_out: Option<String>,
     /// Mode C: glob/path of committed completion files to copy verbatim.
     pub copy: Option<String>,
-    /// Shells to generate for in mode A. Arbitrary user-supplied list — not
-    /// limited to bash/zsh/fish/powershell; `nushell`, `elvish`, `fig`, etc.
+    /// Shells to generate for in mode A. Arbitrary user-supplied list, open
+    /// beyond bash/zsh/fish/powershell; `nushell`, `elvish`, `fig`, etc.
     /// are all valid. Ignored by modes B and C. Defaults to the four common
     /// shells when omitted in mode A.
     pub shells: Option<Vec<String>>,
@@ -66,7 +66,7 @@ pub struct CompletionsConfig {
 
 /// Man-page generation for an archive entry.
 ///
-/// The same three modes as `completions` (set exactly one), without the
+/// The same three modes as `completions` (set at most one), without the
 /// `shells` list, since man pages do not depend on the shell.
 ///
 /// YAML examples:

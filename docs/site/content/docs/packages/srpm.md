@@ -73,7 +73,7 @@ No authentication is required when `signature` is not configured.
 
 ## Republish / update behavior
 
-Not applicable — this is a local packaging stage, not a publisher.
+Not applicable — this is a local packaging stage with no remote to publish to.
 
 ## SRPM config fields
 

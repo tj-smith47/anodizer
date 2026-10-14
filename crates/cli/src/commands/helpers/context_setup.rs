@@ -244,11 +244,12 @@ pub fn setup_context(ctx: &mut Context, config: &Config, log: &StageLogger) -> R
 /// Resolve the SCM token type and token value from config and environment.
 ///
 /// This sets `ctx.token_type` based on priority (highest first):
-/// 1. `config.force_token` — explicit user config (`force_token: gitlab`)
-/// 2. `ANODIZER_FORCE_TOKEN` env var — e.g. `github`, `gitlab`, `gitea`
-/// 3. `GORELEASER_FORCE_TOKEN` env var — compat fallback
-/// 4. Environment variable presence — `GITLAB_TOKEN` → GitLab, `GITEA_TOKEN` → Gitea
-/// 5. Default — GitHub
+/// 1. `release.provider` — the forge the release is published to
+/// 2. `config.force_token` — explicit user config (`force_token: gitlab`)
+/// 3. `ANODIZER_FORCE_TOKEN` env var — e.g. `github`, `gitlab`, `gitea`
+/// 4. `GORELEASER_FORCE_TOKEN` env var — compat fallback
+/// 5. Environment variable presence — `GITLAB_TOKEN` → GitLab, `GITEA_TOKEN` → Gitea
+/// 6. Default — GitHub
 ///
 /// It also resolves the token value into `ctx.options.token` (if not already
 /// set by a CLI flag) from the appropriate environment variable:
@@ -269,8 +270,7 @@ pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) {
     };
 
     // Resolution priority: explicit `release.provider:` (cross-platform
-    // cross-platform publishing) > top-level `force_token:` > env-var
-    // detection. `release.provider:` makes the cross-platform case
+    // publishing) > top-level `force_token:` > env-var detection. `release.provider:` makes the cross-platform case
     // declarative: a project that lives on GitLab but publishes to
     // GitHub declares `provider: github` and the token detection
     // honours it without needing the user to clear `GITLAB_TOKEN`.

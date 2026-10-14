@@ -75,8 +75,8 @@ pub struct SignConfig {
     pub output: Option<StringOrBool>,
     /// Authenticode (Windows PE/MSI) signing backend. When set, this sign
     /// config signs Windows artifacts in place via osslsigncode (Linux/cross)
-    /// or signtool (Windows) instead of producing a detached cosign/gpg
-    /// signature. The signing command, argv, timestamp URL, and artifact
+    /// or signtool (Windows), and no detached cosign/gpg signature is
+    /// written. The signing command, argv, timestamp URL, and artifact
     /// selector are all derived; supply only the cert (a secret).
     pub authenticode: Option<AuthenticodeConfig>,
     /// Post-sign verification knobs. Verification is ON by default wherever
@@ -419,20 +419,20 @@ pub struct DockerSignConfig {
     /// Which docker artifacts to sign: `all`, `images`, `manifests`, `none`,
     /// or empty.
     /// Empty is the default and signs the canonical docker images. The
-    /// singular `image` and `manifest` are refused — the sign stage fails the
-    /// run rather than signing nothing.
+    /// singular `image` and `manifest` are refused: the sign stage fails the
+    /// run, so a misspelled filter cannot sign nothing in silence.
     pub artifacts: Option<String>,
     /// Signing command to invoke (default: "cosign").
     pub cmd: Option<String>,
     /// Arguments passed to the signing command. `{{ .Artifact }}` is
-    /// replaced by the digest-pinned image reference and `{{ .Signature }}`
+    /// replaced by the image reference with its digest and `{{ .Signature }}`
     /// by the synthesized `<image>@<digest>.sig` name before the rest is
     /// rendered as a template; `{{ .Digest }}` renders the image digest.
     /// Shell variables such as `${artifact}` are never expanded on the docker
     /// path and reach the signing command as literal text.
     pub args: Option<Vec<String>>,
     /// Ignored. A container signature is stored in the registry beside the
-    /// image rather than written to a file, so the docker sign stage
+    /// image, and no file is written, so the docker sign stage
     /// synthesizes the `<image>@<digest>.sig` name its argv substitutes and
     /// reads this template nowhere.
     pub signature: Option<String>,
@@ -492,8 +492,8 @@ impl DockerSignConfig {
 
     /// Default `args` for `docker_signs:[]`
     /// (`["sign", "--key=cosign.key", "{{ .Artifact }}@{{ .Digest }}",
-    /// "--yes"]`). `{{ .Artifact }}` is replaced by the digest-pinned image
-    /// reference before the render, and `{{ .Digest }}` renders the digest,
+    /// "--yes"]`). `{{ .Artifact }}` is replaced by the image reference with
+    /// its digest before the render, and `{{ .Digest }}` renders the digest,
     /// so the argument names the image by digest even when the reference
     /// carried only a tag.
     pub const DEFAULT_ARGS: &[&'static str] = &[

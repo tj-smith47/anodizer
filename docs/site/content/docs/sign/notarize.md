@@ -16,8 +16,7 @@ Works on Linux, macOS, and Windows. Uses a P12 certificate for signing and an Ap
 ```yaml
 notarize:
   macos:
-    - skip: false
-      sign:
+    - sign:
         certificate: "{{ Env.P12_CERTIFICATE }}"
         password: "{{ Env.P12_PASSWORD }}"
       notarize:
@@ -31,7 +30,7 @@ notarize:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `ids` | list | project name | Build IDs to filter |
-| `skip` | string/bool | `true` | Skip this config. Notarization is off until you set `skip: false`. `enabled:` is accepted as an inverted alias (`enabled: true` is `skip: false`); see [Enabling with `enabled`](#enabling-with-enabled) for how its value is read. |
+| `skip` | string/bool | `false` | Skip this config. An entry with no `skip` runs. A template skips when it renders `true` or `1`, trimmed and in any letter case. `enabled:` is accepted as an inverted alias (`enabled: true` is `skip: false`); see [The `enabled` alias](#the-enabled-alias) for how its value is read. |
 
 #### Sign config (`sign`)
 
@@ -42,15 +41,17 @@ notarize:
 | `entitlements` | string | none | Path to entitlements XML file (template) |
 | `timestamp_url` | string | `http://timestamp.apple.com/ts01` | RFC-3161 timestamp service URL passed to `rcodesign sign --timestamp-url`. Override when running behind a corporate proxy or when Apple's service is unreachable. |
 
-#### Notarize config (`notarize`, optional — omit for sign-only)
+#### Notarize config (`notarize`, optional)
+
+Omit this block to sign without notarizing.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `issuer_id` | string | none | App Store Connect API key issuer UUID (template) |
 | `key` | string | none | Path to .p8 key file or base64 contents (template) |
 | `key_id` | string | none | API key ID (template) |
-| `timeout` | string | `10m` | Timeout for notarization polling. Maximum `20m` — the App Store Connect token lifetime is derived from it and Apple rejects tokens that live longer, so a larger value fails config validation. |
-| `wait` | bool | none | Whether to wait for notarization to complete |
+| `timeout` | string | `10m` | Timeout for notarization polling, passed to `rcodesign notary-submit --max-wait` when `wait` is `true`. Maximum `20m` — the App Store Connect token lifetime is derived from it and Apple rejects tokens that live longer, so a larger value fails config validation. |
+| `wait` | bool | `false` | Whether to wait for notarization to complete |
 
 ## Native mode (codesign + xcrun)
 
@@ -61,8 +62,7 @@ macOS only. Uses Keychain identities for signing and `xcrun notarytool` for nota
 ```yaml
 notarize:
   macos_native:
-    - skip: false
-      use: dmg
+    - use: dmg
       sign:
         identity: "Developer ID Application: My Org"
       notarize:
@@ -74,7 +74,7 @@ notarize:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `ids` | list | project name | Build IDs to filter |
-| `skip` | string/bool | `true` | Skip this config. Set `skip: false` to enable. `enabled:` is accepted as an inverted alias; see [Enabling with `enabled`](#enabling-with-enabled). |
+| `skip` | string/bool | `false` | Skip this config. An entry with no `skip` runs. A template skips when it renders `true` or `1`, trimmed and in any letter case. `enabled:` is accepted as an inverted alias; see [The `enabled` alias](#the-enabled-alias). |
 | `use` | string | `dmg` | Artifact type to sign: `"dmg"` or `"pkg"` |
 
 #### Sign config (`sign`)
@@ -86,18 +86,24 @@ notarize:
 | `options` | list | none | Options for codesign (e.g., `["runtime"]`). DMG only |
 | `entitlements` | string | none | Path to entitlements XML (template). DMG only |
 
-#### Notarize config (`notarize`, optional — omit for sign-only)
+#### Notarize config (`notarize`, required)
+
+Native mode always notarizes: an entry with no `notarize` block, or with no
+`profile_name`, fails the stage.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `profile_name` | string | none | `notarytool` stored credentials profile name (template) |
-| `wait` | bool | none | Whether to wait for notarization to complete |
+| `profile_name` | string | none | `notarytool` stored credentials profile name (template). Required. |
+| `wait` | bool | `false` | Whether to wait for notarization to complete. Stapling runs only when this is `true`. |
 | `timeout` | string | `10m` | Timeout for `xcrun notarytool submit --timeout` (template) |
 
 ## Behavior
 
-- Notarization must be explicitly enabled (`skip: false`, or the `enabled: true` back-compat alias) — it is off by default
-- After signing, SHA-256 checksums are refreshed for all affected darwin binary artifacts
+- Every `macos` or `macos_native` entry runs unless its `skip` is truthy (or its `enabled` is falsy). A top-level `notarize.skip` turns off the whole stage.
+- `macos` and `macos_native` cannot both hold entries: they sign the same binaries with different tools, so the stage fails before signing anything when both are set.
+- Each entry needs a `sign` block. Cross-platform mode requires `sign.certificate`; native mode requires `sign.identity` and a `notarize` block with `profile_name`.
+- When `ids` matches no darwin binary, the stage prints a warning and moves on; under `--strict` it fails.
+- After signing, SHA-256 checksums are refreshed for every signed darwin binary, universal binary, DMG and PKG
 - Notarization status is differentiated: accepted, invalid, rejected, and timeout
 - Timeouts are treated as non-fatal (the submission may still be processing)
 - Sensitive values (P12 password, API key file path) are redacted from log output
@@ -105,7 +111,7 @@ notarize:
 - In native mode, when `wait` is enabled, the notarization ticket is automatically stapled to the artifact — both DMG (`use: dmg`) and PKG (`use: pkg`) are stapled
 - Skippable with `--skip notarize`
 
-## Enabling with `enabled`
+## The `enabled` alias
 
 `enabled:` is the inverse of `skip:` and takes a boolean or a template. A
 template is rendered and read in any letter case: `false`, `0`, `no` or an
@@ -121,23 +127,4 @@ notarize:
       sign:
         certificate: "{{ Env.P12_CERTIFICATE }}"
         password: "{{ Env.P12_PASSWORD }}"
-```
-
-## Both modes together
-
-You can use cross-platform signing for CI builds and native signing for local builds:
-
-```yaml
-notarize:
-  macos:
-    # cross-platform path runs in CI (skip when NOT in CI)
-    - skip: "{{ Env.CI == \"\" }}"
-      sign:
-        certificate: "{{ Env.P12_CERTIFICATE }}"
-        password: "{{ Env.P12_PASSWORD }}"
-  macos_native:
-    # native path runs locally (skip when IN CI)
-    - skip: "{{ Env.CI != \"\" }}"
-      sign:
-        identity: "Developer ID Application: My Org"
 ```

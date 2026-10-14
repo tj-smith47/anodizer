@@ -1,6 +1,6 @@
 //! Well-known config file discovery.
 //!
-//! The single source of the candidate-name list every discovery surface
+//! The single source of the candidate-name list every discovery path
 //! probes — the CLI's `find_config` family and the changelog engine's
 //! lightweight raw readers alike — so no code path can honor a different
 //! name set.
@@ -35,7 +35,7 @@ pub fn find_config_candidate_in(base: &Path) -> Option<PathBuf> {
 }
 
 /// Transcode a parsed `toml::Value` into a `serde_yaml_ng::Value` — the one
-/// conversion route shared by every TOML-accepting config surface (the raw
+/// conversion route shared by every TOML-accepting config reader (the raw
 /// readers here and the CLI loader's include merging). Serializes the TOML
 /// tree straight into YAML with no `serde_json` intermediate hop: the two
 /// routes differ only on non-finite floats (`inf`/`nan`, which TOML and YAML

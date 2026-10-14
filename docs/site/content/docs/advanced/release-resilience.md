@@ -17,7 +17,7 @@ This guide walks through:
 - The three-line recovery model — what to type when a release fails.
 - The three publisher groups (Assets / Manager / Submitter) and why dispatch order matters.
 - The Submitter gate that prevents irreversible publishers from firing after a required failure.
-- `reconcile()` — the primitive that makes a re-run converge instead of double-publishing.
+- `reconcile()` — the primitive that makes a re-run converge without publishing twice.
 - `release.on_failure: hold` — what a failed run leaves behind, and why there is no automatic rollback.
 - `--fail-fast` and how it differs from the default collect-then-decide behavior.
 - `anodizer tag rollback` — deliberate withdrawal of a release, including its publisher-unwind step.
@@ -37,8 +37,8 @@ section explains why each one is safe.
 > **Re-running is for a failed PUBLISHER; `anodizer continue` is for a failed
 > STAGE.** A re-run reconciles each publisher against its upstream and
 > self-skips what is already published. `continue` resumes a pipeline that stalled
-> before publishing — it skips the stages that already completed rather than
-> the publishers that already published. See
+> before publishing — it skips the stages that already completed; it does
+> not look at which publishers already published. See
 > [`publish` vs `continue`](@/docs/general/release-workflow.md#publish-vs-continue).
 
 A worked convergence, with homebrew marked `required: true` so the failure
@@ -72,7 +72,7 @@ tag stays exactly where it is, and the SAME tag's release converges on re-run.
 > upstream with content that does not match what you are about to ship, so a
 > re-run would be silently skipped by the registry. Bump the version. See
 > [Convergent re-run](#convergent-re-run) for the full state table and
-> [`tag rollback`](#recovering-a-poisoned-tag-with-tag-rollback) for the flag
+> [`tag rollback`](#poisoned-tag-recovery-with-tag-rollback) for the flag
 > matrix and the published-state guard.
 
 ## Release-stage retry flags
@@ -144,7 +144,7 @@ is safe.
 The "Rollback action" column below is invoked only by `anodizer tag rollback`
 — never automatically. A release run that fails leaves published state exactly
 where it stopped; withdrawing it is always an explicit operator command (see
-[Recovering a poisoned tag with `tag rollback`](#recovering-a-poisoned-tag-with-tag-rollback)).
+[Recovering a poisoned tag with `tag rollback`](#poisoned-tag-recovery-with-tag-rollback)).
 
 | Publisher | Group | required (default) | Rollback action | Token scope |
 |---|---|---|---|---|
@@ -172,7 +172,7 @@ where it stopped; withdrawing it is always an explicit operator command (see
 | snapcraft | Submitter (own stage) | derived from config | none — snapcraft registers no `rollback()`, and already-installed snaps keep the revision | n/a |
 
 Custom `publishers:` entries are not in this table: they run after the
-pipeline stages rather than inside group dispatch, so they carry no group, no
+pipeline stages, outside group dispatch, so they carry no group, no
 `required` gate, and no unwind.
 
 `required: true` means the release pipeline treats this publisher's failure as
@@ -187,9 +187,11 @@ anything; everything else is opportunistic:
 Override per-publisher in your config:
 
 ```yaml
-publish:
-  homebrew_cask:
-    required: true     # block submitter dispatch + announce on tap failure
+crates:
+  - name: myapp
+    publish:
+      homebrew_cask:
+        required: true     # block submitter dispatch + announce on tap failure
 ```
 
 ## The Submitter gate
@@ -199,7 +201,7 @@ re-inspects the in-progress `PublishReport`:
 
 - Once any `required: true` publisher has failed, every remaining Manager and
   Submitter publisher is skipped and recorded as `skipped-submitter-gated`.
-  Re-checking per publisher (rather than once per group) is what makes the
+  Re-checking per publisher, each time one is about to run, makes the
   intra-group ordering safe — each remaining one-way door consults live state.
 - While every `required: true` publisher has succeeded, dispatch proceeds
   normally even though `required: false` publishers have failed.
@@ -247,7 +249,7 @@ differently to each:
 | `Absent` | Not present upstream yet. | `run()` publishes as normal. |
 | `Complete` | This exact version is already published/submitted upstream. | `run()` is skipped; recorded `skipped-already-published`. |
 | `Diverged` | The version exists upstream but with **different** local bytes. | Recorded `Failed`; dispatch continues unless `--fail-fast`. A `required: true` publisher's divergence closes the Submitter gate and fails the run at the end-of-pipeline exit-code gate; `required: false` is a tolerated, gate-neutral failure. Either way, this publisher cannot be re-published as-is. |
-| `Unknown` | The probe could not determine state (network error, unparseable response). | Never blocks — `run()` proceeds and the registry's own conflict handling is the backstop. Fail-safe toward publishing, never toward silently skipping. |
+| `Unknown` | The probe could not determine state (network error, unparseable response). | Never blocks — `run()` proceeds and the registry's own conflict handling is the backstop. An unknown state leads to publishing; it never silently skips. |
 
 `Diverged` is the one state a re-run cannot fix by itself: the version is
 burned upstream with content that does not match what you are trying to ship.
@@ -275,9 +277,11 @@ Shell hooks that fire once per FAILED publisher, immediately — there is no
 automatic rollback step to wait for:
 
 ```yaml
-publish:
-  on_error:
-    - cmd: 'anodizer notify --raw "anodizer: $ANODIZER_PUBLISHER failed @ $ANODIZER_VERSION: $ANODIZER_ERROR"'
+crates:
+  - name: myapp
+    publish:
+      on_error:
+        - cmd: 'anodizer notify --raw "anodizer: $ANODIZER_PUBLISHER failed @ $ANODIZER_VERSION: $ANODIZER_ERROR"'
 ```
 
 `--raw` sends the message literally, skipping Tera rendering — recommended
@@ -360,12 +364,14 @@ then `true` — the orphaned-artifact escalation signal).
 > `{{ .RollbackFailed }}` instead.
 
 ```yaml
-publish:
-  on_rollback:
-    # renders: "reverted homebrew @ v0.2.1 (reason: )" — the reason is empty
-    - cmd: 'anodizer notify "reverted {{ .Publisher }} @ {{ .Tag }} (reason: {{ .Reason }})"'
-    # what to write instead:
-    - cmd: 'anodizer notify --raw "reverted $ANODIZER_PUBLISHER @ $ANODIZER_TAG (rollback_failed=$ANODIZER_ROLLBACK_FAILED)"'
+crates:
+  - name: myapp
+    publish:
+      on_rollback:
+        # renders: "reverted homebrew @ v0.2.1 (reason: )" — the reason is empty
+        - cmd: 'anodizer notify "reverted {{ .Publisher }} @ {{ .Tag }} (reason: {{ .Reason }})"'
+        # what to write instead:
+        - cmd: 'anodizer notify --raw "reverted $ANODIZER_PUBLISHER @ $ANODIZER_TAG (rollback_failed=$ANODIZER_ROLLBACK_FAILED)"'
 ```
 
 `on_rollback` is independent of `on_error`: a publisher that both failed
@@ -384,7 +390,7 @@ fires **both** hooks, at different times — they answer different questions.
 | `ANODIZER_ROLLBACK_REASON` | `{{ .Reason }}` | Always empty here — the unwind replays state a prior process persisted, so the trigger cause is not available to it |
 
 The same security note applies: `{{ .Error }}` carries untrusted git/API text —
-read it from `$ANODIZER_ERROR` with `--raw` rather than interpolating it into
+read it from `$ANODIZER_ERROR` with `--raw`; do not interpolate it into
 `cmd`. Hook failures are logged as warnings and never change the rollback
 outcome or abort the remaining unwinds. In workspace per-crate mode both
 channels carry the per-crate-scoped `Version` / `Tag`.
@@ -440,8 +446,8 @@ release:
 |---|---|
 | `hold` | Leaves tags, commits, and published state exactly where the failed run left them. Exit is still nonzero. Recover by re-running the identical command — publishers converge — or, to withdraw the release deliberately, `anodizer tag rollback`. |
 
-`on_failure: rollback` is a **hard error at config validation**, not a
-silent downgrade — automatic rollback was removed entirely:
+`on_failure: rollback` is a **hard error at config validation**; it is
+not silently downgraded. Automatic rollback was removed entirely:
 
 ```bash
 $ anodizer check config
@@ -536,7 +542,7 @@ published state (respectively, a `failed` outcome).
 Submitter-group publisher's publish succeeded. Submitter targets (crates.io, npm,
 PyPI, chocolatey, winget, snapcraft, ...) never accept the same version twice, so
 once it flips the version is burned — a tag rollback can only orphan the live
-release, never enable a clean same-version re-cut. Even a `rolled-back`
+release; a clean same-version re-cut stays impossible. Even a `rolled-back`
 Submitter counts: `cargo yank` withdraws the artifact but does not reopen the
 version slot. Reversible publishers (release assets, blobs, tap/bucket/index
 commits) never set it; their state is deletable and the same version can be
@@ -584,7 +590,7 @@ RollbackSkippedNoScope
 `RolledBack`, `RollbackFailed`, and `RollbackSkippedNoScope` are written only
 by `anodizer tag rollback`'s publisher-unwind pass — a `release` run never
 produces them itself, since it never rolls anything back automatically. See
-[Recovering a poisoned tag with `tag rollback`](#recovering-a-poisoned-tag-with-tag-rollback).
+[Recovering a poisoned tag with `tag rollback`](#poisoned-tag-recovery-with-tag-rollback).
 
 `AlreadyPublished` (`skipped-already-published` in the run summary and
 `--summary-json` output) fires when a publisher's [`reconcile()`](#convergent-re-run)
@@ -632,7 +638,7 @@ the summary's publisher row appends the count to the status:
 ```
 
 `entry_skips` is absent when the publisher skipped no entry. Reporting the
-skips beside the outcome rather than in place of it is what keeps
+skips beside the outcome, which stays as it is, keeps
 `anodizer tag rollback` and `irreversibly_published` truthful: a mixed run's
 uploaded artifact is still live at the remote, so its publisher must still be
 unwound.
@@ -770,12 +776,12 @@ $ anodizer release --verbose
 Reconciliation fails *toward* publishing: a publisher only skips on a
 full positive match of name **and** version upstream. An unreachable
 registry, an ambiguous response, or a partial match all dispatch the
-publish attempt rather than assume success. The one hard stop is a
+publish attempt; none of them is taken as success. The one hard stop is a
 version already published upstream with **different content** — that
 records a publisher failure telling you to bump the version, because no
 amount of re-running can overwrite an immutable release.
 
-### Recovering a poisoned tag with `tag rollback`
+### Poisoned-tag recovery with `tag rollback`
 
 `anodizer tag rollback` is the inverse of `anodizer tag`: when a downstream
 release fails (publish error, mcp 422, an irreversible Submitter blows up),
@@ -866,7 +872,7 @@ never invokes `tag rollback` itself — `on_failure: hold` is the only
 behavior, so a failed run always leaves the tag exactly where it is. `tag
 rollback` is a **manual, deliberate** command: run it from an operator shell
 (or a one-off `workflow_dispatch` job) when you have decided a release
-should not exist, not merely that a step failed (a step failure recovers by
+should not exist. A failed step alone is no reason to run it (a step failure recovers by
 [re-running the same command](#convergent-re-run)). Workflows that wire a
 custom destructive step must still gate it on the action's
 `irreversibly_published` output (see above) so nothing ever tears down a
@@ -878,7 +884,7 @@ published for that tag — each Assets/Manager publisher recorded as
 `Succeeded` in that run's `report.json` gets its `rollback()` override
 invoked, and so does one recorded as `Failed` when its row names work it
 published before failing (see
-[What a failed publisher leaves on record](#what-a-failed-publisher-leaves-on-record)):
+[What a failed publisher leaves on record](#record-of-a-failed-publisher)):
 
 ```
 github-release  delete release + delete uploaded assets (tag refs untouched)
@@ -902,16 +908,18 @@ The published-state guard above still applies first: a Submitter-group
 publisher that already published (crates.io, npm, PyPI, chocolatey, winget,
 snapcraft, ...) blocks the whole rollback unless `--force` is passed, because
 those registries never reopen the version slot — `cargo yank` and
-`npm unpublish` are best-effort withdrawals, not un-publishes.
+`npm unpublish` are best-effort withdrawals that leave the version slot taken.
 
 Any publisher can opt out of the unwind with a per-block flag:
 
 ```yaml
-publish:
-  homebrew_cask:
-    retain_on_rollback: true   # homebrew tap survives a `tag rollback` unwind
-  cargo:
-    retain_on_rollback: false  # (default) cargo yank still runs
+crates:
+  - name: myapp
+    publish:
+      homebrew_cask:
+        retain_on_rollback: true   # homebrew tap survives a `tag rollback` unwind
+      cargo:
+        retain_on_rollback: false  # (default) cargo yank still runs
 ```
 
 When `retain_on_rollback: true`, `tag rollback` logs one line and moves on,
@@ -937,7 +945,7 @@ name their own run dirs — both layouts are swept, and there is no
 
 | Situation | What happens |
 |---|---|
-| Run dir present with recorded state | Publishers are unwound, and the pass rewrites `<dist>/run-<tag>/rollback.json` — re-running `tag rollback` resumes from it rather than re-reverting a publisher twice |
+| Run dir present with recorded state | Publishers are unwound, and the pass rewrites `<dist>/run-<tag>/rollback.json` — re-running `tag rollback` resumes from it and reverts no publisher twice |
 | No run dir (fresh checkout, dist never preserved) | Nothing to unwind; the git half proceeds. The published-state guard still probes the registries and the GitHub Releases API, so an unattributed live release still refuses |
 | Run dir present but its state is unreadable | **Refusal.** The withdrawal cannot be completed, so the tag documenting the published state is not destroyed. Fix or delete the file, or pass `--force` |
 | `--dry-run` | Prints `(dry-run) would withdraw N publishers for <tag>: …` and touches nothing — no `rollback()` call, no `rollback.json` |
@@ -948,7 +956,7 @@ refuse before anything is withdrawn) and **before** the tags are deleted (the
 github-release publisher's own rollback reads the release that `delete_tags`
 is about to remove).
 
-#### What a failed publisher leaves on record
+#### Record of a failed publisher
 
 A publisher that handles several things in one run — objects, packages,
 crates, taps — can publish the first and fail on the second. The part that
@@ -1010,7 +1018,7 @@ carried into it:
 | Publisher in the re-run | What the new `report.json` holds |
 |---|---|
 | blob, cloudsmith, artifactory, uploads, and the re-run uploaded something | one row listing both runs' objects, each once |
-| a tap publisher (homebrew, scoop, nix, krew, aur) that pushed again | one row listing both runs' commits — the rollback reverts each commit it recorded, never the branch head |
+| a tap publisher (homebrew, scoop, nix, krew, aur) that pushed again | one row listing both runs' commits — the rollback reverts each commit it recorded and leaves later commits on the branch alone |
 | any publisher the re-run skipped as already published, or that failed before publishing anything, or a re-run for one crate (`--crate`) of a workspace | the earlier run's row, under `carried_forward` |
 | a Submitter publisher the re-run ran (succeeded, failed, or skipped as already published) | the re-run's row only |
 | a Submitter publisher the re-run did not reach | the earlier run's row, under `carried_forward` |
@@ -1042,7 +1050,7 @@ is `true`.
 
 Most publishers are idempotent on re-run: they detect that the current
 version was already published and record a `skipped-already-published`
-outcome instead of duplicating work. This covers cargo (crates.io index
+outcome and do the work only once. This covers cargo (crates.io index
 check), chocolatey (feed hash), the MCP registry (duplicate-version
 rejection → skip), snapcraft (existing Snap Store revision for the version →
 skip), artifactory (matching sha256 already at the path → skip; a *differing*
@@ -1076,7 +1084,7 @@ anodizer release \
 There is no `--rollback`, `--rollback-only`, or `--from-run` flag. Recovery
 is `anodizer release` (re-run to converge) or `anodizer tag rollback`
 (deliberate withdrawal) — see [Convergent re-run](#convergent-re-run) and
-[Recovering a poisoned tag](#recovering-a-poisoned-tag-with-tag-rollback).
+[Recovering a poisoned tag](#poisoned-tag-recovery-with-tag-rollback).
 
 ## `anodizer notify`
 
@@ -1193,7 +1201,7 @@ secret-named env var inside a template block in an announce content field.
 
 ### Static check — workspace-membership guard
 
-`anodizer check config` also **fails** (a hard error, not a warning) when a
+`anodizer check config` also **fails** with a hard error when a
 crate that is a real on-disk Cargo dependency of a published crate is
 missing from `crates:` entirely. It catches the class of failure where a
 crate is a publish-order requirement on disk but absent from the config —

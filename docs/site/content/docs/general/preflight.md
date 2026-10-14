@@ -221,7 +221,7 @@ $ anodizer preflight --json             # machine-readable report
 $ anodizer preflight --skip=docker,blob # same stage names as release --skip
 ```
 
-### Which version is probed
+### Probed version
 
 The publisher check and the reconcile sweep are only meaningful against the
 version this tree would release, so the command derives it the way
@@ -252,14 +252,14 @@ repository whose remote holds no tag of a family this tree releases in has no
 last release to reach and plans the first version. The remote asked is
 `origin`; a checkout without one is asked of every remote it has. When the
 remote's tags cannot be listed, or there is no remote to ask, the checkout is
-refused rather than guessed at:
+refused, and anodizer does not guess:
 
 ```text
 $ anodizer preflight
 Error preflight: this checkout is shallow and HEAD's history does not reach the last tag, so the version this tree would release cannot be planned; fetch the whole history (actions/checkout fetch-depth: 0, or git fetch --unshallow) and re-run
 ```
 
-#### When the reconcile sweep is skipped
+#### Reconcile sweep skips
 
 With no release signal since the last tag the resolved version is the last
 released one, and every probe would describe a version nobody is about to
@@ -305,7 +305,7 @@ $ ANODIZER_CURRENT_TAG=v0.20.0 anodizer preflight --publish-only
 > them as failures is what wedged partially-failed releases. CI scripts that
 > read "non-zero == do not publish" now only trip on a genuine content
 > divergence, a blocker, or a missing credential. To act on the old signal,
-> read the `--json` `reconcile[].state` field instead of the exit code.
+> read the `--json` `reconcile[].state` field; the exit code no longer carries it.
 
 ### JSON report
 
@@ -407,7 +407,7 @@ The job runs on an untagged tree by design: the probes use the version the
 tag job is about to cut. anodizer's own pipeline is the worked example, in
 [The Release Pipeline](@/docs/ci/release-pipeline.md).
 
-## What gets derived
+## Derived requirements
 
 | Stage or publisher | Derived requirements |
 |---------|---------------------|

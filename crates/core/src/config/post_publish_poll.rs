@@ -6,7 +6,7 @@
 //! moderation queue) or merges the PR (winget-pkgs validation pipeline).
 //! When polling is enabled, the publish stage waits for a terminal
 //! moderation/validation state up to `timeout`, sampling every
-//! `interval`, and surfaces the result as part of the release summary.
+//! `interval`, and reports the result as part of the release summary.
 //!
 //! Defaults: `enabled: false`, `interval: 30s`, `timeout: 30m`. The
 //! human-moderation queues these publishers feed routinely take

@@ -26,9 +26,9 @@ pub struct ReleaseConfig {
     pub draft: Option<bool>,
     #[schemars(schema_with = "prerelease_schema")]
     /// Mark release as pre-release: `true`, `false`, or `"auto"` (inferred
-    /// from the tag). An unquoted `1` / `0` and the strings `"true"`,
-    /// `"false"`, `"1"` and `"0"` are accepted as booleans; any other string
-    /// is a load error.
+    /// from the tag). The words `true`, `false`, `1`, `0` and `auto` load in
+    /// any letter case, quoted or unquoted; any other string is a load
+    /// error.
     ///
     /// ```yaml
     /// release:
@@ -38,8 +38,9 @@ pub struct ReleaseConfig {
     #[schemars(schema_with = "make_latest_schema")]
     /// Mark release as latest: `true`, `false`, `"auto"` (GitHub decides:
     /// the release is sent with `make_latest: legacy`), or a template
-    /// rendered at publish time. An unquoted `1` / `0` and the strings
-    /// `"1"` / `"0"` are booleans. A template that renders `false`, `0` or
+    /// rendered at publish time. The words `true`, `false`, `1`, `0` and
+    /// `auto` load in any letter case, quoted or unquoted; any other string
+    /// is a template. A template that renders `false`, `0` or
     /// empty does not mark the release latest, `auto` lets GitHub decide, and
     /// `true`, `1` or any other render marks it latest.
     ///
@@ -54,8 +55,7 @@ pub struct ReleaseConfig {
     pub header: Option<ContentSource>,
     /// Text appended to the release body (inline string, from_file, or from_url).
     ///
-    /// REPLACES anodizer's default attribution footer rather than stacking
-    /// with it. Set to `""` for no footer at all.
+    /// REPLACES anodizer's default attribution footer; the two are never combined. Set to `""` for no footer at all.
     pub footer: Option<ContentSource>,
     /// Append a derived `**Full Changelog**: <compare-url>` line to the
     /// release body, below the changelog and above the footer. The compare
@@ -87,12 +87,12 @@ pub struct ReleaseConfig {
     /// Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip_upload: Option<StringOrBool>,
-    /// When true, replace an existing draft release instead of failing.
+    /// When true, replace an existing draft release. When false, an existing draft fails the release.
     pub replace_existing_draft: Option<bool>,
     /// When true, replace existing release artifacts with the same name.
     ///
     /// A nightly run with `nightly.tag_name` set behaves as if this were
-    /// `true`: the pinned tag is rolling, so every run after the first meets
+    /// `true`: the fixed tag is rolling, so every run after the first meets
     /// the assets its predecessor uploaded onto the same release.
     pub replace_existing_artifacts: Option<bool>,
     /// Skip the release stage. Accepts bool or template string
@@ -140,9 +140,9 @@ pub struct ReleaseConfig {
     /// `name_template` in place of creating a new one.
     pub use_existing_draft: Option<bool>,
     /// Override the release tag (template string). When set, this tag is used
-    /// as the `tag_name` in the GitHub release API instead of the crate's
+    /// as the `tag_name` in the GitHub release API in place of the crate's
     /// `tag_template`. Useful in monorepo setups to strip a tag prefix
-    /// (e.g. `"{{ Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`).
+    /// (e.g. `"{{ Tag }}"` to publish `v1.0.0` for the tag `myapp/v1.0.0`).
     /// A cross-platform publishing feature provided for free by anodizer.
     pub tag: Option<String>,
     /// Maximum number of asset-upload requests in flight simultaneously.
@@ -170,7 +170,7 @@ pub struct ReleaseConfig {
     /// Default: `"200ms"` — at the default concurrency of 4 this caps the
     /// initial start rate at ~5/s, which is below the burst threshold yet adds
     /// negligible wall-clock to a normal release (upload time is dominated by
-    /// transfer, not start-spacing). Set to `"0s"` to disable pacing entirely
+    /// transfer; start-spacing adds little). Set to `"0s"` to disable pacing entirely
     /// (rely on the concurrency cap + reactive backoff). Override at runtime
     /// with `ANODIZER_GITHUB_UPLOAD_PACE_MS` (integer milliseconds; `0`
     /// disables).
@@ -181,17 +181,23 @@ pub struct ReleaseConfig {
     /// Set to `false` to log failures but continue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
-    /// Explicit publish target — the SCM provider whose `release.<provider>`
-    /// block the publisher uses. When unset, the provider is inferred from
-    /// which forge's token is set in the environment (for example
-    /// `GITLAB_TOKEN`), and is GitHub when none is.
+    /// Explicit publish target: the SCM provider (`github`, `gitlab` or
+    /// `gitea`) whose `release.<provider>` block the publisher uses. The
+    /// provider is the first of these that gives an answer:
     ///
-    /// Use this for **cross-platform publishing**
-    /// pattern: source repo on one provider (e.g. GitLab) but releases
-    /// reach another (e.g. GitHub). Without it, the publish target
-    /// is inferred from which `*_TOKEN` env-var is set — fine for
-    /// single-provider setups but ambiguous when both tokens are
-    /// available.
+    /// 1. `release.provider`;
+    /// 2. the top-level `force_token`;
+    /// 3. the `ANODIZER_FORCE_TOKEN` environment variable, or
+    ///    `GORELEASER_FORCE_TOKEN` when `ANODIZER_FORCE_TOKEN` is unset
+    ///    (`github`, `gitlab` or `gitea` in any letter case; any other value
+    ///    gives no answer);
+    /// 4. `GITLAB_TOKEN` set in the environment: GitLab;
+    /// 5. `GITEA_TOKEN` set in the environment: Gitea;
+    /// 6. GitHub.
+    ///
+    /// Set it for cross-platform publishing, where the source repo lives on
+    /// one provider (e.g. GitLab) and releases go to another (e.g. GitHub),
+    /// or whenever more than one forge token is in the environment.
     ///
     /// ```yaml
     /// release:
@@ -203,7 +209,7 @@ pub struct ReleaseConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<ForceTokenKind>,
     /// When `true`, a triggered rollback leaves this publisher's work in
-    /// place rather than attempting to undo it. Default `false`.
+    /// place and does not try to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
     /// In-process failure policy: what `anodizer release` does after a
     /// release-pipeline failure. `hold` is the only accepted value, and it
@@ -311,8 +317,8 @@ impl ReleaseConfig {
     /// Resolve the release `mode`, validating and falling back to
     /// [`Self::DEFAULT_MODE`] when unset or empty. Returns an error when
     /// the user supplied a value outside [`Self::VALID_MODES`] so the
-    /// invalid mode surfaces at the call site instead of producing a
-    /// silent no-op publish.
+    /// invalid mode fails at the call site and no silent no-op publish
+    /// happens.
     pub fn resolved_mode(&self) -> anyhow::Result<&str> {
         match self.mode.as_deref() {
             None | Some("") => Ok(Self::DEFAULT_MODE),
@@ -341,7 +347,7 @@ impl ReleaseConfig {
     }
 
     /// Resolve `full_changelog_link`, falling back to `true` — the derived
-    /// compare link is opt-out, not opt-in.
+    /// compare link is on unless turned off.
     pub fn resolved_full_changelog_link(&self) -> bool {
         self.full_changelog_link.unwrap_or(true)
     }
@@ -384,8 +390,8 @@ pub enum OnFailureConfig {
     /// (`validate_on_failure_not_rollback`) — re-running `anodizer release`
     /// converges on already-published state, and `anodizer tag rollback`
     /// handles deliberate withdrawal. Kept as a parseable variant so the
-    /// validator can name it explicitly in the migration error rather than
-    /// failing an opaque deserialize.
+    /// validator can name it in the migration error; an opaque
+    /// deserialize failure would not.
     Rollback,
     /// Leave everything in place for forensics; exit nonzero with a
     /// pointer at `anodizer tag rollback`.
@@ -453,7 +459,7 @@ pub struct ScmRepoConfig {
     /// remote together with `owner`.
     #[serde(default)]
     pub name: String,
-    /// Auth token override for this repository, instead of the default one.
+    /// Auth token override for this repository, used in place of the default one.
     /// Useful when the release repository requires a different token than
     /// the one used to build from — for instance, when publishing to a
     /// repository in another organization. Supports templates
@@ -525,9 +531,9 @@ pub struct GitLabUrlsConfig {
     pub download: Option<String>,
     /// When true, skip TLS certificate verification for the custom URLs.
     pub skip_tls_verify: Option<bool>,
-    /// When true, use the GitLab Package Registry for uploads instead of Generic Packages.
+    /// When true, use the GitLab Package Registry for uploads. When false, uploads go to Generic Packages.
     pub use_package_registry: Option<bool>,
-    /// When true, use the CI_JOB_TOKEN for authentication instead of a personal token.
+    /// When true, authenticate with the CI_JOB_TOKEN. When false, a personal token is used.
     pub use_job_token: Option<bool>,
 }
 
@@ -610,8 +616,9 @@ macro_rules! impl_auto_or_bool_serde {
     };
 }
 
-/// `prerelease` can be the string `"auto"` or a boolean. A quoted `true`,
-/// `false`, `1`, `0` or `auto` loads trimmed and in any letter case.
+/// `prerelease` can be the string `"auto"` or a boolean. The words `true`,
+/// `false`, `1`, `0` and `auto` load in any letter case, quoted or
+/// unquoted; a quoted word is trimmed first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrereleaseConfig {
     Auto,
@@ -625,8 +632,8 @@ impl_auto_or_bool_serde!(
 );
 
 /// `make_latest` can be the string `"auto"`, a boolean, or a template string.
-/// An unquoted `1` / `0` loads as a boolean, and a quoted `true`, `false`, `1`,
-/// `0` or `auto` loads trimmed and in any letter case.
+/// The words `true`, `false`, `1`, `0` and `auto` load in any letter case,
+/// quoted or unquoted; a quoted word is trimmed first.
 /// This field is rendered through the template engine at publish time,
 /// so arbitrary strings are accepted (e.g. `"{{ if .IsSnapshot }}false{{ else }}true{{ end }}"`)
 /// and defer resolution to the release stage.
@@ -696,8 +703,8 @@ impl<'de> Deserialize<'de> for MakeLatestConfig {
 }
 
 /// `skip_push` can be `"auto"` (skip for prereleases), a boolean, or a template string.
-/// An unquoted `1` / `0` loads as a boolean, and a quoted `true`, `false`, `1`,
-/// `0` or `auto` loads trimmed and in any letter case.
+/// The words `true`, `false`, `1`, `0` and `auto` load in any letter case,
+/// quoted or unquoted; a quoted word is trimmed first.
 /// Template expressions like `"{{ if .IsSnapshot }}true{{ end }}"` are accepted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkipPushConfig {

@@ -35,15 +35,16 @@ crates:
 
 > **Warning:** Chocolatey is a _submitter_ publisher — it pushes a `.nupkg` to the
 > community moderation queue; that queue resolves hours or days after the release
-> completes. The publisher "succeeds" at queue-acceptance time, not at approval time.
-> Setting `required: true` therefore has no meaningful effect: the failure mode it
-> guards against (queue rejection) happens asynchronously, long after the release
-> exits.
+> completes. The publisher "succeeds" when the queue accepts the package; approval comes later.
+> `required: true` fails the release when the push to the queue fails. The
+> moderation that follows (queue rejection) happens long after the release exits,
+> so no setting can gate the release on it.
 >
-> Anodizer emits this warning at config-validation time when `required: true` is set:
+> With `-v`, anodizer prints this line when it loads a config that sets
+> `required: true` on this publisher:
 >
 > ```
-> <location>: publisher 'chocolatey' is a submitter (external moderation queue); `required: true` has no meaningful effect — the submitter gate evaluates at push time, not at approval time.
+> <location>: publisher 'chocolatey' submits to an external moderation queue; `required: true` fails the release when the submission itself fails, but the eventual moderation outcome happens outside the release run and cannot be gated.
 > ```
 >
 > See [Publish overview — the `required:` field](../) for the full submitter-publisher
@@ -98,14 +99,13 @@ crates:
         url_template: ""                    # optional; override download URL
         api_key: "{{ Env.CHOCOLATEY_API_KEY }}"  # optional; defaults to env var
         source_repo: "https://push.chocolatey.org/"  # optional
-        skip_publish: false                 # optional; skip push without disabling
         use: archive                        # optional; archive | msi | nsis
         amd64_variant: v1                   # optional; v1 | v2 | v3 | v4
         republish_in_moderation: false      # optional; re-push in-moderation copies
         dependencies:                       # optional
           - id: dotnet-runtime
             version: "[6.0,)"
-        disable: false                      # optional
+        skip: false                         # optional; older spelling: skip_publish
 ```
 
 ## Authentication
@@ -123,7 +123,7 @@ Anodizer reads `api_key` first; when it is unset or renders blank (such as an un
 - **Rejected versions**: a version rejected by Chocolatey moderation cannot be replaced; the version must be bumped before re-pushing. `republish_in_moderation` does not apply to rejected packages.
 - **Moderation queue lag**: the Chocolatey flat API (`/api/v2/Packages`) only returns approved packages. Checking for an in-moderation version requires scraping `community.chocolatey.org/packages/<name>`.
 - **Retry**: a transport failure, a `5xx` or a `429` retries the push per the top-level `retry:` block, and a `429` waits the `Retry-After` or `RateLimit-Reset` the feed sent in place of the backoff step (see [Retry](@/docs/general/retry.md)). A 403, 502, 503 or 504 answered with an HTML page (a Cloudflare or IIS edge challenge) is retried too; any other `4xx` fails at once.
-- **`skip_publish: true`** skips the entire publisher early — no nuspec is generated. Use `disable: true` if you want to disable without suppressing config validation.
+- **`skip: true`** (or the older `skip_publish: true`) skips the entire publisher early — no nuspec is generated.
 
 ## Republish / update behavior
 
@@ -158,8 +158,7 @@ When `republish_in_moderation: true`, anodizer re-pushes a queued nupkg if the f
 | `dependencies` | object[] | none | Package dependencies (see below) |
 | `api_key` | string | `$CHOCOLATEY_API_KEY` | Chocolatey API key for `choco push` (supports templates) |
 | `source_repo` | string | `https://push.chocolatey.org/` | Push source URL |
-| `skip_publish` | bool | `false` | Skip pushing the `.nupkg` to the Chocolatey repository |
-| `disable` | bool or string | `false` | Disable this publisher entirely. Accepts a bool or a template string that renders `true` or `1`, in any letter case |
+| `skip` | bool or string | `false` | Skip this publisher entirely: no nuspec, no `choco pack`, no push. Accepts a bool or a template string that renders `true` or `1`, in any letter case. `skip_publish:` is accepted as an older spelling. |
 | `use` | string | `archive` | Artifact type to package, which also routes the install cmdlet: `archive` → `Install-ChocolateyZipPackage` (unpacked into `tools/`); `msi` → `Install-ChocolateyPackage -FileType 'msi'` with `-SilentArgs '/qn /norestart'` and MSI `-ValidExitCodes @(0, 1641, 3010)`; `nsis` → `Install-ChocolateyPackage -FileType 'exe'` with `-SilentArgs '/S'`. |
 | `amd64_variant` | enum | `v1` | amd64 microarchitecture variant filter — exactly one of `v1`, `v2`, `v3`, `v4` (any other value is rejected when the config is parsed) |
 | `republish_in_moderation` | bool or string | `false` | Re-push the nupkg when a version is already in the community moderation queue. See [Recovery flags](../advanced/recovery-flags.md#chocolatey-republish-in-moderation). |
@@ -173,7 +172,7 @@ Each entry in the `dependencies` array has:
 | `id` | string | Chocolatey package ID of the dependency |
 | `version` | string | Optional version constraint (e.g., `[1.0.0,)`) |
 
-## How nuspec and nupkg files are generated
+## nuspec and nupkg generation
 
 When the publish stage runs for Chocolatey, Anodizer:
 
@@ -185,9 +184,9 @@ When the publish stage runs for Chocolatey, Anodizer:
 
 If no Windows artifacts are found, Anodizer falls back to a placeholder GitHub release download URL and logs a warning.
 
-## skip_publish behavior
+## `skip` behavior
 
-When `skip_publish: true` is set, Anodizer skips the entire publish function early -- no nuspec is generated, no `choco pack` is run, and no push occurs. This is useful when you want to define the Chocolatey config for future use without actually publishing, or when another system handles the push step.
+When `skip: true` (or `skip_publish: true`) is set, Anodizer skips the entire publish function early -- no nuspec is generated, no `choco pack` is run, and no push occurs. This is useful when you want to define the Chocolatey config for future use without actually publishing, or when another system handles the push step.
 
 In dry-run mode (`--dry-run`), Anodizer logs what it would do without generating any files or running any commands.
 
@@ -221,5 +220,5 @@ crates:
           - id: dotnet-runtime
             version: "[6.0,)"
         source_repo: "https://push.chocolatey.org/"
-        skip_publish: false
+        skip: false
 ```

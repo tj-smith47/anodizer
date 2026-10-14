@@ -53,10 +53,10 @@ surface; [deprecated Formula](./homebrew.md) is documented separately),
 
 Chocolatey, winget, and AUR Sources are _submitter_ publishers: they push to an
 external moderation queue whose outcome is asynchronous. The submit itself succeeds
-at queue acceptance time — not when the package is approved and live.
+when the queue accepts it; approval and going live come later.
 
-Setting `required: true` on a submitter publisher has no meaningful effect because
-the failure mode it guards against (queue rejection) happens days after the release
-completes. Anodizer emits a `tracing::warn` at config-validation time if `required: true`
-is set on one of these publishers. See the per-publisher pages for the exact warning
-message.
+`required: true` on a submitter publisher fails the release when the submission
+itself fails. The moderation outcome (queue rejection) arrives days after the release
+completes, so no setting can gate the release on it. With `-v`, anodizer prints an
+advisory saying so when it loads a config that sets `required: true` on one of these
+publishers; the per-publisher pages quote the line.

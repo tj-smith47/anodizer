@@ -15,7 +15,9 @@ use super::{
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct NotarizeConfig {
-    /// Skip all notarization. Accepts bool or template string.
+    /// Skip all notarization. Accepts a bool or a template string; a
+    /// template skips when it renders `true` or `1`. When absent,
+    /// notarization runs for every entry that is not skipped on its own.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Cross-platform signing/notarization (rcodesign-based, works on any OS).
@@ -28,21 +30,21 @@ pub struct NotarizeConfig {
 #[derive(Debug, Clone, Serialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct MacOSSignNotarizeConfig {
-    /// Build IDs to filter. Default: project name.
+    /// Build IDs whose darwin binaries this entry signs. Default: the
+    /// project name; with no project name, every darwin binary.
     pub ids: Option<Vec<String>>,
-    /// Skip this configuration. Accepts bool or template string.
-    /// Replaces the previous `enabled:` toggle with the canonical
-    /// `skip:` (inverted semantic) to align with every other publisher /
-    /// pipe in anodizer.
+    /// Skip this entry. Accepts a bool or a template string; a template
+    /// skips when it renders `true` or `1`. When absent, the entry runs.
     ///
     /// The older `enabled:` key is still accepted and inverted:
     /// `enabled: true` becomes `skip: false`, `enabled: false` becomes
     /// `skip: true`.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
-    /// Older spelling of `skip:`, inverted (opt-in, default false):
-    /// `enabled: true` is `skip: false` and `enabled: false` is
-    /// `skip: true`.
+    /// Older spelling of `skip:`, inverted: `enabled: true` is
+    /// `skip: false` and `enabled: false` is `skip: true`. A template skips
+    /// the entry when it renders empty, `false`, `0` or `no`. When both
+    /// `enabled` and `skip` are absent, the entry runs.
     // Listed so the generated schema accepts `enabled:`; the deserializer
     // folds it into `skip` and leaves this field empty.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -51,7 +53,7 @@ pub struct MacOSSignNotarizeConfig {
     /// must be rendered verbatim and have its truthiness NEGATED at
     /// evaluation (a falsy `enabled` → skip). Bool / literal `enabled:`
     /// values are inverted at parse time and leave this `false`. Not part of
-    /// the YAML surface — set only by the `enabled:`-alias deserializer.
+    /// the YAML keys; set only by the `enabled:`-alias deserializer.
     #[serde(skip)]
     pub skip_inverts_enabled: bool,
     /// Signing configuration (P12 certificate).
@@ -104,8 +106,8 @@ impl MacOSSignNotarizeConfig {
     /// inversion convention recorded in [`Self::skip_inverts_enabled`]:
     /// when the value came from a templated `enabled:`, the rendered
     /// truthiness is negated (a falsy `enabled` → skip). A render failure is
-    /// propagated as `Err` so callers FAIL CLOSED rather than silently
-    /// enabling a stage the operator meant to disable.
+    /// propagated as `Err` so callers FAIL CLOSED and never run a stage the
+    /// operator meant to disable.
     pub fn should_skip(
         &self,
         render: impl Fn(&str) -> anyhow::Result<String>,
@@ -132,7 +134,7 @@ pub struct MacOSSignConfig {
 
 impl MacOSSignConfig {
     /// Apple's public RFC-3161 timestamp service. Used so the signature
-    /// carries a trusted timestamp rather than the host clock; override via
+    /// carries a trusted timestamp independent of the host clock; override via
     /// `notarize.macos[*].sign.timestamp_url` when running behind a corporate
     /// proxy or when Apple's service is unreachable.
     pub const DEFAULT_TIMESTAMP_URL: &'static str = "http://timestamp.apple.com/ts01";
@@ -160,11 +162,12 @@ pub struct MacOSNotarizeApiConfig {
     pub key_id: Option<String>,
     /// Timeout for notarization status polling. Humantime-style string
     /// (e.g. `"10m"`, `"15s"`). Default when omitted: `"10m"`, maximum
-    /// `"20m"` — the App Store Connect token lifetime is derived from this
+    /// `"20m"`. The App Store Connect token lifetime is derived from this
     /// value and Apple rejects a token that lives longer, so a larger
-    /// timeout fails config validation instead of authenticating.
+    /// timeout fails config validation.
     pub timeout: Option<HumanDuration>,
-    /// Whether to wait for notarization to complete.
+    /// Whether to wait for notarization to complete. Default: `false`;
+    /// `timeout` applies only while waiting.
     pub wait: Option<bool>,
 }
 
@@ -211,17 +214,21 @@ pub enum MacOSNativeArtifactKind {
 #[derive(Debug, Clone, Serialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct MacOSNativeSignNotarizeConfig {
-    /// Build IDs to filter. Default: project name.
+    /// Build IDs whose artifacts this entry signs and notarizes. Default:
+    /// the project name; with no project name, every matching artifact.
     pub ids: Option<Vec<String>>,
-    /// Skip this configuration. Accepts bool or template string.
-    /// Replaces `enabled:` with the canonical `skip:`. Imported
-    /// configs may continue to write `enabled:` — the deserializer
-    /// inverts it into `skip:` so both spellings work.
+    /// Skip this entry. Accepts a bool or a template string; a template
+    /// skips when it renders `true` or `1`. When absent, the entry runs.
+    ///
+    /// The older `enabled:` key is still accepted and inverted:
+    /// `enabled: true` becomes `skip: false`, `enabled: false` becomes
+    /// `skip: true`.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
-    /// Older spelling of `skip:`, inverted (opt-in, default false):
-    /// `enabled: true` is `skip: false` and `enabled: false` is
-    /// `skip: true`.
+    /// Older spelling of `skip:`, inverted: `enabled: true` is
+    /// `skip: false` and `enabled: false` is `skip: true`. A template skips
+    /// the entry when it renders empty, `false`, `0` or `no`. When both
+    /// `enabled` and `skip` are absent, the entry runs.
     // Listed so the generated schema accepts `enabled:`; the deserializer
     // folds it into `skip` and leaves this field empty.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -231,12 +238,8 @@ pub struct MacOSNativeSignNotarizeConfig {
     /// [`MacOSSignNotarizeConfig::skip_inverts_enabled`].
     #[serde(skip)]
     pub skip_inverts_enabled: bool,
-    /// Artifact type to sign and notarize: `dmg` (default) or `pkg`.
-    ///
-    /// Anodizer-original (signs
-    /// binaries directly via rcodesign). Constrained to a typed enum at
-    /// parse time so an unsupported value (`zip`, `app`, etc.) fails fast
-    /// instead of producing a silent no-op signing pipe.
+    /// Artifact type to sign and notarize: `dmg` (default) or `pkg`. Any
+    /// other value (`zip`, `app`, …) fails when the config loads.
     #[serde(rename = "use")]
     pub use_: Option<MacOSNativeArtifactKind>,
     /// Native signing configuration (Keychain).
@@ -304,7 +307,7 @@ struct ResolvedSkip {
 
 /// Invert the `enabled:` (opt-in, default false) into anodizer's
 /// canonical `skip:` (opt-out, default false). Both keys may be present;
-/// if they conflict (e.g. `skip: true` AND `enabled: true`), surface a
+/// if they conflict (e.g. `skip: true` AND `enabled: true`), return a
 /// clear error.
 ///
 /// Bool and literal `"true"`/`"false"` `enabled:` values are inverted right
@@ -393,8 +396,8 @@ fn invert_enabled(v: StringOrBool) -> ResolvedSkip {
 ///   `enabled: "{{ … }}"` rendering to `yes`, `on` or `1` runs.
 ///
 /// A render failure propagates as `Err` — callers FAIL CLOSED (treat the
-/// entry as skipped) rather than silently signing/notarizing a stage the
-/// operator meant to disable.
+/// entry as skipped), so a stage the operator meant to disable is never
+/// signed or notarized.
 fn resolve_notarize_skip(
     skip: &Option<StringOrBool>,
     inverts_enabled: bool,
@@ -456,10 +459,11 @@ pub struct MacOSNativeSignConfig {
 pub struct MacOSNativeNotarizeConfig {
     /// Notarytool stored credentials profile name. Templates allowed.
     pub profile_name: Option<String>,
-    /// Whether to wait for notarization to complete.
+    /// Whether to wait for notarization to complete and staple the
+    /// ticket. Default: `false`.
     pub wait: Option<bool>,
     /// Timeout for `xcrun notarytool submit --timeout`. Humantime-style
-    /// string (e.g. `"10m"`, `"15s"`, `"1h"`).
+    /// string (e.g. `"10m"`, `"15s"`, `"1h"`). Default: `"10m"`.
     pub timeout: Option<HumanDuration>,
 }
 
@@ -469,9 +473,8 @@ impl MacOSNativeNotarizeConfig {
     pub const DEFAULT_TIMEOUT: &'static str = "10m";
 
     /// Resolve `wait`, falling back to `false`. The native xcrun path
-    /// prints a "submit only" message instead of polling when `wait`
-    /// is false; the unwrap at this accessor pins that fallback in one
-    /// place.
+    /// prints a "submit only" message and does not poll when `wait`
+    /// is false; this accessor holds that fallback in one place.
     pub fn resolved_wait(&self) -> bool {
         self.wait.unwrap_or(false)
     }

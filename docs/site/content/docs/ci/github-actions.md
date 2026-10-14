@@ -38,7 +38,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-That one step is the whole release job. Before any stage runs, anodizer verifies the environment with a config-derived [preflight](@/docs/general/preflight.md) (required tools, secrets, key material, endpoints), and on a pipeline failure it leaves everything exactly where it stopped — [`on_failure: hold`](@/docs/advanced/release-resilience.md#release-on-failure) is the only accepted behavior. Recover by re-running the identical `anodizer release` command; publishers [converge](@/docs/advanced/release-resilience.md#convergent-re-run) rather than double-publishing. No workflow-level rollback step is needed:
+That one step is the whole release job. Before any stage runs, anodizer verifies the environment with a config-derived [preflight](@/docs/general/preflight.md) (required tools, secrets, key material, endpoints), and on a pipeline failure it leaves everything exactly where it stopped — [`on_failure: hold`](@/docs/advanced/release-resilience.md#release-on-failure) is the only accepted behavior. Recover by re-running the identical `anodizer release` command; publishers [converge](@/docs/advanced/release-resilience.md#convergent-re-run) and publish nothing twice. No workflow-level rollback step is needed:
 
 ```yaml
 # .anodizer.yaml
@@ -63,7 +63,7 @@ release:
     COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
 ```
 
-The preflight parses every configured key (GPG, cosign, SSH) before any stage runs, so a truncated or newline-mangled CI secret aborts the release instead of failing a publisher halfway through.
+The preflight parses every configured key (GPG, cosign, SSH) before any stage runs, so a truncated or newline-mangled CI secret aborts the release before a publisher can fail halfway through.
 
 ## Auto-tag on push to main
 
@@ -189,7 +189,7 @@ jobs:
 
 ## Reuse a CI-built anodizer binary across workflows
 
-When you have a separate `ci.yml` that builds and uploads an anodizer binary per commit, downstream release jobs can reuse it instead of reinstalling. Set `artifact-run-id: auto` to resolve the run from the current commit SHA:
+When you have a separate `ci.yml` that builds and uploads an anodizer binary per commit, downstream release jobs can reuse it without reinstalling. Set `artifact-run-id: auto` to resolve the run from the current commit SHA:
 
 ```yaml
 # ci.yml — builds and uploads anodizer once per commit

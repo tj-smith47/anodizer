@@ -4,9 +4,12 @@
 use anodizer_core::config::RepositoryConfig;
 
 /// The token the config names for opening a pull request:
-/// `pull_request.token`, else `repository.token`, each rendered. A link that
-/// renders blank falls through to the next one, and `None` leaves the choice
-/// to the environment chain (`anodizer_core::git::resolve_github_token_with_env`).
+/// `pull_request.token`, else `repository.token`, each rendered and trimmed
+/// of surrounding whitespace, the way a token file is read
+/// (`anodizer_core::config::read_token_file_with_env`). A link whose render
+/// is empty or only whitespace falls through to the next one, and `None`
+/// leaves the choice to the environment chain
+/// (`anodizer_core::git::resolve_github_token_with_env`).
 ///
 /// A link that fails to render is an error naming its field and the render
 /// failure's cause, with the template's own text taken out
@@ -39,8 +42,9 @@ pub(crate) fn configured_pr_token(
         let rendered = render(raw).map_err(|e| {
             anyhow::anyhow!("{field} does not render: {}", token_render_cause(raw, &e))
         })?;
-        if !rendered.is_empty() {
-            return Ok(Some(rendered));
+        let token = rendered.trim();
+        if !token.is_empty() {
+            return Ok(Some(token.to_string()));
         }
     }
     Ok(None)
@@ -71,8 +75,9 @@ mod tests {
     use anodizer_core::config::{PullRequestConfig, RepositoryConfig};
 
     /// `pull_request.token` is the first link of the configured chain and
-    /// `repository.token` the second; each is rendered, and a link that
-    /// renders blank falls through to the next one.
+    /// `repository.token` the second; each is rendered and trimmed, and a
+    /// link whose render is empty or only whitespace falls through to the
+    /// next one.
     #[test]
     fn configured_pr_token_prefers_the_pull_request_token_and_skips_a_blank_one() {
         let render = |s: &str| Ok(s.replace("{{ .Env.T }}", "rendered-token"));
@@ -104,6 +109,34 @@ mod tests {
                 .as_deref(),
             Some("repo-token"),
             "a blank pull_request.token falls through to repository.token"
+        );
+
+        let spaces_pr_token = RepositoryConfig {
+            pull_request: Some(PullRequestConfig {
+                token: Some(" \t\n ".into()),
+                ..Default::default()
+            }),
+            ..repo.clone()
+        };
+        assert_eq!(
+            configured_pr_token(Some(&spaces_pr_token), &render)
+                .expect("renders")
+                .as_deref(),
+            Some("repo-token"),
+            "a pull_request.token that renders only whitespace falls through"
+        );
+
+        let padded_repo_token = RepositoryConfig {
+            token: Some("  repo-token\n".into()),
+            pull_request: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            configured_pr_token(Some(&padded_repo_token), &render)
+                .expect("renders")
+                .as_deref(),
+            Some("repo-token"),
+            "a token is sent without its surrounding whitespace"
         );
 
         let nothing = RepositoryConfig {

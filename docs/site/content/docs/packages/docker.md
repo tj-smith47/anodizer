@@ -140,7 +140,7 @@ before the release step. In `anodizer-action`, set `docker-registry` /
   any letter case, skips, and any other render builds (see
   [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)).
 - **Platform strings**: use Docker platform notation (`linux/amd64`,
-  `linux/arm64`), not Rust target triples.
+  `linux/arm64`); a Rust target triple is not a Docker platform.
 - **Build-args leak**: buildx records `build_args` in image history by
   default. Prefer `{{ Env.VAR }}` over raw user-config strings for secrets.
 - **`use: podman` is Linux-only**: configs setting `use: podman` on macOS or
@@ -223,7 +223,7 @@ crates:
 `created` deriving from `SOURCE_DATE_EPOCH` (seeded by the build stage) is what
 keeps two builds of the same commit byte-identical — a wall-clock `created`
 would defeat reproducibility, so anodizer omits the label entirely when no
-source date is resolvable rather than stamping the current time.
+source date is resolvable; it never stamps the current time.
 
 ## Multi-arch builds
 

@@ -5,13 +5,13 @@ weight = 3
 template = "docs.html"
 +++
 
-## 1. Install anodizer
+## 1. Installation
 
 ```bash
 cargo install anodizer
 ```
 
-## 2. Generate a config
+## 2. Config generation
 
 In your project root (where `Cargo.toml` lives):
 
@@ -21,7 +21,7 @@ anodizer init > .anodizer.yaml
 
 This reads your `Cargo.toml` and generates a starter config with sensible defaults. `init` discovers your `project_name`, every `[[bin]]` target across the workspace, the GitHub `owner`/`name` from your `origin` remote, and a default archive `name_template` — so the generated config builds and releases without further edits. Anything it can derive is left out of the file as an implicit default; you only write config to *override* a default or to add a publisher (a tap, a registry) it can't infer.
 
-## 3. Validate the config
+## 3. Config validation
 
 ```bash
 anodizer check config
@@ -30,7 +30,7 @@ anodizer check config
 This validates your `.anodizer.yaml` against the schema — checks for missing fields, invalid target triples, dependency cycles, and more.
 
 Anodizer rejects unknown config keys, so a typo like `dockrs_v2:` or
-`fromats:` fails fast at load time instead of being silently ignored. Migrating
+`fromats:` fails fast at load time; it is never silently ignored. Migrating
 from GoReleaser? Paste your config in as-is — anodizer accepts the GoReleaser
 field names `disable`, `docker_v2`, `layouts`, and `name_template` (snapshot) as
 back-compat aliases for their canonical anodizer spellings (`skip`,
@@ -44,7 +44,7 @@ property (shown as a `DEPRECATION:` warning), the line reads
 `Config is valid, but uses deprecated properties.` instead. Both exit 0, so a
 deprecated field never fails CI on its own.
 
-## 4. Do a dry run
+## 4. Dry run
 
 ```bash
 anodizer release --dry-run
@@ -52,15 +52,15 @@ anodizer release --dry-run
 
 This runs the full pipeline without any side effects — no GitHub release created, no packages published, no images pushed. `--dry-run` plans and **renders** every stage (templates, manifest contents, the publisher PRs it *would* open) but skips the real build and every network write, so it's fast and offline. Use it to confirm your config resolves before spending a real build.
 
-## 5. Do a snapshot build
+## 5. Snapshot build
 
 ```bash
 anodizer release --snapshot
 ```
 
-Unlike `--dry-run`, a snapshot performs the **real** build, archive, checksum, and signing stages — it just skips every stage that writes to a remote (GitHub release, crates.io, taps, registries, images). It also derives a snapshot version (the default appends `-SNAPSHOT`; the template can fold in the commit hash) instead of requiring a release tag, so you can snapshot an untagged working tree. Use it to test that your binaries compile for every target and that archive formats and checksums come out right. Every mode — `--dry-run`, `--snapshot`, `--nightly`, and a real release — runs the emission cross-check: each publisher's *would-be* output (a binstall download URL, a Nix asset map) is rendered in-memory and compared against the run's registered artifacts, catching a class of "release succeeds but is silently wrong" bugs before anything ships. Under `--snapshot` and in a real release, real built archives back the comparison; under `--dry-run` the artifacts are placeholder registrations, so it confirms the emission *renders* but not that it points at real bytes.
+Unlike `--dry-run`, a snapshot performs the **real** build, archive, checksum, and signing stages — it just skips every stage that writes to a remote (GitHub release, crates.io, taps, registries, images). It also derives a snapshot version (the default appends `-SNAPSHOT`; the template can fold in the commit hash), so no release tag is needed and you can snapshot an untagged working tree. Use it to test that your binaries compile for every target and that archive formats and checksums come out right. Every mode — `--dry-run`, `--snapshot`, `--nightly`, and a real release — runs the emission cross-check: each publisher's *would-be* output (a binstall download URL, a Nix asset map) is rendered in-memory and compared against the run's registered artifacts, catching a class of "release succeeds but is silently wrong" bugs before anything ships. Under `--snapshot` and in a real release, real built archives back the comparison; under `--dry-run` the artifacts are placeholder registrations, so it confirms the emission *renders* but not that it points at real bytes.
 
-## 6. Release for real
+## 6. Real release
 
 ```bash
 export GITHUB_TOKEN="ghp_..."
@@ -71,9 +71,9 @@ This runs the full pipeline: build, archive, checksum, changelog, GitHub release
 
 > **Tap repos must already exist.** If you configure `homebrew_casks` (or a Scoop bucket, AUR repo, etc.), create the target repo — e.g. an empty `<owner>/homebrew-tap` — *before* your first release; anodizer writes into it but never creates it. The release token needs `contents:write` for the default direct push, plus `pull_request:write` only if the tap uses the PR workflow (`pull_request.enabled`).
 
-> **Preflight checks run before any publishing.** `--strict` promotes indeterminate preflight outcomes — a 5xx, a rate-limit, or another transport failure that leaves a credential/permission probe unable to reach a verdict — into hard errors (`preflight.strict: true` in the config does the same on every run), so a misconfigured CI run fails at the top before a transient blip can leave a release half-published. See [Preflight](@/docs/general/preflight.md#strict-mode). It does not affect publisher-state reporting: an already-published, in-moderation, or pending-PR version is reported and reconciled by the publisher itself, never blocked.
+> **Preflight checks run before any publishing.** `--strict` promotes indeterminate preflight outcomes — a 5xx, a rate-limit, or another transport failure that leaves a credential/permission probe unable to reach a verdict — into hard errors (`preflight.strict: true` in the config does the same on every run), so a misconfigured CI run fails at the top before a transient blip can leave a release half-published. See [Preflight](@/docs/general/preflight.md#strict-mode). It does not affect publisher-state reporting: an already-published, in-moderation, or pending-PR version is reported and reconciled by the publisher itself, and preflight does not block it.
 
-## What next?
+## Next steps
 
 - [Configuration Reference](@/docs/reference/configuration.md) — all config fields explained
 - [Template Reference](@/docs/general/templates.md) — template variables and filters

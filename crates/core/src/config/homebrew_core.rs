@@ -29,7 +29,7 @@ pub struct HomebrewCoreConfig {
     pub id: Option<String>,
 
     /// Crate scoping: when set, the formula `name` default is derived from
-    /// the first crate named here instead of the workspace's primary crate.
+    /// the first crate named here. Unset, it comes from the workspace's primary crate.
     /// The workspace per-crate pattern — one `homebrew_cores[]` entry per
     /// crate, each scoped by `ids:`.
     pub ids: Option<Vec<String>>,
@@ -92,8 +92,7 @@ pub struct HomebrewCoreConfig {
     /// ```
     pub commit_author: Option<CommitAuthorConfig>,
 
-    /// Commit straight to the base branch instead of opening a pull
-    /// request. Accepts bool or template string. Only honored for formula
+    /// Commit straight to the base branch and open no pull request. Accepts bool or template string. Only honored for formula
     /// repositories you can push to — bumps targeting
     /// `Homebrew/homebrew-core` always go through a fork + PR, because
     /// homebrew-core never accepts direct pushes.
@@ -105,11 +104,9 @@ pub struct HomebrewCoreConfig {
     #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
     pub direct_commit: Option<StringOrBool>,
 
-    /// When `true` or `1`, refresh the existing bump PR in place instead of skipping
-    /// it: a same-version re-cut force-resets the bump branch to the current
+    /// When `true` or `1`, refresh the existing bump PR in place: a same-version re-cut force-resets the bump branch to the current
     /// base and re-commits the rewritten formula, so the open PR carries this
-    /// run's content rather than a stale earlier attempt (and no duplicate PR
-    /// is opened). When `false`, `0` or empty (default), an already-open bump PR is left
+    /// run's content and no duplicate PR is opened. When `false`, `0` or empty (default), an already-open bump PR is left
     /// untouched and a warning names this toggle. Accepts bool or template
     /// string. Mirrors `winget` / `krew` / `homebrew_cask`'s
     /// `update_existing_pr`.
@@ -142,6 +139,6 @@ pub struct HomebrewCoreConfig {
     pub if_condition: Option<String>,
 
     /// When `true`, a triggered rollback leaves the opened pull request in
-    /// place rather than closing it. Default `false`.
+    /// place and does not close it. Default `false`.
     pub retain_on_rollback: Option<bool>,
 }

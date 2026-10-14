@@ -331,8 +331,8 @@ struct ConfigField {
 struct NestedSection {
     name: String,
     /// The heading's explicit anchor attribute, pre-rendered as `{#anchor}`.
-    /// Built here rather than in the template because `{#` opens a Tera
-    /// comment — the template cannot spell the attribute literally.
+    /// Built here because `{#` opens a Tera comment, so the template cannot
+    /// spell the attribute literally.
     anchor_attr: String,
     description: String,
     fields: Vec<ConfigField>,
@@ -341,7 +341,7 @@ struct NestedSection {
 /// The explicit heading anchor for a section named `name`, emitted as
 /// `## `name` {#anchor}`.
 ///
-/// Written into the heading rather than left to zola's slugifier: `zola build`
+/// Written into the heading so zola's slugifier never chooses it: `zola build`
 /// does not validate bare `#fragment` targets, so a generated link that
 /// disagreed with the slug would be a dead link nothing reports. Section names
 /// carry `[]` and `.` (`crates[].dockers_v2`), which is exactly where a
@@ -386,8 +386,8 @@ fn format_instance_type(t: &str) -> String {
 /// Width is the whole criterion, so a narrow composite stays literal:
 /// `preflight`'s `{"strict":false}` answers the reader's question in place, and
 /// replacing it with a link would cost a page jump to learn less. Same for the
-/// empty composites `[]` / `{}` — "no entries" is the answer, not a pointer to
-/// field defaults that do not apply until the reader adds one.
+/// empty composites `[]` / `{}`: "no entries" is the answer, and the field
+/// defaults of an entry do not apply until the reader adds one.
 fn format_default(val: Option<&Value>, section: Option<&str>) -> String {
     match val {
         None | Some(Value::Null) => "\u{2014}".into(),
@@ -441,7 +441,7 @@ fn non_null_variants(variants: &[Value]) -> Vec<&Value> {
 /// Resolve a property schema to a human-readable type name, matching the config
 /// reference's vocabulary.
 ///
-/// The cell names JSON shapes only, never a Rust type: a reader of the
+/// The cell names JSON shapes only: a reader of the
 /// reference writes YAML and has no use for `StringOrBool` or `HooksConfig`.
 ///
 /// Handles:
@@ -536,7 +536,7 @@ fn resolve_type_name(
 
     // `Option<Vec<T>>` renders as `type: ["array", "null"]`, while `Vec<T>`
     // renders as the bare `type: "array"`; both must resolve their `items` type
-    // so the field shows `list of <inner>` rather than a bare `list`.
+    // so the field shows `list of <inner>`.
     if schema_has_type(prop, "array") {
         if let Some(item) = array_item(prop) {
             let inner = resolve_type_name(item, defs, anchors, section);
@@ -653,8 +653,7 @@ fn collapse_description(s: &str) -> String {
 ///
 /// A fenced code block cannot survive in a table cell — markdown ends the row
 /// at the first newline. Its lines become one `<code>` span each, joined by
-/// `<br>`, so a YAML example stays line-per-line instead of collapsing into an
-/// unreadable single run.
+/// `<br>`, so a YAML example keeps one line per line.
 fn schema_description(schema: &Value) -> String {
     schema
         .as_object()
@@ -711,12 +710,12 @@ fn html_escape_cell(s: &str) -> String {
 /// Extract `ConfigField` entries from a properties map, sorted by field name.
 /// `defs` is the schema's definitions map, consulted to inline scalar newtype
 /// `$ref`s to their underlying type. `anchors` maps a definition name to the
-/// sections documenting it, so a struct type and a composite default can point
-/// at a section instead of inlining its serialization. `parent` is the section
+/// sections documenting it, so a struct type and a composite default can link
+/// to the section that documents them. `parent` is the section
 /// the fields belong to (`None` for the top-level table), which names each
 /// field's own section (`crates[].publish` + `cargo`).
 ///
-/// The map is keyed by DEFINITION name, not field name: a nested `repository`
+/// The map is keyed by definition name: a nested `repository`
 /// field resolves to `McpRepository`, which has no section, while a top-level
 /// `changelog` field resolves to `ChangelogConfig`, which does. Keying by field
 /// name would link any same-named nested field to an unrelated top-level
@@ -1007,7 +1006,7 @@ mod tests {
     }
 
     /// Load the xtask templates the same way `run` does, so a test renders
-    /// through the real template rather than a stand-in.
+    /// through the real template.
     fn load_templates() -> Tera {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
         let mut tera = Tera::default();
@@ -1299,11 +1298,68 @@ mod tests {
         }
     }
 
-    /// The Rust names in a description: a `::` path, a type name ending in
+    /// Mixed-case words a description may use: product names, template
+    /// variables and example file names a reader of the reference writes.
+    /// Any other mixed-case word is read as a Rust type.
+    const SPELLED_WORDS: &[&str] = &[
+        // Products and formats.
+        "AppDir",
+        "AppImage",
+        "BuildKit",
+        "GitHub",
+        "GitLab",
+        "LinkedIn",
+        "OpenCollective",
+        "OpenSSH",
+        "PyO3",
+        "PyPI",
+        "SchemaStore",
+        "SemVer",
+        "TestPyPI",
+        "TypeScript",
+        "NuGet",
+        "OpenWrt",
+        "ScoopInstaller",
+        "WinGet",
+        // Keys and names in the formats other tools read: winget manifests,
+        // the Chocolatey feed, a Homebrew download strategy class.
+        "AppName",
+        "DefaultLocale",
+        "GitHubPrivateRepositoryReleaseDownloadStrategy",
+        "InstallerLocale",
+        "InstallerSwitches",
+        "PackageIdentifier",
+        "PackageLocale",
+        "PackageStatus",
+        "UpgradeBehavior",
+        // Template variables.
+        "AllLogins",
+        "AuthorEmail",
+        "AuthorName",
+        "AuthorUsername",
+        "BaseImage",
+        "BaseImageDigest",
+        "CrateName",
+        "NpmCpu",
+        "NpmLibc",
+        "NpmOs",
+        "PrefixedPreviousTag",
+        "PrefixedTag",
+        "ProjectName",
+        "RawVersion",
+        "ShortSHA",
+        // Example file names.
+        "MyApp",
+        "MyTool",
+    ];
+
+    /// The Rust names in a description: a `::` path, a mixed-case type name
+    /// (`BTreeMap`, `PathBuf`) outside `SPELLED_WORDS`, a type name ending in
     /// `Config`, `Entry`, `Stage` or `Report`, a `DEFAULT_` constant, a source
-    /// path (`src/…` or a snake-case `.rs` file), and `None` or `Some(…)`
-    /// written as code. A reader of the
-    /// reference writes YAML and cannot look any of them up.
+    /// path (`src/…` or a snake-case `.rs` file), a one-word std type or a
+    /// primitive written as code or with generics (`Vec<`, `` `u64` ``), and
+    /// `None` or `Some(…)` written as code. A reader of the reference writes
+    /// YAML and cannot look any of them up.
     fn rust_names_in(desc: &str) -> Vec<String> {
         // A `{{ … }}` expression names template variables the config can
         // read, whatever their spelling.
@@ -1323,12 +1379,28 @@ mod tests {
                 found.push(code.to_string());
             }
         }
+        // A one-word std type or a primitive reads as English or as a value
+        // in prose, so it counts only written as code or with generics.
+        for name in [
+            "Vec", "Option", "String", "Duration", "Box", "Result", "Path", "u8", "u16", "u32",
+            "u64", "usize", "i8", "i16", "i32", "i64", "isize", "f32", "f64",
+        ] {
+            if desc.contains(&format!("`{name}`")) || desc.contains(&format!("{name}<")) {
+                found.push(name.to_string());
+            }
+        }
         let is_rust_type = |seg: &str| {
-            seg.starts_with(|c: char| c.is_ascii_uppercase())
-                && seg.chars().any(|c| c.is_ascii_lowercase())
-                && ["Config", "Entry", "Stage", "Report"]
-                    .iter()
-                    .any(|suffix| seg.len() > suffix.len() && seg.ends_with(suffix))
+            let mixed_case = seg.starts_with(|c: char| c.is_ascii_uppercase())
+                && seg
+                    .as_bytes()
+                    .windows(2)
+                    .any(|w| w[0].is_ascii_lowercase() && w[1].is_ascii_uppercase());
+            (mixed_case && !SPELLED_WORDS.contains(&seg))
+                || (seg.starts_with(|c: char| c.is_ascii_uppercase())
+                    && seg.chars().any(|c| c.is_ascii_lowercase())
+                    && ["Config", "Entry", "Stage", "Report"]
+                        .iter()
+                        .any(|suffix| seg.len() > suffix.len() && seg.ends_with(suffix)))
         };
         for token in desc
             .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '.')))
@@ -1379,8 +1451,16 @@ mod tests {
             rust_names_in("reads `{{ .RunReport }}`, unlike RunReport"),
             ["RunReport"]
         );
+        assert_eq!(
+            rust_names_in("Stored as a `BTreeMap`, a HashMap or an IndexMap of PathBuf"),
+            ["BTreeMap", "HashMap", "IndexMap", "PathBuf"]
+        );
+        assert_eq!(
+            rust_names_in("a `Vec<String>` or `Option<Duration>`, in `u64` seconds"),
+            ["Vec", "Option", "u64"]
+        );
         assert!(rust_names_in(
-            "`Programming Language :: Rust`, `{{ .ProjectName }}`, `Config`, `publishConfig.provenance`, e.g. `90s`, `GITHUB_TOKEN`, Cargo.toml, docs.rs"
+            "`Programming Language :: Rust`, `{{ .ProjectName }}`, `Config`, `publishConfig.provenance`, e.g. `90s`, `GITHUB_TOKEN`, Cargo.toml, docs.rs, GitHub, PyPI, Option to set a String"
         )
         .is_empty());
     }
@@ -1415,10 +1495,15 @@ mod tests {
             "descriptions naming Rust items:\n{}",
             bad.join("\n")
         );
+        let unused: Vec<&&str> = SPELLED_WORDS.iter().filter(|w| !md.contains(**w)).collect();
+        assert!(
+            unused.is_empty(),
+            "SPELLED_WORDS entries no description uses: {unused:?}"
+        );
     }
 
-    /// A duration field reads as a string in the reference, never as the
-    /// object a derived schema of `std::time::Duration` would describe.
+    /// A duration field reads as a string in the reference, the form the
+    /// loader parses (`90s`, `1h30m`).
     #[test]
     fn a_duration_field_renders_as_a_string() {
         let md = generate_config_reference(&load_templates()).expect("render");
@@ -1501,8 +1586,8 @@ mod tests {
         // `section_anchor` is lossy — `[]` and `.` both collapse to `-` — so two
         // section names can slug to one anchor. Two headings sharing an id means
         // every link to it silently resolves to whichever one the renderer emits
-        // first, and nothing reports it. Counted, not set-collected: a set would
-        // hide the very thing under test.
+        // first, and nothing reports it. The anchors are counted because a set
+        // would hide a duplicate.
         let md = generate_config_reference(&load_templates()).expect("render");
         let emitted: Vec<&str> = md
             .lines()

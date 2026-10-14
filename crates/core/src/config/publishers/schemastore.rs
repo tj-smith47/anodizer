@@ -36,7 +36,7 @@ pub struct SchemastoreConfig {
     /// The schema entries to register/refresh.
     pub schemas: Vec<SchemaEntry>,
     /// When `true`, a triggered rollback leaves this publisher's work in
-    /// place rather than attempting to undo it. Default `false`.
+    /// place and does not try to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
 }
 
@@ -152,7 +152,7 @@ impl SchemastoreConfig {
     ///
     /// Both sides are read through [`crate::config::active_if_gate`], so an
     /// entry's `if: ""` — which imposes no gate — falls through to the
-    /// block's condition instead of shadowing it.
+    /// block's condition and does not shadow it.
     pub fn resolved_if<'a>(&'a self, entry: &'a SchemaEntry) -> Option<&'a str> {
         use crate::config::active_if_gate;
         active_if_gate(entry.if_condition.as_deref())

@@ -924,7 +924,7 @@ fn test_release_on_failure_defaults_to_unset() {
 }
 
 /// The removed `rollback` value must stay PARSEABLE so the validator can
-/// name it in the migration error. A serde-level rejection would instead
+/// name it in the migration error. A serde-level rejection would
 /// emit an opaque "unknown variant" that says nothing about the migration.
 #[test]
 fn test_release_on_failure_parses_both_values() {
@@ -2854,9 +2854,8 @@ crates:
 
 /// Every config struct is `deny_unknown_fields` (GoReleaser-style strict
 /// parsing), so an unknown key at ANY nesting depth — top-level section,
-/// nested sub-config, or per-crate leaf — is a hard error, not silently
-/// ignored. This pins the strict contract at each level so a typo'd or
-/// misplaced key surfaces at parse time rather than silently no-op'ing on a
+/// nested sub-config, or per-crate leaf — is a hard error. This holds the strict contract at each level so a typo'd or
+/// misplaced key fails at parse time and cannot silently no-op on a
 /// release.
 #[test]
 fn test_unknown_nested_fields_rejected() {
@@ -3429,7 +3428,7 @@ crates: []
 /// The upstream writes `enabled:` (opt-in, default false) where anodizer
 /// writes `skip:` (opt-out once the block is present). The deserializer
 /// inverts the bool so an imported YAML runs the pipeline
-/// instead of being rejected at parse time.
+/// and is not rejected at parse time.
 #[test]
 fn test_notarize_macos_enabled_alias_inverts_to_skip() {
     let yaml_true = r#"
@@ -7017,8 +7016,8 @@ sboms:
 // ---- env map-form rejection tests (must be Vec<String>, not map) ----
 
 /// Assert that the given YAML fails to deserialize into `Config` because an
-/// `env:` field was supplied as a map (`KEY: value`) rather than the
-/// required `Vec<String>` (`- KEY=value`).
+/// `env:` field was supplied as a map (`KEY: value`), where the
+/// required shape is `Vec<String>` (`- KEY=value`).
 #[track_caller]
 fn assert_env_map_rejected(yaml: &str, label: &str) {
     let result = serde_yaml_ng::from_str::<Config>(yaml);
@@ -7565,7 +7564,7 @@ fn cfgd_shaped_config_is_unchanged_by_the_derived_fold() {
 }
 
 /// The template-keyed sibling list must exclude exactly what the name-keyed
-/// walk excluded: `excluded_sibling_prefixes` only keeps strictly-longer
+/// scan excluded: `excluded_sibling_prefixes` only keeps strictly-longer
 /// prefixes, so a same-family sibling never mattered, and the own family is
 /// never its own sibling.
 #[test]
@@ -8617,7 +8616,7 @@ fn test_installer_and_nfpm_configs_accept_legacy_goamd64_alias() {
 }
 
 /// The whole `amd64_variant` domain is the typed [`Amd64Variant`] enum, so a
-/// level typo dies at parse instead of silently selecting only variant-less
+/// level typo dies at parse and cannot silently select only variant-less
 /// baseline archives. `homebrew: { amd64_variant: "x86-64-v3" }` is the proven
 /// failure: it used to parse, then the selector matched only untagged
 /// baseline archives and published the UNTUNED binary under a formula the
@@ -8645,7 +8644,7 @@ crates:
 }
 
 /// Same closed domain on the defaults axis: a garbage level under
-/// `defaults.publish.*` is rejected at parse, not merged into every crate.
+/// `defaults.publish.*` is rejected at parse and never merged into every crate.
 #[test]
 fn test_publisher_amd64_variant_typo_rejected_at_parse_defaults_axis() {
     let yaml = r#"
@@ -11117,7 +11116,7 @@ fn default_cross_strategy_uses_configured_strategy() {
 
 // ---- crate_universe tests ----
 
-/// One crate config with just name + path, for universe-walk tests.
+/// One crate config with just name + path, for crate-universe tests.
 fn universe_crate(name: &str, path: &str) -> super::CrateConfig {
     super::CrateConfig {
         name: name.to_string(),
@@ -11369,9 +11368,9 @@ mcp:
 /// operator sees it, so a reword leaves the page showing a line the binary no
 /// longer prints.
 ///
-/// The page's other errors come from four more producers and are pinned where
+/// The page's other errors come from four more producers and are held where
 /// each of them lives; the error count is asserted in every one of those
-/// tests, so a newly quoted line fails until it is pinned somewhere.
+/// tests, so a newly quoted line fails until a test holds it.
 #[test]
 fn the_rollback_policy_error_quoted_in_the_resilience_docs_is_what_validation_produces() {
     let path = concat!(

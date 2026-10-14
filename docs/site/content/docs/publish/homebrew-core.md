@@ -26,7 +26,7 @@ Most projects use a tap. Reach for `homebrew_cores` only once your tool is popul
 |-------|--------------------|----------|--------------|-------|
 | Submitter | `false` | close the opened PR | **NEVER** | `HOMEBREW_CORE_GITHUB_TOKEN` / `COMMITTER_TOKEN` / `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` |
 
-The bump is **fully reversible** — it opens a pull request, which `anodizer tag rollback`'s publisher-unwind step closes when you deliberately withdraw the release. Nothing about it consumes a version or crosses a one-way door, so `required` defaults to `false`: a failed bump PR is fixed by hand and must never abort the release. A re-run of the same release also reconciles cleanly — it finds the already-open PR and skips rather than opening a duplicate.
+The bump is **fully reversible** — it opens a pull request, which `anodizer tag rollback`'s publisher-unwind step closes when you deliberately withdraw the release. Nothing about it consumes a version or crosses a one-way door, so `required` defaults to `false`: a failed bump PR is fixed by hand and must never abort the release. A re-run of the same release also reconciles cleanly — it finds the already-open PR and skips, so no duplicate is opened.
 
 ## Quick start
 
@@ -89,7 +89,7 @@ homebrew_cores:
 | `required` | — | `false` | Whether failure fails the release |
 | `retain_on_rollback` | — | `false` | Leave the opened PR in place on rollback |
 
-## What gets rewritten
+## Rewritten fields
 
 Anodizer never parses the formula as Ruby — it rewrites the small, rigidly-formatted stanzas Homebrew's own audit tooling enforces:
 
@@ -126,7 +126,7 @@ For a **personal formula repository** the token can push to, anodizer uses a sam
 
 ## Direct commit
 
-`direct_commit: true` commits the bump straight to the base branch instead of opening a PR — useful for a personal formula repo you fully control.
+`direct_commit: true` commits the bump straight to the base branch with no PR — useful for a personal formula repo you fully control.
 
 ```yaml
 homebrew_cores:
@@ -141,7 +141,7 @@ This is **only honored for repositories you can push to**. A bump targeting `Hom
 Re-running a release is safe — the bump is a no-op when it has already happened:
 
 - **Formula already current** — if the formula's `url` / `tag:` / `version` already reference the new release, anodizer logs `formula … already at <version> — skipping (idempotent)` and opens nothing.
-- **Open PR already exists** — if a bump branch from this run's head already has an open PR, anodizer logs `open PR already bumps … — skipping (idempotent)` rather than opening a duplicate.
+- **Open PR already exists** — if a bump branch from this run's head already has an open PR, anodizer logs `open PR already bumps … — skipping (idempotent)` and opens no duplicate.
 - **Branch re-created** — a stale bump branch from a prior failed run is force-moved to the fresh upstream base, so the retried bump starts clean.
 
 ## Authentication
@@ -161,7 +161,7 @@ Empty values are skipped at every link, so a blank `GITHUB_TOKEN` (GitHub Action
 anodizer release --show-skipped
 ```
 
-### Migrating from `mislav/bump-homebrew-formula-action`
+### Migration from `mislav/bump-homebrew-formula-action`
 
 ```yaml
 # Before (GitHub Actions workflow step):

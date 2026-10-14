@@ -73,7 +73,7 @@ pub enum BuilderKind {
     /// per the `cross:` strategy). Default when no `builder:` is set.
     #[default]
     Cargo,
-    /// Import a binary already staged on disk instead of compiling. Pairs
+    /// Import a binary already staged on disk, with no compile. Pairs
     /// with the `prebuilt:` block on the same build entry.
     Prebuilt,
 }
@@ -144,7 +144,7 @@ pub struct CrateConfig {
     ///
     /// Rungs 3 and 4 never apply to a config with a `workspaces:` list.
     /// Rungs 2–4 are folded into this field at config load; read the
-    /// resolved family through `tag_family_template()` rather than touching
+    /// resolved family through `tag_family_template()` and do not touch
     /// this field directly.
     pub tag_template: Option<String>,
     /// Pinned semver version. When set, `anodizer bump --strict` refuses to
@@ -170,7 +170,7 @@ pub struct CrateConfig {
     pub publish: Option<PublishConfig>,
     /// Docker V2 image build configurations for this crate (canonical API:
     /// images+tags, annotations, build_args, sbom, disable). The legacy
-    /// `docker:` block was removed; this is the only docker surface. The
+    /// `docker:` block was removed; this is the only docker block. The
     /// `docker_v2:` spelling is still accepted via serde alias for back-compat.
     #[serde(alias = "docker_v2")]
     pub dockers_v2: Option<Vec<DockerV2Config>>,
@@ -217,7 +217,7 @@ pub struct CrateConfig {
     /// macOS universal binary (fat binary) configurations for this crate.
     pub universal_binaries: Option<Vec<UniversalBinaryConfig>>,
     /// When true (or template evaluating to "true"), all build outputs are
-    /// placed in a flat `dist/` directory instead of `dist/{target}/`.
+    /// placed in a flat `dist/` directory. When false, each goes to `dist/{target}/`.
     #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
     pub no_unique_dist_dir: Option<StringOrBool>,
     /// Hooks that run inside THIS crate's scope at the start of the release,
@@ -239,7 +239,7 @@ pub struct CrateConfig {
     /// after the crate's publish dispatch (and post-publish verification)
     /// completes. Per-crate counterpart of the top-level `after:` (which fires
     /// once around the whole release). Same per-crate firing semantics across
-    /// all modes, template surface, and abort semantics as the per-crate
+    /// all modes, template variables, and abort semantics as the per-crate
     /// `before:`.
     pub after: Option<HooksConfig>,
     /// Hooks that run immediately before THIS crate's publishers dispatch,
@@ -322,7 +322,7 @@ impl CrateConfig {
     /// `<name>-v` — the family `init` writes, `tag` cuts under, and `bump`,
     /// `changelog`, `docker promote` and `tag rollback` all scan. A second
     /// answer here (a bare `v`) would put the release stage's tag outside the
-    /// family every other surface looks in, so the tag it created is the one
+    /// family every other reader looks in, so the tag it created is the one
     /// nothing else can find.
     /// The crate's `release.tag:` override, if it set one.
     ///
@@ -331,7 +331,7 @@ impl CrateConfig {
     /// the second of
     /// [`resolve_release_tag`](crate::release_tag::resolve_release_tag);
     /// reading it through this accessor keeps "where does the override come
-    /// from" one answer rather than one per caller.
+    /// from" one answer for every caller.
     pub fn release_tag_override(&self) -> Option<&str> {
         self.release.as_ref().and_then(|r| r.tag.as_deref())
     }
@@ -360,9 +360,12 @@ pub struct UniversalBinaryConfig {
     pub name_template: Option<String>,
     /// When true, remove the individual arch binaries after creating the universal binary.
     pub replace: Option<bool>,
-    /// Build IDs filter: only combine artifacts from builds whose `id` is in
-    /// this list. A build's `id` defaults to the project name, then the
-    /// crate name.
+    /// Build IDs filter: only combine binaries from builds whose `id` is in
+    /// this list. A build's `id` defaults to its binary name.
+    ///
+    /// When unset, the filter is this entry's `id` if set; otherwise the
+    /// project name when a binary of the crate carries that id; otherwise
+    /// the crate name.
     pub ids: Option<Vec<String>>,
     /// Pre/post hooks around universal binary creation.
     pub hooks: Option<BuildHooksConfig>,
@@ -377,7 +380,8 @@ pub struct UniversalBinaryConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct BuildConfig {
-    /// Unique identifier for this build, used to reference it from archives and other configs.
+    /// Unique identifier for this build, used to reference it from archives
+    /// and other configs. Default: the binary name.
     pub id: Option<String>,
     /// Binary name to build (must match a Cargo binary target in the crate).
     ///
@@ -400,7 +404,7 @@ pub struct BuildConfig {
     pub no_default_features: Option<bool>,
     /// Per-target environment variables keyed as {target: {KEY: VALUE}}.
     pub env: Option<HashMap<String, HashMap<String, String>>>,
-    /// Copy the binary from another build ID instead of building it.
+    /// Copy the binary from another build ID. The binary is not built.
     pub copy_from: Option<String>,
     /// Extra flags passed to cargo build, one per list entry (e.g., `["--release", "--locked"]`).
     ///
@@ -422,7 +426,7 @@ pub struct BuildConfig {
     /// Falls back to `defaults.builds.overrides` when not set.
     pub overrides: Option<Vec<BuildOverride>>,
     /// Override the cross-compilation tool binary path (e.g., a custom `cross` wrapper).
-    /// When set, this binary is used instead of cargo/cross/zigbuild.
+    /// When set, this binary replaces cargo/cross/zigbuild.
     pub cross_tool: Option<String>,
     /// Override the modification timestamp of built binaries for reproducible builds.
     /// Template string (e.g. `"{{ CommitTimestamp }}"`) or unix timestamp.
@@ -430,8 +434,8 @@ pub struct BuildConfig {
     /// Override the cargo subcommand (default: auto-detected "build" or "zigbuild").
     /// Enables e.g. `cargo auditable build` by setting `command: "auditable build"`.
     pub command: Option<String>,
-    /// When true (or template evaluating to "true"), place binaries in flat dist/
-    /// instead of dist/{target}/. Overrides the crate-level setting.
+    /// When true (or template evaluating to "true"), place binaries in flat dist/.
+    /// When false, each goes to dist/{target}/. Overrides the crate-level setting.
     #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
     pub no_unique_dist_dir: Option<StringOrBool>,
     /// Declared x86-64 micro-architecture level for this build's artifacts:
@@ -467,9 +471,9 @@ pub struct BuildConfig {
     /// Accepted-but-ignored legacy key. anodizer always drives the cargo
     /// toolchain (or `cross` / `zigbuild`) directly, so there is no
     /// pluggable build binary to point at. The field is parsed only so that
-    /// configs imported from a Go-style tool keep loading instead of
-    /// hard-failing under `deny_unknown_fields`; its value is never read.
-    /// Use `command:` to override the cargo subcommand instead.
+    /// configs imported from a Go-style tool keep loading and do not
+    /// hard-fail under `deny_unknown_fields`; its value is never read.
+    /// Use `command:` to override the cargo subcommand.
     #[doc(hidden)]
     #[serde(default, skip_serializing)]
     pub gobinary: Option<String>,
@@ -507,7 +511,7 @@ mod legacy_field_tests {
     use super::*;
 
     /// An imported config carrying the removed Go-style `gobinary:` key must
-    /// still parse (accept-and-ignore) rather than hard-fail under
+    /// still parse (accept-and-ignore) and must not hard-fail under
     /// `deny_unknown_fields`. The value is captured but never read.
     #[test]
     fn build_gobinary_is_accepted_and_ignored() {

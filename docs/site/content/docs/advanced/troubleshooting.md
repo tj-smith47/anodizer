@@ -98,7 +98,7 @@ The default pipeline timeout is `3h`, a backstop; per-stage bounds such as `anno
 anodizer release --timeout 90m
 ```
 
-### "git repository is dirty" with nothing to commit
+### Dirty-tree refusal on an unreadable git status
 
 The release refuses a dirty working tree unless the run is `--snapshot`, nightly or `--dry-run`. A working tree whose status git cannot read counts as dirty, so a corrupt index or git's `safe.directory` refusal (a checkout owned by another user, common in containers) stops the release with an empty "Dirty files" list. `anodizer bump` refuses the same tree, and `--auto-snapshot` switches to snapshot mode on it. Run git yourself to see the cause:
 
@@ -108,7 +108,7 @@ git status --porcelain
 git config --global --add safe.directory /work
 ```
 
-### A command returns while a background process keeps running
+### Background processes that outlive their command
 
 When a command anodizer runs (a hook, a build or sign tool) starts a process of its own that keeps its stdout, stderr or stdin open (`tool &`, a daemon it launched), anodizer stops reading those pipes 5 seconds after the command itself exits. The command's own exit status and the output read until then are kept, a last line without a trailing newline included, and the step carries on. Under `--verbose` the cut-off is printed:
 
@@ -138,7 +138,7 @@ anodizer release --dry-run --verbose
 
 This runs the full pipeline without creating releases, pushing tags, or publishing packages. Combined with `--verbose`, you can see exactly what would happen.
 
-## Getting Help
+## Help
 
 - [GitHub Issues](https://github.com/tj-smith47/anodizer/issues) -- report bugs or request features
 - `anodizer --help` -- full CLI reference

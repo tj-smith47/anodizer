@@ -33,7 +33,7 @@ use super::MetadataConfig;
 /// - `description` ← `package.description`
 /// - `license` ← `package.license` (an SPDX string). When the crate uses
 ///   `license-file` instead, no SPDX id can be synthesised, so `license`
-///   is left unset rather than fabricated.
+///   is left unset.
 /// - `homepage` ← `package.homepage`, falling back to `package.repository`.
 /// - `repository` ← `package.repository`.
 /// - `documentation` ← `package.documentation`.
@@ -44,8 +44,8 @@ use super::MetadataConfig;
 /// for a `Cargo.toml` declaring `[workspace]`).
 ///
 /// Missing / unreadable / unparsable `Cargo.toml` yields an all-`None`
-/// [`MetadataConfig`] — derivation is a best-effort enrichment, never a hard
-/// failure (the publisher's own "required field" error still fires if nothing
+/// [`MetadataConfig`] — derivation is a best-effort enrichment and cannot fail the
+/// load (the publisher's own "required field" error still fires if nothing
 /// supplies the value).
 pub fn derive_metadata_from_cargo_toml(crate_dir: &Path) -> MetadataConfig {
     let cargo_toml = crate_dir.join("Cargo.toml");

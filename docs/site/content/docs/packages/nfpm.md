@@ -78,7 +78,7 @@ Not applicable — nFPM generates package files locally. Uploading them to a pac
 
 ## Republish / update behavior
 
-Not applicable — this is a local packaging stage, not a publisher.
+Not applicable — this is a local packaging stage with no remote to publish to.
 
 ## nFPM config fields
 
@@ -124,10 +124,12 @@ authors = ["TJ Smith <tj@jarvispro.io>"]
 ```
 
 ```yaml
-nfpm:
-  - package_name: myapp
-    formats: [deb, rpm]
-    # vendor omitted -> derived as "TJ Smith"
+crates:
+  - name: myapp
+    nfpm:
+      - package_name: myapp
+        formats: [deb, rpm]
+        # vendor omitted -> derived as "TJ Smith"
 ```
 
 `vendor: "Some Other Org"` overrides the derived value.
@@ -137,28 +139,32 @@ nfpm:
 Include additional files in the package:
 
 ```yaml
-nfpm:
-  - package_name: myapp
-    formats: [deb, rpm]
-    contents:
-      - src: config.example.yaml
-        dst: /etc/myapp/config.yaml
-        type: config
-      - src: myapp.service
-        dst: /usr/lib/systemd/system/myapp.service
+crates:
+  - name: myapp
+    nfpm:
+      - package_name: myapp
+        formats: [deb, rpm]
+        contents:
+          - src: config.example.yaml
+            dst: /etc/myapp/config.yaml
+            type: config
+          - src: myapp.service
+            dst: /usr/lib/systemd/system/myapp.service
 ```
 
 ## Install scripts
 
 ```yaml
-nfpm:
-  - package_name: myapp
-    formats: [deb]
-    scripts:
-      preinstall: scripts/preinstall.sh
-      postinstall: scripts/postinstall.sh
-      preremove: scripts/preremove.sh
-      postremove: scripts/postremove.sh
+crates:
+  - name: myapp
+    nfpm:
+      - package_name: myapp
+        formats: [deb]
+        scripts:
+          preinstall: scripts/preinstall.sh
+          postinstall: scripts/postinstall.sh
+          preremove: scripts/preremove.sh
+          postremove: scripts/postremove.sh
 ```
 
 ## Per-format blocks
@@ -168,103 +174,107 @@ apply to that format. Set the block alongside `formats`; anodizer emits the
 matching nfpm section only for the formats you list.
 
 ```yaml
-nfpm:
-  - package_name: myapp
-    formats: [rpm, deb, apk, archlinux, ipk]
-    rpm:
-      summary: "A fast CLI tool"        # RPM Summary tag
-      compression: zstd                 # lzma | gzip | xz | zstd
-      group: "System/Tools"
-      packager: "Build Team <build@example.com>"
-      prefixes: ["/usr"]                # relocatable RPM prefixes
-      build_host: "reproducible"        # override RPM BuildHost tag
-      signature:
-        key_file: signing.gpg
-        key_passphrase: ""              # falls back to NFPM_PASSPHRASE
-      scripts:
-        pretrans: scripts/pretrans.sh   # %pretrans scriptlet
-        posttrans: scripts/posttrans.sh # %posttrans scriptlet
-    deb:
-      compression: xz                   # gzip | xz | zstd | none
-      predepends: ["dpkg (>= 1.17)"]    # stronger than Depends
-      breaks: ["oldpkg (<< 2.0)"]       # Breaks relationship
-      lintian_overrides: ["binary-without-manpage"]
-      fields:                           # extra control fields
-        Built-Using: "rustc"
-      signature:
-        key_file: signing.gpg
-        type: origin                    # origin | maint | archive
-      triggers:
-        activate_noawait: ["ldconfig"]
-      scripts:
-        rules: debian/rules
-        templates: debian/templates     # debconf templates
-        config: debian/config           # debconf config script
-    apk:
-      signature:
-        key_file: signing.rsa
-        key_name: "build@example.com.rsa.pub"
-      scripts:
-        preupgrade: scripts/preupgrade.sh
-        postupgrade: scripts/postupgrade.sh
-    archlinux:
-      pkgbase: myapp                    # base name for split packages
-      packager: "Build Team <build@example.com>"
-      scripts:
-        preupgrade: scripts/preupgrade.sh
-        postupgrade: scripts/postupgrade.sh
-    ipk:
-      abi_version: "1"
-      auto_installed: false
-      essential: false
-      predepends: ["libc"]
-      tags: ["net"]
-      fields:
-        Maintainer: "team@example.com"
-    msix:                               # only consumed by formats: [msix]
-      arch: x64                         # optional; x64 | x86 | arm64 | arm | neutral (derived from the target)
-      publisher: "CN=My Company, O=My Company, C=US"   # REQUIRED; must match the signing cert subject
-      identity:
-        resource_id: en-us              # optional
-      properties:
-        display_name: "My App"          # optional; defaults to the package name
-        publisher_display_name: "My Company"  # optional; defaults to the package name
-        logo: assets/logo.png           # REQUIRED; package logo image
-      applications:                     # REQUIRED (>= 1 entry)
-        - id: MyApp                     # REQUIRED
-          executable: myapp.exe         # REQUIRED; path inside the package
-          entry_point: Windows.FullTrustApplication  # optional; this is the default
-          visual_elements:
-            display_name: "My App"      # optional; defaults to the package name
-            description: "A fast CLI"   # optional; defaults to the package description
-            background_color: transparent          # optional; this is the default
-            square150x150_logo: assets/150.png     # optional; defaults to properties.logo
-            square44x44_logo: assets/44.png        # optional; defaults to properties.logo
-      dependencies:
-        target_device_families:         # optional; this is the default family
-          - name: Windows.Desktop
-            min_version: 10.0.17763.0
-            max_version_tested: 10.0.22621.0
-      capabilities:
-        capabilities: [internetClient]  # optional
-        device_capabilities: []         # optional
-        restricted: []                  # optional; runFullTrust is auto-added for full-trust apps
-      signature:
-        pfx_file: cert.pfx              # optional; PFX certificate for signing
+crates:
+  - name: myapp
+    nfpm:
+      - package_name: myapp
+        formats: [rpm, deb, apk, archlinux, ipk]
+        rpm:
+          summary: "A fast CLI tool"        # RPM Summary tag
+          compression: zstd                 # lzma | gzip | xz | zstd
+          group: "System/Tools"
+          packager: "Build Team <build@example.com>"
+          prefixes: ["/usr"]                # relocatable RPM prefixes
+          build_host: "reproducible"        # override RPM BuildHost tag
+          signature:
+            key_file: signing.gpg
+            key_passphrase: ""              # falls back to NFPM_PASSPHRASE
+          scripts:
+            pretrans: scripts/pretrans.sh   # %pretrans scriptlet
+            posttrans: scripts/posttrans.sh # %posttrans scriptlet
+        deb:
+          compression: xz                   # gzip | xz | zstd | none
+          predepends: ["dpkg (>= 1.17)"]    # stronger than Depends
+          breaks: ["oldpkg (<< 2.0)"]       # Breaks relationship
+          lintian_overrides: ["binary-without-manpage"]
+          fields:                           # extra control fields
+            Built-Using: "rustc"
+          signature:
+            key_file: signing.gpg
+            type: origin                    # origin | maint | archive
+          triggers:
+            activate_noawait: ["ldconfig"]
+          scripts:
+            rules: debian/rules
+            templates: debian/templates     # debconf templates
+            config: debian/config           # debconf config script
+        apk:
+          signature:
+            key_file: signing.rsa
+            key_name: "build@example.com.rsa.pub"
+          scripts:
+            preupgrade: scripts/preupgrade.sh
+            postupgrade: scripts/postupgrade.sh
+        archlinux:
+          pkgbase: myapp                    # base name for split packages
+          packager: "Build Team <build@example.com>"
+          scripts:
+            preupgrade: scripts/preupgrade.sh
+            postupgrade: scripts/postupgrade.sh
+        ipk:
+          abi_version: "1"
+          auto_installed: false
+          essential: false
+          predepends: ["libc"]
+          tags: ["net"]
+          fields:
+            Maintainer: "team@example.com"
+        msix:                               # only consumed by formats: [msix]
+          arch: x64                         # optional; x64 | x86 | arm64 | arm | neutral (derived from the target)
+          publisher: "CN=My Company, O=My Company, C=US"   # REQUIRED; must match the signing cert subject
+          identity:
+            resource_id: en-us              # optional
+          properties:
+            display_name: "My App"          # optional; defaults to the package name
+            publisher_display_name: "My Company"  # optional; defaults to the package name
+            logo: assets/logo.png           # REQUIRED; package logo image
+          applications:                     # REQUIRED (>= 1 entry)
+            - id: MyApp                     # REQUIRED
+              executable: myapp.exe         # REQUIRED; path inside the package
+              entry_point: Windows.FullTrustApplication  # optional; this is the default
+              visual_elements:
+                display_name: "My App"      # optional; defaults to the package name
+                description: "A fast CLI"   # optional; defaults to the package description
+                background_color: transparent          # optional; this is the default
+                square150x150_logo: assets/150.png     # optional; defaults to properties.logo
+                square44x44_logo: assets/44.png        # optional; defaults to properties.logo
+          dependencies:
+            target_device_families:         # optional; this is the default family
+              - name: Windows.Desktop
+                min_version: 10.0.17763.0
+                max_version_tested: 10.0.22621.0
+          capabilities:
+            capabilities: [internetClient]  # optional
+            device_capabilities: []         # optional
+            restricted: []                  # optional; runFullTrust is auto-added for full-trust apps
+          signature:
+            pfx_file: cert.pfx              # optional; PFX certificate for signing
 ```
 
 `deb.lintian_overrides` can also be set per format under `overrides`, which
 is how a `termux.deb` gets a different list from the `deb`:
 
 ```yaml
-nfpm:
-  - formats: [deb, termux.deb]
-    deb:
-      lintian_overrides: ["binary-without-manpage"]
-    overrides:
-      termux.deb:
+crates:
+  - name: myapp
+    nfpm:
+      - formats: [deb, termux.deb]
         deb:
-          lintian_overrides: ["binary-without-manpage", "statically-linked-binary"]
+          lintian_overrides: ["binary-without-manpage"]
+        overrides:
+          termux.deb:
+            deb:
+              lintian_overrides: ["binary-without-manpage", "statically-linked-binary"]
 ```
 
 A non-empty per-format list replaces the top-level one for that format; an
@@ -293,9 +303,11 @@ ends with it. Each package artifact records that extension, so
 (`myapp-1.2.3-1-x86_64.pkg.tar.zst` for `archlinux`):
 
 ```yaml
-nfpm:
-  - formats: [archlinux]
-    file_name_template: "{{ ConventionalFileName }}"
+crates:
+  - name: myapp
+    nfpm:
+      - formats: [archlinux]
+        file_name_template: "{{ ConventionalFileName }}"
 ```
 
 ## Termux packages
@@ -314,11 +326,13 @@ filesystem prefix (`/data/data/com.termux/files`):
 | `armv6` | `armhf` | `arm` |
 
 ```yaml
-nfpm:
-  - package_name: myapp
-    formats: [termux.deb]
-    maintainer: "team@example.com"
-    file_name_template: "{{ ConventionalFileName }}"
+crates:
+  - name: myapp
+    nfpm:
+      - package_name: myapp
+        formats: [termux.deb]
+        maintainer: "team@example.com"
+        file_name_template: "{{ ConventionalFileName }}"
 ```
 
 ```

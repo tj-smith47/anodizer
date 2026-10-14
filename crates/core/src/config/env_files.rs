@@ -97,7 +97,7 @@ pub fn read_token_file(path: &str) -> Result<Option<String>, String> {
 
 /// [`EnvSource`](crate::EnvSource)-injecting form of [`read_token_file`].
 ///
-/// Tilde expansion resolves the home directory from `env` instead of the
+/// Tilde expansion resolves the home directory from `env`, which need not be the
 /// process environment, so tests can point `~` at a fixture directory
 /// without mutating global `HOME`.
 pub fn read_token_file_with_env<E: crate::EnvSource + ?Sized>(

@@ -290,7 +290,7 @@ fn derivation(output: &str, source: AssetNameSource, base: &str, template: &str)
         ),
         AssetNameSource::OutputTemplate => format!(
             "the {output} was rendered by the `binary_signs[].{output}:` \
-             template, which renamed the output instead of suffixing the \
+             template, which renamed the output and dropped the \
              binary's own file name, so the asset base '{base}' (from \
              '{template}') is not part of it"
         ),

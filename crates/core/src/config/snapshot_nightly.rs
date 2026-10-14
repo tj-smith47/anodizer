@@ -53,7 +53,7 @@ pub struct NightlyConfig {
     /// `v1.2.4-abc1234-nightly`), which keeps two nightlies at different
     /// commits distinguishable.
     ///
-    /// Set it to pin one rolling tag instead (`tag_name: nightly` → tag
+    /// Set it to use one rolling tag (`tag_name: nightly` → tag
     /// `nightly`, moved each run). In a workspace that creates more than one
     /// tag family the value is prefixed with the publishing crate's family so
     /// the tracks do not collide on a single tag: with `operator-v{{ Version }}`,
@@ -82,7 +82,7 @@ pub struct NightlyConfig {
     /// either: its whole history is unreleased, so "no changes since the last
     /// release" is not a claim it can make.
     pub skip_if_no_changes: Option<bool>,
-    /// Publish the nightly release to a DIFFERENT repository than the source
+    /// Publish the nightly release to a repository other than the source
     /// repo, in `"owner/repo"` form (e.g. `"nushell/nightly"`). When unset,
     /// the nightly publishes to the configured `release.github` repo.
     ///
@@ -91,9 +91,10 @@ pub struct NightlyConfig {
     /// target this repo. The active SCM token is assumed to have write
     /// access to `publish_repo`. GitHub-only.
     pub publish_repo: Option<String>,
-    /// Delete the prior release that points at the same tag before
-    /// creating the new one. Default: `false`. Set `true` to maintain a
-    /// single rolling nightly release on GitHub.
+    /// Keep only the nightly release this run creates: after it is
+    /// published, every older nightly release with the same name, and the
+    /// tag anodizer created for it, is deleted. Default: `false`. Set `true`
+    /// to maintain a single rolling nightly release on GitHub.
     ///
     /// Back-compat alias for `retention: { keep_last: 1 }`. When both
     /// `keep_single_release` and `retention` are set, `retention` wins.
@@ -104,7 +105,13 @@ pub struct NightlyConfig {
     /// `keep_single_release` (which is `keep_last: 1`): keeps the N newest
     /// nightly releases matching the nightly tag/name and deletes the rest
     /// (releases + the tags anodizer created for them). Operates on
-    /// `publish_repo` when set. When unset, no old nightly is deleted.
+    /// `publish_repo` when set.
+    ///
+    /// The number kept resolves in this order:
+    ///
+    /// 1. `retention` set: `keep_last`, with `0` read as `1`;
+    /// 2. `retention` unset and `keep_single_release: true`: `1`;
+    /// 3. otherwise no old nightly is deleted.
     pub retention: Option<RetentionConfig>,
     /// Override `release.draft` for nightly runs only.
     /// When unset, `release.draft` applies; when set, this value is used.
@@ -121,8 +128,8 @@ pub struct NightlyConfig {
     /// semver at all. Set `false` to opt out.
     pub prerelease: Option<bool>,
     /// Override `release.make_latest` for nightly runs only, with the same
-    /// spellings: `true`, `false`, `"auto"`, an unquoted `1` / `0`, or a
-    /// template. Default: `false` — a rolling nightly must not displace the newest stable
+    /// spellings: `true`, `false`, `1`, `0` and `auto` in any letter case,
+    /// quoted or unquoted, or a template. Default: `false` — a rolling nightly must not displace the newest stable
     /// release in the GitHub UI, in `releases/latest`, or for the install
     /// scripts and `gh release download` invocations that resolve it.
     ///
@@ -171,7 +178,7 @@ impl NightlyConfig {
 ///
 /// Returns `Ok(())` when unset or well-formed. A malformed value (missing
 /// `/`, empty owner/repo, extra path segments, or whitespace) is a
-/// config-time error rather than a confusing 404 at publish time.
+/// config-time error, so it never reaches publish time as a confusing 404.
 pub fn validate_nightly_publish_repo(config: &crate::config::Config) -> Result<(), String> {
     let Some(nightly) = config.nightly.as_ref() else {
         return Ok(());
@@ -230,11 +237,12 @@ pub struct MetadataConfig {
     pub mod_timestamp: Option<String>,
     /// Long-form project description. Supports inline
     /// string, `from_file`, or `from_url`. Exposed as `{{ Metadata.FullDescription }}`.
-    /// FromUrl is resolved lazily (requires the release stage); FromFile is resolved
-    /// at context-populate time with template-rendered path.
+    /// A `from_url` source is fetched in the release stage; a `from_file`
+    /// path is template-rendered and read when the run starts.
     pub full_description: Option<ContentSource>,
-    /// Commit author identity for commit workflows: `name`, `email` and
-    /// optional `signing`, the same keys as a publisher's `commit_author`.
+    /// Commit author identity for commit workflows: `name`, `email`,
+    /// `signing` and `use_github_app_token`, the same keys as a publisher's
+    /// `commit_author`.
     /// Exposed as `{{ Metadata.CommitAuthor.Name }}` / `{{ Metadata.CommitAuthor.Email }}`.
     pub commit_author: Option<CommitAuthorConfig>,
 }

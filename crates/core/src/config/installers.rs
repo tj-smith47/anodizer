@@ -235,7 +235,8 @@ pub struct AppBundleConfig {
     /// Must be set explicitly; there is no default. A missing value is caught at
     /// validation time with an actionable error message.
     pub bundle: Option<String>,
-    /// Additional files to include in the bundle (glob strings, or objects with `src`, `dst` and `info` keys).
+    /// Additional files to include in the bundle (glob strings, or objects
+    /// with `src`, `dst`, `info` and `strip_parent` keys).
     pub extra_files: Option<Vec<ArchiveFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before inclusion.
     /// Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.

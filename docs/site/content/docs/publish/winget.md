@@ -34,16 +34,18 @@ crates:
 
 > **Warning:** Winget is a _submitter_ publisher — it opens a pull request against
 > `microsoft/winget-pkgs`; that PR goes through automated validation (SubmitPipelineBot)
-> that takes hours to days. The publisher "succeeds" when the PR is opened, not when
-> it is merged.
+> that takes hours to days. The publisher "succeeds" when the PR is opened; the merge
+> comes later.
 >
-> Setting `required: true` therefore has no meaningful effect: the failure mode it
-> guards against (PR rejection) happens asynchronously, long after the release exits.
+> `required: true` fails the release when opening the pull request fails. The
+> review that follows (PR rejection) happens long after the release exits, so no
+> setting can gate the release on it.
 >
-> Anodizer emits this warning at config-validation time when `required: true` is set:
+> With `-v`, anodizer prints this line when it loads a config that sets
+> `required: true` on this publisher:
 >
 > ```
-> <location>: publisher 'winget' is a submitter (external moderation queue); `required: true` has no meaningful effect — the submitter gate evaluates at push time, not at approval time.
+> <location>: publisher 'winget' submits to an external moderation queue; `required: true` fails the release when the submission itself fails, but the eventual moderation outcome happens outside the release run and cannot be gated.
 > ```
 >
 > See [Publish overview — the `required:` field](../) for the full submitter-publisher
@@ -67,7 +69,7 @@ crates:
 `[package].license`. Set `publish.winget.license` only to override it (or if
 the crate has no SPDX `license`, since winget manifests require one).
 
-## How it works
+## Publishing process
 
 1. Anodizer collects your Windows `.zip` archive artifacts (or portable binary artifacts).
 2. It generates three YAML manifest files following the WinGet 1.12.0 schema.
@@ -124,7 +126,7 @@ If `package_identifier` is not set, Anodizer auto-generates it as `Publisher.Nam
 | `product_code` | string | none | Product code for Add/Remove Programs |
 | `use` | string | `archive` | Artifact type: `archive`, `msi`, or `nsis` |
 | `amd64_variant` | enum | `v1` | amd64 microarchitecture variant filter — exactly one of `v1`, `v2`, `v3`, `v4` (any other value is rejected when the config is parsed) |
-| `update_existing_pr` | bool or string | `false` | Force-push to an existing open PR branch instead of skipping. See [Existing PR behavior](#existing-pr-behavior) and [Recovery flags](../advanced/recovery-flags.md#update_existing_pr-winget-krew-homebrew-cask). |
+| `update_existing_pr` | bool or string | `false` | Force-push to an existing open PR branch. When `false`, an existing PR is skipped. See [Existing PR behavior](#existing-pr-behavior) and [Recovery flags](../advanced/recovery-flags.md#update_existing_pr-winget-krew-homebrew-cask). |
 
 ## Repository config
 
@@ -231,24 +233,27 @@ The push to your winget-pkgs fork uses the first token that is set:
 The pull request is opened with `repository.pull_request.token`, then `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. With none of these set, the `gh` CLI's own login opens it; with neither a token nor `gh`, the publish fails. Both the `gh` and the REST API transports use this order. The pull request needs `pull_request:write` on `microsoft/winget-pkgs`.
 
 ```yaml
-winget:
-  repository:
-    owner: myorg
-    name: winget-pkgs
-    token: "{{ .Env.WINGET_PKGS_TOKEN }}"
-    pull_request:
-      enabled: true
-      token: "{{ .Env.PR_TOKEN }}"
+crates:
+  - name: myapp
+    publish:
+      winget:
+        repository:
+          owner: myorg
+          name: winget-pkgs
+          token: "{{ .Env.WINGET_PKGS_TOKEN }}"
+          pull_request:
+            enabled: true
+            token: "{{ .Env.PR_TOKEN }}"
 ```
 
-`repository.pull_request.token` and `repository.token` are rendered before anything is cloned or pushed. A blank render, such as an unset `{{ .Env.X }}`, falls through to the next token in the chain. A template that fails to render skips this crate's winget entry with nothing pushed, and the next crate still publishes. The skip reason names the field and the render error (`pull_request.token does not render: …`), with the template's own text replaced by `<template>` so a token literal in it is never printed.
+`repository.pull_request.token` and `repository.token` are rendered before anything is cloned or pushed. On both the push and the pull request chain, a render that is empty or only whitespace, such as an unset `{{ .Env.X }}`, falls through to the next token, and a token is sent with its surrounding whitespace removed. A template that fails to render skips this crate's winget entry with nothing pushed, and the next crate still publishes. The skip reason names the field and the render error (`pull_request.token does not render: …`), with the template's own text replaced by `<template>` so a token literal in it is never printed.
 
 ## Common gotchas
 
 - **Non-zip archives**: WinGet only accepts `.zip` format for archive installers. `.tar.gz`, `.7z`, and other formats are rejected with a clear error.
 - **Mixed artifact types**: cannot mix zip archives and portable binaries in the same manifest. Anodizer errors if both types are detected.
 - **Validation pipeline lag**: WinGet PR validation runs in the `microsoft/winget-pkgs` CI pipeline, which can take hours to complete. Rollback is warn-only — the PR cannot be cancelled programmatically once validation has started.
-- **Duplicate PRs**: if a prior run pushed a PR for the same tag, use `update_existing_pr: true` to force-push the updated manifests instead of opening a second PR.
+- **Duplicate PRs**: if a prior run pushed a PR for the same tag, use `update_existing_pr: true` to force-push the updated manifests, so no second PR is opened.
 
 ## Commit author
 
@@ -275,8 +280,8 @@ attaches where it belongs.
 
 The scope match is exact and case-sensitive against each installer's WinGet
 architecture (`x64`/`arm64`/`x86`). A value outside that set matches no
-installer, so config validation rejects it up front rather than silently
-dropping the dependency from the generated manifest.
+installer, so config validation rejects it up front; the dependency is never silently
+dropped from the generated manifest.
 
 ### Per-architecture runtime dependencies
 
@@ -427,8 +432,11 @@ skipping winget — additional_locales[1].locale 'en-US' equals default_locale
   their own uninstall, or `deny` to forbid in-place upgrades.
 
   ```yaml
-  winget:
-    upgrade_behavior: install   # default; portable-zip packages
+  crates:
+    - name: myapp
+      publish:
+        winget:
+          upgrade_behavior: install   # default; portable-zip packages
   ```
 
 - **`moniker`** auto-derives from the binary name and is emitted as `Moniker`
@@ -489,8 +497,11 @@ existing branch using `--force-with-lease`, so the open PR automatically picks
 up the new content:
 
 ```yaml
-winget:
-  update_existing_pr: true
+crates:
+  - name: myapp
+    publish:
+      winget:
+        update_existing_pr: true
 ```
 
 This is useful when a prior run pushed a stale manifest (e.g. from a failed

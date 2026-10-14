@@ -100,7 +100,7 @@ pub(crate) struct VerifyJob {
 /// Return the value of `--<flag> <v>` / `--<flag>=<v>` in `args`, if present.
 fn flag_value(args: &[String], flag: &str) -> Option<String> {
     let eq_prefix = format!("{flag}=");
-    let mut it = args.iter();
+    let mut it = cosign_flag_args(args).iter();
     while let Some(a) = it.next() {
         if a == flag {
             return it.next().cloned();
@@ -115,29 +115,50 @@ fn flag_value(args: &[String], flag: &str) -> Option<String> {
 /// True when `args` carries `--<flag>` in either spelling.
 fn has_flag(args: &[String], flag: &str) -> bool {
     let eq_prefix = format!("{flag}=");
-    args.iter().any(|a| a == flag || a.starts_with(&eq_prefix))
+    cosign_flag_args(args)
+        .iter()
+        .any(|a| a == flag || a.starts_with(&eq_prefix))
+}
+
+/// The part of a cosign argv that cosign reads flags from: everything before
+/// the first `--`. cosign parses its argv with pflag, which reads every word
+/// after a `--` terminator as a positional argument, so a `--key` or
+/// `--tlog-upload` written there sets nothing.
+pub(crate) fn cosign_flag_args(args: &[String]) -> &[String] {
+    let end = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    &args[..end]
+}
+
+/// The `--tlog-upload` value a rendered cosign argv sets, or `None` when it
+/// sets none and cosign keeps its default of uploading.
+///
+/// cosign registers `--tlog-upload` as a bool flag, so only the
+/// `--tlog-upload=<value>` spelling carries a value, read with
+/// [`go_parse_bool`]; a value Go does not accept sets nothing here, since
+/// cosign refuses the whole command. A bare `--tlog-upload` sets it on, and
+/// the word after it is a positional argument, so `--tlog-upload false`
+/// leaves the upload on. The last occurrence wins, as it does in cosign, and
+/// a flag after a `--` terminator is a positional argument
+/// ([`cosign_flag_args`]).
+pub(crate) fn tlog_upload_setting(args: &[String]) -> Option<bool> {
+    let mut upload = None;
+    for arg in cosign_flag_args(args) {
+        if arg == "--tlog-upload" {
+            upload = Some(true);
+        } else if let Some(value) = arg.strip_prefix("--tlog-upload=")
+            && let Some(on) = go_parse_bool(value)
+        {
+            upload = Some(on);
+        }
+    }
+    upload
 }
 
 /// True when the sign argv disabled the transparency-log upload, meaning no
 /// tlog entry exists for the signature and verification must not demand one.
-///
-/// cosign registers `--tlog-upload` as a bool flag, so only the
-/// `--tlog-upload=<value>` spelling carries a value, read with
-/// [`go_parse_bool`]. A bare `--tlog-upload` sets it on, and the word after
-/// it is a positional argument. The last occurrence wins, as it does in
-/// cosign.
+/// The flag is read by [`tlog_upload_setting`].
 pub(crate) fn tlog_upload_disabled(args: &[String]) -> bool {
-    let mut upload = true;
-    for arg in args {
-        if arg == "--tlog-upload" {
-            upload = true;
-        } else if let Some(value) = arg.strip_prefix("--tlog-upload=")
-            && let Some(on) = go_parse_bool(value)
-        {
-            upload = on;
-        }
-    }
-    !upload
+    tlog_upload_setting(args) == Some(false)
 }
 
 /// A bool flag value as cosign reads it: Go's `strconv.ParseBool`, which
@@ -693,6 +714,46 @@ mod tests {
         ])));
         assert!(!tlog_upload_disabled(&strs(&["--tlog-upload=no"])));
         assert!(!tlog_upload_disabled(&strs(&["sign-blob"])));
+    }
+
+    #[test]
+    fn a_flag_after_the_terminator_is_a_positional_argument() {
+        assert_eq!(
+            tlog_upload_setting(&strs(&["sign-blob", "--", "--tlog-upload=false"])),
+            None
+        );
+        assert_eq!(
+            tlog_upload_setting(&strs(&["--tlog-upload=0", "--", "--tlog-upload=true"])),
+            Some(false)
+        );
+        assert!(!tlog_upload_disabled(&strs(&[
+            "sign-blob",
+            "--",
+            "--tlog-upload=false"
+        ])));
+        assert_eq!(
+            flag_value(&strs(&["sign-blob", "--", "--key=cosign.key"]), "--key"),
+            None
+        );
+        assert!(!has_flag(
+            &strs(&["sign-blob", "--", "--bundle=b"]),
+            "--bundle"
+        ));
+        assert!(has_flag(&strs(&["--bundle=b", "--", "x"]), "--bundle"));
+    }
+
+    #[test]
+    fn tlog_upload_setting_reports_only_a_flag_cosign_reads() {
+        assert_eq!(tlog_upload_setting(&strs(&["sign-blob", "a"])), None);
+        assert_eq!(tlog_upload_setting(&strs(&["--tlog-upload=no"])), None);
+        assert_eq!(
+            tlog_upload_setting(&strs(&["--tlog-upload", "false"])),
+            Some(true)
+        );
+        assert_eq!(
+            tlog_upload_setting(&strs(&["--tlog-upload=F"])),
+            Some(false)
+        );
     }
 
     #[test]

@@ -59,7 +59,7 @@ explicitly only to override, or if the crate has no `description`.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | string | crate name | Override the plugin name in the manifest |
-| `mode` | string | `auto` | Submission path: one of `auto` \| `bot` \| `pr-direct`. See [How mode selection works](#how-mode-selection-works) |
+| `mode` | string | `auto` | Submission path: one of `auto` \| `bot` \| `pr-direct`. See [How mode selection works](#mode-selection) |
 | `ids` | list of strings | all | Build IDs filter: only include artifacts whose `id` is in this list |
 | `repository` | object | **required** | Unified repository config — supports `owner`, `name`, `token`, `branch`, `git`, and `pull_request` |
 | `commit_author` | object | none | Commit author name, email, and optional signing config |
@@ -73,7 +73,7 @@ explicitly only to override, or if the crate has no `description`.
 | `skip_upload` | bool or string | `false` | Generate the manifest but skip the upload step; `true` or `1` always skips, `auto` skips for prereleases, `false`, `0` or empty publishes; a template is rendered and read the same way, in any letter case (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)) |
 | `amd64_variant` | enum | `"v1"` | amd64 microarchitecture variant filter — exactly one of `"v1"`, `"v2"`, `"v3"`, `"v4"` (any other value is rejected when the config is parsed) |
 | `arm_variant` | string | `"6"` | ARM version filter (`"6"`, `"7"`) |
-| `update_existing_pr` | bool or string | `false` | Force-push to an existing open PR branch instead of skipping. See [Existing PR behavior](#existing-pr-behavior) and [Recovery flags](../advanced/recovery-flags.md#update_existing_pr-winget-krew-homebrew-cask). |
+| `update_existing_pr` | bool or string | `false` | Force-push to an existing open PR branch. When `false`, an existing PR is skipped. See [Existing PR behavior](#existing-pr-behavior) and [Recovery flags](../advanced/recovery-flags.md#update_existing_pr-winget-krew-homebrew-cask). |
 
 All string fields support Tera template rendering (e.g. `{{ ProjectName }}`, `{{ Version }}`).
 
@@ -86,20 +86,23 @@ Krew plugins are distributed through the [krew-index](https://github.com/kuberne
 3. Anodizer clones the fork, writes the manifest into the `plugins/` directory, commits to a versioned branch (`<name>-v<version>`), pushes, and opens a pull request against the upstream krew-index.
 
 ```yaml
-krew:
-  repository:
-    owner: myorg
-    name: krew-index
-    pull_request:
-      enabled: true
-      draft: false
-      token: ""                      # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
-      base:
-        owner: kubernetes-sigs
-        name: krew-index
-        branch: master
-  short_description: "A kubectl plugin"
-  description: "Full description of the plugin"
+crates:
+  - name: myapp
+    publish:
+      krew:
+        repository:
+          owner: myorg
+          name: krew-index
+          pull_request:
+            enabled: true
+            draft: false
+            token: ""                      # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
+            base:
+              owner: kubernetes-sigs
+              name: krew-index
+              branch: master
+        short_description: "A kubectl plugin"
+        description: "Full description of the plugin"
 ```
 
 ## Full config reference
@@ -152,21 +155,24 @@ The push to your krew-index fork uses the first token that is set:
 The pull request is opened with `repository.pull_request.token`, then `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. With none of these set, the `gh` CLI's own login opens it; with neither a token nor `gh`, the publish fails. Set `pull_request.token` when the fork token cannot open pull requests against the upstream index.
 
 ```yaml
-krew:
-  repository:
-    owner: myorg
-    name: krew-index
-    token: "{{ .Env.KREW_FORK_TOKEN }}"
-    pull_request:
-      enabled: true
-      token: "{{ .Env.KREW_PR_TOKEN }}"
+crates:
+  - name: myapp
+    publish:
+      krew:
+        repository:
+          owner: myorg
+          name: krew-index
+          token: "{{ .Env.KREW_FORK_TOKEN }}"
+          pull_request:
+            enabled: true
+            token: "{{ .Env.KREW_PR_TOKEN }}"
 ```
 
-`repository.pull_request.token` and `repository.token` are rendered before anything is cloned or pushed. A blank render, such as an unset `{{ .Env.X }}`, falls through to the next token in the chain. A template that fails to render skips this crate's krew entry with nothing pushed, and the next crate still publishes. The skip reason names the field and the render error (`pull_request.token does not render: …`), with the template's own text replaced by `<template>` so a token literal in it is never printed.
+`repository.pull_request.token` and `repository.token` are rendered before anything is cloned or pushed. On both the push and the pull request chain, a render that is empty or only whitespace, such as an unset `{{ .Env.X }}`, falls through to the next token, and a token is sent with its surrounding whitespace removed. A template that fails to render skips this crate's krew entry with nothing pushed, and the next crate still publishes. The skip reason names the field and the render error (`pull_request.token does not render: …`), with the template's own text replaced by `<template>` so a token literal in it is never printed.
 
 A pull request that fails after the branch was pushed records the pushed branch on krew's Failed row, so `anodizer tag rollback` still finds it.
 
-## How plugin manifests are generated
+## Plugin manifest generation
 
 Anodizer discovers all build artifacts for the crate (filtered by `ids`, `amd64_variant`, and `arm_variant`), then generates a Krew plugin manifest YAML file conforming to the `krew.googlecontainertools.github.com/v1alpha2` API.
 
@@ -224,29 +230,35 @@ existing branch using `--force-with-lease`, so the open PR automatically picks
 up the new content without creating a duplicate PR:
 
 ```yaml
-krew:
-  update_existing_pr: true
+crates:
+  - name: myapp
+    publish:
+      krew:
+        update_existing_pr: true
 ```
 
 ## Common gotchas
 
 - **`repository` is required**: the description and `short_description` derive from the crate's `Cargo.toml` `[package].description`, so the manifest only hard-errors if `repository` is missing or the crate has no description to fall back on.
-- **PR-based submission**: the krew-index is managed via PR, not direct push. Anodizer creates a PR against `kubernetes-sigs/krew-index` from your fork. PR review and merge are manual.
-- **Version updates are self-contained**: once a plugin is in krew-index, anodizer submits each version bump directly via the hosted krew-release-bot webhook — no separate workflow step. See [Version updates](#version-updates-self-contained-no-extra-workflow-step).
-- **Duplicate PRs**: if a prior run already opened a PR for the same tag, use `update_existing_pr: true` to force-push instead of opening a second PR.
+- **PR-based submission**: the krew-index takes changes only by PR. Anodizer creates a PR against `kubernetes-sigs/krew-index` from your fork. PR review and merge are manual.
+- **Version updates are self-contained**: once a plugin is in krew-index, anodizer submits each version bump directly via the hosted krew-release-bot webhook — no separate workflow step. See [Version updates](#version-updates).
+- **Duplicate PRs**: if a prior run already opened a PR for the same tag, use `update_existing_pr: true` to force-push to it, so no second PR is opened.
 
 ## Custom URL templates
 
 Use `url_template` to override the default release download URLs:
 
 ```yaml
-krew:
-  url_template: "https://cdn.example.com/{{ ProjectName }}/{{ Version }}/{{ ProjectName }}-{{ Os }}-{{ Arch }}.tar.gz"
-  repository:
-    owner: myorg
-    name: krew-index
-  short_description: "A kubectl plugin"
-  description: "Full plugin description"
+crates:
+  - name: myapp
+    publish:
+      krew:
+        url_template: "https://cdn.example.com/{{ ProjectName }}/{{ Version }}/{{ ProjectName }}-{{ Os }}-{{ Arch }}.tar.gz"
+        repository:
+          owner: myorg
+          name: krew-index
+        short_description: "A kubectl plugin"
+        description: "Full plugin description"
 ```
 
 ## Full example
@@ -273,7 +285,7 @@ crates:
         skip_upload: auto
 ```
 
-## Version updates — self-contained, no extra workflow step
+## Version updates
 
 After your initial krew-index PR is approved and merged, every subsequent
 version bump is a mechanical update the krew maintainers run through a hosted
@@ -283,14 +295,16 @@ own GitHub account. **Anodizer drives that service directly — `anodizer releas
 completes the krew-index submission itself, with no separate GitHub-Actions
 step and no extra token.**
 
-### How mode selection works
+### Mode selection
 
 The krew `mode` field selects the submission path. It defaults to `auto`:
 
 ```yaml
-publish:
-  krew:
-    mode: auto   # auto (default) | bot | pr-direct
+crates:
+  - name: myapp
+    publish:
+      krew:
+        mode: auto   # auto (default) | bot | pr-direct
 ```
 
 | `mode` | Behavior |
@@ -313,9 +327,9 @@ The probe is **authenticated** whenever a GitHub token is available
 [Authentication](#authentication)), which raises the API rate limit from 60/hr
 (anonymous) to 5,000/hr.
 
-**Indeterminate probe → loud failure, not a guess.** If the probe can't reach a
+**Indeterminate probe → loud failure.** If the probe can't reach a
 definitive 200/404 (rate-limit, network blip, unexpected status), anodizer
-**hard-errors** rather than guessing. It does **not** silently fall back to
+**hard-errors** and does not guess. It does **not** silently fall back to
 `pr-direct`: a plugin already in krew-index wrongly routed into a fork PR is
 rejected by krew maintainers. The error tells you to retry, supply a token, or
 set `mode: bot` / `mode: pr-direct` explicitly to bypass the probe.
@@ -382,7 +396,7 @@ anodizer packages only the archives krew can install: genuine macOS targets
 (`*-apple-darwin`, `darwin-universal`) plus the Linux archives it supports. Apple
 **non-macOS** targets (`aarch64-apple-ios`, `*-tvos`, `*-watchos`) are excluded —
 they never appear in the generated plugin manifest. If the build produces **no**
-eligible archive, anodizer fails the release rather than emitting an empty
+eligible archive, the krew publisher fails with an error and writes no
 manifest. See
 [Artifact eligibility](./selecting-publishers.md#artifact-eligibility) for the
 full rule.

@@ -45,12 +45,12 @@ pub struct DockerRetryConfig {
 
 /// Docker V2 configuration — the canonical Docker build API.
 ///
-/// Notable surface:
-/// - `images` + `tags` (cleaner separation than a single `image_templates` list)
+/// Notable fields:
+/// - `images` + `tags`, two lists that together name every pushed reference
 /// - `annotations` map for OCI annotations (`--annotation`)
 /// - `build_args` map for build-time variables
-/// - `skip` as a [`StringOrBool`] template for conditional opt-out
-/// - `sbom` as a [`StringOrBool`] — when `true` or `1`, adds `--sbom=true` to buildx
+/// - `skip` as a bool or a template for conditional opt-out
+/// - `sbom` as a bool or a template; when `true` or `1`, adds `--attest=type=sbom` to buildx
 /// - `flags` for arbitrary extra `docker build` flags
 /// - `platforms` is the only target selector — no per-arch field overrides
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -120,8 +120,9 @@ pub struct DockerV2Config {
         deserialize_with = "deserialize_string_or_bool_opt"
     )]
     pub skip: Option<StringOrBool>,
-    /// Adds `--sbom=true` to buildx when the value is, or a template renders,
-    /// `true` or `1` (any letter case).
+    /// Adds `--attest=type=sbom` to the buildx build when the value is, or a
+    /// template renders, `true` or `1` (any letter case). Default: `true`.
+    /// A snapshot run never adds it.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub sbom: Option<StringOrBool>,
     /// Pre/post hooks for this dockers_v2 config. Each hook accepts the same
@@ -129,7 +130,7 @@ pub struct DockerV2Config {
     /// run after the staging directory is prepared but before `docker buildx
     /// build`; `post` hooks run after the image digest is captured. Hook
     /// commands, working directories, and env values are template-expanded;
-    /// in addition to the standard template surface, hooks see:
+    /// in addition to the standard template variables, hooks see:
     ///
     /// - `{{ Images }}` — list of `image:tag` references for this build.
     ///   Iterate via `{% for img in Images %}{{ img }}{% endfor %}` to mirror
@@ -151,15 +152,17 @@ pub struct DockerV2Config {
     /// The default `"buildx"` invokes `docker buildx build` with the full set
     /// of BuildKit features (multi-platform, attestations, `--rewrite-timestamp`,
     /// SBOM, OCI exporter). Setting `use: podman` swaps the binary to
-    /// `podman build` and disables every buildx-only flag — anodizer rejects
-    /// configs that mix `use: podman` with `sbom: true`, `--rewrite-timestamp`,
-    /// `--provenance`, `--attest`, `--cache-from`, `--cache-to`, `--output`,
-    /// or `--sbom` because plain podman does not recognise them.
+    /// `podman build` and drops every buildx-only flag. The docker stage
+    /// fails an entry that combines `use: podman` with `sbom` reading true
+    /// outside a snapshot (`sbom` defaults to `true`, so set `sbom: false`),
+    /// or with a `--rewrite-timestamp`, `--sbom`, `--provenance`, `--attest`,
+    /// `--output`, `--cache-from` or `--cache-to` flag, because plain podman
+    /// does not recognise them. Any value other than `buildx` or `podman`
+    /// fails the same way.
     ///
-    /// **Linux-only.** The podman backend is
-    /// restricted to Linux hosts. Configs setting `use: podman` on macOS or
-    /// Windows fail at config-validation time with a clear error rather than
-    /// blowing up later when `podman` is not on `PATH`.
+    /// **Linux-only.** On a macOS or Windows host the docker stage fails an
+    /// entry with `use: podman` with an error naming the entry, before any
+    /// `podman` command runs. `check config` does not check the host.
     #[serde(rename = "use")]
     pub use_backend: Option<String>,
     // No `skip_push` field — use the canonical `skip:` to suppress
@@ -214,8 +217,9 @@ pub struct DockerManifestConfig {
     /// Extra flags for `docker manifest push`.
     pub push_flags: Option<Vec<String>>,
     /// Skip push: `true`, `false`, `"auto"` (skip for prereleases), or a
-    /// template rendered at run time. An unquoted `1` / `0` and the strings
-    /// `"1"` / `"0"` are booleans.
+    /// template rendered at run time. The words `true`, `false`, `1`, `0`
+    /// and `auto` load in any letter case, quoted or unquoted; any other
+    /// string is a template.
     ///
     /// ```yaml
     /// skip_push: "{{ IsSnapshot }}"
@@ -225,10 +229,10 @@ pub struct DockerManifestConfig {
     /// Unique identifier for this manifest config.
     pub id: Option<String>,
     /// Docker backend for manifest commands: `"docker"` (default) or
-    /// `"podman"`. The `"podman"` backend is **Linux-only**:
-    /// configs on macOS or Windows fail at config-validation time with
-    /// a clear error rather than blowing up later when `podman` is not on
-    /// `PATH`.
+    /// `"podman"`; any other value (including `"buildx"`) fails the docker
+    /// stage. The `"podman"` backend is **Linux-only**: on a macOS or
+    /// Windows host the docker stage fails before any `podman` command runs.
+    /// `check config` does not check the host.
     #[serde(rename = "use")]
     pub use_backend: Option<String>,
     /// Retry configuration for manifest push (handles transient registry errors).

@@ -21,7 +21,7 @@ announce:
 
 ### Delivery
 
-With `host` set (or `SMTP_HOST` in the environment), anodizer connects to that SMTP server itself and logs in as `username` (or `SMTP_USERNAME`) with `SMTP_PASSWORD`. `host` and `username` are plain strings, not templates; leave `username` out to take it from the environment. The password is required unless the connection is plain SMTP (`encryption: none`, or port 25 under `auto`):
+With `host` set (or `SMTP_HOST` in the environment), anodizer connects to that SMTP server itself and logs in as `username` (or `SMTP_USERNAME`) with `SMTP_PASSWORD`. `host` and `username` are plain strings and are not rendered as templates; leave `username` out to take it from the environment. The password is required unless the connection is plain SMTP (`encryption: none`, or port 25 under `auto`):
 
 ```yaml
 announce:

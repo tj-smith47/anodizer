@@ -19,7 +19,7 @@ use toml::Value;
 /// intra-workspace deps: entries carrying `path = "..."` or
 /// `workspace = true`, whose package name is also present in
 /// `member_names`. `workspace = true` alone does not imply a local crate —
-/// it just inherits from `[workspace.dependencies]`, which can pin an
+/// it just inherits from `[workspace.dependencies]`, which can set an
 /// external crate — so the name check against known members disambiguates.
 /// Sorted for deterministic output.
 pub fn extract_workspace_deps(
@@ -56,8 +56,8 @@ pub fn extract_workspace_deps(
 /// (the serde ↔ serde_derive idiom), so deriving an edge from one fabricates a
 /// cycle the publish-order validator refuses — blocking a workspace `cargo
 /// publish` itself handles fine. Kept edges: an entry with an explicit
-/// `version`, or `workspace = true` (the workspace pin supplies the version —
-/// conservatively kept even if the root pin were somehow unversioned, since an
+/// `version`, or `workspace = true` (the workspace entry supplies the version —
+/// conservatively kept even if the root entry were somehow unversioned, since an
 /// extra edge on an acyclic graph is harmless while a missing one strands a
 /// backfill).
 fn extract_publishable_dev_deps(

@@ -26,7 +26,9 @@ pub(crate) fn is_keyless_cosign(cmd: &str, args: &[String]) -> bool {
     }
     // A `--key` (the keyed form, e.g. `--key=env://COSIGN_KEY`) signs with a
     // local key and never contacts Fulcio.
-    let has_key = args.iter().any(|a| a == "--key" || a.starts_with("--key="));
+    let has_key = crate::verify::cosign_flag_args(args)
+        .iter()
+        .any(|a| a == "--key" || a.starts_with("--key="));
     !has_key
 }
 
@@ -93,36 +95,32 @@ pub(crate) fn render_args_without_artifact(args: &[String], ctx: &Context) -> Ve
 /// A no-op (returns `args` unchanged) unless ALL hold: the harness is active,
 /// `cmd`'s basename is `cosign`, some arg supplies `--key` (keyless cosign is
 /// skipped on the same rendered argv and the flag is meaningless without a
-/// key), and no arg already pins `--tlog-upload` (an explicit operator choice
-/// is respected, making this idempotent). cosign accepts the flag interspersed
-/// with or after positionals, so appending is always safe. `args` is the
-/// RENDERED argv: a `--key` supplied through a template is only visible there.
+/// key), and the argv sets no `--tlog-upload` value as cosign reads it
+/// ([`crate::verify::tlog_upload_setting`]): an explicit operator choice is
+/// respected, which makes this idempotent. A bare `--tlog-upload` is that
+/// choice set to on, including in `--tlog-upload false`, where cosign reads
+/// `false` as a positional argument. cosign accepts the flag interspersed
+/// with or after positionals, so the flag goes at the end, or just before a
+/// `--` terminator, after which cosign would read it as a positional
+/// argument. `args` is the RENDERED argv: a `--key` supplied through a
+/// template is only visible there.
 pub(crate) fn harden_cosign_args_for_harness(
     cmd: &str,
     mut args: Vec<String>,
     ctx: &Context,
 ) -> Vec<String> {
-    if !ctx.in_determinism_harness() {
+    if !ctx.in_determinism_harness() || is_keyless_cosign(cmd, &args) {
         return args;
     }
     let basename = std::path::Path::new(cmd)
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(cmd);
-    if basename != "cosign" {
+    if basename != "cosign" || crate::verify::tlog_upload_setting(&args).is_some() {
         return args;
     }
-    let has_key = args.iter().any(|a| a == "--key" || a.starts_with("--key="));
-    if !has_key {
-        return args;
-    }
-    let already_pinned = args
-        .iter()
-        .any(|a| a == "--tlog-upload" || a.starts_with("--tlog-upload="));
-    if already_pinned {
-        return args;
-    }
-    args.push("--tlog-upload=false".to_string());
+    let at = crate::verify::cosign_flag_args(&args).len();
+    args.insert(at, "--tlog-upload=false".to_string());
     args
 }
 

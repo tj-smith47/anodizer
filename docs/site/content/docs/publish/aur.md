@@ -387,10 +387,12 @@ AUR publishing requires SSH access. To configure this:
 
 3. **Reference the private key** in your config:
    ```yaml
-   publish:
-     aur:
-       git_url: "ssh://aur@aur.archlinux.org/myapp-bin.git"
-       private_key: "{{ Env.AUR_SSH_KEY }}"
+   crates:
+     - name: myapp
+       publish:
+         aur:
+           git_url: "ssh://aur@aur.archlinux.org/myapp-bin.git"
+           private_key: "{{ Env.AUR_SSH_KEY }}"
    ```
 
 4. **In CI**, store the private key as a secret and expose it as an environment variable:
@@ -403,10 +405,12 @@ AUR publishing requires SSH access. To configure this:
 Alternatively, use `git_ssh_command` for full control over the SSH invocation:
 
 ```yaml
-publish:
-  aur:
-    git_url: "ssh://aur@aur.archlinux.org/myapp-bin.git"
-    git_ssh_command: "ssh -i /path/to/key -o StrictHostKeyChecking=no"
+crates:
+  - name: myapp
+    publish:
+      aur:
+        git_url: "ssh://aur@aur.archlinux.org/myapp-bin.git"
+        git_ssh_command: "ssh -i /path/to/key -o StrictHostKeyChecking=no"
 ```
 
 If neither `private_key` nor `git_ssh_command` is set, Anodizer uses the system default SSH configuration (e.g. `~/.ssh/config`, ssh-agent).
@@ -428,7 +432,7 @@ The `disable` field works similarly but skips the entire stage, including PKGBUI
 
 anodizer packages only the **Linux** archives for AUR; every non-Linux target is
 excluded from the generated `PKGBUILD`. If a configured AUR build produces no
-Linux archive, anodizer fails the release (`aur: no linux archives matched`)
-rather than emitting an empty `PKGBUILD`. See
+Linux archive, the AUR publisher fails with `aur: no linux archives matched`
+and writes no `PKGBUILD`. See
 [Artifact eligibility](./selecting-publishers.md#artifact-eligibility) for the
 full rule.

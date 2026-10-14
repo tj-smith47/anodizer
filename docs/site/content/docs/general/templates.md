@@ -34,9 +34,9 @@ name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
 
 Text between `{% raw %}` and `{% endraw %}` reaches the output byte-identical.
 That covers the Go→Tera translation too: **no preprocessing pass rewrites
-anything inside a raw span** — not the leading-dot strip, not the block
-conversion, not positional-call rewriting, not numeric indexing, not the
-string-literal backslash shim. Raw spans are detected once and every pass
+anything inside a raw span**. The leading-dot strip, the block conversion,
+positional-call rewriting, numeric indexing and the string-literal backslash
+shim all leave it alone. Raw spans are detected once and every pass
 consumes that one answer, so the guarantee holds for passes added later.
 
 ```yaml
@@ -77,7 +77,7 @@ the engine sees the block at all; the limit turns that into a named error.
 # Rejected — 65 nested groups
 name_template: "{{ tolower (tolower (tolower (… 62 more …))) }}"
 
-# Accepted — bind the intermediate result instead of nesting further
+# Accepted — bind the intermediate result to a variable
 name_template: "{% set stem = trimprefix Tag \"v\" %}{{ tolower stem }}"
 ```
 
@@ -94,7 +94,7 @@ depth.
 
 Anodizer runs Tera in strict mode: referencing an undefined variable is a
 render error by default, so a typo in a name template fails the build
-instead of silently baking a blank into a release artifact.
+before a blank can be baked into a release artifact.
 
 - **Top-level access errors**, naming the missing variable:
 
@@ -121,9 +121,9 @@ instead of silently baking a blank into a release artifact.
   reader that tolerates the absence: it renders empty where no target is in
   scope.
 
-- **An undefined operand inside `~` string-concat renders as empty**, not an
-  error — this is Tera's own coercion rule for the `~` operator, not
-  something anodizer configures:
+- **An undefined operand inside `~` string-concat renders as empty** with no
+  error. This is Tera's own coercion rule for the `~` operator, and anodizer
+  does not change it:
 
   ```yaml
   name_template: "{{ Typo ~ '-rc1' }}"
@@ -131,7 +131,7 @@ instead of silently baking a blank into a release artifact.
   ```
 
 - **`.Env.MISSING` (Go-style) renders empty by design** — env var
-  references always resolve, defaulting to `""` instead of erroring, since
+  references always resolve, defaulting to `""` with no error, since
   most templates only reference an env var conditionally:
 
   ```yaml
@@ -139,7 +139,7 @@ instead of silently baking a blank into a release artifact.
   # -> ""
   ```
 
-For an *intentional* default rather than an accidental empty string, reach
+For an *intentional* default in place of an accidental empty string, reach
 for one of these idioms:
 
 ```yaml
@@ -237,7 +237,7 @@ Anodizer auto-translates Go `text/template` syntax to its Tera equivalent before
   {{ printf "%s-%s" (tolower Os) Arch }}    → {{ printf(format="%s-%s", args=[(tolower(s=Os)), Arch]) }}
   ```
 
-  A parenthesis inside a string literal is string contents, never nesting, so `{{ trimprefix (base "x/(v9)") "(v" }}` renders `9)`. A group that never closes is rejected before rendering, with a diagnostic that quotes the offending block and counts the unclosed groups — rather than the engine's parse error, which points at the following token. Groups that nest past the [depth limit](#nesting-depth) are rejected the same way.
+  A parenthesis inside a string literal is string contents and opens no group, so `{{ trimprefix (base "x/(v9)") "(v" }}` renders `9)`. A group that never closes is rejected before rendering, with a diagnostic that quotes the offending block and counts the unclosed groups. The engine's own parse error would point at the following token. Groups that nest past the [depth limit](#nesting-depth) are rejected the same way.
 - **Positional calls in a pipeline** — a `|` splits the expression into a head and one filter segment per pipe, and a Go positional call is accepted in every one of those slots:
 
   ```text
@@ -246,15 +246,15 @@ Anodizer auto-translates Go `text/template` syntax to its Tera equivalent before
   {{ list "a" "b" | join(sep=" ") }}        → {{ list(items=["a", "b"]) | join(sep=" ") }}
   ```
 
-  A `|` inside a string literal or a sub-expression is string contents or nesting, never a segment boundary.
-- **Positional calls in statement blocks** — a Go call is rewritten wherever a value expression is accepted, not only inside `{{ }}`: `if` / `else if` conditions, the collection of a `range`, and the right-hand side of a `$var :=` assignment.
+  A `|` inside a string literal or a sub-expression is string contents or nesting and does not end a segment.
+- **Positional calls in statement blocks** — a Go call is rewritten wherever a value expression is accepted, inside `{{ }}` and also in `if` / `else if` conditions, the collection of a `range`, and the right-hand side of a `$var :=` assignment.
 
   ```text
   {{ if contains (tolower .Os) "win" }}       → {% if contains(s=(tolower(s=Os)), substr="win") %}
   {{ range filter .Lines "^v" }}              → {% for val in filter(items=Lines, regexp="^v") %}
   {{ $v := trimprefix (base .Path) "v" }}     → {% set v = trimprefix(s=(base(s=Path)), prefix="v") %}
   ```
-- **tera 1.x numeric indexing** — `list.0` / `a.0.b` / `a?.0` rewrite to the native `list[0]` / `a[0].b` / `a?[0]`. Numeric segments index arrays: a map key that is the string `"0"` needs `["0"]`, not `.0`. Write `[N]` in new templates.
+- **tera 1.x numeric indexing** — `list.0` / `a.0.b` / `a?.0` rewrite to the native `list[0]` / `a[0].b` / `a?[0]`. Numeric segments index arrays: a map key that is the string `"0"` needs `["0"]`; `.0` indexes an array. Write `[N]` in new templates.
 
 ```yaml
 # Both forms are equivalent:
@@ -270,7 +270,7 @@ Anodizer preprocesses most Go-template constructs into their Tera equivalents, b
 
 | GoReleaser idiom | Tera equivalent | Notes |
 |---|---|---|
-| `{{ if .IsRelease }}X{{ end }}` | `{% if IsRelease %}X{% endif %}` | Statement tags use `{% %}`, not `{{ }}` |
+| `{{ if .IsRelease }}X{{ end }}` | `{% if IsRelease %}X{% endif %}` | Statement tags use `{% %}`; `{{ }}` prints a value |
 | `{{ if .IsRelease }}X{{ else }}Y{{ end }}` | `{% if IsRelease %}X{% else %}Y{% endif %}` | `{% else %}` |
 | `{{ range .Tags }}...{{ end }}` | `{% for t in Tags %}...{% endfor %}` | Tera names the loop variable explicitly |
 | `{{ range $k, $v := .Env }}...{{ end }}` | `{% for k, v in Env %}...{% endfor %}` | Key/value loop |
@@ -280,7 +280,7 @@ Anodizer preprocesses most Go-template constructs into their Tera equivalents, b
 | `{{ trimprefix .Tag "v" }}` | `{{ Tag \| trimprefix(prefix="v") }}` | Alias filter registered for parity |
 | `{{ .Env.FOO }}` | `{{ Env.FOO }}` — or `{{ .Env.FOO }}` | Dot-prefix form is preprocessed away |
 | `{{ default "x" .Tag }}` | `{{ Tag \| default(value="x") }}` | Tera pipes the value through a filter |
-| `{{ eq .Os "linux" }}` | `{% if Os == "linux" %}...{% endif %}` | Equality is a normal operator, not a function |
+| `{{ eq .Os "linux" }}` | `{% if Os == "linux" %}...{% endif %}` | Equality is a normal operator |
 | `{{ printf "%s-%s" .Os .Arch }}` | `{{ Os }}-{{ Arch }}` | Most `printf` formats can be inlined; use filters for padding/number formatting |
 
 If you hit a construct not covered here, open an issue with the failing template and the intended output.
@@ -398,7 +398,7 @@ if: "{% if NightlyBuild > 0 %}true{% endif %}"
 
 Comparing them to quoted strings (`IsSnapshot == "false"`) never matches —
 Tera does not coerce booleans to strings — so anodizer rejects such
-conditions with a hard error instead of silently skipping the stage.
+conditions with a hard error; the stage is not silently skipped.
 
 ### Time
 
@@ -413,7 +413,7 @@ conditions with a hard error instead of silently skipping the stage.
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `RuntimeGoos` | Host OS in Go naming (GoReleaser's `{{ .Runtime.Goos }}` also works) | `linux` |
-| `RuntimeGoarch` | Host architecture in anodizer's arch vocabulary — Go names except the mips family, which keeps the Rust spellings (`mipsel`/`mips64el`, not Go's `mipsle`/`mips64le`). GoReleaser's `{{ .Runtime.Goarch }}` also works | `amd64` |
+| `RuntimeGoarch` | Host architecture in anodizer's arch vocabulary — Go names except the mips family, which keeps the Rust spellings (`mipsel`/`mips64el`, where Go writes `mipsle`/`mips64le`). GoReleaser's `{{ .Runtime.Goarch }}` also works | `amd64` |
 | `RustcVersion` | Host rustc release version; empty when rustc is unavailable | `1.96.0` |
 
 ```yaml
@@ -448,7 +448,7 @@ body_template: "Build ID: {{ Outputs.build_id }}"
 body_template: "Build ID: {{ .Outputs.build_id }}"
 ```
 
-Similar to `Var.*` but for pipeline outputs rather than user config values.
+Similar to `Var.*`, but for pipeline outputs. `Var.*` holds user config values.
 
 > **Note:** Only reference keys that are actually set by stages. For optional keys, use the `| default` guard:
 > ```yaml
@@ -469,13 +469,13 @@ These variables are bound **only** inside a publisher's `on_error` and
 | `Reason` | `ANODIZER_ROLLBACK_REASON` | Always empty (`on_rollback`) — the unwind replays state a prior process persisted, so the trigger cause is not available to it |
 
 `Error` carries untrusted git/API text — read it from `$ANODIZER_ERROR` with
-`--raw` rather than splicing it into `cmd`. See
+`--raw`; do not splice it into `cmd`. See
 [Release resilience](../advanced/release-resilience.md#on-rollback-hooks) for the
 full hook reference.
 
 ### Run-outcome context (root `on_error:` / `always:`)
 
-The root-level hook blocks describe the run as a whole rather than one
+The root-level hook blocks describe the run as a whole, with no single
 publisher, so they bind a different, smaller set:
 
 | Variable | Env channel | Bound in | Value |
@@ -489,7 +489,7 @@ publisher, so they bind a different, smaller set:
 ```yaml
 always:
   hooks:
-    # Read the untrusted error text from the env channel, never from `cmd`.
+    # Read the untrusted error text from the env channel; keep it out of `cmd`.
     - cmd: './teardown-staging.sh "$ANODIZER_SUCCESS" "$ANODIZER_ERROR"'
 ```
 
@@ -568,7 +568,7 @@ The GoReleaser positional form auto-translates:
 | `reverseFilter` | filter / fn | `{{ reverseFilter(items=Lines, regexp="^#") }}` | non-matching lines |
 | `englishJoin` | filter / fn | `{{ englishJoin(items=Names) }}` | `a, b, and c` |
 
-#### Rendering an array directly
+#### Direct array rendering
 
 A helper that returns an array — `list`, `split`, `filter`, `reverseFilter`, or a
 structured field — stringifies as a quoted, comma-separated array when it is

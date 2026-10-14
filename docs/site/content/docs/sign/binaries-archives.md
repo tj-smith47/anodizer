@@ -46,7 +46,7 @@ Inside `args` (and `signature`), these six `${…}` placeholders are expanded pe
 | `${artifactName}` | Basename of the artifact. |
 | `${artifactID}` | The producing build's `id` (empty when unset). |
 
-## Signing the raw binaries
+## Raw binary signing
 
 `binary_signs:` signs each built binary before it is packaged. Its `artifacts`
 field accepts only `binary` (or `none`); everything else about an entry matches
@@ -77,8 +77,8 @@ read the environment, and a signature named one way on the machine that builds
 it and another on the machine that publishes it is an asset the release's
 verify gate cannot find.
 
-A name that renders empty fails the sign stage rather than uploading a bare
-`.sig` every binary's signature would collide on.
+A name that renders empty fails the sign stage, so no bare `.sig` is
+uploaded for every binary's signature to collide on.
 
 Two binaries resolving to ONE name fail it the same way. A release asset
 carries one file, so the second upload would replace the first and the release
@@ -102,12 +102,12 @@ one name for two files, and the run stops with both outputs named:
 ```
 
 When a `signature:` (or `certificate:`) template renders a name of its own
-instead of suffixing the binary's file name, the base is not part of the
-result, so the message asks for a change to that template rather than to the
-archive name:
+with no suffix on the binary's file name, the base is not part of the
+result, so the message asks for a change to that template; the archive name
+is left alone:
 
 ```text
-       Error sign: the signature of 'target/x86_64-unknown-linux-gnu/release/app (crate 'app', build id 'app', target x86_64-unknown-linux-gnu, amd64 v1)' and the signature of 'target/x86_64-unknown-linux-gnu/release/helper (crate 'app', build id 'helper', target x86_64-unknown-linux-gnu, amd64 v1)' both resolve to the asset name 'detached-x86_64-unknown-linux-gnu.sig' — the signature was rendered by the `binary_signs[].signature:` template, which renamed the output instead of suffixing the binary's own file name, so the asset base 'app-1.2.3-linux-amd64' (from '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}') is not part of it. One release asset cannot carry both files — give the `binary_signs[].signature:` template {{ .Artifact }} or the target, so it renders one name per binary.
+       Error sign: the signature of 'target/x86_64-unknown-linux-gnu/release/app (crate 'app', build id 'app', target x86_64-unknown-linux-gnu, amd64 v1)' and the signature of 'target/x86_64-unknown-linux-gnu/release/helper (crate 'app', build id 'helper', target x86_64-unknown-linux-gnu, amd64 v1)' both resolve to the asset name 'detached-x86_64-unknown-linux-gnu.sig' — the signature was rendered by the `binary_signs[].signature:` template, which renamed the output and dropped the binary's own file name, so the asset base 'app-1.2.3-linux-amd64' (from '{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}') is not part of it. One release asset cannot carry both files — give the `binary_signs[].signature:` template {{ .Artifact }} or the target, so it renders one name per binary.
 ```
 
 `asset_name_template:` is a per-entry field and the asset name is the base
@@ -203,7 +203,7 @@ app-1.2.3-linux-amd64-extra.tar.xz
 app-1.2.3-linux-amd64.sig          <- binary_signs, the primary entry's name
 ```
 
-### Overriding the asset name
+### Asset name override
 
 `asset_name_template:` replaces the derived name. It is read on `binary_signs:`
 entries only — `anodizer check config` warns when a `signs:` entry sets it. It
@@ -253,7 +253,7 @@ signs:
 Those two select different artifact kinds, so neither can overwrite the
 other's output and `anodizer check config` says nothing about the pair.
 
-## What `anodizer check config` catches
+## `anodizer check config` findings
 
 ### Two entries writing one file
 
@@ -339,7 +339,7 @@ docker_signs:
      Warning binary_signs[0].certificate names `{{ Artifact | upper }}`, which anodizer substitutes only as the literal `{{ .Artifact }}` or `{{ Artifact }}` — every other spelling reaches the template engine as an undefined variable and fails the sign stage
      Warning binary_signs[1].signature names `{{ .Signature }}`, which anodizer does not substitute in signature: — it reaches the template engine as an undefined variable and fails the sign stage; the signature path is what this template renders, so `${signature}` has no value here either — remove the reference
      Warning docker_signs[0].args names `${artifact}`, which the docker sign path never expands — it reaches the signing command as that literal text; write `{{ .Artifact }}`, which anodizer substitutes before the render
-     Warning docker_signs[0].signature is set but a docker signature is stored in the registry rather than written to a file (it will be ignored)
+     Warning docker_signs[0].signature is set but a docker signature is stored in the registry and no file is written (it will be ignored)
    • Config is valid.
 ```
 
@@ -361,7 +361,7 @@ flaking:
   `--tlog-upload=false`, runs one invocation at a time regardless of
   `--parallelism`, and holds a host-level advisory lock
   (`~/.sigstore/root/.anodizer-tuf-init.lock`, or `$TUF_ROOT`) so a second
-  anodizer process on the same host queues rather than races. Concurrent
+  anodizer process on the same host waits its turn. Concurrent
   cosign invocations collide on the sigstore TUF trust store and the loser
   exits with `creating cached local store: resource temporarily unavailable`
   — an already-initialized store does not prevent it. A keyed sign uploads to

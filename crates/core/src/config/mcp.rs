@@ -17,7 +17,7 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 
 /// MCP server registry publisher configuration.
 ///
-/// Publishes an `apiv0.ServerJSON` document to the MCP registry
+/// Publishes a `server.json` server description to the MCP registry
 /// (`https://registry.modelcontextprotocol.io/v0/publish` by default).
 /// MCP config (server details flattened onto the publisher block).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -88,7 +88,7 @@ pub struct McpConfig {
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in
-    /// place rather than attempting to undo it. Default `false`.
+    /// place and does not try to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
 }
 

@@ -10,15 +10,13 @@
 //!   max_delay: 5m
 //! ```
 //!
-//! Defaults are `Attempts:10, Delay:10s, MaxDelay:5m`
-//! so that consumers see identical retry behaviour with the
-//! same YAML.
+//! Defaults are 10 attempts, a 10s first delay, a 5m cap on each delay and
+//! a 15-minute retry budget per publisher run (`max_elapsed`).
 //!
 //! [`RetryConfig::to_policy`] bridges the user-facing type to
 //! [`crate::retry::RetryPolicy`] which is what `retry_sync` / `retry_async`
 //! consume. The conversion fixes the multiplier at 2.0 (hard-coded in
-//! `RetryPolicy::delay_for`); a fixed 2× backoff is used via
-//! `retry.BackOffDelay`.
+//! `RetryPolicy::delay_for`).
 //!
 //! ## See also
 //!
@@ -35,7 +33,8 @@ use crate::retry::RetryPolicy;
 /// User-facing retry configuration block (`retry:` at config root).
 ///
 /// All fields are optional in YAML; missing fields fall back to the
-/// defaults (10 attempts, 10s base delay, 5m cap).
+/// defaults (10 attempts, 10s base delay, 5m cap on each delay, and a
+/// 15-minute `max_elapsed` budget for each publisher run).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct RetryConfig {
@@ -49,12 +48,16 @@ pub struct RetryConfig {
     /// Without this cap, an exponential backoff with `delay=10s` would
     /// stretch attempt 9 to ~42 minutes.
     pub max_delay: HumanDuration,
-    /// Cap on TOTAL retry wall-time across all attempts of a single operation.
-    /// Retrying stops before a backoff sleep would push elapsed time past this
-    /// budget, so a long transient storm fails cleanly (with the last error,
-    /// resumable on an idempotent re-run) instead of running the full attempt
-    /// ladder. When unset the budget is 15 minutes; set it to raise or lower
-    /// that limit. Publishers apply this budget to their retries, so a release
+    /// Cap on total retry wall-time. Each publisher run gets its own
+    /// deadline: the moment the publisher starts plus this budget. Every
+    /// retried request inside that run (an auth exchange, the publish
+    /// request, a cleanup) shares that one deadline, and a second publisher
+    /// starts a fresh one. A retry outside any publisher run starts its own
+    /// deadline when it begins.
+    ///
+    /// Retrying stops before a backoff sleep would pass the deadline, so a
+    /// long transient storm fails with the last error, and an idempotent
+    /// re-run can resume. When unset the budget is 15 minutes. A release
     /// whose CI job has a hard timeout should keep it below that timeout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_elapsed: Option<HumanDuration>,
@@ -72,9 +75,9 @@ impl RetryConfig {
     /// [`crate::retry::retry_sync`] / [`crate::retry::retry_async`].
     ///
     /// If `max_delay < delay`, every backoff is immediately capped to
-    /// `max_delay`. This is parity-correct passthrough
-    /// but almost certainly a config mistake, so a `tracing::warn!` fires
-    /// once at conversion time to surface the issue in logs.
+    /// `max_delay`. The values pass through unchanged, but the pair is
+    /// almost certainly a config mistake, so a `tracing::warn!` fires once
+    /// at conversion time.
     pub fn to_policy(&self) -> RetryPolicy {
         if self.max_delay.duration() < self.delay.duration() {
             tracing::warn!(
@@ -113,7 +116,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_match_goreleaser() {
+    fn defaults_are_ten_attempts_ten_seconds_and_five_minutes() {
         let c = RetryConfig::default();
         assert_eq!(c.attempts, 10);
         assert_eq!(c.delay.duration(), std::time::Duration::from_secs(10));

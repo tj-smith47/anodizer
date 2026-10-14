@@ -92,8 +92,8 @@ impl StringOrBool {
     ///
     /// Always-rendering keeps this helper consistent with sibling
     /// `should_skip_upload` (which always renders) — a literal `"{{ broken"`
-    /// surfaces as an `Err` instead of being silently treated as a false-y
-    /// non-template string.
+    /// returns an `Err`, so a broken template is never read as a false-y
+    /// plain string.
     ///
     /// Used for both `skip:` evaluation (most callers) and `output:` / `sbom:`
     /// bool-or-template fields — there is no separate alias; call this directly.
@@ -190,7 +190,7 @@ impl Default for StringOrBool {
 /// `Bool`/`Number` ↔ `str`, so the compare evaluates to `false` in *every*
 /// mode and the guarded resource silently skips. Failing loud here matches
 /// the render-failure contract below: a condition that can never do what it
-/// says is a config bug, not a skip.
+/// says is a config bug, and it fails.
 fn reject_stale_typed_compare(template: &str, label: &str) -> anyhow::Result<()> {
     if let Some(snippet) = crate::template::find_stale_typed_compare(template) {
         anyhow::bail!(
@@ -319,7 +319,7 @@ where
 ///
 /// Accepts `"10m"`, `"15s"`, `"1h30m"`, `"500ms"`, etc. Used by notarize
 /// timeouts so the schema is typed and validation catches malformed values
-/// at config-load time instead of during the notarize stage.
+/// when the config loads, before any stage runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct HumanDuration(
     #[serde(serialize_with = "serialize_human_duration")] pub std::time::Duration,
@@ -358,8 +358,8 @@ impl HumanDuration {
 }
 
 /// The schema of a duration is the string the loader parses: one or more
-/// whole numbers each followed by a unit (`ms`, `s`, `m`, `h`, `d`), with
-/// whitespace allowed between the parts.
+/// whole numbers of up to 19 digits, each followed by a unit (`ms`, `s`,
+/// `m`, `h`, `d`), with whitespace allowed between the parts.
 impl JsonSchema for HumanDuration {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "HumanDuration".into()
@@ -374,9 +374,20 @@ impl JsonSchema for HumanDuration {
     }
 }
 
-/// The spellings `parse_humantime_duration` accepts, as a JSON Schema
-/// pattern.
-const HUMAN_DURATION_PATTERN: &str = r"^\s*([0-9][0-9\s]*(ms|s|m|h|d)\s*)+$";
+/// The shape `parse_humantime_duration` accepts, as a JSON Schema pattern:
+/// one or more terms, each a number of 1 to [`MAX_DURATION_DIGITS`] digits
+/// (whitespace allowed between the digits) followed by a unit. Every string
+/// the parser accepts matches it. A string that matches it is accepted by the
+/// parser unless one term or the sum is longer than the longest
+/// `std::time::Duration` (`18446744073709551615s` and 999999999 nanoseconds),
+/// a range a pattern cannot express.
+const HUMAN_DURATION_PATTERN: &str = r"^\s*([0-9](\s*[0-9]){0,18}\s*(ms|s|m|h|d)\s*)+$";
+
+/// The longest number a duration term may spell. Every 19-digit number fits
+/// a `u64`, and the 20-digit numbers above `u64::MAX` cannot be told apart
+/// from the ones below it by a pattern, so the parser and the pattern both
+/// stop at 19.
+const MAX_DURATION_DIGITS: usize = 19;
 
 impl<'de> Deserialize<'de> for HumanDuration {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -420,7 +431,9 @@ fn serialize_human_duration<S: serde::Serializer>(
 
 /// Parse a humantime-style duration string. Recognizes `ms`, `s`, `m`, `h`,
 /// `d` units and concatenated forms like `"1h30m"`. Whitespace between
-/// components is tolerated.
+/// components is tolerated. A number longer than [`MAX_DURATION_DIGITS`]
+/// digits, and a term or total longer than the longest `Duration`, is an
+/// error naming the value.
 pub(super) fn parse_humantime_duration(input: &str) -> Result<std::time::Duration, String> {
     let s = input.trim();
     if s.is_empty() {
@@ -454,18 +467,40 @@ pub(super) fn parse_humantime_duration(input: &str) -> Result<std::time::Duratio
             unit.push('s');
             iter.next();
         }
+        if number_buf.len() > MAX_DURATION_DIGITS {
+            return Err(format!(
+                "number '{number_buf}' in '{input}' has more than {MAX_DURATION_DIGITS} digits"
+            ));
+        }
         let n: u64 = number_buf
             .parse()
             .map_err(|e| format!("invalid number '{number_buf}' in '{input}': {e}"))?;
+        let too_long = || {
+            format!(
+                "'{number_buf}{unit}' in '{input}' is longer than the longest duration \
+                 ({}s)",
+                u64::MAX
+            )
+        };
+        let seconds = |per_unit: u64| {
+            n.checked_mul(per_unit)
+                .map(std::time::Duration::from_secs)
+                .ok_or_else(too_long)
+        };
         let segment = match unit.as_str() {
             "ms" => std::time::Duration::from_millis(n),
             "s" => std::time::Duration::from_secs(n),
-            "m" => std::time::Duration::from_secs(n * 60),
-            "h" => std::time::Duration::from_secs(n * 3600),
-            "d" => std::time::Duration::from_secs(n * 86_400),
+            "m" => seconds(60)?,
+            "h" => seconds(3600)?,
+            "d" => seconds(86_400)?,
             other => return Err(format!("unknown duration unit '{other}' in '{input}'")),
         };
-        total += segment;
+        total = total.checked_add(segment).ok_or_else(|| {
+            format!(
+                "the total of '{input}' is longer than the longest duration ({}s)",
+                u64::MAX
+            )
+        })?;
         number_buf.clear();
         had_any = true;
     }
@@ -983,6 +1018,106 @@ mod tests {
         assert!(parse_humantime_duration("10").is_err());
     }
 
+    /// A number over 19 digits, or a term or a total past the longest
+    /// `Duration`, is an error that names the value, in a debug and a release
+    /// build alike.
+    #[test]
+    fn a_duration_past_the_longest_is_refused_with_its_value() {
+        for (input, names) in [
+            (
+                "18446744073709551615s 1s",
+                "'18446744073709551615' in '18446744073709551615s 1s' has more than 19 digits",
+            ),
+            (
+                "9999999999999999999s 9999999999999999999s",
+                "the total of '9999999999999999999s 9999999999999999999s'",
+            ),
+            ("307445734561825861m", "'307445734561825861m'"),
+            ("5124095576030432h", "'5124095576030432h'"),
+            ("213503982334602d", "'213503982334602d'"),
+            ("18446744073709551616s", "'18446744073709551616'"),
+            ("99999999999999999999ms", "'99999999999999999999'"),
+        ] {
+            let err = parse_humantime_duration(input).unwrap_err();
+            assert!(err.contains(names), "{input:?}: {err}");
+        }
+        assert_eq!(
+            parse_humantime_duration("307445734561825860m").unwrap(),
+            Duration::from_secs(307_445_734_561_825_860 * 60)
+        );
+        assert_eq!(
+            parse_humantime_duration("9999999999999999999s").unwrap(),
+            Duration::from_secs(9_999_999_999_999_999_999)
+        );
+    }
+
+    /// The schema pattern and the parser agree on every sample: a string the
+    /// parser accepts matches the pattern, and a string the pattern matches
+    /// is accepted by the parser unless a term or the total is longer than
+    /// the longest `Duration`.
+    #[test]
+    fn the_duration_pattern_and_the_parser_agree() {
+        let pattern = regex::Regex::new(super::HUMAN_DURATION_PATTERN).unwrap();
+        let numbers = [
+            "0",
+            "1",
+            "1 0",
+            "90",
+            "007",
+            "9999999999999999999",
+            "1844674407370955161",
+            "18446744073709551615",
+            "18446744073709551616",
+            "99999999999999999999",
+            "1.5",
+            "",
+        ];
+        let units = ["ms", "s", "m", "h", "d", "", "x", " m"];
+        let mut terms = Vec::new();
+        for n in numbers {
+            for u in units {
+                terms.push(format!("{n}{u}"));
+            }
+        }
+        let mut samples: Vec<String> = terms.clone();
+        for a in &terms {
+            for b in ["1h", "30m", "18446744073709551615s", "1 0s"] {
+                samples.push(format!("{a}{b}"));
+                samples.push(format!(" {b} {a} "));
+            }
+        }
+        let mut accepted_by_both = 0;
+        for s in &samples {
+            let parsed = super::parse_humantime_duration(s);
+            let matched = pattern.is_match(s);
+            match &parsed {
+                Ok(_) => assert!(matched, "the parser accepts {s:?}, the pattern does not"),
+                Err(e) if matched => assert!(
+                    e.contains("longer than the longest duration"),
+                    "the pattern matches {s:?}, the parser refuses it: {e}"
+                ),
+                Err(_) => {}
+            }
+            accepted_by_both += usize::from(parsed.is_ok());
+        }
+        assert!(
+            accepted_by_both > 100,
+            "only {accepted_by_both} samples parsed"
+        );
+        for v in ["90s", "1h30m", "0s", "1 0s"] {
+            assert!(
+                super::parse_humantime_duration(v).is_ok() && pattern.is_match(v),
+                "{v}"
+            );
+        }
+        for v in ["1.5s", "0", "", "90"] {
+            assert!(
+                super::parse_humantime_duration(v).is_err() && !pattern.is_match(v),
+                "{v}"
+            );
+        }
+    }
+
     // --- StringOrU32 / deserialize_u32_from_string_or_int -----------------
 
     #[test]
@@ -1088,8 +1223,7 @@ mod tests {
                 // unrelated `.or(` elsewhere in the body says nothing.
                 let flat: String = body.split_whitespace().collect();
                 // A comment in the body can carry a multi-byte character, so
-                // a window is widened to the nearest boundary rather than
-                // sliced at a raw offset.
+                // a window is widened to the nearest character boundary.
                 let window = |from: usize, to: usize| -> &str {
                     let (mut lo, mut hi) = (from.min(flat.len()), to.min(flat.len()));
                     while !flat.is_char_boundary(lo) {
@@ -1210,13 +1344,6 @@ mod tests {
         );
     }
 
-    /// Every enum in the config with a `Bool(bool)` variant is a value that
-    /// spells a bool, so it loads an unquoted `1` / `0` through the shared
-    /// helpers and its schema accepts them. Its deserializer names
-    /// `bool_from_u64` and `bool_from_i64`, and its schema either carries the
-    /// `accept_one_or_zero` transform or, on every field of that type, a
-    /// `schema_with` function that reaches `one_or_zero_schema`. Rule:
-    /// `.claude/rules/bool-or-template-values.md`.
     /// Whether an enum body line declares a `Bool(bool)` variant: with or
     /// without the trailing comma, with an attribute written before it on the
     /// same line, and with any spacing inside the parentheses.
@@ -1255,6 +1382,13 @@ mod tests {
         assert!(!enum_with(&["    MaybeBool(bool),"]));
     }
 
+    /// Every enum in the config with a `Bool(bool)` variant is a value that
+    /// spells a bool, so it loads an unquoted `1` / `0` through the shared
+    /// helpers and its schema accepts them. Its deserializer names
+    /// `bool_from_u64` and `bool_from_i64`, and its schema either carries the
+    /// `accept_one_or_zero` transform or, on every field of that type, a
+    /// `schema_with` function that reaches `one_or_zero_schema`. Rule:
+    /// `.claude/rules/bool-or-template-values.md`.
     #[test]
     fn every_bool_or_template_enum_reads_one_and_zero() {
         use crate::test_helpers::test_sources::{
@@ -1645,14 +1779,14 @@ mod tests {
     /// bool-or-template value.
     type AllowedComparison = (&'static str, &'static str, &'static str, &'static str);
 
+    /// Comparisons keyed by (file, function, trimmed line), each with the
+    /// number of times the line occurs in that function.
+    type ComparisonHits = std::collections::BTreeMap<(String, String, String), usize>;
+
     /// Every line of `text` (the production half of `rel`) that compares
-    /// against `true` / `false`, keyed by (file, trimmed line), with the
-    /// functions holding it. Returns the number of function bodies read.
-    fn bool_word_comparisons(
-        rel: &str,
-        text: &str,
-        hits: &mut std::collections::BTreeMap<(String, String), std::collections::BTreeSet<String>>,
-    ) -> usize {
+    /// against `true` / `false`, counted under the innermost function that
+    /// holds it. Returns the number of function bodies read.
+    fn bool_word_comparisons(rel: &str, text: &str, hits: &mut ComparisonHits) -> usize {
         use crate::test_helpers::test_sources::{function_bodies, production_half};
         fn fn_name(body: &str) -> String {
             let first = body.lines().next().unwrap_or_default();
@@ -1663,47 +1797,62 @@ mod tests {
                 .unwrap_or_default()
                 .to_string()
         }
-        let mut bodies_read = 0;
-        for body in function_bodies(production_half(text)) {
-            bodies_read += 1;
-            let name = fn_name(&body);
-            for line in body.lines() {
+        let bodies = function_bodies(production_half(text));
+        for (i, body) in bodies.iter().enumerate() {
+            // `function_bodies` yields a nested fn both inside its parent and
+            // on its own; cutting it out of the parent counts each line once,
+            // under the function that holds it.
+            let mut own = body.clone();
+            for nested in &bodies[i + 1..] {
+                if own.contains(nested.as_str()) {
+                    own = own.replacen(nested.as_str(), "", 1);
+                }
+            }
+            let name = fn_name(body);
+            for line in own.lines() {
                 let trimmed = line.trim();
                 if trimmed.starts_with("//") {
                     continue;
                 }
                 if compares_a_bool_word(before_comment(line)) {
-                    hits.entry((rel.to_string(), trimmed.to_string()))
-                        .or_default()
-                        .insert(name.clone());
+                    *hits
+                        .entry((rel.to_string(), name.clone(), trimmed.to_string()))
+                        .or_default() += 1;
                 }
             }
         }
-        bodies_read
+        bodies.len()
     }
 
     /// The comparisons no helper and no `allowed` entry accounts for, and the
     /// `allowed` entries that match no comparison. An entry names one line of
-    /// one function, so a second comparison added to an allowed function is
-    /// reported. A line held by nested functions passes when any of them is
-    /// a helper or names it.
+    /// one function and covers one occurrence of it, so a second comparison
+    /// added to an allowed function, or the same line copied into another
+    /// function, is reported.
     fn unaccounted_comparisons<'a>(
-        hits: &std::collections::BTreeMap<(String, String), std::collections::BTreeSet<String>>,
+        hits: &ComparisonHits,
         helpers: &[&str],
         allowed: &'a [AllowedComparison],
     ) -> (Vec<String>, Vec<&'a AllowedComparison>) {
         let mut used = std::collections::BTreeSet::new();
         let mut failures = Vec::new();
-        for ((file, line), owners) in hits {
-            let mut accounted = owners.iter().any(|n| helpers.contains(&n.as_str()));
-            for (i, (f, n, l, _)) in allowed.iter().enumerate() {
-                if f == file && l == line && owners.contains(*n) {
-                    used.insert(i);
-                    accounted = true;
-                }
+        for ((file, owner, line), &count) in hits {
+            if helpers.contains(&owner.as_str()) {
+                continue;
             }
-            if !accounted {
-                failures.push(format!("{file} ({owners:?}): {line}"));
+            let entry = allowed
+                .iter()
+                .position(|(f, n, l, _)| f == file && n == owner && l == line);
+            match entry {
+                Some(i) => {
+                    used.insert(i);
+                    if count > 1 {
+                        failures.push(format!(
+                            "{file} ({owner}): {line} occurs {count} times, and its entry covers one"
+                        ));
+                    }
+                }
+                None => failures.push(format!("{file} ({owner}): {line}")),
             }
         }
         let stale = allowed
@@ -1744,13 +1893,87 @@ mod tests {
             ),
         ];
         let (failures, stale) = unaccounted_comparisons(&hits, &[], allowed);
-        assert_eq!(failures, [r#"x.rs ({"reads_git"}): answer == "false""#]);
+        assert_eq!(failures, [r#"x.rs (reads_git): answer == "false""#]);
         assert_eq!(stale, [&allowed[1]]);
         let (failures, _) = unaccounted_comparisons(&hits, &["reads_git"], allowed);
         assert!(
             failures.is_empty(),
             "a helper owns every line: {failures:?}"
         );
+    }
+
+    /// An allowed line copied into a second function of the same file, or a
+    /// second time into the same function, is reported; an allowed line
+    /// moved to another function is reported there and its entry is stale.
+    /// A line in a nested fn belongs to that fn alone.
+    #[test]
+    fn a_copied_or_moved_allowed_comparison_is_reported() {
+        let allowed: &[AllowedComparison] =
+            &[("x.rs", "reads_git", r#"answer == "true""#, "git output")];
+        let report = |source: &str| {
+            let mut hits = ComparisonHits::new();
+            bool_word_comparisons("x.rs", source, &mut hits);
+            let (failures, stale) = unaccounted_comparisons(&hits, &[], allowed);
+            (failures, stale.len())
+        };
+
+        let copied = r#"
+        fn reads_git(answer: &str) -> bool {
+            answer == "true"
+        }
+        fn reads_flag(answer: &str) -> bool {
+            answer == "true"
+        }
+"#;
+        assert_eq!(
+            report(copied),
+            (
+                vec![r#"x.rs (reads_flag): answer == "true""#.to_string()],
+                0
+            )
+        );
+
+        let twice = r#"
+        fn reads_git(answer: &str) -> bool {
+            if answer.is_empty() {
+                answer == "true"
+            } else {
+                answer == "true"
+            }
+        }
+"#;
+        let (failures, stale) = report(twice);
+        assert_eq!(stale, 0);
+        assert_eq!(
+            failures,
+            [r#"x.rs (reads_git): answer == "true" occurs 2 times, and its entry covers one"#]
+        );
+
+        let moved = r#"
+        fn reads_git(answer: &str) -> bool {
+            answer.is_empty()
+        }
+        fn reads_flag(answer: &str) -> bool {
+            answer == "true"
+        }
+"#;
+        assert_eq!(
+            report(moved),
+            (
+                vec![r#"x.rs (reads_flag): answer == "true""#.to_string()],
+                1
+            )
+        );
+
+        let nested = r#"
+        fn outer(answer: &str) -> bool {
+            fn reads_git(answer: &str) -> bool {
+                answer == "true"
+            }
+            reads_git(answer)
+        }
+"#;
+        assert_eq!(report(nested), (Vec::new(), 0));
     }
 
     /// Production code matches a rendered value against `true` / `false`
@@ -1926,8 +2149,8 @@ mod tests {
         );
         for helper in HELPERS {
             assert!(
-                hits.iter().any(|((f, _), owners)| {
-                    f == "crates/core/src/config/string_or_bool.rs" && owners.contains(*helper)
+                hits.keys().any(|(f, owner, _)| {
+                    f == "crates/core/src/config/string_or_bool.rs" && owner == helper
                 }),
                 "{helper} no longer matches the words"
             );

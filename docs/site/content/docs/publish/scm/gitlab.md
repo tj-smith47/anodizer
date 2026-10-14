@@ -37,8 +37,8 @@ The `release` config is shared across all SCM providers. See the [GitHub release
 | `api` | string | `https://gitlab.com/api/v4/` | GitLab API base URL |
 | `download` | string | `https://gitlab.com` | GitLab download base URL |
 | `skip_tls_verify` | bool | `false` | Skip TLS certificate verification |
-| `use_package_registry` | bool | `false` | Upload to the Package Registry instead of project uploads |
-| `use_job_token` | bool | `false` | Authenticate with `CI_JOB_TOKEN` instead of personal token |
+| `use_package_registry` | bool | `false` | Upload to the Package Registry; when `false`, files go to project uploads |
+| `use_job_token` | bool | `false` | Authenticate with `CI_JOB_TOKEN`; when `false`, a personal token is used |
 
 ## Environment variables
 

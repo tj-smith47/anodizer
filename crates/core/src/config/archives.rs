@@ -149,8 +149,8 @@ where
 
 /// Wraps [`deserialize_signs`] and enforces that each entry's `artifacts`
 /// is one of the binary-only allowed values (`binary`, `none`, or omitted).
-/// Catches misconfiguration at load time instead of producing a silent
-/// no-op signing pipe.
+/// Catches misconfiguration at load time, so no silent no-op signing pipe
+/// is produced.
 pub(super) fn deserialize_binary_signs<'de, D>(deserializer: D) -> Result<Vec<SignConfig>, D::Error>
 where
     D: Deserializer<'de>,
@@ -235,7 +235,7 @@ impl WrapInDirectory {
 pub struct ArchiveConfig {
     /// Unique identifier for cross-referencing this archive from other configs.
     /// Defaults to `"default"` so a parse->serialise->reparse round-trip is
-    /// stable (stored verbatim, not as an Option).
+    /// stable (the value is stored verbatim, with no Option wrapper).
     pub id: Option<String>,
     /// Archive filename template (supports templates, e.g., "{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}").
     pub name_template: Option<String>,
@@ -246,7 +246,8 @@ pub struct ArchiveConfig {
     pub formats: Option<Vec<String>>,
     /// Per-OS format overrides for this archive config.
     pub format_overrides: Option<Vec<FormatOverride>>,
-    /// Extra files to include in the archive (glob patterns, or objects with `src` and `dst` keys).
+    /// Extra files to include in the archive (glob patterns, or objects with
+    /// `src`, `dst`, `info` and `strip_parent` keys).
     pub files: Option<Vec<ArchiveFileSpec>>,
     /// Binary names to include (defaults to all binaries from matched builds).
     pub binaries: Option<Vec<String>>,
@@ -276,7 +277,7 @@ pub struct ArchiveConfig {
     /// (`"false"` / `"0"` / `"no"` / empty), the archive entry is skipped
     /// entirely (no archives produced for this `id`). Render failure
     /// hard-errors. "Filter artifacts with `if` statements" is listed as a
-    /// blanket promise — anodizer surfaces it explicitly to keep imported
+    /// blanket promise — anodizer states it explicitly to keep imported
     /// configs portable).
     /// An absent, empty or blank `if:` imposes no gate and always runs; the
     /// falsy test applies to what a non-blank gate renders.
@@ -284,13 +285,13 @@ pub struct ArchiveConfig {
     pub if_condition: Option<String>,
     /// Turnkey shell-completion generation: auto-generate (or harvest, or
     /// copy) completion files and bundle them into every archive produced by
-    /// this entry. Set exactly one of the three modes: `generate`,
-    /// `from_build_out` or `copy`.
+    /// this entry. Set at most one of the three modes: `generate`,
+    /// `from_build_out` or `copy`; with none set, nothing is generated.
     pub completions: Option<super::CompletionsConfig>,
     /// Turnkey man-page generation: auto-generate (or harvest, or copy) man
     /// pages and bundle them into every archive produced by this entry. Set
-    /// exactly one of the three modes: `generate`, `from_build_out` or
-    /// `copy`.
+    /// at most one of the three modes: `generate`, `from_build_out` or
+    /// `copy`; with none set, nothing is generated.
     pub manpages: Option<super::ManpagesConfig>,
 }
 
@@ -443,8 +444,8 @@ impl<'de> Deserialize<'de> for FormatOverride {
 }
 
 /// Specifies a file to include in archives. Can be a simple glob string or a
-/// detailed object with `src`, `dst` and `info` keys that control where the
-/// file goes in the archive and its file metadata.
+/// detailed object with `src`, `dst`, `info` and `strip_parent` keys that
+/// control where the file goes in the archive and its file metadata.
 // Kept separate from `ExtraFileSpec` (checksum/release extra_files): this one
 // carries placement and owner/group/mode/mtime metadata, that one carries
 // `glob`/`name_template` for checksumming and upload renaming.
@@ -504,8 +505,8 @@ pub fn parse_octal_mode(s: &str) -> Option<u32> {
 }
 
 /// The set of archive format strings recognised by the archive stage.
-/// Used for early validation so typos are caught at config load time rather
-/// than mid-pipeline.
+/// Used for early validation so typos are caught at config load time, before the
+/// pipeline starts.
 pub const VALID_ARCHIVE_FORMATS: &[&str] = &[
     "tar.gz",
     "tgz",
@@ -538,8 +539,8 @@ pub enum ExtraFileSpec {
         /// Optional override for the upload filename.
         #[serde(default)]
         name_template: Option<String>,
-        /// When true, treat a glob that matches zero files as a no-op
-        /// rather than a hard error. Useful for assets produced only in
+        /// When true, treat a glob that matches zero files as a no-op.
+        /// When false, it is a hard error. Useful for assets produced only in
         /// CI (e.g. signing public keys derived from a secret) that
         /// must not break local snapshot/dry-run flows. Defaults to
         /// false, matching the prior fail-fast behavior.
@@ -629,7 +630,7 @@ pub struct ChecksumConfig {
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Build IDs filter: only checksum artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
-    /// When true, produce one checksum file per artifact instead of a combined file.
+    /// When true, produce one checksum file per artifact. When false, one combined file is produced.
     pub split: Option<bool>,
     /// Sidecar content format when `split: true` (default: `bare`). Set to
     /// `coreutils` to write `<hash>  <filename>` so each sidecar verifies with
@@ -657,8 +658,8 @@ impl ChecksumConfig {
     ];
 
     /// Resolve the hash algorithm, falling back to the project default
-    /// when the user did not specify one. Stages MUST call this rather
-    /// than reading `self.algorithm` directly, so a future default change
+    /// when the user did not specify one. Stages MUST call this and never
+    /// read `self.algorithm` directly, so a future default change
     /// (or user-facing override resolution) ends up in one place.
     pub fn resolved_algorithm(&self) -> &str {
         self.algorithm.as_deref().unwrap_or(Self::DEFAULT_ALGORITHM)

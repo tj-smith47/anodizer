@@ -55,9 +55,10 @@ homebrew_casks:
       token: "{{ Env.HOMEBREW_TAP_TOKEN }}"  # optional; default: HOMEBREW_TAP_TOKEN, then the GitHub token chain
       branch: main                   # optional; push branch (default: repo default branch, or versioned <cask>-<version> when pull_request.enabled)
       pull_request:
-        enabled: false               # optional; open PR instead of direct push
+        enabled: false               # optional; true opens a PR in place of a direct push
         token: ""                    # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
-        base: main
+        base:
+          branch: main               # optional; PR target branch
     directory: Casks                 # optional; directory in the tap repo
     description: ""                  # optional
     homepage: ""                     # optional
@@ -134,11 +135,11 @@ homebrew_casks:
 
 - **macOS artifact required**: a cask is generated only when the release has a macOS artifact (`disk_image`, `archive` or uploadable binary). Linux artifacts of the same release join it as an `on_linux` block; Windows and other targets are ignored.
 - **SHA256 required**: cask files require a checksum on every artifact. Ensure the checksum stage runs before the cask publisher.
-- **`update_existing_pr`**: if your tap uses a PR-based workflow, set `update_existing_pr: true` to force-push to an existing open branch rather than opening a duplicate PR. See [Cask existing PR behavior in the Homebrew doc](./homebrew.md#cask-existing-pr-behavior).
+- **`update_existing_pr`**: if your tap uses a PR-based workflow, set `update_existing_pr: true` to force-push to an existing open branch, so no duplicate PR is opened. See [Cask existing PR behavior in the Homebrew doc](./homebrew.md#cask-existing-pr-behavior).
 
 ## Republish / update behavior
 
-Cask files are updated in-place on each release; no recovery flag is required for re-cuts. When a PR-based workflow is configured and a prior run left an open PR, set `update_existing_pr: true` to force-push the updated cask file instead of opening a duplicate. See [Cask existing PR behavior in the Homebrew doc](./homebrew.md#cask-existing-pr-behavior) and [Recovery flags](../advanced/recovery-flags.md#update-existing-pr-winget-krew-homebrew-cask) for the full mechanism.
+Cask files are updated in-place on each release; no recovery flag is required for re-cuts. When a PR-based workflow is configured and a prior run left an open PR, set `update_existing_pr: true` to force-push the updated cask file, so no duplicate PR is opened. See [Cask existing PR behavior in the Homebrew doc](./homebrew.md#cask-existing-pr-behavior) and [Recovery flags](../advanced/recovery-flags.md#update-existing-pr-winget-krew-homebrew-cask) for the full mechanism.
 
 ## Homebrew cask config fields
 
@@ -206,19 +207,21 @@ behavior. anodizer no longer writes it into the cask; remove the field.``
 ### Hooks (`hooks`) {#hooks}
 
 ```yaml
-hooks:
-  pre:
-    install: "system_command '/usr/bin/some-setup'"
-    uninstall: "system_command '/usr/bin/some-cleanup'"
-  post:
-    install: "system_command '/usr/bin/post-setup'"
-    uninstall: "system_command '/usr/bin/post-cleanup'"
+homebrew_casks:
+  - name: myapp
+    hooks:
+      pre:
+        install: "system_command '/usr/bin/some-setup'"
+        uninstall: "system_command '/usr/bin/some-cleanup'"
+      post:
+        install: "system_command '/usr/bin/post-setup'"
+        uninstall: "system_command '/usr/bin/post-cleanup'"
 ```
 
 Each hook is written as a `preflight do` / `postflight do` /
 `uninstall_preflight do` / `uninstall_postflight do` block holding the Ruby
 as given. Homebrew 7 deprecates these blocks in favour of `preflight_steps`
-and its siblings, which accept only Homebrew's own step calls rather than
+and its siblings, which accept only Homebrew's own step calls and no
 arbitrary Ruby, so `brew style` reports `Cask/InstallSteps` for each hook. The
 cask still installs; Homebrew prints a deprecation warning when it loads it.
 
@@ -239,10 +242,12 @@ first, then formulae, each group sorted by name without regard to case
 with the names written as given, the order `brew style` requires:
 
 ```yaml
-dependencies:
-  - formula: cmake
-  - cask: xquartz
-  - cask: Example/tap/app
+homebrew_casks:
+  - name: myapp
+    dependencies:
+      - formula: cmake
+      - cask: xquartz
+      - cask: Example/tap/app
 ```
 
 ```ruby
@@ -261,7 +266,7 @@ out when the `custom_block` declares an OS dependency of its own, because
 Homebrew refuses a `depends_on :macos` beside a versioned
 `depends_on macos:`.
 
-### How anodizer reads `custom_block` {#custom-block}
+### `custom_block` parsing {#custom-block}
 
 `custom_block` is raw Ruby, written at the top of the cask body. It may hold
 any Ruby a cask accepts: stanzas, `on_*` blocks, `depends_on` statements,
@@ -308,7 +313,7 @@ A flat single-download cask whose `custom_block` gives it a Linux side puts
 its `sha256` / `url` (and `app` / `service`) inside `on_macos`, so a Linux
 host never downloads the macOS archive.
 
-#### When the block cannot be read to its end
+#### Unterminated blocks
 
 In Ruby, `<<`, `%`, `?` and `/` open a heredoc, a percent literal, a
 character literal or a regex where an operand stands, and are an operator
@@ -361,7 +366,7 @@ the literal or leave the heredoc unclosed. Trailing whitespace is dropped
 only from a line that ends in code. Past a line anodizer cannot read, every
 line is kept as written.
 
-#### A wrong answer
+#### Casks Homebrew refuses
 
 A wrong answer gives a cask that Homebrew refuses:
 
@@ -426,8 +431,10 @@ entry. A `formula` entry is dropped with a deprecation warning, because
 `conflicts_with formula:` makes the cask fail to load:
 
 ```yaml
-conflicts:
-  - cask: another-app
+homebrew_casks:
+  - name: myapp
+    conflicts:
+      - cask: another-app
 ```
 
 ### Livecheck (`livecheck`) {#livecheck}
@@ -564,7 +571,7 @@ entry.
 Every artifact filling a slot **must** carry `sha256` metadata: a cask block
 with an empty `sha256 ""` line fails `brew style` and aborts `brew install`
 (Homebrew verifies the digest before extracting), so a missing checksum is a
-hard error rather than a degraded cask.
+hard error.
 
 ### Interaction with `universal_binaries`
 
@@ -666,7 +673,14 @@ anodizer generates a cask from genuine macOS targets (`*-apple-darwin`,
 `darwin-universal`), and adds the release's Linux artifacts as an `on_linux`
 block beside them. Apple **non-macOS** targets (`aarch64-apple-ios`, `*-tvos`,
 `*-watchos`) are excluded and never appear in the generated cask. If the build
-produces **no** eligible macOS artifact, anodizer fails the release rather
-than emitting an empty cask. See
+produces **no** eligible macOS artifact, the cask is skipped and no cask file
+is written; `--show-skipped` prints the reason:
+
+```text
+skipped cask 'myapp' — no macOS artifact in scope (not applicable)
+```
+
+The cask fails only when its `ids:` filter matches no macOS artifact while
+other macOS artifacts exist, since that is almost always a typo in `ids:`. See
 [Artifact eligibility](./selecting-publishers.md#artifact-eligibility) for the
 full rule.

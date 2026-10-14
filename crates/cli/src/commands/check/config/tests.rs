@@ -3160,7 +3160,7 @@ fn a_docker_sign_signature_template_warns_that_it_is_ignored() {
         warnings,
         vec![
             "docker_signs[0].signature is set but a docker signature is stored \
-             in the registry rather than written to a file (it will be ignored)"
+             in the registry and no file is written (it will be ignored)"
                 .to_string(),
         ]
     );

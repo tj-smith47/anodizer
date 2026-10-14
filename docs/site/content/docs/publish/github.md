@@ -135,7 +135,7 @@ $ anodizer check config
 | `extra_files` | list | none | Additional files to upload (glob patterns) |
 | `skip_upload` | bool or template | `false` | Create release without uploading assets: `true` or `1` skips, `auto` skips on a snapshot, `false`, `0` or empty uploads, any other render is an error; read in any letter case (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)) |
 | `replace_existing_draft` | bool | `false` | Replace existing draft release. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-draft). |
-| `use_existing_draft` | bool | `false` | Reuse an existing draft release whose title matches the rendered `name_template` and update it in place. See [Reusing a draft](#reusing-a-draft). |
+| `use_existing_draft` | bool | `false` | Reuse an existing draft release whose title matches the rendered `name_template` and update it in place. See [Reusing a draft](#draft-reuse). |
 | `replace_existing_artifacts` | bool | `false` | Overwrite existing assets. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-artifacts). |
 | `preflight.fail_on_error` | bool/template | `true` | Stop the run when the release preflight fails; `false` reports it as a warning. See [Release preflight](#release-preflight). |
 | `on_failure` | string | `hold` | What a pipeline failure leaves behind. `hold` is the only accepted value — `rollback` is a hard config-validation error. See [Release resilience](../advanced/release-resilience.md#release-on-failure). |
@@ -204,7 +204,7 @@ release:
   footer: ""                   # no footer at all
 ```
 
-## Excluding sidecars with `exclude`
+## Sidecar exclusion with `exclude`
 
 `exclude` is a list of globs matched against each release asset's **file
 name**; anodizer drops every asset whose name matches at least one glob before
@@ -241,7 +241,7 @@ anodizer release
 
 - **Draft vs published**: a draft release is only visible to repo collaborators. Set `draft: false` (the default) for publicly visible releases.
 - **`make_latest: auto`**: by default, anodizer marks a release as latest only when the version is not a prerelease. Override with `make_latest: true` or `make_latest: false`.
-- **Asset name collisions**: an asset already on the release under the same file name with different bytes fails the upload unless `replace_existing_artifacts: true` is set on the `release:` block. See [Re-uploading onto an existing release](#re-uploading-onto-an-existing-release).
+- **Asset name collisions**: an asset already on the release under the same file name with different bytes fails the upload unless `replace_existing_artifacts: true` is set on the `release:` block. See [Re-uploading onto an existing release](#re-uploads-onto-an-existing-release).
 - **Renamed or transferred repository**: GitHub answers an asset upload for a moved repository with a redirect that names no new location. anodizer does not follow it and fails the upload naming the repository:
 
   ```text
@@ -252,7 +252,7 @@ anodizer release
 
 Use `replace_existing_draft: true` and `replace_existing_artifacts: true` on the `release:` block for re-runnable workflows. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-draft) for the full mechanism.
 
-## Re-uploading onto an existing release
+## Re-uploads onto an existing release
 
 A re-run that meets an asset already attached to the release under the same file name decides per asset:
 
@@ -284,7 +284,7 @@ release:
   draft: true
 ```
 
-### Reusing a draft
+### Draft reuse
 
 `use_existing_draft: true` looks for a draft release whose title is the rendered `name_template` and updates it in place, composing its body per `mode`. A draft whose title is only the tag is passed over when `name_template` renders something else. `replace_existing_draft: true` deletes such a draft before the new release is created.
 

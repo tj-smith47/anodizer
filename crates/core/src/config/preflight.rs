@@ -17,12 +17,17 @@ pub struct PreflightConfig {
     /// a 5xx, a 429 / rate-limit, a transport failure, or a response that
     /// hides the permission the publish path needs. By default those degrade
     /// to warnings so a transient upstream blip cannot abort a release whose
-    /// credentials are actually valid; `strict: true` makes them abort
-    /// instead (fail-closed). Definitive failures (credentials rejected,
+    /// credentials are actually valid; `strict: true` makes them abort the
+    /// release (fail-closed). Definitive failures (credentials rejected,
     /// target missing) keep their required→blocker / optional→warning
-    /// severity regardless of this setting. The global `--strict` flag does
-    /// the same and also makes a missing rollback scope a blocker and turns
-    /// configured features that silently skip into errors.
+    /// severity regardless of this setting.
+    ///
+    /// The global `--strict` flag does the same, and three more things this
+    /// field does not do: a missing rollback scope becomes a blocker, a
+    /// configured feature that would skip itself with a warning fails the
+    /// run, and a template that fails to render fails the run (without
+    /// `--strict` a publisher template render error logs a warning and keeps
+    /// the raw text).
     pub strict: bool,
 }
 

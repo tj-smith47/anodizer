@@ -205,7 +205,7 @@ Two ways forward, both safe:
 | the same `anodizer release` again | skipped as identical; only the missing file is uploaded |
 | `anodizer tag rollback` | deleted, because the failed row names them |
 
-A rollback after a successful re-run deletes all three: the re-run's report takes over the objects the failed run recorded, as long as `dist/run-<tag>/` is still there for the second run (`--clean` keeps it; a fresh checkout does not have it). See [What a failed publisher leaves on record](../advanced/release-resilience.md#what-a-failed-publisher-leaves-on-record).
+A rollback after a successful re-run deletes all three: the re-run's report takes over the objects the failed run recorded, as long as `dist/run-<tag>/` is still there for the second run (`--clean` keeps it; a fresh checkout does not have it). See [What a failed publisher leaves on record](../advanced/release-resilience.md#record-of-a-failed-publisher).
 
 ### What a rollback deletes
 

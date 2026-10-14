@@ -15,11 +15,11 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 // one-time deprecation warning is emitted by
 // [`crate::config::warn_on_legacy_furies_alias`].
 
-/// GemFury package registry publisher configuration.
+/// Gemfury package registry publisher configuration.
 ///
 /// Pushes deb / rpm / apk artifacts to `https://push.fury.io/<account>`.
 /// Authenticates via HTTP Basic auth using the push token as the username
-/// (empty password) — the conventional Fury push surface.
+/// (empty password) — the conventional Fury push form.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct GemFuryConfig {
@@ -30,7 +30,7 @@ pub struct GemFuryConfig {
     pub ids: Option<Vec<String>>,
 
     /// Glob patterns matched against each artifact's file name; anodizer drops
-    /// any artifact whose name matches at least one glob from THIS GemFury
+    /// any artifact whose name matches at least one glob from THIS Gemfury
     /// target only. Use it to keep heavy sidecars off the account while
     /// packages still upload. Composes with `ids:` and the format filter (all
     /// filters apply). Unset or empty keeps everything.
@@ -43,7 +43,7 @@ pub struct GemFuryConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exclude: Option<Vec<String>>,
 
-    /// GemFury account name. Required; rendered through the template engine
+    /// Gemfury account name. Required; rendered through the template engine
     /// so `account: "{{ Env.MY_FURY_ACCOUNT }}"` works.
     pub account: Option<String>,
 
@@ -85,7 +85,7 @@ pub struct GemFuryConfig {
 
     /// Override whether this publisher failing should fail the overall release.
     ///
-    /// Default: `true` — GemFury is a Manager-group publisher (mutable but
+    /// Default: `true` — Gemfury is a Manager-group publisher (mutable but
     /// reversible via the delete API), so a failed publish aborts by default
     /// to avoid surprising the operator with a half-released version. Set to
     /// `false` to log failures but continue.
@@ -93,7 +93,7 @@ pub struct GemFuryConfig {
     pub required: Option<bool>,
 
     /// Template-conditional gate: when the rendered result is falsy
-    /// (`"false"` / `"0"` / `"no"` / empty), the GemFury publisher entry is
+    /// (`"false"` / `"0"` / `"no"` / empty), the Gemfury publisher entry is
     /// skipped. Render failure hard-errors. Exposes the `gemfury[].if:`
     /// conditional gate; distinct from `skip:` (which expresses "always
     /// skip") and provides config-import parity.
@@ -102,6 +102,6 @@ pub struct GemFuryConfig {
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in
-    /// place rather than attempting to undo it. Default `false`.
+    /// place and does not try to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
 }

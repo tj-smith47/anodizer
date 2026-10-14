@@ -10,7 +10,7 @@ use super::*;
 /// Schema Store) resolve for `.anodizer.yaml`, so the published schema and the
 /// editor integration agree.
 ///
-/// Returns a plain `Value` rather than [`schemars::Schema`] deliberately:
+/// Returns a plain `Value` on purpose, and no [`schemars::Schema`]:
 /// serializing a `Schema` re-imposes schemars 1.x's keyword ordering (via its
 /// internal `OrderedKeywordWrapper`), which would undo `canonicalize_schema`.
 /// Serializing the `Value` directly preserves the canonical order.
@@ -27,7 +27,7 @@ pub fn config_schema() -> serde_json::Value {
 /// JSON Schema keyword serialization order matching schemars 0.8's `SchemaObject`
 /// field declaration order (its flattened `Metadata` / `SubschemaValidation` /
 /// number / string / array / object validation structs concatenated in struct
-/// order). The published `schema.json` is byte-pinned to this order so it stays
+/// order). The published `schema.json` is held byte-for-byte to this order so it stays
 /// stable across schemars upgrades (1.x emits a different keyword order, and the
 /// workspace builds `serde_json` with `preserve_order` — via `stage-publish` —
 /// so insertion order leaks into the file unless re-imposed here). An unlisted
@@ -226,19 +226,44 @@ pub fn collapse_description(s: &str) -> String {
 
 /// Collapse a fence-free run of doc text: hard-wrapped lines within a paragraph
 /// join with single spaces, blank-line paragraph breaks survive.
+///
+/// A list item (`- `, `* `, `1. `) or a table row (`|`) starts its own line,
+/// so a list or a table in a doc comment still renders as one; the item's
+/// wrapped continuation lines join it.
 fn collapse_prose(s: &str) -> String {
     s.split("\n\n")
         .map(|para| {
-            para.split('\n')
-                .map(str::trim)
+            let mut lines: Vec<String> = Vec::new();
+            for line in para.split('\n').map(str::trim) {
+                match lines.last_mut() {
+                    Some(last) if !starts_own_line(line) => {
+                        if !line.is_empty() {
+                            last.push(' ');
+                            last.push_str(line);
+                        }
+                    }
+                    _ => lines.push(line.to_string()),
+                }
+            }
+            lines
+                .iter()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
                 .collect::<Vec<_>>()
-                .join(" ")
-                .trim()
-                .to_string()
+                .join("\n")
         })
         .filter(|para| !para.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// Whether a trimmed doc line opens a list item or a table row.
+fn starts_own_line(line: &str) -> bool {
+    if line.starts_with("- ") || line.starts_with("* ") || line.starts_with('|') {
+        return true;
+    }
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    (1..=2).contains(&digits) && line[digits..].starts_with(". ")
 }
 
 #[cfg(test)]
@@ -250,6 +275,20 @@ mod tests {
         assert_eq!(
             collapse_description("a doc comment\nwrapped by rustfmt\n\nsecond paragraph"),
             "a doc comment wrapped by rustfmt\n\nsecond paragraph"
+        );
+    }
+
+    #[test]
+    fn collapse_description_keeps_list_items_and_table_rows_on_their_own_lines() {
+        let doc = "Intro wrapped\nhere:\n\n- first item\n  wrapped\n- second\n1. one\n2. two\n\n| a | b |\n|---|---|\n| 1 | 2 |";
+        assert_eq!(
+            collapse_description(doc),
+            "Intro wrapped here:\n\n- first item wrapped\n- second\n1. one\n2. two\n\n| a | b |\n|---|---|\n| 1 | 2 |"
+        );
+        // A year or a long number at the start of a wrapped line is prose.
+        assert_eq!(
+            collapse_description("since\n2026. Done"),
+            "since 2026. Done"
         );
     }
 

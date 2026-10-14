@@ -29,7 +29,9 @@ use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
 use anodizer_core::artifact::{Artifact, ArtifactKind};
-use anodizer_core::config::{AttestationArtifactKind, AttestationConfig, AttestationMode};
+use anodizer_core::config::{
+    AttestationArtifactKind, AttestationConfig, AttestationMode, default_attestable_kinds,
+};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
 
@@ -162,59 +164,6 @@ impl InTotoStatement {
 }
 
 // ---------------------------------------------------------------------------
-// Kind mapping
-// ---------------------------------------------------------------------------
-
-/// Map a configured [`AttestationArtifactKind`] to the concrete
-/// [`ArtifactKind`]s it selects from the registry.
-///
-/// Between them the variants reach every release-uploadable kind (the
-/// `release_uploadable_kinds()` set minus signatures/certificates), so an
-/// explicit `artifacts:` selection can name anything that reaches the release.
-fn concrete_kinds(kind: AttestationArtifactKind) -> &'static [ArtifactKind] {
-    match kind {
-        // archive: packaged + self-extracting archives + AppImages (a single
-        // self-contained, runnable Linux bundle, same shape as makeself).
-        AttestationArtifactKind::Archive => &[
-            ArtifactKind::Archive,
-            ArtifactKind::Makeself,
-            ArtifactKind::AppImage,
-        ],
-        // binary: uploadable raw binaries (the bare-binary release-asset kind,
-        // NOT the intermediate build output).
-        AttestationArtifactKind::Binary => &[ArtifactKind::UploadableBinary],
-        // checksum: checksum files + split sidecars.
-        AttestationArtifactKind::Checksum => &[ArtifactKind::Checksum],
-        // package: Linux packages (.deb/.rpm/.apk) + source RPMs.
-        AttestationArtifactKind::Package => &[ArtifactKind::LinuxPackage, ArtifactKind::SourceRpm],
-        // source: the source-archive tarball.
-        AttestationArtifactKind::Source => &[ArtifactKind::SourceArchive],
-        // sbom: generated SBOM documents.
-        AttestationArtifactKind::Sbom => &[ArtifactKind::Sbom],
-        // installer: Windows MSI/NSIS, macOS DMG, macOS PKG.
-        AttestationArtifactKind::Installer => &[
-            ArtifactKind::Installer,
-            ArtifactKind::DiskImage,
-            ArtifactKind::MacOsPackage,
-        ],
-    }
-}
-
-/// The concrete [`ArtifactKind`]s attested when `artifacts:` is omitted: the
-/// canonical release-uploadable set minus the integrity outputs that are
-/// either signatures over other artifacts (`Signature`/`Certificate`) or the
-/// attestation outputs themselves. Derived from `release_uploadable_kinds()`
-/// rather than hand-curated so a kind added to the release surface is attested
-/// by default rather than silently dropped.
-fn default_attestable_kinds() -> Vec<ArtifactKind> {
-    anodizer_core::artifact::release_uploadable_kinds()
-        .iter()
-        .copied()
-        .filter(|k| !matches!(k, ArtifactKind::Signature | ArtifactKind::Certificate))
-        .collect()
-}
-
-// ---------------------------------------------------------------------------
 // Subject derivation
 // ---------------------------------------------------------------------------
 
@@ -276,8 +225,8 @@ fn crate_has_artifacts(ctx: &Context, crate_name: &str) -> bool {
 /// Collect attestation subjects for one crate, in a deterministic order.
 ///
 /// Resolves the concrete [`ArtifactKind`] set — the explicit `artifacts:`
-/// selection mapped via [`concrete_kinds`], or the full
-/// [`default_attestable_kinds`] when omitted — and derives a [`Subject`] per
+/// selection mapped via [`AttestationArtifactKind::concrete_kinds`], or the
+/// full [`default_attestable_kinds`] when omitted — and derives a [`Subject`] per
 /// matching artifact. Skips binary-sign intermediates (never release assets)
 /// and attestation's own outputs (no self-attestation). De-duplicates by name
 /// so a kind that registers the same file twice doesn't produce a duplicate
@@ -291,7 +240,7 @@ fn collect_subjects(
     let kinds: Vec<ArtifactKind> = match selected {
         Some(sel) => sel
             .iter()
-            .flat_map(|s| concrete_kinds(*s))
+            .flat_map(|s| s.concrete_kinds())
             .copied()
             .collect(),
         None => default_attestable_kinds(),

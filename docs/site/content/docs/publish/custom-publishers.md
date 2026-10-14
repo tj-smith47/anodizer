@@ -78,7 +78,7 @@ Not applicable to anodizer — credentials are the responsibility of the command
 - `artifact_types` filters at dispatch time; if no artifacts match, the publisher is a no-op (no error).
 - An empty, blank or template-emptied `cmd:` fails the run with `publisher "<name>": command is empty` as soon as the publisher matches an artifact — on a dry run too, so `anodizer release --snapshot` catches the typo. A publisher whose filters match nothing is still a clean skip.
 
-## Filtering artifacts
+## Artifact filters
 
 ```yaml
 publishers:

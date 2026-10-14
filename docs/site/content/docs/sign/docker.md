@@ -24,7 +24,7 @@ docker_signs:
 | `artifacts` | string | `""` | Which Docker artifacts to sign: `all`, `images`, `manifests`, `none`, or `""` (empty — the default — signs the canonical Docker images). The singular `image` / `manifest` are **not** accepted and hard-error at release time. `none` skips only this entry: another `docker_signs:` entry still runs, and its failure still fails the stage. |
 | `cmd` | string | `cosign` | Signing command to invoke. |
 | `args` | list | `["sign", "--key=cosign.key", "{{ .Artifact }}@{{ .Digest }}", "--yes"]` | Arguments passed to the signing command. `{{ Artifact }}` is replaced by the digest-pinned image reference and `{{ Signature }}` by the synthesized `<image>@<digest>.sig` name before the rest is rendered as a template; `{{ Digest }}` renders the image digest. The `${artifact}` shell variables the [binary/archive path](@/docs/sign/binaries-archives.md) expands are **not** expanded here and reach the signing command as literal text. |
-| `signature` | string | — | **Ignored.** A container signature is stored in the registry beside the image rather than written to a file, so anodizer synthesizes the `<image>@<digest>.sig` name its argv substitutes and reads this template nowhere. `anodizer check config` warns when it is set. |
+| `signature` | string | — | **Ignored.** A container signature is stored in the registry beside the image with no file written, so anodizer synthesizes the `<image>@<digest>.sig` name its argv substitutes and reads this template nowhere. `anodizer check config` warns when it is set. |
 | `certificate` | string | | Certificate file whose **presence** selects cosign's bundle verification mode. The path itself never reaches the signing command — `{{ Certificate }}` in `args:` renders empty. |
 | `ids` | list | all | Only sign images from docker configs whose `id` is in this list. |
 | `stdin` | string | | Content written to the signing command's stdin (e.g. a passphrase); rendered as a template (e.g. `{{ Env.GPG_PASSPHRASE }}`) with nothing substituted first, so neither `{{ Artifact }}` nor `${artifact}` names anything here. |
@@ -36,7 +36,7 @@ docker_signs:
 Images are signed one at a time. A keyless config (no `--key` argument) also
 takes the same host-level advisory lock as keyless
 [binary/archive signing](@/docs/sign/binaries-archives.md), so two anodizer processes on
-one host queue on the sigstore TUF trust store instead of colliding on it.
+one host take turns on the sigstore TUF trust store and do not collide on it.
 
 ## Job summary
 

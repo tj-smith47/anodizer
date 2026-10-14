@@ -7,8 +7,8 @@ use super::StringOrU32;
 // SourceConfig
 // ---------------------------------------------------------------------------
 
-/// An individual file entry for the source archive, with `src` and `dst`
-/// paths and file metadata overrides.
+/// An individual file entry for the source archive, with `src`, `dst`,
+/// `strip_parent` and `info` (file metadata overrides) keys.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct SourceFileEntry {
@@ -50,7 +50,9 @@ pub struct SourceConfig {
     /// Prefix prepended to all paths inside the archive (supports templates).
     /// Defaults to name_template value. Use this to set a different prefix than the archive name.
     pub prefix_template: Option<String>,
-    /// Extra files to include in the source archive. Accepts strings (glob patterns) or objects with `src`, `dst` and `info` keys.
+    /// Extra files to include in the source archive. Accepts strings (glob
+    /// patterns) or objects with `src`, `dst`, `info` and `strip_parent`
+    /// keys.
     #[serde(default, deserialize_with = "deserialize_source_files")]
     #[schemars(schema_with = "source_files_schema")]
     pub files: Vec<SourceFileEntry>,
@@ -108,7 +110,7 @@ fn source_files_schema(generator: &mut schemars::SchemaGenerator) -> schemars::S
     let mut schema = generator.subschema_for::<Vec<SourceFileEntry>>();
     schema.ensure_object().insert(
         "description".to_owned(),
-        "Extra files for the source archive. Accepts strings (glob patterns), objects with src/dst/info, or a mixed array.".into(),
+        "Extra files for the source archive. Accepts strings (glob patterns), objects with src, dst, info and strip_parent keys, or a mixed array.".into(),
     );
     schema
 }

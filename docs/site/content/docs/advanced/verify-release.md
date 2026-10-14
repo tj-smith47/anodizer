@@ -16,7 +16,7 @@ waits on Chocolatey/WinGet moderation queues): `verify_release` is a broader,
 top-level gate covering the GitHub release's assets and the produced Linux
 packages.
 
-## What it checks
+## Checks
 
 Four independently-toggleable checks:
 
@@ -76,7 +76,7 @@ $ anodizer release
 ```
 
 Extra assets on the release (orphans from a prior re-cut) are reported as an
-advisory, never a failure on their own.
+advisory; on their own they do not fail the check.
 
 ### Size + digest verification
 
@@ -212,10 +212,10 @@ request. Every probe above therefore keeps asking — backing off from 5 seconds
 to a 30-second cap — before it reports an absence. npm has been observed to
 take ten minutes to serve a package after `npm publish` returned.
 
-The window belongs to the **whole sweep**, not to each target: it opens once,
+The window belongs to the **whole sweep**: it opens once,
 runs for 12 minutes, and every probe of that run shares it. A release publishing
 43 targets to a registry that never serves them therefore costs one 12-minute
-window, not 43 of them. `retry.max_elapsed` caps the window too, so lowering
+window in total. `retry.max_elapsed` caps the window too, so lowering
 that lowers this; a dry run probes once and never waits.
 
 Waiting out propagation is the expected case, so it prints no warning. The
@@ -228,8 +228,8 @@ publisher's own result line says how much of the publish arrived late:
 Run with `-v` to see each individual re-ask.
 
 A failure re-asking cannot resolve — a rejected credential, a bucket store that
-could not be built — ends that target immediately instead of holding the
-shared window open on a fixed answer.
+could not be built — ends that target immediately, so the shared window is not
+held open on a fixed answer.
 
 Docker files no publish report, so its targets come from the artifacts: an image
 artifact records that its push returned, which is what also carries the pushed
@@ -248,7 +248,7 @@ recorded warning that never fails the release: the probe reads only the plain
 helper binary, so a repository whose credential lives in a helper answers 401 to
 a push that succeeded. The probe also asks over TLS everywhere but
 loopback (`localhost`, `127.0.0.0/8`, `[::1]`), so a plain-HTTP registry reached
-through docker's `insecure-registries` answers as unverifiable rather than as a
+through docker's `insecure-registries` answers as unverifiable and is not counted as a
 failure.
 
 ```yaml
@@ -271,7 +271,7 @@ crates:
 
 A publisher that was skipped, deselected, or failed is not probed — it published
 nothing this run. A probe that **cannot run** (index unreachable, store build
-failure) is reported as an issue once the window closes, never silently passed:
+failure) is reported as an issue once the window closes; it does not pass silently:
 an unverifiable landing is a finding.
 
 ```
@@ -316,11 +316,11 @@ image defaults to a sane base (`debian:stable-slim`, `fedora:latest`,
 `alpine:latest`); override only the ones you care about.
 
 The `--platform` pin comes from the package's build target — an arm64 `.deb`
-is installed in an arm64 container, never the runner's native one. Running a
+is installed in an arm64 container whatever the runner's native platform is. Running a
 non-native platform needs cross-arch emulation (qemu/binfmt) on the Docker
 host; anodizer probes for it once per platform and, when it is missing,
-**fails that package's smoke-test loudly** instead of reporting a misleading
-in-container arch error or silently skipping the coverage:
+**fails that package's smoke-test loudly** with a message naming the cause; it
+does not report a misleading in-container arch error or silently skip the coverage:
 
 ```
 - crate 'myapp': install smoke-test failed for myapp_1.0.0_linux_arm64.deb on debian:stable-slim:
@@ -354,8 +354,8 @@ won't run on the target distro" regression:
   - crate 'myapp': usr/bin/myapp requires glibc 2.38, exceeding the configured ceiling 2.36
 ```
 
-The comparison is **numeric, component-wise** (so `2.36 > 2.4`, not the wrong
-lexical ordering). **musl** binaries have no glibc requirement and are
+The comparison is **numeric, component-wise** (so `2.36 > 2.4`, which a
+lexical ordering gets wrong). **musl** binaries have no glibc requirement and are
 **skipped** — which is the whole point: a musl build would otherwise hide a
 glibc-floor regression, so a ceiling-checked release should ship glibc `.deb`s
 to be meaningful.
@@ -382,7 +382,7 @@ In workspace modes (lockstep or per-crate), the gate verifies **every** publishe
 crate: asset-existence across each crate's produced set, install-smoke and
 libc-ceiling across each crate's Linux packages. No crate is siloed.
 
-## Skipping
+## Skip flag
 
 ```bash
 anodizer release --skip=verify-release

@@ -25,7 +25,7 @@ Release Rust projects with ease
 
 ### `anodizer release`
 
-Run the full release pipeline. Re-running the identical command converges on already-published state instead of double-publishing, so a re-run is how a failed release is recovered
+Run the full release pipeline. Re-running the identical command converges on already-published state and publishes nothing twice, so a re-run is how a failed release is recovered
 
 
 | Flag | Short | Default | Description |
@@ -40,7 +40,7 @@ Run the full release pipeline. Re-running the identical command converges on alr
 | `--skip` | — | — | Skip stages or publishers (comma-separated, e.g. docker,announce,npm). Unified denylist: a stage name skips the stage, a publisher name (npm, homebrew, chocolatey, …) skips that publisher. |
 | `--publishers` | — | — | Comma-separated publishers to run (default: all configured). --skip always wins over --publishers. |
 | `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN env vars) |
-| `--timeout` | — | `3h` | Pipeline timeout duration (e.g., 90m, 3h, 5s) — a generous safety backstop, not the primary bound; per-stage bounds (e.g. announce.deadline) catch a hung stage in seconds |
+| `--timeout` | — | `3h` | Pipeline timeout duration (e.g., 90m, 3h, 5s). A generous safety backstop: per-stage bounds (e.g. announce.deadline) catch a hung stage in seconds |
 | `--parallelism` | `-p` | — | Maximum number of parallel build jobs (default: number of CPUs) |
 | `--auto-snapshot` | — | — | Automatically set --snapshot if the git repo is dirty |
 | `--single-target` | — | — | Build only for the host target triple |
@@ -59,7 +59,7 @@ Run the full release pipeline. Re-running the identical command converges on alr
 | `--show-skipped` | — | — | Show per-crate 'no <publisher> config block' skip lines at default verbosity (normally only visible with --debug). Use to diagnose why a publisher didn't run for a given crate. |
 | `--allow-nondeterministic` | — | — | Runtime non-determinism opt-out for a specific artifact (repeatable). Mutually exclusive with --strict. |
 | `--summary-json` | — | — | Write the per-publisher run summary JSON to this path. Without it, real (non-snapshot, non-dry-run) releases write <dist>/run-<id>/summary.json — even when a stage fails — so recovery tooling always has machine-readable publish state. |
-| `--allow-ai-failure` | — | — | If `changelog.ai` is configured and the AI provider fails, log a warning and keep the pre-AI release notes instead of aborting the release. |
+| `--allow-ai-failure` | — | — | If `changelog.ai` is configured and the AI provider fails, log a warning and keep the pre-AI release notes so the release goes on. |
 | `--allow-snapshot-publish` | — | — | DANGEROUS: allow publishing a non-release version (snapshot / dirty / 0.0.0-sentinel, e.g. 0.0.0~SNAPSHOT-<sha>) to external publishers. By default the publish, blob, and announce stages refuse such versions — several indexes (crates.io, Cloudsmith, Chocolatey, winget, AUR) are one-way doors. Use ONLY for a private/test channel. |
 | `--split` | — | — | Run only the build stage for split CI fan-out (outputs artifacts JSON to dist/) |
 | `--merge` | — | — | Merge artifacts from split build jobs and resume the pipeline from post-build stages |
@@ -79,7 +79,7 @@ Build binaries only (always runs in snapshot mode)
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--crate` | — | — | Build a specific crate (repeatable) |
-| `--timeout` | — | `3h` | Pipeline timeout duration (e.g., 90m, 3h, 5s) — a generous safety backstop, not the primary bound; per-stage bounds (e.g. announce.deadline) catch a hung stage in seconds |
+| `--timeout` | — | `3h` | Pipeline timeout duration (e.g., 90m, 3h, 5s). A generous safety backstop: per-stage bounds (e.g. announce.deadline) catch a hung stage in seconds |
 | `--parallelism` | `-p` | — | Maximum number of parallel build jobs (default: number of CPUs) |
 | `--single-target` | — | — | Build only for the host target triple |
 | `--workspace` | — | — | Build a specific workspace in a monorepo config |
@@ -118,7 +118,7 @@ Run the determinism harness (build pipeline twice, diff artifacts)
 | `--snapshot` | — | — | Force snapshot mode on the child release subprocess (artifacts get a `-SNAPSHOT-<sha>` suffix). Default: auto — snapshot off when HEAD is at a tag, on otherwise. |
 | `--no-snapshot` | — | — | Force snapshot mode OFF on the child release subprocess (artifacts emit the actual release version). Default: auto — see --snapshot. |
 | `--preserve-dist` | — | — | On a passing run, copy run-0's `<worktree>/dist/**` to <path> and emit `<path>/context.json` describing the artifact set. The release workflow's publish-only path consumes this to ship the determinism step's output directly (eliminates the redundant `build:` recompilation). Local operators can pass this too — useful for inspecting a hermetic dist tree without re-running the release pipeline. |
-| `--crate` | — | — | When --preserve-dist is set, write the preserved dist tree to <dest>/<name>/ instead of directly into <dest>/. Used by the sharded matrix to produce per-crate subdirectories so a `release --publish-only` job can merge all crates into a single dist/ without context.json collision. |
+| `--crate` | — | — | When --preserve-dist is set, write the preserved dist tree to <dest>/<name>/ (without it the tree goes straight into <dest>/). The sharded matrix uses it to produce per-crate subdirectories so a `release --publish-only` job can merge all crates into a single dist/ without context.json collision. |
 | `--require-tools` | — | — | Fail (not warn-skip) if any selected stage's backing tool is missing — used by CI so a default host-OS run cannot silently skip an OS-native producer. |
 
 
@@ -176,7 +176,7 @@ Run the release preflight without releasing: the environment check (required too
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--json` | — | — | Output the report as JSON |
-| `--publish-only` | — | — | Check only the publish-time stages (what `release --publish-only` runs), not artifact-producing stages |
+| `--publish-only` | — | — | Check only the publish-time stages (what `release --publish-only` runs) and skip the artifact-producing stages |
 | `--skip` | — | — | Skip requirement collection for these stages (comma-separated, same names as release --skip) |
 | `--publishers` | — | — | Comma-separated publishers to run (default: all configured). --skip always wins over --publishers. |
 | `--token` | — | — | GitHub token override; when set, GitHub token env-var requirements are treated as satisfied |
@@ -232,7 +232,7 @@ Emit the external CLI tools the resolved config's pipeline will invoke
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--json` | — | — | Output as JSON |
-| `--publish-only` | — | — | Only the tools the publish-time stages need (what `release --publish-only` runs), not artifact-producing stages |
+| `--publish-only` | — | — | Only the tools the publish-time stages need (what `release --publish-only` runs); the artifact-producing stages are left out |
 | `--skip` | — | — | Drop tools contributed by these skipped stages (comma-separated, same names as release --skip) |
 | `--publishers` | — | — | Comma-separated publishers to run (default: all configured). --skip always wins over --publishers. |
 
@@ -269,7 +269,7 @@ Withdraw a release: unwind the publishers the run recorded, delete the anodizer-
 | `<sha>` | — | — | Commit SHA to roll back from. Defaults to HEAD. |
 | `--dry-run` | — | — | Print what would happen without mutating anything |
 | `--no-push` | — | — | Skip remote tag delete and branch push (local-only) |
-| `--force` | — | — | Override the published-state guard: roll back even when the tag's run summary shows a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) accepted the version, when the crates.io index shows the tag's crate@version live (GLOBAL state — published by any prior run, not just this one; an unreachable index also refuses), or — when no summary exists — when a published (non-draft) GitHub release exists for the tag. Without it, rollback refuses because those registries never accept the same version twice: the version is burned and the only clean recovery is fixing forward |
+| `--force` | — | — | Override the published-state guard: roll back even when the tag's run summary shows a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) accepted the version, when the crates.io index shows the tag's crate@version live (GLOBAL state: a version published by any run counts; an unreachable index also refuses), or — when no summary exists — when a published (non-draft) GitHub release exists for the tag. Without it, rollback refuses because those registries never accept the same version twice: the version is burned and the only clean recovery is fixing forward |
 | `--scope` | — | `all` | Tag-shape filter: all | lockstep | per-crate |
 | `--mode` | — | `revert` | Rollback strategy: revert (default; history-preserving) | reset (opt-in; rewrites history, requires --force-with-lease to push) |
 | `--branch` | — | — | Branch name to push the revert commit to. Usually unnecessary: the branch is auto-resolved from the bump commit via `git branch -r --contains <sha>`, which covers the ordinary CI tag-push case (detached HEAD, GITHUB_REF_NAME set to the tag). Needed only when that resolution is ambiguous or empty — the bump commit is on two or more remote branches, or on none and HEAD cannot be resolved either. Both cases fail with an error naming this flag. Pass --branch master (or whichever branch the bump commit was created on). |

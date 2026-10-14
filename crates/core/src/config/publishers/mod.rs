@@ -107,7 +107,7 @@ pub struct GitRepoConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct PullRequestConfig {
-    /// Enable PR creation instead of direct push.
+    /// Open a pull request. When false, the commit is pushed directly.
     pub enabled: Option<bool>,
     /// Create PR as draft.
     pub draft: Option<bool>,
@@ -166,7 +166,7 @@ pub struct CommitAuthorConfig {
     /// PRs against `homebrew/homebrew-core` / `kubernetes-sigs/krew-index`
     /// / `microsoft/winget-pkgs` opened from a GitHub App workflow, where
     /// EasyCLA / DCO / signed-commit policies require the App's identity
-    /// (rather than a per-user bot identity) to complete the merge.
+    /// to complete the merge; a per-user bot identity is refused.
     #[serde(default)]
     pub use_github_app_token: bool,
 }
@@ -175,7 +175,7 @@ impl CommitAuthorConfig {
     /// Fill in the anodizer default name/email when either field is empty.
     /// The commit-author defaulting, which
     /// runs during the Default pass — so validation messages that reference
-    /// commit-author identity see non-empty strings rather than blanks.
+    /// commit-author identity see non-empty strings.
     pub fn normalize_defaults(&mut self) {
         if self.name.as_deref().is_none_or(str::is_empty) {
             self.name = Some("anodizer".to_string());
@@ -226,7 +226,7 @@ pub struct PublishConfig {
     pub winget: Option<WingetConfig>,
     /// AUR (Arch User Repository) binary package publishing configuration.
     pub aur: Option<AurConfig>,
-    /// AUR source package publishing configuration (source-only PKGBUILD, not -bin).
+    /// AUR source package publishing configuration (source-only PKGBUILD; no -bin package).
     pub aur_source: Option<AurSourceConfig>,
     /// Krew (kubectl plugin manager) manifest publishing configuration.
     pub krew: Option<KrewConfig>,
@@ -256,7 +256,7 @@ pub struct PublishConfig {
     /// stderr) — interpolating it into `cmd` lets crafted error content
     /// break quoting and execute. Read untrusted values from the env vars
     /// instead (`$ANODIZER_ERROR`), and pass `anodizer notify --raw` so the
-    /// text is sent literally rather than Tera-rendered. The outbound
+    /// text is sent literally with no Tera rendering. The outbound
     /// notification body is secret-redacted by default, so a secret reference
     /// smuggled into the error body is masked (sent as `$NAME`) even without
     /// `--raw`; `--raw` stays recommended because it avoids re-rendering
@@ -273,11 +273,11 @@ pub struct PublishConfig {
     /// Hooks that fire once per publisher `anodizer tag rollback` REVERTED —
     /// including a publisher that itself `Succeeded` and is being withdrawn
     /// because the whole release is (the case `on_error`, which fires solely
-    /// for a failed publisher, never reaches). A publisher whose
+    /// for a failed publisher, does not cover). A publisher whose
     /// rollback was attempted but could not complete fires this too, with
     /// `{{ .RollbackFailed }}` set to `true` so the hook can escalate the
     /// orphaned-artifact case. Each entry is a standard hook (`cmd` / `dir` /
-    /// `env` / `output`); the template surface adds `{{ .Publisher }}`,
+    /// `env` / `output`); the template variables add `{{ .Publisher }}`,
     /// `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}`
     /// (Assets/Manager/Submitter), `{{ .Required }}`, `{{ .RollbackFailed }}`
     /// (`true` when the revert itself failed), `{{ .Error }}` (the rollback
@@ -300,7 +300,7 @@ pub struct PublishConfig {
     pub on_rollback: Option<Vec<HookEntry>>,
 }
 
-/// `cargo publish` flag surface.
+/// `cargo publish` flags.
 ///
 /// Presence under `publish:` opts the crate in; use `skip: true` (or a
 /// template rendering `true` or `1`) to opt out. There is no `enabled` field — presence is
@@ -310,7 +310,7 @@ pub struct PublishConfig {
 /// - `--package` / `--workspace` / `--exclude`: the top-level `crates[]`
 ///   axis owns crate selection.
 /// - `--dry-run`: pipeline-level CLI ergonomics (`anodizer release --dry-run`).
-/// - `-v` / `-q` / `--color`: CLI ergonomics, not config.
+/// - `-v` / `-q` / `--color`: CLI ergonomics with no config key.
 /// - `--config` / `-Z`: cargo CLI escape hatches; out of scope.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -410,7 +410,7 @@ pub struct CargoPublishConfig {
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in
-    /// place rather than attempting to undo it. Default `false`.
+    /// place and does not try to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
 }
 
@@ -464,8 +464,8 @@ pub enum CargoAuthMode {
     /// Always authenticate with OIDC (Trusted Publishing); never fall back to
     /// the token. Errors if the GitHub Actions OIDC request env
     /// (`ACTIONS_ID_TOKEN_REQUEST_URL` / `_TOKEN`) is absent, so a
-    /// misconfigured Trusted Publisher fails the release loudly instead of
-    /// silently falling back to a token.
+    /// misconfigured Trusted Publisher fails the release loudly and never
+    /// falls back to a token.
     Oidc,
 }
 
@@ -550,8 +550,8 @@ impl WaitForWorkspaceDepsConfig {
 /// The publish registry collapses these overrides across all of a
 /// publisher's config sources (per-crate blocks over the full crate
 /// universe, top-level entry lists) into a single publisher-level value.
-/// Implementing this trait — rather than hand-copying the field accessor
-/// chain per publisher — makes it impossible for a publisher to collapse
+/// Implementing this trait, with no hand-copied field accessor chain per
+/// publisher, makes it impossible for a publisher to collapse
 /// `required` but forget the parallel `retain_on_rollback` collapse (or
 /// vice versa).
 pub trait PublisherGateOverrides {

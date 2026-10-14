@@ -50,7 +50,7 @@ Not applicable — archive generation is a local build step with no external ser
 
 ## Republish / update behavior
 
-Not applicable — this is a local packaging stage, not a publisher.
+Not applicable — this is a local packaging stage with no remote to publish to.
 
 ## Archive config fields
 
@@ -61,7 +61,7 @@ Not applicable — this is a local packaging stage, not a publisher.
 | `format_overrides` | list | none | Per-OS format overrides (each entry takes `os` plus `formats`) |
 | `files` | list | none | Extra files to include (e.g., `LICENSE`, `README.md`) |
 | `binaries` | list | all | Specific binaries to include (default: all from builds) |
-| `wrap_in_directory` | bool \| string | none | Wrap contents in a subdirectory. `true` (or an unquoted `1`) names it after the archive, `false` (or an unquoted `0`) or `""` leaves the archive flat, and a string is a directory name template. A string is always a name, never read as a bool: a quoted `"1"` is a directory named `1`, and a quoted `"true"` one named `true`. Any other number is refused when the config loads. |
+| `wrap_in_directory` | bool \| string | none | Wrap contents in a subdirectory. `true` (or an unquoted `1`) names it after the archive, `false` (or an unquoted `0`) or `""` leaves the archive flat, and a string is a directory name template. A string is always a name and is not read as a bool: a quoted `"1"` is a directory named `1`, and a quoted `"true"` one named `true`. Any other number is refused when the config loads. |
 
 ```yaml
 crates:
@@ -95,23 +95,27 @@ spell out.
 Use different formats for different operating systems:
 
 ```yaml
-archives:
-  - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
-    formats: [tar.gz]
-    format_overrides:
-      - os: windows
-        formats: [zip]
+crates:
+  - name: myapp
+    archives:
+      - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
+        formats: [tar.gz]
+        format_overrides:
+          - os: windows
+            formats: [zip]
 ```
 
-## Including extra files
+## Extra files
 
 ```yaml
-archives:
-  - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
-    files:
-      - LICENSE
-      - README.md
-      - config.example.yaml
+crates:
+  - name: myapp
+    archives:
+      - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
+        files:
+          - LICENSE
+          - README.md
+          - config.example.yaml
 ```
 
 ## Shell completions & man pages
@@ -121,20 +125,22 @@ them into every archive. Three mutually-exclusive modes per block — set exactl
 one of `generate` / `from_build_out` / `copy`:
 
 ```yaml
-archives:
-  - id: default
-    completions:
-      # Mode A — run the host-native binary once per shell, reuse for all targets.
-      generate: "{{ ArtifactPath }} completions {{ Shell }}"
-      shells: [bash, zsh, fish, powershell, nushell, elvish]   # arbitrary list
-      dst: "completions/"
-      # Mode B — harvest a build.rs OUT_DIR (clap_complete) via a per-target glob:
-      #   from_build_out: "**/out/{{ Binary }}.{bash,fish,zsh}"
-      # Mode C — copy committed files:
-      #   copy: "contrib/completion/*"
-    manpages:
-      generate: "{{ ArtifactPath }} --man"     # or from_build_out / copy
-      dst: "man/man1/"
+crates:
+  - name: myapp
+    archives:
+      - id: default
+        completions:
+          # Mode A — run the host-native binary once per shell, reuse for all targets.
+          generate: "{{ ArtifactPath }} completions {{ Shell }}"
+          shells: [bash, zsh, fish, powershell, nushell, elvish]   # arbitrary list
+          dst: "completions/"
+          # Mode B — harvest a build.rs OUT_DIR (clap_complete) via a per-target glob:
+          #   from_build_out: "**/out/{{ Binary }}.{bash,fish,zsh}"
+          # Mode C — copy committed files:
+          #   copy: "contrib/completion/*"
+        manpages:
+          generate: "{{ ArtifactPath }} --man"     # or from_build_out / copy
+          dst: "man/man1/"
 ```
 
 Mode A generates **once on the host-native target** (completions/man pages do
@@ -150,7 +156,7 @@ written as `<bin>.1`.
 In `from_build_out` / `copy` globs, `{{ Binary }}` resolves to the
 host-native binary's name — but on a pure cross build (no host artifact) it
 falls back to the **crate name**. If your binary name differs from the crate
-name, spell it literally in the glob instead of relying on `{{ Binary }}`.
+name, spell it literally in the glob; `{{ Binary }}` will not match it.
 
 ### Single source of truth for nfpm
 
@@ -165,12 +171,14 @@ dist/.manpages/<crate>/      # e.g. dist/.manpages/rg/rg.1
 Point an nfpm `contents:` entry at the staging dir to install them system-wide:
 
 ```yaml
-nfpm:
-  - contents:
-      - src: "dist/.completions/rg/*"
-        dst: /usr/share/bash-completion/completions/
-      - src: "dist/.manpages/rg/*"
-        dst: /usr/share/man/man1/
+crates:
+  - name: myapp
+    nfpm:
+      - contents:
+          - src: "dist/.completions/rg/*"
+            dst: /usr/share/bash-completion/completions/
+          - src: "dist/.manpages/rg/*"
+            dst: /usr/share/man/man1/
 ```
 
 ## Raw binary (no archive)
@@ -178,8 +186,10 @@ nfpm:
 Use `formats: [binary]` to skip archiving and distribute the raw binaries:
 
 ```yaml
-archives:
-  - formats: [binary]
+crates:
+  - name: myapp
+    archives:
+      - formats: [binary]
 ```
 
 One output per binary, per target. Each is named by rendering `name_template`
@@ -205,10 +215,12 @@ LICENSE/README/CHANGELOG are all dropped. Configuring them explicitly is not an
 error (`--strict` included); it earns a `-v` note:
 
 ```yaml
-archives:
-  - formats: [binary]
-    files:
-      - LICENSE
+crates:
+  - name: myapp
+    archives:
+      - formats: [binary]
+        files:
+          - LICENSE
 ```
 
 ```console
@@ -224,21 +236,23 @@ entry that selects no binaries at all (`meta: true`) produces nothing under
      • skipped archive for myapp/unknown — meta archive under format: binary carries no binaries
 ```
 
-### Naming a `binary` output
+### `binary` output names
 
 Each `binary` output is named per binary from `{{ .Binary }}`. Setting
 `name_template:` on the entry wins instead, so an entry shipping a single
 binary can pin any name in one line:
 
 ```yaml
-archives:
-  - formats: [binary]
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+crates:
+  - name: myapp
+    archives:
+      - formats: [binary]
+        name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 ```
 
 A template without `{{ .Binary }}` renders one path for every binary the entry
-selects, so an entry shipping two or more binaries is rejected rather than
-letting one overwrite the other. Every output path of the whole run — every
+selects, so an entry shipping two or more binaries is rejected, so one
+cannot overwrite the other. Every output path of the whole run — every
 crate, build target, format and binary — is claimed before the first copy, so
 the refusal leaves no archive or binary behind in `dist/`; only the run's own
 bookkeeping remains — the effective `config.yaml` every run writes, plus
@@ -275,7 +289,7 @@ a distinct name instead.
 
 Archiving is idempotent. A re-run — `release` after `release --prepare`, a
 retried `release --merge`, or any run over a `dist/` a previous attempt already
-populated — rewrites its own archives rather than refusing:
+populated — rewrites its own archives and does not refuse:
 
 ```console
 $ anodizer release --split                    # writes dist/myapp-1.0.0-linux-amd64.tar.gz
@@ -285,7 +299,7 @@ $ anodizer release --merge --verbose           # converges over it
 ```
 
 A `name_template` that renders the same filename twice **within one run** is
-still a hard error — that is a config defect, not leftover state, and it is
+still a hard error — that is a config defect with no leftover state involved, and it is
 caught in `--dry-run` and `--snapshot` too:
 
 ```text
@@ -297,7 +311,7 @@ to the `name_template` (e.g. "{{ .ProjectName }}_{{ .Arch }}") so each archive
 gets a distinct path.
 ```
 
-## Disabling archives
+## Disabled archives
 
 ```yaml
 crates:

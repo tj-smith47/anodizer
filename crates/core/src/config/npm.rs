@@ -64,7 +64,7 @@ pub enum NpmAuthMode {
     /// Always authenticate with OIDC (Trusted Publishing); never fall back to
     /// the token. Errors if the OIDC request env is absent. Use when every
     /// package in this entry has a configured Trusted Publisher and you want a
-    /// failed exchange to fail the release loudly rather than silently fall
+    /// failed exchange to fail the release loudly and never fall
     /// back to a token.
     Oidc,
 }
@@ -120,8 +120,8 @@ pub struct NpmConfig {
     /// standard release context, four platform vars are available per package:
     /// `NpmOs` (npm's os selector: `linux`/`darwin`/`win32`), `NpmCpu`
     /// (`x64`/`arm64`/`ia32`/...), `NpmLibc` (`glibc`/`musl`, empty off-linux),
-    /// plus anodizer's own `Os`/`Arch` target mapping (os `windows`, not
-    /// `win32`). Example: `"git-cliff-{{ Os }}-{{ NpmCpu }}"` yields
+    /// plus anodizer's own `Os`/`Arch` target mapping (os `windows`; `win32`
+    /// is never produced). Example: `"git-cliff-{{ Os }}-{{ NpmCpu }}"` yields
     /// `git-cliff-linux-x64`, `git-cliff-darwin-arm64`, `git-cliff-windows-x64`.
     /// A rendered name without a leading `@` is prefixed with `scope` when one
     /// is set; with this template set, `scope` is optional and unscoped names
@@ -171,7 +171,7 @@ pub struct NpmConfig {
 
     /// Per-platform binary subdirectory inside each `optional-deps` package
     /// (e.g. `bin`). When set, the platform binary ends up at
-    /// `<platform_bin_dir>/<binary>` rather than the package root, the metapackage
+    /// `<platform_bin_dir>/<binary>` below the package root, the metapackage
     /// shim resolves it at that path, and the package's `files` allowlist covers
     /// it. Required by external shims that hard-code a nested resolve path — for
     /// example git-cliff's own wrapper resolves
@@ -280,7 +280,7 @@ pub struct NpmConfig {
     /// Version of the native binary the `postinstall` script downloads, when it
     /// differs from the published npm package version. Feeds the `{{ Version }}`
     /// var of the derived (or `url_template`) download URL, so the npm package
-    /// can be re-published at a new version while still fetching a pinned binary
+    /// can be re-published at a new version while still fetching a fixed binary
     /// release. Falls back to the release version when unset. Only consulted in
     /// `postinstall` mode.
     pub binary_version: Option<String>,
@@ -311,7 +311,7 @@ pub struct NpmConfig {
     /// Free-form root-level `package.json` fields. Shallow-merged into
     /// the generated `package.json` (config keys win over generated ones).
     /// Useful for `mcpName`, `funding`, or other npm metadata fields
-    /// anodizer does not surface as first-class options.
+    /// anodizer does not offer as first-class options.
     pub extra: Option<HashMap<String, serde_json::Value>>,
 
     /// Override the registry endpoint (default `https://registry.npmjs.org`).
@@ -325,7 +325,7 @@ pub struct NpmConfig {
     /// Credential-selection strategy: `auto` (default) decides per package by
     /// probing the registry for the package's existence; `token` always uses
     /// the token; `oidc` always uses Trusted Publishing with no token fallback.
-    /// See [`NpmAuthMode`]. Absent in existing configs resolves to `auto`.
+    /// Absent, it is `auto`.
     #[serde(default)]
     pub auth: NpmAuthMode,
 
@@ -355,7 +355,7 @@ pub struct NpmConfig {
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in
-    /// place rather than attempting to undo it. Default `false`.
+    /// place and does not try to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
 }
 

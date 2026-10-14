@@ -14,7 +14,7 @@ pub struct AurSourceConfig {
     /// Override the package name (default: crate name, no -bin suffix).
     pub name: Option<String>,
     /// Has no effect on a source package: the PKGBUILD builds from the one
-    /// source archive the release carries, not from build artifacts.
+    /// source archive the release carries and reads no build artifacts.
     pub ids: Option<Vec<String>>,
     /// Commit author with optional signing.
     pub commit_author: Option<CommitAuthorConfig>,
@@ -89,7 +89,7 @@ pub struct AurSourceConfig {
     /// to a typed enum because AUR source pkgs build from the upstream
     /// tarball (no binary artifacts to filter), so the value's only role
     /// is as the `Amd64` template var consumed by `prepare:` / `build:` /
-    /// `package:` script bodies — typos must fail at parse time, not
+    /// `package:` script bodies — typos must fail at parse time and never
     /// silently render an invalid string into the PKGBUILD.
     /// When unset, defaults to `v1` at template-render time.
     pub amd64_variant: Option<Amd64Variant>,
@@ -108,17 +108,17 @@ pub struct AurSourceConfig {
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in
-    /// place rather than attempting to undo it. Default `false`.
+    /// place and does not try to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
 }
 
 /// `x86_64` micro-architecture level — `v1` (baseline), `v2`, `v3`, or `v4`.
-/// Typed so a typo fails at config-parse time instead of flowing on as an
+/// Typed so a typo fails at config-parse time and never flows on as an
 /// arbitrary string. This is the ONE type for every `amd64_variant:` config
 /// field: [`BuildConfig::amd64_variant`](super::BuildConfig::amd64_variant) —
 /// where the declared level names a tuned group's artifacts and derived asset
 /// names — [`AurSourceConfig::amd64_variant`], where it constrains the
-/// `prepare:` / `build:` / `package:` template var surface to a known set
+/// `prepare:` / `build:` / `package:` template var to a known set
 /// (AUR source pkgs build from the upstream tarball, so an invalid value
 /// would otherwise render silently into the PKGBUILD), and the variant
 /// *selector* on every installer/packager/publisher config
@@ -137,7 +137,7 @@ pub enum Amd64Variant {
 
 impl Amd64Variant {
     /// Canonical lowercase string form (`"v1"`..`"v4"`). Matches the
-    /// `Goamd64` external surface and the value rendered into the PKGBUILD
+    /// `Goamd64` external spelling and the value rendered into the PKGBUILD
     /// `Amd64` template var.
     pub fn as_str(&self) -> &'static str {
         match self {

@@ -94,7 +94,7 @@ pub struct WingetConfig {
     /// Example: `moniker: "rg"`.
     pub moniker: Option<String>,
     /// Documentation links rendered as the `Documentations[]` block on the
-    /// locale manifest. Each entry is a `{ label, url }` pair surfaced in the
+    /// locale manifest. Each entry is a `{ label, url }` pair shown in the
     /// winget gallery (real ripgrep emits a `FAQ` and a `User Guide` entry).
     /// Omitted entirely when empty.
     ///
@@ -158,7 +158,7 @@ pub struct WingetConfig {
     pub post_publish_poll: Option<PostPublishPollConfig>,
     /// When true, force-push the updated manifest to the existing PR branch
     /// when a PR for the same head branch already exists. The PR content is
-    /// updated in place rather than creating a duplicate. When false (default),
+    /// updated in place, so no duplicate is created. When false (default),
     /// the push is skipped and a warning is emitted so the operator sees that
     /// the publisher did not update the PR.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -177,7 +177,7 @@ pub struct WingetConfig {
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in
-    /// place rather than attempting to undo it. Default `false`.
+    /// place and does not try to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
 }
 
@@ -264,8 +264,8 @@ pub struct WingetDependency {
     ///
     /// Use this when a runtime dependency is architecture-specific: e.g. an
     /// `x64` build needs the x64 VC++ runtime while the native `arm64` build
-    /// needs the arm64 one, so each must be scoped to its own installer rather
-    /// than attached to all of them.
+    /// needs the arm64 one, so each must be scoped to its own installer and
+    /// left off the others.
     ///
     /// Example:
     /// ```yaml

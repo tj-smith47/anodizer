@@ -13,7 +13,7 @@ use super::{HumanDuration, StringOrBool, deserialize_string_or_bool_opt};
 /// unreachable channels (e.g. external endpoints on an egress-firewalled
 /// self-hosted runner) cannot accumulate into a multi-minute hang that trips
 /// the pipeline timeout AFTER the release already published. Stragglers past
-/// this deadline are abandoned with a warning, never awaited forever.
+/// this deadline are abandoned with a warning and are not awaited further.
 pub const DEFAULT_ANNOUNCE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// Floor for the resolved announce deadline.
@@ -33,11 +33,14 @@ pub const MIN_ANNOUNCE_DEADLINE: std::time::Duration = std::time::Duration::from
 /// When the announce stage runs, judged from the results of the publishers
 /// and blob uploads earlier in the same run:
 ///
-/// - `required_publishers` (default): announce runs only if every
-///   `required: true` publisher across the run succeeded.
-/// - `all_publishers`: announce runs only if every configured
-///   publisher succeeded. A publisher skipped because an earlier required
-///   publisher failed counts as not succeeded.
+/// - `required_publishers` (default): announce is skipped when a
+///   `required: true` publisher failed or its rollback failed.
+/// - `all_publishers`: announce is skipped when any publisher, required or
+///   not, failed, its rollback failed, was skipped because an earlier
+///   required publisher failed, or was held back by the verify-release
+///   gate. A publisher skipped for any other reason (not configured,
+///   snapshot, dry run, nightly, already published, deselected, `skip`) or
+///   waiting on moderation or validation does not stop announce.
 /// - `none`: announce always runs.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -63,18 +66,20 @@ pub struct AnnounceConfig {
     pub skip: Option<StringOrBool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the entire announce stage is
-    /// skipped. Render failure hard-errors. The
-    /// `announce.if:`. Distinct from `skip:` (always-skip predicate) — both
-    /// surfaces are documented.
+    /// skipped. Render failure hard-errors. `skip:` is the opposite test:
+    /// it skips on a truthy render.
     /// An absent, empty or blank `if:` imposes no gate and always runs; the
     /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When the announce stage runs, judged from the results of the
     /// publishers and blob uploads earlier in the same run:
-    /// `required_publishers` (default) runs it only if every
-    /// `required: true` publisher succeeded, `all_publishers` only if every
-    /// configured publisher succeeded, and `none` always runs it.
+    /// `required_publishers` (default) skips it when a `required: true`
+    /// publisher failed or its rollback failed; `all_publishers` also skips
+    /// it when any other publisher failed, its rollback failed, was skipped
+    /// after an earlier required failure, or was held back by the
+    /// verify-release gate; `none` always runs it. A publisher skipped for
+    /// another reason, or waiting on moderation, does not stop announce.
     #[serde(default)]
     pub gate_on: AnnounceGate,
     /// Overall wall-clock deadline for the announce stage (e.g. `"90s"`,
@@ -307,7 +312,7 @@ pub struct TelegramAnnounce {
 
 /// Default Adaptive Card title for Teams announcements. Centralised so that a
 /// config-load round-trip (parse → serialise → re-parse) preserves the value
-/// instead of stripping it back to `None`.
+/// and does not strip it back to `None`.
 pub const TEAMS_DEFAULT_TITLE_TEMPLATE: &str = "{{ ProjectName }} {{ Tag }} is out!";
 
 fn default_teams_title_template() -> Option<String> {

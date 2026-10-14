@@ -476,9 +476,8 @@ pub struct SrpmConfig {
     /// binary produced by the build for this crate defaults to
     /// `%{_bindir}/<name>` (i.e. `/usr/bin/<name>`, the RPM-idiomatic
     /// location for a built binary). Provide this only to override the
-    /// install path or to declare extra owned paths. Stored as a
-    /// `BTreeMap` so the emitted `%files` section iterates in
-    /// deterministic key order.
+    /// install path or to declare extra owned paths. The `%files` section
+    /// lists the entries in alphabetical order of binary name.
     pub bins: Option<BTreeMap<String, String>>,
     /// Filesystem prefixes the package may install to (RPM `Prefix:` tag).
     /// Each entry becomes one `Prefix:` directive — relocatable RPMs need

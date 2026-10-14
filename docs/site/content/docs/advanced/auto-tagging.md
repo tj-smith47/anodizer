@@ -153,7 +153,7 @@ The refresh follows the same per-mode file placement as the bump itself:
   `tag_template` prefix: treated exactly like lockstep — one shared `v*` tag,
   one flat section — even though each crate carries its own `[package].version`.
   All members must agree on `[package].version` (the
-  [coherence rule](@/docs/more/changelog.md#coherence-members-must-agree-on-package-version));
+  [coherence rule](@/docs/more/changelog.md#package-version-agreement-across-members));
   a divergence errors before tagging.
 - **Multi-track (per-crate)** — crates with distinct tag prefixes: only the
   crates this tag actually bumps get their `CHANGELOG.md` refreshed, each
@@ -307,7 +307,7 @@ unique (or no extractable) prefix stay independent tracks. When the whole list
 shares a single prefix this is the flat-aggregate shape. Each aggregate's
 members must agree on `[package].version` first; a divergence
 errors before any tag is created (see the
-[coherence rule](@/docs/more/changelog.md#coherence-members-must-agree-on-package-version)).
+[coherence rule](@/docs/more/changelog.md#package-version-agreement-across-members)).
 
 When `version_sync.enabled: true` is set per-crate, the tag command also
 updates that crate's `Cargo.toml` version (and any intra-workspace `path +
@@ -522,6 +522,6 @@ exactly where it is under [`on_failure: hold`](./release-resilience.md#release-o
 [re-running the identical release command](./release-resilience.md#convergent-re-run),
 never a rollback. Reach for `tag rollback` only when you have decided a
 release should not exist at all. See
-[Release resilience — Recovering a poisoned tag](./release-resilience.md#recovering-a-poisoned-tag-with-tag-rollback)
+[Release resilience — Recovering a poisoned tag](./release-resilience.md#poisoned-tag-recovery-with-tag-rollback)
 for the full flag matrix (`--scope`, `--mode`, `--branch`, `--no-push`) and
 the publisher-unwind step it also performs.

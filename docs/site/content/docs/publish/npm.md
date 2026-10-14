@@ -396,7 +396,7 @@ Within the 72-hour window after publishing, it runs `npm unpublish
 package and the metapackage in `optional-deps` mode). Outside the window,
 npm refuses unpublish requests, and anodizer warns that `npm deprecate` is
 the only remedy left. See [Release
-resilience — Recovering a poisoned tag](../advanced/release-resilience.md#recovering-a-poisoned-tag-with-tag-rollback).
+resilience — Recovering a poisoned tag](../advanced/release-resilience.md#poisoned-tag-recovery-with-tag-rollback).
 
 ## Common gotchas
 

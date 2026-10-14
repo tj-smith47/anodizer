@@ -75,7 +75,7 @@ pub struct PypiConfig {
     ///   - index_url: "https://test.pypi.org/legacy/"
     /// ```
     ///
-    /// This is the twine *upload* target, not a `{owner, name}` source
+    /// This is the twine *upload* target. It names no `{owner, name}` source
     /// repository — the name `index_url` keeps it distinct from the reserved
     /// `repository` meaning every git-based publisher uses. The legacy
     /// `repository:` spelling is still accepted via serde alias.
@@ -84,8 +84,8 @@ pub struct PypiConfig {
 
     /// Tolerate the index rejecting a file that already exists (the
     /// twine `--skip-existing` semantics). Default `true` so a re-run of an
-    /// already-published tag skips previously-uploaded files instead of
-    /// failing the release. Set to `false` to make a duplicate upload a hard
+    /// already-published tag skips previously-uploaded files and does not
+    /// fail the release. Set to `false` to make a duplicate upload a hard
     /// error.
     pub skip_existing: bool,
 
@@ -156,10 +156,10 @@ pub struct PypiConfig {
     /// that target. Every target without an entry keeps the auto-detected tag.
     ///
     /// The escape hatch for toolchains whose emitted glibc floor is stricter
-    /// than the compatibility a project wants to advertise — e.g. pinning
+    /// than the compatibility a project wants to advertise — e.g. setting
     /// `aarch64-unknown-linux-gnu` to `manylinux_2_28` to match a
-    /// `maturin`/PyO3 build environment rather than shipping the higher floor
-    /// the binary's symbols imply.
+    /// `maturin`/PyO3 build environment when the binary's symbols
+    /// imply a higher floor.
     ///
     /// ```yaml
     /// pypis:
@@ -223,7 +223,7 @@ pub struct PypiConfig {
     pub if_condition: Option<String>,
 
     /// When `true`, a triggered rollback leaves this publisher's work in
-    /// place rather than attempting to undo it. Default `false`. (PyPI has
+    /// place and does not try to undo it. Default `false`. (PyPI has
     /// no programmatic delete path anyway — rollback is warn-only — but the
     /// flag suppresses even that warning.)
     pub retain_on_rollback: Option<bool>,
@@ -268,7 +268,7 @@ impl Default for PypiConfig {
 /// GitHub Actions OIDC (PyPI Trusted Publishing, which creates a short-lived
 /// upload token per run — no stored secret).
 ///
-/// Unlike npm, PyPI is uploaded directly over HTTP rather than through a CLI,
+/// Unlike npm, PyPI is uploaded directly over HTTP with no CLI,
 /// so the Trusted-Publishing exchange (Actions id-token → PyPI mint-token) is
 /// performed by anodizer itself. Trusted Publishing also creates brand-new
 /// projects when a *pending* publisher is configured on PyPI, so there is no
@@ -287,7 +287,7 @@ pub enum PypiAuthMode {
     /// Always authenticate with OIDC (Trusted Publishing); never fall back to
     /// the token. Errors if the GitHub Actions OIDC request env
     /// (`ACTIONS_ID_TOKEN_REQUEST_URL` / `_TOKEN`) is absent, so a misconfigured
-    /// Trusted Publisher fails the release loudly instead of silently falling
-    /// back to a token.
+    /// Trusted Publisher fails the release loudly and never falls back
+    /// to a token.
     Oidc,
 }

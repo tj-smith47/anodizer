@@ -9,9 +9,9 @@ Anodizer is a Rust-native release automation tool. It reads a declarative config
 
 If you've used [GoReleaser](https://goreleaser.com/) for Go projects, anodizer is the same idea — built for Rust. Same config structure, same CLI verbs, same template vocabulary.
 
-## Why anodizer?
+## Features
 
-**One config, full pipeline.** Instead of stitching together shell scripts, GitHub Actions steps, and manual uploads, you define your release in YAML and run `anodizer release`. Everything happens automatically:
+**One config, full pipeline.** You define your release in YAML, with no shell scripts, GitHub Actions steps or manual uploads to stitch together, and run `anodizer release`. Everything happens automatically:
 
 1. **Build** — Cross-compile binaries for every target
 2. **Archive** — Package them into tar.gz, zip, tar.xz, or tar.zst archives
@@ -27,7 +27,7 @@ If you've used [GoReleaser](https://goreleaser.com/) for Go projects, anodizer i
 
 **Familiar to GoReleaser users.** If you're migrating from Go, the config structure and CLI verbs feel immediately familiar — and so do your templates. Anodizer renders every template on the [Tera](https://keats.github.io/tera/) engine but accepts **two dialects**: the canonical Tera-native no-dot form (`{{ Version }}`) and the dotted Go `text/template` form a `.goreleaser.yaml` is written in (`{{ .Version }}`). The dotted form — along with Go idioms like `{{ if }}`, `eq`, `ne`, `and`, and `or` — is auto-translated before rendering, so a snippet pasted straight from a GoReleaser config works unchanged. See the [Templates reference](@/docs/general/templates.md) for the full variable list and the Go-to-Tera mapping table.
 
-**AI-enhanced release notes.** The changelog stage can summarize commits using an LLM — Anthropic Claude, OpenAI, or a local Ollama model. Configure the provider in `changelog.ai` and get release notes that read like prose instead of a raw commit list.
+**AI-enhanced release notes.** The changelog stage can summarize commits using an LLM — Anthropic Claude, OpenAI, or a local Ollama model. Configure the provider in `changelog.ai` and get release notes that read like prose, with no raw commit list.
 
 **Distributed builds and rootless containers.** The `--split` / `--merge` flags fan builds out across CI runners and rejoin artifacts for publishing, eliminating the single-runner bottleneck. Docker image builds support Podman as a drop-in buildx alternative — no daemon, no root required.
 
@@ -81,4 +81,4 @@ Binaries are built, archived, checksummed, released on GitHub, published to crat
 
 > **Prerequisite:** the tap repo (`myorg/homebrew-tap` above) must already exist before a release can push to it — anodizer writes the cask into it but does not create it. Create an empty `<owner>/homebrew-tap` repo first, and make sure the token has `contents:write` (direct push) or `pull_request:write` (PR workflow) on it.
 
-> **Why `homebrew_casks`, not `publish.homebrew`?** The cask is the canonical channel for pre-compiled binaries — including CLI tools, which install as a `binary` stub. The older `publish.homebrew` *Formula* path still parses for back-compat but emits a deprecation warning at config-load. New configs should use `homebrew_casks`. See [Homebrew Casks](@/docs/publish/homebrew-casks.md) for the full cask surface; the [deprecated Formula reference](@/docs/publish/homebrew.md) documents both forms, and the [migration guide](@/migration/goreleaser.md) covers the GoReleaser jump.
+> **`homebrew_casks` and `publish.homebrew`.** The cask is the canonical channel for pre-compiled binaries — including CLI tools, which install as a `binary` stub. The older `publish.homebrew` *Formula* path still parses for back-compat but emits a deprecation warning at config-load. New configs should use `homebrew_casks`. See [Homebrew Casks](@/docs/publish/homebrew-casks.md) for the full cask reference; the [deprecated Formula reference](@/docs/publish/homebrew.md) documents both forms, and the [migration guide](@/migration/goreleaser.md) covers the GoReleaser jump.

@@ -169,7 +169,7 @@ schemas:
 
 ## `crate` (workspace per-crate mode)
 
-In a workspace with per-crate independent versions, `crate:` binds a vendored or versioned schema's version to a specific crate's tag rather than the first-crate fallback:
+In a workspace with per-crate independent versions, `crate:` binds a vendored or versioned schema's version to a specific crate's tag; without it, the first crate's tag is used:
 
 ```yaml
 schemastore:
@@ -180,7 +180,7 @@ schemastore:
     - name: myapp-config
       file_match: ["myapp.yaml"]
       schema_file: "crates/myapp/schemas/config.schema.json"
-      crate: myapp              # version from myapp's tag, not workspace root
+      crate: myapp              # version from myapp's tag
 
     - name: myplugin-config
       file_match: ["myplugin.yaml"]
@@ -275,7 +275,7 @@ schemastore:
       token: "{{ .Env.SCHEMASTORE_PR_TOKEN }}"
 ```
 
-Both tokens are rendered before the fork is cloned. A blank render falls through to the next token in the chain. A template that fails to render fails the publisher before anything is cloned or pushed, with an error naming the field and the render error and the template's own text replaced by `<template>` (`pull_request.token does not render: …`).
+Both tokens are rendered before the fork is cloned. On both the push and the pull request chain, a render that is empty or only whitespace falls through to the next token, and a token is sent with its surrounding whitespace removed. A template that fails to render fails the publisher before anything is cloned or pushed, with an error naming the field and the render error and the template's own text replaced by `<template>` (`pull_request.token does not render: …`).
 
 The token needs push access to your fork (`contents:write`) and permission to open a pull request against the upstream `SchemaStore/schemastore` (`pull_request:write`).
 

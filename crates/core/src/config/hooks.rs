@@ -14,7 +14,9 @@ use crate::artifact::ArtifactKind;
 ///
 /// The key is `hooks:` in every block. The older `post:` spelling is still
 /// accepted, so `after: { post: [...] }` keeps working, with a deprecation
-/// warning. When a block sets both, `hooks:` is used and `post:` is ignored.
+/// warning. When a block sets a non-empty `hooks:` list and `post:`, the
+/// `hooks:` list runs and `post:` is ignored; an empty `hooks: []` beside a
+/// non-empty `post:` list runs the `post:` commands.
 #[derive(Debug, Clone, PartialEq, Default, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HooksConfig {
@@ -22,7 +24,8 @@ pub struct HooksConfig {
     /// as this list.
     pub hooks: Option<Vec<HookEntry>>,
     /// Deprecated spelling of `hooks:` (anodizer before v0.4). Its commands
-    /// run as the `hooks:` list, and it is ignored when `hooks:` is also set.
+    /// run as the `hooks:` list, and it is ignored when `hooks:` is also set
+    /// and non-empty.
     // Deserialization writes the legacy key here; `merge_hook_aliases` moves
     // it into `hooks` and leaves this field empty.
     #[doc(hidden)]
@@ -123,8 +126,8 @@ pub struct StructuredHook {
     pub output: Option<bool>,
     /// Template-conditional: when set, the hook only runs if the rendered
     /// result is truthy (not `"false"` / `"0"` / `"no"` / empty). Render
-    /// failure hard-errors (not silent-skip).
-    /// `before.hooks[].if:` / per-build / per-archive hook `if:` surface.
+    /// failure hard-errors and is never skipped silently.
+    /// `before.hooks[].if:` / per-build / per-archive hook `if:` fields.
     /// An absent, empty or blank `if:` imposes no gate and always runs; the
     /// falsy test applies to what a non-blank gate renders. The gate is
     /// evaluated before the hook's own `env:` is rendered, so it cannot read
@@ -135,15 +138,15 @@ pub struct StructuredHook {
     /// fires only for artifacts whose id matches one of these strings.
     /// Unset (the default) imposes no id constraint. Ignored by lifecycle hook sites
     /// (`before:` / `after:` / per-build / per-archive) — those run once
-    /// per pipeline tick, not per artifact.
+    /// per pipeline tick and never per artifact.
     pub ids: Option<Vec<String>>,
     /// Artifact-kind filter (`before_publish:` only). When set, the hook
     /// fires only for artifacts whose kind matches the filter. Unset is the
     /// same as `all` (every artifact).
     /// Ignored by lifecycle hook sites for the same reason as `ids`.
     pub artifacts: Option<BeforePublishArtifactFilter>,
-    /// Run the hook exactly once before the publish stage instead of once
-    /// per matching artifact (`before_publish:` only). With the default
+    /// Run the hook exactly once before the publish stage, with no per-artifact
+    /// runs (`before_publish:` only). With the default
     /// `false`, the hook keeps the per-artifact semantics: it fires once for
     /// each artifact passing the `ids` / `artifacts` filters, with the
     /// per-artifact template vars (`ArtifactName`, `ArtifactPath`, ...) and
@@ -309,6 +312,22 @@ mod tests {
             captured.contains("renamed to 'hooks:'"),
             "legacy-only warning must guide to 'hooks:' rename: {captured}"
         );
+    }
+
+    /// An empty `hooks: []` beside a non-empty `post:` list runs the `post:`
+    /// commands, as the `HooksConfig` doc says.
+    #[test]
+    #[serial_test::serial(tracing)]
+    fn an_empty_hooks_list_beside_post_runs_the_post_commands() {
+        let _ = capture_tracing_warnings(|| {
+            let cfg: HooksConfig =
+                serde_yaml_ng::from_str("hooks: []\npost: [legacy.sh]\n").expect("parses");
+            assert_eq!(
+                cfg.hooks,
+                Some(vec![HookEntry::Simple("legacy.sh".to_string())])
+            );
+            assert!(cfg.post.is_none());
+        });
     }
 
     /// Both spellings set: `hooks:` wins, `post:` is dropped, and the

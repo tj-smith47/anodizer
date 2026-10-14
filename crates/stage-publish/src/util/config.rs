@@ -253,8 +253,9 @@ pub(crate) fn should_skip_publisher_with_if(
 // Repository token resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve the repository token: `repository.token` (rendered; a blank or
-/// failed render falls through), then [`resolve_token`].
+/// Resolve the repository token: `repository.token` (rendered and trimmed; a
+/// render that fails, is empty or is only whitespace falls through), then
+/// [`resolve_token`].
 pub(crate) fn resolve_repo_token(
     ctx: &Context,
     repo: Option<&anodizer_core::config::RepositoryConfig>,
@@ -270,10 +271,11 @@ pub(crate) fn resolve_repo_token(
     {
         // A render that fails falls through like a blank one: the literal
         // template text must never be sent as a credential.
-        if let Ok(rendered) = ctx.render_template(tok)
-            && !rendered.is_empty()
-        {
-            return Some(rendered);
+        if let Ok(rendered) = ctx.render_template(tok) {
+            let rendered = rendered.trim();
+            if !rendered.is_empty() {
+                return Some(rendered.to_string());
+            }
         }
     }
     // 2. Fall back to context + env
@@ -582,6 +584,41 @@ mod tests {
         assert_eq!(
             resolve_repo_token(&ctx, Some(&repo), Some("KREW_INDEX_TOKEN")).as_deref(),
             Some("krew")
+        );
+    }
+
+    /// A `repository.token` that renders to only whitespace falls through to
+    /// the publisher variable, and a padded token is sent trimmed.
+    #[test]
+    fn a_whitespace_repository_token_falls_through_and_a_padded_one_is_trimmed() {
+        let mut ctx = TestContextBuilder::new()
+            .sealed_env()
+            .env("KREW_INDEX_TOKEN", "krew")
+            .build();
+        ctx.template_vars_mut().set_env("BLANK_TOKEN", "   ");
+        ctx.template_vars_mut()
+            .set_env("PADDED_TOKEN", "  ghp_x\t ");
+        let repo = |tok: &str| RepositoryConfig {
+            token: Some(tok.into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_repo_token(
+                &ctx,
+                Some(&repo("{{ .Env.BLANK_TOKEN }}")),
+                Some("KREW_INDEX_TOKEN")
+            )
+            .as_deref(),
+            Some("krew")
+        );
+        assert_eq!(
+            resolve_repo_token(
+                &ctx,
+                Some(&repo("{{ .Env.PADDED_TOKEN }}")),
+                Some("KREW_INDEX_TOKEN")
+            )
+            .as_deref(),
+            Some("ghp_x")
         );
     }
 }

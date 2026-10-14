@@ -17,7 +17,7 @@ the config signal:
 |-------|---------------|--------------|-----------------|
 | **Single** | one crate, or no config | one `v*` tag | one flat section |
 | **Lockstep** | `[workspace.package].version` in root `Cargo.toml` | one shared `v*` tag | one flat section |
-| **Lockstep, `crates:` with no `tag_template`** | `[workspace.package].version` plus a `crates:` list whose members omit `tag_template` | one shared `v*` tag — the family is [derived](#crate-level-defaults) from the lockstep signal, so `anodizer tag` cuts `v1.2.3`, not one `<name>-v1.2.3` per crate | one flat section |
+| **Lockstep, `crates:` with no `tag_template`** | `[workspace.package].version` plus a `crates:` list whose members omit `tag_template` | one shared `v*` tag — the family is [derived](#crate-level-defaults) from the lockstep signal, so `anodizer tag` cuts one `v1.2.3` for the whole family | one flat section |
 | **Flat-aggregate** | flat `crates:` list, every `tag_template` resolves to the **same** prefix, per-crate `[package].version` | one shared `v*` tag | one flat section |
 | **Multi-track** | flat `crates:` list (or `workspaces:`) with **distinct** tag prefixes (`core-v`, `cli-v`) | per-crate tags | `### <crate>` subsection per track |
 
@@ -25,7 +25,7 @@ Lockstep and flat-aggregate ship the whole workspace under one version; the
 multi-track shape lets each crate release on its own cadence. See
 [Changelog → Workspace shapes](@/docs/more/changelog.md#workspace-shapes-at-a-glance)
 for the changelog side, including the flat-aggregate
-[coherence rule](@/docs/more/changelog.md#coherence-members-must-agree-on-package-version)
+[coherence rule](@/docs/more/changelog.md#package-version-agreement-across-members)
 (all members of a shared-prefix list must agree on `[package].version`).
 
 ## Crate-level defaults
@@ -119,11 +119,11 @@ or one with an explicit `tag.tag_prefix`: the derived value keeps shape
 detection seeing one group, and `anodizer tag` keeps cutting one shared tag.
 The note applies only to a workspace with **independent** `[package].version`s
 and **no** `tag.tag_prefix`: there every crate falls to rung 5, its own
-`<name>-v` track, and shape detection sees independent singleton tracks
-instead of one shared tag. To release such a workspace under one tag,
+`<name>-v` track, and shape detection sees one independent singleton track
+per crate. To release such a workspace under one tag,
 set `defaults.crates.tag_template` (rung 2) or `tag.tag_prefix` (rung 3) — and
 bring the members' `[package].version`s into agreement, which the
-[coherence rule](@/docs/more/changelog.md#coherence-members-must-agree-on-package-version)
+[coherence rule](@/docs/more/changelog.md#package-version-agreement-across-members)
 enforces.
 
 `defaults.crates:` (and this precedence) only applies when the top-level
@@ -153,7 +153,7 @@ To release the crates together under **one** shared `v*` tag instead, give every
 member the **same** prefix (`tag_template: "v{{ Version }}"`) — the
 flat-aggregate shape above. All members must then agree on `[package].version`.
 
-Grouping is **by prefix**, not all-or-nothing: a shared prefix on a SUBSET of
+Grouping is **by prefix**: a shared prefix on a SUBSET of
 the list aggregates just that subset (those members bump and tag as one unit,
 under one shared tag) while every crate with a unique prefix keeps its own
 track. The `[package].version` coherence rule applies per prefix group.
@@ -178,8 +178,7 @@ workspaces:
           enabled: true
           mode: cargo
         publish:
-          crates:
-            enabled: true
+          cargo: {}                    # presence opts in to crates.io
 
   - name: cli
     crates:
@@ -248,8 +247,7 @@ crates:
 An explicit `depends_on:` (as in the earlier examples on this page) is
 still honored and always wins — the derivation only fills crates that omit
 the field entirely. `anodizer init` scaffolds the same complete
-`depends_on:` set explicitly (it writes what it derives, rather than
-omitting it), so a freshly generated config and a hand-trimmed one resolve
+`depends_on:` set explicitly (it writes out what it derives), so a freshly generated config and a hand-trimmed one resolve
 identically. This only matters once a project has more than one crate under
 `crates:` — a single-crate config has no intra-workspace dependency to
 order.
@@ -420,7 +418,7 @@ push after the upgrade cuts a first-ever tag per new track — one release
 workflow can fan out per track. Pre-create tags at the current versions for
 tracks that should not release immediately.
 
-## Resolving a tag to a crate
+## Tag-to-crate resolution
 
 Tag-triggered release workflows need to know which crate a given tag belongs to. `anodizer resolve-tag` does that lookup:
 

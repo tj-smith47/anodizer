@@ -71,7 +71,7 @@ crates:
           token: ""                 # default: SCOOP_BUCKET_TOKEN, then the GitHub token chain
           branch: ""                # default: repo default branch (versioned <manifest>-<version> when pull_request.enabled)
           pull_request:
-            enabled: false          # optional; open PR instead of direct push
+            enabled: false          # optional; true opens a PR in place of a direct push
             token: ""               # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
         description: "A fast CLI tool"   # optional; derived from Cargo.toml description
         license: MIT                     # optional; derived from Cargo.toml license
@@ -92,17 +92,20 @@ The push to the bucket repository uses the first token that is set:
 The pull request is opened with `repository.pull_request.token`, then `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. With none of these set, the `gh` CLI's own login opens it; with neither a token nor `gh`, the publish fails.
 
 ```yaml
-scoop:
-  repository:
-    owner: myorg
-    name: scoop-bucket
-    token: "{{ .Env.SCOOP_BUCKET_TOKEN }}"
-    pull_request:
-      enabled: true
-      token: "{{ .Env.SCOOP_PR_TOKEN }}"
+crates:
+  - name: myapp
+    publish:
+      scoop:
+        repository:
+          owner: myorg
+          name: scoop-bucket
+          token: "{{ .Env.SCOOP_BUCKET_TOKEN }}"
+          pull_request:
+            enabled: true
+            token: "{{ .Env.SCOOP_PR_TOKEN }}"
 ```
 
-`repository.pull_request.token` and `repository.token` are rendered before anything is cloned or pushed. A blank render, such as an unset `{{ .Env.X }}`, falls through to the next token in the chain. A template that fails to render skips this crate's scoop entry with nothing pushed, and the next crate still publishes. The skip reason names the field and the render error (`pull_request.token does not render: …`), with the template's own text replaced by `<template>` so a token literal in it is never printed.
+`repository.pull_request.token` and `repository.token` are rendered before anything is cloned or pushed. On both the push and the pull request chain, a render that is empty or only whitespace, such as an unset `{{ .Env.X }}`, falls through to the next token, and a token is sent with its surrounding whitespace removed. A template that fails to render skips this crate's scoop entry with nothing pushed, and the next crate still publishes. The skip reason names the field and the render error (`pull_request.token does not render: …`), with the template's own text replaced by `<template>` so a token literal in it is never printed.
 
 ## Common gotchas
 

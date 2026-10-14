@@ -3,7 +3,7 @@ use super::*;
 /// A submitter moderation-queue advisory paired with the dispatch publisher
 /// identity that produced it. The CLI filters by [`SubmitterAdvisory::publisher`]
 /// so an advisory for a publisher deselected by `--skip` / `--publishers`
-/// (e.g. `chocolatey` under a `--publishers npm` run) is suppressed instead of
+/// (e.g. `chocolatey` under a `--publishers npm` run) is suppressed and not
 /// emitted as noise.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubmitterAdvisory {
@@ -12,7 +12,7 @@ pub struct SubmitterAdvisory {
     /// `winget`, or `upstream-aur` (the AUR-source publisher's dispatch name).
     /// The CLI keys its deselection predicate on this value.
     pub publisher: String,
-    /// The verbose advisory line surfaced to the operator.
+    /// The verbose advisory line shown to the operator.
     pub message: String,
 }
 
@@ -32,7 +32,7 @@ pub struct SubmitterAdvisory {
 /// `workspaces[].crates[].publish`, and `defaults.publish` (via
 /// `for_each_crate_publish`) — plus the top-level `aur_sources:` list.
 ///
-/// Pure: this returns the advisories without emitting them. The CLI surfaces
+/// Pure: this returns the advisories without emitting them. The CLI prints
 /// them through `StageLogger::verbose` (the `--verbose`-gated register), so
 /// they stay hidden at the default log level — see
 /// `pipeline::load_config_logged`.
@@ -220,8 +220,8 @@ pub fn warn_on_legacy_furies_alias(raw_yaml: &serde_yaml_ng::Value) {
 /// nfpm config objects appear under the key `nfpm` or `nfpms` (a single map or
 /// a sequence of maps) at multiple nesting depths — top-level, under
 /// `defaults:`, under each `crates[]` entry, and under each
-/// `workspaces[].crates[]` entry. Rather than enumerate every path, this walks
-/// the tree recursively and inspects a node as an nfpm config only when it is
+/// `workspaces[].crates[]` entry. This reads the tree recursively, with no list of
+/// paths, and inspects a node as an nfpm config only when it is
 /// the value of an `nfpm:`/`nfpms:` key, so an unrelated `builds:` key
 /// elsewhere (e.g. archives) is not double-counted.
 pub fn warn_on_legacy_nfpm_builds(raw_yaml: &serde_yaml_ng::Value) {
@@ -276,7 +276,7 @@ pub fn warn_on_legacy_nfpm_builds(raw_yaml: &serde_yaml_ng::Value) {
 /// consults the raw YAML pre-parse value so porting users get a migration
 /// prompt pointing at the canonical `skip:`.
 ///
-/// Detection is allow-listed by enclosing block key, NOT a blind tree walk,
+/// Detection is allow-listed by enclosing block key, with no blind tree scan,
 /// because free-form string-keyed maps would otherwise produce false
 /// positives:
 ///   * Free-form string-keyed maps (`variables`, `derived_metadata`,
@@ -391,11 +391,11 @@ pub(crate) fn legacy_disable_alias_warnings(raw_yaml: &serde_yaml_ng::Value) -> 
 ///
 /// The registry metadata that used to live under
 /// `mcp.github:` (repository owner/name/url) to the top-level `mcp:` block
-/// (canonical surface: `mcp.repository:`, `mcp.name:`, etc.). Anodizer
+/// (canonical keys: `mcp.repository:`, `mcp.name:`, etc.). Anodizer
 /// never carried the nested shim — its `McpConfig` has `deny_unknown_fields`
 /// so the key would otherwise produce a generic "unknown field" message.
 /// This pre-parse check intercepts the legacy spelling so the user sees a
-/// migration pointer rather than a schema-shape error.
+/// migration pointer; a schema-shape error would not help.
 pub fn validate_no_mcp_github(raw_yaml: &serde_yaml_ng::Value) -> Result<(), String> {
     if raw_yaml.get("mcp").and_then(|m| m.get("github")).is_some() {
         return Err(
@@ -414,7 +414,7 @@ pub fn validate_no_mcp_github(raw_yaml: &serde_yaml_ng::Value) -> Result<(), Str
 /// `retry:` field is the legacy shape (retry handling moved to
 /// the top-level `retry:` block); the per-pipe value is still honored at
 /// resolve-time (see `stage-docker::resolve_retry_params`) but a top-level
-/// `retry:` is the canonical surface for retry policy. Warning fires once
+/// `retry:` is the canonical key for retry policy. Warning fires once
 /// per occurrence so users porting from older configs see a clear
 /// pointer at load time without waiting for the docker pipe to execute.
 pub fn warn_on_legacy_docker_retry(config: &Config) {
@@ -521,7 +521,7 @@ pub fn apply_homebrew_cask_legacy_singulars(config: &mut Config) {
 
 /// Perform the folds and the `url.verified:` check of
 /// [`apply_homebrew_cask_legacy_singulars`] and return the deprecation warnings
-/// instead of logging them, so a caller — or a test — can read what a config
+/// without logging them, so a caller — or a test — can read what a config
 /// tripped.
 pub fn homebrew_cask_legacy_warnings(config: &mut Config) -> Vec<String> {
     /// Fold the deprecated singular fields (`binary:` → `binaries`,

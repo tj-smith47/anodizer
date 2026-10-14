@@ -15,7 +15,7 @@ anodizer changelog [<tag>|<range>] [--format keep-a-changelog|release-notes|json
 
 | Flag / arg | Default | Effect |
 |------------|---------|--------|
-| `[<tag>\|<range>]` | last-tag..HEAD | Commit range to render (see [Selecting a range](#selecting-a-range)) |
+| `[<tag>\|<range>]` | last-tag..HEAD | Commit range to render (see [Selecting a range](#range-selection)) |
 | `--format` | `keep-a-changelog` | Output shape: refresh the `[Unreleased]` section, a GitHub-release body, or JSON |
 | `--write` | off (preview) | Apply the regenerated `[Unreleased]` to the configured `CHANGELOG.md` in place (`keep-a-changelog` only) |
 | `--crate <name>` | all selected crates | Restrict to one crate in a workspace |
@@ -24,7 +24,7 @@ anodizer changelog [<tag>|<range>] [--format keep-a-changelog|release-notes|json
 There is no `--output`/`-o` (redirect stdout instead), no `--from`/`--to` (use the
 positional range), and no `check changelog` subcommand.
 
-### Selecting a range
+### Range selection
 
 The positional arg drives every format identically — the same arg selects the
 same commits whether you render `keep-a-changelog`, `release-notes`, or `json`.
@@ -58,7 +58,7 @@ the tag immediately below it in that crate's semver-sorted list — so you get
 exactly that release's entries. A tag that is the earliest in its series has no
 predecessor, so it falls back to full history up to that tag.
 
-### `--format keep-a-changelog` (default) — refresh `[Unreleased]`
+### `--format keep-a-changelog` (default) — `[Unreleased]` refresh
 
 Regenerates the `## [Unreleased]` section of the configured `CHANGELOG.md` in
 Keep-a-Changelog form. A bare command previews to stdout and writes nothing:
@@ -122,7 +122,7 @@ To preview the pending window *before* the release is tagged — when HEAD is
 ahead of the last release tag — pass `--snapshot`. Without it, release-notes
 requires HEAD to point at a tag and errors otherwise. The snapshot preview is
 bounded at the last release tag (the same since-last-release window as
-`keep-a-changelog` and `json`), not full history.
+`keep-a-changelog` and `json`); it does not read the full history.
 
 ### `--format json` — structured array to stdout
 
@@ -158,7 +158,7 @@ $ anodizer changelog v1.2.0 --format json
 `from` is `null` for full history; `to` resolves to `HEAD` when the range is
 unbounded.
 
-### End-to-end: preview → write → edit → tag
+### End-to-end flow: preview, write, edit and tag
 
 The standalone command and the tag-time promotion compose into one flow:
 
@@ -247,7 +247,7 @@ only lived on the branch still cuts a patch release, and a `#none` on a bullet
 holds the release the way it would on a commit (see
 [auto-tagging](../advanced/auto-tagging#commit-message-directives)).
 
-## Filtering commits
+## Commit filters
 
 ```yaml
 changelog:
@@ -350,7 +350,7 @@ A flat `crates:` list whose members **all** resolve to the same tag prefix
 in lockstep: one tag namespace can't hand `v0.2.0` to two crates independently.
 anodizer treats this exactly like a lockstep workspace — **one shared `v*` tag,
 one flat `[Unreleased]`/released section** — even though each crate carries its
-own `[package].version` (rather than a single `[workspace.package].version`):
+own `[package].version` and there is no single `[workspace.package].version`:
 
 ```yaml
 crates:
@@ -377,7 +377,7 @@ promote that one flat section under a single `## [v0.2.0] - <date>` heading. To
 get per-crate `### <crate>` subsections instead, give each crate a **distinct**
 tag prefix (the [multi-track](#multi-track-root-subsections) shape below).
 
-### Coherence: members must agree on `[package].version`
+### `[package].version` agreement across members
 
 In a flat-aggregate one tag carries one version, so every member's
 `[package].version` must **agree**. The rule applies per prefix group: a

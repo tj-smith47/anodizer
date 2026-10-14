@@ -90,7 +90,7 @@ pub struct UploadConfig {
     ///
     /// With the default, a re-run that finds the same version's artifact
     /// already uploaded with a matching SHA-256 records an idempotent SKIP
-    /// rather than re-PUTting it — so re-running a partially-failed release is
+    /// and does not PUT it again, so re-running a partially-failed release is
     /// safe. A path that already holds a *different* artifact for the same
     /// version still hard-errors (immutable-version drift) unless `overwrite`
     /// is set. With `overwrite: true`, every artifact is PUT unconditionally.
@@ -102,6 +102,6 @@ pub struct UploadConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
     /// When `true`, a triggered rollback leaves this upload's artifacts in
-    /// place rather than issuing a server-side DELETE. Default `false`.
+    /// place and sends no server-side DELETE. Default `false`.
     pub retain_on_rollback: Option<bool>,
 }

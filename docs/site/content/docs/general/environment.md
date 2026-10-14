@@ -79,7 +79,7 @@ Where a secret value is masked depends on its length:
 | Value length | Masked |
 |--------------|--------|
 | 8 characters or more | every occurrence, including inside a longer word (`-p<value>`) |
-| under 8 characters | only where it stands alone, not inside a longer word |
+| under 8 characters | only where it stands alone; inside a longer word it is left as is |
 
 Credentials written inside a URL (`https://user:pass@host`) are replaced
 with `<redacted>` whatever variable they came from.

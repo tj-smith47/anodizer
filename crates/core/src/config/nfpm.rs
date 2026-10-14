@@ -37,7 +37,7 @@ pub struct NfpmConfig {
     /// Rename the installed binary inside the package only.
     ///
     /// When set, the auto-emitted binary content entry is installed under this
-    /// name (in `bindir`) instead of the built file's name; the archive/build
+    /// name (in `bindir`) in place of the built file's name; the archive/build
     /// output is untouched. Use this to resolve Debian/RPM name clashes — e.g.
     /// `fd` ships its binary as `fdfind` in the Debian package while the tarball
     /// keeps `fd`. Templated.
@@ -599,7 +599,7 @@ pub struct NfpmIpkAlternative {
 }
 
 /// Unified signature configuration shared by nFPM (deb/rpm/apk) and SRPM
-/// packages — SRPM's surface is a strict subset, so a single struct covers
+/// packages — SRPM's fields are a strict subset, so a single struct covers
 /// both. The legacy SRPM `passphrase:` key is accepted as a serde alias
 /// for `key_passphrase:` so both spellings parse.
 ///
@@ -693,7 +693,7 @@ mod is_empty_tests {
     }
 
     /// A typo'd level in the list form must fail at parse — the field is a
-    /// closed enum, not free text, so `x86-64-v3` cannot silently disable
+    /// closed enum with no free text, so `x86-64-v3` cannot silently disable
     /// the variant filter.
     #[test]
     fn nfpm_amd64_variant_list_rejects_garbage_at_parse() {

@@ -55,7 +55,7 @@ pub struct KrewConfig {
     pub arm_variant: Option<String>,
     /// When true, force-push the updated plugin manifest to the existing PR
     /// branch when a PR for the same head branch already exists. The PR content
-    /// is updated in place rather than creating a duplicate. When false
+    /// is updated in place, so no duplicate is created. When false
     /// (default), the push is skipped and a warning is emitted so the operator
     /// sees that the publisher did not update the PR.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -80,7 +80,7 @@ pub struct KrewConfig {
     ///   hosted krew-release-bot opens the version-bump PR server-side);
     ///   definitively absent → `pr-direct` (anodizer opens the initial
     ///   fork PR). A probe that can't reach a definitive answer
-    ///   (rate-limit, network error) hard-errors rather than guessing,
+    ///   (rate-limit, network error) hard-errors and does not guess,
     ///   so a transient blip never routes an existing plugin into a
     ///   maintainer-hostile fork PR.
     /// - `bot`: always POST to the krew-release-bot webhook. Use when
@@ -92,7 +92,7 @@ pub struct KrewConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<KrewMode>,
     /// When `true`, a triggered rollback leaves this publisher's work in
-    /// place rather than attempting to undo it. Default `false`.
+    /// place and does not try to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
 }
 

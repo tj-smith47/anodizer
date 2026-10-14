@@ -94,7 +94,7 @@ pub struct Cli {
 #[allow(clippy::large_enum_variant)]
 pub enum Commands {
     /// Run the full release pipeline. Re-running the identical command
-    /// converges on already-published state instead of double-publishing,
+    /// converges on already-published state and publishes nothing twice,
     /// so a re-run is how a failed release is recovered.
     ///
     /// Every publisher reconciles against upstream before it acts and skips
@@ -138,9 +138,9 @@ pub enum Commands {
         #[arg(
             long,
             default_value = "3h",
-            help = "Pipeline timeout duration (e.g., 90m, 3h, 5s) — a generous \
-                    safety backstop, not the primary bound; per-stage bounds \
-                    (e.g. announce.deadline) catch a hung stage in seconds"
+            help = "Pipeline timeout duration (e.g., 90m, 3h, 5s). A generous \
+                    safety backstop: per-stage bounds (e.g. announce.deadline) \
+                    catch a hung stage in seconds"
         )]
         timeout: String,
         #[arg(
@@ -236,7 +236,7 @@ pub enum Commands {
         summary_json: Option<PathBuf>,
         #[arg(
             long = "allow-ai-failure",
-            help = "If `changelog.ai` is configured and the AI provider fails, log a warning and keep the pre-AI release notes instead of aborting the release."
+            help = "If `changelog.ai` is configured and the AI provider fails, log a warning and keep the pre-AI release notes so the release goes on."
         )]
         allow_ai_failure: bool,
         #[arg(
@@ -340,9 +340,9 @@ pub enum Commands {
         #[arg(
             long,
             default_value = "3h",
-            help = "Pipeline timeout duration (e.g., 90m, 3h, 5s) — a generous \
-                    safety backstop, not the primary bound; per-stage bounds \
-                    (e.g. announce.deadline) catch a hung stage in seconds"
+            help = "Pipeline timeout duration (e.g., 90m, 3h, 5s). A generous \
+                    safety backstop: per-stage bounds (e.g. announce.deadline) \
+                    catch a hung stage in seconds"
         )]
         timeout: String,
         #[arg(
@@ -450,7 +450,7 @@ pub enum Commands {
         json: bool,
         #[arg(
             long,
-            help = "Check only the publish-time stages (what `release --publish-only` runs), not artifact-producing stages"
+            help = "Check only the publish-time stages (what `release --publish-only` runs) and skip the artifact-producing stages"
         )]
         publish_only: bool,
         #[arg(
@@ -511,7 +511,7 @@ pub enum Commands {
         json: bool,
         #[arg(
             long,
-            help = "Only the tools the publish-time stages need (what `release --publish-only` runs), not artifact-producing stages"
+            help = "Only the tools the publish-time stages need (what `release --publish-only` runs); the artifact-producing stages are left out"
         )]
         publish_only: bool,
         #[arg(

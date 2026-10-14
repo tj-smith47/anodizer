@@ -31,7 +31,7 @@ $ anodizer promote --to stable --dry-run
 Every run prints two registers: one line per artifact the publisher acted on,
 then one folded summary line per publisher. Drop `--dry-run` to apply it.
 
-## No config block — and why
+## No config block
 
 Promotion is **CLI-driven only**. There is deliberately no `promote:` config
 field. A static `promote: {from: candidate, to: stable}` would run on *every*
@@ -89,7 +89,7 @@ The same check runs on every rendered `snapcrafts[].channel_templates` entry
 during a publish, so a template that only resolves to a bad channel at upload
 time is caught before `snapcraft upload --release=` sees it.
 
-## Promoting a snap from candidate to stable
+## Snap promotion from candidate to stable
 
 The classic soak workflow: publish to `candidate`, test the real snap, then move
 that exact revision to `stable`.
@@ -106,7 +106,7 @@ architecture (`snapcraft list-revisions`), releases each one
 revision <rev> candidate→stable` result line per revision followed by the
 folded per-publisher summary.
 
-## Selecting which artifact to promote
+## Artifact selection
 
 | Selector | Flag | Behavior |
 |---|---|---|
@@ -139,7 +139,7 @@ $ anodizer promote --to stable --version 1.4.0
 $ anodizer promote --to stable --from-run 20260712-abc123
 ```
 
-## Choosing publishers
+## Publisher selection
 
 By default every configured, promotion-capable publisher runs. Narrow with
 `--publishers`:
@@ -159,7 +159,7 @@ Promotion-capable publishers: **snapcraft**, **npm**, **docker**, **github**.
 (cargo, PyPI, and the index publishers publish immutable versions with no
 mutable track pointer to move.)
 
-## What each publisher does
+## Per-publisher actions
 
 | Publisher | Mechanism | Rebuild? |
 |---|---|---|
@@ -192,7 +192,7 @@ Promotion needs the same credentials as the original publish:
 
 A live promotion preflights every selected publisher's tool and credentials and
 **fails fast** before mutating anything — so a missing token stops the run
-before the first registry is touched, never halfway through.
+before the first registry is touched.
 
 ## Dry run
 
@@ -211,7 +211,7 @@ $ anodizer promote --to stable --dry-run
    • github: 1 release prerelease→stable (dry-run)
 ```
 
-The snapcraft dry-run names the **selector**, not a concrete revision:
+The snapcraft dry-run names the **selector** and no concrete revision:
 resolving one needs a `snapcraft list-revisions` round-trip, and `--dry-run`
 deliberately runs no external command and needs no credential.
 

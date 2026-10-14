@@ -122,7 +122,7 @@ pub struct HomebrewConfig {
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in
-    /// place rather than attempting to undo it. Default `false`.
+    /// place and does not try to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
 }
 
@@ -181,9 +181,8 @@ impl HomebrewConflict {
 ///
 /// Default (the struct absent from config): the formula emits a
 /// `livecheck { skip "Auto-generated on release." }` block — correct for a
-/// binary tap whose archive URL/sha256 are rewritten every release. To opt
-/// into active version polling, set `skip: false` and a `strategy:` (and
-/// optionally `url:` / `regex:`):
+/// binary tap whose archive URL/sha256 are rewritten every release. Setting
+/// any of `strategy`, `url` or `regex` turns on active version polling:
 ///
 /// ```yaml
 /// livecheck:
@@ -201,10 +200,11 @@ impl HomebrewConflict {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct HomebrewLivecheck {
-    /// Force the `skip "<reason>"` form even when a strategy is set, or set to
-    /// `false` to opt out of the default skip and emit an active livecheck.
-    /// When unset (the default), the livecheck skips only when no
-    /// `strategy` or `url` is configured.
+    /// `true` forces the `skip "<reason>"` form even when `strategy`, `url`
+    /// or `regex` is set. When unset or `false`, the livecheck is active
+    /// when any of `strategy`, `url` or `regex` is set, and takes the skip
+    /// form otherwise; `false` with none of the three set also logs a
+    /// warning.
     pub skip: Option<bool>,
     /// Reason text for the `skip "<reason>"` form.
     /// Default: `"Auto-generated on release."`.
@@ -213,9 +213,9 @@ pub struct HomebrewLivecheck {
     /// Rendered as a Ruby symbol: `strategy :github_latest`.
     pub strategy: Option<String>,
     /// `url` for the livecheck. Accepts a Ruby symbol shorthand
-    /// (`stable` / `head` / `homepage` → `url :stable`) or a literal URL
-    /// string (`url "https://..."`). Defaults to `:stable` when a strategy
-    /// is set without an explicit url.
+    /// (`stable` / `head` / `homepage`, and `url` for a cask → `url :stable`)
+    /// or a literal URL string (`url "https://..."`). Defaults to `:stable`
+    /// in an active livecheck that sets no url.
     pub url: Option<String>,
     /// `regex(...)` argument for `page_match`-style strategies. Emitted
     /// verbatim inside `regex(...)`, so it is raw Ruby (e.g. `%r{v(\d+\.\d+)}i`).
@@ -477,7 +477,7 @@ pub struct HomebrewCaskConfig {
     pub skip_upload: Option<StringOrBool>,
     /// When true, force-push the updated cask file to the existing PR branch
     /// when a PR for the same head branch already exists. The PR content is
-    /// updated in place rather than creating a duplicate. When false (default),
+    /// updated in place, so no duplicate is created. When false (default),
     /// the push is skipped and a warning is emitted so the operator sees that
     /// the publisher did not update the PR.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -496,7 +496,7 @@ pub struct HomebrewCaskConfig {
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in
-    /// place rather than attempting to undo it. Default `false`.
+    /// place and does not try to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
 }
 
@@ -582,7 +582,7 @@ pub struct HomebrewCaskCompletions {
 /// - `{ name, target }` object — `{ name: "my-cli", target: "mycli" }`
 ///   → renders `binary "my-cli", target: "mycli"`. The `target:` form is
 ///   the Homebrew Ruby cask DSL rename: install the symlink at
-///   `/usr/local/bin/<target>` instead of `/usr/local/bin/<name>`.
+///   `/usr/local/bin/<target>` in place of `/usr/local/bin/<name>`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
 #[serde(untagged)]
 pub enum HomebrewCaskBinary {
@@ -730,7 +730,7 @@ pub struct ScoopConfig {
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in
-    /// place rather than attempting to undo it. Default `false`.
+    /// place and does not try to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
 }
 
