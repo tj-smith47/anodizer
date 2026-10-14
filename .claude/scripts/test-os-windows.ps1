@@ -2,9 +2,9 @@ param([Parameter(Mandatory = $true)][string]$Sha)
 
 # Windows leg of `task test:os`. Fetches the exact commit under test from the
 # bundle the orchestrator ships (a pre-push gate must prove the not-yet-pushed
-# tree), HARD-VERIFIES it landed on $Sha before testing -- a failed fetch/checkout
+# tree), HARD-VERIFIES it is on $Sha before testing -- a failed fetch/checkout
 # must never fall through to testing a stale tree and reporting that rc as the
-# result -- pins the installer-tool PATH the determinism harness uses, runs the
+# result -- sets the installer-tool PATH the determinism harness uses, runs the
 # full workspace suite, and records a tail-able log plus a final RC file the
 # orchestrator polls. Invoked by an S4U scheduled task so the build outlives the
 # dispatching ssh session (Windows reaps channel-held child trees at the
@@ -38,7 +38,7 @@ $user = [Environment]::GetEnvironmentVariable('PATH', 'User')
 $env:PATH = "C:\upx-pinned;C:\Program Files\GnuPG\bin;C:\Program Files (x86)\WiX Toolset v3.14\bin;C:\Program Files (x86)\NSIS;C:\cosign-pinned;C:\Program Files\Git\cmd;C:\Program Files\Git\usr\bin;$machine;$user"
 $env:CARGO_BUILD_JOBS = '4'
 
-# Fail-fast if cargo is not reachable on the (now-pinned) PATH. A PowerShell
+# Fail-fast if cargo is not reachable on the (now-fixed) PATH. A PowerShell
 # CommandNotFoundException does NOT update $LASTEXITCODE, so without this an
 # absent cargo would leave the nextest probe's $LASTEXITCODE at the prior
 # (git rev-parse, 0) value, enter the nextest branch, find nothing to run, and

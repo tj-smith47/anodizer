@@ -30,7 +30,7 @@ pub fn get_current_branch() -> Result<String> {
 /// are fully anchored and strict (a rollback must touch only real tags).
 /// The patterns here are deliberately looser and prefix-only (branch-vs-tag
 /// disambiguation, not classification). Keep both in sync when the tag
-/// grammar changes — they are intentionally separate, not duplicated.
+/// grammar changes; the two are kept separate on purpose.
 pub fn is_branchlike(name: &str) -> bool {
     use regex::Regex;
     use std::sync::OnceLock;

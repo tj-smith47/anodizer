@@ -157,7 +157,8 @@ fn discover_unwind_targets(dist_root: &Path, tags: &[String]) -> Vec<UnwindTarge
 /// rewrites the right `run-<tag>/` in a per-crate workspace. `Tag` (and
 /// `Version`, when the tag carries a parseable one) are seeded from the tag
 /// being withdrawn so `on_rollback` hooks render the release they are
-/// firing for, and the date variables are read
+/// firing for, the run token is resolved the way a release resolves it
+/// (token files included), and the date variables are read
 /// through the source date reader the release run used.
 fn unwind_context(
     repo_config: &Config,
@@ -167,7 +168,7 @@ fn unwind_context(
     let mut config = repo_config.clone();
     config.dist = target.dist.clone();
     let mut ctx = Context::new(
-        config,
+        config.clone(),
         ContextOptions {
             verbose: opts.verbose,
             debug: opts.debug,
@@ -175,6 +176,7 @@ fn unwind_context(
             ..Default::default()
         },
     );
+    crate::commands::helpers::resolve_scm_token_type(&mut ctx, &config)?;
     ctx.template_vars_mut().set("Tag", &target.tag);
     if let Some((_, version)) = anodizer_core::git::split_tag_family(&target.tag) {
         let version = version.version_string();

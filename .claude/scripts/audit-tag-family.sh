@@ -115,7 +115,7 @@ if [[ -n "$violations" ]]; then
     echo "These lines read CrateConfig.tag_template directly, or re-compose the"
     echo "repo tag prefix (\"tag.tag_prefix else v\", marked [prefix composition])."
     echo "The field is an Option that two config-load folds fill; a raw read supplies"
-    echo "its own fallback and puts this surface in a different tag family from every"
+    echo "its own fallback and puts this caller in a different tag family from every"
     echo "other one. A second prefix composition drifts the same way."
     echo
     echo "Fix: read crate_cfg.tag_family_template() (or"

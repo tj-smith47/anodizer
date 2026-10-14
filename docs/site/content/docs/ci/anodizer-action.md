@@ -94,7 +94,7 @@ the caller needing to know the harness CLI. See
 | `determinism` | `false` | Run the determinism harness on this shard. When true, the action installs Rust (if missing), builds anodizer from source, installs cross-build deps (zig, cargo-zigbuild, upx on Linux), derives the configured-target CSV for the current `RUNNER_OS`, `rustup target add`s those triples, and invokes `anodizer check determinism`. Intended as the entire body of a per-OS harness shard. **Mutually exclusive with `args`.** |
 | `determinism-runs` | `2` | N for `anodizer check determinism --runs=N`. |
 | `determinism-stages` | `""` | Stages to validate (CSV). Default: Linux gets `build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum`; macOS/Windows get `build,source,upx,archive,sbom,sign,checksum` (no Linux-only formats). Explicit values override. |
-| `determinism-targets` | | Explicit target CSV override. Default: filter `anodizer targets --json` to entries matching the current `RUNNER_OS`. Set when your shard runs on a non-standard runner label. The release matrix uses this to pin each shard to one MSVC triple on Windows. |
+| `determinism-targets` | | Explicit target CSV override. Default: filter `anodizer targets --json` to entries matching the current `RUNNER_OS`. Set when your shard runs on a non-standard runner label. The release matrix uses this to limit each shard to one MSVC triple on Windows. |
 | `preserve-dist` | `false` | Have the harness preserve its hermetic dist tree to `./preserved-dist/` so a downstream `release --publish-only` job can publish from the byte-stable artifacts (no recompile). Manifests get a `-<shard-label>` suffix (`context-<label>.json`, etc.) so sharded uploads don't collide under `merge-multiple: true`. **Requires `determinism: true` and `shard-label`.** |
 | `shard-label` | | Per-shard suffix appended to preserved-dist manifests. Required when `preserve-dist: true`. The caller names each shard explicitly; the action does not derive labels. |
 
@@ -327,7 +327,7 @@ When your `ci.yml` builds and uploads the anodizer binary once per commit, downs
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-Pinning `artifact-run-id: auto` resolves the latest successful run of `ci.yml` for the current commit SHA, so the release workflow always picks up a binary built from the same source.
+Setting `artifact-run-id: auto` resolves the latest successful run of `ci.yml` for the current commit SHA, so the release workflow always picks up a binary built from the same source.
 
 ### Dynamic build matrix from config
 

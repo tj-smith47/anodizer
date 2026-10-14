@@ -839,7 +839,7 @@ fn parse_commit_output_with_files_pairs_each_commit_with_its_files() {
 fn parse_commit_output_with_files_preserves_multiline_body_at_idx_gt_0() {
     // A multi-line `%b` body for the SECOND commit (idx>0): the body spans
     // several newline-separated lines, and the parser must keep the full
-    // record — not just its first line — so trailers like `Co-Authored-By:`
+    // record, every line of it, so trailers like `Co-Authored-By:`
     // survive, matching the metadata-only `parse_git_log_records` path.
     let body0 = "detail line one\ndetail line two\n\nCo-Authored-By: Bob <bob@b.com>";
     let raw = format!(
@@ -1057,7 +1057,7 @@ fn short_commit_str_returns_shorter_or_equal_input_unchanged() {
 
 // real-repo fixture helpers for the shelling functions
 
-/// Run a git command in `dir` with a pinned identity, asserting success.
+/// Run a git command in `dir` with a fixed identity, asserting success.
 fn g(dir: &Path, args: &[&str]) {
     let out = anodizer_core::test_helpers::output_with_spawn_retry(
         || {
@@ -1414,7 +1414,7 @@ fn head_commit_timestamp_in_returns_pinned_committer_epoch() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     init_bare_repo(dir);
-    // Pinned GIT_COMMITTER_DATE in `g` is 1715000000 +0000.
+    // Fixed GIT_COMMITTER_DATE in `g` is 1715000000 +0000.
     commit_file(dir, "a", "0", "initial");
     assert_eq!(
         crate::git::head_commit_timestamp_in(dir).unwrap(),

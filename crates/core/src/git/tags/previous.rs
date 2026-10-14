@@ -1,6 +1,6 @@
 //! Previous-tag resolution: the tag that bounds the START of a release range.
 //!
-//! Two topologies answer it. The default walks commit ancestry
+//! Two topologies answer it. The default follows commit ancestry
 //! (`git describe --tags --abbrev=0 <tag>^`); `tag_sort = "smartsemver"`
 //! instead ranks a flat `git tag --list` by SemVer, drops prereleases when the
 //! release being cut is not one, and demotes a candidate sitting on the same
@@ -74,7 +74,7 @@ pub fn find_previous_tag_in(
 /// The full tag (with prefix) is returned.
 ///
 /// **`semver` vs `smartsemver` topology:** The default and `semver` modes
-/// walk commit ancestry via `git describe --abbrev=0 <tag>^`, so the result
+/// follow commit ancestry via `git describe --abbrev=0 <tag>^`, so the result
 /// reflects the nearest reachable ancestor tag. The `smartsemver` mode instead
 /// picks the SemVer-second-highest tag from a flat `git tag --list`, ignoring
 /// ancestry. In repos with branch-and-merge history the two paths can return
@@ -174,7 +174,7 @@ pub fn find_previous_tag_in_family_in(
 }
 
 /// Shared implementation behind both previous-tag entry points: dispatches to
-/// the `smartsemver` list path or the ancestry-walking `git describe` path,
+/// the `smartsemver` list path or the ancestry-following `git describe` path,
 /// with `scope` narrowing the candidate set in either and `excluded_prefixes`
 /// (narrower sibling families) removed from it in either.
 fn find_previous_tag_scoped_in(
@@ -258,7 +258,7 @@ fn find_previous_tag_scoped_in(
 /// there would widen the range to the whole history.
 ///
 /// **Topology note:** Unlike the legacy `git describe --abbrev=0 <tag>^` path
-/// (which walks commit ancestry), this path picks the SemVer-second-highest
+/// (which follows commit ancestry), this path picks the SemVer-second-highest
 /// tag from the flat tag list. In repos with branch-and-merge history the two
 /// can differ even when `skip_prereleases` is false.
 fn smartsemver_previous_tag_in(

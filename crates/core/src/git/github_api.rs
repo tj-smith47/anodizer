@@ -195,11 +195,15 @@ pub fn github_token_env_hint() -> String {
 }
 
 /// Full remediation hint for commands that also accept a `--token` flag:
-/// `set ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN or GH_TOKEN, or pass
-/// --token`, rendered
-/// from [`GITHUB_TOKEN_ENV_LADDER`].
+/// `set ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN or GH_TOKEN, pass --token, or
+/// write the token to ~/.config/anodizer/github_token`, rendered from
+/// [`GITHUB_TOKEN_ENV_LADDER`] and
+/// [`DEFAULT_GITHUB_TOKEN_FILE`](crate::config::DEFAULT_GITHUB_TOKEN_FILE).
 pub fn github_token_hint() -> String {
-    format!("set {}, or pass --token", github_token_env_hint())
+    crate::config::token_hint(
+        &github_token_env_hint(),
+        crate::config::DEFAULT_GITHUB_TOKEN_FILE,
+    )
 }
 
 /// Resolve the GitHub token for API calls through the codebase-standard

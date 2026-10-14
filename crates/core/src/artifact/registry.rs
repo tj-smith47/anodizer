@@ -354,7 +354,7 @@ impl ArtifactRegistry {
     ///
     /// Selects binary-like artifacts. Used by stage-sbom to
     /// avoid generating duplicate SBOMs at the same path; would be silently
-    /// hand-rolled in any future stage that walks binary kinds.
+    /// hand-rolled in any future stage that reads binary kinds.
     pub fn binary_like_dedup(&self) -> Vec<&Artifact> {
         let uploadable_paths: std::collections::HashSet<&std::path::Path> = self
             .artifacts

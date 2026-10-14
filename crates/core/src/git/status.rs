@@ -56,7 +56,7 @@ pub fn local_git_user_email_in(cwd: &Path) -> Option<String> {
 ///
 /// Binary-presence probe; the working directory has no effect on
 /// `git --version`, so this function deliberately has no `_in` sibling. The
-/// spawn is pinned to a guaranteed-existing dir so the probe survives an
+/// spawn runs in a guaranteed-existing dir so the probe survives an
 /// inherited cwd that was removed (see `path_util::probe_dir`).
 pub fn check_git_available() -> Result<()> {
     let output = crate::git::git_command()
@@ -111,9 +111,9 @@ pub fn git_status_porcelain_in(cwd: &Path) -> String {
 /// `Ok(String)` carries the porcelain output (empty = clean tree); `Err`
 /// signals that the `git status` invocation itself could not run or determine
 /// cleanliness (cwd is not a git repository, git is absent, the index is
-/// locked, …). Use this — not [`git_status_porcelain_in`] — for any guard that
-/// must FAIL when it cannot prove the tree is clean, rather than treating an
-/// indeterminate result as clean.
+/// locked, …). Use this for any guard that must FAIL when it cannot prove
+/// the tree is clean; [`git_status_porcelain_in`] treats an indeterminate
+/// result as clean.
 pub fn git_status_porcelain_result_in(cwd: &Path) -> Result<String> {
     git_output_in(cwd, &["status", "--porcelain"])
 }
@@ -442,7 +442,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         assert!(
             git_status_porcelain_result_in(tmp.path()).is_err(),
-            "a non-git dir cannot prove cleanliness — must surface Err, not fail open"
+            "a non-git dir cannot prove cleanliness — must return Err instead of failing open"
         );
     }
 }

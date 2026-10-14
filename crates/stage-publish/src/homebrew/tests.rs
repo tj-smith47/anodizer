@@ -1977,7 +1977,7 @@ fn test_disambiguate_homebrew_archives_logs_dropped_via_sink() {
     // Two archives for the same (os, arch) with ids unset: the fallback
     // keeps the .tar.gz and drops the .tar.xz. Capture the warn sink to
     // assert both URLs appear in the emitted log line (proves the user
-    // sees what was discarded — not silent disambiguation).
+    // sees what was discarded).
     let entries = vec![
         (
             "aarch64-apple-darwin".to_string(),
@@ -2034,7 +2034,7 @@ fn test_disambiguate_homebrew_archives_logs_dropped_via_sink() {
 // publish_to_homebrew / publish_cask / publish_top_level_homebrew_casks
 // early-exit tests.
 //
-// These pin the silent-skip contract — each guard that prevents a real push
+// These test the silent-skip contract — each guard that prevents a real push
 // MUST return Ok(false) (or Ok(()) for publish_cask), and the upstream
 // callers use the boolean to decide whether to record rollback evidence.
 // A regression that returned `Ok(true)` would cause the rollback orchestrator
@@ -4742,7 +4742,7 @@ fn publish_top_level_homebrew_casks_second_run_is_noop_no_changes() {
     // First publish puts the cask on `main`.
     let mut ctx1 = cask_publish_ctx(local_cask_cfg(&bare_url, "main"));
     let first = super::publish_top_level_homebrew_casks(&mut ctx1, &quiet_log())
-        .expect("first publish lands the cask");
+        .expect("first publish writes the cask");
     assert!(first.pushed_any, "first run must push");
 
     // Second publish clones the now-current tap, writes identical bytes ⇒ no diff.
@@ -4936,7 +4936,7 @@ fn publish_cask_no_macos_artifact_errors_with_crate_name() {
     );
     assert!(
         msg.contains("no macOS artifact"),
-        "must surface no-macOS-artifact bail; got: {msg}"
+        "must report the no-macOS-artifact bail; got: {msg}"
     );
     assert!(
         msg.contains("mytool"),

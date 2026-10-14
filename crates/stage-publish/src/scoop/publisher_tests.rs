@@ -108,9 +108,9 @@ fn scoop_rollback_warns_when_no_targets_recorded() {
 
 #[test]
 fn scoop_target_extra_carries_no_secret_material() {
-    // Structural pin: build evidence with a populated variant and
+    // Structural check: build evidence with a populated variant and
     // assert (a) no credential-shaped keys appear AND (b) the
-    // operator-public shape is preserved. The type system pins
+    // operator-public shape is preserved. The type system fixes
     // the negative half — the snapshot struct has no token field
     // to end up in.
     let mut e = PublishEvidence::new("scoop");
@@ -168,7 +168,7 @@ fn scoop_target_extra_roundtrips() {
 
 #[test]
 fn scoop_effective_publish_crates_implicit_all_when_selection_empty() {
-    // Regression pin for the `selected_crates = Vec::new()` failure
+    // Regression test for the `selected_crates = Vec::new()` failure
     // mode: the run path used to iterate the empty Vec and silently
     // skip every configured bucket. The helper now resolves to
     // implicit-all over `publish.scoop`-carrying crates.
@@ -452,7 +452,7 @@ fn build_scoop_reconcile_target_probes_the_pull_request_base_not_the_fork() {
         .build();
     let t = reconcile_target(&ctx, "x").expect("target built");
     // Probing the fork would find no open PR and re-submit a duplicate, so the
-    // base coords — not the fork's — are the part of the probe that matters.
+    // base coords are the part of the probe that matters.
     assert_eq!(t.upstream_owner, "upstream-org");
     assert_eq!(t.upstream_repo, "upstream-bucket");
 }

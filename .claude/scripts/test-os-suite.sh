@@ -13,7 +13,7 @@
 # thread inside ONE process, so a test that writes an executable stub and then
 # has production code exec it races every sibling thread's `fork` — the fork
 # briefly inherits the stub's writable fd and the exec fails with ETXTBSY until
-# that child reaches its own (CLOEXEC) exec. Under heavy fork load that surfaces
+# that child reaches its own (CLOEXEC) exec. Under heavy fork load that shows up
 # as a random handful of fake-tool tests failing. nextest gives each test its
 # own process, so no sibling fork can hold another test's fd.
 set -uo pipefail

@@ -544,7 +544,7 @@ crates:
 /// A non-member crate whose manifest uses `version.workspace = true` has no
 /// literal `[package].version`, so the single-crate accessor yields the
 /// "0.0.0" sentinel. The guard must instead resolve against the workspace
-/// version (declared at the root) — not emit a false `expected 0.0.0`.
+/// version (declared at the root) and never emit a false `expected 0.0.0`.
 #[test]
 fn non_member_inherited_version_resolves_against_workspace() {
     let tmp = TempDir::new().unwrap();
@@ -592,7 +592,7 @@ crates:
     // Must NOT have emitted the sentinel as the expected version.
     assert!(
         !run.stderr.contains("expected 0.0.0"),
-        "the 0.0.0 sentinel must never surface as an expected version: {}",
+        "the 0.0.0 sentinel must never be reported as an expected version: {}",
         run.stderr
     );
 }

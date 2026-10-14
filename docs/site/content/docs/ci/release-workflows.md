@@ -842,7 +842,7 @@ permissions:
 
 **Polling crates.io for upstream deps.** Sleeping and retrying `cargo publish` until the upstream index entry appears treats the symptom (a publish race) and leaves the cause (fan-out) in place. `anodizer release`'s topo-sorted sequential publish makes this unnecessary.
 
-**Per-crate determinism jobs without a shared rust-cache key.** When the determinism matrix uses a different cache key per crate, each shard cold-compiles the full dependency tree. Pin `Swatinem/rust-cache` to the same workspace-level key across all matrix entries.
+**Per-crate determinism jobs without a shared rust-cache key.** When the determinism matrix uses a different cache key per crate, each shard cold-compiles the full dependency tree. Set `Swatinem/rust-cache` to the same workspace-level key across all matrix entries.
 
 **Bash loops invoking `anodizer tag --crate X` repeatedly.** Calling `anodizer tag` once per crate in a shell loop duplicates the change-detection logic, creates one bump commit and tag push per crate, and can trigger N downstream release runs. `anodizer tag` without `--crate` handles the entire workspace in one atomic commit + push.
 

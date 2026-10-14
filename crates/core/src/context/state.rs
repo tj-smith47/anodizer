@@ -4,7 +4,7 @@ use super::*;
 ///
 /// Recorded per crate (and once for a single-track workspace's aggregate)
 /// so a later stage can ask "did this range produce anything?" without
-/// re-deriving the walk or pattern-matching the rendered markdown.
+/// re-reading the commit range or pattern-matching the rendered markdown.
 #[derive(Debug, Clone, Default)]
 pub struct ChangelogRangeSummary {
     /// Entries left after grouping and filtering — the same count the

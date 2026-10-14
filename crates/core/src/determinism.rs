@@ -90,11 +90,11 @@ pub fn merge_msvc_determinism_rustflags(base: &str) -> String {
     out
 }
 
-/// cc-rs env-var pins that force `clang-cl` as the C and C++ compiler for a
+/// cc-rs environment variables that force `clang-cl` as the C and C++ compiler for a
 /// windows-msvc `triple`, so C objects compiled by build-dependency crates
 /// (zstd-sys, ring, aws-lc-sys, lzma-sys, blake3, ...) are byte-reproducible.
 ///
-/// This is the single source of truth for the windows-msvc C-toolchain pin,
+/// This is the single source of truth for the windows-msvc C-toolchain choice,
 /// mirroring how [`MSVC_DETERMINISM_RUSTFLAGS`] is the source of truth for
 /// the Rust-side flags. The two guard different compilers: `/Brepro` and the
 /// sibling link-args are rustc/link.exe flags that never reach a C compile —
@@ -102,16 +102,16 @@ pub fn merge_msvc_determinism_rustflags(base: &str) -> String {
 /// a proven register-allocation coin-flip across otherwise-identical rebuilds
 /// (a single function alternating `mov eax,ecx` / `mov rax,rcx`). `clang-cl`
 /// accepts the same MSVC-compatible command line but its LLVM backend is
-/// deterministic, so pinning it as `CC`/`CXX` closes the gap `/Brepro` cannot.
+/// deterministic, so setting it as `CC`/`CXX` closes the gap `/Brepro` cannot.
 ///
 /// cc-rs resolves a target's compiler through a fixed, prioritized env-var
 /// order: `<VAR>_<target>` (hyphenated triple) first, then
 /// `<VAR>_<target_with_underscores>`, then `TARGET_<VAR>`, then bare `<VAR>`.
-/// Both of the first two forms are set here so the pin takes effect
+/// Both of the first two forms are set here so the setting takes effect
 /// regardless of which spelling a build script or `cc::Build` call queries;
 /// `TARGET_CC`/`CC` are deliberately left unset — a bare `TARGET_CC` would
 /// also apply to a same-host non-msvc target build, which is not what this
-/// pin is for. The `cmake` crate derives its `CMAKE_C_COMPILER` /
+/// setting is for. The `cmake` crate derives its `CMAKE_C_COMPILER` /
 /// `CMAKE_CXX_COMPILER` from `cc::Build::get_compiler()` rather than probing
 /// its own env vars, so these `CC_*`/`CXX_*` pairs propagate into
 /// `aws-lc-sys`'s CMake-driven build without any `CMAKE_*` override.
@@ -214,7 +214,7 @@ impl DeterminismState {
     /// Each entry below corresponds to an artifact pattern the
     /// [`crate::determinism_report`] verification harness will actually
     /// see in `dist/`. Entries are matched by `*.ext` suffix or exact
-    /// filename against the basename of every file the harness walks
+    /// filename against the basename of every file the harness visits
     /// under the per-run worktree's `dist/` tree. Pattern names that do
     /// not match any real emitter output are dead code (silently never
     /// resolve) — keep this list aligned with what stages actually drop
@@ -258,7 +258,7 @@ impl DeterminismState {
             );
         }
         // Installer formats whose non-determinism is intrinsic (a tool's
-        // wall-clock or spec-mandated unique id anodizer cannot pin) AND
+        // wall-clock or spec-mandated unique id anodizer cannot fix) AND
         // empirically proven by a two-build `cmp` test. Reproducible formats
         // are NOT here — they are gated so a real regression is caught.
         // Each entry carries its `.sha256` sidecar: the sidecar hashes a
@@ -296,7 +296,7 @@ impl DeterminismState {
             ),
             (
                 "*.dmg",
-                "hdiutil writes a fresh per-segment SegmentID GUID into the UDIF koly trailer every run and pins no SOURCE_DATE_EPOCH; not byte-reproducible — proven by stage-dmg::dmg_is_byte_reproducible_across_time. Built natively on the macos determinism shard under A′.",
+                "hdiutil writes a fresh per-segment SegmentID GUID into the UDIF koly trailer every run and reads no SOURCE_DATE_EPOCH; not byte-reproducible — proven by stage-dmg::dmg_is_byte_reproducible_across_time. Built natively on the macos determinism shard under A′.",
             ),
             (
                 "*.flatpak",
@@ -784,7 +784,7 @@ mod tests {
         let s = DeterminismState::seed_from_commit(0).expect("non-negative");
         // `cargo package` is byte-identical across two builds at a fixed
         // SOURCE_DATE_EPOCH (the harness exports it; cargo normalizes the
-        // source tarball — sorted paths, pinned mtime). The `.crate` must be
+        // source tarball — sorted paths, fixed mtime). The `.crate` must be
         // gated so a real regression is caught, NOT allow-listed. The
         // per-crate-rendered name must not resolve in any of the three modes.
         assert!(s.resolve_reason("anodizer-0.2.1.crate").is_none());

@@ -133,7 +133,7 @@ crates:
     /// `setup_context` (git resolution) BEFORE `load_artifacts_from_dist`.
     /// Outside a git repo the git step can fail before the run reaches the
     /// artifact-load step, so either failure mode is acceptable — both
-    /// pin the dispatch wiring through the prelude.
+    /// test the dispatch wiring through the prelude.
     #[test]
     #[serial(cwd)]
     fn missing_dist_artifacts_or_git_bails() {

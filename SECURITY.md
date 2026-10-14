@@ -29,7 +29,7 @@ Include:
 
 Anodizer is release-automation tooling. A single `anodizer release` run can build
 binaries, sign artifacts, push to many registries, and announce to many channels.
-The interesting threat surface follows from that scope:
+The threats worth considering follow from that scope:
 
 - **Token handling** - Anodizer reads forge tokens (`GITHUB_TOKEN`,
   `ANODIZER_GITHUB_TOKEN`, GitLab, Gitea), `CARGO_REGISTRY_TOKEN`, Homebrew tap

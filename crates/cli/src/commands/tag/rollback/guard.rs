@@ -56,10 +56,20 @@ pub(super) struct WingetProbeSpec {
 }
 
 /// Ambient GitHub token for the winget burn probe, read through the injected
-/// env source. The probe is a read-only public search that works
-/// anonymously; the token only buys a higher rate limit.
-pub(super) fn winget_probe_token<E: anodizer_core::EnvSource + ?Sized>(env: &E) -> Option<String> {
-    anodizer_core::git::resolve_github_token_with_env(None, &|key| env.var(key))
+/// env source in the run token's order: `ANODIZER_GITHUB_TOKEN`,
+/// `GITHUB_TOKEN`, `GH_TOKEN`, then the GitHub token file `env_files` names
+/// (or the default one). The probe is a read-only public search that works
+/// anonymously; the token only buys a higher rate limit, so a token file that
+/// cannot be read leaves the probe anonymous.
+pub(super) fn winget_probe_token<E: anodizer_core::EnvSource + ?Sized>(
+    env: &E,
+    env_files: Option<&anodizer_core::config::EnvFilesConfig>,
+) -> Option<String> {
+    anodizer_core::git::resolve_github_token_with_env(None, &|key| env.var(key)).or_else(|| {
+        anodizer_core::config::token_file_tokens(env_files, env)
+            .ok()?
+            .remove("GITHUB_TOKEN")
+    })
 }
 
 /// Concurrency bound for registry burn probes: a large workspace must not
@@ -323,7 +333,7 @@ pub(super) fn check_not_irreversibly_published(
             burned.push((tag.clone(), names));
         } else {
             log.status(&format!(
-                "no one-way-door publisher landed for {tag} per this run's summary"
+                "no one-way-door publisher published {tag} per this run's summary"
             ));
         }
     }

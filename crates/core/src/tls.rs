@@ -20,12 +20,12 @@
 //! in its `smtp` transport) and is genuinely unaffected. `reqwest` and
 //! `object_store`, however, link both `ring` and `aws-lc-rs` and take
 //! rustls's *process-default* `CryptoProvider` for their bare
-//! `ClientConfig`/`ServerConfig` builders — they rely on this module's pin
+//! `ClientConfig`/`ServerConfig` builders — they rely on this module's setting
 //! rather than owning their own provider.
 //!
 //! [panics]: https://docs.rs/rustls/0.23/rustls/crypto/struct.CryptoProvider.html#method.install_default
 
-/// Pin the process-default rustls [`CryptoProvider`] to `ring`.
+/// Set the process-default rustls [`CryptoProvider`] to `ring`.
 ///
 /// Call once, as early as possible, before any TLS handshake. Idempotent and
 /// infallible to the caller: a second call (or a prior install, e.g. from a

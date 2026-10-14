@@ -296,7 +296,7 @@ mod tests {
         }
     }
 
-    /// Pins the corrected predicate so the deliberate `-dev` decision and the
+    /// Tests the corrected predicate so the deliberate `-dev` decision and the
     /// kept anodizer-specific markers cannot silently regress.
     #[test]
     fn predicate_marker_list_is_pinned() {

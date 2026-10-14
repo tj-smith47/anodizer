@@ -25,7 +25,7 @@
 //!   in the batch are logged, and a warn summarizes partial progress.
 //! - **Panic-safe**: a worker panic becomes an `anyhow::Error` annotated
 //!   with `stage_name`, so a panicked thread doesn't leave the pool
-//!   deadlocked or drop all other results on the floor.
+//!   deadlocked or discard all other results.
 //! - **Order-preserving**: results are collected in job-submission order, so
 //!   downstream artifact registration remains deterministic.
 
@@ -400,7 +400,7 @@ mod tests {
         assert_eq!(
             recorded.map(|(_, retries, backoff)| (retries, backoff)),
             Some((2, std::time::Duration::from_millis(6_000_000_001))),
-            "both workers' backoff must land under the caller's scope"
+            "both workers' backoff must run under the caller's scope"
         );
     }
 

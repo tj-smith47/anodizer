@@ -521,7 +521,7 @@ fn assemble_postinstall_tarball_residual_description_template_errors() {
 /// The same residual `description` template stays lenient on a dry-run
 /// `Context`: `assemble_postinstall_tarball` runs unconditionally (staging
 /// happens before `publish_postinstall`'s own dry-run gate), so the guard's
-/// OWN dry-run leniency is what must carry this — not a caller-side gate.
+/// OWN dry-run leniency is what must carry this.
 #[test]
 fn assemble_postinstall_tarball_residual_description_template_dry_run_stays_lenient() {
     let mut ctx = ctx_with_archives();
@@ -1290,7 +1290,7 @@ fn optional_deps_universal_only_one_darwin_triple_configured_still_expects_it() 
         .crates(vec![krate])
         .build();
     // aarch64-apple-darwin (the crate's only configured darwin triple) is
-    // missing — the both-required floor can't be met (no x86_64-apple-darwin
+    // missing — the requirement for both can't be met (no x86_64-apple-darwin
     // in the target set at all), so `replace` could never have fired; the
     // gate must still expect and report it.
     add_binary(&mut ctx, tmp.path(), "x86_64-pc-windows-msvc", "demo.exe");
@@ -1524,7 +1524,7 @@ fn sibling_crate(name: &str, targets: &[&str]) -> CrateConfig {
 }
 
 /// Single-crate mode (one crate configured, `selected_crates` empty):
-/// baseline already covered by the tests above, pinned here explicitly so
+/// baseline already covered by the tests above, checked here explicitly so
 /// the three-mode matrix is visible in one place.
 #[test]
 fn optional_deps_single_crate_mode_all_expected_present() {
@@ -4253,7 +4253,7 @@ fn npm_publish_retry_honors_already_elapsed_deadline() {
 
     assert!(
         res.is_err(),
-        "budget-exhausted publish must surface the error"
+        "budget-exhausted publish must return the error"
     );
     assert_eq!(
         attempts.load(Ordering::SeqCst),
@@ -4833,7 +4833,7 @@ fn optional_deps_metadata_per_crate_isolated_in_per_crate_workspace() {
 
 #[test]
 fn engines_default_node_18_and_overridable() {
-    // Default: { node: ">=18" } (esbuild/biome/swc floor).
+    // Default: { node: ">=18" } (the esbuild/biome/swc minimum).
     let (_tmp, ctx_b) = optional_deps_ctx();
     let layout = generate_layout(
         &ctx_b,

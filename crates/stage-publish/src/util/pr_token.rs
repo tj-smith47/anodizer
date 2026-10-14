@@ -15,7 +15,8 @@ pub(crate) enum TokenLink {
     /// The publisher's own variable, such as `HOMEBREW_TAP_TOKEN`.
     PublisherVariable,
     /// The run's token (`--token`, or the GitHub variable the CLI read at
-    /// startup), read only on a GitHub run.
+    /// startup, or the GitHub token file when every GitHub variable is unset),
+    /// read only on a GitHub run.
     RunToken,
     /// [`anodizer_core::git::GITHUB_TOKEN_ENV_LADDER`], in its order.
     GithubVariables,
@@ -170,15 +171,18 @@ pub(crate) fn token_order_hint(
             TokenLink::RunToken => {
                 if github_run {
                     items.push(format!(
-                        "{} (`--token`, or {} read at startup when `--token` is unset)",
+                        "{} (`--token`, or {} read at startup when `--token` is unset, or \
+                         the GitHub token file when all three are unset)",
                         TokenSource::RunToken,
                         anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.join("/"),
                     ));
                 }
             }
             // On a GitHub run the run token's item already names these
-            // variables: the CLI read the run token from them, so when it is
-            // unset they are unset too.
+            // variables: the CLI read the run token from them and then from
+            // the GitHub token file, which is loaded into `GITHUB_TOKEN` only
+            // when all of them are unset. So when the run token is unset they
+            // are unset too.
             TokenLink::GithubVariables => {
                 if !(github_run && order.contains(&TokenLink::RunToken)) {
                     items.extend(vars(anodizer_core::git::GITHUB_TOKEN_ENV_LADDER));
@@ -332,7 +336,7 @@ pub(crate) mod hint_probe {
                 hint.contains(
                     "the run's GitHub token (`--token`, or \
                      ANODIZER_GITHUB_TOKEN/GITHUB_TOKEN/GH_TOKEN read at startup when \
-                     `--token` is unset)"
+                     `--token` is unset, or the GitHub token file when all three are unset)"
                 ),
                 "{name}: the run token's item names where it came from: {hint}"
             );

@@ -437,7 +437,7 @@ pub struct ReleaseStage;
 mod asset_conflict_tests {
     //! The shared overwrite classifier consumed by both the GitHub and Gitea
     //! backends. The byte-identical-skip invariant lives here once; the
-    //! per-backend projection tests (`spec.rs` / `gitea.rs`) pin the mapping
+    //! per-backend projection tests (`spec.rs` / `gitea.rs`) test the mapping
     //! onto their own action enums.
     use super::{AssetConflict, classify_asset_conflict};
 

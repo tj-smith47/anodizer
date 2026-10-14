@@ -101,8 +101,8 @@ pub fn poll(
     let mut pr_url: Option<String> = None;
     // Track whether a matching PR was ever located during this poll
     // run. Distinguishes "PR not visible yet" (expected initial state
-    // while the upstream search index ingests a fresh PR — not
-    // actionable for the operator) from "PR was found then disappeared"
+    // while the upstream search index ingests a fresh PR, nothing
+    // for the operator to act on) from "PR was found then disappeared"
     // (a regression: the PR was deleted/withdrawn after first appearing,
     // which IS actionable).
     let mut ever_found = false;
@@ -298,7 +298,7 @@ fn check_pr_at(pr_api_url: &str, token: Option<&str>) -> PrVerdict {
     classify_pr_json(&v)
 }
 
-/// Pure PR-state classifier — no IO. Tests pin the exact label vocabulary
+/// Pure PR-state classifier — no IO. Tests check the exact label vocabulary
 /// observed in `microsoft/winget-pkgs`.
 fn classify_pr_json(v: &Value) -> PrVerdict {
     let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("");
@@ -673,7 +673,7 @@ mod tests {
 
     #[test]
     fn rejection_label_classification_table() {
-        // Pin the rejection-label vocabulary so future label additions
+        // Check the rejection-label vocabulary so future label additions
         // get a deliberate decision rather than silent acceptance.
         for label in [
             "Validation-Installation-Error",

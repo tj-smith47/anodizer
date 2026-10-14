@@ -198,10 +198,10 @@ pub fn set_file_mtime_epoch(path: &Path, epoch_secs: i64) -> Result<()> {
     set_file_mtime(path, system_time_from_epoch(epoch_secs)?)
 }
 
-/// Recursively pin every regular file's mtime under `dir` to `epoch_secs`
+/// Recursively set every regular file's mtime under `dir` to `epoch_secs`
 /// (SOURCE_DATE_EPOCH seconds). Packaging tools (makeself's tar, NSIS's `File`)
 /// embed each input file's on-disk mtime; `fs::copy` stamps the wall clock, so
-/// two harness runs with identical contents drift the packed bytes. Pinning to
+/// two harness runs with identical contents drift the packed bytes. Setting it to
 /// the build epoch removes that variance.
 ///
 /// Subdirectories are scanned; only regular files have their mtime set (mirrors
@@ -210,7 +210,7 @@ pub fn pin_dir_mtimes_epoch(dir: &Path, epoch_secs: i64) -> Result<()> {
     let mut stack: Vec<std::path::PathBuf> = vec![dir.to_path_buf()];
     while let Some(p) = stack.pop() {
         for entry in
-            fs::read_dir(&p).with_context(|| format!("read_dir {} for mtime pin", p.display()))?
+            fs::read_dir(&p).with_context(|| format!("read_dir {} for mtime reset", p.display()))?
         {
             let entry = entry?;
             let path = entry.path();
@@ -219,7 +219,7 @@ pub fn pin_dir_mtimes_epoch(dir: &Path, epoch_secs: i64) -> Result<()> {
                 stack.push(path);
             } else if ft.is_file() {
                 set_file_mtime_epoch(&path, epoch_secs)
-                    .with_context(|| format!("pin mtime on {}", path.display()))?;
+                    .with_context(|| format!("set mtime on {}", path.display()))?;
             }
         }
     }
@@ -665,7 +665,7 @@ mod tests {
             assert_eq!(
                 mtime,
                 target,
-                "{}: mtime must equal the pinned epoch exactly",
+                "{}: mtime must equal the fixed epoch exactly",
                 path.display()
             );
         }

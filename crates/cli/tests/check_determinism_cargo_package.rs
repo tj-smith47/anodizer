@@ -118,7 +118,7 @@ fn cargo_package_stage_is_byte_stable_on_minimal_repo() {
             .map(|a| (&a.name, &a.stage))
             .collect::<Vec<_>>()
     );
-    // Pin: every emitted `.crate` row must end in `.crate`.
+    // Every emitted `.crate` row must end in `.crate`.
     for row in &crate_rows {
         assert!(
             row.name.ends_with(".crate"),

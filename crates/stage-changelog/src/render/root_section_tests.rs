@@ -473,7 +473,7 @@ fn curated_bullet_with_no_group_and_no_catchall_is_preserved() {
 #[test]
 fn wrapped_curated_bullet_continuation_stays_with_parent() {
     // A curated bullet wrapped across two lines: the continuation (indented,
-    // no list marker) must follow its `feat:` parent under Features — not be
+    // no list marker) must follow its `feat:` parent under Features and must not be
     // re-classified to the catch-all / unmatched tail under another heading.
     // A raw string keeps the 2-space continuation indent intact (a
     // `\`-continued literal would strip it).

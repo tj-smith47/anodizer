@@ -505,7 +505,7 @@ fn a_rendered_but_invalid_package_identifier_still_fails_validation() {
         .clone()
         .unwrap();
     let derived = crate::winget::derive_winget_config(&ctx, &log, &cfg, "demo")
-        .expect("the seam renders the field");
+        .expect("the derive function renders the field");
     assert_eq!(
         derived.package_identifier.as_deref(),
         Some("nodots"),
@@ -551,11 +551,11 @@ fn package_identifier_is_rendered_at_one_seam_only() {
         .clone()
         .unwrap();
     let derived = crate::winget::derive_winget_config(&ctx, &log, &cfg, "demo")
-        .expect("the seam renders the field");
+        .expect("the derive function renders the field");
     assert_eq!(
         derived.package_identifier.as_deref(),
         Some("Acme.tool"),
-        "the seam must render the template into the config it returns"
+        "the derive function must render the template into the config it returns"
     );
 
     let target = collect_winget_target(&ctx, "demo", &derived).expect("demo is winget-configured");
@@ -623,11 +623,11 @@ fn package_identifier_is_rendered_at_one_seam_only() {
     assert_eq!(
         sites.len(),
         1,
-        "the identifier must be rendered at exactly one seam: {sites:?}"
+        "the identifier must be rendered at exactly one place: {sites:?}"
     );
     assert!(
         sites[0].contains("winget/identifier.rs"),
-        "the one seam is `derive_winget_config`: {sites:?}"
+        "the one place is `derive_winget_config`: {sites:?}"
     );
 }
 
@@ -673,7 +673,7 @@ fn the_repository_owner_is_rendered_once_per_crate() {
     assert_eq!(
         owner_warns.len(),
         1,
-        "the owner is rendered at the derive seam only: {owner_warns:?}"
+        "the owner is rendered in the derive function only: {owner_warns:?}"
     );
 }
 
@@ -735,7 +735,7 @@ fn a_preflight_run_warns_once_for_an_unrenderable_winget_owner() {
     assert_eq!(
         owner_warns.len(),
         1,
-        "the probe reads the seam's derived owner rather than re-rendering it: {owner_warns:?}"
+        "the probe reads the derive function's owner without re-rendering it: {owner_warns:?}"
     );
 }
 
@@ -1004,7 +1004,7 @@ fn live_single_crate_default_moniker_and_upgrade_behavior() {
 /// the schema validator skip the crate rather than drive
 /// `collect_winget_installers` into its "no Windows artifact" bail. The
 /// shared `WingetArtifactFilters::matches` Windows predicate keeps the two
-/// from drifting; this pins the portable-binary branch of that agreement.
+/// from drifting; this tests the portable-binary branch of that agreement.
 #[test]
 fn guard_skips_linux_only_portable_binary() {
     let cfg = WingetConfig {
@@ -1136,7 +1136,7 @@ fn a_dry_run_winget_submission_records_no_landed_entry() {
                 anodizer_core::SkipReason::EntriesSkipped
             ))
         ),
-        "a dry run reached no remote, so nothing landed: {:?}",
+        "a dry run reached no remote, so nothing was published: {:?}",
         ctx.pending_outcome
     );
 }
@@ -1350,7 +1350,7 @@ fn winget_target_extra_roundtrips() {
 
 #[test]
 fn winget_target_extra_carries_no_secret_material() {
-    // Structural pin: build a typed-variant evidence and assert
+    // Structural check: build a typed-variant evidence and assert
     // (a) no credential-shaped keys appear AND (b) the
     // operator-public PR coordinates are preserved.
     let mut e = PublishEvidence::new("winget");
@@ -1542,7 +1542,7 @@ fn winget_publisher_run_no_eligible_crates_returns_empty_evidence() {
 /// carrying a `publish.winget` block. Without this the publisher
 /// would emit `crate::publisher_helpers::run_done_message("winget", 0)` and report `succeeded` with zero
 /// winget activity in the publish log — the root-cause failure mode
-/// this regression test pins against.
+/// this regression test guards against.
 #[test]
 fn winget_publisher_run_empty_selection_publishes_all_configured() {
     let repo = crate::testing::hermetic_tagged_repo();
@@ -1617,7 +1617,7 @@ fn winget_publisher_visible_work_contract() {
 /// A windows archive that arrives at the winget publisher without
 /// `sha256` metadata MUST bail with an actionable error, not emit
 /// `InstallerSha256: ''` (which the winget validation pipeline
-/// rejects). Pins the bail message + the downstream-consequence
+/// rejects). Tests the bail message + the downstream-consequence
 /// hint pointing the operator at the checksum stage.
 #[test]
 fn winget_archive_without_sha256_metadata_bails_with_actionable_error() {

@@ -323,7 +323,7 @@ fn test_single_word_header_emits_no_trailing_space() {
             );
         }
         // In-process `cargo test` intercepts `eprintln!`; re-assert the
-        // shared helper so the invariant still has a floor under nextest.
+        // shared helper so the invariant is still checked under nextest.
         None => {
             let header = strip_ansi(&render_header(depth, "Publishing", ""));
             assert_eq!(header, format!("{prefix}{:>VERB_COLUMN$}", "Publishing"));
@@ -853,7 +853,7 @@ fn test_with_stage_rebinds_stage_field() {
 fn test_body_markers_render_at_body_indent() {
     // Body lines sit at the 3-space body indent (top level: no section
     // nesting) behind a colored marker glyph. ANSI codes are stripped
-    // for the assertion so the test pins the visible shape, not palette.
+    // for the assertion so the test checks the visible shape and ignores the palette.
     let _guard = SECTION_TEST_LOCK.lock().unwrap();
     let strip = |s: String| {
         // Drop CSI sequences so the assertion is palette-independent.
@@ -894,7 +894,7 @@ fn test_body_markers_render_at_body_indent() {
 fn test_kv_pads_plain_key_so_values_align() {
     // The padded key width counts the PLAIN key, not the ANSI-dimmed
     // bytes, so a short key and a long key share the same value column.
-    // Emitting a body line drains the process-global PENDING stack via
+    // Emitting a body line empties the process-global PENDING stack via
     // `flush_pending`, so serialize against the section-depth tests that
     // assert on that stack.
     let _guard = SECTION_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -916,7 +916,7 @@ fn test_kv_pads_plain_key_so_values_align() {
 /// The two child-stream tee helpers have no production caller today — every
 /// live path goes through `stream_child_chunk` — so nothing observed that they
 /// still redact, still terminate the line, and still record at their own
-/// levels. They are `pub` on a published crate, so this is the pin.
+/// levels. They are `pub` on a published crate, so this test holds them.
 #[test]
 fn stream_child_helpers_redact_and_record_at_their_own_level() {
     let _guard = SECTION_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -974,7 +974,7 @@ fn test_retag_helpers_record_under_shared_capture() {
     // The retagged clone shares the capture sink, and the plain
     // delegations still record at the right level — locking the plumbing
     // independent of the rendered tag (which the capture does not store).
-    // Emitting body lines drains the global PENDING stack via
+    // Emitting body lines empties the global PENDING stack via
     // `flush_pending`; serialize against the section-depth tests.
     let _guard = SECTION_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (log, cap) = StageLogger::with_capture("release", Verbosity::Normal);
@@ -1000,7 +1000,7 @@ fn skip_line_records_debug_when_not_shown() {
     // The default (show=false) routes a per-crate "no config block" skip to
     // debug() so it stays invisible at Normal/Verbose and only shows at
     // --debug — the fix for the 300+-line workspace skip-noise problem.
-    // skip_line emits a body line that drains the global PENDING stack;
+    // skip_line emits a body line that empties the global PENDING stack;
     // serialize against the section-depth tests.
     let _guard = SECTION_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (log, cap) = StageLogger::with_capture("homebrew", Verbosity::Normal);
@@ -1023,7 +1023,7 @@ fn skip_line_records_debug_when_not_shown() {
 fn skip_line_records_status_when_shown() {
     // --show-skipped (show=true) forces the skip line back to status so the
     // operator can diagnose why a publisher didn't run for a given crate.
-    // skip_line emits a body line that drains the global PENDING stack;
+    // skip_line emits a body line that empties the global PENDING stack;
     // serialize against the section-depth tests.
     let _guard = SECTION_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (log, cap) = StageLogger::with_capture("homebrew", Verbosity::Normal);
@@ -1050,14 +1050,14 @@ fn skip_line_records_status_when_shown() {
 ///   and `.env_var(` never match the spellings asked for. A literal value
 ///   (`.env("LC_ALL", "C")`, `.env("GIT_TERMINAL_PROMPT", "0")`) is no
 ///   secret, and a body that sets only those is outside the class — that
-///   is what keeps the thirty-odd git helpers out of the walk. Known
+///   is what keeps the thirty-odd git helpers out of the scan. Known
 ///   negative: a literal value that is a secret written in source, which
 ///   this workspace does not do and a review catches.
 /// - or the body calls a BUILDER: a function whose signature returns a
 ///   `Command` and whose own body sets such an env. The command a builder
 ///   hands back carries the env just the same, and a spawner that never
 ///   spells `.env(` itself would otherwise be invisible. The builders are
-///   found by the walk and their names pinned.
+///   found by the scan and their names listed.
 /// - and the body reads the child's output somewhere a line can be printed:
 ///   any run helper of `crate::run` (`RUN_HELPERS`), `check_output(`,
 ///   `.redact(` or a `.stderr)` read (`from_utf8_lossy(&output.stderr)`).
@@ -1077,9 +1077,7 @@ fn skip_line_records_status_when_shown() {
 /// read from config.
 #[test]
 fn every_spawn_with_its_own_env_logs_through_the_child_env_redactor() {
-    use crate::test_helpers::test_sources::{
-        function_bodies, production_half, workspace_production_sources,
-    };
+    use crate::test_helpers::test_sources::production_corpus;
 
     // Functions returning a `Command` that already carries a non-literal env.
     const BUILDERS: [&str; 5] = [
@@ -1165,11 +1163,10 @@ fn every_spawn_with_its_own_env_logs_through_the_child_env_redactor() {
     );
 
     let mut bodies: Vec<(String, String, String)> = Vec::new();
-    for source in workspace_production_sources() {
-        let text = std::fs::read_to_string(&source).expect("read source");
-        let path = source.to_string_lossy().replace('\\', "/");
-        for body in function_bodies(production_half(&text)) {
-            bodies.push((path.clone(), fn_name(&body), body));
+    for source in production_corpus() {
+        let path = source.path.to_string_lossy().replace('\\', "/");
+        for body in &source.bodies {
+            bodies.push((path.clone(), fn_name(body), body.clone()));
         }
     }
 
@@ -1194,7 +1191,7 @@ fn every_spawn_with_its_own_env_logs_through_the_child_env_redactor() {
     assert_eq!(
         builders, BUILDERS,
         "the functions returning a Command that carries its own env moved; \
-         every spawner of one is in this pin's population"
+         every spawner of one is in this test's population"
     );
 
     let reads_output = |body: &str| {
@@ -1272,7 +1269,7 @@ fn every_spawn_with_its_own_env_logs_through_the_child_env_redactor() {
     );
 }
 
-/// Every `pub fn` of `crate::run`'s exec API; the pin holds the list to the
+/// Every `pub fn` of `crate::run`'s exec API; the test holds the list to the
 /// module's own source.
 const RUN_HELPERS: [&str; 6] = [
     "run_checked(",
@@ -1373,7 +1370,7 @@ fn fn_name(body: &str) -> String {
 }
 
 /// Whether `body` sets an env on a `Command` with a value that is not a
-/// string literal (see the doc comment on the pin above).
+/// string literal (see the doc comment on the test above).
 fn sets_command_env(body: &str) -> bool {
     let bytes = body.as_bytes();
     let mut from = 0;

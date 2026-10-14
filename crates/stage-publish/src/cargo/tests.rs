@@ -113,7 +113,7 @@ fn test_publish_command_default() {
 }
 
 #[test]
-fn test_publish_command_full_flag_surface() {
+fn test_publish_command_full_flag_set() {
     let cfg = CargoPublishConfig {
         registry: Some("alt-registry".to_string()),
         index: Some("https://example.com/idx".to_string()),
@@ -265,7 +265,7 @@ fn test_expand_transitive_deps_ignores_external_deps() {
 // ~line 489) avoids redundant `cargo publish` calls — and the bogus
 // 422-with-stale-bytes problem they create — when the version already
 // exists on crates.io and the local .crate cksum matches the index. The
-// tests below pin (a) the sparse-index URL shape, matching the path
+// tests below check (a) the sparse-index URL shape, matching the path
 // cargo itself uses, and (b) the JSONL parser, which must keep treating
 // "version present, no cksum" as a fall-back-to-skip rather than a
 // silently-missed publish.
@@ -277,7 +277,7 @@ fn test_expand_transitive_deps_ignores_external_deps() {
 /// every release.
 #[test]
 fn test_sparse_index_url_shape() {
-    // The base is env-overridable for hermetic tests, so this one pins the
+    // The base is env-overridable for hermetic tests, so this one checks the
     // production spelling with the override removed and the env mutex held.
     let _env = anodizer_core::test_helpers::env::env_mutex()
         .lock()
@@ -1457,7 +1457,7 @@ fn crates_equal_modulo_vcs_lockfile_drift_on_example_crate_differs() {
 
 // retry plumbing through is_already_published_at
 //
-// Pin: the sparse-index GET must route through retry_http_blocking so
+// Check: the sparse-index GET must route through retry_http_blocking so
 // transient 5xx / 429 / network failures retry per the user's policy.
 // 404 (crate never published) must remain Ok(None) — preserved via the
 // HttpError(404)-from-Break catch in is_already_published_at.
@@ -1533,7 +1533,7 @@ fn is_already_published_at_stops_on_an_already_elapsed_deadline() {
         Some(std::time::Instant::now()),
         anodizer_core::test_helpers::test_logger(),
     )
-    .expect_err("a wedged index must surface an error");
+    .expect_err("a wedged index must return an error");
     assert!(format!("{err:#}").contains("503"), "{err:#}");
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -1851,7 +1851,7 @@ fn is_transient_network_failure_rejects_unrelated_errors() {
     assert!(!is_transient_network_failure(""));
 }
 
-/// Pin the cargo major.minor version against which the discriminator
+/// Record the cargo major.minor version against which the discriminator
 /// substrings in [`is_index_propagation_failure`] were last verified.
 ///
 /// If CI upgrades to a different cargo major.minor this test fails,
@@ -1871,13 +1871,13 @@ fn cargo_version_matches_pinned_discriminator_strings() {
     const VERIFIED_CARGO_MINOR: u64 = 99;
 
     // Resolve cargo via the `CARGO` env var — the absolute path cargo
-    // exports when it spawns the test binary — not PATH: a peer `#[serial]`
+    // exports when it spawns the test binary. A peer `#[serial]`
     // test prepends a stub-cargo dir to the process-global PATH, and a
     // PATH-resolved spawn here would race it and read the stub's version.
     let cargo_bin = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = std::process::Command::new(cargo_bin)
         .arg("--version")
-        // Pin cwd: a peer test that deletes the process-global cwd would
+        // Fix the cwd: a peer test that deletes the process-global cwd would
         // otherwise make this forked `cargo --version` abort on getcwd.
         .current_dir(anodizer_core::path_util::probe_dir())
         .output()
@@ -2053,7 +2053,7 @@ fn run_cargo_publish_with_retry_does_not_retry_unrelated_failure() {
         std::time::Duration::from_millis(1),
         None,
     )
-    .expect_err("non-propagation failure must surface");
+    .expect_err("non-propagation failure must be returned");
     let chain = format!("{err:#}");
     assert!(
         chain.contains("401") || chain.contains("Unauthorized") || chain.contains("exit code"),
@@ -2215,7 +2215,7 @@ fn main() {
         std::time::Duration::from_millis(1),
         None,
     )
-    .expect_err("non-propagation failure must surface");
+    .expect_err("non-propagation failure must be returned");
     let chain = format!("{err:#}");
     assert!(
         chain.contains("401") || chain.contains("Unauthorized") || chain.contains("exit code"),
@@ -2232,7 +2232,7 @@ fn main() {
 
 // wait_for_workspace_deps — pre-publish gate
 //
-// Pin the manifest parser shape and the polling-success path. The
+// Test the manifest parser shape and the polling-success path. The
 // sparse-index URL math is exercised by `test_sparse_index_url_shape`
 // above; the gate reuses that helper unchanged.
 
@@ -2852,9 +2852,9 @@ fn scan_section_version_skips_comment_lines() {
     );
 }
 
-// find_workspace_root_manifest — anchored [workspace] header walk.
+// find_workspace_root_manifest — anchored [workspace] header search.
 
-/// Walks up from a leaf crate dir to the manifest carrying `[workspace]`.
+/// Searches upward from a leaf crate dir to the manifest carrying `[workspace]`.
 #[test]
 fn find_workspace_root_manifest_walks_up_to_workspace() {
     let root = tempfile::tempdir().expect("tempdir");
@@ -2901,7 +2901,7 @@ fn find_workspace_root_manifest_ignores_metadata_subtable() {
 // captured status stream is therefore a faithful witness of the ordering
 // and gating decisions WITHOUT any network or subprocess. Covers all
 // three config modes — single-crate, workspace-lockstep, workspace
-// per-crate — for the publish-graph walk.
+// per-crate — for the publish-graph traversal.
 
 use anodizer_core::config::{PublishConfig, WorkspaceConfig};
 // `Verbosity` / `LogLevel` are not in the file-level imports `super::*`
@@ -2956,7 +2956,7 @@ fn plain_crate(name: &str, deps: &[&str]) -> CrateConfig {
 
 /// Run `publish_to_cargo` in dry-run mode with a capturing logger and
 /// return the ordered list of crate names whose per-crate-start line was
-/// emitted — i.e. the order `publish_to_cargo` walked the publish graph.
+/// emitted — i.e. the order `publish_to_cargo` traversed the publish graph.
 fn dry_run_publish_order(ctx: &mut Context) -> Vec<String> {
     let (log, cap) = StageLogger::with_capture("publish-test", Verbosity::Normal);
     let selected = ctx.options.selected_crates.clone();
@@ -3152,7 +3152,7 @@ fn resolve_ignores_deselected_sibling_oidc_block() {
     assert_eq!(
         got, None,
         "x is auth:token with an ambient token present; the resolver must take the token path, \
-         not mint against y's out-of-scope oidc block"
+         not exchange a token against y's out-of-scope oidc block"
     );
 }
 
@@ -3176,10 +3176,10 @@ fn resolve_auto_without_token_but_oidc_context_routes_to_mint() {
         max_delay: std::time::Duration::from_millis(1),
     };
     let err = resolve_workspace_cargo_token(&ctx, &no_retry, None, &quiet_log())
-        .expect_err("mint against an unreachable OIDC endpoint fails");
+        .expect_err("a token exchange against an unreachable OIDC endpoint fails");
     assert!(
         !err.to_string().contains("no credential available"),
-        "auto must route to mint when an OIDC context exists, not bail: {err:#}"
+        "auto must route to the token exchange when an OIDC context exists, not bail: {err:#}"
     );
 }
 
@@ -3915,7 +3915,7 @@ fn cargo_publish_plan_propagates_if_render_error() {
         .build();
     // CargoPublishPlan is not Debug, so match rather than expect_err.
     let chain = match cargo_publish_plan(&mut ctx, &["bad".to_string()], &quiet_log()) {
-        Ok(_) => panic!("malformed if template must surface as Err"),
+        Ok(_) => panic!("malformed if template must return Err"),
         Err(e) => format!("{e:#}"),
     };
     assert!(
@@ -4091,7 +4091,7 @@ fn a_failed_yank_redacts_the_registry_token_from_its_warning() {
 // extract_version_pin — the three TOML dep shapes + the None branches.
 //
 // workspace_deps_for_crate tests above exercise the happy paths end to
-// end; these pin the helper directly so each early-return branch (bare
+// end; these test the helper directly so each early-return branch (bare
 // string, inline-table workspace-inherit, inline-table version, standard
 // table workspace-inherit, standard table version, no-version) is
 // observable in isolation.
@@ -4236,7 +4236,7 @@ fn read_cargo_toml_version_workspace_root_without_version_is_none() {
 
 // run_cargo_publish_with_retry — exhaustion path (all retries fail).
 //
-// The recovery + fast-fail paths are covered above; this pins the third
+// The recovery + fast-fail paths are covered above; this tests the third
 // arm: a propagation-style failure that NEVER clears must retry the full
 // PUBLISH_PROPAGATION_RETRIES budget, then report the last failure.
 
@@ -4246,7 +4246,7 @@ fn read_cargo_toml_version_workspace_root_without_version_is_none() {
 /// succeed.
 #[cfg(unix)]
 #[test]
-fn run_cargo_publish_with_retry_exhausts_then_surfaces() {
+fn run_cargo_publish_with_retry_exhausts_then_returns_error() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let counter = tmp.path().join("counter");
     let stub = tmp.path().join("cargo");
@@ -4278,7 +4278,7 @@ fn run_cargo_publish_with_retry_exhausts_then_surfaces() {
         std::time::Duration::from_millis(1),
         None,
     )
-    .expect_err("persistent propagation failure must surface after exhaustion");
+    .expect_err("persistent propagation failure must be returned after exhaustion");
     let chain = format!("{err:#}");
     assert!(
         chain.contains("no matching package") || chain.contains("exit code"),
@@ -4292,12 +4292,12 @@ fn run_cargo_publish_with_retry_exhausts_then_surfaces() {
         .expect("u32");
     assert_eq!(
         n, PUBLISH_PROPAGATION_RETRIES,
-        "must retry the full budget before surfacing"
+        "must retry the full budget before reporting the error"
     );
 }
 
 #[test]
-fn run_cargo_publish_with_retry_surfaces_spawn_failure() {
+fn run_cargo_publish_with_retry_returns_spawn_failure() {
     // A command that cannot be spawned (no such binary) must bubble the spawn
     // error with its context, never silently retry into a timeout.
     let cmd = vec!["anodizer-nonexistent-cargo-binary-xyz".to_string()];

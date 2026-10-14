@@ -46,8 +46,8 @@ pub fn changelog_regenerated_marker(crate_name: &str, version: &str) -> String {
 /// `/`-separated) in `workspace_root` records that the tool regenerated the
 /// changelog for `crate_name` at `version`.
 ///
-/// Anchoring on the file's last toucher — not any marker anywhere in history —
-/// scopes the provenance to the file's CURRENT content: an operator hand-edit
+/// Anchoring on the file's last toucher scopes the provenance to the file's
+/// CURRENT content: an operator hand-edit
 /// committed after the tool's regeneration makes the operator's commit the
 /// last toucher, whose message carries no marker, so the guard reverts to
 /// byte-strict instead of forgiving drift the tool did not author.

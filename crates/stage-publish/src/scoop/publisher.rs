@@ -6,10 +6,10 @@ use super::*;
 // manifest is recorded so a `anodizer tag rollback` re-clones the bucket,
 // runs `git revert HEAD --no-edit`, and pushes the revert. Scoop is
 // always per-crate (no top-level Scoop config block), so the run loop
-// only walks the per-crate universe (`Config::crate_universe`).
+// only scans the per-crate universe (`Config::crate_universe`).
 //
 // CREDENTIAL HANDLING: ScoopTarget stores `token_env_var` — the NAME of
-// the env var — not the resolved token VALUE. The token is read from the
+// the env var, and never the resolved token VALUE. The token is read from the
 // live env at rollback time so persisted evidence carries no secret
 // material. Same rule applies to the homebrew / nix git-revert publishers.
 simple_publisher!(
@@ -41,7 +41,7 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 }
 
 /// Decision predicate for the no-eligible-crates warning. True when the
-/// publisher walked the selection but the configured-predicate filtered
+/// publisher scanned the selection but the configured-predicate filtered
 /// every crate out — distinct from "ran successfully in dry-run mode".
 ///
 /// `processed` is the count of crates whose `is_scoop_per_crate_configured`

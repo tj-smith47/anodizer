@@ -1180,7 +1180,7 @@ fn test_blob_stage_dry_run_logs_commands() {
 // string compare, so `provider: "{{ .ProviderName }}"` skipped the ACL
 // branch. Anodizer renders `provider` once via `ctx.render_template` then
 // dispatches against `Provider::S3` (an enum) so the bug cannot occur,
-// but two tests pin the contract:
+// but two tests check the contract:
 //   - `..._for_acl_dispatch` — full stage dry-run: templated provider +
 //     ACL must not error.
 //   - `..._exercises_s3_acl_validator` — bypass dry-run by calling the
@@ -1264,7 +1264,7 @@ fn test_q9_1_template_resolved_provider_exercises_s3_acl_validator() {
 #[test]
 fn test_q9_1_templated_provider_routes_through_s3_acl_validator() {
     // Composed end-to-end test: this is the contract the prior two tests
-    // pinned independently — render-then-dispatch happens together, and a
+    // tested independently: render-then-dispatch happens together, and a
     // templated provider value resolving to "s3" plus an invalid ACL must
     // be rejected by the S3-arm validator. The earlier dry-run + direct
     // `build_s3_store` tests cover the two halves; this one rules out a
@@ -1949,8 +1949,8 @@ fn blob_stage_not_gated_on_optional_upstream_failure() {
         !gated,
         "an optional upstream failure must not gate the blob upload"
     );
-    // Positive proof the gate is open — not merely that no gated row was
-    // recorded (which the no-work path would also satisfy). The predicate the
+    // Positive proof the gate is open. A missing gated row alone is not enough,
+    // since the no-work path also records none. The predicate the
     // stage consults must itself report not-closed for an optional-only failure.
     assert!(
         !ctx.publish_report()
@@ -1992,7 +1992,7 @@ fn blob_stage_does_not_touch_publish_report_when_no_work() {
 // `BlobConfig.required` wire-up
 //
 // `record_blob_result` now takes a `required: bool` parameter derived
-// from any blob config opting in via `required: true`. The tests pin
+// from any blob config opting in via `required: true`. The tests check
 // the three relevant shapes: default-off, opt-in-on, and aggregated
 // (any-true-makes-the-stage-required). Aggregation matches the
 // "any failed required publisher in Assets group fails the release"

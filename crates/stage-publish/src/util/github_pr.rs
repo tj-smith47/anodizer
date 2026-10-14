@@ -334,7 +334,7 @@ pub(crate) fn find_open_prs_for_head_with_env<E: EnvSource + ?Sized>(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
         // The blocking response is consumed at most once. For non-2xx
-        // statuses it is drained into a String for the error carrier; for
+        // statuses it is read to the end into a String for the error carrier; for
         // 2xx it goes to serde-json below. `classify_find_pr_status`
         // takes a body supplier rather than the body up-front so the read
         // is not paid for success cases.
@@ -468,7 +468,7 @@ mod tests {
     /// transport always errors into `FindPrError::Network`. Firing at the
     /// real `api.github.com` made the variant environment-dependent
     /// (404→`RepoNotFound` with internet, transport-fail offline);
-    /// pinning the dead URL makes it deterministic and hermetic.
+    /// fixing the dead URL makes it deterministic and hermetic.
     #[test]
     fn find_open_pr_numbers_for_head_returns_err_on_failure() {
         let env = anodizer_core::MapEnvSource::new()
@@ -557,8 +557,8 @@ mod tests {
 
     #[test]
     fn close_pr_via_api_treats_4xx_other_as_failed() {
-        // 401 / 403 / 400 / 401 / 429 are real failures — not
-        // already-closed. Operator must see them in the failure bucket.
+        // 401 / 403 / 400 / 401 / 429 are real failures, and they do not mean
+        // already closed. Operator must see them in the failure bucket.
         for code in [400u16, 401, 403, 429] {
             let status = reqwest::StatusCode::from_u16(code).unwrap();
             let outcome = classify_close_status(status, "auth bad");

@@ -146,7 +146,7 @@ pub struct NightlyConfig {
 pub struct RetentionConfig {
     /// Number of newest nightly releases to keep. `0` is treated as `1`
     /// (never delete every nightly), matching the `keep_single_release`
-    /// floor. nushell keeps 10.
+    /// minimum. nushell keeps 10.
     pub keep_last: usize,
 }
 
@@ -157,7 +157,7 @@ impl NightlyConfig {
     /// Precedence: an explicit `retention:` block wins over the legacy
     /// `keep_single_release:` alias. `keep_single_release: true` (with no
     /// `retention`) maps to `keep_last: 1`; `false` maps to `None`. A
-    /// `retention.keep_last: 0` is floored to `1` so a retention sweep
+    /// `retention.keep_last: 0` is raised to `1` so a retention sweep
     /// never deletes the just-created release.
     pub fn resolved_keep_last(&self) -> Option<usize> {
         if let Some(r) = self.retention.as_ref() {
@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn resolved_keep_last_floors_zero_to_one() {
+    fn resolved_keep_last_raises_zero_to_one() {
         let n = NightlyConfig {
             retention: Some(RetentionConfig { keep_last: 0 }),
             ..Default::default()

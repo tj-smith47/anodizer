@@ -267,8 +267,8 @@ fn universal_replace_retires_darwin_pair(
 /// mapped to the source target triples it was derived from (so an error
 /// message can point the user at the exact `targets:` self-service value).
 ///
-/// Derived from the crate's CONFIGURED build targets — not from whatever
-/// binaries happen to be present in `ctx.artifacts` this run — via the same
+/// Derived from the crate's CONFIGURED build targets, whatever
+/// binaries happen to be present in `ctx.artifacts` this run, via the same
 /// build-planning SSOT ([`crate_build_target_entries`],
 /// [`anodizer_core::build_plan::crate_target_list`]'s sibling) that
 /// `stage-publish::publisher_helpers::crate_build_targets` composes for every
@@ -696,7 +696,7 @@ pub(crate) fn generate_layout(
     // `merged` is already collapsed to at most one entry per identity (the
     // `!libc_aware` glibc/musl dedup above keeps the glibc entry when both
     // are present), so this libc is whichever triple is actually backing the
-    // identity right now — not necessarily the one the config promises.
+    // identity right now, which can differ from the one the config promises.
     let actual_libc_by_identity: BTreeMap<String, String> = merged
         .iter()
         .map(|r| {

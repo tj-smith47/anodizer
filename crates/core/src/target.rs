@@ -35,7 +35,7 @@ pub const DEFAULT_TARGETS: &[&str] = &[
 ///
 /// Docker/OCI `platform.architecture` values are GOARCH values, so this single
 /// table serves template `Goarch` vars, triple-derived asset naming, and
-/// container platform pinning — the three consumers whose former private
+/// container platform selection — the three consumers whose former private
 /// copies disagreed on `powerpc64` and `loongarch64`.
 ///
 /// 32-bit ARM tokens (`arm`, `armv6`, `armv7`, …) are deliberately absent:

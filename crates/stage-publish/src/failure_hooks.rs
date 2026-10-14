@@ -29,7 +29,7 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::template::TemplateVars;
 use anodizer_core::{PublisherGroup, PublisherResult};
 
-/// Walk the in-scope crates' `publish:` blocks and return the failure hooks
+/// Scan the in-scope crates' `publish:` blocks and return the failure hooks
 /// (`select` picks the `on_error` / `on_rollback` list) for the first crate
 /// that declares them.
 ///
@@ -425,7 +425,7 @@ mod tests {
     }
 
     /// A workspace-only crate's `publish.on_error` hooks must fire: a
-    /// `config.crates`-only walk resolved no hooks for a pure-workspace
+    /// `config.crates`-only scan resolved no hooks for a pure-workspace
     /// config, so a failed publish never ran the operator's hook.
     #[test]
     fn on_error_fires_from_workspace_only_crate() {
@@ -639,7 +639,7 @@ mod tests {
     ];
 
     #[test]
-    fn env_channel_mirrors_failure_var_surface_exactly() {
+    fn env_channel_mirrors_failure_var_set_exactly() {
         use std::collections::BTreeSet;
         let res = result("homebrew", PublisherGroup::Manager, true);
         let bound: BTreeSet<&str> = failure_var_values(&res, "boom", true, "")
@@ -958,12 +958,12 @@ mod tests {
     }
 
     /// The env channel must mirror the on_rollback template variables exactly —
-    /// the same invariant [`env_channel_mirrors_failure_var_surface_exactly`]
-    /// pins for `on_error`. `Version` / `Tag` are ambient (bound by the
+    /// the same invariant [`env_channel_mirrors_failure_var_set_exactly`]
+    /// checks for `on_error`. `Version` / `Tag` are ambient (bound by the
     /// context per-crate), so they appear on the env side but not in
     /// `rollback_var_values`.
     #[test]
-    fn rollback_env_channel_mirrors_var_surface_exactly() {
+    fn rollback_env_channel_mirrors_var_set_exactly() {
         use std::collections::BTreeSet;
         let bound: BTreeSet<&str> = rollback_var_values(
             "homebrew",

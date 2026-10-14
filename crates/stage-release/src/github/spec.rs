@@ -225,7 +225,7 @@ impl NightlyRetentionFamily<'_> {
     ///
     /// Only a multitrack workspace has siblings to protect, and narrowing
     /// where there are none would strand every release cut under an earlier
-    /// tag scheme (a repo that used to pin `nightly.tag_name` and now creates
+    /// tag scheme (a repo that used to fix `nightly.tag_name` and now creates
     /// version-derived tags) — the name alone is already unambiguous there.
     /// A literal `nightly.tag_name` likewise creates a tag outside every
     /// family, leaving the name as the only key there is.
@@ -341,7 +341,7 @@ pub(crate) fn nightly_releases_to_prune(
 /// Returns `(max_upload_attempts, initial_retry_delay, max_retry_delay)` in
 /// the order the upload loop binds them. The single point of translation
 /// from policy to locals lives here so a future formula change is visible
-/// in one place (and so tests can pin the formula against the backend without
+/// in one place (and so tests can check the formula against the backend without
 /// re-deriving it inline).
 ///
 /// `max_upload_attempts` mirrors [`RetryPolicy::max_attempts`](anodizer_core::retry::RetryPolicy::max_attempts) directly:
@@ -546,7 +546,7 @@ mod existing_assets_precheck_tests {
         // The CLI override is plumbed via `replace_existing_artifacts: true`
         // in the helper signature (the caller ORs the config value with
         // ctx.options.replace_existing_artifacts before calling).
-        // This pins that the helper treats the CLI-derived value the same
+        // This checks that the helper treats the CLI-derived value the same
         // as the config-derived value.
         let result =
             check_existing_assets_block_upload(false, false, true, &["foo.tar.gz", "bar.zip"]);
@@ -574,7 +574,7 @@ mod existing_assets_precheck_tests {
         // The helper returns the names in the order the caller supplied
         // them, so the resulting bail message lists assets in a predictable
         // (release-API) order. A future sort/dedupe regression would be
-        // user-visible noise; pin the contract.
+        // user-visible noise; test the contract.
         let assets = &["a.tar.gz", "b.zip", "c.sig"];
         let names = check_existing_assets_block_upload(false, false, false, assets)
             .expect("conflict present");
@@ -591,7 +591,7 @@ mod existing_assets_precheck_tests {
     #[test]
     fn skip_upload_wins_even_with_assets_and_no_replace() {
         // skip_upload short-circuits BEFORE the asset-list inspection runs.
-        // Pinning this so a future refactor doesn't reorder the early-return
+        // Tested so a future refactor doesn't reorder the early-return
         // and accidentally report a conflict during a no-op upload pass.
         let result = check_existing_assets_block_upload(true, false, false, &["x.tar.gz"]);
         assert!(
@@ -603,7 +603,7 @@ mod existing_assets_precheck_tests {
 
 #[cfg(test)]
 mod upload_retry_locals_tests {
-    //! Pin the policy-to-locals translation that the bespoke upload retry
+    //! Test the policy-to-locals translation that the bespoke upload retry
     //! loop reads on every iteration. The formula is trivial today but the
     //! rustdoc claims "single point of translation"; if a future change
     //! adds a clamp / fudge factor / multiplier here, these tests force
@@ -629,7 +629,7 @@ mod upload_retry_locals_tests {
     }
 
     #[test]
-    fn surfaces_the_upload_canonical_policy_unchanged() {
+    fn returns_the_upload_canonical_policy_unchanged() {
         // Canonical upload policy: 10 attempts, 50ms base,
         // 30s cap. The locals helper must NOT mutate these on the way to the
         // upload loop — drift here is a user-visible behaviour change in the
@@ -661,7 +661,7 @@ mod upload_retry_locals_tests {
 
 #[cfg(test)]
 mod already_exists_action_derive_tests {
-    //! Pin the `Debug`/`PartialEq`/`Eq` derives on `AlreadyExistsAction`.
+    //! Test the `Debug`/`PartialEq`/`Eq` derives on `AlreadyExistsAction`.
     //! The classifier returns these variants and downstream call sites in
     //! the upload retry loop `match` on them — a drift to a non-equality
     //! representation would silently break the upload loop's arm matching.
@@ -690,7 +690,7 @@ mod already_exists_action_derive_tests {
     #[test]
     fn debug_format_names_the_variant() {
         // The error-path log lines format the action via `{:?}` to identify
-        // which branch the classifier picked. Pin the variant names so a
+        // which branch the classifier picked. Check the variant names so a
         // future rename (`SkipIdempotent` -> `Idempotent`) shows up in the
         // log diff instead of silently breaking grep-based triage.
         assert_eq!(
@@ -709,7 +709,7 @@ mod already_exists_action_derive_tests {
 }
 
 #[cfg(test)]
-mod spec_struct_surface_tests {
+mod spec_struct_field_tests {
     //! Check the fields of the three "context bundles" passed
     //! into `run_github_backend`. Each is `Clone + Copy` so a struct
     //! can be constructed, copied, and read field-by-field through
@@ -750,7 +750,7 @@ mod spec_struct_surface_tests {
     fn upload_opts_round_trips_every_field() {
         // Independent fields -> a drift in field order or a silent removal
         // would let the caller in `run.rs` send `replace_existing_draft`
-        // where `skip_upload` was wanted. Pin each one by name.
+        // where `skip_upload` was wanted. Check each one by name.
         let opts = UploadOpts {
             skip_upload: true,
             replace_existing_draft: false,
@@ -799,7 +799,7 @@ mod spec_struct_surface_tests {
 
     /// A retention family that scopes NOTHING — a literal `nightly.tag_name`
     /// creates a tag outside every crate's family, so the release name stays the
-    /// only key. The arithmetic pins below predate family scoping and must be
+    /// only key. The arithmetic tests below predate family scoping and must be
     /// unchanged by it.
     fn unscoped(tag: &str) -> NightlyRetentionFamily<'_> {
         NightlyRetentionFamily {
@@ -811,7 +811,7 @@ mod spec_struct_surface_tests {
         }
     }
 
-    /// The family a per-crate `tag_template` creates, for the multitrack pins.
+    /// The family a per-crate `tag_template` creates, for the multitrack tests.
     fn family<'a>(tag: &'a str, tag_template: &'a str) -> NightlyRetentionFamily<'a> {
         NightlyRetentionFamily {
             tag,
@@ -941,9 +941,9 @@ mod spec_struct_surface_tests {
     }
 
     #[test]
-    fn nightly_releases_to_prune_floors_zero_to_one() {
+    fn nightly_releases_to_prune_raises_zero_to_one() {
         let all = vec![(2u64, "v1.2.3".to_string()), (1u64, "t1".to_string())];
-        // keep_last=0 floored to 1 -> prune everything except the new release.
+        // keep_last=0 raised to 1 -> prune everything except the new release.
         assert_eq!(
             nightly_releases_to_prune(&all, 0, 2, &unscoped("v1.2.3")),
             vec![(1u64, "t1".to_string())]
@@ -1058,7 +1058,7 @@ mod spec_struct_surface_tests {
         );
     }
 
-    /// A single-track repo that USED to pin `nightly.tag_name` carries older
+    /// A single-track repo that USED to fix `nightly.tag_name` carries older
     /// releases on a tag no family contains. Narrowing there would strand
     /// them forever; with one track the shared name is already unambiguous,
     /// so the sweep stays name-keyed and collects them.

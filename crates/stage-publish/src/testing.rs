@@ -24,7 +24,7 @@ pub enum FakeOutcome {
 
 /// Drives [`FakePublisher::rollback`]. Independent from [`FakeOutcome`]
 /// because publishing and rollback are exercised by separate tests:
-/// rollback dispatch only walks publishers whose `run()` succeeded, so
+/// rollback dispatch only visits publishers whose `run()` succeeded, so
 /// the rollback-failure path needs `Succeed` for the publish side AND a
 /// failing rollback to verify the per-step `RollbackFailed` outcome.
 pub enum FakeRollback {

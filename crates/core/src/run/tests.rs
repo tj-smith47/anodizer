@@ -1,7 +1,7 @@
 //! Tests for the subprocess exec API: capture and verbose tee behavior across
 //! both verbosities, stdin piping, the bounded-wait watchdog and its
 //! post-exit drain grace, and the live-subtree registry the external
-//! termination handler drains.
+//! termination handler empties.
 
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -69,7 +69,7 @@ fn run_checked_success_is_silent_at_default_verbosity() {
 fn run_checked_failure_embeds_child_stderr() {
     let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
     let err = run_checked(&mut sh("echo boom >&2; exit 3"), &log, "boomer")
-        .expect_err("non-zero exit must surface as Err");
+        .expect_err("non-zero exit must return Err");
     let chain = format!("{err:#}");
     assert!(
         chain.contains("boom"),
@@ -102,7 +102,7 @@ fn run_checked_verbose_emits_stdout_line() {
 fn run_checked_verbose_failure_no_double_emit() {
     let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
     let _ = run_checked(&mut sh("echo BOOMTOKEN >&2; exit 1"), &log, "boomer")
-        .expect_err("non-zero exit must surface as Err");
+        .expect_err("non-zero exit must return Err");
     // The tee streams stderr live (one Verbose record); check_output_streamed
     // must NOT re-emit it as an Error record. Exactly one capture record
     // carries the token across the whole capture.
@@ -113,7 +113,7 @@ fn run_checked_verbose_failure_no_double_emit() {
         .count();
     assert_eq!(
         hits, 1,
-        "verbose failure must surface its stderr exactly once (no double-emit)"
+        "verbose failure must print its stderr exactly once (no double-emit)"
     );
 }
 
@@ -305,7 +305,7 @@ fn run_checked_with_stdin_timeout_kills_hung_child() {
         "hung",
         Duration::from_millis(200),
     )
-    .expect_err("a child outliving the timeout must surface as Err");
+    .expect_err("a child outliving the timeout must return Err");
     let elapsed = start.elapsed();
     assert!(
         elapsed < Duration::from_secs(5),
@@ -392,7 +392,7 @@ fn run_capture_timeout_kills_hung_child() {
         "hung-upload",
         Duration::from_millis(200),
     )
-    .expect_err("a child outliving the timeout must surface as Err");
+    .expect_err("a child outliving the timeout must return Err");
     let elapsed = start.elapsed();
     assert!(
         elapsed < Duration::from_secs(5),
@@ -457,7 +457,7 @@ fn run_capture_timeout_reaps_grandchild_holding_pipe() {
 /// on Windows reaps the Job Object the child was enclosed in via
 /// `TerminateJobObject` — killing the leaked grandchild by job membership
 /// even though the direct child already exited (which `taskkill /T` cannot
-/// do: a terminated root is absent from the snapshot its tree walk needs).
+/// do: a terminated root is absent from the snapshot its tree traversal needs).
 /// That forces EOF so the call returns promptly with the child's real
 /// (success) status. `ping` writes a line per second, so its presence in the
 /// captured stdout also proves the grandchild genuinely inherited the pipe
@@ -503,7 +503,7 @@ fn run_capture_timeout_reaps_grandchild_holding_pipe_windows() {
         captured.to_ascii_lowercase().contains("ping")
             || captured.to_ascii_lowercase().contains("pinging"),
         "the backgrounded grandchild must genuinely hold the inherited pipe \
-         (its ping output should land in our capture); got: {captured:?}"
+         (its ping output should reach the capture); got: {captured:?}"
     );
 }
 
@@ -562,7 +562,7 @@ fn child_tree_registry_add_and_remove() {
 
 /// A `capture_inner` that returns `Err` (here: a child that outlives its
 /// timeout, taking the watchdog-kill error edge) must still leave the
-/// registry at its pre-call baseline. This pins the RAII guard's coverage
+/// registry at its pre-call baseline. This tests the RAII guard's coverage
 /// of the error path — the leak window a manual deregister statement (placed
 /// after the reap, before the error returns) would miss. Unix-only: the
 /// timeout path relies on process-group kill semantics. Serialized against
@@ -582,7 +582,7 @@ fn err_path_does_not_leak_registered_child_tree() {
         "leak-probe",
         Duration::from_millis(50),
     )
-    .expect_err("a child that outlives its timeout must surface an Err");
+    .expect_err("a child that outlives its timeout must return an Err");
     assert!(
         format!("{err:#}").contains("did not exit within"),
         "the error must be the watchdog deadline kill; got: {err:#}"

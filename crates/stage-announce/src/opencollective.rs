@@ -373,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn create_update_graphql_error_surfaces() {
+    fn create_update_graphql_error_is_returned() {
         // Upstream TestCreateUpdateGraphqlError: HTTP 200 + errors body.
         let body = serde_json::json!({
             "errors": [{"message": "You need to be logged in as an admin of this collective"}],
@@ -387,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn create_update_empty_id_surfaces() {
+    fn create_update_empty_id_errors() {
         // Upstream TestCreateUpdateEmptyID: HTTP 200 + empty id + no errors.
         let body = serde_json::json!({"data": {"createUpdate": {"id": ""}}});
         let err = extract_create_update_id(&body).unwrap_err();
@@ -402,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn create_update_missing_id_surfaces() {
+    fn create_update_missing_id_errors() {
         let body = serde_json::json!({"data": {"createUpdate": {}}});
         let err = extract_create_update_id(&body).unwrap_err();
         assert!(
@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn publish_update_graphql_error_surfaces() {
+    fn publish_update_graphql_error_is_returned() {
         // Upstream TestPublishUpdateGraphqlError.
         let body = serde_json::json!({"errors": [{"message": "Update not found"}]});
         let err = decode_graphql_errors(&body).unwrap_err();
@@ -578,7 +578,10 @@ mod tests {
             )
             .unwrap_err()
         );
-        assert!(err.contains("401"), "status must surface: {err}");
+        assert!(
+            err.contains("401"),
+            "status must appear in the error: {err}"
+        );
         assert!(
             err.contains("OPENCOLLECTIVE_TOKEN"),
             "401 must name the token env var: {err}"
@@ -618,7 +621,7 @@ mod tests {
         );
         assert!(
             err.contains("need admin"),
-            "graphql error must surface: {err}"
+            "graphql error must appear in the error: {err}"
         );
         let entries = log.lock().unwrap();
         assert_eq!(

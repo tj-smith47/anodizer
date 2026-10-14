@@ -273,7 +273,7 @@ fn resolve_changelog_opts(
     let raw_groups: Vec<ChangelogGroup> = cfg.and_then(|c| c.groups.clone()).unwrap_or_default();
     // Pre-render each group's title through the project's template context
     // so configs like `title: "{{ .ProjectName }} features"` resolve. The
-    // Pro template-renders these too. Walks subgroups recursively.
+    // Pro template-renders these too. Visits subgroups recursively.
     let groups = render_group_titles(ctx, log, raw_groups)?;
 
     let header_src: Option<ContentSource> = cfg.and_then(|c| c.header.clone());
@@ -327,7 +327,7 @@ fn resolve_changelog_opts(
 /// Resolve the changelog range start (the "previous tag") for a crate.
 ///
 /// An explicit `--from <ref>` (carried as `ctx.options.changelog_from`)
-/// overrides the auto-discovered tag, letting the operator pin the lower
+/// overrides the auto-discovered tag, letting the operator fix the lower
 /// bound. Otherwise the latest tag matching the crate's `tag_template` is
 /// used. In a real release that latest tag IS the just-cut `current_tag` (and
 /// always is in lockstep, where every crate shares one tag namespace); rather

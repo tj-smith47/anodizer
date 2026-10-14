@@ -11,7 +11,7 @@
 //! nix-configured crate (the crate's `default.nix`) plus the merged root
 //! `flake.nix`; this validator renders the exact expressions a live publish
 //! would push — via the same render path — and checks them two ways: an
-//! always-on structural floor (pure-Rust, string/comment-aware delimiter
+//! always-on minimum structural check (pure-Rust, string/comment-aware delimiter
 //! balance + required-attr scanning) and, when `nix-instantiate` is on `PATH`,
 //! a real `nix-instantiate --parse` of each file. A structural defect (a
 //! missing required attribute, an unbalanced template that produced broken
@@ -29,7 +29,7 @@ use crate::nix::{
 };
 
 /// Which kind of artifact a rendered Nix string is — drives the attribute set
-/// the structural floor asserts.
+/// the minimum structural check asserts.
 #[derive(Clone, Copy)]
 enum NixKind {
     Derivation,
@@ -57,7 +57,7 @@ impl PublisherSchemaValidator for NixSchemaValidator {
         let strict = ctx.render_is_strict();
         let mut findings = Vec::new();
 
-        // Walk exactly the crate set the live nix publisher's `run` iterates
+        // Visit exactly the crate set the live nix publisher's `run` iterates
         // (honoring `--crate` selection, else every nix-configured crate) so
         // the validated set equals the published set in all config modes.
         let selected =
@@ -201,10 +201,10 @@ fn has_nonempty_string_attr(text: &str, attr: &str) -> bool {
     })
 }
 
-/// The always-on, hermetic structural floor for a rendered `default.nix`
+/// The always-on, hermetic minimum structural check for a rendered `default.nix`
 /// derivation: balanced delimiters (string/comment-aware) plus the attributes
 /// `nix-build` HARD-requires, one [`SchemaFinding`] per violation. An empty Vec
-/// means the expression clears the floor. Runs with no external tools, so it
+/// means the expression passes the check. Runs with no external tools, so it
 /// holds even where `nix-instantiate` is absent.
 ///
 /// The rendered output is template-controlled, so targeted line scanning is
@@ -214,7 +214,7 @@ fn has_nonempty_string_attr(text: &str, attr: &str) -> bool {
 /// them is valid, so requiring them would false-reject valid output — itself a
 /// defect. `meta.description` and `meta.license` are likewise gated
 /// (`{% if description %}` / `{% if license %}`): a metadata-light derivation
-/// is valid Nix and installable, so the floor asserts the `meta` attrset is
+/// is valid Nix and installable, so the check asserts the `meta` attrset is
 /// PRESENT but does not require those optional sub-attributes.
 pub(crate) fn validate_derivation_structural(text: &str) -> Vec<SchemaFinding> {
     let mut findings = Vec::new();
@@ -293,12 +293,12 @@ pub(crate) fn validate_derivation_structural(text: &str) -> Vec<SchemaFinding> {
     findings
 }
 
-/// The always-on, hermetic structural floor for a rendered root `flake.nix`:
+/// The always-on, hermetic minimum structural check for a rendered root `flake.nix`:
 /// balanced delimiters + the overlay `callPackage` lines round-trip (both via
 /// [`nix::flake_is_well_formed`], the SAME recovery parser the next publish
 /// relies on) plus the top-level `description` / `inputs` / `outputs`
 /// attributes a flake must expose. Returns one [`SchemaFinding`] per violation;
-/// an empty Vec means the flake clears the floor.
+/// an empty Vec means the flake passes the check.
 ///
 /// Reuses `flake_is_well_formed` rather than re-deriving the balance + overlay
 /// checks, so the validator and the publish-loop's recovery parser share ONE
@@ -335,7 +335,7 @@ pub(crate) fn validate_flake_structural(text: &str) -> Vec<SchemaFinding> {
 /// `<file>:<line>:<col>: <message>` stderr line into a [`SchemaFinding`]. A
 /// non-zero exit with no parseable line still yields a `(root)` finding (never
 /// silent-pass). When `nix-instantiate` is absent, log a visible skip marker
-/// and return no findings — the structural floor stands; a missing tool is
+/// and return no findings — the minimum structural check stands; a missing tool is
 /// never an artifact defect.
 fn validate_nix_syntax(
     kind: NixKind,
@@ -353,7 +353,7 @@ fn validate_nix_syntax(
             tool: "nix-instantiate",
             flags: &["--parse"],
             files: &[(file_name, nix_src)],
-            skip_message: "nix-instantiate not on PATH — relying on the structural Nix floor \
+            skip_message: "nix-instantiate not on PATH — relying on the minimum structural check \
                  for syntax validation",
             empty_fallback: "nix-instantiate --parse reported the generated Nix invalid but \
                  emitted no parseable diagnostic",
@@ -386,7 +386,7 @@ fn parse_nix_instantiate_stderr(stderr: &str) -> Vec<SchemaFinding> {
 /// in `line`, or `None` when no such marker is present. Scans for the LAST
 /// such marker so a tempfile path containing colons does not mis-anchor.
 fn nix_error_lineno(line: &str) -> Option<u32> {
-    // Walk every `:` and test whether it begins a `:<digits>:<digits>:`
+    // Visit every `:` and test whether it begins a `:<digits>:<digits>:`
     // position; keep the last match (positions trail the file path).
     let bytes = line.as_bytes();
     let mut found: Option<u32> = None;
@@ -567,7 +567,7 @@ mod tests {
         );
         assert!(
             validate_flake_structural(&flake).is_empty(),
-            "the rendered flake must clear the structural floor"
+            "the rendered flake must pass the minimum structural check"
         );
     }
 
@@ -747,7 +747,7 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(
             msg.contains("no Linux/Darwin archive"),
-            "surfaces the genuine full-build absence, naming the missing archive: {msg}"
+            "reports the genuine full-build absence, naming the missing archive: {msg}"
         );
     }
 
@@ -836,10 +836,10 @@ mod tests {
         );
     }
 
-    // biting negatives — the floor must bite, fixes must clear.
+    // negative cases: each defect must be reported, and each fix must pass.
 
-    /// A conforming hand-written derivation clears the derivation floor; this
-    /// anchors the biting negatives below (they all mutate THIS baseline).
+    /// A conforming hand-written derivation passes the derivation check; this
+    /// is the baseline for the negative cases below (they all mutate THIS baseline).
     fn good_derivation() -> String {
         r#"{ lib, stdenvNoCC, fetchurl }:
 stdenvNoCC.mkDerivation {
@@ -866,7 +866,7 @@ stdenvNoCC.mkDerivation {
     }
 
     #[test]
-    fn good_derivation_clears_the_floor() {
+    fn good_derivation_passes_the_structural_check() {
         assert!(
             validate_derivation_structural(&good_derivation()).is_empty(),
             "a conforming derivation must produce zero findings"
@@ -936,7 +936,7 @@ stdenvNoCC.mkDerivation {
 
     /// A literal brace inside a `''…''` install body or a string must NOT trip
     /// the balance check — the string/comment-aware scan is what makes the
-    /// floor lenient about valid Nix that embeds delimiter characters.
+    /// check lenient about valid Nix that embeds delimiter characters.
     #[test]
     fn derivation_braces_inside_strings_do_not_miscount() {
         let with_braces = r#"{ lib, stdenvNoCC, fetchurl }:
@@ -967,7 +967,7 @@ stdenvNoCC.mkDerivation {
     /// literal `${`) must NOT be mistaken for the string terminator. A
     /// user-supplied `installPhase` line containing them — with a stray `}`
     /// after, opaque because the scanner stays inside the string — must still
-    /// CLEAR the floor (the too-strict false-rejection trap this guards). If
+    /// PASS the check (the too-strict false-rejection trap this guards). If
     /// the scanner ended the string early on `'''`/`''${`, the trailing `}`
     /// would end up in code context and trip a bogus "(root)" imbalance.
     #[test]
@@ -1001,7 +1001,7 @@ stdenvNoCC.mkDerivation {
         );
     }
 
-    /// A conforming flake clears the flake floor.
+    /// A conforming flake passes the flake check.
     fn good_flake() -> String {
         nix::generate_flake(&[FlakePackage {
             attr: "widget".to_string(),
@@ -1011,7 +1011,7 @@ stdenvNoCC.mkDerivation {
     }
 
     #[test]
-    fn good_flake_clears_the_floor() {
+    fn good_flake_passes_the_structural_check() {
         assert!(
             validate_flake_structural(&good_flake()).is_empty(),
             "a conforming flake must produce zero findings"
@@ -1053,7 +1053,7 @@ stdenvNoCC.mkDerivation {
 
     /// When `nix-instantiate` is on `PATH`, the gated layer parses the
     /// derivation; absent (as in this sandbox), it returns no findings and the
-    /// structural floor carries the assertions. This test documents the gate
+    /// minimum structural check carries the assertions. This test documents the gate
     /// and the SKIP path it takes here.
     #[test]
     fn nix_instantiate_layer_is_tool_gated() {
@@ -1065,7 +1065,7 @@ stdenvNoCC.mkDerivation {
             anodizer_core::tool_detect::ToolProbe::Unavailable => false,
             anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
                 eprintln!(
-                    "SKIP: nix-instantiate probe failed ({e}); structural floor carries the assertions"
+                    "SKIP: nix-instantiate probe failed ({e}); the minimum structural check carries the assertions"
                 );
                 false
             }
@@ -1078,7 +1078,9 @@ stdenvNoCC.mkDerivation {
                 "a valid derivation must parse cleanly under nix-instantiate, got: {findings:?}"
             );
         } else {
-            eprintln!("SKIP: nix-instantiate not on PATH; structural floor carries the assertions");
+            eprintln!(
+                "SKIP: nix-instantiate not on PATH; the minimum structural check carries the assertions"
+            );
             assert!(
                 findings.is_empty(),
                 "absent tool yields no findings (visible skip), got: {findings:?}"
@@ -1086,7 +1088,7 @@ stdenvNoCC.mkDerivation {
         }
     }
 
-    /// The gated layer must BITE: a syntactically broken Nix expression fed
+    /// The gated layer catches a syntactically broken Nix expression fed
     /// through the real `nix-instantiate --parse` path produces a
     /// [`SchemaFinding`] (it does not silent-pass every input). Drives
     /// `validate_nix_syntax` — the same function the live validator calls — so
@@ -1101,13 +1103,13 @@ stdenvNoCC.mkDerivation {
             anodizer_core::tool_detect::ToolProbe::Available => {}
             anodizer_core::tool_detect::ToolProbe::Unavailable => {
                 eprintln!(
-                    "SKIP: nix-instantiate not on PATH; cannot exercise the parse-error bite path"
+                    "SKIP: nix-instantiate not on PATH; cannot exercise the parse-error path"
                 );
                 return;
             }
             anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
                 eprintln!(
-                    "SKIP: nix-instantiate probe failed ({e}); cannot exercise the parse-error bite path"
+                    "SKIP: nix-instantiate probe failed ({e}); cannot exercise the parse-error path"
                 );
                 return;
             }
@@ -1128,7 +1130,7 @@ stdenvNoCC.mkDerivation {
         // `nix-instantiate --parse` stderr drove the diagnostic.
         assert!(
             findings.iter().any(|f| f.field == "line 4"),
-            "the bite must extract the parse position from nix-instantiate stderr, got: {findings:?}"
+            "the parse-error finding must carry the parse position from nix-instantiate stderr, got: {findings:?}"
         );
     }
 

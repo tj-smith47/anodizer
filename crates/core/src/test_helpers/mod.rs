@@ -488,7 +488,7 @@ impl TestContextBuilder {
     }
 
     /// Set the explicit changelog upper bound (`changelog <from>..<to>`): the
-    /// changelog stage walks `<from>..<to>` instead of `<from>..HEAD`.
+    /// changelog stage reads `<from>..<to>` instead of `<from>..HEAD`.
     pub fn changelog_to(mut self, to: Option<&str>) -> Self {
         self.changelog_to = to.map(str::to_string);
         self
@@ -1205,7 +1205,7 @@ mod tests {
 mod git_fixture_identity {
     use super::*;
 
-    /// The repo fixtures spawn git through the shared pinned helper, so a host
+    /// The repo fixtures spawn git through the shared configured helper, so a host
     /// whose global config demands a signature or supplies no identity still
     /// gets a committed fixture. The identity is the fixture config's, which
     /// `git init` copied into the repository.

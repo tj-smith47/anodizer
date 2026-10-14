@@ -4,7 +4,7 @@
 #
 # Contract: Windows GitHub runners intermittently fail to *create* a child
 # process under heavy parallel nextest load — the loader aborts before the
-# program runs, surfacing as an NTSTATUS init-failure exit code (0xC0000142
+# program runs, showing up as an NTSTATUS init-failure exit code (0xC0000142
 # STATUS_DLL_INIT_FAILED and kin), or on `node` an empty-stderr non-success.
 # This is the OS failing to START the process, not the program erroring: a real
 # `git`/`node` failure returns 1/128, never these codes. Test fixtures that
@@ -162,7 +162,7 @@ if [[ -n "$config_violations" ]]; then
     echo
     echo "Every repository a fixture creates through output_with_spawn_retry carries"
     echo "FIXTURE_REPO_CONFIG (crates/core/src/test_helpers/spawn.rs): signing off"
-    echo "for commits and tags, hooks pinned to the repository, a fixed identity."
+    echo "for commits and tags, hooks fixed to the repository, a fixed identity."
     echo "A line setting one of those keys restates part of it; delete the line."
     echo
     echo "A test that needs a different value says why on the line or the line above:"

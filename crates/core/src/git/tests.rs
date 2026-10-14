@@ -567,7 +567,7 @@ fn test_strip_url_credentials_token_with_at_sign_does_not_leak() {
 
 #[test]
 fn test_compare_prerelease_numeric() {
-    // rc.9 < rc.10 (numeric comparison, not lexicographic)
+    // rc.9 < rc.10: the pre-release numbers compare as numbers
     assert_eq!(
         compare_prerelease("rc.9", "rc.10"),
         std::cmp::Ordering::Less
@@ -887,7 +887,7 @@ fn test_smartsemver_empty_ignore_prefix_is_skipped() {
 /// A candidate tag resolving to the SAME commit as the tag being released can
 /// never be a range start — `v0.3.0..v0.2.0` spans zero commits no matter how
 /// the two names sort. Name inequality alone lets it through, so the
-/// smartsemver path compares resolved commits and walks on to `v0.1.0`.
+/// smartsemver path compares resolved commits and moves on to `v0.1.0`.
 #[test]
 #[serial(cwd, path_env)]
 fn test_smartsemver_skips_candidate_on_the_current_tags_commit() {
@@ -1131,8 +1131,8 @@ fn test_find_latest_tag_prerelease_suffix_with_default_sort() {
     // v1.1.1-rc.1 is semantically version 1.1.1 with a prerelease,
     // which is > 1.1.0 in both SemVer and git version sort.
     // versionsort.suffix only affects ordering relative to the same
-    // base version (e.g. v1.1.1-rc.1 vs v1.1.1), not across different
-    // patch levels.
+    // base version (e.g. v1.1.1-rc.1 vs v1.1.1); different patch levels
+    // sort by their numbers.
     init_repo_with_tags(dir, &["v1.0.0", "v1.1.0", "v1.1.1-rc.1"]);
 
     let _cwd = CwdGuard::new(dir).unwrap();
@@ -2113,9 +2113,8 @@ fn init_repo_with_ssh_signing(dir: &std::path::Path) -> tempfile::TempDir {
     keydir
 }
 
-/// P1 regression: a prior run leaves an UNSIGNED tag at HEAD (debris); a
-/// re-run with `sign=true` must upgrade it to a SIGNED tag via the
-/// idempotent-reuse branch, not silently reuse the unsigned one.
+/// A prior run leaves an UNSIGNED tag at HEAD; a re-run with `sign=true`
+/// replaces it with a SIGNED tag through the idempotent-reuse branch.
 #[test]
 #[serial(path_env)]
 fn create_tag_local_only_upgrades_unsigned_reuse_to_signed() {
@@ -2268,7 +2267,7 @@ fn create_and_push_tag_in_pushes_to_origin() {
     let names = list_remote_tag_names_in(tmp.path(), "origin").unwrap();
     assert!(
         names.contains(&"v2.0.0".to_string()),
-        "the tag must land on origin; got {names:?}"
+        "the tag must reach origin; got {names:?}"
     );
 }
 
@@ -2297,8 +2296,7 @@ fn delete_local_tag_in_is_idempotent_and_removes_present_tags() {
     let out = super::git_output_in(tmp.path(), &["tag", "--list"]).unwrap();
     assert!(!out.lines().any(|l| l == "v1.0.0"), "tag must be gone");
     // Missing tag: idempotent success (the `not found` branch).
-    delete_local_tag_in(tmp.path(), "v1.0.0")
-        .expect("deleting an already-absent tag must be idempotent, not an error");
+    delete_local_tag_in(tmp.path(), "v1.0.0").expect("deleting an already-absent tag succeeds");
 }
 
 #[test]
@@ -2337,7 +2335,7 @@ fn delete_remote_tag_in_bails_without_origin() {
         .expect_err("a push with no origin remote must error");
     assert!(
         format!("{err:#}").contains("git push origin"),
-        "error must surface the failed push: {err:#}"
+        "the error must name the failed push: {err:#}"
     );
 }
 
@@ -2348,10 +2346,10 @@ fn get_tags_at_sha_in_returns_empty_on_unknown_sha() {
     tags_init_commit_repo(tmp.path());
     // A malformed object name makes `git tag --points-at` exit non-zero (a
     // valid-form but non-existent 40-hex sha exits 0 with no output, which would
-    // pass through the success path instead); the helper must warn and return an
-    // empty list rather than erroring.
+    // pass through the success path instead); the helper warns and returns an
+    // empty list.
     let tags = get_tags_at_sha_in(tmp.path(), "bad!!ref")
-        .expect("a malformed revision yields no tags, not an error");
+        .expect("a malformed revision yields an empty list");
     assert!(
         tags.is_empty(),
         "malformed revision must yield no tags; got {tags:?}"
@@ -2415,7 +2413,7 @@ fn push_branch_and_tags_atomic_in_lands_branch_and_tags_on_origin() {
     let names = list_remote_tag_names_in(tmp.path(), "origin").unwrap();
     assert!(
         names.contains(&"v1.0.0".to_string()),
-        "the tag must land on origin; got {names:?}"
+        "the tag must reach origin; got {names:?}"
     );
     // The exact branch ref must exist on the bare remote too (show-ref --verify
     // resolves the full refname, so a differently-named branch would not pass).
@@ -2554,7 +2552,7 @@ fn tag_points_at_head_in_true_for_head_tag_false_otherwise() {
     );
     assert!(
         tag_points_at_head_in(tmp.path(), "no-such-tag").is_err(),
-        "a tag that does not resolve must error, not read as 'points elsewhere'"
+        "a tag that does not resolve is an error"
     );
 }
 
@@ -2596,8 +2594,8 @@ fn tag_position_in_distinguishes_missing_at_head_ancestor_and_unrelated() {
     );
 }
 
-/// Real releases cut ANNOTATED tags, whose ref names a tag OBJECT rather than
-/// the commit. The `^{}` deref is what keeps the comparison against `HEAD`
+/// Real releases cut ANNOTATED tags, whose ref names a tag OBJECT that
+/// points at the commit. The `^{}` deref is what keeps the comparison against `HEAD`
 /// honest — without it an annotated tag at HEAD would compare unequal and read
 /// as `UnrelatedToHead`, skipping a sweep that must run.
 #[test]
@@ -2611,8 +2609,8 @@ fn tag_position_in_derefs_annotated_tags() {
     tags_run_git(tmp.path(), &["commit", "-q", "-m", "second"]);
     tags_run_git(tmp.path(), &["tag", "-a", "-m", "current", "ann-current"]);
 
-    // The tag ref resolves to a tag object, not the commit — the premise that
-    // makes the deref necessary rather than incidental.
+    // The tag ref resolves to a tag object whose id differs from the commit's,
+    // which is why the deref is needed.
     let tag_obj =
         anodizer_core::test_helpers::git_test_stdout(tmp.path(), &["rev-parse", "ann-current"]);
     let head = anodizer_core::test_helpers::git_test_stdout(tmp.path(), &["rev-parse", "HEAD"]);
@@ -2735,7 +2733,7 @@ fn get_tags_at_head_in_lists_only_head_tags() {
     assert_eq!(
         at_head,
         vec!["new".to_string()],
-        "only the tag on HEAD is returned, not the one on the earlier commit"
+        "only the tag on HEAD is returned"
     );
 }
 
@@ -2857,8 +2855,8 @@ mod column_ui {
         })
     }
 
-    /// Every `git tag` listing spawn pins `column.ui=never` — itself, or by
-    /// going through a wrapper that does.
+    /// Every `git tag` listing spawn passes `-c column.ui=never`, itself or
+    /// through a wrapper that does.
     ///
     /// Every spawn is built by `git_command`, which passes the flag; this
     /// test reads every production body and also fails a listing spawn that names neither the helper nor the
@@ -2879,10 +2877,10 @@ mod column_ui {
                     continue;
                 }
                 checked += 1;
-                let pinned = body.contains("COLUMN_UI_NEVER")
+                let passes_flag = body.contains("COLUMN_UI_NEVER")
                     || body.contains("column.ui=never")
                     || WRAPPERS.iter().any(|w| body.contains(w));
-                if !pinned {
+                if !passes_flag {
                     let name = body.lines().next().unwrap_or_default().trim().to_string();
                     offenders.push(format!("{}: {name}", source.path.display()));
                 }
@@ -2891,17 +2889,17 @@ mod column_ui {
         assert!(
             checked >= 6,
             "the git tag listing population shrank to {checked}; a rename likely \
-             slipped the walk"
+             hid a listing from the scan"
         );
         assert!(
             offenders.is_empty(),
-            "these `git tag` listing spawns do not pin column.ui=never:\n{}",
+            "these `git tag` listing spawns do not pass column.ui=never:\n{}",
             offenders.join("\n")
         );
     }
 
-    /// The wrappers the walk above accepts really do pin the flag — otherwise
-    /// the allow-list would launder every site that routes through them.
+    /// The wrappers the scan above accepts pass the flag themselves, so a site
+    /// that routes through one of them gets it.
     #[test]
     fn the_shared_git_wrapper_pins_column_ui() {
         let wrapper = std::fs::read_to_string(
@@ -3474,6 +3472,7 @@ mod secret_renders {
     use crate::test_helpers::test_sources::{
         cached_regex, production_corpus, workspace_crate_dirs,
     };
+    use std::borrow::Cow;
     use std::collections::{BTreeMap, BTreeSet};
 
     /// The render calls a secret field could be handed to. `render_secret`
@@ -3783,8 +3782,9 @@ mod secret_renders {
                     continue;
                 }
                 let args = call_arguments(&body[idx + call.len()..]);
-                let via_binding = argument_variables(args, Reach::Projection).into_iter().any(
-                    |(ident, projected)| {
+                let via_binding = argument_variables(args)
+                    .into_iter()
+                    .any(|(ident, projected)| {
                         reaches_credential(
                             &bindings,
                             idx,
@@ -3793,10 +3793,8 @@ mod secret_renders {
                             params,
                             &carries_secret,
                             MAX_HOPS,
-                            Reach::Projection,
                         )
-                    },
-                );
+                    });
                 if carries_secret(args) || via_binding {
                     out.push(format!(
                         "{call}{})",
@@ -3850,7 +3848,6 @@ mod secret_renders {
     /// variable read as a projection (`raw.trim()`, `pair.0`) holds one only
     /// when the [`value_part`] of its binding does, followed the same way,
     /// since a value only computed from a credential is a different value.
-    #[allow(clippy::too_many_arguments)]
     fn reaches_credential(
         bindings: &Bindings<'_>,
         at: usize,
@@ -3859,7 +3856,6 @@ mod secret_renders {
         params: &BTreeSet<String>,
         carries_secret: &dyn Fn(&str) -> bool,
         hops: usize,
-        reach: Reach,
     ) -> bool {
         follow_binding(
             bindings,
@@ -3869,7 +3865,6 @@ mod secret_renders {
             params,
             carries_secret,
             hops,
-            reach,
             &mut BTreeSet::new(),
         )
     }
@@ -3885,7 +3880,6 @@ mod secret_renders {
         params: &BTreeSet<String>,
         carries_secret: &dyn Fn(&str) -> bool,
         hops: usize,
-        reach: Reach,
         seen: &mut BTreeSet<(usize, String, bool)>,
     ) -> bool {
         match bindings.bound(at, ident) {
@@ -3894,13 +3888,13 @@ mod secret_renders {
                     return false;
                 }
                 let expr = if value_only {
-                    std::borrow::Cow::Owned(value_part(expr))
+                    Cow::Owned(value_part(&expr))
                 } else {
-                    std::borrow::Cow::Borrowed(expr)
+                    expr
                 };
                 carries_secret(&expr)
                     || (hops > 0
-                        && argument_variables(&expr, reach)
+                        && argument_variables(&expr)
                             .into_iter()
                             .any(|(next, projected)| {
                                 follow_binding(
@@ -3911,7 +3905,6 @@ mod secret_renders {
                                     params,
                                     carries_secret,
                                     hops - 1,
-                                    reach,
                                     seen,
                                 )
                             }))
@@ -3930,7 +3923,7 @@ mod secret_renders {
     /// The items of a parameter or argument list, split at the commas
     /// outside brackets, string literals and closure parameter lists, so
     /// `a, |b, c| d, Vec<(e, f)>` is three items.
-    fn top_level_items(list: &str) -> Vec<&str> {
+    pub(super) fn top_level_items(list: &str) -> Vec<&str> {
         let mut items = Vec::new();
         let (mut depth, mut angle, mut start) = (0usize, 0usize, 0usize);
         let (mut in_str, mut in_closure) = (false, false);
@@ -4073,27 +4066,14 @@ mod secret_renders {
                     let args = call_arguments(&body[callee.end() + 1..]);
                     let bindings = indexes[n].get_or_insert_with(|| Bindings::new(body));
                     for (i, arg) in top_level_items(args).into_iter().enumerate() {
-                        let reaches = |reach: Reach| {
-                            argument_variables(arg, reach)
-                                .into_iter()
-                                .filter(|(_, projected)| reach == Reach::Whole || *projected)
-                                .any(|(v, projected)| {
-                                    reaches_credential(
-                                        bindings,
-                                        callee.start(),
-                                        &v,
-                                        projected,
-                                        &own,
-                                        &carries_secret,
-                                        MAX_HOPS,
-                                        reach,
-                                    )
-                                })
-                        };
-                        let credential = carries_secret(arg)
-                            || reaches(Reach::Whole)
-                            || reaches(Reach::Projection);
-                        if !credential {
+                        if !root_reaches_credential(
+                            bindings,
+                            callee.start(),
+                            arg,
+                            &own,
+                            &carries_secret,
+                            MAX_HOPS,
+                        ) {
                             continue;
                         }
                         for shape in shapes {
@@ -4110,6 +4090,68 @@ mod secret_renders {
             if !grew {
                 return tainted;
             }
+        }
+    }
+
+    /// Whether the root of `expr` holds a credential. The root is the
+    /// leading path of the expression's [`value_part`] once `&`, `*`, `mut`
+    /// and a constructor such as `Some(…)` are taken off: `cfg.token` in
+    /// `&cfg.token.as_deref().unwrap_or("")`. It holds one when the path
+    /// reads a credential field (`carries_secret`), or when it starts at a
+    /// variable bound from such an expression (followed up to `hops`
+    /// bindings back), or at a parameter in `params`. A struct literal that
+    /// holds a credential field, a value computed by a call from one, and a
+    /// variable such as `ctx` whose field is read are no credential.
+    fn root_reaches_credential(
+        bindings: &Bindings<'_>,
+        at: usize,
+        expr: &str,
+        params: &BTreeSet<String>,
+        carries_secret: &dyn Fn(&str) -> bool,
+        hops: usize,
+    ) -> bool {
+        let value: String = value_part(expr).split_whitespace().collect();
+        let mut root = value.as_str();
+        loop {
+            let before = root;
+            root = root
+                .trim_start_matches("&mut")
+                .trim_start_matches(['&', '*'])
+                .trim_start_matches("mut");
+            let constructor = cached_regex(r"^[A-Z][A-Za-z0-9_:]*\((.*)\)$".to_string());
+            if let Some(inner) = constructor.captures(root).and_then(|c| c.get(1)) {
+                root = inner.as_str();
+            }
+            if root == before {
+                break;
+            }
+        }
+        let path = cached_regex(
+            r"^([a-z_][a-z0-9_]*)(?:\.[a-z_][a-z0-9_]*(?:\(\))?|\.[0-9]+)*".to_string(),
+        );
+        let Some(found) = path.captures(root) else {
+            return false;
+        };
+        let (whole, head) = (&found[0], &found[1]);
+        if root[whole.len()..].starts_with(['(', '!', ':']) {
+            return false;
+        }
+        if carries_secret(whole) {
+            return true;
+        }
+        match bindings.bound(at, head) {
+            Some((start, bound)) => {
+                hops > 0
+                    && root_reaches_credential(
+                        bindings,
+                        start,
+                        &bound,
+                        params,
+                        carries_secret,
+                        hops - 1,
+                    )
+            }
+            None => params.contains(head),
         }
     }
 
@@ -4133,27 +4175,13 @@ mod secret_renders {
             .collect()
     }
 
-    /// How far a variable is followed from where it is read.
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum Reach {
-        /// A variable followed by any method call or field access
-        /// (`raw.trim()`, `raw.unwrap_or_default()`, `pair.0`, `holder.url`)
-        /// is read too, as a projection of it, and so is a variable called
-        /// (`pick()`, a closure held in a variable, whose value is its body).
-        Projection,
-        /// Only a variable passed whole (`raw`, `&raw`, `Some(raw)`) or
-        /// through an adapter that keeps its value (`as_str`, `as_deref`,
-        /// `as_ref`, `clone`, `to_string`, `trim`).
-        Whole,
-    }
-
-    /// The variables `args` reads, as [`Reach`] decides, each with whether
-    /// it is read as a projection (followed by a `.` or called). A macro
-    /// (`m!`), the head of a path (`a::b`), a field name after a `.` and a
-    /// parameter of a closure written in `args` (`.filter(|s| !s.is_empty())`,
-    /// whose `s` is the closure's own) are left out, and so is a called name
-    /// under [`Reach::Whole`].
-    fn argument_variables(args: &str, reach: Reach) -> Vec<(String, bool)> {
+    /// The variables `args` reads, each with whether it is read as a
+    /// projection (followed by a `.` or called: `raw.trim()`, `pair.0`,
+    /// `pick()`). A macro (`m!`), the head of a path (`a::b`), a field name
+    /// after a `.` and a parameter of a closure written in `args`
+    /// (`.filter(|s| !s.is_empty())`, whose `s` is the closure's own) are
+    /// left out.
+    fn argument_variables(args: &str) -> Vec<(String, bool)> {
         let word = cached_regex(r"\b[a-z_][a-z0-9_]*\b");
         let closure_params: BTreeSet<&str> = cached_regex(CLOSURE_SHAPE)
             .captures_iter(args)
@@ -4164,22 +4192,12 @@ mod secret_renders {
             .flat_map(|c| word.find_iter(c.get(1).expect("params").as_str()))
             .map(|w| w.as_str())
             .collect();
-        let ident = match reach {
-            Reach::Projection => cached_regex(r"(?:^|[^\w.:])([a-z_][a-z0-9_]*)"),
-            Reach::Whole => cached_regex(
-                r"(?:^|[^\w.:])([a-z_][a-z0-9_]*)((?:\.(?:as_str|as_deref|as_ref|clone|to_string|trim)\(\))*)",
-            ),
-        };
+        let ident = cached_regex(r"(?:^|[^\w.:])([a-z_][a-z0-9_]*)");
         let mut out = Vec::new();
         for cap in ident.captures_iter(args) {
             let end = cap.get(0).expect("whole match").end();
             let next = args[end..].chars().next();
-            let skip = match reach {
-                Reach::Projection => next.is_some_and(|c| matches!(c, '!' | ':')),
-                Reach::Whole => next.is_some_and(|c| {
-                    c.is_alphanumeric() || matches!(c, '.' | '(' | '!' | ':' | '_')
-                }),
-            };
+            let skip = next.is_some_and(|c| matches!(c, '!' | ':'));
             if !skip && !closure_params.contains(&cap[1]) {
                 out.push((cap[1].to_string(), matches!(next, Some('.' | '('))));
             }
@@ -4247,8 +4265,50 @@ mod secret_renders {
             "arm",
             r"\b(?:Some|Ok)\(\s*(?:ref\s+)?(?:mut\s+)?([a-z_][a-z0-9_]*)\s*\)\s*(?:if\b[^{};]*?)?=>",
         ),
+        ("let pattern", r"\blet\s+([A-Z][^=;]*)=([^;]*)"),
+        (
+            "tuple arm",
+            r"\(((?:[^();{}]|\([^();{}]*\))*,(?:[^();{}]|\([^();{}]*\))*)\)\s*(?:if\b[^{};]*?)?=>",
+        ),
         ("closure", CLOSURE_SHAPE),
     ];
+
+    /// The field a struct pattern binds `ident` from: `token` for
+    /// `Holder { token: t, .. }` and for the shorthand `Holder { token, .. }`.
+    fn struct_field<'p>(pattern: &'p str, ident: &str) -> Option<&'p str> {
+        let inner = &pattern[pattern.find('{')? + 1..pattern.rfind('}')?];
+        top_level_items(inner).into_iter().find_map(|item| {
+            let (field, alias) = match item.split_once(':') {
+                Some((f, a)) => (f.trim(), a.trim()),
+                None => (item.trim(), item.trim()),
+            };
+            let alias = alias
+                .trim_start_matches("ref ")
+                .trim_start_matches("mut ")
+                .trim();
+            (alias == ident).then_some(field)
+        })
+    }
+
+    /// The element of the tuple expression `expr` at the position `ident`
+    /// holds in the tuple pattern `pattern` (the text inside its outer
+    /// parentheses), so `(Some(u), _)` under `match (cfg.token, n)` binds `u`
+    /// from `cfg.token`. An expression that is no tuple literal is returned
+    /// whole.
+    fn tuple_element<'e>(pattern: &str, expr: &'e str, ident: &str) -> Option<&'e str> {
+        let word = cached_regex(r"\b[a-z_][a-z0-9_]*\b");
+        let position = top_level_items(pattern)
+            .iter()
+            .position(|p| word.find_iter(p).any(|w| w.as_str() == ident))?;
+        let element = expr
+            .trim()
+            .strip_prefix('(')
+            .and_then(|t| t.strip_suffix(')'))
+            .map(top_level_items)
+            .filter(|items| items.len() > 1)
+            .and_then(|items| items.get(position).copied());
+        Some(element.unwrap_or(expr))
+    }
 
     /// A closure's parameter list. It holds no `.`, `=`, `!`, quote or line
     /// break, so the text between a closure and a later `||` is no binding.
@@ -4273,20 +4333,36 @@ mod secret_renders {
     impl<'a> Bindings<'a> {
         fn new(body: &'a str) -> Self {
             let word = cached_regex(r"\b[a-z_][a-z0-9_]*\b".to_string());
+            // A struct pattern's `field:` names the field; the binding follows it.
+            let field_label = cached_regex(r"\b[a-z_][a-z0-9_]*\s*:([^:]|$)".to_string());
             let mut all = Vec::new();
             for (kind, pattern) in BINDING_SHAPES {
                 let shape = cached_regex(pattern.to_string());
                 let mut from = 0;
                 while let Some(c) = shape.captures_at(body, from) {
                     let whole = c.get(0).expect("whole match");
+                    // `if let Some(t) =` is read by the `if let` shape.
+                    let before = body[..whole.start()].trim_end();
+                    let in_if = *kind == "let pattern"
+                        && (before.ends_with(" if") || before.ends_with(" while"));
                     let names = c
                         .get(1)
                         .filter(|_| {
                             *kind != "closure" || opens_closure(body, whole.start(), whole.end())
                         })
-                        .map(|g| word.find_iter(g.as_str()).map(|w| w.as_str().to_string()))
+                        .map(|g| {
+                            let pattern = if g.as_str().contains('{') {
+                                field_label.replace_all(g.as_str(), "$1")
+                            } else {
+                                Cow::Borrowed(g.as_str())
+                            };
+                            word.find_iter(&pattern)
+                                .map(|w| w.as_str().to_string())
+                                .collect::<Vec<_>>()
+                        })
                         .into_iter()
                         .flatten()
+                        .filter(|_| !in_if)
                         .collect();
                     all.push(Binding {
                         kind,
@@ -4307,67 +4383,99 @@ mod secret_renders {
         }
 
         /// The last binding of the variable `ident` before offset `at`, as
-        /// the offset it starts at and the expression it binds: a `let`, an
+        /// the offset it starts at and the expression it binds: a `let`, a
+        /// `let Some(ident) = … else` (the text before the `else`), an
         /// `if let` or `while let`, a `for` pattern, a match arm
         /// `Some(ident) =>`, `Some(ref ident) =>` or `Some(ident) if … =>`
-        /// (the scrutinee of the `match` the arm belongs to) or a closure
-        /// parameter (the statement text before the closure). A `let` whose
-        /// expression runs past `at` binds the part before it.
-        fn bound(&self, at: usize, ident: &str) -> Option<(usize, &'a str)> {
+        /// (the scrutinee of the `match` the arm belongs to), a tuple arm
+        /// `(Some(ident), _) =>` (the scrutinee's element at that position),
+        /// a struct pattern `Holder { field: ident, .. }` (the expression's
+        /// `field`), or a closure parameter (the statement text before the
+        /// closure, or for a closure stored with `let r = |v| …` the
+        /// arguments of every later call `r(…)`). A `let` whose expression
+        /// runs past `at` binds the part before it.
+        fn bound(&self, at: usize, ident: &str) -> Option<(usize, Cow<'a, str>)> {
             let body = self.body;
             let found = self.all.iter().rev().find(|b| {
                 b.start < at
                     && b.names.contains(ident)
                     && match b.kind {
-                        "let" | "tuple" => b.expression.is_some_and(|(s, _)| s <= at),
+                        "let" | "tuple" | "let pattern" => {
+                            b.expression.is_some_and(|(s, _)| s <= at)
+                        }
                         _ => b.end <= at,
                     }
             })?;
             let start = found.start;
+            let pattern_and_expr = || {
+                let (s, e) = found.expression?;
+                Some((&body[start..s], &body[s..e.min(at.max(s))]))
+            };
+            // A struct pattern binds the field it names: `cfg.token` for
+            // `let Holder { token: t, .. } = cfg`.
+            let with_field = |pattern: &str, expr: &'a str| match struct_field(pattern, ident) {
+                Some(field) if pattern.contains('{') => {
+                    Cow::Owned(format!("{}.{field}", expr.trim()))
+                }
+                _ => Cow::Borrowed(expr),
+            };
             match found.kind {
                 "tuple" => {
-                    let (s, e) = found.expression?;
-                    let expr = &body[s..e.min(at.max(s))];
-                    let pattern = &body[start..s];
+                    let (pattern, expr) = pattern_and_expr()?;
                     let pattern = &pattern[pattern.find('(')? + 1..pattern.rfind(')')?];
-                    let position = top_level_items(pattern).iter().position(|p| {
-                        p.trim()
-                            .trim_start_matches("ref ")
-                            .trim_start_matches("mut ")
-                            .trim()
-                            == ident
-                    })?;
-                    let element = expr
-                        .trim()
-                        .strip_prefix('(')
-                        .and_then(|t| t.strip_suffix(')'))
-                        .map(top_level_items)
-                        .filter(|items| items.len() > 1)
-                        .and_then(|items| items.get(position).copied());
-                    Some((start, element.unwrap_or(expr)))
+                    Some((start, Cow::Borrowed(tuple_element(pattern, expr, ident)?)))
                 }
-                "arm" => {
+                "let pattern" | "if let" => {
+                    let (pattern, expr) = pattern_and_expr()?;
+                    // `let Some(t) = cfg.token.as_deref() else { … }` binds
+                    // the text before its `else`, and a `let` in a chain
+                    // (`a && let Some(t) = x {`) the text before its block.
+                    let expr = match [" else", "{"].iter().filter_map(|w| expr.find(w)).min() {
+                        Some(i) if found.kind == "let pattern" => &expr[..i],
+                        _ => expr,
+                    };
+                    Some((start, with_field(pattern, expr)))
+                }
+                "arm" | "tuple arm" => {
                     let brace = enclosing_brace(body, start)?;
                     let head = &body[statement_start(body, brace)..brace];
-                    head.rfind("match ")
-                        .map(|i| (start, &head[i + "match ".len()..]))
+                    let scrutinee = &head[head.rfind("match ")? + "match ".len()..];
+                    if found.kind == "arm" {
+                        return Some((start, Cow::Borrowed(scrutinee)));
+                    }
+                    let pattern = &body[start + 1..found.end];
+                    let pattern = &pattern[..pattern.rfind(')')?];
+                    Some((
+                        start,
+                        Cow::Borrowed(tuple_element(pattern, scrutinee, ident)?),
+                    ))
                 }
                 "closure" => {
                     let statement = &body[statement_start(body, start)..start];
                     // A closure handed to `render_secret` is its renderer: the
                     // template it receives is the credential, already labelled.
-                    Some((
-                        start,
-                        if statement.contains("render_secret") {
-                            ""
-                        } else {
-                            statement
-                        },
-                    ))
+                    if statement.contains("render_secret") {
+                        return Some((start, Cow::Borrowed("")));
+                    }
+                    // A closure stored in a variable (`let r = |v| …`) is
+                    // handed its parameters by the calls of that variable.
+                    let stored = cached_regex(
+                        r"^\s*let\s+(?:mut\s+)?([a-z_][a-z0-9_]*)\s*(?::[^=]+)?=\s*(?:move\s+)?$"
+                            .to_string(),
+                    );
+                    let Some(name) = stored.captures(statement).map(|c| c[1].to_string()) else {
+                        return Some((start, Cow::Borrowed(statement)));
+                    };
+                    let calls = cached_regex(format!(r"(?:^|[^\w.]){}\(", regex::escape(&name)));
+                    let arguments: Vec<&str> = calls
+                        .find_iter(&body[found.end..])
+                        .map(|m| call_arguments(&body[found.end + m.end()..]))
+                        .collect();
+                    Some((start, Cow::Owned(arguments.join(", "))))
                 }
                 _ => found
                     .expression
-                    .map(|(s, e)| (start, &body[s..e.min(at.max(s))])),
+                    .map(|(s, e)| (start, Cow::Borrowed(&body[s..e.min(at.max(s))]))),
             }
         }
     }
@@ -4686,6 +4794,62 @@ mod secret_renders {
         );
     }
 
+    /// A credential bound by a `let … else`, a tuple match arm, a struct
+    /// pattern that renames or names its field, or handed to a closure
+    /// stored in a variable that renders its parameter is reported, while
+    /// the same shapes over another field are not.
+    #[test]
+    fn a_credential_bound_by_let_else_a_tuple_arm_a_struct_pattern_or_a_stored_renderer_is_reported()
+     {
+        let names = BTreeSet::from(["webhook_url", "password"]);
+        let bodies = [
+            r#"fn let_else() {
+        let Some(raw) = cfg.webhook_url.as_deref() else {
+            return Ok(());
+        };
+        ctx.render_template(raw)?;
+        let Some(c) = cfg.color.as_deref() else {
+            return Ok(());
+        };
+        ctx.render_template(c)?;
+    }"#,
+            r#"fn tuple_arm() {
+        match (cfg.webhook_url.as_deref(), cfg.color.as_deref()) {
+            (Some(u), _) => ctx.render_template(u)?,
+            (None, Some(c)) => ctx.render_template(c)?,
+            _ => {}
+        }
+    }"#,
+            r#"fn renamed() {
+        let SlackAnnounce { webhook_url: hook, color: shade, .. } = cfg;
+        ctx.render_template(hook)?;
+        ctx.render_template(shade)?;
+    }"#,
+            r#"fn shorthand() {
+        if let Holder { password, .. } = entry {
+            ctx.render_template(password)?;
+        }
+    }"#,
+            r#"fn stored_renderer() {
+        let r = |v: &str| ctx.render_template(v);
+        r(&cfg.webhook_url)?;
+        let paint = |v: &str| ctx.render_template(v);
+        paint(&cfg.color)?;
+    }"#,
+        ]
+        .map(str::to_string);
+        assert_eq!(
+            credential_render_calls(&bodies, &names),
+            vec![
+                (0, "render_template(raw)".to_string()),
+                (1, "render_template(u)".to_string()),
+                (2, "render_template(hook)".to_string()),
+                (3, "render_template(password)".to_string()),
+                (4, "render_template(v)".to_string()),
+            ]
+        );
+    }
+
     /// A value a call builds from a credential argument is reported when it
     /// is rendered whole, and passes when a method is called on it first,
     /// since a binding keeps a call's arguments only for a whole read.
@@ -4790,6 +4954,39 @@ mod secret_renders {
             offenders.join("\n")
         );
     }
+
+    /// The parameters the helper scan follows are the ones a caller hands
+    /// a credential field or a name bound from one. A context, a logger or
+    /// a message is never one of them, and the set stays small: a taint
+    /// spread through `ctx` would report every plain render the helper
+    /// makes.
+    #[test]
+    fn the_tainted_helper_parameters_are_credentials_only() {
+        let names = unshared_credential_names();
+        let bodies: Vec<String> = production_corpus()
+            .iter()
+            .flat_map(|s| s.bodies.iter().cloned())
+            .collect();
+        let tainted = credential_parameters(&bodies, &names);
+        let listed: Vec<String> = tainted
+            .iter()
+            .flat_map(|(f, ps)| ps.iter().map(move |p| format!("{f}.{p}")))
+            .collect();
+        let shared: Vec<&String> = listed
+            .iter()
+            .filter(|p| {
+                let param = p.rsplit('.').next().unwrap_or("");
+                matches!(param, "ctx" | "log" | "msg")
+            })
+            .collect();
+        assert!(
+            shared.is_empty() && listed.len() < 60,
+            "the tainted parameters must hold no ctx, log or msg and number under 60; \
+             {} found:\n{}",
+            listed.len(),
+            listed.join("\n")
+        );
+    }
 }
 
 mod credential_env_reads {
@@ -4844,6 +5041,8 @@ mod credential_env_reads {
         "unwrap_or_else(",
         "!= \"\"",
         "== \"\"",
+        "== Some(\"\")",
+        "!= Some(\"\")",
         "len() > 0",
         "len() == 0",
         "Ok(\"\")",
@@ -4910,6 +5109,11 @@ mod credential_env_reads {
         consts: &BTreeSet<String>,
     ) -> bool {
         let arg = arg.trim().trim_start_matches('&').trim();
+        // `NAME.as_ref()` names what `NAME` names.
+        let arg =
+            cached_regex(r"(?:\.(?:as_ref|as_str|as_deref|to_string|to_owned|clone|into)\(\))+$")
+                .replace(arg, "");
+        let arg = arg.as_ref();
         if arg.contains('"') {
             return has_credential_literal(arg);
         }
@@ -4969,18 +5173,59 @@ mod credential_env_reads {
     }
 
     /// Whether every later use of the name a `let Some(name) =` pattern binds
-    /// sets it on a child process (`command.env(VAR, name)`), which hands
-    /// the child the value it would have inherited: an empty
-    /// `COSIGN_PASSWORD` is the password of an unencrypted key.
-    fn forwarded_verbatim(later: &str, name: &str) -> bool {
+    /// sets it on a child process under the variable it was read from
+    /// (`command.env(VAR, name)` after `env.var(VAR)`), which hands the
+    /// child the value it would have inherited: an empty `COSIGN_PASSWORD`
+    /// is the password of an unencrypted key. The receiver must be a
+    /// process command: `cmd`, `command`, or a name `body` binds from
+    /// `Command::new`, `git_command` or `git_command_in`. A forward under
+    /// another variable name (`GITHUB_TOKEN` set as `GH_TOKEN`) or onto any
+    /// other receiver is a use like any other.
+    fn forwarded_verbatim(body: &str, later: &str, name: &str, read: &str) -> bool {
+        let read = read.trim().trim_start_matches('&').trim();
         let name = regex::escape(name);
         let uses = cached_regex(format!(r"\b{name}\b"))
             .find_iter(later)
             .count();
-        let forwards = cached_regex(format!(r"\.env\([^,()]+,\s*&?{name}\s*\)"))
-            .find_iter(later)
-            .count();
+        let forwards = cached_regex(format!(
+            r"\b([a-z_][a-z0-9_]*)\s*\.env\(\s*{}\s*,\s*&?{name}\s*\)",
+            regex::escape(read)
+        ))
+        .captures_iter(later)
+        .filter(|c| {
+            let receiver = &c[1];
+            matches!(receiver, "cmd" | "command")
+                || cached_regex(format!(
+                    r"\blet\s+(?:mut\s+)?{}\s*(?::[^=]+)?=\s*[\w:]*(?:Command::new|git_command|git_command_in)\(",
+                    regex::escape(receiver)
+                ))
+                .is_match(body)
+        })
+        .count();
         forwards > 0 && uses == forwards
+    }
+
+    /// The offset of the first `?` in `text` outside a string or character
+    /// literal and outside brackets opened in `text`, before a bracket
+    /// closes that `text` did not open: the `?` that applies to the value
+    /// `text` follows, and not one of an enclosing call.
+    fn question_mark(text: &str) -> Option<usize> {
+        let mut in_str = false;
+        let mut depth = 0usize;
+        let mut prev = '\0';
+        for (i, c) in text.char_indices() {
+            match c {
+                '"' if prev != '\\' => in_str = !in_str,
+                _ if in_str => {}
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' if depth == 0 => return None,
+                ')' | ']' | '}' => depth -= 1,
+                '?' if depth == 0 && prev != '\'' => return Some(i),
+                _ => {}
+            }
+            prev = c;
+        }
+        None
     }
 
     /// The parameter names of the function `body` opens with.
@@ -5041,6 +5286,13 @@ mod credential_env_reads {
                 continue;
             }
             let arg = super::secret_renders::call_arguments(&body[m.end()..]);
+            // `command.env(NAME, value)` sets a child's variable; it reads none.
+            if m.as_str() == "env("
+                && body[..start].ends_with('.')
+                && super::secret_renders::top_level_items(arg).len() > 1
+            {
+                continue;
+            }
             let rest = &body[start..];
             let end = statement_end(rest);
             let statement = &rest[..end];
@@ -5097,16 +5349,21 @@ mod credential_env_reads {
                     &mut CLOSURE_COMBINATORS.iter().map(|t| t.to_string()),
                 )
             });
-            // `?` straight after the read returns early when it is unset.
-            if after.starts_with('?') {
-                let question = m.end() + arg.len() + 1 - start;
-                presence = presence.into_iter().chain([question]).min();
+            // A `?` in the statement after the read (`?`, `.ok()?`,
+            // `.context(…)?`) returns early when it is unset, and a `match`
+            // over the read decides presence in its arms.
+            let read_end = m.end() + arg.len() + 1 - start;
+            if let Some(q) = statement.get(read_end..).and_then(question_mark) {
+                presence = presence.into_iter().chain([read_end + q]).min();
+            }
+            if cached_regex(r"\bmatch\s+[\w:]*$").is_match(opening) {
+                presence = presence.into_iter().chain([end]).min();
             }
             let mut trim = first_trim(statement, None);
             let mut non_blank = statement.contains("non_blank_token");
             if let Some(bound) = let_binding.captures(opening.trim_end()) {
                 let later = &body[start + end..];
-                if bound.get(1).is_some() && !forwarded_verbatim(later, &bound[2]) {
+                if bound.get(1).is_some() && !forwarded_verbatim(body, later, &bound[2], arg) {
                     presence = presence.into_iter().chain([end]).min();
                 }
                 let closure = bound[3].trim_start().starts_with('|');
@@ -5243,10 +5500,14 @@ mod credential_env_reads {
     }
 
     /// A credential read that `trim_end_matches` or `strip_suffix` cleans,
-    /// that a constant names, that `option_env!` or a stored closure
-    /// makes, or whose presence `is_ok()`, an `if let Ok(…)` / `Some(…)`
-    /// pattern or `?` decides is reported, while one read through
-    /// `non_blank_token` after such a pattern is not.
+    /// that a constant names (whole or through `.as_ref()`), that
+    /// `option_env!` or a stored closure makes, or whose presence
+    /// `is_ok()`, `== Some("")`, a `match` over the read, an
+    /// `if let Ok(…)` / `Some(…)` pattern or a `?` later in the statement
+    /// (`.ok()?`, `.context(…)?`) decides is reported, and so is one forwarded to a
+    /// child under another variable name or onto a receiver that is no
+    /// process command, while one read through `non_blank_token` after such
+    /// a pattern, or forwarded under its own name to a command, is not.
     #[test]
     fn a_credential_read_cleaned_by_a_suffix_strip_or_tested_by_a_pattern_is_reported() {
         let file = r#"const NPM_NAME: &str = "NPM_TOKEN";
@@ -5282,6 +5543,35 @@ const NPM_USER: &str = "NPM_USER";"#;
             let t = ctx.env_var("NPM_TOKEN")?;
             Some(t)
         }"#,
+            r#"fn context_question() -> Result<String> {
+            let t = std::env::var("NPM_TOKEN").context("NPM_TOKEN is unset")?;
+            Ok(t)
+        }"#,
+            r#"fn ok_question() -> Option<String> {
+            let t = std::env::var("NPM_TOKEN").ok()?;
+            Some(t)
+        }"#,
+            r#"fn matched() -> Option<String> {
+            match std::env::var("NPM_TOKEN") {
+                Ok(t) => Some(t),
+                Err(_) => None,
+            }
+        }"#,
+            r#"fn eq_some_empty() {
+            if std::env::var("NPM_TOKEN").ok().as_deref() == Some("") { return; }
+        }"#,
+            r#"fn const_as_ref() {
+            if env.var(NPM_NAME.as_ref()).is_some() { go(); }
+        }"#,
+            r#"fn renamed_forward() {
+            if let Some(t) = env.var("GITHUB_TOKEN") {
+                cmd.env("GH_TOKEN", t);
+            }
+        }"#,
+            r#"fn builder_forward(b: Builder) -> Builder {
+            let Some(t) = env.var("NPM_TOKEN") else { return b };
+            b.env("NPM_TOKEN", t)
+        }"#,
             r#"fn sound() {
             let t = std::env::var("NPM_TOKEN").map(|v| v.trim_end().to_string()).unwrap_or_default();
             if t.is_empty() { return; }
@@ -5289,6 +5579,10 @@ const NPM_USER: &str = "NPM_USER";"#;
             if u.is_none() { return; }
             if let Some(p) = env.var("COSIGN_PASSWORD") {
                 command.env("COSIGN_PASSWORD", p);
+            }
+            let mut spawn = std::process::Command::new("cosign");
+            if let Some(q) = env.var(COSIGN_PASSWORD_ENV) {
+                spawn.env(COSIGN_PASSWORD_ENV, &q);
             }
             let lookup = |name: &str| env.var(name).as_deref().and_then(non_blank_token);
             if let Some(v) = lookup("NPM_TOKEN") { send(v); }
@@ -5319,11 +5613,42 @@ const NPM_USER: &str = "NPM_USER";"#;
                 vec![r#"env::var("NPM_TOKEN").is_ok()"#.to_string()],
                 vec![r#"env::var("NPM_TOKEN")"#.to_string()],
                 vec![r#"env_var("NPM_TOKEN")?"#.to_string()],
+                vec![r#"env::var("NPM_TOKEN").context("NPM_TOKEN is unset")?"#.to_string()],
+                vec![r#"env::var("NPM_TOKEN").ok()?"#.to_string()],
+                vec![r#"env::var("NPM_TOKEN")"#.to_string()],
+                vec![r#"env::var("NPM_TOKEN").ok().as_deref() == Some("")"#.to_string()],
+                vec![r#".var(NPM_NAME.as_ref()).is_some()"#.to_string()],
+                vec![r#".var("GITHUB_TOKEN")"#.to_string()],
+                vec![r#".var("NPM_TOKEN") else"#.to_string()],
                 Vec::<String>::new(),
                 Vec::<String>::new(),
             ]
         );
     }
+
+    /// The fewest production files the shared corpus holds. The workspace
+    /// has about 750, so a corpus that lost a crate or a directory falls
+    /// under it.
+    const MIN_CORPUS_FILES: usize = 700;
+
+    /// Production files across nine crates that read a credential variable
+    /// through `non_blank_token`. Each must be in the corpus with its read,
+    /// so a corpus that lost one of them fails.
+    const KNOWN_CREDENTIAL_READERS: &[&str] = &[
+        "crates/cli/src/commands/helpers/env.rs",
+        "crates/cli/src/determinism_harness/run.rs",
+        "crates/core/src/git/github_api.rs",
+        "crates/stage-announce/src/helpers.rs",
+        "crates/stage-changelog/src/ai/anthropic.rs",
+        "crates/stage-nfpm/src/builders.rs",
+        "crates/stage-publish/src/dockerhub/mod.rs",
+        "crates/stage-publish/src/mcp/auth.rs",
+        "crates/stage-publish/src/npm/publisher.rs",
+        "crates/stage-publish/src/util/config.rs",
+        "crates/stage-release/src/gitlab/auth.rs",
+        "crates/stage-sign/src/process/authenticode.rs",
+        "crates/stage-srpm/src/lib.rs",
+    ];
 
     /// Every production env read of a credential variable trims the value
     /// and treats an empty one as unset, through
@@ -5341,19 +5666,31 @@ const NPM_USER: &str = "NPM_USER";"#;
                 .extend(credential_consts(&source.text));
         }
         let mut offenders = Vec::new();
-        let mut reads = 0usize;
+        let mut reading_files = BTreeSet::new();
         for source in corpus {
             let consts = &consts[crate_dir(&source.path)];
             for body in source.bodies.iter().chain(&source.items) {
-                reads += body.matches("non_blank_token").count();
+                if body.contains("non_blank_token") {
+                    reading_files.insert(source.path.to_string_lossy().replace('\\', "/"));
+                }
                 for read in bare_empty_credential_reads(body, consts) {
                     offenders.push(format!("{}: {read}", source.path.display()));
                 }
             }
         }
         assert!(
-            reads > 0,
-            "the scan found no non_blank_token call; the source list is wrong"
+            corpus.len() >= MIN_CORPUS_FILES,
+            "the scan read {} production files, under {MIN_CORPUS_FILES}; the source list is wrong",
+            corpus.len()
+        );
+        let missing: Vec<&&str> = KNOWN_CREDENTIAL_READERS
+            .iter()
+            .filter(|f| !reading_files.iter().any(|r| r.ends_with(*f)))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these files read a credential through non_blank_token and the scan did not \
+             see the read; the source list is wrong:\n{missing:#?}"
         );
         assert!(
             offenders.is_empty(),

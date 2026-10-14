@@ -187,7 +187,7 @@ pub(crate) fn render_changelog_with_provider(
     Ok(out)
 }
 
-/// State shared across the recursive [`render_groups`] tree walk.
+/// State shared across the recursive [`render_groups`] tree traversal.
 ///
 /// Bundles every parameter that's invariant across the recursion (only `out`,
 /// `groups`, and `depth` change). `divider` is the single field that's
@@ -236,7 +236,7 @@ pub(crate) fn render_groups(
         // spurious heading.
         if !group.title.is_empty() {
             // Group titles are pre-rendered by the stage before reaching
-            // this function (`run.rs::resolve_changelog_opts` walks the
+            // this function (`run.rs::resolve_changelog_opts` visits the
             // groups tree and resolves each title through the project's
             // template context). Heading-emit is therefore a plain
             // string append.
@@ -395,7 +395,7 @@ pub(crate) fn render_commit_line(
     // `Authors` (comma-string, backward-compatible) and `AuthorsList`
     // (structured {Name, Email, Username} records for
     // `{% for a in AuthorsList %}@{{ a.Username }}{% endfor %}`) are built
-    // from a SINGLE walk over the author + co-author set: the comma-string
+    // from a SINGLE pass over the author + co-author set: the comma-string
     // is derived from the structured list's names rather than re-iterating.
     // Co-author trailers contribute Name only (email is in the raw trailer
     // string; Username is unknown without an extra SCM API hit — left empty).

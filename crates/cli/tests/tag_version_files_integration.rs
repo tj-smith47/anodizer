@@ -965,7 +965,7 @@ crates:
 
     // Invoke from the crate subdirectory, NOT the workspace root. The explicit
     // `--config` (root `.anodizer.yaml`) anchors the workspace-root discovery
-    // (walk up from the config's parent), matching the established subdir
+    // (climbing from the config's parent), matching the established subdir
     // contract; the fix is that the version_files IO then resolves against that
     // root rather than the cwd.
     let cfg = root.join(".anodizer.yaml");
@@ -1536,7 +1536,7 @@ fn tag_rewrote(root: &Path, mode: &str, tag_args: &[&str]) -> Vec<Validated> {
 
 /// Both commands resolve the same enrollment, so the files `check` validates
 /// and the files `tag` rewrites are the same set at the same versions — the
-/// pin derives BOTH lists from the commands' own output, so a resolver that
+/// test derives BOTH lists from the commands' own output, so a resolver that
 /// drifts on one side fails here without anyone updating a fixture list.
 /// Every fixture enrolls one file bare AND anchored, and each side must report
 /// the anchored entry as such: a resolver that dropped the anchor on one side
@@ -1565,7 +1565,7 @@ fn assert_tag_covers_what_check_validates(root: &Path, mode: &str, tag_args: &[&
 /// The tag/check agreement across every config mode: single-crate, lockstep
 /// with and without a `crates:` block, per-crate, and the one-declared-crate
 /// shape whose enrollment lives at the top level. Both divergences found here
-/// were resolver splits — `check` walked one list and `tag` another.
+/// were resolver splits — `check` read one list and `tag` another.
 #[test]
 fn tag_and_check_agree_in_every_config_mode() {
     let single = TempDir::new().unwrap();

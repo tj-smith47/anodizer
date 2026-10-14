@@ -34,8 +34,8 @@ else COLOR="red"; fi
 
 # Restore the original checkout before exit. The coverage job resolves a LOCAL
 # composite action (`./.github/actions/setup-rust`), whose files must exist in
-# the working tree at the job's post phase (cache-save, composite cleanup) — not
-# just the main phase. Leaving the tree on the `badges` branch (which lacks
+# the working tree at the job's post phase (cache-save, composite cleanup) as well as
+# the main phase. Leaving the tree on the `badges` branch (which lacks
 # `.github/`) makes the post phase fail with "Can't find action.yml". --force
 # discards the badge-branch tree state; the badge is already committed+pushed.
 ORIG_REF="$(git symbolic-ref --quiet --short HEAD || git rev-parse HEAD)"

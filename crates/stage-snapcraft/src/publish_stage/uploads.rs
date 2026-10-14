@@ -313,10 +313,10 @@ pub(crate) fn run_uploads(
                     // A snapcraft push is idempotent for retry purposes: the
                     // revision-already-published probe above skips a re-run, so
                     // re-issuing the upload after a transient 5xx/network blip
-                    // is safe. Keep a transient-error retry floor even when a
+                    // is safe. Keep a transient-error retry minimum even when a
                     // stateful mode (`--publish-only`) resolves `attempts: 1`,
-                    // mirroring the HTTP-upload, blob, and GitHub asset floors.
-                    let upload_policy = retry_policy.with_idempotent_floor();
+                    // mirroring the HTTP-upload, blob, and GitHub asset minimums.
+                    let upload_policy = retry_policy.with_idempotent_minimum();
                     let max_attempts = upload_policy.max_attempts;
                     let retry_desc = format!("snapcraft upload '{snap_name}'");
                     retry_sync_deadline(
@@ -469,7 +469,7 @@ pub(crate) fn run_uploads(
                                                 "promoted snap {snap_name} {version} \
                                                  (revision {revision}) to {} — recovered from \
                                                  a content-dedup rejection: an earlier attempt \
-                                                 had already landed this version's bytes \
+                                                 had already uploaded this version's bytes \
                                                  without releasing them",
                                                 promote_channels.join(",")
                                             ));

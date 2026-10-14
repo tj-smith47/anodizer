@@ -124,7 +124,7 @@ publish:
 }
 
 /// An empty config must not demand publisher credentials: the
-/// ungated `all_publishers` walk relies on every `requirements`
+/// ungated `all_publishers` loop relies on every `requirements`
 /// impl self-gating on its own configuration. That includes
 /// github-release — the release stage only releases crates carrying a
 /// `release:` block (real configs get one injected by defaults
@@ -526,7 +526,7 @@ publish:
 }
 
 /// FULL scope (the main release job's shape, empty allowlist) keeps BOTH
-/// sign slices, so the binaries that ship are still signed. Pins the
+/// sign slices, so the binaries that ship are still signed. Tests the
 /// main-job binary-signing invariant alongside the deselection case above.
 #[test]
 fn full_scope_keeps_both_sign_slices() {
@@ -568,7 +568,7 @@ publish:
 /// The main release job runs with an EMPTY allowlist + `--skip=npm`, so
 /// neither the release stage nor the `signs:` slice may be deselected:
 /// `publisher_deselected` short-circuits to the denylist alone, which names
-/// only `npm`. This pins the non-regression of the main job alongside the
+/// only `npm`. This tests the non-regression of the main job alongside the
 /// npm-job deselection above.
 #[test]
 fn empty_allowlist_keeps_release_and_signs_for_main_job() {
@@ -752,7 +752,7 @@ builds:
     );
     assert!(
         report.warnings.iter().any(|w| w.message.contains("zig")),
-        "missing zig must surface as a warning: {:?}",
+        "missing zig must be reported as a warning: {:?}",
         report.warnings
     );
 }
@@ -1047,7 +1047,7 @@ fn reduced_scope_membership_matches_pipeline_builders() {
 /// registered in the full release pipeline — a typo'd or renamed stage
 /// name would silently drop that stage's requirements from every scope.
 /// Iterates the PRODUCTION `GATED_STAGES` table (the same list the
-/// collection loop walks), so a stage added to one is covered by the
+/// collection loop reads), so a stage added to one is covered by the
 /// other by construction.
 #[test]
 fn requirement_gated_stage_names_exist_in_release_pipeline() {
@@ -1216,9 +1216,7 @@ fn reconcile_sweep_applies_when_the_tag_does_not_exist() {
 /// Rule: `.claude/rules/preflight-one-engine.md`.
 #[test]
 fn every_preflight_half_runs_inside_the_one_engine() {
-    use anodizer_core::test_helpers::test_sources::{
-        function_bodies, production_half, workspace_production_sources,
-    };
+    use anodizer_core::test_helpers::test_sources::production_corpus;
 
     /// `run_preflight` as a whole word, however the path is spelled: a
     /// direct call, an `as` alias or a `use …::run_preflight;` import all
@@ -1252,11 +1250,10 @@ fn every_preflight_half_runs_inside_the_one_engine() {
     let mut half_callers: Vec<(String, String)> = Vec::new();
     let mut engine_callers: Vec<(String, String)> = Vec::new();
     let mut release_callers: Vec<String> = Vec::new();
-    for source in workspace_production_sources() {
-        let text = std::fs::read_to_string(&source).expect("read source");
-        let file = source.to_string_lossy().replace('\\', "/");
-        for body in function_bodies(production_half(&text)) {
-            let name = fn_name(&body).to_string();
+    for source in production_corpus() {
+        let file = source.path.to_string_lossy().replace('\\', "/");
+        for body in &source.bodies {
+            let name = fn_name(body).to_string();
             // The header line only defines the function.
             let rest: String = body.lines().skip(1).collect::<Vec<_>>().join("\n");
             if rest.contains("run_env_preflight(") || calls_publisher_half(&rest) {

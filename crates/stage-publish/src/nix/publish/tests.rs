@@ -355,7 +355,7 @@ fn build_archive_tuples_excludes_watchos_darwin_keeps_linux() {
     assert_eq!(tuples[0].0, "x86_64-linux");
     assert!(
         !tuples.iter().any(|(sys, _, _)| sys.contains("darwin")),
-        "watchOS archive must never surface as a darwin nix system"
+        "watchOS archive must never appear as a darwin nix system"
     );
 }
 
@@ -1827,7 +1827,10 @@ mod subprocess {
         }
         let mut ctx = ctx_for(nix, two_archives());
         let pushed = publish_to_nix(&mut ctx, "mytool", &quiet_log()).expect("publish ok");
-        assert!(pushed, "the direct push to the overlay branch still lands");
+        assert!(
+            pushed,
+            "the direct push to the overlay branch still succeeds"
+        );
         assert!(
             ctx.take_pending_outcome().is_some(),
             "an enabled pull_request must record a publisher outcome"

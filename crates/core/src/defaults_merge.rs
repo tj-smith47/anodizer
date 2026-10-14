@@ -1609,7 +1609,7 @@ crates:
         // `NotarizeConfig.macos[].notarize.timeout` is `Option<HumanDuration>`.
         // The merge engine does NOT yet fold top-level `Config.notarize`
         // into per-crate state because notarize lives on `Config`, not
-        // `CrateConfig`. This test pins that gap so any future wiring
+        // `CrateConfig`. This test records that gap so any future wiring
         // change shows up explicitly.
         use crate::config::{
             HumanDuration, MacOSNotarizeApiConfig, MacOSSignNotarizeConfig, NotarizeConfig,
@@ -1634,7 +1634,7 @@ crates:
         // Structural proof of the gap: `CrateConfig` has no `notarize` field
         // at all today. Notarize lives only on `Config` and `Defaults`, so
         // there is no per-crate slot for the merge engine to fold the typed
-        // `HumanDuration` timeout into. Test pins the structural state so
+        // `HumanDuration` timeout into. The test holds the structural state so
         // any future field-add (CrateConfig.notarize) shows up here and the
         // wiring change can be cross-checked against the known-bug entry.
         let _ = crate_cfg; // no-op: no per-crate notarize field exists.
@@ -1645,7 +1645,7 @@ crates:
         // `ChangelogConfig.header` is `Option<ContentSource>`. ChangelogConfig
         // lives on `Config` (not on `CrateConfig` and not on `Defaults`), so
         // the merge engine has no path to fold a default header into per-crate
-        // state today. Test pins the gap.
+        // state today. The test records the gap.
         use crate::config::{ChangelogConfig, ContentSource};
         let _defaults_changelog = ChangelogConfig {
             header: Some(ContentSource::Inline("## Notes".to_string())),

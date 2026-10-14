@@ -1,5 +1,5 @@
 //! Static analysis of `.github/workflows/release.yml` and the reusable
-//! `.github/workflows/determinism.yml` it calls, pinning the safety
+//! `.github/workflows/determinism.yml` it calls, checking the safety
 //! properties of the release pipeline:
 //!
 //! - The release job runs only after a successful determinism check
@@ -231,7 +231,7 @@ fn determinism_shard_checks_out_passed_head_sha() {
         .and_then(|w| w.get("ref"))
         .and_then(Value::as_str)
         .expect(
-            "determinism.yml: checkout step must pin `with.ref` to the \
+            "determinism.yml: checkout step must set `with.ref` to the \
              passed-in commit — a missing `ref:` byte-verifies default-branch \
              HEAD, not the bytes being shipped",
         );

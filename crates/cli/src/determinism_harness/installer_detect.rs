@@ -226,7 +226,7 @@ pub(super) fn host_tool_probe(tool: &str) -> bool {
 /// Probe each tool-gated stage in `requested` with `probe` and partition
 /// into available vs skipped. Stages with no external-tool requirement pass
 /// through to `available` unmodified. Behavioral tests pass a stub probe to
-/// verify the "tool missing => stage lands in `skipped`" contract without
+/// verify the "tool missing => stage ends up in `skipped`" contract without
 /// depending on what's installed on the runner.
 ///
 /// `config_tools` carries the tool requirements that can only be known from
@@ -402,7 +402,7 @@ mod tests {
         // that the shard does not install — otherwise these stages silently
         // route to `skipped` and never get byte-verified. (msi is config-
         // resolved, not host-static — see the WiX-version gate tests.) This
-        // pins the host-static mapping on the Linux build.
+        // tests the host-static mapping on the Linux build.
         #[cfg(target_os = "linux")]
         {
             assert_eq!(stage_primary_tool(StageId::Dmg), Some("genisoimage"));
@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn msi_v3_available_when_candle_and_light_present() {
-        // Release-blocker regression: config pins WiX v3 (candle+light) and
+        // Release-blocker regression: config selects WiX v3 (candle+light) and
         // both are on PATH (the real Windows shard). The gate must NOT skip
         // msi. Before the fix it hardcoded the v4 `wix` CLI on Windows, found
         // it absent, and hard-failed the shard on every release.

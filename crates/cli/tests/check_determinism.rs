@@ -74,13 +74,13 @@ fn check_determinism_help_lists_every_flag() {
 }
 
 /// Outside a git repo the dispatcher must error cleanly when resolving
-/// HEAD (not panic, not hang). This pins the early-exit path that gates
+/// HEAD (not panic, not hang). This tests the early-exit path that gates
 /// the harness's expensive subprocess.
 #[test]
 fn check_determinism_errors_cleanly_outside_git_repo() {
     let tmp = TempDir::new().unwrap();
     // `--runs 2` clears the runs>=2 gate so the dispatcher proceeds to HEAD
-    // resolution, which is the path this test pins; `--runs 1` would bail at
+    // resolution, which is the path this test covers; `--runs 1` would bail at
     // the gate and pass vacuously without ever touching git.
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["check", "determinism", "--runs", "2"])
@@ -99,7 +99,7 @@ fn check_determinism_errors_cleanly_outside_git_repo() {
 /// Smoke test: `--report=<path>` is respected when the dispatcher fails
 /// fast (the report dir is NOT created in the error path; the test
 /// passes by virtue of the binary exiting non-zero without panicking).
-/// This is the lowest-cost shape that pins "the dispatcher reaches the
+/// This is the lowest-cost shape that tests "the dispatcher reaches the
 /// SDE resolver". A full N-runs harness test is below
 /// (`inject_drift_archive_reports_drift_on_minimal_workspace`).
 #[test]
@@ -107,7 +107,7 @@ fn check_determinism_respects_report_flag_in_error_path() {
     let tmp = TempDir::new().unwrap();
     let report = tmp.path().join("custom-report.json");
     // `--runs 2` clears the runs>=2 gate so the dispatcher proceeds to the SDE
-    // resolver (the path this test pins); `--runs 1` would bail at the gate
+    // resolver (the path this test covers); `--runs 1` would bail at the gate
     // before the resolver is ever reached, passing vacuously.
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["check", "determinism", "--runs", "2", "--report"])
@@ -289,7 +289,7 @@ fn inject_drift_archive_reports_drift_on_minimal_workspace() {
     );
 }
 
-/// Regression pin for the v0.9.0 release failure: the harness's replica
+/// Regression test for the v0.9.0 release failure: the harness's replica
 /// pipelines run on credential-less runners (the run paths skip what's
 /// absent; nothing publishes), so the config-derived env preflight must be
 /// disabled for the children by construction. The fixture mirrors the live
@@ -298,7 +298,7 @@ fn inject_drift_archive_reports_drift_on_minimal_workspace() {
 /// `required: true`. Pre-fix this run aborted with
 /// `Error: preflight: N check(s) failed` from determinism run 0.
 ///
-/// Also pins the console contract:
+/// Also tests the console contract:
 /// - the `Checking determinism` header + parameter block print exactly once
 ///   (one formatter — the binary's; wrappers must not echo their own), and
 /// - the submitter moderation-queue advisory is HIDDEN at the default log
@@ -401,7 +401,7 @@ fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
         !stderr.contains("preflight:")
             && !stderr.contains("preflight check failed")
             && !stderr.contains("preflight checks failed"),
-        "no env-preflight failure may surface from replica children: {stderr}"
+        "no env-preflight failure may come from replica children: {stderr}"
     );
     // Guard against a vacuous pass: the children must have actually driven
     // the build pipeline (one `Building binaries` section per run), not

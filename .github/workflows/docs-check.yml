@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 # actions/checkout's internal `git init` prints a defaultBranch hint on GitHub
-# runners that don't set init.defaultBranch; pin it via git's env-config so the
+# runners that don't set init.defaultBranch; set it via git's env-config so the
 # hint never fires (binds every git invocation regardless of HOME or global config).
 env:
   GIT_CONFIG_COUNT: '1'

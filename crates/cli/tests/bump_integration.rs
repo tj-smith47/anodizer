@@ -1105,7 +1105,7 @@ changelog:
 }
 
 /// BLOCKER regression: an UNSET `tag_template` must resolve the SAME
-/// `{crate}-v` prefix family `tag`/`changelog` use — not silently collapse
+/// `{crate}-v` prefix family `tag`/`changelog` use instead of silently collapsing
 /// to the bare `v{{ Version }}` built-in default (`tag_family_template()`).
 /// Against the bug (`.map(|c| c.tag_family_template())`), the previous-tag
 /// lookup for prefix `v` misses `demo-v0.1.0`, `from_tag` is `None`, the

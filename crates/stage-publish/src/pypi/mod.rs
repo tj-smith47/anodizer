@@ -5,7 +5,7 @@
 //! derived by *inspecting the binary* rather than guessing:
 //!
 //! * `*-linux-gnu` → `manylinux_<maj>_<min>_<arch>` from the binary's real
-//!   glibc floor ([`anodizer_core::libc_check::max_glibc_requirement`]);
+//!   minimum glibc version ([`anodizer_core::libc_check::max_glibc_requirement`]);
 //! * `*-linux-musl` → `musllinux_1_2_<arch>`;
 //! * `*-apple-darwin` → `macosx_<maj>_<min>_<arch>` from the Mach-O
 //!   deployment target ([`anodizer_core::macho_check::macho_min_os_version`]),

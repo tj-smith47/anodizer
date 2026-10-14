@@ -11,7 +11,7 @@ anodizer is release-automation tooling. A single `anodizer release` run can
 build binaries, sign artifacts, attest provenance, and publish to crates.io,
 npm, Homebrew taps, Scoop buckets, Chocolatey, Winget, AUR, Krew, Snapcraft,
 Docker registries, blob storage, and custom publisher commands — then announce
-to many channels. The threat surface is the union of every credential it
+to many channels. The threats come from every credential it
 touches and every subprocess it spawns.
 
 ## Asset Inventory
@@ -29,7 +29,7 @@ touches and every subprocess it spawns.
 - **OIDC identity** — the GitHub Actions OIDC token (`id-token: write`) consumed
   by npm Trusted Publishing and by `actions/attest-build-provenance` via
   `stage-attest`'s `subjects` mode. A forged or misdirected OIDC exchange can
-  mint short-lived publish credentials or sign provenance for a release the
+  issue short-lived publish credentials or sign provenance for a release the
   attacker controls.
 - **Release artifacts** — the binaries, archives, packages, container images,
   and manifests anodizer produces and publishes. These are what downstream
@@ -86,8 +86,8 @@ embedded in a remote URL leaks through a subprocess error message.
   the child process. A unit test proves a credential-shaped key is dropped while
   `PATH` forwards verbatim.
 - **The `Command::new` allow-list.** `.claude/rules/module-boundaries.md`
-  confines all subprocess spawns to a small, named set of modules so the
-  exfiltration surface is auditable. Anything outside the allow-list is a
+  confines all subprocess spawns to a small, named set of modules so every
+  path that could leak data can be audited. Anything outside the allow-list is a
   review-blocker. The current audited count is 71 files / 228 call sites, all
   inside the allow-list.
 - **Token redaction in error output.** `crates/stage-publish/src/util/cmd.rs`
@@ -121,7 +121,7 @@ attacker-controlled content into published metadata.
   template that fails to render aborts the release while it is still reversible,
   instead of after a one-way-door publisher has already run.
 - **`anodizer check` and `--dry-run` / `--snapshot`** run the full pipeline
-  without publishing, surfacing config and template defects before a tag exists.
+  without publishing, reporting config and template defects before a tag exists.
 
 **Accepted risk:** a template that *successfully* renders attacker-chosen text
 into release notes is not distinguishable from a legitimate one by the guard.
@@ -239,7 +239,7 @@ the operator does not own.
 
 **Mitigations:**
 
-- **`anodizer check` + `--dry-run`/`--snapshot`** surface the resolved
+- **`anodizer check` + `--dry-run`/`--snapshot`** show the resolved
   destinations before any tag is cut, and the pre-publish guard renders every
   manifest before the first publisher fires.
 

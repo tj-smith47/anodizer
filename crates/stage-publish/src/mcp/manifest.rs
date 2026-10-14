@@ -190,7 +190,7 @@ mod tests {
         };
         let v = serde_json::to_value(&server).expect("serialize");
 
-        // Pin the key shape — subfolder omitted, websiteUrl camelCased,
+        // Check the key shape — subfolder omitted, websiteUrl camelCased,
         // $schema present, registryType camelCased.
         assert_eq!(v["$schema"], CURRENT_SCHEMA_URL);
         assert_eq!(v["name"], "test-server");

@@ -457,7 +457,7 @@ crates:
 }
 
 #[test]
-fn test_failing_before_hook_stderr_surfaces_once_when_verbose() {
+fn test_failing_before_hook_stderr_is_printed_once_when_verbose() {
     // A failing `before:` hook routes through the consolidated run helper
     // (anodizer_core::run::run_checked). At --verbose the helper tees the
     // hook's stderr live AND captures it; the streaming-aware check_output
@@ -537,7 +537,7 @@ crates:
     );
     assert!(
         hits >= 1,
-        "failing before-hook stderr must surface at least once; \
+        "failing before-hook stderr must be printed at least once; \
          got {hits} in stderr:\n{stderr}"
     );
 }
@@ -1213,7 +1213,7 @@ fn test_e2e_dry_run_no_side_effects() {
             .collect();
         entries.sort();
         // Spelled out rather than read from the release command's constant,
-        // so a widened set fails this pin instead of widening with it.
+        // so a widened set fails this test instead of widening with it.
         let bookkeeping = ["config.yaml", "matrix.json", "release-notes.md"];
         let leftovers: Vec<_> = entries
             .iter()
@@ -5780,7 +5780,7 @@ crates:
 ///
 /// Both gates phrase the bail as `"... {N} required publishers
 /// failed: {names}. ..."` — so this test asserts both `"required
-/// publisher"` and `"cargo"` appear in stderr without pinning which
+/// publisher"` and `"cargo"` appear in stderr without fixing which
 /// layer fired. It also confirms `report.json` was persisted *before*
 /// the gate fired so `anodizer tag rollback` has publisher state to
 /// unwind.
@@ -5861,7 +5861,7 @@ crates:
 /// no binary artifact exists. The publisher's runtime name is
 /// `upstream-aur`, which is what `--simulate-failure` must target.
 ///
-/// Together, these two tests pin both directions of the gate wiring:
+/// Together, these two tests check both directions of the gate wiring:
 /// - required + failed → non-zero exit (the regression class)
 /// - non-required + failed → zero exit (no false-positive gate)
 #[test]
@@ -6229,7 +6229,7 @@ workspaces:
 
 /// `release --workspace ws-a --dry-run` plans ONLY ws-a's crates. Before the
 /// overlay cleared `config.workspaces`, dry-run's "empty selection = all"
-/// walked the whole universe and planned the SIBLING workspace's builds and
+/// read the whole universe and planned the SIBLING workspace's builds and
 /// archives under ws-a's overlay.
 #[test]
 fn test_release_workspace_dry_run_scopes_to_workspace() {
@@ -6499,5 +6499,100 @@ fn test_build_ws_member_crate_applies_workspace_inference() {
             || effective.contains("workspaces: null")
             || effective.contains("workspaces: ~"),
         "the overlay must clear the workspaces block, got:\n{effective}"
+    );
+}
+
+/// Run `anodizer release` in a fresh tagged repo whose config has a GitHub
+/// release, with an environment holding no token variable and `home` as
+/// `HOME`. Every stage after the environment setup is skipped, so the run
+/// stops at the first check after it; what matters is whether it stopped at
+/// the token check.
+fn release_with_only_home(home: &Path, extra_config: &str) -> std::process::Output {
+    let repo = TempDir::new().unwrap();
+    create_test_project(repo.path());
+    create_config(
+        repo.path(),
+        &format!(
+            r#"
+project_name: test-project
+{extra_config}
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{{{ .Version }}}}"
+    release:
+      github:
+        owner: acme
+        name: test-project
+"#
+        ),
+    );
+    init_git_repo(repo.path());
+    Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--verbose",
+            "--skip=build,archive,checksum,sign,publish,announce,changelog,sbom",
+        ])
+        .current_dir(repo.path())
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", home)
+        .output()
+        .unwrap()
+}
+
+fn stopped_at_the_token_check(output: &std::process::Output) -> bool {
+    String::from_utf8_lossy(&output.stderr).contains("no GitHub token found")
+}
+
+fn loaded_the_token_file(output: &std::process::Output) -> bool {
+    String::from_utf8_lossy(&output.stderr).contains("loaded GITHUB_TOKEN from")
+}
+
+#[test]
+fn a_github_token_held_only_in_a_token_file_is_the_run_token() {
+    let bare_home = TempDir::new().unwrap();
+    let control = release_with_only_home(bare_home.path(), "");
+    assert!(
+        stopped_at_the_token_check(&control),
+        "with no token anywhere the run stops at the token check: {}",
+        String::from_utf8_lossy(&control.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&control.stderr)
+            .contains("or write the token to ~/.config/anodizer/github_token"),
+        "the token check names the default token file: {}",
+        String::from_utf8_lossy(&control.stderr)
+    );
+
+    for default_path in [
+        ".config/anodizer/github_token",
+        ".config/goreleaser/github_token",
+    ] {
+        let home = TempDir::new().unwrap();
+        let file = home.path().join(default_path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "ghp_fromfile\n").unwrap();
+        let output = release_with_only_home(home.path(), "");
+        assert!(
+            !stopped_at_the_token_check(&output) && loaded_the_token_file(&output),
+            "a token in ~/{default_path} is the run token: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let home = TempDir::new().unwrap();
+    let custom = home.path().join("secrets/release_token");
+    fs::create_dir_all(custom.parent().unwrap()).unwrap();
+    fs::write(&custom, "ghp_fromcustomfile\n").unwrap();
+    let output = release_with_only_home(
+        home.path(),
+        &format!("env_files:\n  github_token: {}\n", custom.display()),
+    );
+    assert!(
+        !stopped_at_the_token_check(&output) && loaded_the_token_file(&output),
+        "a token in the file env_files.github_token names is the run token: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }

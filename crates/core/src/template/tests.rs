@@ -4982,18 +4982,15 @@ fn target_variant_is_the_micro_arch_suffix_plus_the_abi() {
 /// Flattened production function bodies of the whole workspace that contain
 /// `trigger`, each paired with `<file>: <signature line>`.
 fn per_target_bodies(trigger: &str) -> Vec<(String, String)> {
-    use crate::test_helpers::test_sources::{
-        function_bodies, production_half, workspace_production_sources,
-    };
+    use crate::test_helpers::test_sources::production_corpus;
     let mut found = Vec::new();
-    for source in workspace_production_sources() {
-        let text = std::fs::read_to_string(&source).expect("read source");
-        for body in function_bodies(production_half(&text)) {
+    for source in production_corpus() {
+        for body in &source.bodies {
             let flat: String = body.chars().filter(|c| !c.is_whitespace()).collect();
             if flat.contains(trigger) {
                 let name = body.lines().next().unwrap_or_default().trim().to_string();
                 // Allow-lists in this file spell paths with `/`; Windows displays `\`.
-                let path = source.display().to_string().replace('\\', "/");
+                let path = source.path.display().to_string().replace('\\', "/");
                 found.push((format!("{path}: {name}"), flat));
             }
         }

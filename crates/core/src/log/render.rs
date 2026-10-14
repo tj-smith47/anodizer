@@ -27,7 +27,7 @@ pub(super) struct PendingHeader {
 }
 
 /// Stack of section headers awaiting their first body line. Pushed by
-/// [`StageLogger::group`](crate::log::StageLogger::group), drained by [`flush_pending`] when a real line is
+/// [`StageLogger::group`](crate::log::StageLogger::group), emptied by [`flush_pending`] when a real line is
 /// about to print, and popped (LIFO) by [`SectionGuard::drop`](crate::log::SectionGuard::drop).
 ///
 /// A `Mutex` (not a thread-local) because sections are opened on the main
@@ -285,7 +285,7 @@ pub fn indent() -> String {
 /// body indent here would push the gutter-aligned label two columns past both
 /// the sibling headers and the body bullets, leaving it floating on its own.
 ///
-/// Floored at the inherited `base_depth` so a label emitted with no open
+/// Kept at or above the inherited `base_depth` so a label emitted with no open
 /// section never dedents below the ambient (e.g. GitHub Actions) indent.
 pub(super) fn label_indent() -> String {
     "  ".repeat(current_depth().saturating_sub(1).max(base_depth()))

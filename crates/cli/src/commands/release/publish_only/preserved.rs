@@ -96,11 +96,11 @@ pub(super) fn discover_sharded_manifests(dist: &Path, base: &str) -> Result<Vec<
     Ok(found)
 }
 
-/// Walk `dist/` for every `context.json` and `context-*.json` entry at
+/// Scan `dist/` for every `context.json` and `context-*.json` entry at
 /// the dist root (non-recursive). Returns the parsed contexts paired
 /// with their source paths, sorted by filename for reproducible output.
 /// Empty result is an error — `publish-only` cannot proceed without at
-/// least one manifest pinning the preserved commit.
+/// least one manifest recording the preserved commit.
 pub(super) fn discover_preserved_contexts(
     dist: &Path,
 ) -> Result<Vec<(PathBuf, PreservedDistContext)>> {
@@ -122,7 +122,7 @@ pub(super) fn discover_preserved_contexts(
     Ok(out)
 }
 
-/// Walk `dist/` for every `artifacts.json` and `artifacts-*.json` entry
+/// Scan `dist/` for every `artifacts.json` and `artifacts-*.json` entry
 /// at the dist root (non-recursive). Returns paths sorted by filename
 /// for reproducible output. May return an empty vec when neither the
 /// legacy nor any sharded manifest is present — callers decide whether
@@ -338,7 +338,7 @@ pub(super) fn is_ephemeral_signature_path(path: &str) -> bool {
 }
 
 /// Cross-check that every artifact recorded in the preserved
-/// `context.json` matches the on-disk bytes under `dist_root`. Pins
+/// `context.json` matches the on-disk bytes under `dist_root`. Holds
 /// the determinism-check → publish-only safety invariant: the bytes
 /// shipped MUST be the bytes the harness verified. Closes the
 /// silent-corruption window between `upload-artifact` /

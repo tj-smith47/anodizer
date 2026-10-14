@@ -133,7 +133,7 @@ impl Default for BlobPublisher {
 /// emits for one recorded object key when structured `blob_targets` evidence
 /// is absent
 /// (`anodizer tag rollback` against a run written before the structured-target
-/// capture existed). Exposed as a helper so tests can pin the wording
+/// capture existed). Exposed as a helper so tests can check the wording
 /// without intercepting stderr.
 ///
 /// The PRIMARY rollback path issues a real
@@ -561,7 +561,7 @@ mod publisher_tests {
     }
 
     /// Per-key warn message shape is fixed by `blob_manual_cleanup_msg`;
-    /// tests pin the wording here so a future refactor cannot silently
+    /// tests check the wording here so a future refactor cannot silently
     /// drop the actionable instruction.
     #[test]
     fn blob_manual_cleanup_msg_is_actionable() {
@@ -651,7 +651,7 @@ mod publisher_tests {
         let decoded = decode_blob_targets(&encoded);
         assert_eq!(decoded, vec![t.clone()]);
 
-        // Wire-format pin: serialize through evidence and inspect the
+        // Wire-format check: serialize through evidence and inspect the
         // JSON to confirm the array rides under the `blob_targets`
         // key (matches the pre-typed shape, parallel to
         // `cloudsmith_targets`).
@@ -762,7 +762,7 @@ mod publisher_tests {
     /// structured-target branch was taken end-to-end without crashing
     /// on a "real" delete attempt.
     ///
-    /// The fixture pins retry attempts to 1 + 1ms backoff (via
+    /// The fixture sets retry attempts to 1 + 1ms backoff (via
     /// `ctx.config.retry`) so the unreachable endpoint fails in
     /// milliseconds instead of running out the default 5-minute retry
     /// budget. Live DELETE behaviour against a real store is covered
@@ -880,12 +880,12 @@ mod publisher_tests {
 
     /// Evidence credential-contract regression: serialised `BlobTarget`
     /// JSON must carry no credential bytes. The five `BlobTarget`
-    /// fields are addressing-only by design; this test pins that
+    /// fields are addressing-only by design; this test checks that
     /// invariant so a future field addition that smuggles a token /
     /// access_key / secret in via `extra.blob_targets` trips here.
     #[test]
     fn blob_target_extra_carries_no_secret_material() {
-        // Structural pin: build typed evidence and assert (a) no
+        // Structural check: build typed evidence and assert (a) no
         // credential-shaped keys appear AND (b) the operator-public
         // addressing fields serialize.
         let t = BlobTarget {

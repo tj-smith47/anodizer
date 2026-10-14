@@ -48,7 +48,7 @@ env:
   # --publishers=es it — the two selectors must stay exact complements.
   HOSTED_PUBLISHERS: npm,pypi,cargo
   # actions/checkout's internal `git init` prints a defaultBranch hint on GitHub
-  # runners that don't set init.defaultBranch; pin it via git's env-config so the
+  # runners that don't set init.defaultBranch; set it via git's env-config so the
   # hint never fires (binds every git invocation regardless of HOME or global config).
   GIT_CONFIG_COUNT: '1'
   GIT_CONFIG_KEY_0: init.defaultBranch
@@ -107,7 +107,7 @@ jobs:
           args: release --publish-only --publishers ${{ env.HOSTED_PUBLISHERS }} --skip=preflight
         env:
           # Empty on a fresh cut → anodizer resolves the highest tag at HEAD.
-          # A backfill dispatch sets inputs.tag so the version is pinned here
+          # A backfill dispatch sets inputs.tag so the version is fixed here
           # while the job runs on master's up-to-date publisher binary.
           ANODIZER_CURRENT_TAG: ${{ inputs.tag }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}

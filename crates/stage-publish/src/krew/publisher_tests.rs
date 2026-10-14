@@ -121,7 +121,7 @@ fn krew_rollback_warns_when_no_targets_recorded() {
 /// Rollback with a recorded target but NO token resolvable from the
 /// env: the per-target loop must warn (naming the target + the env
 /// var it tried) and `continue` WITHOUT making any network call —
-/// then complete `Ok(())`, emitting the all-zero summary. Pins the
+/// then complete `Ok(())`, emitting the all-zero summary. Tests the
 /// no-token skip arm that protects against firing a credential-less
 /// GitHub API request.
 #[test]
@@ -187,7 +187,7 @@ fn krew_target_extra_roundtrips() {
 
 #[test]
 fn krew_target_extra_carries_no_secret_material() {
-    // Structural pin: build a typed-variant evidence and assert
+    // Structural check: build a typed-variant evidence and assert
     // (a) no credential-shaped keys appear AND (b) the
     // operator-public PR coordinates are preserved.
     let mut e = anodizer_core::PublishEvidence::new("krew");
@@ -218,7 +218,7 @@ fn krew_target_extra_carries_no_secret_material() {
 
 #[test]
 fn krew_effective_publish_crates_implicit_all_when_selection_empty() {
-    // Regression pin for the `selected_crates = Vec::new()` failure
+    // Regression test for the `selected_crates = Vec::new()` failure
     // mode: the run path used to iterate the empty Vec and silently
     // skip every configured krew plugin. The helper now resolves to
     // implicit-all over `publish.krew`-carrying crates.
@@ -326,8 +326,8 @@ fn run_no_eligible_crates_warning_names_remediation() {
 }
 
 /// The no-eligible-crates warning must fire only when the iteration
-/// loop's configured-predicate filtered every selected crate out — not
-/// when the publish path was reached successfully.
+/// loop's configured-predicate filtered every selected crate out, and
+/// stay silent when the publish path was reached successfully.
 #[test]
 fn should_warn_no_eligible_only_fires_when_predicate_filtered_everything() {
     // One configured crate reached the publish path → no warning.
@@ -393,7 +393,7 @@ fn krew_publisher_run_no_eligible_crates_returns_ok() {
 /// Implicit-all selection (empty `selected_crates`) + dry-run must
 /// produce empty evidence. The implicit-all path resolves through
 /// `effective_publish_crates` to every krew-configured crate, so this
-/// pins the gate where phantom rollback targets used to leak.
+/// checks the gate where phantom rollback targets used to leak.
 #[test]
 fn test_publish_to_krew_dry_run_implicit_all_produces_empty_evidence() {
     let repo = crate::testing::hermetic_tagged_repo();
@@ -794,7 +794,7 @@ fn krew_rollback_warns_on_pr_query_auth_failure() {
         cap.warn_messages()
             .iter()
             .any(|m| m.contains("failed to query krew upstream kubernetes-sigs/krew-index")),
-        "a 403 on the query must surface the actionable failure warn: {:?}",
+        "a 403 on the query must log the actionable failure warn: {:?}",
         cap.warn_messages()
     );
     let reqs = req_log.lock().unwrap();

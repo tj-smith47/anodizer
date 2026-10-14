@@ -251,7 +251,10 @@ fn partial_publish_records_only_succeeded_crate() {
         None,
     );
 
-    assert!(result.is_err(), "crate-b's publish failure must surface");
+    assert!(
+        result.is_err(),
+        "crate-b's publish failure must be returned"
+    );
 
     // The stub must have seen BOTH publishes (a succeeds, b fails).
     let argv = read_argv_log(&argv_log);
@@ -332,7 +335,7 @@ fn run_failure_then_rollback_yanks_only_succeeded_crate() {
         never_published,
         None,
     );
-    assert!(publish_result.is_err(), "crate-b failure surfaces");
+    assert!(publish_result.is_err(), "crate-b failure is returned");
 
     let mut evidence = anodizer_core::PublishEvidence::new("cargo");
     evidence.extra = encode_cargo_yank_targets(&record);
@@ -500,7 +503,7 @@ fn rollback_continues_and_warns_when_yank_fails() {
 }
 
 /// A recorded target with an `index` (not a `registry`) threads
-/// `--index <url>` into the yank argv. Pins the index-arg branch of the
+/// `--index <url>` into the yank argv. Tests the index-arg branch of the
 /// rollback yank command builder.
 #[test]
 #[serial(cargo_stub_path, path_env)]
@@ -801,7 +804,7 @@ fn wait_for_workspace_deps_gate_is_wired_into_publish_loop() {
             None,
         )
     });
-    let err = result.expect_err("wait_for_workspace_deps timeout must surface");
+    let err = result.expect_err("wait_for_workspace_deps timeout must return an error");
     let chain = format!("{err:#}");
     assert!(
         chain.contains("wait_for_workspace_deps"),
@@ -868,7 +871,7 @@ fn run_failure_stashes_partial_evidence_on_context() {
     init_clean_repo(tmp.path());
     let publisher = CargoPublisher::new();
     let run_result = with_path(&new_path, || publisher.run(&mut ctx));
-    assert!(run_result.is_err(), "crate-b failure surfaces from run");
+    assert!(run_result.is_err(), "crate-b failure is returned from run");
 
     // The Err arm recorded the partial evidence on the context.
     let pending = ctx
@@ -1022,7 +1025,7 @@ fn guard_publishes_when_version_not_on_crates_io() {
 
 /// Fail-CLOSED on an indeterminate working tree: when `project_root` is not
 /// a git repository (git status cannot prove cleanliness), the guard must
-/// REFUSE — not treat the empty/errored porcelain as "clean → proceed". A
+/// REFUSE; an empty or errored porcelain does not count as clean. A
 /// guard documented as failing loud rather than silently skipping is a
 /// poison hole if an unverifiable tree slips through. Mirrors the real risk:
 /// a manual `--publish-only` invoked from a non-repo cwd.

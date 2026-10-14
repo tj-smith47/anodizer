@@ -814,7 +814,7 @@ fn to_artifacts_json_output_is_order_insensitive() {
         json_a, json_b,
         "two registries with the same artifacts in different insertion \
          orders must produce byte-identical artifacts.json — otherwise \
-         the determinism harness will surface per-run drift in dist/"
+         the determinism harness will report per-run drift in dist/"
     );
 }
 
@@ -1302,7 +1302,7 @@ fn test_size_field_serialized_when_some() {
 
 #[test]
 fn release_uploadable_kinds_matches_canonical_set() {
-    // Pins the cross-linked artifact set used by stage-checksum,
+    // Checks the cross-linked artifact set used by stage-checksum,
     // stage-release upload, blob storage, and stage-sign "all" filter.
     // The release-uploadable artifact kinds plus the
     // four installer kinds anodizer ships as OSS:
@@ -1387,7 +1387,7 @@ fn artifact_ext_falls_back_when_metadata_ext_is_empty() {
 
 #[test]
 fn release_uploadable_kinds_excludes_snap_store_and_raw_build_outputs() {
-    // Negative pin: snap-store-bound kinds and raw build outputs must
+    // Negative test: snap-store-bound kinds and raw build outputs must
     // never appear in the release-upload set. Snap files are pushed to
     // the snap store (not GitHub releases); raw Binary / UniversalBinary
     // are wrapped as UploadableBinary or bundled into Archive before

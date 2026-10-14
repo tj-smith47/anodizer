@@ -357,7 +357,7 @@ Signing commands run one subprocess per artifact, in parallel, bounded by
 flaking:
 
 - **Cosign that reads the sigstore trust store is serialized** — a keyless
-  config (no `--key` argument), or a keyed one whose argv does not pin
+  config (no `--key` argument), or a keyed one whose argv does not pass
   `--tlog-upload=false`, runs one invocation at a time regardless of
   `--parallelism`, and holds a host-level advisory lock
   (`~/.sigstore/root/.anodizer-tuf-init.lock`, or `$TUF_ROOT`) so a second

@@ -440,7 +440,7 @@ async fn retry_upload_fast_fails_4xx_via_inner_classifier() {
         }
     })
     .await;
-    assert!(result.is_err(), "4xx must surface as Err");
+    assert!(result.is_err(), "4xx must be returned as Err");
     assert_eq!(
         attempt.load(std::sync::atomic::Ordering::SeqCst),
         1,
@@ -1200,7 +1200,7 @@ fn test_dry_run_with_make_latest() {
 
 // release.tag override tests
 
-/// A crate whose tag family is `tag_template`, for the resolver pins.
+/// A crate whose tag family is `tag_template`, for the resolver tests.
 fn tag_crate(tag_template: &str) -> anodizer_core::config::CrateConfig {
     anodizer_core::config::CrateConfig {
         name: "testcrate".to_string(),
@@ -3115,7 +3115,7 @@ fn test_dry_run_with_header_from_file() {
 // absolute dist paths and internal artifact bookkeeping that mean nothing
 // off the producing machine, so it stays local — v0.1.1 was the last
 // release that attached it. Nothing else asserted the emitted asset set,
-// which is why that change reached consumers unannounced; this pins it in
+// which is why that change reached consumers unannounced; this tests it in
 // both directions.
 
 #[test]
@@ -3375,7 +3375,7 @@ fn test_build_release_json_never_sets_generate_release_notes() {
     assert!(
         json.get("generate_release_notes").is_none(),
         "create-release POST must never include `generate_release_notes` \
-         (would diverge from GR's explicit prev/current pinning); got: {json}"
+         (the notes come from the explicit previous/current tag range); got: {json}"
     );
 }
 
@@ -3946,7 +3946,7 @@ fn test_build_publish_patch_body_prerelease_with_discussion() {
 // was nil before accessing `resp.Header.Get(...)`. Anodizer is panic-free
 // by construction: octocrab/reqwest header access goes through
 // `headers().get(name)` which returns `Option<&HeaderValue>`. This test
-// pins that contract so a future refactor that introduces `.unwrap()` on
+// checks that contract so a future refactor that introduces `.unwrap()` on
 // a header access fails CI.
 
 #[test]
@@ -3974,9 +3974,9 @@ fn test_response_header_access_returns_option_no_panic() {
 // In a multi-crate workspace, each crate's checksum stage writes a combined
 // SHA256SUMS-style sidecar. When the release body references
 // `{{ .Checksums }}`, users expect the UNION of every per-crate checksum
-// block — not a single crate's content (last-write-wins) and not a
+// block. Neither a single crate's content (last-write-wins) nor a
 // `serde_json::Map` keyed by the artifact's path (which leaks the build
-// host's filesystem layout into release notes). The aggregation must be
+// host's filesystem layout into release notes) is correct. The aggregation must be
 // sorted by filename so the rendered block is deterministic and matches
 // the SHA256SUMS convention.
 
@@ -4088,7 +4088,7 @@ fn test_populate_checksums_var_split_mode_preserves_map_keyed_by_checksumof() {
     // pointing back at the artifact they checksum. The Checksums variable
     // must be a map so a release-body template can iterate
     // `{% for k, v in Checksums %}…{% endfor %}` and reference each sidecar
-    // by the artifact name. This pins the split-mode contract that workspace
+    // by the artifact name. This checks the split-mode contract that workspace
     // aggregation MUST NOT break.
     let dir = tempfile::tempdir().unwrap();
     let sidecar_a = dir.path().join("myapp-1.0.0-linux.tar.gz.sha256");
@@ -4168,8 +4168,9 @@ fn test_populate_checksums_var_unreadable_artifact_errors_not_silent() {
         size: None,
     });
 
-    let err = populate_checksums_var(&mut ctx)
-        .expect_err("an unreadable checksum artifact must surface, not silently empty Checksums");
+    let err = populate_checksums_var(&mut ctx).expect_err(
+        "an unreadable checksum artifact must be returned, not silently empty Checksums",
+    );
     assert!(
         err.to_string().contains("checksum artifact"),
         "error should name the failing checksum artifact read, got: {err}"
@@ -4197,7 +4198,7 @@ fn test_populate_checksums_var_unreadable_artifact_errors_not_silent() {
 
 /// Local helper that mirrors the resolution `run_github_backend` performs:
 /// `ctx.config.retry.unwrap_or_default().to_policy()`. Drift between the
-/// backend and this helper is the failure mode the test pins against.
+/// backend and this helper is the failure mode the test guards against.
 fn resolve_policy_like_github_backend(
     retry: Option<anodizer_core::config::RetryConfig>,
 ) -> anodizer_core::retry::RetryPolicy {
@@ -4206,11 +4207,11 @@ fn resolve_policy_like_github_backend(
 
 #[test]
 fn test_retry_config_default_yields_goreleaser_defaults_for_github_backend() {
-    // Pin the "no retry: block in YAML" branch: `unwrap_or_default()` must
+    // Test the "no retry: block in YAML" branch: `unwrap_or_default()` must
     // yield the defaults so the github backend's upload-loop constants
     // translate cleanly to the policy fields. A change to either the
     // defaults or the github backend's `unwrap_or_default()` call site
-    // breaks this pin and requires a deliberate update.
+    // breaks this test and requires a deliberate update.
     let policy = resolve_policy_like_github_backend(None);
     assert_eq!(
         policy.max_attempts, 10,
@@ -4254,7 +4255,7 @@ fn test_retry_config_attempts_one_short_circuits_github_backend_policy() {
 
 #[test]
 fn test_retry_config_custom_values_flow_into_upload_constants() {
-    // Pin the upload-loop wiring: `policy.max_attempts` seeds
+    // Test the upload-loop wiring: `policy.max_attempts` seeds
     // `max_upload_attempts`, `policy.base_delay` seeds `initial_retry_delay`,
     // and `policy.max_delay` seeds `max_retry_delay`. The YAML controls all
     // three via `ctx.config.retry`.
@@ -4406,12 +4407,12 @@ fn one_asset_name_uploads_once() {
     );
 }
 
-// run.rs coverage: behaviors not already pinned by sibling tests.
+// run.rs coverage: behaviors not already tested by sibling tests.
 
 // release.skip template-rendering path
 //
 // `release.skip` is a `StringOrBool`: when a template string evaluates
-// to "true" the crate is skipped before validation runs. Pin both
+// to "true" the crate is skipped before validation runs. Test both
 // branches (renders-to-true skips; renders-to-false proceeds).
 
 #[test]
@@ -4644,7 +4645,7 @@ fn test_skip_upload_template_renders_to_invalid_bails() {
 // selected_crates filter
 //
 // Only crates whose name is in `ctx.options.selected_crates` are
-// processed (when the filter is non-empty). Pin by setting up a crate
+// processed (when the filter is non-empty). Test by setting up a crate
 // whose release config has a poison pill (conflicting drafts that would
 // bail) and filtering it OUT: success means the crate was filtered.
 
@@ -5012,7 +5013,7 @@ fn test_gitea_dry_run_derives_download_url_from_api_url() {
 
 // collect_release_upload_candidates: include_meta + ids filter
 //
-// Beyond the existing binary-sign exclusion test, pin two more behaviors
+// Beyond the existing binary-sign exclusion test, test two more behaviors
 // of the public helper:
 //   1. `include_meta=true` adds the Metadata kind to the upload set.
 //   2. The ids filter honors metadata["id"] correctly.
@@ -5312,12 +5313,12 @@ fn test_release_upload_candidates_filters_by_crate_name() {
 }
 
 // run.rs additional coverage: bail paths, template render errors, and
-// dry-run branches not yet pinned above.
+// dry-run branches not yet tested above.
 
 // conflicting draft options bail (without skip-template detour)
 //
-// The pre-existing test that pins this error path threads through the
-// `release.skip` renders-to-false branch. Pin the direct bail path too:
+// The pre-existing test that covers this error path threads through the
+// `release.skip` renders-to-false branch. Test the direct bail path too:
 // no `skip`, just `replace_existing_draft + use_existing_draft` both true.
 // Regression target: dropping or reordering the validation.
 
@@ -5623,7 +5624,7 @@ fn test_release_stage_filters_crates_without_release_block() {
 
 // release.skip plain bool true skips silently
 //
-// Bool-shaped skip (not a template) hits the same branch. Pin it
+// Bool-shaped skip (not a template) hits the same branch. Test it
 // explicitly so a future regression that only handles the template
 // form gets caught.
 
@@ -5690,7 +5691,7 @@ fn test_gitlab_missing_token_errors() {
 // Gitea backend dry-run with default URLs (no gitea_urls)
 //
 // When `gitea_urls` is None, the dry-run still publishes a ReleaseURL
-// derived from the default `https://gitea.com`. Pin that URL prefix so
+// derived from the default `https://gitea.com`. Check that URL prefix so
 // dropping the default would show up immediately.
 
 #[test]
@@ -5832,7 +5833,7 @@ fn test_dry_run_no_repo_config_does_not_set_release_url() {
 // skip_upload template that renders to a bare bool string
 //
 // `skip_upload: "{{ IsSnapshot }}"` should evaluate IsSnapshot and the
-// rendered "true"/"false" string is consumed by the same matcher. Pin
+// rendered "true"/"false" string is consumed by the same matcher. Test
 // the snapshot=false / renders-to-"false" path so the dry-run proceeds
 // AND the artifact-listing branch is taken.
 
@@ -6034,7 +6035,7 @@ fn test_release_stage_multiple_crates_processed_independently() {
 
     assert!(ReleaseStage.run(&mut ctx).is_ok());
     // ReleaseURL gets overwritten per-crate; the *last* crate wins. This
-    // pins the per-crate ordering (c2 runs after c1).
+    // checks the per-crate ordering (c2 runs after c1).
     let release_url = ctx
         .template_vars()
         .get("ReleaseURL")
@@ -6193,7 +6194,7 @@ fn test_release_no_crates_with_release_block_silently_succeeds() {
 #[test]
 fn test_dry_run_with_make_latest_template_string() {
     // Template-string make_latest gets resolved through
-    // `resolve_make_latest`; pin the dry-run path with a rendered "auto".
+    // `resolve_make_latest`; test the dry-run path with a rendered "auto".
     use anodizer_core::config::ScmRepoConfig;
 
     let mut ctx = TestContextBuilder::new()

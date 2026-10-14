@@ -76,5 +76,5 @@ pub(crate) async fn synth_github_error(status: u16, body: &str) -> octocrab::Err
     let octo = build_test_octocrab(addr);
     octo.get::<serde_json::Value, _, _>("/test", None::<&()>)
         .await
-        .expect_err("synth_github_error: octocrab must surface Err for non-2xx status")
+        .expect_err("synth_github_error: octocrab must return Err for non-2xx status")
 }

@@ -171,7 +171,7 @@ fn test_apply_filters() {
 }
 
 /// This repository's own `.anodizer.yaml` exclude list is the only thing that
-/// keeps a test-only commit out of its release notes, and nothing else pins it.
+/// keeps a test-only commit out of its release notes, and nothing else tests it.
 /// A `test:` TYPE is dropped by an explicit pattern, but a non-production
 /// SCOPE on another type (`fix(test):`, `refactor(tests):`, `fix(audit):`) is
 /// just as invisible to a consumer and would otherwise render under Bug Fixes,
@@ -3112,7 +3112,7 @@ fn test_empty_title_suppresses_heading() {
 
 #[test]
 fn test_title_three_state_matrix() {
-    // Pin the three-state behaviour of the title escape-hatch:
+    // Check the three-state behaviour of the title escape-hatch:
     //   - None        → emits the default `## Changelog` heading (matches
     //                   the unconditional emission).
     //   - Some("foo") → emits `## foo`.
@@ -3876,7 +3876,7 @@ fn test_prev_tag_skips_sibling_track_tag_on_the_same_commit() {
 #[test]
 #[serial(cwd)]
 fn test_prev_tag_skips_intervening_sibling_tag_on_default_sort() {
-    // The ancestry-walking `git describe` path needs the same family scope:
+    // The ancestry-following `git describe` path needs the same family scope:
     // without `--match`, `git describe --abbrev=0 v0.2.0^` answers with the
     // sibling track's `core-v0.9.0` and silently drops `feat: first change`.
     let tmp = multitrack_repo();
@@ -5747,7 +5747,7 @@ line two\n\
 
     /// Data-loss guard: an EXISTING `### <crate>` subsection with content,
     /// refreshed over a range that yields NO new commits, must be left untouched
-    /// — not blanked. The whole file is byte-identical and the sibling
+    /// and keep its content. The whole file is byte-identical and the sibling
     /// subsection survives verbatim.
     #[test]
     fn multitrack_existing_subsection_with_empty_body_is_untouched() {

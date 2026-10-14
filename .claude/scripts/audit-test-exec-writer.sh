@@ -25,7 +25,7 @@
 # marker on that line or the line directly above it. The marker is for a mode
 # set on something that is never exec'd — a directory (a `GNUPGHOME` at 0o700),
 # a `tar::Header` field that never becomes a file, or a fixture file a
-# tree-walk only stats.
+# directory scan only stats.
 #
 # Every spelling of the mode counts: they are interchangeable at a call site,
 # and each one an earlier version of this audit could not see was a writer it
@@ -129,7 +129,7 @@ if [[ -n "$violations" ]]; then
     echo "$violations"
     echo
     echo "Each line above makes a file executable in TEST code without routing the"
-    echo "write through the helper that drains the ETXTBSY window. A sibling test"
+    echo "write through the helper that waits out the ETXTBSY window. A sibling test"
     echo "thread forking inside the write inherits the writable descriptor until its"
     echo "own exec, so a later spawn of this file fails with \"Text file busy\"."
     echo
@@ -138,7 +138,7 @@ if [[ -n "$violations" ]]; then
     echo "and drop the separate write + set_permissions pair."
     echo
     echo "If the mode is set on something never exec'd (a GNUPGHOME directory, a"
-    echo "fixture a tree-walk only stats), mark it with"
+    echo "fixture a directory scan only stats), mark it with"
     echo "  // exec-writer-ok: <why>  on the line or the line above it."
     exit 1
 fi

@@ -553,7 +553,7 @@ mod publisher_tests {
 
     #[test]
     fn mcp_target_extra_carries_no_secret_material() {
-        // Structural pin: build typed evidence with a populated
+        // Structural check: build typed evidence with a populated
         // variant and assert (a) no credential-shaped keys appear AND
         // (b) the operator-public registry coordinates are preserved.
         let mut e = PublishEvidence::new("mcp");
@@ -680,7 +680,7 @@ mod publisher_tests {
     fn mcp_rollback_warns_per_target_when_auth_token_template_invalid() {
         // Token re-render at rollback time can fail (e.g. unclosed tera tag).
         // The per-target failure must be caught and reported as a warn so
-        // sibling publishers continue rolling back — not propagated as Err.
+        // sibling publishers continue rolling back.
         let _g = warn_once_lock();
         let (addr, calls) = spawn_oneshot_http_responder(vec![
             "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
@@ -740,7 +740,7 @@ mod publisher_tests {
         let start = std::time::Instant::now();
         // A per-target PATCH failure is warned, not propagated (a sibling
         // publisher's rollback must still run), so the attempt count is the
-        // observable — not the return value.
+        // observable.
         let _ = p.rollback(&mut ctx, &evidence);
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::SeqCst),

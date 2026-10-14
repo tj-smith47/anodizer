@@ -525,7 +525,7 @@ fn workspace_scoped_checks_ignore_sibling_errors() {
 /// The COMMAND path of the sibling-isolation rule: `check config
 /// --workspace ws-a` must exit clean when the only error (a `depends_on`
 /// cycle) is confined to sibling ws-b, while the no-flag form still fails
-/// on it. The hand-overlaid `run_checks` pin above cannot catch a command
+/// on it. The hand-overlaid `run_checks` test above cannot catch a command
 /// that validates the raw config before scoping — this one drives `run`.
 #[test]
 fn command_workspace_scoped_run_ignores_sibling_errors() {
@@ -840,7 +840,7 @@ fn test_check_per_crate_checksum_disabled_with_other_fields_passes() {
 fn workspace_only_crates_flag_tool_needs() {
     // A crate declared only under `workspaces[].crates` must arm the
     // same tool-requirement checks a top-level crate does; a
-    // top-level-only walk would let its docker/release/nfpm needs pass
+    // top-level-only scan would let its docker/release/nfpm needs pass
     // `check config` silently.
     use anodizer_core::config::{DockerV2Config, NfpmConfig, ReleaseConfig};
     let mut member = make_crate("svc", "svc-v{{ .Version }}", None);
@@ -1553,7 +1553,7 @@ fn an_entry_repeating_the_defaults_value_is_still_named_as_the_entry() {
 /// `check config --workspace <name>` runs the checks on the OVERLAID config.
 /// A workspace that declares its own `signs:` replaces the slice the
 /// `defaults:` fold filled, so the warning must name the workspace entry — the
-/// block the operator actually wrote — not `defaults.sign`.
+/// block the operator actually wrote.
 #[test]
 fn a_workspace_signs_entry_is_named_as_the_entry_after_the_overlay() {
     let workspace = WorkspaceConfig {
@@ -2866,8 +2866,8 @@ fn message_literals(src: &str) -> Vec<String> {
 /// So no message this module builds may carry a run of three spaces —
 /// asked of every production source under `check/config/`, not just the one
 /// that happened to hold the defect.
-/// How many function bodies under `check/config/` build a message. Pinned
-/// so a rename or a move that empties the walk fails instead of passing
+/// How many function bodies under `check/config/` build a message. Fixed
+/// so a rename or a move that empties the scan fails instead of passing
 /// with nothing to ask.
 const MESSAGE_BUILDING_BODIES: usize = 35;
 
@@ -2882,7 +2882,7 @@ fn no_check_config_message_carries_a_run_of_spaces() {
     assert_eq!(
         sources.len(),
         5,
-        "the production sources under {dir} the walk found: {sources:?}"
+        "the production sources under {dir} the scan found: {sources:?}"
     );
     let building: Vec<String> = sources
         .iter()
@@ -2896,7 +2896,7 @@ fn no_check_config_message_carries_a_run_of_spaces() {
     assert_eq!(
         building.len(),
         MESSAGE_BUILDING_BODIES,
-        "the message-building bodies the walk found under {dir}"
+        "the message-building bodies the scan found under {dir}"
     );
     let offenders: Vec<String> = building
         .iter()
@@ -2911,7 +2911,7 @@ fn no_check_config_message_carries_a_run_of_spaces() {
     );
 }
 
-/// The filter check walks every sign slice, so an unrecognized value on a
+/// The filter check reads every sign slice, so an unrecognized value on a
 /// per-crate slice is caught exactly as one on the top-level `signs:` is.
 ///
 /// Both arms are `signs:`, which is the only slice a YAML file can write an
@@ -3637,7 +3637,7 @@ fn signing_tools_silent_when_no_signing_configured() {
 /// runs the announce, structure and tooling checks, so a page block that
 /// ever quotes one of THEIR warnings needs that check driven here too. The
 /// page's `Error sign:` blocks come from the sign stage rather than from a
-/// check function and are pinned in `crates/stage-sign/src/tests.rs`.
+/// check function and are tested in `crates/stage-sign/src/tests.rs`.
 #[test]
 fn every_warning_quoted_in_the_sign_docs_is_a_message_the_checks_produce() {
     let page = read_docs_page("sign/binaries-archives.md");
@@ -3650,7 +3650,7 @@ fn every_warning_quoted_in_the_sign_docs_is_a_message_the_checks_produce() {
             continue;
         }
         // A fragment the loader refuses is not a config the page claims to
-        // show output for. The count is pinned below, so one arriving is a
+        // show output for. The count is checked below, so one arriving is a
         // failure rather than a silent skip.
         let Ok(mut config) = serde_yaml_ng::from_str::<Config>(&block.body) else {
             refused += 1;
@@ -3693,7 +3693,7 @@ fn every_warning_quoted_in_the_sign_docs_is_a_message_the_checks_produce() {
 /// to produce for it.
 ///
 /// The count is taken over the whole page, not over that section, so a
-/// `Warning ` quoted anywhere else on it fails until somebody pins it too.
+/// `Warning ` quoted anywhere else on it fails until a test checks it too.
 #[test]
 fn the_warning_quoted_in_the_resilience_docs_is_a_message_the_check_produces() {
     let page = read_docs_page("advanced/release-resilience.md");
@@ -3779,9 +3779,9 @@ fn quoted_warning_lines(relative: &str) -> Vec<String> {
 /// be exactly what the guard produced.
 ///
 /// The release-resilience page's other errors come from four more producers
-/// and are pinned where each of them lives; this test asserts that page's
+/// and are tested where each of them lives; this test asserts that page's
 /// total error count too, so a newly quoted line fails here until it is
-/// pinned somewhere.
+/// tested somewhere.
 #[test]
 fn the_membership_errors_quoted_in_the_docs_are_what_the_guard_produces() {
     // A dependency on disk that the config never lists.

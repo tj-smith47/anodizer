@@ -99,7 +99,7 @@ pub(crate) fn detect_repo_shape(
         None => return RepoShape::Single,
     };
 
-    // Raw `config.crates` walks from here on are the whole universe: a
+    // Raw `config.crates` scans from here on are the whole universe: a
     // config with `workspaces:` entries returned in the precedence branch
     // above, so no workspace crate can reach this point.
     if config.crates.len() > 1 {

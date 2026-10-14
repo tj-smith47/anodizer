@@ -228,8 +228,8 @@ fn run_rustc_vv() -> Result<String> {
     let mut cmd = std::process::Command::new("rustc");
     cmd.args(["-vV"]);
     // `rustc -vV` reads nothing relative to the cwd, but rustc still calls
-    // getcwd() at startup and aborts if the inherited cwd was removed; pin it
-    // to a guaranteed-existing dir so host detection is cwd-independent.
+    // getcwd() at startup and aborts if the inherited cwd was removed; run it
+    // in a guaranteed-existing dir so host detection is cwd-independent.
     cmd.current_dir(crate::path_util::probe_dir());
     tracing::debug!(args = ?cmd.get_args(), "spawning rustc -vV for host/version detection");
     let output = cmd.output().context("failed to run `rustc -vV`")?;
@@ -321,7 +321,7 @@ pub fn resolve_host_target() -> Result<String> {
 
 /// Best-effort host->triple fuzzy matcher for `--single-target`.
 ///
-/// Host-target detection: walks
+/// Host-target detection: tries
 /// `goos -> {macos, darwin}` and `goarch -> {x86_64, amd64, arm64,
 /// aarch64, 386 -> i686/i586/i386}` alias tables to find a configured
 /// target that matches the runtime even when the user's `targets:`
@@ -683,7 +683,7 @@ mod tests {
     /// `OsArch { os: "linux", arch: None }` must spell `"linux"` —
     /// byte-for-byte the `dist/linux` shape.
     /// This is the only `dist_subdir` shape that round-trips between
-    /// the two tools and is therefore worth pinning explicitly.
+    /// the two tools and is therefore worth testing explicitly.
     #[test]
     fn dist_subdir_os_only_matches_goreleaser_layout() {
         let target = PartialTarget::OsArch {
@@ -776,8 +776,8 @@ mod tests {
     /// Regression: host detection must survive an inherited working directory
     /// that has been removed. A peer test swapping the process-global cwd into
     /// a tempdir and tearing it down used to make `rustc -vV` abort with
-    /// "Could not locate working directory"; `run_rustc_vv` now pins its spawn
-    /// to a guaranteed-existing dir, so detection no longer depends on the cwd.
+    /// "Could not locate working directory"; `run_rustc_vv` now runs its spawn
+    /// in a guaranteed-existing dir, so detection no longer depends on the cwd.
     // Unix-only: deleting the directory that is the process cwd is a POSIX
     // behavior. Windows locks the cwd and refuses to remove it (os error 32),
     // so the deleted-cwd race this guards against cannot occur there.

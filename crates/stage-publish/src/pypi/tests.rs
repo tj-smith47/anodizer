@@ -55,7 +55,7 @@ fn static_gnu_traits() -> BinaryTraits {
 // Platform-tag derivation
 
 #[test]
-fn gnu_targets_tag_manylinux_from_glibc_floor() {
+fn gnu_targets_tag_manylinux_from_minimum_glibc() {
     let t = traits(Some((2, 28)), None, false);
     assert_eq!(
         platform_tag("x86_64-unknown-linux-gnu", &t).unwrap(),
@@ -105,10 +105,10 @@ fn non_elf_under_gnu_target_errors() {
 }
 
 #[test]
-fn static_gnu_binary_tags_arch_aware_manylinux_floor() {
+fn static_gnu_binary_tags_arch_aware_manylinux_minimum() {
     // anodizer ships fully-static linux-gnu binaries: no PT_INTERP, no glibc
     // requirement. They run on any glibc host and must tag at the arch's
-    // lowest manylinux floor, NOT hard-error.
+    // lowest manylinux minimum, NOT hard-error.
     let s = static_gnu_traits();
     // x86_64/i686 → manylinux1 baseline (2_5).
     assert_eq!(
@@ -172,7 +172,7 @@ fn universal_binaries_tag_universal2() {
         "macosx_11_0_universal2"
     );
     // Fallback with no minos load command still tags universal2 at the
-    // arm64 floor (a universal binary always carries an arm64 slice).
+    // arm64 minimum (a universal binary always carries an arm64 slice).
     assert_eq!(
         platform_tag("x86_64-apple-darwin", &traits(None, None, true)).unwrap(),
         "macosx_11_0_universal2"
@@ -196,7 +196,7 @@ fn synthetic_darwin_universal_target_tags_universal2() {
         platform_tag("darwin-universal", &traits(None, Some((11, 0)), false)).unwrap(),
         "macosx_11_0_universal2"
     );
-    // No minos load command still tags at the arm64 floor.
+    // No minos load command still tags at the arm64 minimum.
     assert_eq!(
         platform_tag("darwin-universal", &traits(None, None, false)).unwrap(),
         "macosx_11_0_universal2"
@@ -242,10 +242,10 @@ fn macosx_minor_clamps_to_zero_for_major_ge_11() {
 }
 
 #[test]
-fn manylinux_floors_below_baseline_glibc() {
+fn manylinux_raises_below_baseline_glibc() {
     // `GLIBC_2.2.5` (the ancient x86_64 baseline symbol) truncates to
     // (2, 2); `manylinux_2_2` is below every recognized manylinux platform,
-    // so the tag floors to the manylinux1 baseline `manylinux_2_5`.
+    // so the tag is raised to the manylinux1 baseline `manylinux_2_5`.
     assert_eq!(
         platform_tag(
             "x86_64-unknown-linux-gnu",
@@ -254,7 +254,7 @@ fn manylinux_floors_below_baseline_glibc() {
         .unwrap(),
         "manylinux_2_5_x86_64"
     );
-    // A below-floor minor also lifts to 2_5.
+    // A below-minimum minor also lifts to 2_5.
     assert_eq!(
         platform_tag(
             "aarch64-unknown-linux-gnu",
@@ -263,7 +263,7 @@ fn manylinux_floors_below_baseline_glibc() {
         .unwrap(),
         "manylinux_2_5_aarch64"
     );
-    // At/above the floor is preserved verbatim.
+    // At/above the minimum is preserved verbatim.
     assert_eq!(
         platform_tag(
             "x86_64-unknown-linux-gnu",
@@ -423,7 +423,7 @@ fn wheel_contents_carry_metadata_wheel_and_record() {
     let record = read_entry(&mut zip, "My_Tool-1.2.3.dist-info/RECORD");
     let rows: Vec<&str> = record.trim_end().lines().collect();
     assert_eq!(rows.len(), 4, "{record}");
-    // The binary row pins the urlsafe-b64 (no pad) sha256 + size.
+    // The binary row checks the urlsafe-b64 (no pad) sha256 + size.
     use base64::Engine as _;
     use sha2::Digest as _;
     let bin_hash = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -680,7 +680,7 @@ fn publish_ctx(
 ) -> anodizer_core::context::Context {
     // Every upload resolves its host from `index_url`, defaulting to real
     // PyPI. A fixture that leaves the field unset uploads to upload.pypi.org
-    // the moment the error it expects stops firing, so the fixture pins a
+    // the moment the error it expects stops firing, so the fixture fixes a
     // dead loopback port unless the caller named its own responder.
     if cfg.index_url.is_none() {
         cfg.index_url = Some("http://127.0.0.1:1/legacy/".to_string());
@@ -1470,7 +1470,7 @@ fn oidc_mint_errors_without_request_env() {
         .build();
     // live-host-ok: the token URL is derived from the repository, and only
     // pypi.org/test.pypi.org derive one at all — a loopback repository would
-    // fail the derivation instead of the env gate this test pins. The sealed
+    // fail the derivation instead of the env gate this test checks. The sealed
     // env above is what makes the run unreachable: hop 1 needs
     // ACTIONS_ID_TOKEN_REQUEST_URL, which the closed map does not hold.
     let err = super::oidc::mint_trusted_publishing_token(
@@ -1558,11 +1558,11 @@ fn auto_mode_routes_around_a_token_render_error_to_oidc() {
         "pypis[0]",
         &ctx.logger("publish"),
     )
-    .expect_err("mint on a custom index must error");
+    .expect_err("a token exchange on a custom index must error");
     let msg = err.to_string();
     assert!(
         msg.contains("only supported against"),
-        "auto must route the token error to the OIDC mint path: {msg}"
+        "auto must route the token error to the OIDC token-exchange path: {msg}"
     );
     assert!(
         !msg.contains("does not render"),
@@ -1571,7 +1571,7 @@ fn auto_mode_routes_around_a_token_render_error_to_oidc() {
 }
 
 #[test]
-fn auto_mode_surfaces_the_token_render_error_without_oidc() {
+fn auto_mode_returns_the_token_render_error_without_oidc() {
     use super::publisher::resolve_upload_credential;
     // No OIDC fallback to route around to: the token-render error IS the
     // actionable failure and must be reported (not swallowed into the generic
@@ -1598,7 +1598,7 @@ fn auto_mode_surfaces_the_token_render_error_without_oidc() {
     .expect_err("a malformed token template with no OIDC fallback must error");
     assert!(
         err.to_string().contains("pypi.token does not render"),
-        "the token-render error must surface when there is no OIDC fallback: {err}"
+        "the token-render error must be returned when there is no OIDC fallback: {err}"
     );
 }
 
@@ -2369,7 +2369,7 @@ fn pypi_version_live_fails_closed_when_unreachable() {
     );
     assert!(
         err.is_err(),
-        "an unreachable index must surface Err, got {err:?}"
+        "an unreachable index must return Err, got {err:?}"
     );
 }
 
@@ -2723,7 +2723,7 @@ fn run_records_failed_outcome_and_still_returns_evidence_on_publish_error() {
             .all_messages()
             .iter()
             .any(|(_, m)| m.contains("pypi: publish failed")),
-        "a publish error must be surfaced via log.error, not swallowed: {:?}",
+        "a publish error must be reported via log.error: {:?}",
         capture.all_messages()
     );
 }

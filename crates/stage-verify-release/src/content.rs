@@ -17,7 +17,7 @@ const DIGEST_DOWNLOAD_CAP: u64 = 64 * 1024 * 1024;
 /// a leg whose assets an earlier leg uploaded; it exempts the
 /// publisher-selection-dependent combined checksum manifests (and their
 /// signatures' cryptographic re-check, whose payload is that manifest) from
-/// cross-leg byte comparison — see [`surface_dependent_asset_names`].
+/// cross-leg byte comparison — see [`publisher_dependent_asset_names`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn verify_published_contents(
     ctx: &Context,
@@ -31,10 +31,10 @@ pub(crate) fn verify_published_contents(
 ) -> ContentSummary {
     // Empty when this run uploaded the assets, so the `contains` checks below
     // collapse to no-ops on the normal (same-leg) path.
-    let surface_dependent = if assets_published_by_this_run {
+    let publisher_dependent = if assets_published_by_this_run {
         std::collections::BTreeSet::new()
     } else {
-        surface_dependent_asset_names(
+        publisher_dependent_asset_names(
             ctx,
             &crate_cfg.name,
             release_cfg.ids.as_deref(),
@@ -106,12 +106,12 @@ pub(crate) fn verify_published_contents(
             // perfectly valid signature. Presence + non-empty were enforced
             // above; the byte-level truth was established by the leg that
             // signed and uploaded it.
-            if surface_dependent
+            if publisher_dependent
                 .iter()
                 .any(|s| name.starts_with(s.as_str()) && name.len() > s.len())
             {
                 log.verbose(&format!(
-                    "asset '{name}' signs a publish-surface-dependent manifest \
+                    "asset '{name}' signs a publisher-dependent manifest \
                      uploaded by an earlier leg — cryptographic re-check \
                      exempted (present and non-empty)"
                 ));
@@ -190,9 +190,9 @@ pub(crate) fn verify_published_contents(
         // digests) this leg's publishers never produce, so this leg's locally
         // recomputed bytes legitimately differ from the published ones.
         // Presence was already enforced by the missing-asset diff.
-        if surface_dependent.contains(name) {
+        if publisher_dependent.contains(name) {
             log.verbose(&format!(
-                "asset '{name}' is a publish-surface-dependent manifest \
+                "asset '{name}' is a publisher-dependent manifest \
                  uploaded by an earlier leg — byte comparison exempted \
                  (its bytes fold in that leg's publish-time evidence)"
             ));

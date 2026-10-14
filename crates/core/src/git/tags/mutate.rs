@@ -157,7 +157,7 @@ pub fn create_tag_local_only(
 /// Delete a local tag (`git tag -d <tag>`). Returns `Ok(())` even when the
 /// tag is missing so callers can run the delete idempotently.
 ///
-/// `LC_ALL=C` is pinned on the spawn so the "tag not found" substring
+/// `LC_ALL=C` is set on the spawn so the "tag not found" substring
 /// match is locale-stable; a non-C locale would translate the message
 /// and the idempotency check would silently degrade to bail-on-rerun.
 pub fn delete_local_tag_in(cwd: &Path, tag: &str) -> Result<()> {
@@ -186,7 +186,7 @@ pub fn delete_local_tag_in(cwd: &Path, tag: &str) -> Result<()> {
 /// up so callers (notably `tag rollback`) can warn-and-continue per tag
 /// without aborting the whole pass.
 ///
-/// `LC_ALL=C` is pinned on the spawn so the substring match is
+/// `LC_ALL=C` is set on the spawn so the substring match is
 /// locale-stable.
 pub fn delete_remote_tag_in(cwd: &Path, tag: &str) -> Result<()> {
     let refspec = format!(":refs/tags/{}", tag);
@@ -332,7 +332,7 @@ fn push_with_ff_hint(cwd: &Path, args: &[&str], remote: &str, branch: Option<&st
         Err(e) => {
             let raw = e.to_string();
             // `! [rejected]` / `non-fast-forward` are git's stable English
-            // markers for a stale-ref rejection (`LC_ALL=C` is pinned on the
+            // markers for a stale-ref rejection (`LC_ALL=C` is set on the
             // spawn, so the wording does not localize).
             if raw.contains("[rejected]") || raw.contains("non-fast-forward") {
                 let target = match branch {

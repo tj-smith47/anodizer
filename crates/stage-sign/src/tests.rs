@@ -2898,7 +2898,7 @@ fn empty_match_docker_config_is_classified_from_the_rendered_arguments() {
 
 /// A cosign config WITH an explicit `--key` (e.g. `--key=env://COSIGN_KEY`)
 /// signs with the harness's ephemeral key, so it must still RUN under the
-/// harness — not be swept up by the keyless skip.
+/// harness, outside the keyless skip.
 #[test]
 fn keyed_cosign_is_not_skipped_under_harness() {
     let sign = SignConfig {
@@ -4089,8 +4089,8 @@ fn test_binary_signs_armv7_templates_render_composite_arch_and_empty_arm() {
 }
 
 /// A signature template referencing `{{ Amd64 }}` must render the binary's
-/// real `amd64_variant` metadata — the key the build stage writes — not a
-/// dead metadata key that silently falls back to the baseline. An untagged
+/// real `amd64_variant` metadata — the key the build stage writes. A
+/// dead metadata key would silently fall back to the baseline. An untagged
 /// binary renders the unified `"v1"` baseline.
 #[test]
 fn test_binary_signs_amd64_variant_metadata_renders_in_signature_template() {
@@ -5520,7 +5520,7 @@ mod authenticode {
     #[test]
     fn preflight_not_required_declares_nothing() {
         // A non-required authenticode config may skip when the tool/cert are
-        // absent, so preflight must declare NOTHING — not even the tool.
+        // absent, so preflight must declare NOTHING, the tool included.
         let reqs = reqs_for(vec![authenticode_sign(AuthenticodeConfig::default())]);
         assert!(reqs.is_empty(), "non-required declares nothing: {reqs:?}");
     }

@@ -608,7 +608,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn panicked_task_surfaces_as_upload_task_panicked() {
+    async fn panicked_task_is_reported_as_upload_task_panicked() {
         let dir = tempfile::tempdir().expect("tempdir");
         let a = write_artifact(dir.path(), "a.bin", b"AAAA");
         let mut mock = MockForge::new(|| AssetPresence::Reactive);
@@ -617,7 +617,7 @@ mod tests {
         let entries = vec![(a, Some("a.bin".to_string()))];
         let err = run_upload_loop(client, &plan(false), &entries, &test_log())
             .await
-            .expect_err("panicked task must surface");
+            .expect_err("panicked task must be returned");
         assert!(
             err.to_string().contains("release: upload task panicked"),
             "{err}"

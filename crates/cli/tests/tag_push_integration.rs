@@ -894,7 +894,7 @@ fn push_dry_run_creates_tag_locally_but_pushes_nothing() {
 #[test]
 fn per_crate_push_dry_run_previews_atomic_push_without_pushing() {
     // Standalone --push-dry-run (no --push) must preview the atomic branch+tags
-    // push in per-crate dispatch too, mirroring single/lockstep — not fall
+    // push in per-crate dispatch too, mirroring single/lockstep, and must not fall
     // through to the fully-local "nothing was pushed" path.
     let (work, bare) = per_crate_with_origin();
     let remote_master_before = remote_branch_sha(bare.path(), "master").unwrap();
@@ -1224,7 +1224,7 @@ fn lockstep_recut_after_remote_tag_delete_remints_same_version() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("new_tag=v0.1.1"),
-        "re-cut must re-mint the SAME version v0.1.1 (remote is the source of truth): {stdout}"
+        "re-cut must re-create the SAME version v0.1.1 (remote is the source of truth): {stdout}"
     );
     assert!(
         stdout.contains("old_tag=v0.1.0"),
@@ -1262,7 +1262,7 @@ fn single_crate_recut_after_remote_tag_delete_remints_same_version() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("new_tag=v0.1.1") && stdout.contains("old_tag=v0.1.0"),
-        "single-crate re-cut must re-mint v0.1.1 over v0.1.0: {stdout}"
+        "single-crate re-cut must re-create v0.1.1 over v0.1.0: {stdout}"
     );
 }
 
@@ -1307,7 +1307,7 @@ fn per_crate_recut_after_remote_tag_delete_remints_same_version() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("\"core\":\"0.1.1\""),
-        "per-crate re-cut must re-mint core 0.1.1 (stale local core-v0.1.1 must not count): {stdout}"
+        "per-crate re-cut must re-create core 0.1.1 (stale local core-v0.1.1 must not count): {stdout}"
     );
 }
 

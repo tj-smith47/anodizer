@@ -668,7 +668,7 @@ edition = "2024"
     /// Mutation-effective guard for the `find_cargo_tomls` boundary-stop:
     /// a nested INDEPENDENT workspace under the bumped crate's own workspace
     /// root. Here `cargo_workspace_root_for` resolves to the root workspace, so
-    /// the scan walks the whole root tree and DOES encounter `nested/` — only
+    /// the scan reads the whole root tree and DOES encounter `nested/` — only
     /// the boundary-stop (`if dir_is_workspace_root(&path) { continue; }`)
     /// prevents the nested workspace's pin from being rewritten. Without that
     /// line this test fails (the nested pin gets clobbered).

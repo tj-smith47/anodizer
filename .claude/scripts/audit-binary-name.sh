@@ -87,7 +87,7 @@ if [[ -n "$violations" ]]; then
     echo
     echo "These lines read metadata[\"binary\"] directly and supply their own"
     echo "fallback for a missing key, so the same binary is named differently on"
-    echo "different surfaces of one run."
+    echo "different places in one run."
     echo
     echo "Fix: read artifact.binary_name() (Option — metadata, else the file name"
     echo "without .exe for a binary-like kind) and keep only the LAST-RESORT"

@@ -48,8 +48,8 @@ pub(crate) fn apply_prepare_mode_to_skip(skip: &mut Vec<String>) {
 
 /// Installs the pre-submitter verify-release gate onto `ctx.verify_gate`.
 /// Extracted to a named function (rather than an inline closure at the call
-/// site) so wiring — not just [`anodizer_stage_verify_release::run_asset_gate`]'s
-/// own behavior, which is unit-tested directly in that crate — has its own
+/// site) so the wiring, beside [`anodizer_stage_verify_release::run_asset_gate`]'s
+/// own behavior (unit-tested directly in that crate), has its own
 /// falsifiable test: deleting the call to this function, or swapping it for
 /// a decoy, must fail a test rather than silently pass the whole tree.
 pub(crate) fn install_verify_gate(ctx: &mut Context) {
@@ -590,8 +590,8 @@ pub(crate) fn build_context_options(
         // notes bound at its previous tag. Only `anodizer changelog ..` opts in.
         changelog_full_history: false,
         // The full release pipeline bounds each crate's notes at its previous
-        // tag, walking to HEAD; only the standalone `changelog <from>..<to>`
-        // command pins an explicit upper bound.
+        // tag, reading to HEAD; only the standalone `changelog <from>..<to>`
+        // command sets an explicit upper bound.
         changelog_to: None,
         // The release pipeline is NOT a local preview: its tag-at-HEAD,
         // dirty-tree, snapshot-gate, and github-native guards must all stay

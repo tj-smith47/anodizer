@@ -175,7 +175,7 @@ pub(crate) fn build_universal_binary(
         _ => {
             // Not an error: universal binaries require both darwin archs, which
             // only exist on macOS builds or in merge mode. On Linux/Windows split
-            // builds this skip is expected — not a strict_guard situation.
+            // builds this skip is expected and is no strict_guard situation.
             log.verbose(&format!(
                 "skipped universal binary for {crate_name} — \
                  both aarch64-apple-darwin and x86_64-apple-darwin binaries required"

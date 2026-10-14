@@ -139,20 +139,20 @@ impl crate::forge::ForgeAssetClient for GithubAssetClient {
 /// GitHub's post-create read-after-write replication lag, not a missing
 /// release — the asset definitively was not created, so re-issuing the
 /// upload is idempotent-safe. Genuinely-missing releases still fail once
-/// this floor is exhausted.
+/// this minimum is exhausted.
 ///
-/// The floor is applied as `max(configured_attempts, this)` on the SHARED
+/// The minimum is applied as `max(configured_attempts, this)` on the SHARED
 /// upload retry loop's iteration cap, so it raises the bound for the whole
 /// loop, not just the transient/404 classes. It is the per-class fast-fail
 /// arms inside the loop (Fatal / 422-bail) that still terminate on
 /// the first attempt — those outcomes never consume the extra iterations
-/// this floor makes available.
+/// this minimum makes available.
 ///
 /// Sourced from the shared [`anodizer_core::retry::IDEMPOTENT_PUT_ATTEMPTS`]
 /// so the "3 total attempts" guarantee is single-sourced across every
-/// idempotent-upload publisher. This bespoke loop floors an integer cap
+/// idempotent-upload publisher. This bespoke loop raises an integer cap
 /// rather than rebuilding a [`RetryPolicy`], so it cannot use
-/// [`RetryPolicy::with_idempotent_floor`] directly.
+/// [`RetryPolicy::with_idempotent_minimum`] directly.
 pub(crate) const MIN_UPLOAD_TRANSIENT_ATTEMPTS: u32 = anodizer_core::retry::IDEMPOTENT_PUT_ATTEMPTS;
 
 /// Everything one asset upload needs, borrowed from the backend's
@@ -235,11 +235,11 @@ pub(crate) async fn upload_release_asset(
     // `RetryConfig::to_policy` (see `RetryPolicy::max_attempts` rustdoc);
     // no additional clamp is needed here.
     let (configured_attempts, initial_retry_delay, max_retry_delay) = upload_retry_locals(policy);
-    // The transient / read-after-write-404 classes get a guaranteed floor
+    // The transient / read-after-write-404 classes get a guaranteed minimum
     // of attempts even when stateful modes (e.g. `--publish-only`) resolve
     // `max_attempts` to 1: a single post-create 404 or upload flake is
     // recoverable and must not kill the whole release. The Fatal /
-    // 422-bail arms still fast-fail regardless of this floor.
+    // 422-bail arms still fast-fail regardless of this minimum.
     let max_upload_attempts = std::cmp::max(configured_attempts, MIN_UPLOAD_TRANSIENT_ATTEMPTS);
 
     // Terminal failure carried out of the step engine. `Fatal` already holds
@@ -912,7 +912,7 @@ mod tests {
     /// A differing published asset met on the LAST attempt is still replaced:
     /// the delete and the re-upload happen inside that attempt, so the
     /// replacement does not depend on an attempt being left to spend. Two
-    /// transient 500s burn attempts 1 and 2 of the 3-attempt floor; attempt 3
+    /// transient 500s burn attempts 1 and 2 of the 3-attempt minimum; attempt 3
     /// meets the 422, deletes the stale asset and re-uploads to 201.
     #[tokio::test]
     async fn a_differing_asset_is_replaced_inside_the_attempt_that_met_it() {
@@ -932,7 +932,7 @@ mod tests {
                 // attempt 2
                 release_json(addr),
                 http("500 Internal Server Error", r#"{"message":"try again"}"#),
-                // attempt 3: the last one the floor allows
+                // attempt 3: the last one the minimum allows
                 release_json(addr),
                 http("422 Unprocessable Entity", BODY_422_ALREADY_EXISTS),
                 // probe list (find_release_asset_probe)
@@ -1339,13 +1339,13 @@ mod tests {
     /// AND names the secondary rate limit (so an operator knows the cause is a
     /// burst guard, not a bare 403 auth failure or a transient 5xx).
     ///
-    /// `test_retry_policy` resolves max_attempts=5 (> the MIN floor of 3), so
+    /// `test_retry_policy` resolves max_attempts=5 (> the minimum of 3), so
     /// 5 attempts x (GET release + POST 403) = 10 scripted responses are
     /// consumed before the loop gives up. `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS=1`
     /// caps each inter-attempt sleep at ~1 s (×0.8–1.2 jitter) so the test
-    /// proves the backoff fires without paying the real 60 s floor.
+    /// proves the backoff fires without paying the real 60 s fallback.
     #[tokio::test]
-    async fn secondary_rate_limit_exhaustion_surfaces_actionable_error() {
+    async fn secondary_rate_limit_exhaustion_returns_actionable_error() {
         let body_403 = r#"{"message":"You have exceeded a secondary rate limit and have been temporarily blocked from content creation. Please retry your request again later.","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#secondary-rate-limits"}"#;
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = write_artifact(tmp.path(), "app.tar.gz", b"bytes");
@@ -1361,7 +1361,7 @@ mod tests {
         });
 
         // Keep the per-attempt secondary-RL backoff at ~1 s instead of the
-        // real 60 s floor so the test stays fast. Injected through a
+        // real 60 s fallback so the test stays fast. Injected through a
         // `MapEnvSource` rather than the global process env so parallel tests
         // never race the override window.
         let env =
@@ -1388,8 +1388,8 @@ mod tests {
     #[tokio::test]
     async fn permanent_404_fails_after_bounded_attempts() {
         // A genuinely missing release (404 on every GET) must exhaust the
-        // bounded attempts and fail — not spin forever and not succeed.
-        // `test_retry_policy` resolves max_attempts=5 (> the floor of 3),
+        // bounded attempts and fail, without spinning forever or succeeding.
+        // `test_retry_policy` resolves max_attempts=5 (> the minimum of 3),
         // so 5 GETs are consumed before the loop gives up.
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = write_artifact(tmp.path(), "app.tar.gz", b"bytes");

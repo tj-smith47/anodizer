@@ -22,7 +22,7 @@ pub(crate) struct AurSourceRender {
     /// `Amd64` micro-architecture variable scoped in. The write/push path
     /// renders the `directory:` template against these so `{{ .Amd64 }}`
     /// resolves to the same configured variant every other per-entry render
-    /// saw — not the stale/empty global value.
+    /// saw, instead of the stale or empty global value.
     pub(crate) scoped_vars: anodizer_core::template::TemplateVars,
 }
 

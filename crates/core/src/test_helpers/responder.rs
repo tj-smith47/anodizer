@@ -166,7 +166,7 @@ pub fn spawn_oneshot_http_responder_bytes(responses: Vec<Vec<u8>>) -> (SocketAdd
 /// error 111)` on Linux and the test goes flaky on slow CI runners. Accepting
 /// continues briefly and serves any straggler an empty 503; the client logic
 /// (which has already returned success) ignores it. Drain-phase connections
-/// are NOT counted: tests pin `counter.load() == <canned attempts>` and an
+/// are NOT counted: tests assert `counter.load() == <canned attempts>` and an
 /// over-eager client middleware (e.g. octocrab's tower retry layer making
 /// extra connects beyond the user-level retry policy) must not inflate that
 /// assertion.

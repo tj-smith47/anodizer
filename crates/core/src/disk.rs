@@ -27,13 +27,13 @@
 //! free space it observes. `peak_consumed_run_k = free_before_run_k −
 //! min_free_during_run_k` is then a *measured* bound on what that run
 //! actually needed at its worst moment. The guard gates run-1..N on the
-//! MAX peak observed across all prior runs × a modest safety factor — a
-//! real measured bound, not a guess.
+//! MAX peak observed across all prior runs × a modest safety factor, a
+//! measured bound.
 //!
 //! ## Guarantee, honestly stated
 //!
 //! - **run-0** has no prior peak to measure, so it is gated by the
-//!   absolute floor ([`DEFAULT_ABS_FLOOR_BYTES`]) ALONE — a liveness
+//!   absolute minimum ([`DEFAULT_ABS_MIN_FREE_BYTES`]) ALONE — a liveness
 //!   backstop, not a peak guarantee. The sampler still records run-0's
 //!   peak (emitted at verbose) to gate run-1.
 //! - **run-1..N** are gated on the measured peak of every prior run — the
@@ -41,7 +41,7 @@
 //!
 //! Everything here is subprocess-free: free space via [`fs4`]'s
 //! `statvfs`/`GetDiskFreeSpaceExW` wrapper, directory size via a `std::fs`
-//! recursive walk, mounted volumes via `std::fs::read_dir("/Volumes")` on
+//! recursive scan, mounted volumes via `std::fs::read_dir("/Volumes")` on
 //! macOS. Nothing mutates disk state; it only observes and decides. The
 //! footprint/threshold math ([`RunPeak`], [`evaluate_headroom`]) takes
 //! plain byte counts so it is unit-testable without a real low-disk host.
@@ -56,12 +56,12 @@ use std::time::Duration;
 /// `1 GiB` in bytes — the unit the harness reports headroom in.
 const GIB: u64 = 1024 * 1024 * 1024;
 
-/// Default absolute free-space floor, in bytes, required before run-0
+/// Default absolute free-space minimum, in bytes, required before run-0
 /// starts and as a backstop for run-1..N.
 ///
 /// This is a minimal **liveness backstop**, NOT a peak guarantee:
 /// "enough free for a build to even start". It must NOT be sized to any
-/// one workload's peak. A blanket absolute floor is workload-blind — it
+/// one workload's peak. A blanket absolute minimum is workload-blind — it
 /// cannot tell a tiny project apart from the macOS universal+dmg
 /// pipeline — so sizing it to the heavy case would false-positive on
 /// every small real project running `anodizer check determinism` on a
@@ -70,12 +70,12 @@ const GIB: u64 = 1024 * 1024 * 1024;
 ///
 /// The real heavy-workload protection is the MEASURED-PEAK gate on
 /// run-1..N: run-0 starts on the reclaimed macOS shard (~101 GiB free),
-/// clears this `2 GiB` floor trivially, and the [`FreeSpaceSampler`]
+/// clears this `2 GiB` minimum trivially, and the [`FreeSpaceSampler`]
 /// measures run-0's true peak to gate run-1 — the run that actually
 /// exhausted the disk. If a future instrumented CI run shows run-0 itself
-/// is marginal, raise the floor for that shard via [`ABS_FLOOR_ENV`]
+/// is marginal, raise the minimum for that shard via [`ABS_MIN_FREE_ENV`]
 /// rather than baking a macOS peak into the cross-workload default.
-pub const DEFAULT_ABS_FLOOR_BYTES: u64 = 2 * GIB;
+pub const DEFAULT_ABS_MIN_FREE_BYTES: u64 = 2 * GIB;
 
 /// Default multiplier applied to a run's MEASURED peak consumption when
 /// gating subsequent runs. `1.3×` is slack ABOVE the observed peak —
@@ -101,45 +101,45 @@ pub const DEFAULT_SAFETY_FACTOR: f64 = 1.3;
 /// override — the const is the single tuning point.
 pub const DEFAULT_SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Env override for [`DEFAULT_ABS_FLOOR_BYTES`], expressed in **whole
+/// Env override for [`DEFAULT_ABS_MIN_FREE_BYTES`], expressed in **whole
 /// GiB** (e.g. `ANODIZER_DET_DISK_FLOOR_GIB=60`). A zero / non-positive /
 /// malformed / overflowing value falls back to the default — `0` must
 /// never disable the guard.
-pub const ABS_FLOOR_ENV: &str = "ANODIZER_DET_DISK_FLOOR_GIB";
+pub const ABS_MIN_FREE_ENV: &str = "ANODIZER_DET_DISK_FLOOR_GIB";
 
 /// Env override for [`DEFAULT_SAFETY_FACTOR`] (e.g.
 /// `ANODIZER_DET_DISK_SAFETY_FACTOR=2.0`). A non-finite or non-positive
 /// value falls back to the default.
 pub const SAFETY_FACTOR_ENV: &str = "ANODIZER_DET_DISK_SAFETY_FACTOR";
 
-/// Resolve the absolute free-space floor (bytes) from the environment,
-/// falling back to [`DEFAULT_ABS_FLOOR_BYTES`]. The override is read in
-/// whole GiB so an operator strengthening reclaim can raise the floor
+/// Resolve the absolute free-space minimum (bytes) from the environment,
+/// falling back to [`DEFAULT_ABS_MIN_FREE_BYTES`]. The override is read in
+/// whole GiB so an operator strengthening reclaim can raise the minimum
 /// without computing byte counts.
 ///
 /// `0` is rejected (it would make `required = 0` and silently disable the
 /// guard for an entire CI history) along with malformed input and any
 /// value whose `× GiB` would overflow `u64`.
 ///
-/// Thin production wrapper over [`abs_floor_bytes_from_env_with`] reading
+/// Thin production wrapper over [`abs_min_free_bytes_from_env_with`] reading
 /// the real process env via [`ProcessEnvSource`].
-pub fn abs_floor_bytes_from_env() -> u64 {
-    abs_floor_bytes_from_env_with(&ProcessEnvSource)
+pub fn abs_min_free_bytes_from_env() -> u64 {
+    abs_min_free_bytes_from_env_with(&ProcessEnvSource)
 }
 
-/// [`abs_floor_bytes_from_env`] parameterized over an [`EnvSource`] so the
+/// [`abs_min_free_bytes_from_env`] parameterized over an [`EnvSource`] so the
 /// parse/validation branches are testable by injecting a [`MapEnvSource`]
 /// — no process-env mutation, no test-isolation marker, race-free by
 /// construction. An absent key reads as `None` and falls through to the
 /// default.
 ///
 /// [`MapEnvSource`]: crate::env_source::MapEnvSource
-pub fn abs_floor_bytes_from_env_with(env: &dyn EnvSource) -> u64 {
-    env.var(ABS_FLOOR_ENV)
+pub fn abs_min_free_bytes_from_env_with(env: &dyn EnvSource) -> u64 {
+    env.var(ABS_MIN_FREE_ENV)
         .and_then(|v| v.trim().parse::<u64>().ok())
         .filter(|&gib| gib > 0)
         .and_then(|gib| gib.checked_mul(GIB))
-        .unwrap_or(DEFAULT_ABS_FLOOR_BYTES)
+        .unwrap_or(DEFAULT_ABS_MIN_FREE_BYTES)
 }
 
 /// Resolve the safety factor from the environment, falling back to
@@ -287,7 +287,7 @@ pub fn mounted_volumes() -> Vec<String> {
 ///
 /// If the probe is unavailable (`available_bytes` returns `None`), the
 /// sampler records nothing and [`stop`](Self::stop) yields `None`; the
-/// guard then has no peak for that run and falls back to the floor, never
+/// guard then has no peak for that run and falls back to the minimum, never
 /// a manufactured value.
 pub struct FreeSpaceSampler {
     /// Stop signal. The worker blocks on `recv_timeout(interval)`; a send
@@ -351,7 +351,7 @@ impl FreeSpaceSampler {
         if let Some(h) = self.handle.take() {
             // A panic in the sampler thread is non-fatal to the harness —
             // a failed join just means "no peak measured", same as a probe
-            // gap; the guard falls back to the floor.
+            // gap; the guard falls back to the minimum.
             let _ = h.join();
         }
     }
@@ -387,7 +387,7 @@ impl RunPeak {
     ///
     /// Clamped at `0`: a `min_free_during` somehow above `free_before`
     /// (free space grew mid-run — another process cleaned up) yields no
-    /// measured pressure, so the floor becomes the only gate.
+    /// measured pressure, so the minimum becomes the only gate.
     pub fn consumed_bytes(&self) -> u64 {
         self.free_before.saturating_sub(self.min_free_during)
     }
@@ -416,7 +416,7 @@ pub struct HeadroomShortfall {
     /// The volume/path the readings were taken on (for the message).
     pub volume: String,
     /// Whether `required_bytes` came from a measured prior-run peak
-    /// (`true`, run-1..N) or the absolute floor alone (`false`, run-0).
+    /// (`true`, run-1..N) or the absolute minimum alone (`false`, run-0).
     /// Drives the message so it never over-claims a peak guarantee for
     /// run-0.
     pub peak_gated: bool,
@@ -425,25 +425,25 @@ pub struct HeadroomShortfall {
 impl HeadroomShortfall {
     /// Actionable, number-carrying abort message. Names the run, the
     /// deficit (with exact bytes so a near-miss is unambiguous), whether
-    /// the bound was peak-measured or the floor backstop, and the two
+    /// the bound was peak-measured or the minimum backstop, and the two
     /// remedies an operator actually has.
     pub fn message(&self) -> String {
         let basis = if self.peak_gated {
             "the measured peak of a prior run's universal rebuild + dmg staging"
         } else {
-            "the absolute floor for the first run's universal rebuild + dmg staging"
+            "the absolute minimum for the first run's universal rebuild + dmg staging"
         };
         format!(
             "determinism run {} needs ~{} free ({}); only {} available on {}. \
              Strengthen reclaim-disk (raise the macOS shard's reclaim target) or use a \
-             larger runner. Override the floor with {}=<GiB> / the safety factor with \
+             larger runner. Override the minimum with {}=<GiB> / the safety factor with \
              {}=<f> if this estimate is wrong for your project.",
             self.run_idx + 1,
             format_gib_exact(self.required_bytes),
             basis,
             format_gib_exact(self.available_bytes),
             self.volume,
-            ABS_FLOOR_ENV,
+            ABS_MIN_FREE_ENV,
             SAFETY_FACTOR_ENV,
         )
     }
@@ -469,13 +469,13 @@ fn project_peak(peak: u64, safety_factor: f64) -> u64 {
 /// the worktree volume.
 ///
 /// The required free space is the **larger** of:
-/// - the absolute floor (`abs_floor`) — the sole gate before run-0 (when
+/// - the absolute minimum (`abs_min`) — the sole gate before run-0 (when
 ///   `prior_peak` is `None`) and a backstop thereafter; and
 /// - the largest prior-run MEASURED peak × `safety_factor` — the precise,
 ///   project-specific gate for run-1..N.
 ///
-/// Taking the max means a project whose real peak exceeds the floor is
-/// caught, while a project lighter than the floor is never rejected below
+/// Taking the max means a project whose real peak exceeds the minimum is
+/// caught, while a project lighter than the minimum is never rejected below
 /// it. `peak_gated` in the returned shortfall reflects which term won, so
 /// the message states the true guarantee.
 ///
@@ -484,14 +484,14 @@ fn project_peak(peak: u64, safety_factor: f64) -> u64 {
 pub fn evaluate_headroom(
     run_idx: u32,
     available: u64,
-    abs_floor: u64,
+    abs_min: u64,
     prior_peak: Option<u64>,
     safety_factor: f64,
     volume: &str,
 ) -> HeadroomDecision {
     let projected = prior_peak.map(|p| project_peak(p, safety_factor));
-    let peak_gated = projected.is_some_and(|p| p >= abs_floor);
-    let required = abs_floor.max(projected.unwrap_or(0));
+    let peak_gated = projected.is_some_and(|p| p >= abs_min);
+    let required = abs_min.max(projected.unwrap_or(0));
     if available >= required {
         HeadroomDecision::Proceed
     } else {
@@ -531,7 +531,7 @@ mod tests {
     fn available_bytes_probes_real_volume() {
         let dir = tempdir().unwrap();
         // A real filesystem always has *some* notion of available space;
-        // the probe must return Some (no floor is asserted — CI runners
+        // the probe must return Some (no minimum is asserted — CI runners
         // vary — only that the call resolves).
         assert!(
             available_bytes(dir.path()).is_some(),
@@ -616,8 +616,8 @@ mod tests {
     }
 
     #[test]
-    fn headroom_run0_gated_by_absolute_floor_only_not_peak() {
-        // No prior peak (run-0): the floor is the sole gate and the
+    fn headroom_run0_gated_by_absolute_minimum_only() {
+        // No prior peak (run-0): the minimum is the sole gate and the
         // shortfall must NOT claim a peak basis.
         let ok = evaluate_headroom(0, 50 * GIB, 45 * GIB, None, 1.3, "/");
         assert_eq!(ok, HeadroomDecision::Proceed);
@@ -628,10 +628,10 @@ mod tests {
                 assert_eq!(s.run_idx, 0);
                 assert_eq!(s.required_bytes, 45 * GIB);
                 assert_eq!(s.available_bytes, 30 * GIB);
-                assert!(!s.peak_gated, "run-0 is floor-gated, not peak-gated");
+                assert!(!s.peak_gated, "run-0 is minimum-gated, not peak-gated");
                 assert!(
-                    s.message().contains("absolute floor"),
-                    "run-0 message must state the floor basis: {}",
+                    s.message().contains("absolute minimum"),
+                    "run-0 message must state the minimum basis: {}",
                     s.message()
                 );
             }
@@ -640,9 +640,9 @@ mod tests {
     }
 
     #[test]
-    fn headroom_later_run_uses_measured_peak_when_above_floor() {
+    fn headroom_later_run_uses_measured_peak_when_above_minimum() {
         // run-0 PEAKED at 70 GiB consumed; ×1.3 = 91 GiB required (above
-        // the 45 GiB floor). This is the exact B1 failure: a net delta
+        // the 45 GiB minimum). This is the observed failure: a net delta
         // would have seen ~30 GiB and wrongly proceeded.
         let prior_peak = Some(70 * GIB);
         let decision = evaluate_headroom(1, 71 * GIB, 45 * GIB, prior_peak, 1.3, "/Volumes/x");
@@ -668,15 +668,15 @@ mod tests {
     }
 
     #[test]
-    fn headroom_floor_backstops_a_tiny_measured_peak() {
-        // A prior run that barely peaked; ×1.3 is below the floor, so the
-        // floor still gates and the shortfall is NOT peak-gated.
+    fn headroom_minimum_backstops_a_tiny_measured_peak() {
+        // A prior run that barely peaked; ×1.3 is below the minimum, so the
+        // minimum still gates and the shortfall is NOT peak-gated.
         let prior_peak = Some(GIB);
         let bad = evaluate_headroom(2, 30 * GIB, 45 * GIB, prior_peak, 1.3, "/");
         match bad {
             HeadroomDecision::Abort(s) => {
                 assert_eq!(s.required_bytes, 45 * GIB);
-                assert!(!s.peak_gated, "floor won, so not peak-gated");
+                assert!(!s.peak_gated, "minimum won, so not peak-gated");
             }
             other => panic!("expected Abort, got {other:?}"),
         }
@@ -714,7 +714,10 @@ mod tests {
         );
         assert!(msg.contains("/Volumes/scratch"), "volume: {msg}");
         assert!(msg.contains("reclaim-disk"), "remedy: {msg}");
-        assert!(msg.contains(ABS_FLOOR_ENV), "floor override hint: {msg}");
+        assert!(
+            msg.contains(ABS_MIN_FREE_ENV),
+            "minimum override hint: {msg}"
+        );
         assert!(
             msg.contains(SAFETY_FACTOR_ENV),
             "factor override hint: {msg}"
@@ -722,28 +725,28 @@ mod tests {
     }
 
     #[test]
-    fn abs_floor_env_rejects_zero_malformed_overflow_accepts_valid() {
+    fn abs_min_free_env_rejects_zero_malformed_overflow_accepts_valid() {
         // Injected env via MapEnvSource — no process-env mutation, so the
         // test is race-free and needs neither `unsafe` nor `#[serial]`.
         let cases: &[(&str, u64)] = &[
-            ("0", DEFAULT_ABS_FLOOR_BYTES),           // B2: 0 must not disable
-            ("abc", DEFAULT_ABS_FLOOR_BYTES),         // malformed
-            ("18446744073", DEFAULT_ABS_FLOOR_BYTES), // B3: × GiB overflows u64
-            ("60", 60 * GIB),                         // valid
-            ("", DEFAULT_ABS_FLOOR_BYTES),            // empty
+            ("0", DEFAULT_ABS_MIN_FREE_BYTES),           // 0 must not disable
+            ("abc", DEFAULT_ABS_MIN_FREE_BYTES),         // malformed
+            ("18446744073", DEFAULT_ABS_MIN_FREE_BYTES), // × GiB overflows u64
+            ("60", 60 * GIB),                            // valid
+            ("", DEFAULT_ABS_MIN_FREE_BYTES),            // empty
         ];
         for (val, want) in cases {
-            let env = MapEnvSource::new().with(ABS_FLOOR_ENV, *val);
+            let env = MapEnvSource::new().with(ABS_MIN_FREE_ENV, *val);
             assert_eq!(
-                abs_floor_bytes_from_env_with(&env),
+                abs_min_free_bytes_from_env_with(&env),
                 *want,
-                "ABS_FLOOR_ENV={val:?} should resolve to {want}"
+                "ABS_MIN_FREE_ENV={val:?} should resolve to {want}"
             );
         }
         // Missing key (var simply absent from the map) → default.
         assert_eq!(
-            abs_floor_bytes_from_env_with(&MapEnvSource::new()),
-            DEFAULT_ABS_FLOOR_BYTES,
+            abs_min_free_bytes_from_env_with(&MapEnvSource::new()),
+            DEFAULT_ABS_MIN_FREE_BYTES,
             "unset → default"
         );
     }
@@ -773,9 +776,9 @@ mod tests {
 
     #[test]
     fn defaults_are_the_documented_values() {
-        // A minimal liveness floor — NOT a workload peak. The measured-peak
+        // A small liveness backstop sized below any workload peak. The measured-peak
         // gate (run-1+) is the heavy-workload protection.
-        assert_eq!(DEFAULT_ABS_FLOOR_BYTES, 2 * GIB);
+        assert_eq!(DEFAULT_ABS_MIN_FREE_BYTES, 2 * GIB);
         assert!((DEFAULT_SAFETY_FACTOR - 1.3).abs() < f64::EPSILON);
     }
 }

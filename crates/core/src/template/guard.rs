@@ -47,7 +47,7 @@ fn find_unrendered_raw(text: &str) -> Option<String> {
     };
     // `end` is a raw byte index that the MAX_SNIPPET clamp can cut mid-codepoint
     // when an unbalanced `{{` is followed by multibyte content (emoji/CJK/accent)
-    // — slicing there would panic. Walk back to the nearest char boundary first.
+    // — slicing there would panic. Step back to the nearest char boundary first.
     while end > 0 && !rest.is_char_boundary(end) {
         end -= 1;
     }
@@ -175,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn snippet_is_redacted_before_surfacing() {
+    fn snippet_is_redacted_before_it_is_shown() {
         let leaked = "token = {{ ghp_supersecrettoken123 }}";
         let redactor = |s: &str| s.replace("ghp_supersecrettoken123", "$REDACTED");
         // Strict: secret must not appear in the error.
@@ -204,14 +204,14 @@ mod tests {
         // An unbalanced `{{` followed by multibyte content straddling the
         // MAX_SNIPPET byte clamp must not panic on a non-char-boundary slice.
         // Each "日本語" is 9 bytes; ~30 copies overruns the 120-byte clamp so the
-        // cut falls mid-codepoint unless the boundary walk-back applies.
+        // cut falls mid-codepoint unless the boundary step-back applies.
         let runaway = format!("{{{{ {}", "日本語".repeat(40));
         let residual = assert_no_unrendered(&runaway, "x", false, identity)
             .unwrap()
             .unwrap();
         assert!(residual.snippet.len() <= MAX_SNIPPET, "snippet not bounded");
         // Round-trips as valid UTF-8 (it is already a String, but assert the
-        // boundary walk-back left no partial codepoint by re-validating bytes).
+        // boundary step-back left no partial codepoint by re-validating bytes).
         assert!(std::str::from_utf8(residual.snippet.as_bytes()).is_ok());
 
         // Also exercise the no-close-delimiter emoji case at the boundary.

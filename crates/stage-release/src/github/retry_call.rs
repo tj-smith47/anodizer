@@ -259,7 +259,7 @@ mod tests {
                 octo.get("/test", None::<&()>).await
             })
             .await;
-        assert!(result.is_err(), "4xx must surface as Err, got Ok");
+        assert!(result.is_err(), "4xx must be returned as Err, got Ok");
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,
@@ -270,7 +270,7 @@ mod tests {
     #[tokio::test]
     async fn respects_max_attempts_one() {
         // `RetryConfig { attempts: 1 }` must produce exactly one octocrab
-        // call even on a retriable 503. This pins the
+        // call even on a retriable 503. This checks the
         // `RetryConfig::to_policy` -> `retry_async` wiring contract.
         let (addr, calls) = spawn_oneshot_http_responder(vec![
             "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
@@ -286,7 +286,7 @@ mod tests {
                 octo.get("/test", None::<&()>).await
             })
             .await;
-        assert!(result.is_err(), "attempts=1 + 503 must surface Err");
+        assert!(result.is_err(), "attempts=1 + 503 must return Err");
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,
@@ -323,7 +323,7 @@ mod tests {
                 async { octo.get("/", None::<&()>).await }
             })
             .await;
-        assert!(result.is_err(), "transport error must surface as Err");
+        assert!(result.is_err(), "transport error must be returned as Err");
         assert_eq!(
             closure_calls.load(Ordering::SeqCst),
             1,
@@ -373,7 +373,7 @@ mod tests {
         let decode_err = octo
             .get::<serde_json::Value, _, ()>("/test", None::<&()>)
             .await
-            .expect_err("invalid JSON body must surface a decode Err");
+            .expect_err("invalid JSON body must return a decode Err");
         assert!(
             is_octocrab_transport_error(&decode_err),
             "a JSON-decode failure (Serde/Json) is transport-class: {decode_err:?}"
@@ -389,7 +389,7 @@ mod tests {
         let github_404 = octo
             .get::<serde_json::Value, _, ()>("/test", None::<&()>)
             .await
-            .expect_err("404 must surface as Err");
+            .expect_err("404 must be returned as Err");
         assert!(
             !is_octocrab_transport_error(&github_404),
             "a status-bearing GitHub 404 is not a transport error: {github_404:?}"
@@ -432,7 +432,7 @@ mod tests {
     /// secondary-RL response, sleeps the configured delay (with jitter), and
     /// retries to success. Multi-second wall-clock is incidental, so the test
     /// configures `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS=1` and asserts
-    /// elapsed >= 800 ms (1 s * 0.8 jitter floor).
+    /// elapsed >= 800 ms (1 s * 0.8 jitter minimum).
     ///
     /// `tokio::time::pause()` is NOT used here: the oneshot HTTP responder
     /// runs on a real socket served by a `std::thread`, which won't observe
@@ -513,7 +513,7 @@ mod tests {
         // With 1 s base and ±20 % jitter, worst-case is 1 s * 0.8 = 800 ms.
         assert!(
             elapsed >= Duration::from_millis(800),
-            "secondary-RL delay must hold for at least 800 ms (jitter floor is 80 % of 1 s; \
+            "secondary-RL delay must hold for at least 800 ms (jitter minimum is 80 % of 1 s; \
              elapsed: {elapsed:?})"
         );
     }
@@ -555,7 +555,7 @@ mod tests {
             })
             .await;
         let elapsed = t0.elapsed();
-        assert!(result.is_err(), "spent budget must surface Err");
+        assert!(result.is_err(), "spent budget must return Err");
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,

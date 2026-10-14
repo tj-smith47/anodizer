@@ -52,7 +52,7 @@ pub(crate) fn run(
 
     // `--publishers` is a config-validation selector: each name must be a
     // publisher the active config actually enables, so the configured (not
-    // merely the known) set is the floor. Validate against the config the
+    // merely the known) set is the minimum. Validate against the config the
     // pipeline would resolve for this invocation — overlaid when --workspace
     // is given — so a per-workspace publish block is honored.
     if !publishers.is_empty() {
@@ -198,7 +198,7 @@ pub fn find_cycle(crates: &[CrateConfig]) -> Option<Vec<String>> {
             for dep in deps {
                 if let Some(&j) = name_to_idx.get(dep.as_str()) {
                     // i depends on j → edge j→i in "needs" direction, but cycle
-                    // detection walks the other way: if i depends on j, j must be
+                    // detection runs the other way: if i depends on j, j must be
                     // processed before i, so the edge i→j means "i needs j".
                     adj[i].push(j);
                 }

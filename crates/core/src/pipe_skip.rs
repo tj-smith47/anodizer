@@ -87,7 +87,7 @@ impl SkipMemento {
 /// A per-entry misconfiguration that disqualifies only the entry it was
 /// raised for.
 ///
-/// A publisher that walks a list — one entry per crate, per cask, per upload
+/// A publisher that iterates a list — one entry per crate, per cask, per upload
 /// target — raises this instead of a plain error when one entry cannot
 /// proceed but its siblings still can. The loop that owns the list records
 /// the reason in a [`SkipMemento`] and moves on; every other error still

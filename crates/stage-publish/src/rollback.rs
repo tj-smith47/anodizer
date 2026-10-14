@@ -1161,7 +1161,7 @@ mod tests {
             "a",           // single char is fine
             "...",         // multiple dots, no traversal segment
             "..-trailing", // ".." prefix but as part of a longer token
-            "foo..bar",    // ".." embedded — not a segment
+            "foo..bar",    // ".." embedded inside a segment
             "0",           // single digit
             // Build-metadata tags: the rollback tag classifier accepts these,
             // so the run-id writer must too or writer and reader disagree.
@@ -1356,7 +1356,7 @@ mod tests {
         // isn't recovered by deleting it).
         assert!(
             msg.contains("delete the file to force a full re-roll"),
-            "error must surface the recovery hint, got '{}'",
+            "error must carry the recovery hint, got '{}'",
             msg,
         );
     }

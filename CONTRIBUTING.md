@@ -140,7 +140,7 @@ cargo test --test e2e
 2. Use `Option<T>` for optional fields with `#[serde(default)]`.
 3. Add validation in `crates/cli/src/commands/check/config/` if needed.
 4. Add a `///` doc comment describing the field — picked up by `schemars`
-   and surfaced in the regenerated docsite reference and JSON schema.
+   and shown in the regenerated docsite reference and JSON schema.
 5. Add a test that parses a YAML/TOML config with the new field.
 
 ### Adding a New Template Variable

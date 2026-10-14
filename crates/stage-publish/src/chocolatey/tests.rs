@@ -923,7 +923,7 @@ fn publish_to_chocolatey_skip_true_returns_false() {
         publish: Some(PublishConfig {
             chocolatey: Some(ChocolateyConfig {
                 skip: Some(StringOrBool::Bool(true)),
-                // The skip is what this test pins; the dead loopback port is
+                // The skip is what this test checks; the dead loopback port is
                 // what keeps a skip that stops firing off the community feed.
                 source_repo: Some("http://127.0.0.1:1/api/v2/package".to_string()),
                 ..Default::default()
@@ -953,8 +953,8 @@ fn classify_moderation_approved_and_unknown() {
 }
 
 /// `classify_moderation` flags Submitted / Rejected / Unknown as in-moderation
-/// (blockers for unattended publish). Exempted is approved and live — not
-/// in-moderation.
+/// (blockers for unattended publish). Exempted is approved and live, so it is
+/// not in moderation.
 #[test]
 fn classify_moderation_in_queue_variants() {
     for s in ["Submitted", "Rejected", "Unknown"] {
@@ -992,7 +992,7 @@ fn classify_moderation_falls_back_to_is_approved() {
 }
 
 /// `compute_nupkg_hash` produces a base64 digest whose length is the
-/// canonical SHA512 / SHA256 / MD5 length. Pins the algorithm dispatch.
+/// canonical SHA512 / SHA256 / MD5 length. Tests the algorithm dispatch.
 #[test]
 fn compute_nupkg_hash_dispatches_algorithm_correctly() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1036,7 +1036,7 @@ fn compute_nupkg_hash_algorithm_case_insensitive() {
 }
 
 /// `package_feed_hash` handles a 404 / connection failure path by
-/// returning `Absent`. Pins the "couldn't reach feed => proceed to push"
+/// returning `Absent`. Tests the "couldn't reach feed => proceed to push"
 /// degrade contract; transport failures must not block legitimate
 /// re-pushes of new versions.
 #[test]

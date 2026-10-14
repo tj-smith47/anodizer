@@ -1325,9 +1325,7 @@ mod tests {
     /// path or is listed here with the reason it has none.
     #[test]
     fn every_publisher_run_keeps_its_committed_work_on_failure() {
-        use anodizer_core::test_helpers::test_sources::{
-            function_bodies, production_half, workspace_production_sources,
-        };
+        use anodizer_core::test_helpers::test_sources::production_corpus;
 
         // How a failure path hands committed work to the row: pending
         // evidence beside the `Err` (directly or through the helper), or an
@@ -1379,10 +1377,9 @@ mod tests {
         let mut offenders = Vec::new();
         let mut whole_config_seen = Vec::new();
         let mut whole_config_offenders = Vec::new();
-        for path in workspace_production_sources() {
-            let text = std::fs::read_to_string(&path).expect("readable source");
-            let shown = path.to_string_lossy().replace('\\', "/");
-            for body in function_bodies(production_half(&text)) {
+        for source in production_corpus() {
+            let shown = source.path.to_string_lossy().replace('\\', "/");
+            for body in &source.bodies {
                 let Some((header, _)) = body.split_once('{') else {
                     continue;
                 };

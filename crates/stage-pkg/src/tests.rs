@@ -275,7 +275,7 @@ fn test_flat_pkg_is_byte_reproducible_across_time() {
 /// flat-package fallback must normalize (`normalize_xar_toc`) to reach
 /// byte-stability. The native `PkgBuilder::Pkgbuild` path invokes pkgbuild
 /// directly with no such normalization, so its `.pkg` drifts every build.
-/// The assertion proves the drift is real (not a flake) and pins the root
+/// The assertion proves the drift is real (not a flake) and records the root
 /// cause; flipping it to byte-equality is the regression signal if the
 /// native path gains the same TOC normalization the Linux path already has.
 /// Runs on the macOS CI test shard only (pkgbuild is macOS-native).
@@ -2226,7 +2226,7 @@ fn test_collect_find_paths_matches_find_pipe_sort() {
     fs::create_dir_all(root.join("empty-dir")).unwrap();
     fs::write(root.join("usr/local/bin/tool"), b"bin").unwrap();
     fs::write(root.join("usr/share/doc/README"), b"doc").unwrap();
-    // A space sorts below every alphanumeric under LC_ALL=C, so this pins the
+    // A space sorts below every alphanumeric under LC_ALL=C, so this checks the
     // collation rather than merely the set of names.
     fs::write(root.join("usr/share/doc/a b"), b"space").unwrap();
     fs::write(root.join("top.txt"), b"top").unwrap();

@@ -327,7 +327,7 @@ mod tests {
         );
 
         // A blank config TUF_ROOT shadows the process value in the child's
-        // env, so resolution falls through to home — not to /process/tuf.
+        // env, so resolution falls through to home and skips /process/tuf.
         let blank = vec![("TUF_ROOT".to_string(), String::new())];
         assert_eq!(
             tuf_cache_dir(&blank, &process),

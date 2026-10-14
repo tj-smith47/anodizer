@@ -249,7 +249,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
 
             // Iterate in archive-path order so two runs against the same
             // input set produce byte-identical zips. The glob expansion that
-            // built `extra_files` walks the filesystem in inode order which
+            // built `extra_files` reads the filesystem in inode order which
             // differs between fresh worktrees (matches the tar path's sort).
             let mut sorted_extras: Vec<&SourceFileEntry> = extra_files.iter().collect();
             sorted_extras.sort_by(|a, b| a.src.cmp(&b.src));
@@ -346,7 +346,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
 
             // Iterate in archive-path order so two runs against the
             // same input set produce byte-identical tars. The glob
-            // expansion that built `extra_files` walks the filesystem
+            // expansion that built `extra_files` reads the filesystem
             // in inode order which differs between fresh worktrees.
             let mut sorted_extras: Vec<&SourceFileEntry> = extra_files.iter().collect();
             sorted_extras.sort_by(|a, b| a.src.cmp(&b.src));

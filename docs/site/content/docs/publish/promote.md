@@ -69,7 +69,7 @@ selects the source floating tag for docker.
 
 Both `--from` and `--to` are checked against the Snap Store's channel grammar
 before anything is spawned — including under `--dry-run`, which is exactly
-where a typo should surface. The form is `[<track>/]<risk>[/<branch>]`, with
+where a typo should be reported. The form is `[<track>/]<risk>[/<branch>]`, with
 `<risk>` one of `stable`, `candidate`, `beta`, `edge`:
 
 | Accepted | Rejected |
@@ -188,7 +188,7 @@ Promotion needs the same credentials as the original publish:
 - **snapcraft** — a logged-in `snapcraft` (Snap Store credentials).
 - **npm** — `NPM_TOKEN` (OIDC publish credentials cannot move a dist-tag).
 - **docker** — `docker buildx` authenticated to the registry.
-- **github** — `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`, or `--token`.
+- **github** — `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`, the GitHub token file ([token order](@/docs/publish/github.md#authentication)), or `--token`.
 
 A live promotion preflights every selected publisher's tool and credentials and
 **fails fast** before mutating anything — so a missing token stops the run

@@ -18,7 +18,7 @@ env:
   CARGO_TERM_COLOR: always
   SCCACHE_GHA_ENABLED: "true"
   # actions/checkout's internal `git init` prints a defaultBranch hint on GitHub
-  # runners that don't set init.defaultBranch; pin it via git's env-config so the
+  # runners that don't set init.defaultBranch; set it via git's env-config so the
   # hint never fires (binds every git invocation regardless of HOME or global config).
   GIT_CONFIG_COUNT: '1'
   GIT_CONFIG_KEY_0: init.defaultBranch
@@ -212,7 +212,7 @@ jobs:
           dotnet tool install --global wix || dotnet tool update --global wix
 
       # The audit-scanner integration tests run every `.claude/scripts` scanner.
-      # Each asserts the bash 4.4 floor and is written against GNU grep and
+      # Each asserts the bash 4.4 minimum and is written against GNU grep and
       # gawk; macOS ships bash 3.2 and the BSD tools.
       - name: Install the bash, grep and awk the scanners need
         if: runner.os == 'macOS'
@@ -261,7 +261,7 @@ jobs:
     name: Snapshot (dry-run)
     # `github.ref` on a pull_request is `refs/pull/N/merge`, so a master-only
     # guard skips the one job that proves the release pipeline still plans —
-    # and a break then surfaces on the master push, after the merge. Scratch
+    # and a break then shows up on the master push, after the merge. Scratch
     # `session-*` pushes still skip it.
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
     needs: [test]
@@ -363,7 +363,7 @@ jobs:
   coverage:
     name: Coverage
     # Same guard as `snapshot`: `github.ref` on a pull_request is
-    # `refs/pull/N/merge`, so a master-only guard would skip the floor on the
+    # `refs/pull/N/merge`, so a master-only guard would skip the coverage minimum on the
     # pull request that breaches it. Scratch `session-*` pushes skip the
     # 75-minute instrumented run entirely.
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'

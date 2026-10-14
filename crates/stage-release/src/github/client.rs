@@ -232,7 +232,7 @@ pub(crate) async fn delete_checked(
 mod tests {
     //! End-to-end proof that the `RetryAfterLayer` actually captures the
     //! server's `Retry-After` header through the FULL production middleware
-    //! stack built by [`build_octocrab_client`] — not just by writing the
+    //! stack built by [`build_octocrab_client`], in addition to writing the
     //! capture directly (which the `secondary_rate_limit.rs` unit tests do).
     //!
     //! This is the test the layer-order comment in `build_octocrab_client`
@@ -284,7 +284,7 @@ mod tests {
         let _ = octo
             .get::<serde_json::Value, _, _>("/test", None::<&()>)
             .await
-            .expect_err("403 must surface as an error");
+            .expect_err("403 must be returned as an error");
 
         assert_eq!(
             capture.get(),

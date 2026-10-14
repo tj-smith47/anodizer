@@ -392,7 +392,7 @@ impl SignSlice<'_> {
 /// outputs through the same `resolve_output_paths` and write under the same
 /// `dist`, so a check about how two entries' outputs collide asks both. This
 /// is the one enumeration: every per-slice question — the duplicate outputs,
-/// the artifact filters, the ignored `asset_name_template:` — walks it.
+/// the artifact filters, the ignored `asset_name_template:` — reads it.
 ///
 /// `docker_signs:` is deliberately outside it. Its entries carry a
 /// `signature:` field of their own, but the docker sign stage never reads it

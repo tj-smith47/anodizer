@@ -24,7 +24,7 @@ use anodizer_core::context::Context;
 /// (`SNAPCRAFT_LOGIN`, token, auth) have no slot to fill.
 pub(crate) type SnapcraftTarget = anodizer_core::publish_evidence::SnapcraftTargetSnapshot;
 
-/// Walk the crate universe's `snapcrafts[]` (top-level `crates` plus every
+/// Visit the crate universe's `snapcrafts[]` (top-level `crates` plus every
 /// `workspaces[].crates` entry) and build one
 /// [`SnapcraftTarget`] per opted-in snap config. Mirrors the publish
 /// stage's filters: `selected_crates` gate, `publish: true` opt-in.
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn snapcraft_target_extra_carries_no_secret_material() {
-        // Structural pin: build typed evidence and assert (a) no
+        // Structural check: build typed evidence and assert (a) no
         // credential-shaped keys appear AND (b) the operator-public
         // package coordinates serialize.
         let mut e = anodizer_core::PublishEvidence::new("snapcraft");
@@ -230,7 +230,7 @@ mod tests {
 
         // With a build declaring an explicit binary name, the last-resort
         // fallback is that binary — the name generate_snap_yaml stamps into
-        // the shipped snap — not the crate name.
+        // the shipped snap, in place of the crate name.
         let mut krate = snap_crate("demo-cli", None, None);
         krate.builds = Some(vec![anodizer_core::config::BuildConfig {
             binary: Some("demo".to_string()),
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn snapcraft_collect_targets_sees_workspace_only_crate() {
         // A crate declared only under `workspaces[].crates` must expose
-        // its opted-in snap configs: the walk resolves through the crate
+        // its opted-in snap configs: the lookup resolves through the crate
         // universe, so a pure-workspace config records the same evidence a
         // top-level `crates:` entry would.
         let ctx = TestContextBuilder::new()

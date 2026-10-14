@@ -582,7 +582,7 @@ fn snapshot_mode_skips_ai() {
 // When `changelog.ai.use` is set the stage clears `opts.groups` BEFORE the
 // per-crate render (`run.rs::run`). The render therefore emits a flat
 // bullet list with no `## <group-title>` headings, and that flat string
-// is what flows into `enhance_with_ai`. This test pins the property by
+// is what flows into `enhance_with_ai`. This test checks the property by
 // rendering both shapes and confirming the flat one (what AI receives)
 // has no group headings while the grouped one does.
 

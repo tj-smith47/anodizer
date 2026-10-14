@@ -60,7 +60,7 @@ fn resolve_scope(
     )
 }
 
-/// Render the resolved commit range for humans: the bounds actually walked
+/// Render the resolved commit range for humans: the bounds actually read
 /// plus the tag family the lower bound was searched in.
 ///
 /// The range is the one datum that distinguishes "this release genuinely has no
@@ -157,7 +157,7 @@ pub(crate) fn render_crate_changelog(
     }
 
     // The explicit upper bound (`changelog <from>..<to>` / single tag): bounds
-    // the commit walk at `<to>` instead of HEAD. `None` keeps the pending
+    // the commit traversal at `<to>` instead of HEAD. `None` keeps the pending
     // window running to HEAD. Cloned before the `&mut ctx` borrow below.
     let changelog_to = ctx.options.changelog_to.clone();
     log.verbose(&format!(

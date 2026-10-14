@@ -358,7 +358,7 @@ enum PushOutcome {
 /// rollback target) or was an idempotent no-op. Self-contained so the account
 /// loop can run it under bounded parallelism: it builds its own multipart
 /// body, carries its own retry budget (raised to the minimum of
-/// [`RetryPolicy::with_idempotent_floor`]), and
+/// [`RetryPolicy::with_idempotent_minimum`]), and
 /// touches no shared mutable state.
 #[allow(clippy::too_many_arguments)]
 fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
@@ -406,7 +406,7 @@ fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
 
     // Idempotent pushes keep a minimum transient-error retry budget even when a
     // stateful mode (`--publish-only`) resolves `max_attempts` to 1.
-    let push_policy = policy.with_idempotent_floor();
+    let push_policy = policy.with_idempotent_minimum();
     let mime = "application/octet-stream";
     // Set inside the retry closure when the push returns a 409/422
     // already-exists conflict, so the post-retry code can skip recording a

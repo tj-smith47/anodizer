@@ -106,7 +106,7 @@ crates:
 
     /// `init_publish_stage_ctx` calls `setup_context` (git resolution)
     /// before `load_artifacts_from_dist`; either failure mode is
-    /// acceptable — both pin the prelude wiring.
+    /// acceptable — both test the prelude wiring.
     #[test]
     #[serial(cwd)]
     fn missing_dist_or_git_bails() {

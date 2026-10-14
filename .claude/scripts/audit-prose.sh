@@ -88,7 +88,7 @@ collect_files YML_FILES -rl --include='*.yml' -- '#' .github/workflows
 # The Taskfile is collected rather than named so a tree without one drops it
 # instead of handing awk a path it cannot open, which exits 2 as a scan that
 # did not run. `/dev/null` then keeps the operand list non-empty: awk with no
-# file operand reads stdin, which the `-f -` program already drained.
+# file operand reads stdin, which the `-f -` program already read to the end.
 collect_files TASKFILE -l -- '#' Taskfile.yml
 run_scanner shell_voice -v VOICE_RE="$VOICE_RE" -f - \
     "${SH_FILES[@]}" "${YML_FILES[@]}" "${TASKFILE[@]}" /dev/null <<'AWK'
@@ -112,15 +112,15 @@ AWK
 # Scan 2, the tool name. The audit's own path is excluded because the pattern
 # it searches for necessarily spells the misspelling, and so is every test
 # fixture: a fixture carries the shape an audit must REPORT, so a fixture
-# spelling the misspelling is the pin doing its job, not prose that shipped.
+# spelling the misspelling is the test doing its job.
 collect_files NAME_HITS -rnE --exclude-dir=target --exclude-dir=.git \
     --exclude-dir=fixtures --exclude='audit-prose.sh' \
     -- '\<[Aa]nodize\>' crates docs/site/content .github/workflows Taskfile.yml README.md
 
 name_violations=""
 for hit in "${NAME_HITS[@]}"; do
-    # The config alias keeps an old spelling loadable, and the test that pins
-    # the alias has to name it. Both are the spelling as DATA, not as prose.
+    # The config alias keeps an old spelling loadable, and the test that checks
+    # the alias has to name it. Both use the spelling as DATA.
     case "$hit" in
         *'alias = "anodize'* | *'alias("anodize'* | *'anodize_'*) continue ;;
     esac
@@ -417,7 +417,7 @@ if [[ -n "$name_violations" ]]; then
     echo
     echo "Spell it anodizer in every message, help string, doc and workflow. The only"
     echo "legitimate 'anodize' is a serde alias keeping an old config spelling"
-    echo "loadable, and the test that pins that alias."
+    echo "loadable, and the test that checks that alias."
     status=1
 fi
 
@@ -429,7 +429,7 @@ if [[ -n "$jargon_violations" ]]; then
     echo
     echo "A field is required, not 'load-bearing'; a change touches less state, it"
     echo "does not have a smaller 'blast radius'; a feature was added, not 'bolted"
-    echo "on'; a test pins an invariant, it is not a 'keystone'. A run passed, it"
+    echo "on'; a test checks an invariant, it is not a 'keystone'. A run passed, it"
     echo "did not go 'green'; a token was issued, not 'minted'; a stub goes in at a"
     echo "hook, not a 'seam'; a release published, it did not 'land'. A literal use"
     echo "the word lists cannot see carries a 'prose-ok: <why>' marker."

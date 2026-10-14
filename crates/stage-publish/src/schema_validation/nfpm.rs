@@ -10,7 +10,7 @@
 //!    against nfpm's own draft-2020-12 config schema. The schema is
 //!    `additionalProperties: false` and requires `name` / `arch` / `version`,
 //!    so a misnamed key, a wrong-typed value, or a missing required field
-//!    shows up in the emission-validate pass — not after a release uploads a
+//!    shows up in the emission-validate pass, before a release uploads a
 //!    broken package.
 //! 2. **Secondary (gated):** when the nfpm stage already built a package in
 //!    this run and the inspection tool is present (`dpkg-deb` for `.deb`,
@@ -35,7 +35,7 @@ use super::{
     yaml_to_json,
 };
 
-/// nfpm's own config schema (draft 2020-12), pinned to the nfpm version
+/// nfpm's own config schema (draft 2020-12), held at the nfpm version
 /// `crates/stage-nfpm` targets. Embedded so the primary layer is fully
 /// offline; refresh via `schemas/SOURCES.md`.
 const NFPM_SCHEMA: &str = include_str!("../../schemas/nfpm.schema.json");
@@ -68,11 +68,11 @@ impl PublisherSchemaValidator for NfpmSchemaValidator {
         let log = ctx.logger("publish");
         let mut findings = Vec::new();
 
-        // Walk the nfpm-configured crates (honoring `--crate` selection, else
+        // Visit the nfpm-configured crates (honoring `--crate` selection, else
         // every nfpm-configured crate) so the validated set equals the built
         // set. Both the build's `run` and the offline renderer resolve crates
         // through the crate universe, so a crate configured only under
-        // `workspaces[].crates` is built AND validated by the same walk.
+        // `workspaces[].crates` is built AND validated by the same scan.
         // The version that NAMED the produced packages: the global `Version`
         // var the build's nfpm stage stamped into every crate's `version:`
         // field (in snapshot, the `<base>-SNAPSHOT-<sha>` synthesized version).
@@ -134,7 +134,7 @@ impl PublisherSchemaValidator for NfpmSchemaValidator {
 /// (`resolve_crate_tag` strips the snapshot label and any monorepo prefix), so
 /// rendering straight through it would stamp `0.4.0` while the build stamped
 /// `0.4.0-SNAPSHOT-<sha>`, and the gated control cross-check would reject every
-/// snapshot package. Pin `Version`/`RawVersion` back to `artifact_version`
+/// snapshot package. Set `Version`/`RawVersion` back to `artifact_version`
 /// (keeping the per-crate `Name`/`Tag`/`ProjectName` scope for templated
 /// name/content fields) so the rendered `version:` equals what was built —
 /// single-crate, workspace-lockstep, and per-crate-independent modes alike,
@@ -167,7 +167,7 @@ struct ExpectedControl {
     /// equal, already translated from the generic nfpm arch into the
     /// packager's control nomenclature (deb keeps `arm64`, rpm uses
     /// `aarch64`). This is the regression guard for the arch bug:
-    /// a package whose control arch drifts from the resolved arch bites here.
+    /// a package whose control arch drifts from the resolved arch is caught here.
     arch: String,
     /// `Some` when the config sets `maintainer`; the control-field check then
     /// asserts the built package carries one.
@@ -242,7 +242,7 @@ fn validate_built_packages(
 
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         // Clean absence skips quietly (nfpm is reversible; the config schema
-        // floor still stands), but a GENUINE probe I/O failure warns — the
+        // check still stands), but a GENUINE probe I/O failure warns — the
         // error is never swallowed into a silent skip.
         match ext {
             "deb" => match anodizer_core::tool_detect::runs("dpkg-deb") {
@@ -721,8 +721,8 @@ mod tests {
     }
 
     /// `expected_control` must fold the nfpm config's separate `prerelease`
-    /// (and `version_metadata`) fields into the expected version — not read the
-    /// bare `/version` alone. Regression for the snapshot bug: under `--snapshot`
+    /// (and `version_metadata`) fields into the expected version, beyond the
+    /// bare `/version`. Regression for the snapshot bug: under `--snapshot`
     /// the version core stays `0.4.0` and the `~SNAPSHOT-<sha>` lives entirely in
     /// `prerelease`, so a `/version`-only expected (`0.4.0`) spuriously failed
     /// against the built `1:0.4.0~SNAPSHOT-<sha>-1` deb / `0.4.0~SNAPSHOT_<sha>`
@@ -755,11 +755,11 @@ mod tests {
     }
 
     /// The validator must render the nfpm `version:` under the SAME global
-    /// artifact version the build stamped — not the per-crate *bare* tag the
+    /// artifact version the build stamped, instead of the per-crate *bare* tag the
     /// surrounding `with_validated_crate_scope` re-derives. The build's nfpm
     /// stage reads the global `Version` (the snapshot `<base>-SNAPSHOT-<sha>`)
     /// for every crate, while `resolve_crate_tag` yields the bare release tag
-    /// (`v0.4.0` → `0.4.0`), so without pinning the version back the validator
+    /// (`v0.4.0` → `0.4.0`), so without setting the version back the validator
     /// renders `0.4.0` against a built `1:0.4.0~SNAPSHOT-<sha>-1` deb and every
     /// snapshot nfpm package spuriously fails the control cross-check (the cfgd
     /// dogfood failure, 2026-06-06).
@@ -937,7 +937,7 @@ mod tests {
         );
         assert!(
             value.pointer("/contents/0/dst").is_some(),
-            "the configured content entry lands in the config"
+            "the configured content entry is written to the config"
         );
     }
 
@@ -1243,7 +1243,7 @@ mod tests {
         );
     }
 
-    /// Schema layer BITES: a wrong-typed field produces a finding on its
+    /// Schema layer catches a wrong-typed field: it produces a finding on its
     /// pointer path; the corrected value clears it.
     #[test]
     fn wrong_typed_field_is_reported_then_corrected() {
@@ -1286,7 +1286,7 @@ mod tests {
         );
     }
 
-    /// Schema layer BITES on an unknown key: nfpm's schema is
+    /// Schema layer catches an unknown key: nfpm's schema is
     /// `additionalProperties: false`, so a key it does not define is rejected.
     #[test]
     fn unknown_field_is_reported() {
@@ -1304,7 +1304,7 @@ mod tests {
     }
 
     /// The gated control-field layer ACCEPTS a real `.deb` whose control fields
-    /// match the config, and BITES when a field is deliberately wrong. Builds
+    /// match the config, and reports a field that is deliberately wrong. Builds
     /// the package with the real `nfpm` CLI. Skipped (visible marker) when
     /// `nfpm` or `dpkg-deb` is absent.
     #[test]
@@ -1333,7 +1333,7 @@ mod tests {
         );
 
         // Deliberately wrong expected version → the control field no longer
-        // matches, so the layer must bite.
+        // matches, so the layer must report it.
         let wrong_version = ExpectedControl {
             version: "9.9.9".to_string(),
             ..clone_expected(&expected)
@@ -1341,11 +1341,11 @@ mod tests {
         let bad = check_deb_control(&deb_path, &wrong_version).expect("dpkg-deb runs");
         assert!(
             bad.iter().any(|f| f.field == "deb:Version"),
-            "a version mismatch must bite, got: {bad:?}"
+            "a version mismatch must be reported, got: {bad:?}"
         );
 
         // Deliberately wrong expected architecture → the built arm64 .deb no
-        // longer matches, so the arch-regression guard must bite. This is the
+        // longer matches, so the arch-regression guard must report it. This is the
         // exact regression of the arch-mislabel bug this task fixed.
         let wrong_arch = ExpectedControl {
             arch: "amd64".to_string(),
@@ -1354,12 +1354,12 @@ mod tests {
         let bad_arch = check_deb_control(&deb_path, &wrong_arch).expect("dpkg-deb runs");
         assert!(
             bad_arch.iter().any(|f| f.field == "deb:Architecture"),
-            "an architecture mismatch must bite, got: {bad_arch:?}"
+            "an architecture mismatch must be reported, got: {bad_arch:?}"
         );
     }
 
     /// The gated control-field layer ACCEPTS a real `.rpm` whose header matches
-    /// and BITES on a deliberate mismatch. Skipped (visible marker) when `nfpm`
+    /// and reports a deliberate mismatch. Skipped (visible marker) when `nfpm`
     /// or `rpm` is absent.
     #[test]
     fn rpm_control_matches_then_bites() {
@@ -1397,11 +1397,11 @@ mod tests {
         let bad = check_rpm_control(&rpm_path, &wrong_name).expect("rpm runs");
         assert!(
             bad.iter().any(|f| f.field == "rpm:Package"),
-            "a package-name mismatch must bite, got: {bad:?}"
+            "a package-name mismatch must be reported, got: {bad:?}"
         );
 
         // Deliberately wrong expected architecture → the built aarch64 .rpm no
-        // longer matches, so the arch-regression guard must bite.
+        // longer matches, so the arch-regression guard must report it.
         let wrong_arch = ExpectedControl {
             arch: "x86_64".to_string(),
             ..clone_expected(&expected)
@@ -1409,7 +1409,7 @@ mod tests {
         let bad_arch = check_rpm_control(&rpm_path, &wrong_arch).expect("rpm runs");
         assert!(
             bad_arch.iter().any(|f| f.field == "rpm:Architecture"),
-            "an architecture mismatch must bite, got: {bad_arch:?}"
+            "an architecture mismatch must be reported, got: {bad_arch:?}"
         );
     }
 

@@ -28,7 +28,7 @@ use crate::util::{RevertCounts, RevertTarget, revert_summary_line, run_revert_ta
 use serde::{Deserialize, Serialize};
 
 /// AUR has a single branch convention: every package repo lives on
-/// `master`. Pinning this in one constant means both the publish path
+/// `master`. Holding this in one constant means both the publish path
 /// and the rollback path push to the same name and a future drift
 /// (e.g. a stray rename to `main`) is impossible without editing this
 /// line.
@@ -77,7 +77,7 @@ pub(crate) struct AurOurTarget {
     pub(crate) commit: Option<String>,
 }
 
-/// Walk the crate universe for a `publish.aur` block whose `git_url`
+/// Scan the crate universe for a `publish.aur` block whose `git_url`
 /// matches `git_url` and return the resolved
 /// `(private_key, git_ssh_command)` pair. Used at rollback time so
 /// the SSH credentials never need to round-trip through serialized
@@ -238,7 +238,7 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 }
 
 /// Decision predicate for the no-eligible-crates warning. True when the
-/// publisher walked the selection but the configured-predicate filtered
+/// publisher scanned the selection but the configured-predicate filtered
 /// every crate out — distinct from "ran successfully in dry-run mode".
 ///
 /// `processed` is the count of crates whose `is_aur_per_crate_configured`

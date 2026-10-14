@@ -517,7 +517,7 @@ mod tests {
         assert_eq!(
             fields.len(),
             27,
-            "the schema walk found a different number of fields"
+            "the schema scan found a different number of fields"
         );
     }
 

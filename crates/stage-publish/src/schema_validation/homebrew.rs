@@ -52,7 +52,7 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
         let strict = ctx.render_is_strict();
         let mut findings = Vec::new();
 
-        // Walk exactly the crate set the live homebrew publisher's `run`
+        // Visit exactly the crate set the live homebrew publisher's `run`
         // iterates (honoring `--crate` selection, else every
         // homebrew-configured crate) so the validated set equals the published
         // set in all config modes.
@@ -157,7 +157,7 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
 /// The always-on, hermetic minimum structural check: scan the rendered Ruby for the
 /// stanzas Homebrew requires and assert each is present and
 /// non-empty. Returns one [`SchemaFinding`] per violation; an empty Vec means
-/// the document clears the floor. Runs with no external tools, so it holds even
+/// the document passes the check. Runs with no external tools, so it holds even
 /// where `ruby` is absent.
 ///
 /// The rendered output is template-controlled, so targeted stanza scanning is
@@ -210,7 +210,7 @@ fn has_nonempty_string_stanza(ruby: &str, stanza: &str) -> bool {
     })
 }
 
-/// The required-stanza floor for a rendered FORMULA — only the stanzas
+/// The required-stanza minimum for a rendered FORMULA — only the stanzas
 /// Homebrew HARD-rejects on (parse / `brew install` failure), never the
 /// `brew audit --strict` advisories:
 /// - `class <Name> < Formula` header,
@@ -266,7 +266,7 @@ fn validate_formula_structural(ruby: &str) -> Vec<SchemaFinding> {
 /// nothing to place on disk.
 const CASK_ARTIFACT_STANZAS: &[&str] = &["binary", "app", "pkg", "suite", "manpage", "artifact"];
 
-/// The required-stanza floor for a rendered CASK — only the stanzas Homebrew
+/// The required-stanza minimum for a rendered CASK — only the stanzas Homebrew
 /// HARD-rejects on (parse / `brew install` failure), never the
 /// `brew audit --strict` advisories:
 /// - `cask "<token>" do` header,
@@ -337,7 +337,7 @@ fn validate_ruby_syntax(ruby: &str, strict: bool, log: &StageLogger) -> Result<V
             tool: "ruby",
             flags: &["-c"],
             files: &[(RUBY_TEMP_NAME, ruby)],
-            skip_message: "ruby not on PATH — relying on the structural Ruby floor for \
+            skip_message: "ruby not on PATH — relying on the minimum structural check for Ruby \
                  syntax validation",
             empty_fallback: "ruby -c reported the generated Ruby invalid but emitted no parseable diagnostic",
             // A homebrew tap publish is a git commit/PR (reversible), not a
@@ -593,7 +593,7 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(
             msg.contains("no archives matched"),
-            "surfaces the genuine full-build absence: {msg}"
+            "reports the genuine full-build absence: {msg}"
         );
     }
 
@@ -623,7 +623,7 @@ mod tests {
             .expect("a linux archive renders a valid formula");
         assert!(
             findings.is_empty(),
-            "a legitimate linux formula must clear the floor, got: {findings:?}"
+            "a legitimate linux formula must pass the minimum structural check, got: {findings:?}"
         );
     }
 
@@ -659,7 +659,7 @@ mod tests {
             );
         assert!(
             format!("{err:#}").contains("sha256"),
-            "surfaces the broken-artifact defect: {err:#}"
+            "reports the broken-artifact defect: {err:#}"
         );
     }
 
@@ -970,9 +970,9 @@ mod tests {
         );
     }
 
-    /// The minimum structural check must BITE for a FORMULA: a Ruby body missing the
+    /// The minimum structural check reports a FORMULA whose Ruby body is missing the
     /// `sha256` stanza is reported with a named finding. The corrected body
-    /// produces zero findings, proving the test bites rather than always-failing.
+    /// produces zero findings, proving the test catches the defect instead of always failing.
     #[test]
     fn formula_missing_sha256_is_reported_and_fix_clears_it() {
         let broken = r#"class Widget < Formula
@@ -1004,7 +1004,7 @@ end
         );
     }
 
-    /// The minimum structural check must BITE for a CASK: a Ruby body missing every
+    /// The minimum structural check reports a CASK whose Ruby body is missing every
     /// artifact stanza is reported. Adding a `binary` stanza clears it.
     #[test]
     fn cask_missing_artifact_is_reported_and_fix_clears_it() {
@@ -1130,7 +1130,7 @@ end
         );
     }
 
-    /// The `ruby -c` layer must BITE: a syntactically-broken Ruby (an unclosed
+    /// The `ruby -c` layer catches a syntactically-broken Ruby (an unclosed
     /// block) must produce a finding from the real `ruby -c`, and a corrected
     /// body must produce none. Skipped (with a visible marker) when `ruby` is
     /// not on `PATH`.
@@ -1174,9 +1174,9 @@ end
     /// The minimum structural check must NOT false-reject a VALID formula that omits
     /// the optional `license` stanza (template-gated `{% if license %}`; a
     /// licenseless formula is valid Ruby and installable). It must clear the
-    /// floor with zero findings.
+    /// check with zero findings.
     #[test]
-    fn formula_without_license_clears_the_floor() {
+    fn formula_without_license_passes_the_structural_check() {
         let no_license = r#"class Widget < Formula
   desc "A widget"
   homepage "https://acme.example"
@@ -1192,16 +1192,16 @@ end
         let findings = validate_formula_structural(no_license);
         assert!(
             findings.is_empty(),
-            "a licenseless formula is valid and must clear the floor, got: {findings:?}"
+            "a licenseless formula is valid and must pass the minimum structural check, got: {findings:?}"
         );
     }
 
     /// The minimum structural check must NOT false-reject a VALID cask that omits
     /// the optional `desc` / `homepage` stanzas (template-gated `{% if %}`; a
-    /// cask without them is valid Ruby and installable). It must clear the floor
+    /// cask without them is valid Ruby and installable). It must pass the check
     /// with zero findings.
     #[test]
-    fn cask_without_desc_or_homepage_clears_the_floor() {
+    fn cask_without_desc_or_homepage_passes_the_structural_check() {
         let no_desc_homepage = r#"cask "widget" do
   version "1.0.0"
   sha256 "abc123"
@@ -1214,7 +1214,7 @@ end
         let findings = validate_cask_structural(no_desc_homepage);
         assert!(
             findings.is_empty(),
-            "a cask without desc/homepage is valid and must clear the floor, got: {findings:?}"
+            "a cask without desc/homepage is valid and must pass the minimum structural check, got: {findings:?}"
         );
     }
 
@@ -1392,11 +1392,11 @@ end
 
     /// A PRESENT formula archive whose metadata is broken (missing
     /// sha256) is a REAL defect the live publish would refuse to push — the
-    /// validator must SURFACE it (an `Err` from the render propagates), NOT
+    /// validator must return it as an error (an `Err` from the render propagates) and must not
     /// collapse it to a not-applicable skip. Guards the regression where every
     /// render error was pattern-matched away as a shard skip.
     #[test]
-    fn present_formula_archive_missing_sha256_surfaces_not_skips() {
+    fn present_formula_archive_missing_sha256_errors_instead_of_skipping() {
         let cfg = every_option_homebrew_cfg();
         let mut ctx = TestContextBuilder::new()
             .snapshot(true)
@@ -1427,12 +1427,12 @@ end
             &crate::schema_validation::test_current_version_resolver(),
         );
         let err = result.expect_err(
-            "a present-but-broken archive (missing sha256) must surface as an error, \
+            "a present-but-broken archive (missing sha256) must be returned as an error, \
              not a silent skip",
         );
         assert!(
             format!("{err:#}").contains("sha256"),
-            "the surfaced error must name the missing sha256, got: {err:#}"
+            "the returned error must name the missing sha256, got: {err:#}"
         );
     }
 }

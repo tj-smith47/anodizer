@@ -126,7 +126,7 @@ impl Harness {
                             hashes,
                             differing_bytes_summary: Some(format!(
                                 "{} [{joined}] drifted and {} not allow-listed; \
-                                 a gated artifact regressed (surfaced via the {name} aggregate)",
+                                 a gated artifact regressed (reported through the {name} aggregate)",
                                 if members.len() == 1 {
                                     "aggregate member"
                                 } else {

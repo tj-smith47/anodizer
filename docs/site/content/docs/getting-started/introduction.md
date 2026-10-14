@@ -54,7 +54,7 @@ crates:
       cargo: {}              # empty map opts in; cargo publishes to crates.io
 
 # homebrew_casks is a top-level array — the canonical, warning-free Homebrew
-# surface. Each entry pushes the cask straight to its tap repo per release
+# publisher. Each entry pushes the cask straight to its tap repo per release
 # (set pull_request.enabled under repository to open a PR instead).
 homebrew_casks:
   - repository:

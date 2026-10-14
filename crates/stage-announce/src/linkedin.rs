@@ -324,7 +324,7 @@ mod tests {
 
     /// The typed 403-fallback sentinel's `Display` names the endpoint and the
     /// fall-back target so a reported error (when the downcast misses) is still
-    /// actionable. Pins the exact text the `LinkedinFallback` sentinel renders.
+    /// actionable. Checks the exact text the `LinkedinFallback` sentinel renders.
     #[test]
     fn fallback_sentinel_display_names_endpoints() {
         let msg = LinkedinFallback.to_string();
@@ -503,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn share_me_403_surfaces_permission_error() {
+    fn share_me_403_returns_permission_error() {
         let (result, calls) = run_share(vec![http("403 Forbidden", ""), http("403 Forbidden", "")]);
         let err = result.unwrap_err().to_string();
         assert!(err.contains("forbidden"), "{err}");
@@ -619,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn share_transport_error_is_classified_and_surfaced() {
+    fn share_transport_error_is_classified_and_returned() {
         // The connect gets ECONNREFUSED, which the userinfo arm classifies
         // as a (retriable) transport error and returns after attempts are
         // exhausted.

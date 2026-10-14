@@ -282,8 +282,8 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for DeprecationCounter
 }
 
 fn main() {
-    // Pin rustls to `ring` before any TLS path runs. The dependency graph
-    // links two CryptoProviders (ring + the aws-lc-rs that rustls 0.23
+    // Install `ring` as the rustls provider before any TLS path runs. The
+    // dependency graph links two CryptoProviders (ring + the aws-lc-rs that rustls 0.23
     // defaults transitive TLS users to); rustls panics on the first bare
     // builder unless the process default is chosen up front. See
     // `anodizer_core::tls`.

@@ -81,7 +81,7 @@ pub fn slash_display(path: &Path) -> String {
 /// not locate working directory") if the *inherited* cwd has been removed.
 /// Tests that swap the process-global cwd into a tempdir and tear it down can
 /// leave exactly that state, and a rotated/cleaned scratch dir can do so in
-/// production. Pinning such probes to this directory makes them independent of
+/// production. Running such probes in this directory makes them independent of
 /// the inherited cwd. Returns the system temp dir, which always exists.
 pub fn probe_dir() -> PathBuf {
     std::env::temp_dir()
@@ -140,7 +140,7 @@ mod tests {
     // parallel with the rest of the crate's suite.
 
     /// A path resolved through a symlinked root still prints relative to the
-    /// root as the user spelled it: `sync_workspace_deps` walks the canonical
+    /// root as the user spelled it: `sync_workspace_deps` scans the canonical
     /// workspace, and on macOS every tempdir is reached through `/var` →
     /// `/private/var`.
     #[cfg(unix)]

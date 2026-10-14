@@ -24,9 +24,9 @@ The platform tag is **derived by inspecting each binary**:
 | `i686-pc-windows-msvc` | — | `win32` |
 | `aarch64-pc-windows-msvc` | — | `win_arm64` |
 
-Because the `manylinux` tag comes from the binary's *real* glibc floor, a wheel never claims broader compatibility than the executable actually has.
+Because the `manylinux` tag comes from the binary's *real* minimum glibc version, a wheel never claims broader compatibility than the executable actually has.
 
-**Fully-static gnu binaries** (anodizer's default linux build — no `PT_INTERP`, no dynamic loader, no glibc dependency) legitimately declare no `GLIBC_*` requirement, so they cannot derive a glibc floor. They run on *any* glibc host, so anodizer tags them at the arch's lowest recognized `manylinux` profile: `manylinux_2_5` (the manylinux1 baseline) for x86_64/i686, and `manylinux_2_17` (manylinux2014, the first profile to include aarch64) for aarch64. A *dynamically linked* gnu binary that declares no glibc requirement is still a hard error — that means the wrong binary (or one with a stripped version-needed table) ended up under that target. Likewise a darwin-target artifact that is **not** a Mach-O object is a hard error (the Mach-O analogue of the missing-glibc case). When a Mach-O carries no version load command, the tag falls back to `10_12` (x86_64) / `11_0` (arm64 and universal). macOS 11+ deployment targets always tag `macosx_<major>_0` (e.g. an 11.2 minos wheel tags `macosx_11_0`), matching what pip/packaging enumerate. A binary whose only glibc requirement is the ancient x86_64 baseline (`GLIBC_2.2.5`) floors to `manylinux_2_5`, since `manylinux_2_2` is not a recognized profile.
+**Fully-static gnu binaries** (anodizer's default linux build — no `PT_INTERP`, no dynamic loader, no glibc dependency) legitimately declare no `GLIBC_*` requirement, so they cannot derive a minimum glibc version. They run on *any* glibc host, so anodizer tags them at the arch's lowest recognized `manylinux` profile: `manylinux_2_5` (the manylinux1 baseline) for x86_64/i686, and `manylinux_2_17` (manylinux2014, the first profile to include aarch64) for aarch64. A *dynamically linked* gnu binary that declares no glibc requirement is still a hard error — that means the wrong binary (or one with a stripped version-needed table) ended up under that target. Likewise a darwin-target artifact that is **not** a Mach-O object is a hard error (the Mach-O analogue of the missing-glibc case). When a Mach-O carries no version load command, the tag falls back to `10_12` (x86_64) / `11_0` (arm64 and universal). macOS 11+ deployment targets always tag `macosx_<major>_0` (e.g. an 11.2 minos wheel tags `macosx_11_0`), matching what pip/packaging enumerate. A binary whose only glibc requirement is the ancient x86_64 baseline (`GLIBC_2.2.5`) maps to `manylinux_2_5`, since `manylinux_2_2` is not a recognized profile.
 
 ### One binary per platform per entry
 
@@ -190,7 +190,7 @@ pypis:
     sdist_manifest: "pypi/"
 ```
 
-With `sdist: true`, `maturin` must be on `PATH` (surfaced by `anodizer preflight` / `anodizer tools` only when enabled) and the produced tarball uploads alongside the wheels with `filetype: sdist`. `SOURCE_DATE_EPOCH` is pinned from the run context so the tarball is reproducible.
+With `sdist: true`, `maturin` must be on `PATH` (reported by `anodizer preflight` / `anodizer tools` only when enabled) and the produced tarball uploads alongside the wheels with `filetype: sdist`. `SOURCE_DATE_EPOCH` is set from the run context so the tarball is reproducible.
 
 ## Authentication
 
@@ -248,7 +248,7 @@ The upload API rejects any filename the index has ever seen. anodizer's semantic
 
 ## Wheel contents
 
-For a project `my-tool` at `1.2.3` targeting `x86_64-unknown-linux-gnu` (glibc floor 2.28):
+For a project `my-tool` at `1.2.3` targeting `x86_64-unknown-linux-gnu` (minimum glibc 2.28):
 
 ```
 my_tool-1.2.3-py3-none-manylinux_2_28_x86_64.whl
@@ -259,7 +259,7 @@ my_tool-1.2.3-py3-none-manylinux_2_28_x86_64.whl
     └── RECORD                                (per-file sha256 + size)
 ```
 
-Wheel bytes are **deterministic**: entries are written in sorted order, deflate-compressed, with every mtime pinned to the commit timestamp (or `SOURCE_DATE_EPOCH`), so two builds of the same commit are byte-identical.
+Wheel bytes are **deterministic**: entries are written in sorted order, deflate-compressed, with every mtime set to the commit timestamp (or `SOURCE_DATE_EPOCH`), so two builds of the same commit are byte-identical.
 
 ## Nightlies
 

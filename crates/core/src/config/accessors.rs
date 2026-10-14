@@ -685,9 +685,7 @@ mod tests {
     /// the gate does not look at (or on no release at all).
     #[test]
     fn every_repository_level_registration_uses_the_release_owner() {
-        use crate::test_helpers::test_sources::{
-            function_bodies, production_half, workspace_production_sources,
-        };
+        use crate::test_helpers::test_sources::production_corpus;
 
         const REPOSITORY_LEVEL_KINDS: &[&str] = &[
             "ArtifactKind::SourceArchive",
@@ -736,10 +734,9 @@ mod tests {
         let mut variable_kind_ok_seen: Vec<&str> = Vec::new();
         let mut derivations_seen: Vec<String> = Vec::new();
         let mut failures: Vec<String> = Vec::new();
-        for source in workspace_production_sources() {
-            let display = source.display().to_string().replace('\\', "/");
-            let text = std::fs::read_to_string(&source).expect("read source");
-            for body in function_bodies(production_half(&text)) {
+        for source in production_corpus() {
+            let display = source.path.display().to_string().replace('\\', "/");
+            for body in &source.bodies {
                 let flat: String = body.split_whitespace().collect();
                 let name = body
                     .lines()
@@ -769,7 +766,7 @@ mod tests {
                     variable_kind_ok_seen.push(ok);
                 } else if names_a_variable_kind(&flat) {
                     failures.push(format!(
-                        "{here}: registers a kind the walk cannot read; spell the \
+                        "{here}: registers a kind the scan cannot read; spell the \
                          ArtifactKind literal or name the body in VARIABLE_KIND_OK"
                     ));
                 }
@@ -806,35 +803,31 @@ mod tests {
             registrars.len(),
             6,
             "the source, sbom (external and built-in), srpm, install-script and \
-             templatefiles registrations; a rename that empties the walk must \
+             templatefiles registrations; a rename that empties the scan must \
              fail here: {registrars:#?}"
         );
     }
 
     #[test]
     fn the_selection_predicate_is_spelled_once() {
-        use crate::test_helpers::test_sources::{production_half, workspace_production_sources};
-
-        let sources = workspace_production_sources();
+        use crate::test_helpers::test_sources::production_corpus;
 
         let this_file = std::path::Path::new(file!())
             .file_name()
             .expect("accessors.rs");
         let mut strays: Vec<String> = Vec::new();
-        for source in &sources {
-            if source.file_name() == Some(this_file) {
+        for source in production_corpus() {
+            if source.path.file_name() == Some(this_file) {
                 continue;
             }
-            let text = std::fs::read_to_string(source).expect("read source");
-            let production = production_half(&text);
-            let lines: Vec<&str> = production.lines().collect();
+            let lines: Vec<&str> = source.text.lines().collect();
             for (index, line) in lines.iter().enumerate() {
                 // rustfmt wraps a long condition, so the emptiness test and
                 // the membership test can span consecutive lines; joining
                 // the pair reads them as the one expression they are.
                 let joined = format!("{line}{}", lines.get(index + 1).unwrap_or(&""));
                 if retypes_the_selection_predicate(&flatten(&joined)) {
-                    strays.push(format!("{}:{}", source.display(), index + 1));
+                    strays.push(format!("{}:{}", source.path.display(), index + 1));
                 }
             }
         }

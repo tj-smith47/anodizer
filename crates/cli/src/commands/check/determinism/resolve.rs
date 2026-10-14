@@ -93,7 +93,7 @@ pub(super) fn resolve_child_snapshot(snapshot: bool, no_snapshot: bool, head_at_
 /// [`anodizer_core::signature_assets::signature_asset_suffixes`] — the
 /// single source of truth also consumed by release verification's digest
 /// exemption, so the two stay congruent by construction rather than by two
-/// hand-maintained copies of the same walk.
+/// hand-maintained copies of the same scan.
 pub(super) fn signature_allowlist_entries_from_config(
     cfg: &anodizer_core::config::Config,
 ) -> Vec<AllowListEntry> {

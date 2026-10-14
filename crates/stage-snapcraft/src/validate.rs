@@ -35,7 +35,7 @@ pub type TagResolver<'a> = &'a dyn Fn(&Context, &CrateConfig) -> Option<String>;
 /// strict render pass that guard returns `Err` instead of warning, so a leak
 /// aborts the release before the snapcraft build (let alone publish) fires.
 ///
-/// Crate selection mirrors [`crate::SnapcraftStage`]'s build walk exactly
+/// Crate selection mirrors [`crate::SnapcraftStage`]'s build loop exactly
 /// (`selected_crates` filter + a non-empty `snapcrafts:` block), so the
 /// validated set equals the built set across single-crate, workspace-lockstep,
 /// and workspace per-crate modes. `resolve_tag` scopes each crate's render to

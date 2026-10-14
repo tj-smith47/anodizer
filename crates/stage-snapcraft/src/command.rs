@@ -217,7 +217,7 @@ fn revisions_by_arch(output: &str, keep: impl Fn(&[&str], usize, usize) -> bool)
 
 /// Return `true` when a failed `snapcraft list-revisions` (or `release`)
 /// invocation's combined output says the snap is simply absent from the store
-/// — not yet registered or holding no revisions — as opposed to a genuine
+/// (not yet registered, or holding no revisions), as opposed to a genuine
 /// authentication / network / server fault. Promotion treats the absent case
 /// as "nothing to promote" (a skip) while reporting every real fault honestly.
 ///
@@ -591,7 +591,7 @@ mod tests {
 
     #[test]
     fn validate_snap_channel_reads_the_known_risks_ssot() {
-        // Walks the vocabulary rather than a literal list, so a fifth risk
+        // Reads the vocabulary itself, so a fifth risk
         // added to KNOWN_RISKS is covered without editing this test.
         for risk in KNOWN_RISKS {
             assert!(

@@ -1,6 +1,6 @@
 //! The workspace's declared `rust-version` must be at least the `rust-version`
 //! of every crate in the locked dependency graph. CI builds on `stable`, so a
-//! dependency whose own floor moved above the declared one is only visible to
+//! dependency whose own minimum moved above the declared one is only visible to
 //! a consumer building on the declared toolchain, where `cargo check --locked`
 //! refuses the graph. This test asks `cargo metadata` the same question on
 //! every run.
@@ -60,7 +60,7 @@ fn declared_msrv_covers_every_locked_dependency() {
 
     assert!(
         above.is_empty(),
-        "[workspace.package].rust-version = \"{declared_raw}\" is below the floor the locked \
+        "[workspace.package].rust-version = \"{declared_raw}\" is below the minimum the locked \
          dependency graph imposes; raise it to the highest of: {}",
         above.join(", ")
     );

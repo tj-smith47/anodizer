@@ -24,7 +24,7 @@ pub(super) struct TagCrateMapping {
 /// custom `registry:`/`index:` targets are out of the probe's scope) and
 /// whose tag family prefix (from its `tag_template`, monorepo prefix
 /// stripped) matches the tag. Per-crate tags (`crd-v0.5.0`) resolve to
-/// their own crate — note the tag prefix is the template's, NOT the crate
+/// their own crate. The tag prefix comes from the template, independent of the crate
 /// name (cfgd's `crd-v...` family belongs to the crate `cfgd-crd`);
 /// lockstep tags (every crate sharing the bare `v...` family) resolve to
 /// every such crate.

@@ -83,7 +83,7 @@ fn resolve_extra_files(
 ///
 /// **Note on `Artifacts` template variable**: This stage does NOT call
 /// `ctx.refresh_artifacts_var()` because it only renders naming templates
-/// (e.g. `name_template`, `extra_name_template`) — not user-facing release
+/// (e.g. `name_template`, `extra_name_template`), with no user-facing release
 /// body or announce templates where `{{ Artifacts }}` would be iterated.
 /// The `Artifacts` variable is refreshed by the release and announce stages
 /// just before they render their body templates.

@@ -18,7 +18,7 @@ This guide covers:
   allow-list (genuinely exempt) — what each is and why.
 - The `anodizer check determinism` harness CLI.
 - `--allow-nondeterministic <name>=<reason>`, the operator escape, and its
-  three audit surfaces.
+  three audit records.
 - The CI `skip_determinism` re-publish path and its integrity contract.
 - Snapshot-mode `SOURCE_DATE_EPOCH` resolution.
 - A worked example.
@@ -53,7 +53,7 @@ Every per-publisher receipt (`PublishEvidence`) carries a
 
 An artifact is allow-listed **only** when it is non-deterministic by nature
 — a spec-mandated unique id or a tool's wall-clock that the producing tool
-will not pin to `SOURCE_DATE_EPOCH` — and that is proven by a two-build
+will not set from `SOURCE_DATE_EPOCH` — and that is proven by a two-build
 `cmp` test, AND anodizer cannot fix it. A format that anodizer can make
 byte-reproducible at a fixed SDE is **not** allow-listed; it is gated so a
 real regression is caught. (Reproducible-but-allow-listed would silently
@@ -67,11 +67,11 @@ exports), proven by the cited test:
 
 | Artifact | Proven reproducible by | Why it is gated |
 |---|---|---|
-| `*.crate` | `cargo package` source-tarball normalization (sorted paths, mtime pinned to SDE) | cargo emits byte-identical `.crate` across two builds at a fixed SDE |
-| `*.rpm` | `stage-nfpm::rpm_is_byte_reproducible_across_time` | nfpm pins package mtimes to SDE; two builds `cmp`-identical |
-| `*.deb` | `stage-nfpm::deb_is_byte_reproducible_across_time` | nfpm pins the `ar`/`cpio` member mtimes to SDE; two builds `cmp`-identical |
+| `*.crate` | `cargo package` source-tarball normalization (sorted paths, mtime set to SDE) | cargo emits byte-identical `.crate` across two builds at a fixed SDE |
+| `*.rpm` | `stage-nfpm::rpm_is_byte_reproducible_across_time` | nfpm sets package mtimes to SDE; two builds `cmp`-identical |
+| `*.deb` | `stage-nfpm::deb_is_byte_reproducible_across_time` | nfpm sets the `ar`/`cpio` member mtimes to SDE; two builds `cmp`-identical |
 | `*.snap` | `stage-snapcraft::snap_is_byte_reproducible_across_time` | `snapcraft pack` (mksquashfs) honors SDE for the squashfs `mod_time`; two builds `cmp`-identical |
-| `*.pkg` (Linux xar/mkbom/cpio) | `stage-pkg::test_flat_pkg_is_byte_reproducible_across_time` | cpio dev/ino zeroed, payload mtime-pinned, xar TOC normalized and re-sealed |
+| `*.pkg` (Linux xar/mkbom/cpio) | `stage-pkg::test_flat_pkg_is_byte_reproducible_across_time` | cpio dev/ino zeroed, payload mtime fixed, xar TOC normalized and re-sealed |
 
 The remaining entries are genuinely allow-listed (intrinsic
 non-determinism, excluded from `drift_count`):
@@ -79,10 +79,10 @@ non-determinism, excluded from `drift_count`):
 | Artifact pattern | Reason it cannot be gated |
 |---|---|
 | `*.msi` | WiX candle/light embeds a non-pinnable build timestamp in the MSI summary-information stream; pending proof by `msi_is_byte_reproducible_across_time` on the windows determinism shard |
-| `*.dmg` | `hdiutil` writes a wall-clock volume creation date the macOS host will not pin to SDE; pending proof by `dmg_is_byte_reproducible_across_time` on the macos determinism shard |
+| `*.dmg` | `hdiutil` writes a wall-clock volume creation date the macOS host will not set from SDE; pending proof by `dmg_is_byte_reproducible_across_time` on the macos determinism shard |
 | `*.pkg` (macOS-host only) | the macOS-native `pkgbuild` path is not yet proven reproducible; pending proof by `native_pkgbuild_pkg_is_byte_reproducible_across_time` on the macos shard. **Host-keyed**: on a Linux host the `.pkg` is the proven xar path above and is gated, with no allow-list entry |
 | `*.flatpak` | `flatpak build-bundle` wraps an OSTree commit whose metadata (commit object timestamp + per-object headers) is not byte-stable even at a fixed SDE; empirically confirmed non-reproducible via two-build `cmp` |
-| `*.cdx.json` / `*.spdx.json` / `*.sbom.json` | SBOMs carry a spec-mandated per-document unique id (CycloneDX `serialNumber` UUID / SPDX `documentNamespace` UUID) plus a generation timestamp syft does not pin to SDE |
+| `*.cdx.json` / `*.spdx.json` / `*.sbom.json` | SBOMs carry a spec-mandated per-document unique id (CycloneDX `serialNumber` UUID / SPDX `documentNamespace` UUID) plus a generation timestamp syft does not fix to SDE |
 | `artifacts.json` | the dist manifest aggregates every artifact's size+digest (including allow-listed non-deterministic SBOMs); a derivative signal — each indexed artifact is drift-checked independently |
 
 Each allow-listed pattern also carries its `.sha256` sidecar (the sidecar
@@ -185,7 +185,7 @@ Semantics:
 - Each invocation appends to the per-run allow-list.
 - Reasons may contain any characters except newline; names must match an
   emitted artifact (mismatched names error out before any publish).
-- Pairs are mirrored into three audit surfaces (see below).
+- Pairs are mirrored into three audit records (see below).
 - **Precedence on collision**: when a runtime opt-out names an artifact that
   also has a compile-time allow-list entry, the compile-time reason wins on
   the `PublishEvidence.nondeterministic` field and both entries appear in
@@ -249,7 +249,7 @@ gate ever validated and breaks the verification contract this page exists to
 uphold. If the source changed, the gate must run. If the gate failed, fix the
 drift — do not skip it.
 
-## Three audit surfaces
+## Three audit records
 
 Every allow-listed artifact (compile-time or runtime) shows up in three
 places so a consumer cannot miss it:
@@ -519,7 +519,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 ```
 
-Windows is split per-target because it's the slowest platform; pinning
+Windows is split per-target because it's the slowest platform; limiting
 each shard to a single MSVC triple halves wall-clock on the critical
 path. Linux and macOS run their full target list in a single shard
 because both complete inside the Windows envelope.

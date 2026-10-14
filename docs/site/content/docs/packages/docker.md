@@ -6,7 +6,7 @@ template = "docs.html"
 +++
 
 Anodizer builds Docker images via `docker buildx`, producing multi-arch OCI
-image indexes in a single push. The canonical (and only) surface is per-crate
+image indexes in a single push. The canonical (and only) configuration is per-crate
 `dockers_v2:`. The legacy GoReleaser V1 `dockers:` block is rejected at
 config-load time with a migration error pointing here.
 
@@ -372,7 +372,7 @@ distroless default.
 `pre:` runs after the staging context is prepared but before
 `docker buildx build`; `post:` runs after the image digest is captured. Hook
 commands, working directories, and env values are template-expanded; in
-addition to the standard template surface, hooks see:
+addition to the standard template variables, hooks see:
 
 | Variable | Available in | Description |
 |----------|--------------|-------------|

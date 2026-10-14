@@ -589,8 +589,8 @@ pub fn homebrew_cask_legacy_warnings(config: &mut Config) -> Vec<String> {
 
     let mut warnings = Vec::new();
 
-    // Top-level homebrew_casks list (not nested under publish:) — not a
-    // publish axis, so it is scanned separately from the visitor.
+    // The top-level homebrew_casks list sits outside every publish axis, so
+    // it is scanned separately from the visitor.
     if let Some(ref mut casks) = config.homebrew_casks {
         for (i, cask) in casks.iter_mut().enumerate() {
             warnings.extend(fold_one(&format!("homebrew_casks[{i}]"), cask));

@@ -25,7 +25,7 @@ use super::{
 
 /// The snap.yaml metadata schema (draft 2020-12), authored from snapd's own
 /// Go validators (`snap/validate.go` / `snap/info.go`) plus the snap-format
-/// docs. Pinned and embedded so validation is fully offline; refresh via
+/// docs. Held at a fixed version and embedded so validation is fully offline; refresh via
 /// `schemas/SOURCES.md`.
 const SNAPCRAFT_SNAP_YAML_SCHEMA: &str =
     include_str!("../../schemas/snapcraft.snap-yaml.schema.json");
@@ -58,12 +58,12 @@ impl PublisherSchemaValidator for SnapcraftSchemaValidator {
         let log = ctx.logger("publish");
         let mut findings = Vec::new();
 
-        // Walk the snapcraft-configured crates (honoring `--crate` selection,
+        // Visit the snapcraft-configured crates (honoring `--crate` selection,
         // else every snapcraft-configured crate) so the validated set equals
         // the built set. Both the build's `run` and the offline renderer
         // resolve crates through the crate universe, so a snapcraft block
         // living only under `workspaces[].crates` is built AND validated —
-        // the two sets stay identical because both walk the same universe.
+        // the two sets stay identical because both scan the same universe.
         let selected = crate::publisher_helpers::effective_publish_crates(
             ctx,
             is_snapcraft_per_crate_configured,
@@ -83,7 +83,7 @@ impl PublisherSchemaValidator for SnapcraftSchemaValidator {
                 resolve_tag,
                 |ctx| {
                     let mut out = Vec::new();
-                    // The render walk returns one snap.yaml per (config, target). An
+                    // The render pass returns one snap.yaml per (config, target). An
                     // empty Vec means there is nothing to validate — the crate's
                     // configs were all `skip:`/`if:`-suppressed, or no Linux binary
                     // was built for it in this snapshot shard (the same
@@ -458,7 +458,7 @@ mod tests {
         );
     }
 
-    /// The offline walk must apply the build's per-target snap-arch gate: a
+    /// The offline scan must apply the build's per-target snap-arch gate: a
     /// crate whose only Linux binary targets an arch the snap store does not
     /// support (riscv64 maps to a snap arch outside `is_valid_snap_arch`) is
     /// not staged by the build, so the validator must render no snap.yaml for
@@ -529,7 +529,7 @@ mod tests {
         );
     }
 
-    /// The check must BITE on the headline rule: snapd caps `summary` at 78
+    /// The check catches the headline rule: snapd caps `summary` at 78
     /// characters (`ValidateSummary`). The renderer truncates to 78 so this
     /// never reaches the schema from real output — feed an over-long summary
     /// directly to prove the rule rejects it, then show the corrected value
@@ -565,7 +565,7 @@ mod tests {
         );
     }
 
-    /// An out-of-enum `confinement` bites: snapd accepts only
+    /// An out-of-enum `confinement` is caught: snapd accepts only
     /// strict/devmode/classic. Show the corrected value conforms.
     #[test]
     fn invalid_confinement_is_reported() {
@@ -596,7 +596,7 @@ mod tests {
         );
     }
 
-    /// An invalid `name` bites: snapd's `ValidateName` rejects uppercase and
+    /// An invalid `name` is caught: snapd's `ValidateName` rejects uppercase and
     /// underscores (the pattern admits only lowercase alphanumerics + single
     /// hyphens). Show the corrected value conforms.
     #[test]
@@ -632,7 +632,7 @@ mod tests {
     /// accepting names that merely contain digits ("v1", "app2") or a digit
     /// run broken by a hyphen ("1-2"). The schema `pattern` encodes that with a
     /// negative lookahead (`fancy-regex`, the engine the validator uses for
-    /// `pattern`), so the all-numeric rejection bites through the real
+    /// `pattern`), so the all-numeric rejection fires through the real
     /// `validate_json` path while valid names pass.
     #[test]
     fn all_numeric_name_is_reported_but_digit_names_pass() {

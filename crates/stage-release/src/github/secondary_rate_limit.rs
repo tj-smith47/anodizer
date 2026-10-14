@@ -20,7 +20,7 @@
 //!
 //! A present `Retry-After` is the server saying when to retry, so it is
 //! honoured as sent — a one-second hint sleeps one second. The 60 s constant
-//! is the fallback for an ABSENT header, never a floor under a present one:
+//! is the fallback for an ABSENT header, and a present header has no minimum:
 //! raising a short hint to a minute spends 59 s of every retry waiting for
 //! nothing. Only the 10-minute cap still applies, so a misbehaving proxy
 //! cannot stall the release indefinitely.
@@ -36,7 +36,7 @@ use anodizer_core::{EnvSource, ProcessEnvSource};
 use tower::{Layer, Service};
 
 /// Sleep applied when a secondary rate-limit response carries NO usable
-/// `Retry-After` header — the fallback, not a floor under a header the
+/// `Retry-After` header. It is only the fallback, and puts no minimum under a header the
 /// server did send.
 ///
 /// GitHub's documentation states that secondary rate-limit waits typically
@@ -205,7 +205,7 @@ pub(crate) fn secondary_rl_delay_with_env<E: EnvSource + ?Sized>(
     }
 
     // Honour the server's Retry-After header as sent. Only the cap applies:
-    // a floor here would turn `Retry-After: 1` into a minute of waiting for
+    // a minimum here would turn `Retry-After: 1` into a minute of waiting for
     // a limit that had already cleared.
     if let Some(captured) = capture.and_then(RetryAfterCapture::get) {
         let secs = captured.as_secs().min(RETRY_AFTER_MAX_SECS);
@@ -252,7 +252,7 @@ mod tests {
             // Retry disabled below, so a single served response suffices for
             // every status — no connection-count dependence on the retry count.
             let (addr, _calls) = spawn_oneshot_http_responder(vec![raw]);
-            // Pin rustls to `ring` before octocrab builds its reqwest client;
+            // Install `ring` as the rustls provider before octocrab builds its reqwest client;
             // the graph links two providers and nextest isolates each test in
             // its own process. See `crate::test_support::build_test_octocrab`.
             anodizer_core::tls::install_default_crypto_provider();
@@ -400,9 +400,9 @@ mod tests {
 
     /// Empty / non-numeric / zero values for the override env var must
     /// be rejected by `override_delay_secs_from` so the function falls
-    /// through to the Retry-After / floor branches. A regression that
+    /// through to the Retry-After / fallback branches. A regression that
     /// accepted "0" or "" would force every secondary-rate-limit retry
-    /// to skip the 60 s floor and hammer the API.
+    /// to skip the 60 s fallback and hammer the API.
     #[test]
     fn override_delay_secs_rejects_zero_empty_and_garbage() {
         let zero = MapEnvSource::new().with("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS", "0");

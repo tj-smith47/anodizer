@@ -162,10 +162,10 @@ fn flip_one(
     // target is untokened, so this is defensive.
     let Some(token) = repo.token.as_deref() else {
         bail!(
-            "github-promote: no GitHub token resolved for {}/{} — set \
-             ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN (or pass --token)",
+            "github-promote: no GitHub token resolved for {}/{}: {}",
             repo.owner,
-            repo.name
+            repo.name,
+            anodizer_core::git::github_token_hint()
         );
     };
     let flipped = rt.block_on(async {
@@ -436,10 +436,10 @@ pub fn preflight(ctx: &Context) -> Result<()> {
         .collect();
     if !untokened.is_empty() {
         bail!(
-            "no GitHub token resolved for {} — set \
-             ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN (or pass --token), \
-             or deselect github with --publishers",
-            untokened.join(", ")
+            "no GitHub token resolved for {}: {}. To promote without github, deselect it with \
+             --publishers",
+            untokened.join(", "),
+            anodizer_core::git::github_token_hint()
         );
     }
     Ok(())
@@ -1230,7 +1230,7 @@ mod tests {
                 dry_run: false,
                 ctx: &ctx,
             })
-            .expect_err("a failed PATCH must surface as a run error");
+            .expect_err("a failed PATCH must be returned as a run error");
         let msg = format!("{err:#}");
         assert!(
             msg.contains("acme/app"),

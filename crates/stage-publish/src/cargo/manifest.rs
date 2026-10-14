@@ -9,7 +9,7 @@ pub(crate) enum CargoVersionRef {
     /// `version = "X.Y.Z"` — literal version, return as-is.
     Literal(String),
     /// `version.workspace = true` or `version = { workspace = true }` —
-    /// walk up to the workspace root and resolve via `[workspace.package]`.
+    /// search upward to the workspace root and resolve via `[workspace.package]`.
     Workspace,
     /// No version field in the section.
     None,
@@ -114,10 +114,10 @@ pub(crate) fn strip_key_prefix<'a>(line: &'a str, key: &str) -> Option<&'a str> 
     }
 }
 
-/// Walk parent directories from `start` looking for a Cargo.toml that
+/// Search parent directories from `start` looking for a Cargo.toml that
 /// contains a real `[workspace]` (or exactly `[workspace.package]`)
 /// section header. Returns the path to that workspace root manifest.
-/// Walks at most 12 levels to bound runtime.
+/// Searches at most 12 levels to bound runtime.
 ///
 /// The header check is anchored to the exact strings — `starts_with`
 /// would falsely accept a leaf-crate manifest that contains only a
@@ -151,7 +151,7 @@ pub(crate) fn find_workspace_root_manifest(start: &std::path::Path) -> Option<st
 /// Resolves three Cargo.toml shapes:
 /// - `version = "X.Y.Z"` in `[package]` → returns `Some("X.Y.Z")`.
 /// - `version.workspace = true` (or `version = { workspace = true }`)
-///   → walks parent dirs for a Cargo.toml with `[workspace]`, reads
+///   → searches parent dirs for a Cargo.toml with `[workspace]`, reads
 ///   `[workspace.package].version`, returns that.
 /// - No version anywhere → `None`.
 ///
@@ -167,10 +167,10 @@ pub(crate) fn read_cargo_toml_version(crate_path: &str) -> Option<String> {
         CargoVersionRef::Literal(v) => Some(v),
         CargoVersionRef::None => None,
         CargoVersionRef::Workspace => {
-            // Walk up from the crate's directory to find the workspace
+            // Search upward from the crate's directory to find the workspace
             // root Cargo.toml. `crate_path` is typically a relative path
             // from the repo root (e.g. `crates/core`), so `.parent()` of
-            // its Cargo.toml gives the crate dir; walking up from there
+            // its Cargo.toml gives the crate dir; searching upward from there
             // finds the workspace manifest.
             let ws_manifest = find_workspace_root_manifest(
                 manifest.parent().unwrap_or(std::path::Path::new(".")),

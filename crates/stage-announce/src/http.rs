@@ -158,7 +158,7 @@ mod tests {
         assert!(is_retriable(wrapped.as_ref()));
         assert!(
             !is_retriable(wrapped.root_cause()),
-            "root_cause() reaches the leaf — wrong API for chain-walk classification"
+            "root_cause() reaches the leaf — wrong API for classification over the error chain"
         );
     }
 }

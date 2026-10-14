@@ -18,7 +18,7 @@
 //!   responders. See [`responder`](crate::test_helpers::responder) for
 //!   the full incident history.
 //! - Drain phase soaks up over-eager retries from middleware (e.g.
-//!   `tower` retry layers) so the returned counter pins to exactly the
+//!   `tower` retry layers) so the returned counter equals exactly the
 //!   canned-response count.
 //!
 //! ## Self-signed cert lifecycle

@@ -261,8 +261,8 @@ fn lockstep_write_refreshes_root_changelog() {
 }
 
 /// A lockstep repo whose `tag.tag_prefix` is `release-v` tags releases
-/// `release-v0.1.0`. The refresh must bound the range from THAT tag — not a
-/// hardcoded `v*` that misses it and degrades to full history (the recurring
+/// `release-v0.1.0`. The refresh must bound the range from THAT tag. A
+/// hardcoded `v*` misses it and degrades to full history (the recurring
 /// 3-mode prefix-drift bug). Asserts only the post-tag commit appears.
 #[test]
 fn lockstep_honors_custom_tag_prefix_for_range() {
@@ -448,7 +448,7 @@ fn single_tag_resolves_owning_crate_and_predecessor() {
     );
     let v: serde_json::Value = serde_json::from_str(&r.stdout).unwrap();
     let arr = v.as_array().unwrap();
-    assert_eq!(arr.len(), 1, "single tag pins to one crate: {}", r.stdout);
+    assert_eq!(arr.len(), 1, "single tag selects one crate: {}", r.stdout);
     assert_eq!(arr[0]["crate"], "core");
     assert_eq!(
         arr[0]["from"], "core-v0.2.0",
@@ -565,7 +565,7 @@ crates:
 }
 
 /// The exclusion must also apply to the DEFAULT `keep-a-changelog` format and to
-/// `--format json` — not just `release-notes`. These share the render path that
+/// `--format json` as well as to `release-notes`. These share the render path that
 /// previously re-derived filters without the version-sync auto-exclude, so the
 /// default `changelog` / `--write` / committed `CHANGELOG.md` leaked the bump.
 #[test]
@@ -1332,7 +1332,7 @@ fn same_prefix_shared_root_write_is_flat() {
 /// per-crate separators, both members' commits in one block. HEAD is tagged
 /// `v0.2.0` and the EXPLICIT `v0.1.0..v0.2.0` range drives a non-empty body
 /// (the changelog stage requires HEAD at the upper tag). An explicit range
-/// (unlike a single-tag positional, which pins to the tag's owning crate)
+/// (unlike a single-tag positional, which selects the tag's owning crate)
 /// applies to every target, exercising the no-filter aggregate collapse.
 #[test]
 fn same_prefix_shared_root_release_notes_is_one_aggregate() {
@@ -1811,7 +1811,7 @@ fn bump_rejects_divergent_flat_aggregate_versions() {
 
 /// Run `changelog -q` against an explicit `--config` (the root `.anodizer.yaml`)
 /// from `run_dir`. The explicit config isolates the workspace-root concern: the
-/// fix derives the root by walking up from the config's parent, so the same
+/// fix derives the root by climbing from the config's parent, so the same
 /// config resolves the same root whether `run_dir` is the repo root or a
 /// subdirectory beneath it.
 fn changelog_preview_from(run_dir: &Path, config: &Path) -> RunResult {
@@ -2539,7 +2539,7 @@ crates:
 
 /// `changelog <from>..<to> --format release-notes` must render exactly the
 /// `<from>..<to>` window: the in-range commit IS present and the post-`<to>`
-/// HEAD commit is ABSENT. Pins the bug where release-notes ignored `<to>` and
+/// HEAD commit is ABSENT. Tests the bug where release-notes ignored `<to>` and
 /// rendered `<from>..HEAD`.
 #[test]
 fn release_notes_explicit_range_honors_upper_bound() {
@@ -2560,7 +2560,7 @@ fn release_notes_explicit_range_honors_upper_bound() {
     assert!(
         !r.stdout.contains("POST_TAG change"),
         "post-v0.3.0 HEAD commit leaked past the upper bound v0.2.0 \
-         (release-notes ignored `<to>` and walked to HEAD):\n{}",
+         (release-notes ignored `<to>` and read to HEAD):\n{}",
         r.stdout
     );
 }
@@ -2587,7 +2587,7 @@ fn release_notes_single_tag_excludes_post_tag_commits() {
     assert!(
         !r.stdout.contains("POST_TAG change"),
         "post-v0.3.0 HEAD commit leaked into `changelog v0.3.0` \
-         (single-tag upper bound v0.3.0 ignored, walked to HEAD):\n{}",
+         (single-tag upper bound v0.3.0 ignored, read to HEAD):\n{}",
         r.stdout
     );
     assert!(
@@ -2598,7 +2598,7 @@ fn release_notes_single_tag_excludes_post_tag_commits() {
     );
 }
 
-/// An OPEN lower bound with an explicit upper bound (`..<to>`) walks only the
+/// An OPEN lower bound with an explicit upper bound (`..<to>`) reads only the
 /// ancestors of `<to>` — directly exercising `get_commits_reachable_paths_in`
 /// (the None-lower + Some-upper quadrant). The commit reachable from `<to>` IS
 /// present; the v0.2.0..v0.3.0 commit (above `<to>`) and the post-v0.3.0 HEAD
@@ -2626,7 +2626,7 @@ fn release_notes_open_lower_bounded_upper_walks_ancestors_of_to() {
     assert!(
         !r.stdout.contains("POST_TAG change"),
         "post-v0.3.0 HEAD commit is not an ancestor of v0.2.0 and must be absent \
-         (open-lower path walked to HEAD instead of bounding at v0.2.0):\n{}",
+         (open-lower path read to HEAD instead of bounding at v0.2.0):\n{}",
         r.stdout
     );
 }
@@ -2701,7 +2701,7 @@ workspaces:
     tmp
 }
 
-/// End-to-end pin for the release-notes workspace overlay: `--crate` naming a
+/// End-to-end test for the release-notes workspace overlay: `--crate` naming a
 /// `workspaces[].crates` member must resolve THAT workspace's track — its
 /// per-workspace `changelog` config (here a `groups` title only the overlay
 /// can supply) shapes the rendered notes, and the pending commit ends up in it.

@@ -4,8 +4,8 @@
 //! The `.claude/scripts/**` scanners classify a file as test code by NAME
 //! (`lib/test-regions.awk`'s `is_test_file`) because a sibling `tests.rs`,
 //! a `<name>_tests.rs` and a `crates/<crate>/tests/**` integration file carry
-//! no `#[cfg(test)]` of their own. Rust-side structural walks need the same
-//! two answers, and a second spelling of either one drifts silently: a walk
+//! no `#[cfg(test)]` of their own. Rust-side structural scans need the same
+//! two answers, and a second spelling of either one drifts: a scan
 //! that stops agreeing with the lexer reports on code the scanners skip, or
 //! skips code they report on.
 //!
@@ -13,20 +13,20 @@
 //! - [`declared_under_test_cfg`] checks the premise behind the name match —
 //!   the parent module really does declare the file under a test-only `cfg`.
 //! - [`production_half`] finds where a production file's inline test module
-//!   starts, so a walk over production code stops before it.
-//! - [`rust_sources`] is the walk itself: every production `.rs` file under a
+//!   starts, so a scan of production code stops before it.
+//! - [`rust_sources`] is the directory read itself: every production `.rs` file under a
 //!   directory, with test sources skipped by name once their declaration has
-//!   been checked. [`test_sources`] is that walk's other half — the sources it
+//!   been checked. [`test_sources`] is that read's other half — the sources it
 //!   skipped, unchecked, for the caller that checks them. Both come from
 //!   `partition_sources`, the one directory walk in the workspace.
 //! - [`function_bodies`] splits a source into per-function bodies, the grain a
 //!   structural guard needs to ask what one function does.
 //! - [`workspace_crate_dirs`] lists the workspace's crates, and
-//!   [`workspace_production_sources`] is the population a repo-wide pin walks:
-//!   the production half of every one of them. A pin asks for the crate list
-//!   rather than listing `crates/` for itself.
+//!   [`workspace_production_sources`] is the population a repo-wide
+//!   structural test reads: the production half of every one of them. A test
+//!   asks for the crate list and never lists `crates/` itself.
 //! - [`workspace_sources`] is every `.rs` file the workspace ships, production
-//!   and test halves and integration tests alike, for a pin that must see all
+//!   and test halves and integration tests alike, for a test that must see all
 //!   of them.
 //! - [`item_initializers`] splits a source into its `static` and `const`
 //!   items outside function bodies, whose initializers run code no body holds.
@@ -39,11 +39,11 @@ use std::path::{Path, PathBuf};
 /// Every production `.rs` file under `dir`, recursively.
 ///
 /// Test sources are skipped by NAME — whatever [`is_test_source_path`] names,
-/// plus a `tests/` module directory — rather than by their content, because a
+/// plus a `tests/` module directory. Their content cannot tell, because a
 /// sibling test file carries no `#[cfg(test)]` of its own. Skipping one by
 /// name is only sound while it really is test-only, so every skipped path is
-/// checked against its parent module's declaration and an ungated one panics
-/// rather than silently dropping production code from the walk.
+/// checked against its parent module's declaration, and an ungated one
+/// panics, so no production code is dropped from the scan unnoticed.
 pub fn rust_sources(dir: &Path) -> Vec<PathBuf> {
     let (production, tests) = partition_sources(dir);
     for path in &tests {
@@ -52,12 +52,12 @@ pub fn rust_sources(dir: &Path) -> Vec<PathBuf> {
     production
 }
 
-/// The other half of [`rust_sources`]'s walk: every test source it skips — a
+/// The other half of [`rust_sources`]'s directory read: every test source it skips — a
 /// whole test source file by name, and a `tests/` module directory itself,
 /// which is the unit a parent module declares.
 ///
 /// Returned without checking the declarations, for the caller whose job is to
-/// check them: the two directions come from one walk, so a rule either learns
+/// check them: the two directions come from one directory read, so a rule either learns
 /// cannot leave the other behind.
 pub fn test_sources(dir: &Path) -> Vec<PathBuf> {
     partition_sources(dir).1
@@ -95,9 +95,8 @@ fn partition_sources(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
 /// qualifiers (`default`, `const`, `async`, `unsafe`, `extern "C"`), then
 /// `fn `.
 ///
-/// Spelled as a rule rather than as a list of the four commonest prefixes,
-/// because a list leaves `async fn`, `const fn`, `unsafe fn` and
-/// `pub(in …) fn` — all of which this workspace contains — unexamined by every
+/// Spelled as a rule. A list of the four commonest prefixes leaves
+/// `async fn`, `const fn`, `unsafe fn` and `pub(in …) fn` — all of which this workspace contains — unexamined by every
 /// guard that composes [`function_bodies`], and a guard that cannot see a
 /// shape cannot fail on it.
 fn opens_fn_item(trimmed: &str) -> bool {
@@ -750,11 +749,11 @@ pub fn workspace_crate_dirs() -> Vec<PathBuf> {
 
 /// The production half of every workspace crate's `src/`.
 ///
-/// The population a repo-wide structural pin walks. Enumerating `crates/`
-/// per pin had drifted once already — one copy listed the directory and
+/// The population a repo-wide structural test reads. Enumerating `crates/`
+/// per test had drifted once already — one copy listed the directory and
 /// another parsed the manifest's `members`, so a crate directory that is not
-/// a member was in one population and not the other. The sanity floor here
-/// fails a pin that would otherwise pass vacuously over an empty walk.
+/// a member was in one population and not the other. The minimum count here
+/// fails a test that would otherwise pass vacuously over an empty corpus.
 pub fn workspace_production_sources() -> Vec<PathBuf> {
     let mut sources: Vec<PathBuf> = Vec::new();
     for krate in workspace_crate_dirs() {
@@ -765,14 +764,14 @@ pub fn workspace_production_sources() -> Vec<PathBuf> {
     }
     assert!(
         sources.len() > 100,
-        "the walk must cover every crate's production sources, found {}",
+        "the corpus must cover every crate's production sources, found {}",
         sources.len()
     );
     sources
 }
 
 /// Every `.rs` file the workspace ships, production and test alike,
-/// reached through the shared walk itself. An integration-test directory
+/// reached through the shared directory read itself. An integration-test directory
 /// is only expanded: its files are declared by cargo's target layout, not
 /// by a parent module, so the declaration check does not apply to them.
 pub fn workspace_sources() -> Vec<PathBuf> {
@@ -800,7 +799,7 @@ pub fn workspace_sources() -> Vec<PathBuf> {
             // sources a structural guard must see. Split directly rather
             // than asked for through `rust_sources`, whose parent-module
             // check has no answer here: an integration test root is
-            // declared by cargo, not by a `mod` item.
+            // declared by cargo and has no `mod` item.
             out.extend(partition_sources(&tests).0);
             expand(&tests, &mut out);
         }
@@ -876,18 +875,18 @@ mod tests {
     use super::*;
 
     /// [`partition_sources`] is the only directory walk that picks Rust files
-    /// out of a tree. A second one drifts from it silently — a rule taught to
-    /// one walk and not the other reports on code the scanners skip, or skips
-    /// code they report on — and two such copies had already drifted before
+    /// out of a tree. A second one drifts from it unnoticed: a rule taught to
+    /// one directory read and not the other reports on code the scanners
+    /// skip, or skips code they report on, and two such copies had already drifted before
     /// this guard existed. Any function that both reads a directory and tests
-    /// for the Rust file extension fails here until it goes through this walk.
+    /// for the Rust file extension fails here until it goes through this module.
     /// Whether a function body is a Rust-source directory walk: it reads a
     /// directory AND either tests for the extension or feeds what it read to
     /// one of this module's scanners. Both extension spellings count — an
     /// `extension() == "rs"` compare and a `ends_with(".rs")` one — because a
     /// detector that knows only the first is blind to the second, which
     /// contains no `"rs"` token at all. The scanner-call clause is what sees
-    /// a pin listing `crates/` itself and handing each `src/` to
+    /// a test listing `crates/` itself and handing each `src/` to
     /// [`rust_sources`]: five of those had accumulated, and none of them
     /// names a file extension.
     fn is_rust_source_walk(body: &str) -> bool {
@@ -898,7 +897,7 @@ mod tests {
                 || body.contains("test_sources("))
     }
 
-    /// The renderer internals a documented-render pin needs are re-exported
+    /// The renderer internals a documented-render test needs are re-exported
     /// only under the `test-helpers` feature. Ungated they are permanent
     /// public API of a consumer-facing library, and un-promising them later is
     /// a breaking change — the cheaper direction is not to promise them.
@@ -906,7 +905,7 @@ mod tests {
     fn the_renderer_internals_are_re_exported_only_under_the_test_feature() {
         let mod_rs = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/log/mod.rs");
         let text = std::fs::read_to_string(&mod_rs).expect("readable log module");
-        // Read the whole `pub use` STATEMENT, not one line of it: rustfmt
+        // Read the whole `pub use` statement: rustfmt
         // wraps a long re-export list across lines, and a line-anchored check
         // then sees a `pub use render::{` carrying none of the names.
         for (idx, _) in text.match_indices("pub use render::{") {
@@ -960,7 +959,7 @@ mod tests {
         );
     }
 
-    /// The walk detector must see both ways a source names the extension. A
+    /// The directory-read detector must see both ways a source names the extension. A
     /// `.ends_with(".rs")` walker contains no `"rs"` token, so a detector
     /// spelled only the first way lets it through with a passing suite.
     #[test]
@@ -972,12 +971,12 @@ mod tests {
             "fn b(d: &Path) { for e in std::fs::read_dir(d)? { if e.path().to_string_lossy().ends_with(\".rs\") {} } }"
         ));
         // A crate listing that hands each `src/` to a shared scanner never
-        // names an extension, and is the shape five pins had re-spelled.
+        // names an extension, and is the shape five tests had re-spelled.
         assert!(is_rust_source_walk(
             "fn c(d: &Path) { for e in std::fs::read_dir(d)? { out.extend(rust_sources(&e)); } }"
         ));
         // A directory read that neither asks about the extension nor collects
-        // sources is not a Rust-source walk.
+        // sources is not a Rust-source directory read.
         assert!(!is_rust_source_walk(
             "fn d(d: &Path) { std::fs::read_dir(d) }"
         ));
@@ -1039,13 +1038,42 @@ unsafe impl Send for NotAFn {
         );
     }
 
+    /// Whether a function body lists the workspace's production sources and
+    /// cuts each one to its production half itself. [`production_corpus`]
+    /// does both once per test binary; a scan that repeats them reads and
+    /// splits every file of the workspace again, which cost two scans a
+    /// minute between them.
+    fn splits_the_production_sources_itself(body: &str) -> bool {
+        body.contains("workspace_production_sources(") && body.contains("production_half(")
+    }
+
+    /// A body that lists the production sources and cuts each one itself is
+    /// reported, and one that iterates the corpus is not.
+    #[test]
+    fn the_corpus_detector_reports_a_scan_that_splits_the_sources_itself() {
+        assert!(splits_the_production_sources_itself(
+            "fn a() { for p in workspace_production_sources() { let t = read(&p); scan(production_half(&t)); } }"
+        ));
+        assert!(!splits_the_production_sources_itself(
+            "fn b() { for source in production_corpus() { scan(&source.text); } }"
+        ));
+        // Listing the paths alone, without cutting each file, is a different
+        // question the corpus does not answer.
+        assert!(!splits_the_production_sources_itself(
+            "fn c() { let n = workspace_production_sources().len(); }"
+        ));
+    }
+
     #[test]
     fn every_rust_source_walk_comes_from_the_shared_scanner() {
         let mut walks = Vec::new();
+        let mut private_splits = Vec::new();
         for source in workspace_sources() {
             let text = std::fs::read_to_string(&source).expect("readable source");
             for body in function_bodies(&text) {
-                if !is_rust_source_walk(&body) {
+                let walk = is_rust_source_walk(&body);
+                let split = splits_the_production_sources_itself(&body);
+                if !walk && !split {
                     continue;
                 }
                 let name = body
@@ -1053,15 +1081,43 @@ unsafe impl Send for NotAFn {
                     .and_then(|(_, rest)| rest.split(['(', '<']).next())
                     .unwrap_or_default()
                     .to_string();
-                walks.push(format!(
-                    "{}: {name}",
-                    crate::path_util::slash_display(&source)
-                ));
+                let site = format!("{}: {name}", crate::path_util::slash_display(&source));
+                if split {
+                    private_splits.push(site.clone());
+                }
+                if walk {
+                    walks.push(site);
+                }
             }
         }
+        // `production_corpus` builds the corpus, and the detector and its
+        // fixture test carry the needles the detector looks for.
+        const CORPUS_ALLOWED: [&str; 3] = [
+            "core/src/test_helpers/test_sources.rs: production_corpus",
+            "core/src/test_helpers/test_sources.rs: splits_the_production_sources_itself",
+            "core/src/test_helpers/test_sources.rs: the_corpus_detector_reports_a_scan_that_splits_the_sources_itself",
+        ];
+        let mut found: Vec<String> = private_splits
+            .iter()
+            .map(|w| {
+                CORPUS_ALLOWED
+                    .iter()
+                    .find(|a| w.ends_with(*a))
+                    .map_or_else(|| w.clone(), |a| (*a).to_string())
+            })
+            .collect();
+        found.sort();
+        let mut expected: Vec<String> = CORPUS_ALLOWED.iter().map(|a| (*a).to_string()).collect();
+        expected.sort();
+        assert_eq!(
+            found, expected,
+            "a scan that lists `workspace_production_sources` and cuts each file \
+             with `production_half` itself: iterate `production_corpus` and read \
+             `source.path`, `source.text` and `source.bodies`"
+        );
         // `crate_has_binary_target` lists one crate's `src/bin` to answer
         // whether a binary target exists at all; it collects no source to
-        // scan, so it is not a walk this module can serve.
+        // scan, so it is not a directory read this module can serve.
         // `is_rust_source_walk` is the detector and its own test fixture
         // carries the needles it looks for, so both match themselves.
         const ALLOWED: [&str; 4] = [
@@ -1084,15 +1140,15 @@ unsafe impl Send for NotAFn {
         expected.sort();
         assert_eq!(
             found, expected,
-            "a Rust-source walk outside the shared scanner: it must take its \
+            "a Rust-source directory read outside the shared scanner: it must take its \
              files from `rust_sources` / `test_sources`"
         );
     }
 
-    /// The walk skips a `tests/` module directory, and only while its parent
-    /// really declares it under a test-only `cfg`: gated, the walk yields
-    /// only the parent module; ungated, the walk fails rather than silently
-    /// dropping the production code it would have scanned.
+    /// The directory read skips a `tests/` module directory only while its
+    /// parent declares it under a test-only `cfg`: gated, the read yields
+    /// only the parent module; ungated, the read fails, so the production
+    /// code it would have scanned is never dropped unnoticed.
     #[test]
     fn walk_skips_only_a_gated_tests_directory() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -1105,7 +1161,7 @@ unsafe impl Send for NotAFn {
         std::fs::write(module.join("mod.rs"), "mod tests;\n").unwrap();
         assert!(
             std::panic::catch_unwind(|| rust_sources(&module)).is_err(),
-            "an ungated tests/ directory must fail the walk"
+            "an ungated tests/ directory must fail the directory read"
         );
     }
 
@@ -1467,14 +1523,18 @@ unsafe impl Send for NotAFn {
             "mod ",
         ];
         let mut stranded = Vec::new();
-        for source in workspace_production_sources() {
-            let path = source.to_string_lossy().replace('\\', "/");
+        for source in production_corpus() {
+            let path = source.path.to_string_lossy().replace('\\', "/");
             // The helpers are test code compiled under a feature, and their
             // own fixtures hold column-0 items inside string literals.
             if path.contains("/test_helpers/") {
                 continue;
             }
-            let text = std::fs::read_to_string(&source).expect("read source");
+            // The corpus holds only the production half, and this scan reads
+            // what follows it. The file is cut again from this one read so a
+            // file edited since the corpus was read is still cut where its
+            // own test module starts.
+            let text = std::fs::read_to_string(&source.path).expect("read source");
             let tail = &text[production_half(&text).len()..];
             let lines: Vec<&str> = tail.lines().collect();
             let mut in_block_comment = false;

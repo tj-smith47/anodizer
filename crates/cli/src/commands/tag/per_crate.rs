@@ -327,7 +327,7 @@ pub(crate) fn run_per_crate_tag(
 
     // Genuine multi-track root: each target owns a `### <crate>` subsection.
     // Multi-track-ness is a property of the repo TOPOLOGY — more than one crate
-    // routed to the shared root — not of how many tracks bump in this run. A
+    // routed to the shared root, whatever the number of tracks bumped this run. A
     // PerCrate release bumps one crate per tag, yet that crate's section still
     // belongs in the shared root as a tag-prefixed `## [<tag>]` section promoted
     // from its `### <crate>` subsection; gating on the per-run bump count would
@@ -392,15 +392,15 @@ pub(crate) fn run_per_crate_tag(
         }
 
         // Propagate every bumped crate's new version into sibling manifests'
-        // intra-workspace `[dependencies].<crate>.version` pins. Without this,
-        // a workspace member that depends on a sibling at the old pinned
+        // intra-workspace `[dependencies].<crate>.version` requirements. Without this,
+        // a workspace member that depends on a sibling at the old required
         // version (e.g. `cfgd-core = { path = "../cfgd-core", version = "0.3.5" }`)
         // still references the pre-bump version after sync_version() rewrites
         // only `[package].version`, and `cargo publish` later fails with
         // "failed to select a version for the requirement <sibling> = ^<old>".
         //
         // Each propagation is scoped to the Cargo workspace that owns the
-        // bumped crate, so a bump in one release group never rewrites a pin in
+        // bumped crate, so a bump in one release group never rewrites a version requirement in
         // an independent group whose crates live in a separate Cargo workspace.
         let mut intra_ws_modified: Vec<String> = Vec::new();
         for group_result in &tag_results {
@@ -427,11 +427,11 @@ pub(crate) fn run_per_crate_tag(
             }
         }
 
-        // Raise every remaining stale internal floor — including on crates no
+        // Raise every remaining stale internal minimum — including on crates no
         // group released this run — so a bump commit stranded off the default
         // branch cannot leave the next publish resolving an old sibling.
         for scope in &heal_scopes {
-            for healed in heal_dep_floors(
+            for healed in heal_dep_minimums(
                 scope,
                 Propagated::TopLevelSections(&versions_map),
                 false,
@@ -559,10 +559,10 @@ pub(crate) fn run_per_crate_tag(
         rewrite_and_stage_version_files(&workspace_root, &vf_plan, true, log)?;
         render_and_stage_changelogs(&cwd, &changelog_targets, &changelog_routing, true, log)?;
         // Preview exactly the heals the real run will make: every crate this
-        // run releases resolves to its new version, and the top-level floors
+        // run releases resolves to its new version, and the top-level minimums
         // `sync_workspace_deps` owns are left to it in both modes.
         for scope in &heal_scopes {
-            heal_dep_floors(
+            heal_dep_minimums(
                 scope,
                 Propagated::TopLevelSections(&versions_map),
                 true,

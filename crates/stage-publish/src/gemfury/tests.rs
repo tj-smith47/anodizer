@@ -556,7 +556,7 @@ fn version_already_published_returns_false_on_404() {
     // coerce it to Ok(false) so the publish path runs.
     assert!(
         matches!(result, Ok(false)),
-        "404 probe must surface Ok(false), got {:?}",
+        "404 probe must return Ok(false), got {:?}",
         result
     );
 }
@@ -886,9 +886,9 @@ fn gemfury_recorded_rollback_target_uses_derived_package_name() {
     assert_eq!(pushed[0].account, "acme");
 }
 
-/// The idempotent retry floor must keep a Fury push alive across a transient
+/// The idempotent retry minimum must keep a Fury push alive across a transient
 /// 503 even when the operator's resolved policy caps `attempts: 1` (the
-/// `--publish-only` shape). With the floor reverted to 1 this fails: the 503
+/// `--publish-only` shape). With the minimum reverted to 1 this fails: the 503
 /// would show up as a hard error and the responder would be hit only once.
 /// Scripts `[503, 200]` on the push responder under `attempts: 1` and asserts
 /// the push SUCCEEDS and the responder was hit twice.
@@ -905,7 +905,7 @@ fn gemfury_push_transient_503_retries_under_single_attempt_policy() {
     std::fs::write(&art_path, b"fake-deb").unwrap();
 
     // Probe 404 ⇒ push attempted; first push 503 (transient) ⇒ retry; second
-    // push 200 ⇒ success. The floor (3) makes the second attempt available even
+    // push 200 ⇒ success. The minimum (3) makes the second attempt available even
     // though the resolved policy caps attempts at 1.
     let probe_404 = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
     let push_503 = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n";
@@ -916,7 +916,7 @@ fn gemfury_push_transient_503_retries_under_single_attempt_policy() {
     let config = Config {
         project_name: "demo".to_string(),
         // attempts: 1 is the `--publish-only` resolved shape; tiny delays keep
-        // the test fast. Only the idempotent floor lets attempt 2 run.
+        // the test fast. Only the idempotent minimum lets attempt 2 run.
         retry: Some(RetryConfig {
             attempts: 1,
             delay: HumanDuration(Duration::from_millis(1)),
@@ -957,7 +957,7 @@ fn gemfury_push_transient_503_retries_under_single_attempt_policy() {
     assert_eq!(
         push_calls.load(Ordering::SeqCst),
         2,
-        "the push responder must be hit twice (503 then 200) — proving the floor retried"
+        "the push responder must be hit twice (503 then 200) — proving the minimum retried"
     );
 }
 
@@ -998,7 +998,7 @@ fn gemfury_partial_push_records_landed_target_on_later_failure() {
         .tag("v1.2.3")
         .build();
     ctx.config = config;
-    // Pin serial so the sequential responder's first-200-then-400 script maps
+    // Force serial so the sequential responder's first-200-then-400 script maps
     // deterministically to alpha (arrives) then beta (fails): this test asserts
     // the EXACT partial that was published, which only a serial push order fixes.
     // Concurrent-failure recording (a sibling success kept despite a failing
@@ -1032,12 +1032,12 @@ fn gemfury_partial_push_records_landed_target_on_later_failure() {
 
     assert!(
         result.is_err(),
-        "second-artifact 400 must surface as an error"
+        "second-artifact 400 must be returned as an error"
     );
     assert_eq!(
         pushed.len(),
         1,
-        "the first artifact that landed must be recorded for rollback, got {pushed:?}"
+        "the first artifact that was pushed must be recorded for rollback, got {pushed:?}"
     );
     assert_eq!(
         pushed[0].package, "alpha",
@@ -1109,11 +1109,11 @@ fn gemfury_concurrent_push_records_landed_target_despite_sibling_failure() {
     let mut pushed: Vec<GemFuryTarget> = Vec::new();
     let result = publish_to_gemfury(&ctx, &log, &mut pushed);
 
-    assert!(result.is_err(), "the 400 push must surface as an error");
+    assert!(result.is_err(), "the 400 push must be returned as an error");
     assert_eq!(
         pushed.len(),
         1,
-        "the concurrently-landed artifact must be recorded for rollback even \
+        "the artifact pushed concurrently must be recorded for rollback even \
          though its sibling failed, got {pushed:?}"
     );
     assert!(
@@ -1125,7 +1125,7 @@ fn gemfury_concurrent_push_records_landed_target_despite_sibling_failure() {
 
 // Push wire shape — assert the POST hits `push_base/<account>` with HTTP Basic
 // auth (push token as username, empty password) and a multipart `package` part.
-// Existing push tests only asserted the OUTCOME; these pin the on-the-wire
+// Existing push tests only asserted the OUTCOME; these check the on-the-wire
 // request so an auth/path regression is caught. Driven via the scripted
 // responder so (method, path, headers, body) are recorded.
 

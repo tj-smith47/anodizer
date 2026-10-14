@@ -26,7 +26,7 @@ pub enum SuccessClass {
 ///    a `<label>: <stage> transport error` context, classify with
 ///    [`is_retriable`] (so EOF / connection-reset retry, plain "dial
 ///    failed" fast-fails), and dispatch `Continue`/`Break`.
-/// 2. On non-success status: drain the body, format the outer message via
+/// 2. On non-success status: read the body to the end, format the outer message via
 ///    `error_msg`, wrap in [`HttpError::new`] with the upstream status, and
 ///    classify (5xx/429 → `Continue`, 4xx → `Break`).
 /// 3. On success status: return `(status, body)`.
@@ -115,7 +115,7 @@ where
                 }
                 Err(e) => {
                     // Transport-layer failure: always wrap in HttpError(status=0)
-                    // so the chain-walking classifier can see network-error
+                    // so the classifier, which reads the whole error chain, can see network-error
                     // substrings via the inner io::Error message.
                     let err = anyhow::Error::new(HttpError::from_response(e, None))
                         .context(format!("{}: HTTP transport error", rlog.desc()));
@@ -253,7 +253,7 @@ where
 ///    a `<label>: HTTP transport error` context, classifies via
 ///    [`is_retriable`] (network-substring + EOF chain match), and dispatches
 ///    `Continue`/`Break`.
-/// 2. On non-success status: drains the body via `Response::text().await`,
+/// 2. On non-success status: reads the body to the end via `Response::text().await`,
 ///    formats the outer message via `error_msg`, wraps in [`HttpError::new`]
 ///    with the upstream status, and classifies (5xx/429 → `Continue`, 4xx →
 ///    `Break`).
@@ -345,7 +345,7 @@ where
                     }
                     Err(e) => {
                         // Transport-layer failure: wrap in HttpError(status=0) so
-                        // the chain-walking classifier can see network-error
+                        // the classifier, which reads the whole error chain, can see network-error
                         // substrings via the inner io::Error message.
                         let err = anyhow::Error::new(HttpError::from_response(e, None))
                             .context(format!("{}: HTTP transport error", rlog.desc()));

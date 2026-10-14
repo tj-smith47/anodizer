@@ -1,6 +1,6 @@
 //! Per-publisher post-publish landing checks.
 //!
-//! A publisher reporting `Succeeded` proves its client call returned OK — not
+//! A publisher reporting `Succeeded` proves its client call returned OK. It does not prove
 //! that consumers can actually SEE the published artifact. This module closes
 //! that gap for the publishers whose published output is independently
 //! probeable with coordinates the run already recorded in its own publish

@@ -60,7 +60,7 @@ pub(super) fn check_workspaces(
 
 /// Top-level crate names must be non-empty.
 pub(super) fn check_top_level_crate_names(config: &Config, errors: &mut Vec<String>) {
-    // Raw walk (not `crate_universe()`): index-based messages need the
+    // Raw scan (not `crate_universe()`): index-based messages need the
     // top-level declaration order, and the walker's dedup would hide a
     // duplicate entry from validation. Workspace crate names get the same
     // check from `check_workspaces`'s own loop.
@@ -79,7 +79,7 @@ pub(super) fn check_top_level_depends_on(
     all_crate_names: &HashSet<&str>,
     errors: &mut Vec<String>,
 ) {
-    // Raw walk (not `crate_universe()`): every entry as written must be
+    // Raw scan (not `crate_universe()`): every entry as written must be
     // validated, including one the walker's dedup would shadow. Workspace
     // crates' `depends_on` gets the same check from `check_workspaces`.
     for c in &config.crates {
@@ -109,7 +109,7 @@ pub(super) fn check_cycles(config: &Config, errors: &mut Vec<String>) {
 /// Top-level `tag_template` must contain `{{ .Version }}` or `{{ Version }}`
 /// (Tera-native).
 pub(super) fn check_top_level_tag_templates(config: &Config, errors: &mut Vec<String>) {
-    // Raw walk (not `crate_universe()`): every entry as written must be
+    // Raw scan (not `crate_universe()`): every entry as written must be
     // validated, including one the walker's dedup would shadow. Workspace
     // crates' tag templates get the same check from `check_workspaces`.
     for c in &config.crates {
@@ -175,7 +175,7 @@ pub(super) fn crate_has_active_cargo_publisher(c: &CrateConfig) -> bool {
         .is_some_and(|cargo| !cargo.skip.as_ref().is_some_and(|s| s.as_bool()))
 }
 
-/// Walk up from `start_dir` to find the nearest ancestor whose `Cargo.toml`
+/// Climb from `start_dir` to find the nearest ancestor whose `Cargo.toml`
 /// declares a `[workspace]` table — the same directory-climbing resolution
 /// `cargo` itself uses to locate a member's workspace root. Falls back to
 /// `start_dir` when no ancestor `Cargo.toml` declares one (e.g. the crate is

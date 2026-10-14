@@ -863,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn rejection_names_the_version_element_and_remedy_below_the_floor() {
+    fn rejection_names_the_version_element_and_remedy_below_the_minimum() {
         let message = wixl_environment_rejection("0.103", Path::new("/tmp/pkg.wxs"))
             .expect("0.103 predates <Environment> support and must be rejected");
         // The three things wixl's own diagnostic omits.
@@ -874,13 +874,13 @@ mod tests {
     }
 
     #[test]
-    fn rejection_is_none_at_and_above_the_floor() {
+    fn rejection_is_none_at_and_above_the_minimum() {
         let (major, minor) = WIXL_ENVIRONMENT_MIN_VERSION;
-        let floor = format!("{major}.{minor}");
+        let minimum = format!("{major}.{minor}");
         assert_eq!(
-            wixl_environment_rejection(&floor, Path::new("/tmp/pkg.wxs")),
+            wixl_environment_rejection(&minimum, Path::new("/tmp/pkg.wxs")),
             None,
-            "the floor version itself carries the element and must pass"
+            "the minimum version itself carries the element and must pass"
         );
         assert_eq!(
             wixl_environment_rejection("0.106", Path::new("/tmp/pkg.wxs")),

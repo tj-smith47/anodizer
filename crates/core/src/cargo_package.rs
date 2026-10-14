@@ -40,7 +40,7 @@ use std::process::Command;
 /// Run `cargo package --workspace --no-verify --allow-dirty
 /// --no-metadata` against `manifest_dir` with the supplied isolated env.
 ///
-/// Pinning args:
+/// Fixed args:
 /// - `--workspace` — assemble every workspace member's `.crate` in one
 ///   invocation. For a non-workspace single-crate repo cargo accepts
 ///   this flag and packages the single crate (verified against cargo
@@ -65,7 +65,7 @@ use std::process::Command;
 /// `cargo_target_dir` is set as `CARGO_TARGET_DIR` (already exported
 /// via `env`) so the `.crate` ends up at
 /// `<cargo_target_dir>/package/<name>-<version>.crate` — the location
-/// the harness's discover step walks to pick up the artifacts.
+/// the harness's discover step scans to pick up the artifacts.
 ///
 /// `env` carries the harness's hermetic env block —
 /// `SOURCE_DATE_EPOCH`, `CARGO_HOME`, `HOME`, `RUSTFLAGS`, `PATH`,

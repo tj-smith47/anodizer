@@ -87,7 +87,7 @@ pub(crate) fn build_put_options(
     // as the disable-sentinel, so a copy-pasted
     // config with no `content_disposition:` key produces a downloadable blob
     // (RFC 6266 attachment) instead of an in-browser preview that the default
-    // user would have seen pinning a checksum file or ZIP archive.
+    // user would have seen opening a checksum file or ZIP archive.
     //
     // Migration note: anodizer historically left this header unset by
     // default. Users relying on the old behaviour for in-browser preview

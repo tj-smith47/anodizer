@@ -10,7 +10,7 @@
 //! uploaded the manifest.
 //!
 //! This module is the shared foundation for closing that gap. It vendors the
-//! registry schemas (offline, pinned — see `schemas/SOURCES.md`), exposes a
+//! registry schemas (offline, at fixed versions — see `schemas/SOURCES.md`), exposes a
 //! `validate_json` helper that runs any instance against any JSON Schema and
 //! reports each violation as a field-named `SchemaFinding`, and defines the
 //! `PublisherSchemaValidator` trait each publisher implements to render and
@@ -148,7 +148,7 @@ pub(crate) struct ExternalValidator<'a> {
     /// `warn` line logged when `tool` is absent (or unprobeable) and the
     /// validation gate is NOT escalating — a lenient local `check`/dry-run, or
     /// a reversible publisher. There the minimum structural check stands and a
-    /// dev missing the tool gets a skip, not a failure. When `tool_required` is
+    /// dev missing the tool gets a skip. When `tool_required` is
     /// set AND the validation gate runs strict, a missing tool shows up as a
     /// finding instead — see [`run_external_validator`].
     pub skip_message: &'a str,
@@ -554,7 +554,7 @@ mod tests {
         // The wrong-typed field is independently reported alongside it.
         assert!(
             findings.iter().any(|f| f.field == "/age"),
-            "both the missing-required and wrong-typed violations are surfaced"
+            "both the missing-required and wrong-typed violations are reported"
         );
     }
 

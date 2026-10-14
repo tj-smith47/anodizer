@@ -52,7 +52,7 @@ anodizer healthcheck
 | Tool | Required for | Install |
 |------|-------------|---------|
 | `cargo` | Building | Comes with Rust |
-| `git` | Version detection, changelog — **2.13 or newer** (see [Git version floor](@/docs/general/git.md#git-version-floor)) | System package manager |
+| `git` | Version detection, changelog — **2.13 or newer** (see [Minimum git version](@/docs/general/git.md#minimum-git-version)) | System package manager |
 | `docker` | Docker stage | [docker.com](https://docs.docker.com/get-docker/) |
 | `nfpm` | Linux packages (.deb, .rpm, .apk) | [nfpm.goreleaser.com](https://nfpm.goreleaser.com/) |
 | `cargo-zigbuild` | Cross-compilation (zigbuild strategy) | `cargo install cargo-zigbuild` |

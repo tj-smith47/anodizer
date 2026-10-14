@@ -240,7 +240,7 @@ entry that selects no binaries at all (`meta: true`) produces nothing under
 
 Each `binary` output is named per binary from `{{ .Binary }}`. Setting
 `name_template:` on the entry wins instead, so an entry shipping a single
-binary can pin any name in one line:
+binary can set any name in one line:
 
 ```yaml
 crates:

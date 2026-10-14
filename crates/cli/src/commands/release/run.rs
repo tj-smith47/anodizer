@@ -192,7 +192,7 @@ pub(crate) fn run(mut opts: ReleaseOpts) -> Result<()> {
         pipeline::emit_config_advisories_filtered(&config, &log, |name| {
             ctx.publisher_deselected(name)
         });
-        helpers::resolve_scm_token_type(&mut ctx, &config);
+        helpers::resolve_scm_token_type(&mut ctx, &config)?;
         ctx.populate_time_vars()?;
         ctx.populate_runtime_vars();
         ctx.populate_metadata_var()?;

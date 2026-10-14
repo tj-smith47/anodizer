@@ -160,7 +160,7 @@ after:
     - echo "Release complete for {{ ProjectName }} {{ Tag }}"
 
 # Pre-publish integrity gate — runs after build/sign/checksum, before any
-# one-way-door publisher dispatches. Each entry runs once (run_once) and walks
+# one-way-door publisher dispatches. Each entry runs once (run_once) and scans
 # the dist dir itself. A non-zero exit aborts the release before crates.io /
 # GitHub / blobs receive anything.
 before_publish:
@@ -278,7 +278,7 @@ crates:
     path: crates/cli
     builds:
       # GNU build — feeds archives + deb + rpm. Inherits defaults.targets
-      # (the six gnu/darwin/msvc triples). The hermetic glibc floor
+      # (the six gnu/darwin/msvc triples). The hermetic glibc minimum
       # (verify_release.glibc_ceiling) and Debian/RHEL portability ride on it.
       - id: anodizer
         binary: anodizer
@@ -574,7 +574,7 @@ crates:
     nfpm:
       # deb + rpm packers — bound to the GNU build (`ids: [anodizer]`). deb
       # (Debian/Ubuntu) and rpm (RHEL/Fedora/SUSE) ship glibc; the hermetic
-      # glibc floor (verify_release.glibc_ceiling) keeps these portable.
+      # glibc minimum (verify_release.glibc_ceiling) keeps these portable.
       - id: default
         package_name: anodizer
         ids:
@@ -646,7 +646,7 @@ crates:
       # apk packer — bound to the musl build (`ids: [anodizer-musl]`). apk
       # installs on Alpine, which ships musl libc; a glibc binary EXITs 127
       # there. Splitting apk into its own config (musl) while deb/rpm stay
-      # glibc preserves the glibc floor for the portable formats.
+      # glibc preserves the glibc minimum for the portable formats.
       - id: apk
         package_name: anodizer
         ids:
@@ -744,7 +744,7 @@ crates:
       # The Flatpak analog of the classic-confinement snap above: anodizer is a
       # release CLI that, once installed, execs the host's cargo/git/docker/
       # cosign/gpg against the user's project. Strict Flatpak sandboxing blocks
-      # all of that, so these finish_args open the same broad host surface the
+      # all of that, so these finish_args open the same broad host access the
       # classic snap relies on — each one is needed, not a toy bundle:
       #   --share=network            registry/git/notary I/O (cargo publish, gh)
       #   --share=ipc                X11/dbus shared-memory many host tools use
@@ -870,7 +870,7 @@ aur_sources:
 
 # Top-level Homebrew Cask publisher — GR v2.16+ supported path.
 # GoReleaser v2.16 fully deprecated `brews:` (Formula). This block uses the
-# structured `homebrew_casks:` surface, which unlocks completions, manpages,
+# structured `homebrew_casks:` set of fields, which unlocks completions, manpages,
 # binaries, caveats, uninstall, and zap as first-class fields instead of raw
 # Ruby strings in post_install.
 homebrew_casks:
@@ -906,7 +906,7 @@ homebrew_casks:
     # Active version detection: anodizer tags releases on GitHub, so
     # `github_latest` against the cask's own `url` stanza (`url :url`, the
     # idiomatic cask shorthand) lets `brew livecheck` poll the latest tag.
-    # This dogfoods the cask `livecheck` field — the single Homebrew surface
+    # This dogfoods the cask `livecheck` field — the only Homebrew package
     # anodizer publishes is this cask; no Formula is emitted.
     livecheck:
       strategy: github_latest
@@ -1183,7 +1183,7 @@ uploads:
     method: PUT
     mode: archive
     # anodizer supports same-version re-cuts (delete the remote tag, re-push
-    # fixes, auto-tag re-mints the same vX.Y.Z); a re-cut's artifacts legitimately
+    # fixes, auto-tag cuts the same vX.Y.Z again); a re-cut's artifacts legitimately
     # differ in bytes, so this self-hosted mirror must replace the stale copy
     # rather than hard-error on immutable-version drift. Safe because the
     # api-server store is fully overwrite/idempotent — never a one-way door.
@@ -1279,7 +1279,7 @@ npms:
 # Self-dogfood: anodizer ships as pip-installable per-platform wheels so the
 # wheel-repackage publisher runs on a live PyPI release, not only in tests.
 # summary/homepage/license derive from `metadata:`; only the declarative PyPI
-# surface is named here. auth: oidc = pure PyPI Trusted Publishing, no stored
+# fields are named here. auth: oidc = pure PyPI Trusted Publishing, no stored
 # token. A PENDING trusted publisher (pypi.org → Publishing) is registered for
 # project `anodizer` against repo tj-smith47/anodizer, workflow publish-oidc.yml,
 # environment Any — a pending publisher exists precisely to CREATE the

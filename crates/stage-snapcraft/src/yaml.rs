@@ -174,7 +174,7 @@ pub(crate) fn render_snap_yaml(
 }
 
 /// Render every snap.yaml a build would emit for one crate, mirroring the
-/// build's per-target run walk — without staging files or spawning snapcraft.
+/// build's per-target run loop — without staging files or spawning snapcraft.
 ///
 /// Returns `Ok(vec![])` (nothing to validate) when the crate carries no
 /// snapcraft config, when a config's `skip:` / `if:` gate suppresses it, or
@@ -444,8 +444,8 @@ mod summary_tests {
     #[test]
     fn emitted_snap_yaml_carries_derived_license() {
         // End-to-end: resolve the config (derive license from Cargo.toml) then
-        // generate the snap.yaml, proving the emitted manifest — not just the
-        // intermediate struct — carries `license: MIT OR Apache-2.0`.
+        // generate the snap.yaml, proving the emitted manifest, as well as the
+        // intermediate struct, carries `license: MIT OR Apache-2.0`.
         let (ctx, _tmp) = ctx_with_cargo_license("MIT OR Apache-2.0");
         let snap_cfg = SnapcraftConfig {
             summary: Some("a demo".to_string()),

@@ -40,7 +40,7 @@ use super::MetadataConfig;
 /// - `maintainers` ← `package.authors`.
 ///
 /// A field that is `{ workspace = true }` is resolved against the workspace
-/// root's `[workspace.package]` table (searched by walking parent directories
+/// root's `[workspace.package]` table (searched in each parent directory in turn
 /// for a `Cargo.toml` declaring `[workspace]`).
 ///
 /// Missing / unreadable / unparsable `Cargo.toml` yields an all-`None`
@@ -131,7 +131,7 @@ struct WorkspacePackage {
 }
 
 impl WorkspacePackage {
-    /// Walk up from `crate_dir` looking for a `Cargo.toml` that declares
+    /// Search upward from `crate_dir` looking for a `Cargo.toml` that declares
     /// `[workspace]`. Stops at the filesystem root. The crate's own
     /// `Cargo.toml` is included in the search (single-crate workspaces declare
     /// `[workspace]` alongside `[package]`).

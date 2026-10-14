@@ -118,7 +118,7 @@ crates:
     /// continue (no --merge) follows the single-host stage-resume path:
     /// load dist/ + run publish-only. `init_publish_stage_ctx` runs
     /// `setup_context` (git resolution) before `load_artifacts_from_dist`,
-    /// so either failure mode is acceptable — both pin the prelude.
+    /// so either failure mode is acceptable — both test the prelude.
     #[test]
     #[serial(cwd)]
     fn no_merge_missing_dist_or_git_bails() {

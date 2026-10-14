@@ -274,7 +274,7 @@ pub(crate) fn render_scoop_manifest_for_crate(
     // a unique set across all architecture variants.
     //
     // Gated on the same `filters.matches` the arch-entry collector above
-    // applies — not a looser Windows-only check — so a binary name from an
+    // applies, so a binary name from an
     // artifact that `ids` / `amd64_variant` excluded cannot leak into the
     // manifest's `bin` field while that artifact's arch entry is (correctly)
     // absent.

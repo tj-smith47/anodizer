@@ -65,7 +65,7 @@ fn preserve_dist_copies_dist_tree_and_emits_context_json() {
 
     assert!(
         output.status.success(),
-        "expected zero exit on green run; stdout={} stderr={}",
+        "expected zero exit on passing run; stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -154,7 +154,7 @@ fn preserve_dist_copies_dist_tree_and_emits_context_json() {
         "context.json `commit` must be the harness's commit SHA, got empty"
     );
 
-    // Round-trip: re-serialize the parsed value and reparse — pins the
+    // Round-trip: re-serialize the parsed value and reparse, which keeps the
     // shape stable under serde even if a future contributor swaps the
     // serializer.
     let reserialized = serde_json::to_string_pretty(&context).expect("reserializing context.json");
@@ -169,7 +169,7 @@ fn preserve_dist_copies_dist_tree_and_emits_context_json() {
 /// Each file in `<preserved-dist>/` has a SHA256 that matches the
 /// corresponding `determinism.json:artifacts[].hash` entry.
 ///
-/// This pins the safety property: the bytes the publish-
+/// This tests the safety property: the bytes the publish-
 /// only flow ships are byte-identical to the bytes the determinism
 /// check verified. A divergence here means the preservation copy lost
 /// or corrupted a file.
@@ -208,7 +208,7 @@ fn preserve_dist_bytes_match_determinism_report_hashes() {
 
     assert!(
         output.status.success(),
-        "expected zero exit on green run; stdout={} stderr={}",
+        "expected zero exit on passing run; stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -218,7 +218,7 @@ fn preserve_dist_bytes_match_determinism_report_hashes() {
     let report_json = fs::read_to_string(&report_path).expect("reading determinism.json");
     let report: DeterminismReport =
         serde_json::from_str(&report_json).expect("parsing determinism.json");
-    assert_eq!(report.drift_count, 0, "harness must green for this test");
+    assert_eq!(report.drift_count, 0, "harness must pass for this test");
 
     let by_name: std::collections::HashMap<&str, &str> = report
         .artifacts
@@ -231,18 +231,18 @@ fn preserve_dist_bytes_match_determinism_report_hashes() {
          report: {report:?}"
     );
 
-    // Walk preserved-dist and confirm each file's SHA matches the
+    // Scan preserved-dist and confirm each file's SHA matches the
     // report's recorded hash. The expected-not-in-report set is
     // bounded — only the manifest sidecars below are valid misses;
     // any other miss indicates a regression in the harness's
-    // discover/hash walk and MUST fail the test.
+    // discover/hash scan and MUST fail the test.
     //
     // - `context.json` is written by the preserve module POST-loop,
     //   after the determinism check finished, so it can't appear in
     //   the report's artifacts array.
     // - `metadata.json` / `artifacts.json` are written by the
     //   release pipeline's `run_post_pipeline`. They post-date the
-    //   harness's `discover_artifacts` walk (which runs immediately
+    //   harness's `discover_artifacts` scan (which runs immediately
     //   after `run_build_pipeline` returns, but BEFORE post-pipeline
     //   bookkeeping fires inside the child), so they don't appear
     //   in `determinism.json:artifacts`.
@@ -295,9 +295,9 @@ fn preserve_dist_bytes_match_determinism_report_hashes() {
         matched += 1;
     }
 
-    // Tight floor: matched + expected_misses MUST account for every
+    // Exact count: matched + expected_misses MUST account for every
     // file in the preserved tree. A regression where a file silently
-    // stops appearing in the report (e.g. the discover walk drops
+    // stops appearing in the report (e.g. the discover scan drops
     // `.sha256` sidecars) would shift it out of `matched` AND out of
     // `EXPECTED_MISSES`, tripping the panic above. This assertion is
     // the belt to that suspender — it locks the count.
@@ -391,7 +391,7 @@ fn preserve_dist_removed_on_drift_detection() {
 /// fields. The release pipeline's `run_post_pipeline` writes
 /// `dist/metadata.json` (`version`) and `dist/artifacts.json`
 /// (`target` per entry) even when the `release` stage is skipped, so
-/// both fields are available in the preserved tree. This test pins
+/// both fields are available in the preserved tree. This test holds
 /// that contract so a future contributor refactoring the post-
 /// pipeline write site can't silently regress to empty manifest
 /// fields (which would force Phase-2 consumers to fall back to
@@ -431,7 +431,7 @@ fn preserve_dist_context_json_has_non_empty_targets_and_version() {
 
     assert!(
         output.status.success(),
-        "expected zero exit on green run; stdout={} stderr={}",
+        "expected zero exit on passing run; stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );

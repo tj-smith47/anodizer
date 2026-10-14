@@ -65,7 +65,7 @@ pub struct DeterminismReport {
     /// passes.
     pub drift: Vec<DriftRow>,
     /// `drift.len() as u32`, hoisted to a top-level field so CI parsers
-    /// can short-circuit on the integer without walking the array.
+    /// can short-circuit on the integer without reading the array.
     pub drift_count: u32,
 }
 

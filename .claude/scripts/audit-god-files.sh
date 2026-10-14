@@ -70,16 +70,16 @@ GOD_FILE_LIMIT=1000
 # it would make the code worse, so it is not going to shrink.
 #
 # GOD_FILE_DEBT — a real violation that predates this guard. It is NOT blessed:
-# it is pinned at its current size and printed on every passing run so it stays
+# it is held at its current size and printed on every passing run so it stays
 # visible until it is split.
 #
-# Both are PINNED ceilings, never blank cheques: the file may shrink freely, but
+# Both are FIXED ceilings: the file may shrink freely, but
 # a commit that grows it fails. That makes the entry a ratchet — the only
 # direction either list can move a file is down and then out.
 #
-# Format: "<path>:<pinned ceiling>:<why>".
+# Format: "<path>:<fixed ceiling>:<why>".
 GOD_FILE_EXEMPT=(
-    "crates/cli/src/lib.rs:1093:CLI surface aggregator — clap command wiring, one flat block per subcommand; splitting it scatters the argument surface across files without reducing it. Ratified 2026-07-26 as a standing exemption from the >1000-production-line rule; do not re-open it as a split target"
+    "crates/cli/src/lib.rs:1093:CLI command aggregator — clap command wiring, one flat block per subcommand; splitting it scatters the argument definitions across files without reducing it. Ratified 2026-07-26 as a standing exemption from the >1000-production-line rule; do not re-open it as a split target"
 )
 
 GOD_FILE_DEBT=()
@@ -225,7 +225,7 @@ for f in "${ALL_RS[@]}"; do
     [[ -n "${IS_TEST_FILE[$f]:-}" ]] || PROD_FILES+=("$f")
 done
 
-# Both pinned lists indexed by path once, so the per-file loop below is a hash
+# Both fixed-ceiling lists indexed by path once, so the per-file loop below is a hash
 # lookup rather than a scan inside a command substitution.
 declare -A PIN_CEILING=()
 declare -A PIN_REASON=()
@@ -322,14 +322,14 @@ while IFS=$'\t' read -r count path; do
         listname="${PIN_LIST[$path]}"
         matched=1
         if [[ "$listname" == GOD_FILE_EXEMPT ]]; then
-            exempt_seen+="  $path: $count prod lines (pinned $ceiling) — $reason"$'\n'
+            exempt_seen+="  $path: $count prod lines (fixed ceiling $ceiling) — $reason"$'\n'
             kind="exempt"
         else
-            debt_seen+="  $path: $count prod lines (pinned $ceiling, over the ${GOD_FILE_LIMIT} ceiling — awaiting a split) — $reason"$'\n'
+            debt_seen+="  $path: $count prod lines (fixed ceiling $ceiling, over the ${GOD_FILE_LIMIT} ceiling — awaiting a split) — $reason"$'\n'
             kind="recorded debt"
         fi
         if [[ "$count" -gt "$ceiling" ]]; then
-            violations+="$path: $count production lines — $kind at a PINNED ceiling of $ceiling and it GREW; a pinned entry may only fall, so split the file instead of raising the pin"$'\n'
+            violations+="$path: $count production lines — $kind at a FIXED ceiling of $ceiling and it GREW; a listed entry may only fall, so split the file instead of raising the ceiling"$'\n'
         fi
     fi
     [[ -z "$matched" ]] || continue
@@ -360,12 +360,12 @@ if [[ -n "$violations" ]]; then
     echo
     echo "Recording the file instead of splitting it is a last resort and needs"
     echo "the user's agreement: add it to GOD_FILE_DEBT in this script with a"
-    echo "pinned ceiling and a written reason. GOD_FILE_EXEMPT is only for a size"
-    echo "that is a deliberate design outcome. Neither pin may ever be raised."
+    echo "fixed ceiling and a written reason. GOD_FILE_EXEMPT is only for a size"
+    echo "that is a deliberate design outcome. Neither ceiling may ever be raised."
     exit 1
 fi
 
-echo "audit-god-files: ${#PROD_FILES[@]} production files scanned (${#IS_TEST_FILE[@]} test files excluded); largest unpinned is $largest_path at $largest_count production lines, ceiling $GOD_FILE_LIMIT."
+echo "audit-god-files: ${#PROD_FILES[@]} production files scanned (${#IS_TEST_FILE[@]} test files excluded); largest unlisted file is $largest_path at $largest_count production lines, ceiling $GOD_FILE_LIMIT."
 if [[ -n "$exempt_seen" ]]; then
     echo "audit-god-files: $(plural "${#GOD_FILE_EXEMPT[@]}" "named exemption" "named exemptions") — deliberate, not going to shrink:"
     printf '%s' "$exempt_seen"

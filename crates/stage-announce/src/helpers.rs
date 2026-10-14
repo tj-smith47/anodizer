@@ -195,7 +195,7 @@ pub(crate) fn render_message(ctx: &mut Context, tmpl: Option<&str>) -> Result<St
 /// An unset port would otherwise be an error; the default-587 path is
 /// tradeoff-free because operators who need a
 /// different port set it explicitly, and the `auto` encryption mode then
-/// picks STARTTLS for 587 (matching the wire reality). Pinned by
+/// picks STARTTLS for 587 (matching the wire reality). Tested by
 /// `test_email_smtp_port_defaults_to_587`.
 pub(crate) fn resolve_smtp_port(cfg_port: Option<u16>, env_port: Option<u16>) -> u16 {
     cfg_port.or(env_port).unwrap_or(587)
@@ -267,7 +267,7 @@ fn render_json_strings(
 /// `(StatusCode, String)` return tuple to keep the announce-callsite
 /// signature (`-> Result<String>`) backward-compatible. The classification
 /// logic (HttpError + is_retriable + as_ref vs root_cause) lives in the core
-/// helper — pinned by `crates/core/src/retry.rs::classifier_5xx_via_anyhow_chain_uses_as_ref`.
+/// helper and is tested by `crates/core/src/retry.rs::classifier_5xx_via_anyhow_chain_uses_as_ref`.
 pub(crate) fn retry_http<F>(
     provider: &str,
     stage: &str,
@@ -304,7 +304,7 @@ where
 /// helper case-folds the lookup so any spelling of `authorization` /
 /// `user-agent` (or any other override) is honored.
 ///
-/// Pinned by `test_resolve_webhook_headers_*` — drift back to a
+/// Tested by `test_resolve_webhook_headers_*`; a change back to a
 /// case-sensitive `contains_key` will trip those tests.
 ///
 /// Q-wh1: returns a [`BTreeMap`] (not a `HashMap`) so the downstream
@@ -319,7 +319,7 @@ pub(crate) fn resolve_webhook_headers(
     user_agent_default: &str,
 ) -> BTreeMap<String, String> {
     let mut headers: BTreeMap<String, String> = user_headers.into_iter().collect();
-    // O(n) per lookup, O(n²) over the precedence walk. Fine for webhook
+    // O(n) per lookup, O(n²) over the precedence scan. Fine for webhook
     // header counts (typically <10); a future optimizer should not reach
     // for `HeaderMap` reflexively.
     let has_user_key = |target: &str, h: &BTreeMap<String, String>| -> bool {

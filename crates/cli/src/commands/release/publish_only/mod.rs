@@ -7,7 +7,7 @@
 //!   check just verified (archives, packages, sboms, checksums,
 //!   `artifacts.json`, `metadata.json`).
 //! - `<preserved-dist>/context.json` — a [`PreservedDistContext`]
-//!   manifest pinning `(artifacts, targets, version, commit)`.
+//!   manifest recording `(artifacts, targets, version, commit)`.
 //!
 //! This mode loads both, rehydrates `ctx.artifacts` from
 //! `dist/artifacts.json` (the in-process registry shape — the manifest

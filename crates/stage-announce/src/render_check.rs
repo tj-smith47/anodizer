@@ -334,7 +334,7 @@ mod tests {
     //
     // A pure config-shape typo that needs no secret/network (Discourse
     // `category_id: 0`, Email empty `username:` on the SMTP path) must fail at
-    // the prepublish guard — before any irreversible publisher fires — not as a
+    // the prepublish guard, before any irreversible publisher fires, instead of as a
     // post-publish WARN. The send-time hard-bail used to be the only check, so a
     // fat-fingered config silently failed to deliver after the release shipped.
 

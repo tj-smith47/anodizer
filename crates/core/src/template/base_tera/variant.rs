@@ -67,7 +67,7 @@ const DIMENSIONS: &[Dimension] = &[
 ///
 /// Each of `Arm`, `Mips`, `Amd64`, `Arm64`, `I386`, `Ppc64`, `Riscv64` and
 /// `Abi` contributes its value unless it is empty or the toolchain baseline,
-/// so a build that pins no variant keeps a suffix-free architecture token and
+/// so a build that sets no variant keeps a suffix-free architecture token and
 /// gains only its ABI (`_gnu`, `_musl`, `_msvc`). A scope with no target
 /// renders the empty string. A comma (an `Arm64` feature list such as
 /// `v9.0,lse`) is written as a dash, since the suffix is meant for file and

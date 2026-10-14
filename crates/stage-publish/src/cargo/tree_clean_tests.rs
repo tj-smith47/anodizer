@@ -2,7 +2,7 @@
 //! exactly the paths anodizer itself recorded as its own in-run writes
 //! (`Context::record_tree_mutation`) and stay loud on every other dirty path.
 //!
-//! The cross-iteration case this pins: per-crate `--publish-only` runs the
+//! The cross-iteration case this tests: per-crate `--publish-only` runs the
 //! publish pipeline once per crate against one persistent context, so crate
 //! A's binstall write to its own `Cargo.toml` is still on disk when crate B's
 //! guard runs. That residue must not abort B's publish (cfgd v0.6.0 partial

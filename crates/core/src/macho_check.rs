@@ -18,7 +18,7 @@ use object::{Endianness, FileKind};
 ///
 /// For a universal (fat) binary, returns the MAXIMUM minos across the
 /// embedded slices — the version below which at least one slice refuses to
-/// run, which is the honest floor for a single artifact serving all arches.
+/// run, which is the honest minimum for a single artifact serving all arches.
 /// Returns `Ok(None)` for files that are not Mach-O or that declare no
 /// version load command.
 pub fn macho_min_os_version(bytes: &[u8]) -> Result<Option<(u16, u16)>> {
@@ -48,7 +48,7 @@ pub fn macho_min_os_version(bytes: &[u8]) -> Result<Option<(u16, u16)>> {
 }
 
 /// Maximum `minos` across the slices of a fat (universal) Mach-O — the
-/// version below which at least one slice refuses to run, the honest floor
+/// version below which at least one slice refuses to run, the honest minimum
 /// for a single artifact serving every arch. Generic over the 32-/64-bit
 /// [`FatArch`] so the two fat-header classes share one body (they were
 /// token-identical modulo the arch type).
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn fat_returns_max_minos_across_slices() {
-        // Two slices at 11.0 and 12.3: the honest floor for the single fat
+        // Two slices at 11.0 and 12.3: the honest minimum for the single fat
         // artifact is the MAX (12.3), the version below which one slice
         // refuses to run.
         let arm = thin_build_version(CPU_TYPE_ARM64, pack_ver(12, 3, 0));

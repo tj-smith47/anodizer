@@ -24,7 +24,7 @@ use crate::krew::{
 };
 
 /// The krew plugin-manifest schema (draft 2020-12), authored from krew's own
-/// Go validators (`validate.go` / `types.go`). Pinned and embedded so
+/// Go validators (`validate.go` / `types.go`). Held at a fixed version and embedded so
 /// validation is fully offline; refresh via `schemas/SOURCES.md`.
 const KREW_SCHEMA: &str = include_str!("../../schemas/krew.v1alpha2.schema.json");
 
@@ -45,7 +45,7 @@ impl PublisherSchemaValidator for KrewSchemaValidator {
         let log = ctx.logger("publish");
         let mut findings = Vec::new();
 
-        // Walk exactly the crate set the live krew publisher's `run` iterates
+        // Visit exactly the crate set the live krew publisher's `run` iterates
         // (honoring `--crate` selection, else every krew-configured crate) so
         // the validated set equals the published set in all config modes.
         let selected =
@@ -260,7 +260,7 @@ mod tests {
         assert_eq!(
             value.pointer("/metadata/name").and_then(|v| v.as_str()),
             Some("kubectl-widget"),
-            "the krew.name override lands in metadata.name"
+            "the krew.name override is written to metadata.name"
         );
         assert_eq!(
             value.pointer("/spec/version").and_then(|v| v.as_str()),
@@ -282,7 +282,7 @@ mod tests {
                 .pointer("/spec/caveats")
                 .and_then(|v| v.as_str())
                 .is_some_and(|c| c.contains("kubectl widget --help")),
-            "caveats lands under spec.caveats"
+            "caveats is written under spec.caveats"
         );
         // The Linux archive arrives as a platform entry with its selector,
         // uri, sha256, and bin.
@@ -308,7 +308,7 @@ mod tests {
                 .pointer("/spec/platforms/0/sha256")
                 .and_then(|v| v.as_str())
                 .is_some_and(|h| h.len() == 64),
-            "sha256 lands under the platform entry"
+            "sha256 is written under the platform entry"
         );
         assert_eq!(
             value
@@ -487,11 +487,11 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(
             msg.contains("no archive artifacts") && msg.contains("krew"),
-            "surfaces the genuine full-build absence, naming krew: {msg}"
+            "reports the genuine full-build absence, naming krew: {msg}"
         );
     }
 
-    /// The check must BITE: krew's `ValidatePlugin` runs `spec.version` through
+    /// The check catches a bad version: krew's `ValidatePlugin` runs `spec.version` through
     /// `semver.Parse`, which both (a) rejects a non-semver token outright and
     /// (b) hard-requires the leading `v` (a bare `1.2.3` is rejected). The
     /// schema rejects each with a finding naming the offending field.
@@ -545,7 +545,7 @@ mod tests {
         );
     }
 
-    /// A required-key omission also bites: dropping the platform `selector`
+    /// A required-key omission is also caught: dropping the platform `selector`
     /// (krew's `validateSelector` rejects a nil selector) is reported.
     #[test]
     fn missing_platform_selector_is_reported() {
@@ -610,7 +610,7 @@ mod tests {
         );
     }
 
-    /// A malformed `sha256` (not 64 hex chars) bites: krew's `isValidSHA256`
+    /// A malformed `sha256` (not 64 hex chars) is caught: krew's `isValidSHA256`
     /// rejects it with the `^[a-f0-9]{64}$` pattern.
     #[test]
     fn malformed_sha256_is_reported() {
@@ -663,7 +663,7 @@ mod tests {
         scope_version(&mut ctx, "1.0.0");
         // The admitted archive (id=main, binary=kubectl-widget) and an excluded
         // one (id=extra, binary=sneaky). Both are Linux archives on the same
-        // arch, so a looser walk would collect `sneaky` even though the `ids`
+        // arch, so a looser scan would collect `sneaky` even though the `ids`
         // filter drops its platform entry.
         add_archive_with_id(&mut ctx, "widget", Some("main"), "kubectl-widget");
         add_archive_with_id(&mut ctx, "widget", Some("extra"), "sneaky");

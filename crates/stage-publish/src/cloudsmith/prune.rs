@@ -147,7 +147,7 @@ pub(crate) fn retained_version_summary(
 ///
 /// CloudSmith paginates at 100 results/page; a single package's
 /// versions × formats × arches can exceed one page in a long-lived repo, so
-/// this walks pages until a short (< page_size) page is returned. 4xx
+/// this reads pages until a short (< page_size) page is returned. 4xx
 /// fast-fails; 5xx/429/transport retry via the shared helper.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn list_cloudsmith_package_versions(

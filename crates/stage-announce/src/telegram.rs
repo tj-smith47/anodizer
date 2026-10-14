@@ -363,13 +363,19 @@ mod tests {
             )
             .unwrap_err()
         );
-        assert!(err.contains("401"), "status must surface: {err}");
-        assert!(err.contains("bad tok"), "response body must surface: {err}");
+        assert!(
+            err.contains("401"),
+            "status must appear in the error: {err}"
+        );
+        assert!(
+            err.contains("bad tok"),
+            "response body must appear in the error: {err}"
+        );
     }
 
     #[test]
     #[serial_test::serial(announce_env)]
-    fn send_telegram_http_200_ok_false_surfaces_api_error() {
+    fn send_telegram_http_200_ok_false_returns_api_error() {
         let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         // Telegram returns HTTP 200 with `ok:false` for logical rejections;
         // these must NOT be reported as success.
@@ -397,10 +403,13 @@ mod tests {
             )
             .unwrap_err()
         );
-        assert!(err.contains("400"), "error_code must surface: {err}");
+        assert!(
+            err.contains("400"),
+            "error_code must appear in the error: {err}"
+        );
         assert!(
             err.contains("chat not found"),
-            "description must surface: {err}"
+            "description must appear in the error: {err}"
         );
     }
 }

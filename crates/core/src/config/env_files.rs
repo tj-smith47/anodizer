@@ -77,11 +77,14 @@ impl EnvFilesConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct EnvFilesTokenConfig {
-    /// Path to file containing the GitHub token. Default: `~/.config/goreleaser/github_token`.
+    /// Path to file containing the GitHub token. Default: `~/.config/anodizer/github_token`,
+    /// then `~/.config/goreleaser/github_token`.
     pub github_token: Option<String>,
-    /// Path to file containing the GitLab token. Default: `~/.config/goreleaser/gitlab_token`.
+    /// Path to file containing the GitLab token. Default: `~/.config/anodizer/gitlab_token`,
+    /// then `~/.config/goreleaser/gitlab_token`.
     pub gitlab_token: Option<String>,
-    /// Path to file containing the Gitea token. Default: `~/.config/goreleaser/gitea_token`.
+    /// Path to file containing the Gitea token. Default: `~/.config/anodizer/gitea_token`,
+    /// then `~/.config/goreleaser/gitea_token`.
     pub gitea_token: Option<String>,
 }
 
@@ -122,16 +125,36 @@ pub fn read_token_file_with_env<E: crate::EnvSource + ?Sized>(
 ///
 /// For each configured token file path, reads the file and returns the
 /// corresponding environment variable name and token value.
-/// Falls back to the default token-file paths (`~/.config/goreleaser/...`) when
-/// a field is not specified.
+/// Falls back to the default token-file paths (`~/.config/anodizer/...`, then
+/// `~/.config/goreleaser/...`) when a field is not specified.
 ///
-/// Only returns entries where the corresponding process env var is NOT already
-/// set (env var takes precedence).
+/// A token file is the last source of its token: the GitHub file is read only
+/// when `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN` are all unset or
+/// blank, and the GitLab and Gitea files only when `GITLAB_TOKEN` or
+/// `GITEA_TOKEN` is unset or blank.
 pub fn load_token_files(
     config: &EnvFilesTokenConfig,
     log: &crate::log::StageLogger,
 ) -> Result<std::collections::HashMap<String, String>, String> {
     load_token_files_with_env(config, log, &crate::ProcessEnvSource)
+}
+
+/// The token file read for the GitHub token when `env_files.github_token`
+/// is unset, named in every "no GitHub token" hint.
+pub const DEFAULT_GITHUB_TOKEN_FILE: &str = "~/.config/anodizer/github_token";
+/// The token file read for the GitLab token when `env_files.gitlab_token`
+/// is unset.
+pub const DEFAULT_GITLAB_TOKEN_FILE: &str = "~/.config/anodizer/gitlab_token";
+/// The token file read for the Gitea token when `env_files.gitea_token` is
+/// unset.
+pub const DEFAULT_GITEA_TOKEN_FILE: &str = "~/.config/anodizer/gitea_token";
+
+/// The remediation hint for a missing forge token, naming every source the
+/// run reads: `set GITLAB_TOKEN, pass --token, or write the token to
+/// ~/.config/anodizer/gitlab_token`. `vars` is the variable, or the variables
+/// joined with `or`, in the order they are read.
+pub fn token_hint(vars: &str, file: &str) -> String {
+    format!("set {vars}, pass --token, or write the token to {file}")
 }
 
 /// [`EnvSource`](crate::EnvSource)-injecting form of [`load_token_files`].
@@ -153,34 +176,39 @@ pub fn load_token_files_with_env<E: crate::EnvSource + ?Sized>(
     let github_candidates: Vec<&str> = match config.github_token.as_deref() {
         Some(p) => vec![p],
         None => vec![
-            "~/.config/anodizer/github_token",
+            DEFAULT_GITHUB_TOKEN_FILE,
             "~/.config/goreleaser/github_token",
         ],
     };
     let gitlab_candidates: Vec<&str> = match config.gitlab_token.as_deref() {
         Some(p) => vec![p],
         None => vec![
-            "~/.config/anodizer/gitlab_token",
+            DEFAULT_GITLAB_TOKEN_FILE,
             "~/.config/goreleaser/gitlab_token",
         ],
     };
     let gitea_candidates: Vec<&str> = match config.gitea_token.as_deref() {
         Some(p) => vec![p],
-        None => vec![
-            "~/.config/anodizer/gitea_token",
-            "~/.config/goreleaser/gitea_token",
-        ],
+        None => vec![DEFAULT_GITEA_TOKEN_FILE, "~/.config/goreleaser/gitea_token"],
     };
-    let mappings: [(&str, &[&str]); 3] = [
-        ("GITHUB_TOKEN", &github_candidates),
-        ("GITLAB_TOKEN", &gitlab_candidates),
-        ("GITEA_TOKEN", &gitea_candidates),
+    let mappings: [(&str, &[&str], &[&str]); 3] = [
+        (
+            "GITHUB_TOKEN",
+            &github_candidates,
+            crate::git::GITHUB_TOKEN_ENV_LADDER,
+        ),
+        ("GITLAB_TOKEN", &gitlab_candidates, &["GITLAB_TOKEN"]),
+        ("GITEA_TOKEN", &gitea_candidates, &["GITEA_TOKEN"]),
     ];
 
-    for (env_name, candidates) in &mappings {
-        // Skip if the env var is already set in the process environment
-        if env.var(env_name).filter(|v| !v.is_empty()).is_some() {
-            log.verbose(&format!("using {} from process environment", env_name));
+    for (env_name, candidates, readers) in &mappings {
+        if let Some(set) = readers.iter().find(|name| {
+            env.var(name)
+                .as_deref()
+                .and_then(crate::git::non_blank_token)
+                .is_some()
+        }) {
+            log.verbose(&format!("using {set} from process environment"));
             continue;
         }
         for file_path in candidates.iter() {
@@ -201,6 +229,33 @@ pub fn load_token_files_with_env<E: crate::EnvSource + ?Sized>(
     }
 
     Ok(vars)
+}
+
+/// The token-file paths a config reads: the `env_files` mapping, or the
+/// default paths when `env_files` is not set. The list form of `env_files`
+/// names `.env` files and reads no token file.
+pub fn token_file_config(env_files: Option<&EnvFilesConfig>) -> Option<EnvFilesTokenConfig> {
+    match env_files {
+        None => Some(EnvFilesTokenConfig::default()),
+        Some(EnvFilesConfig::TokenFiles(paths)) => Some(paths.clone()),
+        Some(EnvFilesConfig::List(_)) => None,
+    }
+}
+
+/// The tokens the config's token files hold, keyed by the variable each one
+/// stands for (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `GITEA_TOKEN`), read without
+/// logging. Only the tokens [`load_token_files_with_env`] would load are
+/// returned, so a file never outranks a variable. A file that exists but
+/// cannot be read is an error.
+pub fn token_file_tokens<E: crate::EnvSource + ?Sized>(
+    env_files: Option<&EnvFilesConfig>,
+    env: &E,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let Some(paths) = token_file_config(env_files) else {
+        return Ok(std::collections::HashMap::new());
+    };
+    let quiet = crate::log::StageLogger::new("env", crate::log::Verbosity::Quiet);
+    load_token_files_with_env(&paths, &quiet, env)
 }
 
 /// Load environment variables from .env-style files.
@@ -327,6 +382,45 @@ mod tests {
         let vars =
             load_token_files_with_env(&EnvFilesTokenConfig::default(), &test_log(), &env).unwrap();
         assert_eq!(vars.get("GITHUB_TOKEN").unwrap(), "anodizer_tok");
+    }
+
+    #[test]
+    fn the_github_token_file_is_read_only_when_every_github_variable_is_unset_or_blank() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let home = dir.path();
+        let file = home.join(".config/anodizer/github_token");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "file_tok\n").unwrap();
+        let home = home.to_string_lossy().to_string();
+
+        for var in crate::git::GITHUB_TOKEN_ENV_LADDER {
+            let env = crate::MapEnvSource::new()
+                .with("HOME", home.clone())
+                .with(*var, "env_tok");
+            let tokens = token_file_tokens(None, &env).unwrap();
+            assert_eq!(
+                tokens.get("GITHUB_TOKEN"),
+                None,
+                "{var} set: the file is not read"
+            );
+        }
+        let blank = crate::MapEnvSource::new()
+            .with("HOME", home.clone())
+            .with("GH_TOKEN", "  ")
+            .with("GITHUB_TOKEN", "");
+        assert_eq!(
+            token_file_tokens(None, &blank)
+                .unwrap()
+                .get("GITHUB_TOKEN")
+                .map(String::as_str),
+            Some("file_tok"),
+        );
+        let listed = EnvFilesConfig::List(vec![".env".to_string()]);
+        let env = crate::MapEnvSource::new().with("HOME", home);
+        assert!(
+            token_file_tokens(Some(&listed), &env).unwrap().is_empty(),
+            "the list form of env_files reads no token file"
+        );
     }
 
     #[test]

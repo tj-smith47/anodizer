@@ -569,7 +569,7 @@ mod tests {
     /// End-to-end proof: rendering anodizer's OWN `scripts/install.sh.tpl`
     /// against an anodizer-shaped (lockstep) config materializes a `case` table
     /// whose `ARCHIVE` values are the byte-exact asset names the archive stage
-    /// uploads — every `curl | sh` URL resolves. Pins installer↔asset-name
+    /// uploads — every `curl | sh` URL resolves. Checks installer↔asset-name
     /// agreement so a future `name_template` / `format_overrides` change can't
     /// silently 404 the installer.
     #[test]

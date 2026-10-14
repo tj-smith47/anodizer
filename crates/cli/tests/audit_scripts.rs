@@ -2016,7 +2016,7 @@ fn the_memory_minimum_still_refuses_a_gate_run_on_a_host_under_it() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        !out.status.success() && text.contains("8388608 kB (8 GB) floor"),
+        !out.status.success() && text.contains("8388608 kB (8 GB)"),
         "without the scan's own bypass the memory minimum must still refuse; got:\n{text}"
     );
 }

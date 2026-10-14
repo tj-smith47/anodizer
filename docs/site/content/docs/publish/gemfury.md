@@ -25,7 +25,7 @@ gemfury:
 `FURY_PUSH_TOKEN` must be exported in the publish environment (or set
 `gemfury[].token` to a templated value). The token is sent as the HTTP
 Basic auth username (empty password) — the conventional Fury push
-surface.
+authentication.
 
 ## Deprecation: `furies:` → `gemfury:`
 

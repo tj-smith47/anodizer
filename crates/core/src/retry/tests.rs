@@ -137,20 +137,20 @@ fn http_status_is_zero_without_http_error() {
     assert_eq!(http_status(&plain), 0);
 }
 
-/// The idempotent floor raises a sub-floor cap to [`IDEMPOTENT_PUT_ATTEMPTS`]
-/// but never lowers an operator-set higher cap. Fails if the floor constant
+/// The idempotent minimum raises a lower cap to [`IDEMPOTENT_PUT_ATTEMPTS`]
+/// but never lowers an operator-set higher cap. Fails if the minimum constant
 /// is reverted to 1 (or the `max()` semantics flip to a clamp).
 #[test]
-fn idempotent_floor_raises_low_cap_and_preserves_high_cap() {
+fn idempotent_minimum_raises_low_cap_and_preserves_high_cap() {
     let raised = RetryPolicy {
         max_attempts: 1,
         base_delay: Duration::from_millis(1),
         max_delay: Duration::from_millis(5),
     }
-    .with_idempotent_floor();
+    .with_idempotent_minimum();
     assert_eq!(
         raised.max_attempts, IDEMPOTENT_PUT_ATTEMPTS,
-        "a single-attempt cap must be raised to the idempotent floor"
+        "a single-attempt cap must be raised to the idempotent minimum"
     );
 
     let preserved = RetryPolicy {
@@ -158,16 +158,16 @@ fn idempotent_floor_raises_low_cap_and_preserves_high_cap() {
         base_delay: Duration::from_millis(1),
         max_delay: Duration::from_millis(5),
     }
-    .with_idempotent_floor();
+    .with_idempotent_minimum();
     assert_eq!(
         preserved.max_attempts, 7,
-        "an operator-set cap above the floor must be preserved, not lowered"
+        "an operator-set cap above the minimum must be preserved"
     );
 }
 
 #[test]
 fn jitter_returns_base_when_window_rounds_to_zero() {
-    // For any duration under 5ns the ±20 % window (`nanos / 5`) floors to
+    // For any duration under 5ns the ±20 % window (`nanos / 5`) rounds down to
     // 0, so jitter is a no-op and the base is returned unchanged — the
     // early-return guard that avoids a `% 0` panic on tiny delays.
     for n in 0..5u64 {
@@ -240,7 +240,7 @@ fn delay_for_saturates_on_huge_attempt_without_overflow() {
 }
 
 /// Locks the production upload ladder shape (10 attempts / 50ms base / 30s
-/// cap) the same way `preflight`/`guard_probe` are pinned, so a silent edit to
+/// cap) the same way `preflight`/`guard_probe` are checked, so a silent edit to
 /// the canonical retry policy is caught.
 #[test]
 fn upload_policy_shape_is_locked() {
@@ -256,28 +256,31 @@ fn upload_policy_shape_is_locked() {
     }
 }
 
-/// `with_floor` is a `max()` that only ever RAISES the attempt cap: a value
-/// below the floor is lifted, an operator-set value above it is preserved.
+/// `with_min_attempts` is a `max()` that only ever RAISES the attempt cap: a value
+/// below the minimum is raised, an operator-set value above it is preserved.
 /// Backoff shape (`base_delay` / `max_delay`) is untouched either way.
 #[test]
-fn with_floor_general_raises_and_preserves() {
+fn with_min_attempts_general_raises_and_preserves() {
     let base = RetryPolicy {
         max_attempts: 2,
         base_delay: Duration::from_millis(50),
         max_delay: Duration::from_secs(30),
     };
-    let raised = base.with_floor(5);
-    assert_eq!(raised.max_attempts, 5, "a sub-floor cap must be raised");
+    let raised = base.with_min_attempts(5);
+    assert_eq!(
+        raised.max_attempts, 5,
+        "a cap below the minimum must be raised"
+    );
     // Shape is preserved verbatim.
     assert_eq!(raised.base_delay, base.base_delay);
     assert_eq!(raised.max_delay, base.max_delay);
 
-    // A cap already above the floor is left alone.
+    // A cap already above the minimum is left alone.
     let high = RetryPolicy {
         max_attempts: 9,
         ..base
     };
-    assert_eq!(high.with_floor(5).max_attempts, 9);
+    assert_eq!(high.with_min_attempts(5).max_attempts, 9);
 }
 
 #[test]
@@ -813,7 +816,7 @@ fn network_error_substrings_match() {
         "context deadline exceeded",
         // DNS-resolution failures across platforms (hyper-util connector
         // reports these via reqwest as `client error (Connect): dns
-        // error: <platform tail>`). Every known tail is pinned so a
+        // error: <platform tail>`). Every known tail is listed so a
         // cross-platform CI failure cannot reintroduce the gap.
         "client error (Connect): dns error: failed to lookup address information: Name or service not known",
         "dns error: nodename nor servname provided, or not known",
@@ -838,7 +841,7 @@ fn network_error_io_eof_kinds() {
 // as io::Error { kind: TimedOut, message: "operation timed out" }, neither
 // of which matched the original EOF-only kind check or the
 // needle list. Same shape for the connection-* kinds across platforms —
-// pin each branch.
+// test each branch.
 
 #[test]
 fn is_network_error_classifies_io_timedout() {
@@ -892,7 +895,7 @@ fn is_network_error_classifies_operation_timed_out_substring() {
 
 #[test]
 fn network_error_wrapped_unexpected_eof() {
-    // Wrap an UnexpectedEof in an outer error so chain-walking is exercised.
+    // Wrap an UnexpectedEof in an outer error so reading the whole chain is exercised.
     #[derive(Debug)]
     struct Wrap(io::Error);
     impl fmt::Display for Wrap {
@@ -1009,7 +1012,7 @@ fn from_response_unwrap_chain_visible() {
         error_links(&e).any(|l| l.downcast_ref::<io::Error>().is_some()),
         "inner error must be reachable through error_links"
     );
-    // And classification must walk through to the network-error matcher.
+    // And classification must read through to the network-error matcher.
     assert!(is_retriable(&e));
 }
 
@@ -1174,7 +1177,7 @@ fn anyhow_error_threadable() {
 #[test]
 fn is_retriable_chain_walks_to_http_error() {
     // An anyhow::Error wrapping a concrete HttpError must be classified
-    // by walking source(), not by Display alone — the message "outer"
+    // by reading every source(), because Display alone is not enough — the message "outer"
     // gives no hint, the 503 status does.
     let inner = HttpError::new(StrErr("bad gateway"), 503);
     let wrapped: anyhow::Error = anyhow::Error::new(inner).context("publish failed");
@@ -1493,7 +1496,7 @@ fn retry_http_blocking_bytes_retries_5xx_then_succeeds() {
 }
 
 /// Under `AllowRedirects` the bytes variant treats a returned 3xx as success
-/// (never invoking the error formatter), mirroring the text variant. Pins the
+/// (never invoking the error formatter), mirroring the text variant. Tests the
 /// `success_class` predicate's redirect arm for the bytes path.
 #[test]
 fn retry_http_blocking_bytes_redirect_class_is_success() {
@@ -1525,7 +1528,7 @@ fn retry_http_blocking_bytes_redirect_class_is_success() {
 
 /// A transport-layer failure in the bytes variant is classified retriable
 /// (`Continue`), so the attempt ladder runs more than once before exhausting.
-/// Pins the bytes path's transport-error `is_retriable` branch (the text and
+/// Tests the bytes path's transport-error `is_retriable` branch (the text and
 /// async variants have their own transport tests).
 #[test]
 fn retry_http_blocking_bytes_transport_error_retries_then_fails() {
@@ -1550,7 +1553,7 @@ fn retry_http_blocking_bytes_transport_error_retries_then_fails() {
         },
         |_, _| String::from("non-success branch should not be reached"),
     );
-    let err = result.expect_err("transport error must surface as Err");
+    let err = result.expect_err("transport error must return Err");
     assert!(
         attempts.load(Ordering::SeqCst) > 1,
         "transport error must be retried; got {} attempts",
@@ -1559,7 +1562,7 @@ fn retry_http_blocking_bytes_transport_error_retries_then_fails() {
     let chain = format!("{err:#}");
     assert!(
         chain.contains("test-transport-bytes"),
-        "label must surface in error chain; got: {chain}"
+        "label must appear in error chain; got: {chain}"
     );
 }
 
@@ -1567,7 +1570,7 @@ fn retry_http_blocking_bytes_transport_error_retries_then_fails() {
 /// `retry_sync` expects: 2xx/3xx → `Ok(resp)`, 5xx → `Continue` (retry), 4xx →
 /// `Break` (fast-fail), transport error → `Continue`. Drives each arm through a
 /// live loopback responder (and a dead address for the transport arm) so the
-/// pure classifier is pinned end-to-end without a public `reqwest::Error` ctor.
+/// pure classifier is tested end-to-end without a public `reqwest::Error` ctor.
 #[test]
 fn classify_http_sync_maps_status_and_transport_to_controlflow() {
     let client = reqwest::blocking::Client::builder()
@@ -1776,7 +1779,7 @@ async fn retry_http_async_429_retries_then_succeeds() {
 // DNS-resolution stage in a few milliseconds on Linux, macOS, and
 // Windows alike.
 //
-// Pinned here:
+// Tested here:
 //   1. the helper retries (attempt counter > 1)
 //   2. eventually returns an Err with the configured label in the chain
 // The outer attempt counter is incremented inside the closure, so it
@@ -1813,7 +1816,7 @@ fn retry_http_blocking_transport_error_retries_then_fails() {
         },
         |_, _| String::from("non-success branch should not be reached"),
     );
-    let err = result.expect_err("transport error must surface as Err");
+    let err = result.expect_err("transport error must return Err");
     let chain = format!("{err:#}");
     assert!(
         attempts.load(Ordering::SeqCst) > 1,
@@ -1822,7 +1825,7 @@ fn retry_http_blocking_transport_error_retries_then_fails() {
     );
     assert!(
         chain.contains("test-transport"),
-        "label must surface in error chain; got: {chain}"
+        "label must appear in error chain; got: {chain}"
     );
 }
 
@@ -1850,7 +1853,7 @@ async fn retry_http_async_transport_error_retries_then_fails() {
         |_, _| String::from("non-success branch should not be reached"),
     )
     .await;
-    let err = result.expect_err("transport error must surface as Err");
+    let err = result.expect_err("transport error must return Err");
     assert!(
         attempts.load(Ordering::SeqCst) > 1,
         "transport error must be retried; got {} attempts",
@@ -1859,7 +1862,7 @@ async fn retry_http_async_transport_error_retries_then_fails() {
     let chain = format!("{err:#}");
     assert!(
         chain.contains("test-transport-async"),
-        "label must surface in error chain; got: {chain}"
+        "label must appear in error chain; got: {chain}"
     );
 }
 
@@ -1882,7 +1885,7 @@ fn publisher_scope_anchor_is_stable_for_the_whole_invocation() {
     let second = current_budget_anchor().expect("anchor stays installed");
     assert_eq!(
         first, second,
-        "the anchor must not advance between seams of one invocation"
+        "the anchor must not advance between two reads within one invocation"
     );
     drop(scope);
     assert_eq!(
@@ -1896,8 +1899,8 @@ fn publisher_scope_anchor_is_stable_for_the_whole_invocation() {
 fn nested_publisher_scope_inherits_rather_than_widening_the_budget() {
     // The hole this closes: a publisher helper that creates its own budget
     // hands a wedged remote `retry.max_elapsed` a second time. Nothing
-    // reachable from inside an invocation — not even a fresh guard of this
-    // same type — may re-anchor.
+    // reachable from inside an invocation may re-anchor, a fresh guard of
+    // this same type included.
     let _outer = PublisherRetryScope::enter("test-anchor-outer");
     let outer_anchor = current_budget_anchor().expect("outer anchors");
     std::thread::sleep(Duration::from_millis(20));
@@ -1906,7 +1909,7 @@ fn nested_publisher_scope_inherits_rather_than_widening_the_budget() {
         assert_eq!(
             current_budget_anchor(),
             Some(outer_anchor),
-            "a nested scope must inherit the invocation's anchor, never mint a new one"
+            "a nested scope must inherit the invocation's anchor instead of creating a new one"
         );
     }
     assert_eq!(
@@ -2257,7 +2260,7 @@ fn retry_sync_sleeps_the_wait_an_anyhow_http_error_carries() {
 }
 
 /// What one function body does with the [`HttpError`]s it builds, as the
-/// wait-header pin reads it.
+/// wait-header test reads it.
 #[derive(Debug, PartialEq, Eq)]
 enum WaitHeaderShape {
     /// Builds no `HttpError` that could carry a wait, or classifies nothing.
@@ -2336,7 +2339,7 @@ fn last_argument(args: &str) -> &str {
     args[start..].trim().trim_end_matches(',').trim()
 }
 
-/// Reads one function body for the wait-header pin.
+/// Reads one function body for the wait-header test.
 ///
 /// A body that holds a response and classifies it (builds an `HttpError`
 /// from it, or asks `status_is_retriable`) must read the wait headers
@@ -2423,23 +2426,20 @@ fn a_helper_taking_the_status_as_a_parameter_must_carry_the_wait() {
 /// honored the header.
 #[test]
 fn every_http_error_built_from_a_response_carries_its_wait_headers() {
-    use crate::test_helpers::test_sources::{
-        function_bodies, production_half, workspace_production_sources,
-    };
+    use crate::test_helpers::test_sources::production_corpus;
     let mut converted: Vec<String> = Vec::new();
     let mut unconverted: Vec<String> = Vec::new();
-    for source in workspace_production_sources() {
-        let path = source.to_string_lossy().replace('\\', "/");
+    for source in production_corpus() {
+        let path = source.path.to_string_lossy().replace('\\', "/");
         if path.contains("/crates/core/src/retry/") {
             continue;
         }
-        let text = std::fs::read_to_string(&source).expect("read source");
-        for body in function_bodies(production_half(&text)) {
+        for body in &source.bodies {
             let name = body
                 .split_once("fn ")
                 .map(|(_, rest)| rest.split(['(', '<']).next().unwrap_or("").trim())
                 .unwrap_or("");
-            match wait_header_shape(&body) {
+            match wait_header_shape(body) {
                 WaitHeaderShape::Outside => {}
                 WaitHeaderShape::Carries => converted.push(format!("{path}::{name}")),
                 WaitHeaderShape::Drops { built, carried } => {

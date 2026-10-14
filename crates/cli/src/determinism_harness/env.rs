@@ -272,9 +272,9 @@ pub(super) fn allow_listed_path() -> String {
 ///
 /// `host_is_windows_msvc` is the injected host-OS decision: when `true`, the
 /// global RUSTFLAGS gains the [`MSVC_DETERMINISM_RUSTFLAGS`] set so the
-/// host (`--target`-less) build is reproducible. It is a parameter — not a
-/// `cfg!(windows)` check — so a cross-built harness binary keys off the OS
-/// it RUNS on, not the one it was BUILT on.
+/// host (`--target`-less) build is reproducible. It is a parameter so a
+/// cross-built harness binary keys off the OS it RUNS on; a `cfg!(windows)`
+/// check would key off the OS it was BUILT on.
 ///
 /// [`MSVC_DETERMINISM_RUSTFLAGS`]: anodizer_core::determinism::MSVC_DETERMINISM_RUSTFLAGS
 pub(crate) fn build_subprocess_env_with_env(
@@ -469,25 +469,25 @@ pub(crate) fn build_subprocess_env_with_env(
         env.insert("RUSTFLAGS".into(), rustflags.clone());
     }
 
-    // Pin `clang-cl` as the C/C++ compiler for every windows-msvc build
+    // Set `clang-cl` as the C/C++ compiler for every windows-msvc build
     // target so cc-rs/cmake-driven crates (zstd-sys, ring, aws-lc-sys, …)
     // compile with a deterministic LLVM backend instead of `cl.exe`'s
     // proven register-allocation coin-flip (see
     // `anodizer_core::determinism::msvc_c_toolchain_env`). Per-target,
     // unlike the `/Brepro` RUSTFLAGS merge above: cc-rs resolves the
-    // compiler per triple, so a mixed target set still needs the pin on
+    // compiler per triple, so a mixed target set still needs the override on
     // just its windows-msvc member(s). Inserted with plain `insert`
     // (before the Windows inherit-everything `or_insert` pass below) so a
-    // pin here always wins over an inherited host `CC`/`CXX`.
+    // setting here always wins over an inherited host `CC`/`CXX`.
     for target in inputs.targets {
         for (key, value) in anodizer_core::determinism::msvc_c_toolchain_env(target) {
             env.insert(key, value);
         }
     }
     // Empty `targets` means a host-only build (no explicit `--target`), so
-    // the pin must key off the actual running host triple rather than a
-    // fixed guess — reuses the already-injected `host_is_windows_msvc` bool
-    // to avoid a redundant probe when the host isn't windows-msvc at all.
+    // the override keys off the running host triple. It reuses the
+    // already-injected `host_is_windows_msvc` bool to avoid a redundant probe
+    // when the host isn't windows-msvc at all.
     if inputs.targets.is_empty()
         && host_is_windows_msvc
         && let Ok(host_triple) = anodizer_core::partial::detect_host_target()
@@ -568,7 +568,7 @@ pub(crate) fn build_subprocess_env_with_env(
     // produce different filenames, so the .crate hashes drift and the
     // byte-stability test fails.
     //
-    // The path must be outside the worktree because cargo walks
+    // The path must be outside the worktree because cargo scans
     // `.det-tmp/` subdirectories that contain files (cargo's
     // auto-exclude is `target/`-shaped, not "anything under
     // `.det-tmp/`"). Falling back to the system temp dir is the simplest
@@ -787,7 +787,7 @@ mod tests {
         );
         assert!(
             !env.contains_key("ACTIONS_CACHE_URL"),
-            "ACTIONS_CACHE_URL must NOT propagate (network-reach surface)"
+            "ACTIONS_CACHE_URL must NOT propagate (it gives the build a network path)"
         );
     }
 
@@ -1357,7 +1357,7 @@ mod tests {
         }
     }
 
-    /// A windows-msvc target must pin `clang-cl` as `CC`/`CXX` under both the
+    /// A windows-msvc target must set `clang-cl` as `CC`/`CXX` under both the
     /// hyphenated and underscored triple spellings — cc-rs probes both forms
     /// (see `anodizer_core::determinism::msvc_c_toolchain_env`), so a missing
     /// spelling would leave `cl.exe`'s non-deterministic codegen in play for
@@ -1383,7 +1383,7 @@ mod tests {
         }
     }
 
-    /// A non-msvc target must not carry any `CC_`/`CXX_` pin — the harness
+    /// A non-msvc target must not carry any `CC_`/`CXX_` override — the harness
     /// must not force clang-cl on a linux-gnu or darwin build.
     #[test]
     fn harness_env_omits_clang_cl_for_non_msvc_target() {
@@ -1395,13 +1395,13 @@ mod tests {
         assert!(
             !env.keys()
                 .any(|k| k.starts_with("CC_") || k.starts_with("CXX_")),
-            "non-msvc target must not carry a CC_/CXX_ pin. got={env:?}"
+            "non-msvc target must not carry a CC_/CXX_ override. got={env:?}"
         );
     }
 
-    /// A mixed target set must still pin clang-cl for its windows-msvc
+    /// A mixed target set must still set clang-cl for its windows-msvc
     /// member — unlike the global-RUSTFLAGS `/Brepro` merge (gated `all`),
-    /// the CC/CXX pin is per-triple, so the non-msvc sibling target must
+    /// the CC/CXX override is per-triple, so the non-msvc sibling target must
     /// not suppress it.
     #[test]
     fn harness_env_pins_clang_cl_for_msvc_member_of_mixed_targets() {
@@ -1423,9 +1423,9 @@ mod tests {
         );
     }
 
-    /// Empty `targets` (host-only build) must NOT trigger the CC/CXX pin
+    /// Empty `targets` (host-only build) must NOT trigger the CC/CXX override
     /// just because `host_is_windows_msvc` is true when the dev/CI machine
-    /// running this test is not itself windows-msvc — the pin's host-triple
+    /// running this test is not itself windows-msvc — the override's host-triple
     /// resolution goes through a real `detect_host_target()` probe, so this
     /// only asserts the false-probe no-op path is safe on every host.
     #[test]
@@ -1436,7 +1436,7 @@ mod tests {
         assert!(
             !env.keys()
                 .any(|k| k.starts_with("CC_") || k.starts_with("CXX_")),
-            "host_is_windows_msvc=false must not pin clang-cl. got={env:?}"
+            "host_is_windows_msvc=false must not set clang-cl. got={env:?}"
         );
     }
 

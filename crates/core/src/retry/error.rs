@@ -92,7 +92,7 @@ pub fn http_retry_after(err: &anyhow::Error) -> Option<Duration> {
 
 /// Every error in `err`'s chain, including the error each [`HttpError`] and
 /// [`Retriable`] wraps: those two are transparent, so their own `source()`
-/// skips the wrapped error and a plain `source()` walk never sees its type.
+/// skips the wrapped error and reading only `source()` never reaches its type.
 pub fn error_links<'a>(
     err: &'a (dyn StdError + 'static),
 ) -> impl Iterator<Item = &'a (dyn StdError + 'static)> {
@@ -215,7 +215,7 @@ impl StdError for Retriable {
 ///     error has been wrapped (e.g. reqwest coercing the inner kind to
 ///     `Other` while preserving the OS message text).
 ///
-/// Walks [`error_links`] for both branches — Rust's `Display` impls do NOT
+/// Reads every link of [`error_links`] for both branches — Rust's `Display` impls do NOT
 /// inherit the wrapped error's text the way Go's `err.Error()` does, so a
 /// reqwest "Connection refused" message buried under an anyhow context would
 /// otherwise be invisible to the head-only string.
@@ -361,9 +361,9 @@ pub fn jitter_duration(base: Duration) -> Duration {
     // giving a net range of [base - window, base + window). The wall-clock
     // seed is XORed with a process-local Weyl sequence (odd-constant atomic
     // counter, so consecutive draws stay well spread) because under
-    // SOURCE_DATE_EPOCH a pinned clock would collapse jitter to a constant
+    // SOURCE_DATE_EPOCH a fixed clock would collapse jitter to a constant
     // and re-synchronize concurrent retriers on every round — recreating
-    // the exact collision jitter exists to break. SOURCE_DATE_EPOCH pins
+    // the exact collision jitter exists to break. SOURCE_DATE_EPOCH fixes
     // BUILD OUTPUT bytes; a retry sleep duration never reaches an artifact,
     // so varying it is determinism-safe (which is also why this reads the
     // real clock instead of `sde::resolve_now()`).

@@ -47,7 +47,7 @@ release:
   on_failure: hold   # the only accepted value; also the default
 ```
 
-`auto-install: true` reads `.anodizer.yaml` and installs whatever the configured stages need. To pin dependencies explicitly, replace it with `install: nfpm,cosign,zig,...`.
+`auto-install: true` reads `.anodizer.yaml` and installs whatever the configured stages need. To name dependencies explicitly, replace it with `install: nfpm,cosign,zig,...`.
 
 ## With signing keys
 

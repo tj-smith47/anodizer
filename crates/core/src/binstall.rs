@@ -401,7 +401,7 @@ pub fn crate_archive_asset_names(
         for target in &targets {
             // The build stage seeds the per-target vars BEFORE it renders a
             // build's `binary:`, so a templated binary name must be resolved
-            // against THIS target's values here too — not the ones the
+            // against THIS target's values here too, never the ones the
             // previous iteration's asset-name render left behind.
             crate::archive_name::seed_target_vars(ctx, target);
             // The archive stage groups its binaries by target before naming

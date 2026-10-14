@@ -4,7 +4,7 @@
 //! A multi-crate invocation (`release --all`, or several independent-version
 //! tags at HEAD) must render each crate's `version_sync` / binstall
 //! `pkg-url`/`overrides` / nix derivation against THAT crate's own version and
-//! name — not the first crate's. [`Context::populate_git_vars`] derives the
+//! name. [`Context::populate_git_vars`] derives the
 //! global `Version`/`Tag`/`RawVersion`/`ProjectName` from a single `GitInfo`
 //! for the first crate, so without per-crate scoping every sibling inherits
 //! the first crate's vars.
@@ -110,7 +110,7 @@ pub fn resolve_crate_tag(ctx: &Context, crate_cfg: &CrateConfig) -> Option<Strin
 /// returned only when such a tag actually exists in `repo`.
 ///
 /// A template that renders to a literal (no `Version` placeholder) is
-/// rejected: it would match on every release and pin the crate to one tag.
+/// rejected: it would match on every release and tie the crate to one tag.
 fn tag_for_current_version(
     ctx: &Context,
     crate_cfg: &CrateConfig,

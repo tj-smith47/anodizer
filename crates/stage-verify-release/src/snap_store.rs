@@ -1,6 +1,6 @@
 //! Snap Store channel-map probe for the snapcraft landing check.
 //!
-//! `snapcraft upload` returning OK proves the store ACCEPTED the binary — not
+//! `snapcraft upload` returning OK proves the store ACCEPTED the binary. It does not prove
 //! that consumers can install it: a manual-review hold parks the revision
 //! outside every channel until a human approves it, and a decline arrives
 //! only by email. The store's public info endpoint

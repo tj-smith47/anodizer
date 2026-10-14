@@ -174,7 +174,7 @@ fn create_image(
 }
 
 /// Explicit `hdiutil` image size, in whole MiB, for a staging directory:
-/// measured staged content plus 50 % headroom (64 MiB floor), rounded up.
+/// measured staged content plus 50 % headroom (64 MiB minimum), rounded up.
 ///
 /// `hdiutil create -srcfolder` derives the internal read/write image size from
 /// the source folder, but the estimate omits enough APFS filesystem overhead
@@ -953,9 +953,9 @@ mod tests {
     }
 
     #[test]
-    fn test_hdiutil_image_size_mb_floor_and_headroom() {
+    fn test_hdiutil_image_size_mb_minimum_and_headroom() {
         let tmp = tempfile::tempdir().unwrap();
-        // Empty staging dir: 0 content -> 64 MiB floor -> 64.
+        // Empty staging dir: 0 content -> 64 MiB minimum -> 64.
         assert_eq!(hdiutil_image_size_mb(tmp.path()), 64);
 
         // ~100 MiB of content -> content + 50% headroom, rounded up in MiB.
@@ -2415,7 +2415,7 @@ crates:
 
     #[test]
     fn test_dmg_amd64_variant_filter_does_not_drop_arm64() {
-        // Pin: filter only constrains amd64 — arm64 must still pass even
+        // The filter only constrains amd64, so arm64 must still pass even
         // when the filter rejects every amd64 variant present.
         let mut ctx = dmg_amd64_variant_test_ctx(Some(anodizer_core::config::Amd64Variant::V4)); // matches no fixture variant
         DmgStage.run(&mut ctx).unwrap();
@@ -2504,7 +2504,7 @@ crates:
     }
 
     #[test]
-    fn test_resolve_mod_timestamp_surfaces_render_errors() {
+    fn test_resolve_mod_timestamp_returns_render_errors() {
         use anodizer_core::config::Config;
         use anodizer_core::context::{Context, ContextOptions};
 
@@ -2555,7 +2555,7 @@ crates:
     }
 
     #[test]
-    fn test_resolve_volume_name_surfaces_render_errors() {
+    fn test_resolve_volume_name_returns_render_errors() {
         use anodizer_core::config::{Config, DmgConfig};
         use anodizer_core::context::{Context, ContextOptions};
 
@@ -2778,7 +2778,7 @@ crates:
         let inner_bin = macos.join("anodizer");
         std::fs::write(&inner_bin, b"\x7fELF fake mach-o").unwrap();
         // exec-writer-ok: the file holds a fake Mach-O header for a staging
-        // tree walk; nothing execs it.
+        // tree scan; nothing execs it.
         std::fs::set_permissions(&inner_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let staging = tmp.path().join("staging");
@@ -2851,7 +2851,7 @@ crates:
     /// reproducible/deterministic flag and does not consult `SOURCE_DATE_EPOCH`,
     /// and anodizer invokes it directly with no post-build koly normalization —
     /// so the native `.dmg` is non-reproducible. The assertion below proves the
-    /// drift is real (not a flake) and pins the root cause; flipping it to
+    /// drift is real (not a flake) and records the root cause; flipping it to
     /// byte-equality is the regression signal if hdiutil ever ships
     /// deterministic output or anodizer adds koly-trailer normalization. Runs on
     /// the macOS CI test shard only.

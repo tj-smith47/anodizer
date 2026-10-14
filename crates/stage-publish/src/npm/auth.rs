@@ -352,7 +352,7 @@ pub(crate) fn probe_dist_tag_latest(
 ///
 /// npm's `latest` is the tag `npm install <pkg>` (no version) resolves, and
 /// publishing an OLDER version with `--tag latest` moves that pointer BACKWARD —
-/// silently downgrading every default install. This bites a BACKFILL: completing
+/// silently downgrading every default install. This breaks a BACKFILL: completing
 /// an interrupted older release after a newer one already published would drag
 /// `latest` back to the older version.
 ///

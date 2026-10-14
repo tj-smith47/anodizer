@@ -64,11 +64,11 @@ fn the_nfpm_echo_masks_a_job_env_value_repeated_in_the_argv() {
     );
 }
 
-/// The version-floor hint fires only on the unregistered-packager
-/// signature an old nfpm emits — not on other msix failures.
+/// The minimum-version hint fires only on the unregistered-packager
+/// signature an old nfpm emits. Other msix failures get no hint.
 #[test]
 #[cfg(unix)]
-fn msix_version_floor_hint_scoped_to_unregistered_packager() {
+fn msix_version_minimum_hint_scoped_to_unregistered_packager() {
     let dir = tempfile::TempDir::new().unwrap();
     let job = failing_job(&dir, "no packager registered for the format msix");
     let err = execute_nfpm_jobs(&[job], 1, &quiet_log()).expect_err("stub exits 1");
@@ -108,7 +108,7 @@ fn deb_arch_variant_drops_v1() {
 
 /// Two amd64 builds of one crate on one target triple, differing only in
 /// their micro-arch level: the baseline package stamps no variant and the
-/// optimized one stamps its own — not its sibling's — whether or not the
+/// optimized one stamps its own level, whether or not the
 /// config declares a `deb:` block.
 #[test]
 fn deb_package_has_no_amd64v1_architecture() {

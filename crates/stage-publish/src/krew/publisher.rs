@@ -22,7 +22,7 @@ use super::*;
 // against a stale evidence file stitched in from an older run.
 //
 // CREDENTIAL HANDLING: `KrewPrTarget` stores `token_env_var` — the
-// NAME of the env var to consult at rollback time — not the resolved
+// NAME of the env var to consult at rollback time, and never the resolved
 // token VALUE. Same rule applies to every PR-based publisher that
 // touches GitHub auth.
 
@@ -182,7 +182,7 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 }
 
 /// Decision predicate for the no-eligible-crates warning. True when the
-/// publisher walked the selection but the configured-predicate filtered
+/// publisher scanned the selection but the configured-predicate filtered
 /// every crate out — distinct from "ran successfully in dry-run mode".
 ///
 /// `processed` is the count of crates whose `is_krew_per_crate_configured`
@@ -495,8 +495,8 @@ impl anodizer_core::Publisher for KrewPublisher {
                 Err(e) => {
                     // Auth-failure / repo-not-found / transport problems
                     // show up as actionable warns naming the actual
-                    // failure mode — not the misleading "no PR found,
-                    // verify manually" that previously fired here.
+                    // failure mode. The misleading "no PR found,
+                    // verify manually" previously fired here.
                     log.warn(&format!(
                         "failed to query krew upstream {}/{} for open PRs ({}); \
                          {} — manual cleanup required",

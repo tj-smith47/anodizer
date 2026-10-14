@@ -479,7 +479,7 @@ fn rpm_version_field(version: &str) -> String {
 /// Contract / assumptions:
 /// - Only the FIRST occurrence of `raw_version` is rewritten (`replacen`),
 ///   matching rpmbuild's `%{version}`, which expands the single version token
-///   — not every coincidental recurrence of that string in the name.
+///   once, leaving any other occurrence of that string in the name alone.
 /// - The source archive name is assumed to EMBED the version, which holds for
 ///   the default `name_template: "{{ ProjectName }}-{{ Version }}-source"`.
 ///   When it does not, the rewrite is a no-op and a `%{version}`-templated
@@ -1907,7 +1907,7 @@ crates:
     #[cfg(all(test, unix))]
     #[test]
     #[serial_test::serial(path_env)]
-    fn test_srpm_live_run_tool_failure_surfaces_stderr() {
+    fn test_srpm_live_run_tool_failure_reports_stderr() {
         let fx = SrpmFixture::new();
         let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
         ctx.config.srpms = Some(SrpmConfig {

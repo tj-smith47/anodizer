@@ -245,7 +245,7 @@ pub(super) fn double_string_literal_backslashes(template: &str) -> std::borrow::
     // Depth of `{`/`}` map-literal nesting inside the current block, outside
     // any string literal. `}}` only closes the block at depth 0.
     let mut brace_depth: u32 = 0;
-    // This scan walks characters rather than blocks, so it consumes the shared
+    // This scan reads characters instead of blocks, so it consumes the shared
     // raw spans directly instead of reaching the exemption through the
     // preprocessor's block helpers.
     let raw = raw_spans(template);
@@ -823,7 +823,7 @@ mod tests {
     /// any backslash, so it can't hide a bug that the production function
     /// might share with a copy-pasted version of itself. Text (and comment)
     /// bytes are copied verbatim by the shim no matter what happens to
-    /// strings inside blocks, so this walk finds the same boundaries as the
+    /// strings inside blocks, so this scan finds the same boundaries as the
     /// real scan for every non-pathological template (the two 1.x-invalid
     /// inputs covered by their own dedicated error test are excluded here —
     /// an unterminated stray string swallowing the rest of the template
@@ -921,7 +921,7 @@ mod tests {
 
     #[test]
     fn backslash_shim_and_preprocessor_scanner_agree_on_string_boundaries() {
-        // Cross-pin: the expected output is computed from string_lit's scan
+        // Cross-check: the expected output is computed from string_lit's scan
         // ALONE — a backslash doubles iff that scan classifies it as inside
         // a string literal. The shim only doubles in-string backslashes, so
         // if either side ever regrows its own boundary rule (escape-aware,

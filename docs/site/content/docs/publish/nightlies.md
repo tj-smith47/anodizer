@@ -41,7 +41,7 @@ nightly:
 |---|---|---|---|
 | `nightly.version_template` | `string` | `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"` | The rendered `Version` for the run. |
 | `nightly.name_template` | `string` | (inherits `release.name_template`) | Names the nightly release, replacing `release.name_template` on nightly runs only. |
-| `nightly.tag_name` | `string` | (unset — the crate's `tag_template` creates the tag) | Pins one rolling tag, moved each run. In a workspace creating more than one tag family the value is prefixed with the publishing crate's family (`operator-v{{ Version }}` + `edge` → `operator-vedge`). |
+| `nightly.tag_name` | `string` | (unset — the crate's `tag_template` creates the tag) | Names one rolling tag, moved each run. In a workspace creating more than one tag family the value is prefixed with the publishing crate's family (`operator-v{{ Version }}` + `edge` → `operator-vedge`). |
 | `nightly.publish_release` | `bool` | `true` | Whether to create a GitHub Release at all. |
 | `nightly.keep_single_release` | `bool` | `false` | Keep only the newest nightly release, deleting the older ones. In a workspace that creates more than one tag family the sweep is narrowed to the publishing crate's family, so the tracks do not delete each other. |
 | `nightly.retention.keep_last` | `integer` | (unset — no sweep) | Keep the N newest nightly releases and delete the older ones with the tags anodizer created for them. `0` counts as `1`. Wins over `keep_single_release` when both are set. GitHub only. |
@@ -71,7 +71,7 @@ Not applicable as a separate config — nightly publishes use the same release c
 - Distinct from `--snapshot` — nightlies are published, snapshots are not.
 - Without `tag_name` every run cuts its own tag, so `keep_single_release: true` is what stops the pile accumulating.
 - Retention runs after the new nightly is created, uploaded and published, so a failure before then never leaves zero nightlies. Each pruned release prints `deleting prior release '<name>' (id=<id>, tag='<tag>') for nightly retention (keep_last=<n>)`, and its tag is deleted too unless it is the live release's own tag. A release delete GitHub refuses fails the run; a release already gone (404) passes. A tag delete GitHub refuses is a warning, and an absent tag passes.
-- With `tag_name` the pinned tag is moved every run and the assets the previous run uploaded are replaced. Pinning the tag turns on that replacement by itself; `release.replace_existing_artifacts: true` is not needed for it.
+- With `tag_name` the named tag is moved every run and the assets the previous run uploaded are replaced. Setting `tag_name` turns on that replacement by itself; `release.replace_existing_artifacts: true` is not needed for it.
 - A nightly never opens a GitHub Discussion: `release.discussion_category_name` is withheld on nightly runs, because retention deletes the release and its Discussion a night later while the number it took from the repository's issue/PR sequence is never reissued.
 - A nightly cuts even when nothing changed since the last release; `skip_if_no_changes: true` turns that into a no-op.
 - `skip_if_no_changes` needs a changelog signal to act on: with `--skip=changelog` or `changelog.use: github-native` there is no entry count, so the nightly cuts as usual. A repo with no prior tag is never skipped either — its whole history is unreleased.

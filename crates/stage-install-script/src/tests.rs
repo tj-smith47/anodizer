@@ -1089,7 +1089,7 @@ fn write_single_file_asset(release: &Path, asset: &str, tool: &str) {
 /// the file's `#` comment header, and returns before any network access.
 #[cfg(unix)]
 #[test]
-fn help_flag_prints_the_env_surface_and_exits_zero() {
+fn help_flag_prints_the_env_variables_and_exits_zero() {
     use std::process::Command;
     let tmp = tempfile::tempdir().unwrap();
     let dist = tmp.path().join("dist");
@@ -1115,7 +1115,7 @@ fn help_flag_prints_the_env_surface_and_exits_zero() {
 }
 
 /// A mistyped flag is a typo the user must see, not an argument the installer
-/// silently drops on the floor.
+/// silently ignores.
 #[cfg(unix)]
 #[test]
 fn unknown_argument_errors_with_a_help_hint() {
@@ -1185,7 +1185,7 @@ fn build_release_tarball(release: &Path, asset: &str, binaries: &[&str]) {
 }
 
 /// Run `install.sh` with `curl`/`uname` PATH stubs that serve `$FAKE_RELEASE`
-/// by basename and pin the host to Linux/x86_64. Returns the install dir and
+/// by basename and fix the host to Linux/x86_64. Returns the install dir and
 /// the script's own stderr (where every `info` line arrives).
 #[cfg(unix)]
 fn run_installer(

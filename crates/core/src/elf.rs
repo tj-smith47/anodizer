@@ -374,7 +374,7 @@ mod tests {
         assert!(!is_dynamically_linked(&p).unwrap());
     }
 
-    /// 32-bit ELF with PT_INTERP returns true — pins the `is_64bit=false`
+    /// 32-bit ELF with PT_INTERP returns true — tests the `is_64bit=false`
     /// branch (phoff/phnum read from 32-bit offsets). The header is exactly 52
     /// bytes, proving the class-aware min-length gate admits a valid 32-bit
     /// ELF that the old 64-byte gate would have wrongly rejected.

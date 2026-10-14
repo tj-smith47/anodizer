@@ -261,7 +261,7 @@ pub(crate) fn token_env_var(_cfg: &NpmConfig) -> &'static str {
 /// Collect the platform-binary download set for one `npms[]` entry
 /// (postinstall mode).
 ///
-/// Walks `ctx.artifacts` for `Archive` entries (filtered by `ids:` when set),
+/// Scans `ctx.artifacts` for `Archive` entries (filtered by `ids:` when set),
 /// derives npm os/cpu via [`npm_triple`], and resolves the download URL (via
 /// `url_template` or the artifact's `url` metadata).
 pub(crate) fn collect_platform_binaries(
@@ -532,7 +532,7 @@ pub(crate) fn shim_env_fragments(cfg: &NpmConfig) -> (String, String) {
     }
 }
 
-/// Default npm `engines.node` floor when [`NpmConfig::engines`] is unset —
+/// Default npm `engines.node` minimum when [`NpmConfig::engines`] is unset —
 /// the constraint every leading native-CLI wrapper (esbuild, biome, swc)
 /// declares as its lower bound.
 pub(crate) const DEFAULT_ENGINES_NODE: &str = ">=18";

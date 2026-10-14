@@ -7,7 +7,7 @@
 //!   - Rewrite sibling `[dependencies]` / `[dev-dependencies]` /
 //!     `[build-dependencies]` entries that reference a bumped member
 //!     by its new version (unless `--exact` is set).
-//!   - Heal every internal `path + version` dependency floor in the workspace
+//!   - Heal every internal `path + version` dependency minimum in the workspace
 //!     against the path crate's post-bump version, not only the crates bumped
 //!     in this run.
 
@@ -197,7 +197,7 @@ pub(crate) fn parse_member_manifest(manifest_path: &Path) -> Result<Option<Membe
 /// Apply the plan: rewrite `[package].version` (or root `[workspace.package].version`)
 /// and — unless `exact` — propagate dep specs into sibling manifests.
 ///
-/// Returns the manifests the dep-spec propagation and the floor sweep edited,
+/// Returns the manifests the dep-spec propagation and the minimum-version sweep edited,
 /// for staging alongside the version rewrites the plan's rows already name.
 pub fn apply_plan(
     workspace_root: &Path,
@@ -273,7 +273,8 @@ pub fn apply_plan(
                 edited.push(m.manifest_path.clone());
             }
         }
-        for healed in heal_dep_floors(workspace_root, Propagated::EveryTable(&bumped), false, log)?
+        for healed in
+            heal_dep_minimums(workspace_root, Propagated::EveryTable(&bumped), false, log)?
         {
             if !edited.contains(&healed) {
                 edited.push(healed);
@@ -455,7 +456,7 @@ fn rewrite_dep_entry(tbl: &mut toml_edit::Table, dep_name: &str, new_ver: &str) 
 /// another leg owns.
 ///
 /// The two variants name the two propagation legs by the tables they cover:
-/// [`apply_plan`]'s own rewrite reaches every table the sweep walks, while
+/// [`apply_plan`]'s own rewrite reaches every table the sweep reads, while
 /// `version_sync::sync_workspace_deps` reaches only the three top-level
 /// sections, leaving `[target.<cfg>]` and `[workspace.dependencies]` entries to
 /// the sweep.
@@ -525,7 +526,7 @@ fn is_lower_bounded(op: semver::Op) -> bool {
 /// The operator travels with the version because `>` EXCLUDES the bound it
 /// names: `>0.2.0` does not admit `0.2.0`, so the caller cannot decide
 /// staleness from the version alone.
-fn floor_minimum(spec: &str) -> Option<(semver::Op, semver::Version)> {
+fn requirement_minimum(spec: &str) -> Option<(semver::Op, semver::Version)> {
     let req = semver::VersionReq::parse(spec).ok()?;
     let [c] = req.comparators.as_slice() else {
         return None;
@@ -549,12 +550,12 @@ fn floor_minimum(spec: &str) -> Option<(semver::Op, semver::Version)> {
 /// wrote (`"0.6"` → `"0.7"`, `"^0.6.1"` → `"^0.7.0"`, `"=0.6.1"` → `"=0.7.0"`).
 ///
 /// The comparator operator is preserved too, with one exception: `>` is
-/// rendered as `>=`. A healed floor names the version the workspace just cut,
+/// rendered as `>=`. A healed minimum names the version the workspace just cut,
 /// and `>0.7.0` excludes exactly that version, so the path dependency the
-/// floor guards would no longer resolve.
+/// minimum guards would no longer resolve.
 ///
-/// Returns `None` for a requirement `floor_minimum` also rejects.
-fn restyle_floor(spec: &str, new: &semver::Version) -> Option<String> {
+/// Returns `None` for a requirement `requirement_minimum` also rejects.
+fn restyle_requirement(spec: &str, new: &semver::Version) -> Option<String> {
     let req = semver::VersionReq::parse(spec).ok()?;
     let [c] = req.comparators.as_slice() else {
         return None;
@@ -595,7 +596,7 @@ struct HealScope<'a> {
     dry_run: bool,
 }
 
-/// Raise every stale internal floor in one dependency table. Returns whether
+/// Raise every stale internal minimum in one dependency table. Returns whether
 /// anything was rewritten.
 fn heal_dep_table(
     tbl: &mut toml_edit::Table,
@@ -609,7 +610,7 @@ fn heal_dep_table(
     for (key, item) in tbl.iter() {
         // The propagation leg rewrites by TOML key, so an entry it owns in a
         // table it covers is left to it: the two modes then report the same
-        // heals, and on the real path the floor is already satisfied anyway.
+        // heals, and on the real path the minimum is already satisfied anyway.
         if propagated_here && scope.propagated.contains_key(key) {
             continue;
         }
@@ -622,7 +623,7 @@ fn heal_dep_table(
             continue;
         };
         // A registry dep may share a member's name; only a `path` that reaches
-        // that member's directory is an internal floor.
+        // that member's directory is an internal minimum.
         if std::fs::canonicalize(scope.manifest_dir.join(path))
             .ok()
             .as_ref()
@@ -633,7 +634,7 @@ fn heal_dep_table(
         let Some(spec) = dep_version_spec(item) else {
             continue;
         };
-        let Some((floor_op, floor)) = floor_minimum(spec) else {
+        let Some((min_op, minimum)) = requirement_minimum(spec) else {
             match semver::VersionReq::parse(spec) {
                 Ok(req) if req.comparators.len() > 1 => log.warn(&format!(
                     "multi-comparator version requirement {dep_name} = \"{spec}\" in {}; dependency minimum left unchanged",
@@ -647,12 +648,12 @@ fn heal_dep_table(
             }
             continue;
         };
-        // `>X` admits nothing at or below `X`, so a floor that merely EQUALS
+        // `>X` admits nothing at or below `X`, so a minimum that merely EQUALS
         // the wanted version is still stale: healing rewrites it to `>=X`.
-        if floor > *want || (floor == *want && floor_op != semver::Op::Greater) {
+        if minimum > *want || (minimum == *want && min_op != semver::Op::Greater) {
             continue;
         }
-        let Some(next) = restyle_floor(spec, want) else {
+        let Some(next) = restyle_requirement(spec, want) else {
             continue;
         };
         if next == spec {
@@ -687,31 +688,31 @@ fn heal_dep_table(
     changed
 }
 
-/// Raise every internal `path + version` dependency floor in the Cargo
+/// Raise every internal `path + version` dependency minimum in the Cargo
 /// workspace rooted at `scope_root` to at least the path crate's post-bump
 /// version.
 ///
-/// A floor lower than the path crate's version is always wrong under
+/// A minimum lower than the path crate's version is always wrong under
 /// `path + version` semantics — cargo requires the path crate to satisfy the
-/// floor at publish time — so it is rewritten regardless of whether that crate
+/// minimum at publish time — so it is rewritten regardless of whether that crate
 /// was bumped in this run. A prior bump commit that never reached the default
 /// branch therefore heals on the next bump instead of poisoning its publish.
 ///
 /// [`Propagated`] carries this run's crate name → version map and names the
 /// tables the preceding propagation leg already rewrote; a member absent from
 /// the map resolves its version from its own manifest (or the root
-/// `[workspace.package].version` when it inherits). Floors already at or above
-/// the resolved version are left byte-for-byte untouched, as are floors whose
+/// `[workspace.package].version` when it inherits). Minimums already at or above
+/// the resolved version are left byte-for-byte untouched, as are minimums whose
 /// requirement is not a single lower-bounded comparator.
 ///
-/// The tables walked are `[dependencies]`, `[dev-dependencies]`,
+/// The tables read are `[dependencies]`, `[dev-dependencies]`,
 /// `[build-dependencies]`, the same three under any `[target.<cfg>]`, and the
 /// root `[workspace.dependencies]`. A `dependencies = { … }` written as an
 /// inline table is left untouched, as it is by the dep-spec propagation.
 ///
 /// Returns the absolute paths of the manifests that changed, for staging into
 /// the bump commit. Writes nothing when `dry_run` is set.
-pub(crate) fn heal_dep_floors(
+pub(crate) fn heal_dep_minimums(
     scope_root: &Path,
     propagated: Propagated<'_>,
     dry_run: bool,
@@ -855,61 +856,94 @@ mod tests {
     }
 
     #[test]
-    fn floor_minimum_reads_each_operator_form() {
+    fn requirement_minimum_reads_each_operator_form() {
         use semver::Op;
-        assert_eq!(floor_minimum("0.6"), Some((Op::Caret, ver("0.6.0"))));
-        assert_eq!(floor_minimum("0.6.1"), Some((Op::Caret, ver("0.6.1"))));
-        assert_eq!(floor_minimum("^0.6.1"), Some((Op::Caret, ver("0.6.1"))));
-        assert_eq!(floor_minimum("~0.6.1"), Some((Op::Tilde, ver("0.6.1"))));
-        assert_eq!(floor_minimum("=0.6.1"), Some((Op::Exact, ver("0.6.1"))));
+        assert_eq!(requirement_minimum("0.6"), Some((Op::Caret, ver("0.6.0"))));
         assert_eq!(
-            floor_minimum(">=0.6.1"),
+            requirement_minimum("0.6.1"),
+            Some((Op::Caret, ver("0.6.1")))
+        );
+        assert_eq!(
+            requirement_minimum("^0.6.1"),
+            Some((Op::Caret, ver("0.6.1")))
+        );
+        assert_eq!(
+            requirement_minimum("~0.6.1"),
+            Some((Op::Tilde, ver("0.6.1")))
+        );
+        assert_eq!(
+            requirement_minimum("=0.6.1"),
+            Some((Op::Exact, ver("0.6.1")))
+        );
+        assert_eq!(
+            requirement_minimum(">=0.6.1"),
             Some((Op::GreaterEq, ver("0.6.1")))
         );
-        assert_eq!(floor_minimum(">0.6.1"), Some((Op::Greater, ver("0.6.1"))));
-        assert_eq!(floor_minimum("<0.9"), None);
-        assert_eq!(floor_minimum("*"), None);
-        assert_eq!(floor_minimum(">=0.6, <0.8"), None);
-        assert_eq!(floor_minimum("junk"), None);
+        assert_eq!(
+            requirement_minimum(">0.6.1"),
+            Some((Op::Greater, ver("0.6.1")))
+        );
+        assert_eq!(requirement_minimum("<0.9"), None);
+        assert_eq!(requirement_minimum("*"), None);
+        assert_eq!(requirement_minimum(">=0.6, <0.8"), None);
+        assert_eq!(requirement_minimum("junk"), None);
     }
 
     #[test]
-    fn restyle_floor_preserves_operator_and_precision() {
+    fn restyle_requirement_preserves_operator_and_precision() {
         let target = ver("0.7.0");
-        assert_eq!(restyle_floor("0.6", &target).as_deref(), Some("0.7"));
-        assert_eq!(restyle_floor("0.6.1", &target).as_deref(), Some("0.7.0"));
-        assert_eq!(restyle_floor("^0.6.1", &target).as_deref(), Some("^0.7.0"));
-        assert_eq!(restyle_floor("~0.6", &target).as_deref(), Some("~0.7"));
-        assert_eq!(restyle_floor("=0.6.1", &target).as_deref(), Some("=0.7.0"));
+        assert_eq!(restyle_requirement("0.6", &target).as_deref(), Some("0.7"));
         assert_eq!(
-            restyle_floor(">=0.6.1", &target).as_deref(),
+            restyle_requirement("0.6.1", &target).as_deref(),
+            Some("0.7.0")
+        );
+        assert_eq!(
+            restyle_requirement("^0.6.1", &target).as_deref(),
+            Some("^0.7.0")
+        );
+        assert_eq!(
+            restyle_requirement("~0.6", &target).as_deref(),
+            Some("~0.7")
+        );
+        assert_eq!(
+            restyle_requirement("=0.6.1", &target).as_deref(),
+            Some("=0.7.0")
+        );
+        assert_eq!(
+            restyle_requirement(">=0.6.1", &target).as_deref(),
             Some(">=0.7.0")
         );
         // Two-component precision is kept even when the residual minimum sits
         // below the target patch: the requirement is still satisfied.
-        assert_eq!(restyle_floor("0.6", &ver("0.7.1")).as_deref(), Some("0.7"));
-        // Identical rendering — the caller writes nothing.
-        assert_eq!(restyle_floor("0", &target).as_deref(), Some("0"));
         assert_eq!(
-            restyle_floor("^0.6.1", &ver("0.7.0-rc.1")).as_deref(),
+            restyle_requirement("0.6", &ver("0.7.1")).as_deref(),
+            Some("0.7")
+        );
+        // Identical rendering — the caller writes nothing.
+        assert_eq!(restyle_requirement("0", &target).as_deref(), Some("0"));
+        assert_eq!(
+            restyle_requirement("^0.6.1", &ver("0.7.0-rc.1")).as_deref(),
             Some("^0.7.0-rc.1")
         );
-        // `>` heals to `>=`: the floor names the version just cut, and `>`
+        // `>` heals to `>=`: the minimum names the version just cut, and `>`
         // would exclude it.
-        assert_eq!(restyle_floor(">0.6.1", &target).as_deref(), Some(">=0.7.0"));
         assert_eq!(
-            restyle_floor("> 0.6.1", &target).as_deref(),
+            restyle_requirement(">0.6.1", &target).as_deref(),
+            Some(">=0.7.0")
+        );
+        assert_eq!(
+            restyle_requirement("> 0.6.1", &target).as_deref(),
             Some(">= 0.7.0")
         );
-        assert_eq!(restyle_floor("<0.9", &target), None);
-        assert_eq!(restyle_floor("junk", &target), None);
+        assert_eq!(restyle_requirement("<0.9", &target), None);
+        assert_eq!(restyle_requirement("junk", &target), None);
     }
 
-    /// A `>` floor is healed to `>=` at the new version, including the case
+    /// A `>` minimum is healed to `>=` at the new version, including the case
     /// where it already names that version — `>0.7.0` beside a sibling at
     /// `0.7.0` resolves to nothing at all.
     #[test]
-    fn heal_dep_floors_rewrites_an_excluding_floor_to_include_the_new_version() {
+    fn heal_dep_minimums_rewrites_an_excluding_minimum_to_include_the_new_version() {
         for spec in [">0.6.1", ">0.7.0"] {
             let dir = tmpdir();
             write_workspace(
@@ -926,7 +960,7 @@ mod tests {
                     ),
                 ],
             );
-            heal_dep_floors(
+            heal_dep_minimums(
                 dir.path(),
                 Propagated::EveryTable(&no_pending()),
                 false,
@@ -939,7 +973,7 @@ mod tests {
     }
 
     #[test]
-    fn heal_dep_floors_raises_stale_floor_on_non_bumped_dependent() {
+    fn heal_dep_minimums_raises_stale_minimum_on_non_bumped_dependent() {
         let dir = tmpdir();
         write_workspace(
             dir.path(),
@@ -956,7 +990,7 @@ mod tests {
                 ),
             ],
         );
-        let healed = heal_dep_floors(
+        let healed = heal_dep_minimums(
             dir.path(),
             Propagated::EveryTable(&no_pending()),
             false,
@@ -969,7 +1003,7 @@ mod tests {
     }
 
     #[test]
-    fn heal_dep_floors_leaves_satisfied_floor_byte_identical() {
+    fn heal_dep_minimums_leaves_satisfied_minimum_byte_identical() {
         let dir = tmpdir();
         let c_manifest = format!(
             "{}\n[dependencies]\nb = {{ path = \"../b\", version = \"0.7.0\" }}\n\n[dev-dependencies]\nb2 = {{ package = \"b\", path = \"../b\", version = \"0.9\" }}\n",
@@ -980,7 +1014,7 @@ mod tests {
             &ws_root(&["b", "c"]),
             &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
         );
-        let healed = heal_dep_floors(
+        let healed = heal_dep_minimums(
             dir.path(),
             Propagated::EveryTable(&no_pending()),
             false,
@@ -995,7 +1029,7 @@ mod tests {
     }
 
     #[test]
-    fn heal_dep_floors_preserves_caret_and_short_forms() {
+    fn heal_dep_minimums_preserves_caret_and_short_forms() {
         let dir = tmpdir();
         write_workspace(
             dir.path(),
@@ -1011,7 +1045,7 @@ mod tests {
                 ),
             ],
         );
-        heal_dep_floors(
+        heal_dep_minimums(
             dir.path(),
             Propagated::EveryTable(&no_pending()),
             false,
@@ -1024,7 +1058,7 @@ mod tests {
     }
 
     #[test]
-    fn heal_dep_floors_heals_exact_pin_to_new_version() {
+    fn heal_dep_minimums_heals_exact_pin_to_new_version() {
         let dir = tmpdir();
         write_workspace(
             dir.path(),
@@ -1040,7 +1074,7 @@ mod tests {
                 ),
             ],
         );
-        heal_dep_floors(
+        heal_dep_minimums(
             dir.path(),
             Propagated::EveryTable(&no_pending()),
             false,
@@ -1052,7 +1086,7 @@ mod tests {
     }
 
     #[test]
-    fn heal_dep_floors_walks_every_dep_table() {
+    fn heal_dep_minimums_reads_every_dep_table() {
         let dir = tmpdir();
         let root = format!(
             "{}\n[workspace.dependencies]\nb = {{ path = \"crates/b\", version = \"0.6.1\" }}\n",
@@ -1067,7 +1101,7 @@ mod tests {
             &root,
             &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
         );
-        let healed = heal_dep_floors(
+        let healed = heal_dep_minimums(
             dir.path(),
             Propagated::EveryTable(&no_pending()),
             false,
@@ -1086,7 +1120,7 @@ mod tests {
     }
 
     #[test]
-    fn heal_dep_floors_ignores_registry_dep_without_path() {
+    fn heal_dep_minimums_ignores_registry_dep_without_path() {
         let dir = tmpdir();
         let c_manifest = format!("{}\n[dependencies]\nb = \"0.6.1\"\n", pkg("c", "0.1.0"));
         write_workspace(
@@ -1095,7 +1129,7 @@ mod tests {
             &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
         );
         assert!(
-            heal_dep_floors(
+            heal_dep_minimums(
                 dir.path(),
                 Propagated::EveryTable(&no_pending()),
                 false,
@@ -1111,7 +1145,7 @@ mod tests {
     }
 
     #[test]
-    fn heal_dep_floors_ignores_path_dep_outside_workspace() {
+    fn heal_dep_minimums_ignores_path_dep_outside_workspace() {
         let dir = tmpdir();
         let outside = dir.path().join("elsewhere/b");
         std::fs::create_dir_all(&outside).unwrap();
@@ -1126,7 +1160,7 @@ mod tests {
             &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
         );
         assert!(
-            heal_dep_floors(
+            heal_dep_minimums(
                 dir.path(),
                 Propagated::EveryTable(&no_pending()),
                 false,
@@ -1142,7 +1176,7 @@ mod tests {
     }
 
     #[test]
-    fn heal_dep_floors_resolves_inheriting_member_version() {
+    fn heal_dep_minimums_resolves_inheriting_member_version() {
         let dir = tmpdir();
         let root = format!(
             "{}\n[workspace.package]\nversion = \"0.9.0\"\n",
@@ -1162,7 +1196,7 @@ mod tests {
                 ),
             ],
         );
-        heal_dep_floors(
+        heal_dep_minimums(
             dir.path(),
             Propagated::EveryTable(&no_pending()),
             false,
@@ -1174,7 +1208,7 @@ mod tests {
     }
 
     #[test]
-    fn heal_dep_floors_honors_renamed_package_key() {
+    fn heal_dep_minimums_honors_renamed_package_key() {
         let dir = tmpdir();
         write_workspace(
             dir.path(),
@@ -1190,7 +1224,7 @@ mod tests {
                 ),
             ],
         );
-        heal_dep_floors(
+        heal_dep_minimums(
             dir.path(),
             Propagated::EveryTable(&no_pending()),
             false,
@@ -1203,7 +1237,7 @@ mod tests {
     }
 
     #[test]
-    fn heal_dep_floors_pending_overrides_disk_under_dry_run() {
+    fn heal_dep_minimums_pending_overrides_disk_under_dry_run() {
         let dir = tmpdir();
         let c_manifest = format!(
             "{}\n[target.'cfg(unix)'.dependencies]\nb = {{ path = \"../b\", version = \"0.7.0\" }}\n",
@@ -1217,7 +1251,7 @@ mod tests {
         let pending: BTreeMap<String, String> = [("b".to_string(), "0.8.0".to_string())]
             .into_iter()
             .collect();
-        let healed = heal_dep_floors(
+        let healed = heal_dep_minimums(
             dir.path(),
             Propagated::TopLevelSections(&pending),
             true,
@@ -1233,7 +1267,7 @@ mod tests {
     }
 
     #[test]
-    fn heal_dep_floors_leaves_a_propagated_entry_to_its_own_leg() {
+    fn heal_dep_minimums_leaves_a_propagated_entry_to_its_own_leg() {
         let dir = tmpdir();
         let c_manifest = format!(
             "{}\n[dependencies]\nb = {{ path = \"../b\", version = \"0.5.0\" }}\n\n[target.'cfg(unix)'.dependencies]\nb = {{ path = \"../b\", version = \"0.5.0\" }}\n",
@@ -1248,8 +1282,8 @@ mod tests {
             .into_iter()
             .collect();
         // `sync_workspace_deps` reaches only the top-level sections, so the
-        // `[target.…]` floor is the sweep's and the `[dependencies]` one is not.
-        let healed = heal_dep_floors(
+        // `[target.…]` minimum is the sweep's and the `[dependencies]` one is not.
+        let healed = heal_dep_minimums(
             dir.path(),
             Propagated::TopLevelSections(&pending),
             false,
@@ -1271,7 +1305,7 @@ mod tests {
 
         // `apply_plan` reaches every table, so it owns both entries.
         std::fs::write(dir.path().join("crates/c/Cargo.toml"), &c_manifest).unwrap();
-        let healed = heal_dep_floors(
+        let healed = heal_dep_minimums(
             dir.path(),
             Propagated::EveryTable(&pending),
             false,
@@ -1286,7 +1320,7 @@ mod tests {
     }
 
     #[test]
-    fn heal_dep_floors_leaves_an_inline_dependencies_table_untouched() {
+    fn heal_dep_minimums_leaves_an_inline_dependencies_table_untouched() {
         let dir = tmpdir();
         // `dependencies = { … }` is an inline value, not a table: the dep-spec
         // propagation skips it and so must the sweep.
@@ -1299,7 +1333,7 @@ mod tests {
             &ws_root(&["b", "c"]),
             &[("b", &pkg("b", "0.7.0")), ("c", &c_manifest)],
         );
-        let healed = heal_dep_floors(
+        let healed = heal_dep_minimums(
             dir.path(),
             Propagated::EveryTable(&no_pending()),
             false,
@@ -1314,7 +1348,7 @@ mod tests {
     }
 
     #[test]
-    fn heal_dep_floors_is_idempotent() {
+    fn heal_dep_minimums_is_idempotent() {
         let dir = tmpdir();
         write_workspace(
             dir.path(),
@@ -1331,7 +1365,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            heal_dep_floors(
+            heal_dep_minimums(
                 dir.path(),
                 Propagated::EveryTable(&no_pending()),
                 false,
@@ -1344,7 +1378,7 @@ mod tests {
         let after_first = std::fs::read_to_string(dir.path().join("crates/c/Cargo.toml")).unwrap();
         assert!(after_first.contains("version = \"0.7\""), "{after_first}");
         assert!(
-            heal_dep_floors(
+            heal_dep_minimums(
                 dir.path(),
                 Propagated::EveryTable(&no_pending()),
                 false,
@@ -1360,7 +1394,7 @@ mod tests {
     }
 
     #[test]
-    fn heal_dep_floors_warns_on_multi_comparator_floor() {
+    fn heal_dep_minimums_warns_on_multi_comparator_requirement() {
         let dir = tmpdir();
         let c_manifest = format!(
             "{}\n[dependencies]\nb = {{ path = \"../b\", version = \">=0.6, <0.8\" }}\n",
@@ -1373,7 +1407,7 @@ mod tests {
         );
         let (log, capture) = StageLogger::with_capture("tag", anodizer_core::log::Verbosity::Quiet);
         assert!(
-            heal_dep_floors(
+            heal_dep_minimums(
                 dir.path(),
                 Propagated::EveryTable(&no_pending()),
                 false,
@@ -1395,7 +1429,7 @@ mod tests {
     }
 
     #[test]
-    fn heal_dep_floors_warns_on_unparseable_requirement() {
+    fn heal_dep_minimums_warns_on_unparseable_requirement() {
         let dir = tmpdir();
         let c_manifest = format!(
             "{}\n[dependencies]\nb = {{ path = \"../b\", version = \"not-a-version\" }}\n",
@@ -1408,7 +1442,7 @@ mod tests {
         );
         let (log, capture) = StageLogger::with_capture("tag", anodizer_core::log::Verbosity::Quiet);
         assert!(
-            heal_dep_floors(
+            heal_dep_minimums(
                 dir.path(),
                 Propagated::EveryTable(&no_pending()),
                 false,

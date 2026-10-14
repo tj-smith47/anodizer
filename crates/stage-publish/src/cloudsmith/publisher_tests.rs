@@ -47,7 +47,7 @@ fn cloudsmith_preflight_defaults_to_pass() {
 #[test]
 fn cloudsmith_rollback_warns_when_no_targets_recorded() {
     // Empty evidence drives rollback into the no-targets branch.
-    // The capture pins that production actually invoked `log.warn`
+    // The capture checks that production actually invoked `log.warn`
     // with the helper-formatted message — a hand-constructed expected
     // string compared against the helper output would pass even if
     // the rollback body forgot the warn entirely.
@@ -111,7 +111,7 @@ fn cloudsmith_target_extra_roundtrips() {
 }
 
 // Slug captured at upload time round-trips through evidence so
-// rollback can issue real DELETEs. Also pins the wire-format key
+// rollback can issue real DELETEs. Also checks the wire-format key
 // for older anodizer binaries decoding this evidence.
 #[test]
 fn cloudsmith_target_serde_roundtrip_with_slug() {
@@ -132,7 +132,7 @@ fn cloudsmith_target_serde_roundtrip_with_slug() {
     let encoded = encode_cloudsmith_targets(&targets);
     let decoded = decode_cloudsmith_targets(&encoded);
     assert_eq!(decoded, targets);
-    // Wire-format pin: serialize through evidence and inspect the
+    // Wire-format check: serialize through evidence and inspect the
     // JSON to confirm the slug rides under the `cloudsmith_targets`
     // key (matches the pre-typed shape).
     let mut e = PublishEvidence::new("cloudsmith");
@@ -212,7 +212,7 @@ fn cloudsmith_target_decode_tolerates_null_slug() {
 
 #[test]
 fn cloudsmith_target_extra_carries_no_secret_material() {
-    // Structural pin: build typed evidence and assert (a) no
+    // Structural check: build typed evidence and assert (a) no
     // credential-shaped keys appear AND (b) the operator-public
     // upload coordinates serialize.
     let mut e = PublishEvidence::new("cloudsmith");
@@ -276,7 +276,7 @@ fn cloudsmith_rollback_falls_back_to_warn_when_slug_missing() {
         "rollback must return Ok in warn-only fallback"
     );
 
-    // Pin the exact warn-line shape so a refactor of
+    // Check the exact warn-line shape so a refactor of
     // `cloudsmith_manual_cleanup_msg` can't silently regress the
     // operator instructions.
     let msg = cloudsmith_manual_cleanup_msg(&targets[0]);

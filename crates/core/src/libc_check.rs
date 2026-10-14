@@ -5,12 +5,12 @@
 //! This check reads the required glibc symbol versions from a `.deb`'s
 //! embedded ELF binary (the `.gnu.version_r` / verneed records, exposed by
 //! the `object` crate) and fails if the maximum required version exceeds a
-//! configured floor.
+//! configured minimum glibc version.
 //!
 //! musl-linked binaries have NO glibc requirement (no verneed entries naming
 //! `GLIBC_*`) and are SKIPPED — which is precisely the point: a musl build
-//! hides a glibc-floor regression, so "no glibc requirement" is a pass, not a
-//! defect.
+//! hides a regression in the minimum glibc version, so "no glibc
+//! requirement" is a pass.
 //!
 //! Two layers, both unit-testable without a network or Docker:
 //! - [`GlibcVersion`] — numeric, component-wise version parse + compare
@@ -98,7 +98,7 @@ impl Ord for GlibcVersion {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LibcCheckOutcome {
     /// No `GLIBC_*` requirement found — a static or musl binary. Skipped (a
-    /// pass): musl hides the very floor regression this check guards.
+    /// pass): musl hides the very minimum-glibc regression this check guards.
     NoGlibcRequirement,
     /// The maximum required glibc version is within the ceiling.
     WithinCeiling {
@@ -126,8 +126,8 @@ pub enum LibcCheckOutcome {
 /// Returns `Ok(None)` when the bytes have no versioned-symbol table, no
 /// `GLIBC_*` requirement (static / musl), OR are not a parseable ELF at all
 /// (a non-ELF or unsupported object DEGRADES TO SKIP rather than failing): the
-/// check exists only to flag a real glibc-floor violation, so an
-/// uninspectable artifact is a pass, not a defect. Returns `Ok(Some(max))`
+/// check exists only to flag a binary that needs a newer glibc than the
+/// supported minimum, so an uninspectable artifact is a pass. Returns `Ok(Some(max))`
 /// with the numerically-greatest requirement otherwise.
 pub fn max_glibc_requirement(elf_bytes: &[u8]) -> Result<Option<GlibcVersion>> {
     match FileKind::parse(elf_bytes) {
@@ -202,7 +202,7 @@ fn scan_glibc_requirement<Elf: FileHeader<Endian = Endianness>>(
 
 /// Check one ELF binary's glibc requirement against `ceiling`.
 ///
-/// `ceiling` is the dotted glibc floor (e.g. `"2.36"`). A binary requiring a
+/// `ceiling` is the dotted minimum supported glibc version (e.g. `"2.36"`). A binary requiring a
 /// glibc strictly NEWER than `ceiling` produces [`LibcCheckOutcome::ExceedsCeiling`].
 pub fn check_glibc_ceiling(elf_bytes: &[u8], ceiling: &str) -> Result<LibcCheckOutcome> {
     let ceiling_ver = GlibcVersion::parse(ceiling).ok_or_else(|| {
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn requirement_equal_to_ceiling_passes() {
-        // Equal is within (the ceiling is the floor you support, inclusive).
+        // Equal is within (the ceiling is the oldest glibc you support, inclusive).
         let out = check_glibc_requirements(&["GLIBC_2.36"], "2.36").unwrap();
         assert_eq!(
             out,
@@ -384,7 +384,7 @@ mod tests {
     /// `.gnu.version_r` declares a `GLIBC_2.99` requirement on one versioned
     /// dynamic symbol, with a section-header table linking
     /// `.gnu.version` → `.dynsym` → `.dynstr` and `.gnu.version_r` → `.dynstr`
-    /// exactly as a real linker emits. The `object` crate's real verneed walk
+    /// exactly as a real linker emits. The `object` crate's real verneed scan
     /// must extract `GLIBC_2.99` from this — proving 32-bit detection, not just
     /// the 32-bit no-issue skip path.
     ///
@@ -521,14 +521,14 @@ mod tests {
     #[test]
     fn elf32_glibc_requirement_above_ceiling_is_detected() {
         // A 32-bit (i686/armv7) .deb ELF requiring GLIBC_2.99 must be DETECTED
-        // as exceeding a 2.36 ceiling via the real `object` verneed walk — not
-        // skipped, not passed. This is the 32-bit DETECTION path; the sibling
+        // as exceeding a 2.36 ceiling via the real `object` verneed scan, so
+        // the check fails. This is the 32-bit DETECTION path; the sibling
         // `elf32_parses_without_false_issue` only covers the 32-bit SKIP path.
         let bytes = elf32_le_with_glibc_2_99();
         assert_eq!(FileKind::parse(bytes.as_slice()).unwrap(), FileKind::Elf32);
 
         // The extraction must report the real requirement, proving the scan
-        // walked the Elf32 .gnu.version_r (a broken 32-bit path would return
+        // read the Elf32 .gnu.version_r (a broken 32-bit path would return
         // None → NoGlibcRequirement, failing the assert below).
         let max = max_glibc_requirement(&bytes)
             .expect("32-bit ELF must parse")
@@ -569,8 +569,8 @@ mod tests {
         match max_glibc_requirement(&bytes) {
             Ok(Some(max)) => {
                 // /bin/ls links glibc; the max must parse and be >= 2.2.5.
-                let floor = GlibcVersion::parse("2.2.5").unwrap();
-                assert!(max >= floor, "extracted glibc max {} too low", max.raw());
+                let minimum = GlibcVersion::parse("2.2.5").unwrap();
+                assert!(max >= minimum, "extracted glibc max {} too low", max.raw());
             }
             Ok(None) => eprintln!("skipping: /bin/ls reported no glibc requirement"),
             Err(e) => eprintln!("skipping: /bin/ls not a parseable ELF here: {e}"),

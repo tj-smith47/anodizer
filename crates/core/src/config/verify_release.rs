@@ -15,9 +15,9 @@
 //!   package (`.deb` / `.rpm` / `.apk`) in a fixed-version container and runs
 //!   `<bin> --version`. Skipped with a notice when Docker is unavailable.
 //! - **libc ceiling** (`Self::glibc_ceiling`) — fails if any glibc-linked
-//!   `.deb` requires a glibc newer than the configured floor. musl binaries
+//!   `.deb` requires a glibc newer than the configured ceiling. musl binaries
 //!   have no glibc requirement and are skipped — which is the whole point:
-//!   musl hides a glibc-floor regression that this check is meant to find.
+//!   musl hides a minimum-glibc regression that this check is meant to find.
 //! - **publisher landing** (`Self::assert_landing`) — every publisher that
 //!   succeeded this run, and every docker image tag the run pushed, is probed
 //!   upstream to confirm consumers can see what it published.
@@ -82,7 +82,7 @@ pub struct VerifyReleaseConfig {
     /// --version` is run.
     pub install_smoke: Option<InstallSmokeConfig>,
     /// glibc version ceiling, e.g. `"2.36"`. When any glibc-linked `.deb`
-    /// requires a glibc NEWER than this floor, the gate reports it and exits
+    /// requires a glibc NEWER than this ceiling, the gate reports it and exits
     /// non-zero. Unset (the default) disables the libc check entirely. musl
     /// binaries have no glibc requirement and are skipped.
     #[serde(skip_serializing_if = "Option::is_none")]

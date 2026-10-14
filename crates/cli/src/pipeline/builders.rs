@@ -473,8 +473,8 @@ mod tests {
     /// The merge pipeline is exactly the release pipeline minus the
     /// release-only head/tail stages (per-crate lifecycle hooks, build, upx).
     /// Both delegate the artifact run to `push_artifact_stages` and the
-    /// publish side to `push_publish_tail`; this pins the whole-sequence
-    /// relationship so a stage added to one builder but not the other goes red.
+    /// publish side to `push_publish_tail`; this tests the whole-sequence
+    /// relationship so a stage added to one builder but not the other fails.
     #[test]
     fn merge_pipeline_is_release_pipeline_minus_build_stages() {
         const RELEASE_ONLY: &[&str] = &["before", "build", "upx", "after"];
@@ -1087,7 +1087,7 @@ mod tests {
 
     /// `if: "{{ IsSnapshot }}"` skips when not a snapshot. Mirrors the shared
     /// `evaluate_if_condition` behavior exercised by build / archive / sign
-    /// hooks — pinning the contract for before-publish too.
+    /// hooks, and tests the same contract for before-publish.
     #[test]
     fn before_publish_hook_if_condition_skip_when_falsy() {
         use anodizer_core::config::{HookEntry, HooksConfig, StructuredHook};
@@ -1152,7 +1152,7 @@ mod tests {
         // The subprocess returns 0 and prints to stdout — the run must succeed.
         // `output: true` plumbing is identical to the shared `run_hooks` path
         // already exercised by `crates/core/src/hooks.rs::tests`; this test
-        // pins the call site, not the output capture mechanism itself.
+        // tests the call site, not the output capture mechanism itself.
         p.run(&mut ctx, &log)
             .expect("echo hook must succeed under before-publish");
     }
@@ -1628,11 +1628,11 @@ before_publish:
     //
     // Pipeline::run must ALWAYS invoke `emit_summary` (regardless of
     // whether `AnnounceStage::run` was reached). The unit tests in
-    // `stage-announce` pin the stage-side contract; this test pins the
+    // `stage-announce` test the stage-side contract; this test checks the
     // pipeline-side contract — specifically that `--skip=announce`
     // doesn't drop `--summary-json`.
 
-    /// A `Stage` that always returns `Err`. Pins the "emit_summary
+    /// A `Stage` that always returns `Err`. Tests the "emit_summary
     /// fires even on inner-fn Err" half of `Pipeline::run`'s contract.
     /// Kept private to the test module.
     struct AlwaysFailStage;
@@ -1649,7 +1649,7 @@ before_publish:
     fn pipeline_emits_summary_even_when_inner_stage_returns_err() {
         // The inner-fn scope-guard shape in `Pipeline::run` must
         // invoke `emit_summary` on Err too, not just on Ok. Without
-        // this test, only the doc line pinned the contract; this
+        // this test, only the doc line stated the contract; this
         // puts a bisectable pass/fail signal on the Err path.
         use anodizer_core::context::ContextOptions;
 
@@ -1692,7 +1692,7 @@ before_publish:
         // failed — and NO summary.json reached disk because nothing
         // passed `--summary-json`. CI then had no machine-readable
         // publish state and rolled back a fully-published release.
-        // Pin the fix: without an explicit path, a failing pipeline
+        // Without an explicit path, a failing pipeline
         // still writes `<dist>/run-<id>/summary.json` carrying the
         // per-publisher outcomes and the top-level publish counts.
         use anodizer_core::context::ContextOptions;
@@ -1755,10 +1755,10 @@ before_publish:
         assert_eq!(parsed.results[0].status, "succeeded");
         assert!(
             parsed.irreversibly_published,
-            "a landed Submitter (cargo) must mark the version burned"
+            "a Submitter (cargo) that published must mark the version burned"
         );
         // The publish succeeded, but verify-release failed: the summary must
-        // record the defect on its own axis (not a false all-green).
+        // record the defect on its own axis (not a false all-passing).
         let vr = parsed
             .verify_release
             .expect("a failing verify-release stage must record its verdict");
@@ -1772,7 +1772,7 @@ before_publish:
         // asset upload AFTER the GitHub release was created, the publish
         // stage never ran (publish_report = None), and no summary.json
         // reached disk — CI's "Upload run summary" step found nothing
-        // and recovery had no machine-readable state. Pin the fix: any
+        // and recovery had no machine-readable state. Any
         // real (non-snapshot) pipeline failure after tag resolution
         // writes the default summary, carrying the tag, an EMPTY
         // publisher table, and irreversibly_published: false.
@@ -1876,7 +1876,7 @@ before_publish:
     // release via BeforeCrateStage / AfterCrateStage. Publish-only fires the
     // same hooks via its own per-crate loop (`run_per_crate_lifecycle_hooks`)
     // and must NOT also carry these stages, or a publish-only run would
-    // double-fire. These tests pin that invariant structurally.
+    // double-fire. These tests check that invariant structurally.
 
     #[test]
     fn release_pipeline_has_before_crate_at_head_after_crate_at_tail() {

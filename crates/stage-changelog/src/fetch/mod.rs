@@ -120,7 +120,7 @@ fn run_git_log(args: &[String], range: &str) -> Result<Option<String>> {
 ///
 /// A non-zero git exit (e.g. an unknown tag, an empty range) is treated as
 /// "no commits" rather than an error, matching the changelog stage's
-/// best-effort history walk; a bad-revision exit fails loud.
+/// best-effort history read; a bad-revision exit fails loud.
 pub(crate) fn fetch_git_commits_in_paths(
     workspace_root: &std::path::Path,
     from: Option<&str>,
@@ -259,7 +259,7 @@ pub(crate) fn fetch_git_commits_narrowed(
                 "no previous tag found for crate '{}', using all commits",
                 crate_name
             ));
-            // With an explicit upper bound and no lower bound, walk every
+            // With an explicit upper bound and no lower bound, read every
             // ancestor of `<to>` (so commits AFTER it are excluded); otherwise
             // all of HEAD's history.
             match to {
@@ -318,7 +318,7 @@ pub(crate) fn fetch_git_commits(
                 "no previous tag found for crate '{}', using all commits",
                 crate_name
             ));
-            // With an explicit upper bound and no lower bound, walk every
+            // With an explicit upper bound and no lower bound, read every
             // ancestor of `<to>` (so commits AFTER it are excluded); otherwise
             // all of HEAD's history.
             match to {

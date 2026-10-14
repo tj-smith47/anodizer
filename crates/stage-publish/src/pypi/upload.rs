@@ -117,10 +117,10 @@ pub(crate) fn upload_file(
         sha256
     ));
 
-    // Duplicate rejections keep a transient-error retry floor even when a
+    // Duplicate rejections keep a transient-error retry minimum even when a
     // stateful mode resolves `max_attempts` to 1; re-POSTs of the same file
     // are idempotent (the index keys on the filename).
-    let upload_policy = policy.with_idempotent_floor();
+    let upload_policy = policy.with_idempotent_minimum();
     let duplicate = std::cell::Cell::new(false);
     retry_sync_deadline(
         RetryLog::new("pypi upload", log),

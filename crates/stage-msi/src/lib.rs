@@ -2144,7 +2144,7 @@ crates:
 
     #[test]
     fn test_msi_amd64_variant_filter_does_not_drop_arm64() {
-        // Pin: filter only constrains amd64. arm64 must still pass even
+        // The filter only constrains amd64. arm64 must still pass even
         // when no amd64 variant matches.
         let mut ctx = msi_amd64_variant_test_ctx(Some(anodizer_core::config::Amd64Variant::V4));
         MsiStage.run(&mut ctx).unwrap();
@@ -2357,7 +2357,7 @@ crates:
         assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Installer).len(), 1);
 
         // Belt-and-braces: confirm the template engine resolves the var to
-        // a parseable timestamp on its own, pinning the contract.
+        // a parseable timestamp on its own, checking the contract.
         let rendered = ctx.render_template("{{ Env.SOURCE_DATE_EPOCH }}").unwrap();
         assert_eq!(rendered, "1704067200");
         anodizer_core::util::parse_mod_timestamp(&rendered).unwrap();
@@ -2590,7 +2590,7 @@ crates:
     /// independent of any timestamp flag. anodizer invokes WiX directly with no
     /// post-build summary-stream normalization, so the native `.msi` inherits
     /// that non-determinism. The assertion below proves the drift is real (not a
-    /// flake) and pins the root cause; flipping it to byte-equality is the
+    /// flake) and records the root cause; flipping it to byte-equality is the
     /// regression signal if WiX ever ships deterministic output or anodizer adds
     /// summary-stream normalization. Runs on the Windows CI test shard only.
     #[test]

@@ -383,12 +383,12 @@ fn test_render_url_template_invalid_fallback() {
 
 /// F1 — `render_url_template_with_ctx` exposes the full project template
 /// variables (`Tag`, `ProjectName`, `Version`, `Major/Minor/Patch`,
-/// `Commit`, `Branch`, `PreviousTag`, `Env.*`, `ArtifactName`, …) — not
-/// just the lower-case 4-var subset. Dotted-variable configs that
+/// `Commit`, `Branch`, `PreviousTag`, `Env.*`, `ArtifactName`, …), beyond
+/// the lower-case 4-var subset. Dotted-variable configs that
 /// reference `{{ .Tag }}` or `{{ .Env.X }}` in `url_template:` would
 /// silently produce empty fields under the legacy renderer.
 #[test]
-fn test_render_url_template_with_ctx_full_surface() {
+fn test_render_url_template_with_ctx_full_variable_set() {
     use crate::util::render_url_template_with_ctx;
     use anodizer_core::config::Config;
     use anodizer_core::context::{Context, ContextOptions};
@@ -881,14 +881,14 @@ fn test_resolve_repo_owner_name_partial_returns_none() {
 
 // render_or_warn regression: malformed template must NOT propagate as
 // Err; instead, the raw value is preserved and a warning is emitted.
-// Pins the warn-and-fallback path against a future drift back to
+// Tests the warn-and-fallback path against a future drift back to
 // `unwrap_or_else(|_| raw.clone())` (silent swallow) or `with_context()`
 // (hard-fail).
 
 /// Lenient (production dry-run / snapshot / nightly): a malformed Tera
 /// template (`{{ unclosed`) feeding `render_or_warn` must NOT error — it
 /// yields the raw value back (not Err, not empty) and warns on stderr. This
-/// pins the warn-and-fallback path so a forgiving release stays forgiving.
+/// tests the warn-and-fallback path so a forgiving release stays forgiving.
 #[test]
 fn test_render_or_warn_falls_back_on_malformed_template() {
     use anodizer_core::config::Config;
@@ -952,7 +952,7 @@ fn test_render_or_warn_errors_on_malformed_template_under_global_strict() {
     assert!(format!("{err:#}").contains("scoop.name"));
 }
 
-/// Well-formed templates render normally — pin the success path so a
+/// Well-formed templates render normally — test the success path so a
 /// future refactor that breaks the Ok branch trips this test.
 #[test]
 fn test_render_or_warn_renders_well_formed_template() {
@@ -1054,7 +1054,7 @@ mod redact_output_token_tests {
 
     #[test]
     fn replace_bytes_overlapping_collapses_to_non_overlapping() {
-        // Pin the chosen semantics: needle `aa` in haystack `aaaa` produces
+        // Check the chosen semantics: needle `aa` in haystack `aaaa` produces
         // two replacements (after each match the cursor jumps past the
         // consumed needle), not three. Documented in `replace_bytes`'s
         // doc comment.

@@ -15,7 +15,7 @@
 //! available but the harness skips internally (no Dockerfile / buildx
 //! unreachable), the report still has to parse and `--stages=docker`
 //! must be on the `stages_under_test` list — those two invariants are
-//! pinned by the parser-side assertions even on hosts without docker.
+//! tested by the parser-side assertions even on hosts without docker.
 //!
 //! Known non-determinism the harness's flag set addresses:
 //! - **Layer file mtimes** — `--rewrite-timestamp` rewrites every layer
@@ -23,7 +23,7 @@
 //! - **Provenance + SBOM attestations** — `--provenance=false
 //!   --sbom=false` suppresses BuildKit's default attestations whose
 //!   bodies embed wall-clock timestamps and BuildKit version strings.
-//! - **Manifest annotations** — the harness pins the `--tag` to a
+//! - **Manifest annotations** — the harness sets the `--tag` to a
 //!   deterministic constant so `org.opencontainers.image.ref.name` does
 //!   not drift.
 //!
@@ -54,7 +54,7 @@ use common::{bootstrap_minimal_cargo_repo, tool_on_path};
 /// report still gets written with `stages_under_test` including
 /// `"docker"`.
 ///
-/// This is the lowest-cost shape that pins the parser wiring. On
+/// This is the lowest-cost shape that tests the parser wiring. On
 /// hosts WITH docker buildx, the sibling `docker_oci_tar_is_byte_stable_…`
 /// test exercises the full byte-stability path.
 #[test]

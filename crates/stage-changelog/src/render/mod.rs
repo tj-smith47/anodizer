@@ -3,7 +3,7 @@
 //! `render_changelog_with_provider` is the canonical render function
 //! (used by both the in-pipeline `Stage::run` body and the
 //! `bump --commit` flow in `render_crate_section`). The recursive
-//! `render_groups` walks the `GroupedCommits` tree to produce headings +
+//! `render_groups` visits the `GroupedCommits` tree to produce headings +
 //! bullets at the configured Markdown depth.
 //!
 //! `merge_into_changelog` is the file-level merge helper used by

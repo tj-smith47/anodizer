@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial(cwd)]
-    fn gh_failure_surfaces_error_with_redacted_token() {
+    fn gh_failure_returns_error_with_redacted_token() {
         let dir = tempfile::tempdir().expect("script dir");
         let token = "ghp_secret_token_abc123";
         // Stub exits 1 with stderr that includes the token verbatim,

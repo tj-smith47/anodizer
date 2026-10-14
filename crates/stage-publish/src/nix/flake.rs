@@ -203,11 +203,11 @@ pub(super) fn write_flake(repo_path: &Path, attr: &str, nix_path: &str) -> Resul
 ///
 /// A naive `count('{') == count('}')` miscounts a flake or derivation whose
 /// `installPhase = ''…''` body or `meta.description` string carries a literal
-/// brace, so the scan walks character-by-character and only counts delimiters
+/// brace, so the scan reads character-by-character and only counts delimiters
 /// in code context. Returns `Err` describing the first imbalance (an unmatched
 /// or mismatched closer, or unclosed openers at end of input); `Ok(())` when
 /// every pair nests cleanly. Shared by the flake and derivation structural
-/// floors so both speak the same definition of "balanced".
+/// checks so both use the same definition of "balanced".
 ///
 /// Antiquotation (`${…}`) bodies inside either string form are treated as
 /// opaque string content, NOT re-entered as code. This is sound only because
@@ -486,7 +486,7 @@ mod tests {
 
     #[test]
     fn parse_overlay_line_round_trips_what_we_emit() {
-        // Defensive pin: the recovery parser must accept exactly the line
+        // Defensive check: the recovery parser must accept exactly the line
         // the template emits.
         let pkgs = vec![FlakePackage {
             attr: "tool".into(),

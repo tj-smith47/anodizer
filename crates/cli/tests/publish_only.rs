@@ -83,7 +83,7 @@ fn bootstrap_preserved_dist(
     // context.json — the Phase-1 harness's PreservedDistContext shape.
     // sha256 must match the on-disk bytes of `archive_path` because
     // publish-only hash-verifies every preserved artifact before
-    // re-signing. Pinned literal is the sha256 of `b"ARCHIVE\n"`.
+    // re-signing. The fixed literal is the sha256 of `b"ARCHIVE\n"`.
     let archive_sha256 = "5c1f30e5f037be631bf54f0b521304c77bb439bfe90f7839b885a1b5099c724c";
     let context_json = serde_json::json!({
         "artifacts": [
@@ -140,7 +140,7 @@ fn inject_preserved_config_yaml(repo: &Path) -> Vec<u8> {
     let config_path = dist.join("config.yaml");
     fs::write(&config_path, SENTINEL_CONFIG_YAML).unwrap();
 
-    // sha256 of SENTINEL_CONFIG_YAML (pinned literal; recomputing in-test
+    // sha256 of SENTINEL_CONFIG_YAML (fixed literal; recomputing in-test
     // would mask a divergence between the bytes and the recorded hash).
     let config_sha256 = "19a5da57ecdd13111317203615779cddafda16e93d71761d2fe1ff682ad2b79b";
 
@@ -242,7 +242,7 @@ fn tag_head(repo: &Path, version: &str) -> String {
 /// archive / nfpm stages.
 ///
 /// Drives `anodizer release --publish-only --dry-run`
-/// against a pre-bootstrapped dist. Asserts on stdout markers that pin
+/// against a pre-bootstrapped dist. Asserts on stdout markers that check
 /// the pipeline composition end-to-end.
 #[test]
 fn publish_only_dry_run_consumes_context_json_and_runs_publish_pipeline() {
@@ -337,7 +337,7 @@ fn publish_only_dry_run_consumes_context_json_and_runs_publish_pipeline() {
 
     // Tag presence: release stage's dry-run path mentions the
     // resolved Git.Tag (e.g. "would create GitHub Release ... tag=v0.1.0").
-    // A hard assertion pins that publish-only resolves the tag and
+    // A hard assertion checks that publish-only resolves the tag and
     // reports it in the dry-run summary — silent absence would mask
     // a regression where the tag resolver short-circuits before
     // ReleaseStage.
@@ -520,7 +520,7 @@ fn publish_only_conflicts_with_merge_at_clap_level() {
 /// the fixture's `release:` block and aborts citing the missing env
 /// var NAMES plus the stages that demand them.
 ///
-/// The assertions pin its exact output — the var list, the needed-by
+/// The assertions check its exact output — the var list, the needed-by
 /// attribution, and the abort bail.
 #[test]
 fn publish_only_preflight_credentials_required_in_non_dry_run() {
@@ -793,7 +793,7 @@ fn publish_only_resigns_with_production_keys_idempotently() {
 
     // Override .anodizer.yaml to add a signs: section so SignStage has
     // something to do. gpg key-id is left to "default" (gpg's first
-    // secret key); the gnupghome below pins which keyring that is.
+    // secret key); the gnupghome below fixes which keyring that is.
     let host = common::host_triple();
     let yaml = format!(
         r#"crates:
@@ -969,7 +969,7 @@ Expire-Date: 0
 
 // Shard-merge union: publish-only must include BOTH shards' artifacts
 
-/// Pinned sha256 hex of `SHARD_A_PAYLOAD` (22 bytes). Computed
+/// Fixed sha256 hex of `SHARD_A_PAYLOAD` (22 bytes). Computed
 /// out-of-band — verifying the literal here would only re-derive the
 /// value via the same hash function that the production code uses to
 /// satisfy `hash_verify_preserved_dist`, making the test tautological.

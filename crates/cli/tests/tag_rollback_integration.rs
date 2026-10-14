@@ -26,7 +26,7 @@ fn anodizer() -> (Command, TempDir) {
 /// Redirect HOME / GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM at every git
 /// child the test spawns so the host's global / system git config
 /// (notably `commit.gpgsign = true`) cannot affect fixture-repo
-/// behavior. Per-repo `git config user.email ...` writes already pin
+/// behavior. Per-repo `git config user.email ...` writes already configure
 /// the test repo, but `git commit` reads global settings on top of
 /// that — without the redirection, a host with `commit.gpgsign`
 /// globally enabled would try to sign with an unconfigured key and

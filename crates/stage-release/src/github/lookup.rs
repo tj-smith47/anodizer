@@ -377,7 +377,7 @@ pub(super) async fn list_releases_by_name(
 
 #[cfg(test)]
 mod find_draft_by_name_tests {
-    //! Behavioural pins for [`find_draft_by_name`] — the paginated draft
+    //! Behavioural tests for [`find_draft_by_name`] — the paginated draft
     //! search used by the `replace_existing_draft` and
     //! `use_existing_draft` paths in `run_github_backend`.
     //!
@@ -385,7 +385,7 @@ mod find_draft_by_name_tests {
     //! in-process loopback responder (the shared
     //! `spawn_oneshot_http_responder`) so the pagination terminator,
     //! per-page route shape, and `draft && name match` predicate are
-    //! pinned against the production code path — not the matcher in
+    //! tested against the production code path, beyond the matcher in
     //! isolation.
     use super::*;
     use crate::test_support::{build_test_octocrab, test_retry_policy};
@@ -553,7 +553,7 @@ mod find_draft_by_name_tests {
 
 #[cfg(test)]
 mod published_asset_tests {
-    //! Pin the asset size/digest extraction behind [`fetch_published_assets`]:
+    //! Test the asset size/digest extraction behind [`fetch_published_assets`]:
     //! octocrab's typed `Asset` model carries `size` and an optional `digest`,
     //! and the mapping must preserve both (digest absent on older GHES) so the
     //! verify-release content check sees exactly what GitHub stores. Driven
@@ -661,13 +661,13 @@ mod published_asset_tests {
 
 #[cfg(test)]
 mod get_by_tag_lookup_tests {
-    //! Pin the `get_by_tag` lookup decision rule introduced to prevent the
+    //! Test the `get_by_tag` lookup decision rule introduced to prevent the
     //! "transient 5xx falls through to create-release POST" bug.
     //!
     //! Two invariants:
     //! 1. The lookup is retried per the user's `RetryPolicy` (transient 5xx /
     //!    429 / transport failures retry). The retry-loop contract itself is
-    //!    pinned by `retry_call::tests` against a real TCP responder.
+    //!    tested by `retry_call::tests` against a real TCP responder.
     //! 2. Only a real 404 yields "no existing release" (None); every other
     //!    error (auth, validation, exhausted retries on 5xx) propagates so
     //!    the user sees the real GitHub error, NOT a downstream 422
@@ -677,7 +677,7 @@ mod get_by_tag_lookup_tests {
     //! against real `octocrab::Error::GitHub` values. The retry-then-error
     //! coupling is exercised by `retry_call::tests` plus a single 404
     //! fast-fail check here so the predicate's "404 only" invariant is
-    //! pinned end-to-end against the helper.
+    //! tested end-to-end against the helper.
     use super::*;
     use crate::test_support::build_test_octocrab;
     use anodizer_core::retry::RetryPolicy;
@@ -699,7 +699,7 @@ mod get_by_tag_lookup_tests {
         assert!(
             !is_octocrab_404(&github_err_503),
             "503 must NOT classify as 404 (would let the caller fall \
-             through to create-release and surface a downstream 422)"
+             through to create-release and report a downstream 422)"
         );
         let github_err_422 = synth_github_error(422).await;
         assert!(
@@ -734,7 +734,10 @@ mod get_by_tag_lookup_tests {
                     .await
             })
             .await;
-        assert!(result.is_err(), "404 must surface as Err from the helper");
+        assert!(
+            result.is_err(),
+            "404 must be returned as Err from the helper"
+        );
         let err = result.expect_err("err is Some by the assert above");
         assert!(
             is_octocrab_404(&err),
@@ -749,7 +752,7 @@ mod get_by_tag_lookup_tests {
 
     #[tokio::test]
     async fn get_by_tag_5xx_retries_then_succeeds_under_helper() {
-        // Pin the regression: a transient 5xx on `get_by_tag` must retry
+        // Regression test: a transient 5xx on `get_by_tag` must retry
         // through `retry_octocrab_call`, NOT fall through to the
         // create-release POST (which would return a 422 "tag already
         // exists" on a tag whose existing release just had a flaky lookup).
@@ -783,8 +786,8 @@ mod get_by_tag_lookup_tests {
     }
 
     #[tokio::test]
-    async fn get_by_tag_500_forever_surfaces_real_error_not_404_fallthrough() {
-        // Pin the regression: if every retry sees 5xx, the helper must
+    async fn get_by_tag_500_forever_returns_real_error_instead_of_404_fallthrough() {
+        // Regression test: if every retry sees 5xx, the helper must
         // return the typed 500 error (NOT swallow it into None). The
         // backend's match arm has only one non-error fall-through (a real
         // 404 via `is_octocrab_404`); 500-forever must propagate so the
@@ -809,7 +812,7 @@ mod get_by_tag_lookup_tests {
             .await;
         assert!(
             result.is_err(),
-            "500-forever must surface as Err, NOT swallow into None"
+            "500-forever must be returned as Err, NOT swallow into None"
         );
         let err = result.expect_err("err is Some by the assert above");
         assert!(

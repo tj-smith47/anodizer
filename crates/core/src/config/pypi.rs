@@ -9,7 +9,7 @@ use super::{Amd64Variant, StringOrBool, deserialize_string_or_bool_opt};
 ///
 /// Publishes the project's prebuilt binaries as native Python wheels — one
 /// `py3-none-<platform>` wheel per built target, with the platform tag
-/// derived by inspecting each binary (glibc floor for `manylinux`, Mach-O
+/// derived by inspecting each binary (minimum glibc version for `manylinux`, Mach-O
 /// deployment target for `macosx`) — and uploads them via PyPI's legacy
 /// (twine-protocol) upload API. Optionally also builds and uploads a source
 /// distribution via `maturin sdist`. Each `pypis[]` entry produces one
@@ -151,15 +151,15 @@ pub struct PypiConfig {
 
     /// Per-target-triple wheel platform-tag overrides: `<target triple>` →
     /// explicit wheel platform tag. When a built target has an entry, its tag
-    /// is used *verbatim* — binary inspection (the glibc floor for
+    /// is used *verbatim* — binary inspection (the minimum glibc version for
     /// `manylinux`, the Mach-O deployment target for `macosx`) is skipped for
     /// that target. Every target without an entry keeps the auto-detected tag.
     ///
-    /// The escape hatch for toolchains whose emitted glibc floor is stricter
+    /// The escape hatch for toolchains whose emitted minimum glibc version is stricter
     /// than the compatibility a project wants to advertise — e.g. setting
     /// `aarch64-unknown-linux-gnu` to `manylinux_2_28` to match a
     /// `maturin`/PyO3 build environment when the binary's symbols
-    /// imply a higher floor.
+    /// imply a higher minimum.
     ///
     /// ```yaml
     /// pypis:

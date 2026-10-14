@@ -400,7 +400,7 @@ pub(crate) fn probe_http_endpoint(
 /// A 2xx/3xx and a 404 (host up, resource simply absent) prove the host is
 /// reachable, so the probe must not abort on them. A 5xx is indeterminate —
 /// degraded to a Warning by default, promoted to a Blocker under strict
-/// preflight (`strict`). Use this — not [`probe_http_endpoint`] — whenever a
+/// preflight (`strict`). Use this instead of [`probe_http_endpoint`] whenever a
 /// 404 does NOT mean a misconfigured target.
 pub(crate) fn reachability_outcome(
     status: EndpointStatus,

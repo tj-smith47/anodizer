@@ -298,7 +298,7 @@ fn capture_inner(
     // in a kill-on-close Job Object so the watchdog can reap the WHOLE subtree
     // via `TerminateJobObject` even after the direct child has exited — the
     // post-exit drain-reap case `taskkill /T` cannot serve (a terminated root is
-    // absent from the snapshot its tree walk needs). Assigned immediately after
+    // absent from the snapshot its tree traversal needs). Assigned immediately after
     // spawn; a grandchild forked in the microseconds before assignment escapes
     // the job, but the bounded tools do real work before forking. `None` (job
     // creation/assignment failed) falls back to the `taskkill` reap.

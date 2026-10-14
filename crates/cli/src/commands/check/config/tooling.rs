@@ -73,11 +73,27 @@ pub(super) fn check_docker_tooling(config: &Config, warnings: &mut Vec<String>) 
 
 pub(super) fn check_github_token(config: &Config, warnings: &mut Vec<String>) {
     // Route through the canonical resolver so an empty `GITHUB_TOKEN=""`
-    // (set-but-blank) is correctly reported as "no token", same as unset.
-    if config_needs_release(config) && anodizer_core::git::resolve_github_token(None).is_none() {
+    // (set-but-blank) is correctly reported as "no token", same as unset. A
+    // GitHub token file is the last source of the run token, so a token held
+    // only there is a token. A token file that cannot be read is reported by
+    // the release itself; here it counts as no token.
+    let file_token = || {
+        anodizer_core::config::token_file_tokens(
+            config.env_files.as_ref(),
+            &anodizer_core::ProcessEnvSource,
+        )
+        .ok()
+        .and_then(|mut tokens| tokens.remove("GITHUB_TOKEN"))
+    };
+    if config_needs_release(config)
+        && anodizer_core::git::resolve_github_token(None).is_none()
+        && file_token().is_none()
+    {
         warnings.push(format!(
-            "no GitHub token found but release sections are configured; set {}",
-            anodizer_core::git::github_token_env_hint()
+            "no GitHub token found but release sections are configured; set {} or write the \
+             token to {}",
+            anodizer_core::git::github_token_env_hint(),
+            anodizer_core::config::DEFAULT_GITHUB_TOKEN_FILE
         ));
     }
 }

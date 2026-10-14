@@ -185,12 +185,13 @@ pub struct ReleaseConfig {
     ///
     /// 1. `release.provider`;
     /// 2. the top-level `force_token`;
-    /// 3. the `ANODIZER_FORCE_TOKEN` environment variable, or
-    ///    `GORELEASER_FORCE_TOKEN` when `ANODIZER_FORCE_TOKEN` is unset
+    /// 3. the `ANODIZER_FORCE_TOKEN` environment variable; when it is unset
+    ///    or blank, `GORELEASER_FORCE_TOKEN` is read; both are trimmed
     ///    (`github`, `gitlab` or `gitea` in any letter case; any other value
     ///    gives no answer);
-    /// 4. `GITLAB_TOKEN` set in the environment: GitLab;
-    /// 5. `GITEA_TOKEN` set in the environment: Gitea;
+    /// 4. `GITLAB_TOKEN` set in the environment, or a GitLab token file:
+    ///    GitLab;
+    /// 5. `GITEA_TOKEN` set in the environment, or a Gitea token file: Gitea;
     /// 6. GitHub.
     ///
     /// Set it for cross-platform publishing, where the source repo lives on

@@ -250,14 +250,14 @@ fi
 # Reachability: does every mapped local target, and every target a ci.yml
 # step runs, actually run as part of `task gate`? Prefer `task -n -v gate` (a
 # real dry-run of the composed task graph). CI's actionlint job has no `task` binary on PATH, so
-# fall back to walking Taskfile.yml's `- task:` cmds and `deps:` from `gate`
+# fall back to reading Taskfile.yml's `- task:` cmds and `deps:` from `gate`
 # with yq — it does not evaluate `platforms:` or vars, but it doesn't require
 # the binary.
 #
 # go-task evaluates `preconditions:` even under `-n`, so the host-resource
-# floors `task doc` declares would decide this walk. They gate running the
-# work, not naming it; ANODIZER_STRUCTURAL_WALK lets each leg stand down for
-# a walk that spawns none of it.
+# minimums `task doc` declares would decide this scan. They gate running the
+# work, and naming it does not need them; ANODIZER_STRUCTURAL_WALK lets each leg stand down for
+# a scan that spawns none of it.
 unreachable=""
 if command -v task >/dev/null 2>&1; then
     if ! dryrun=$(ANODIZER_STRUCTURAL_WALK=1 task -n -v gate 2>&1); then
@@ -273,7 +273,7 @@ if command -v task >/dev/null 2>&1; then
 else
     taskfile="Taskfile.yml"
     if [[ ! -f "$taskfile" ]]; then
-        echo "audit-gate-mirror: FAIL — no \`task\` binary on PATH and ${taskfile} not found for the static walk." >&2
+        echo "audit-gate-mirror: FAIL — no \`task\` binary on PATH and ${taskfile} not found for the static scan." >&2
         exit 2
     fi
     declare -A REACHED=()

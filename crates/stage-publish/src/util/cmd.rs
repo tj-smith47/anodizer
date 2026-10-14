@@ -67,7 +67,7 @@ pub(crate) fn run_git_in_envs(
 
 /// Timeout-bounded variant of [`run_git_in`] for network-touching git ops
 /// (`git push` / `git fetch` to a remote). A remote that accepts the
-/// connection then never drains — a wedged TLS handshake, a half-open
+/// connection then never finishes — a wedged TLS handshake, a half-open
 /// connection to AUR/a tap repo — would otherwise hang the release forever
 /// with no deadline. On expiry the whole git subtree is killed and the call
 /// returns a [`Retriable`](anodizer_core::retry::Retriable)-wrapped timeout
@@ -305,7 +305,7 @@ mod tests {
             &log,
             Duration::from_millis(200),
         )
-        .expect_err("a child outliving the timeout must surface as Err");
+        .expect_err("a child outliving the timeout must return Err");
         let elapsed = start.elapsed();
         assert!(
             elapsed < Duration::from_secs(5),

@@ -25,7 +25,7 @@
 # to the real tool. A test that reaches the tripwire of a tool ITS OWN binary
 # stubs is a reader, and must be keyed.
 #
-# The tripwire finds the test that spawned it by walking its parent chain to
+# The tripwire finds the test that spawned it by following its parent chain to
 # the test process, which the runner registered under its pid before starting
 # the test. It carries no state in the environment, so a test that spawns the
 # tool under `env_clear()` is measured like any other. Only a DIRECT spawn
@@ -129,7 +129,7 @@ for tool in $(printf '%s\n' $all_tools | sort -u); do
 export PATH
 me=$(basename "$0")
 self=$(dirname "$0")
-# Walk up to the registered test process: the first parent is a direct spawn.
+# Follow the parents up to the registered test process: the first parent is a direct spawn.
 p=$PPID; how=""; hop=0
 while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null; do
     if [ -f "$work/pids/$p" ]; then

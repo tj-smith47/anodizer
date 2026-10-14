@@ -208,7 +208,7 @@ where
 /// `module-boundaries.md` allow-list stays accurate.
 pub(crate) fn probe_buildx_version() -> BuildxVersionProbe {
     // Capability probe: no context env injection needed (reads version only).
-    // Pin the cwd to a guaranteed-existing dir so the probe survives an
+    // Set the cwd to a guaranteed-existing dir so the probe survives an
     // inherited cwd that was removed (see `path_util::probe_dir`).
     let output = Command::new("docker")
         .args(["buildx", "version"])

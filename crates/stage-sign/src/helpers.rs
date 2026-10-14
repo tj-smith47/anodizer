@@ -837,7 +837,7 @@ mod filter_drift_tests {
         assert_eq!(
             every_kind.len(),
             45,
-            "the walk over ArtifactKind::as_str found {} kinds, so either a \
+            "the scan of ArtifactKind::as_str found {} kinds, so either a \
              variant was added or the arms no longer look the way this reads \
              them",
             every_kind.len()

@@ -25,7 +25,7 @@ use crate::upload::{
 /// (S3 canned-ACL gate, GCS predefined-ACL gate, KMS provider/scheme match,
 /// …) execute. The store itself is discarded — no network is dispatched.
 ///
-/// Used by Q9.1 regression tests to pin the contract that a templated
+/// Used by regression tests to check the contract that a templated
 /// `provider:` field flows through the same dispatch as a literal one. The
 /// function is `pub(crate)` (test-only consumption); production callers
 /// should use [`BlobStage::run`].
@@ -347,7 +347,7 @@ pub(crate) fn derive_blob_required(ctx: &Context) -> bool {
 /// configured `provider`/`bucket` strings (templates unrendered) are enough to
 /// identify the destination without building object stores.
 ///
-/// Walks the same `crate_universe` (top-level `crates` + every
+/// Visits the same `crate_universe` (top-level `crates` + every
 /// `workspaces[].crates`) the guard predicate uses, so a pure-workspace config
 /// whose `blobs:` lives only under a workspace crate still names its bucket
 /// rather than reporting `(none configured)`.
@@ -1136,7 +1136,7 @@ mod run_tests {
 
     // non-release version guard — wiring proof.
 
-    /// Pins that the non-release version guard is WIRED into `BlobStage::run`,
+    /// Checks that the non-release version guard is WIRED into `BlobStage::run`,
     /// not merely that the shared `guard_release_version` works in isolation.
     /// Drives the real `Stage::run` entrypoint with a configured blob and a
     /// `0.0.0~SNAPSHOT-<sha>` version on a real-release (non-snapshot,
@@ -1186,7 +1186,7 @@ mod run_tests {
 
     /// A pure-workspace config (crates live ONLY under `workspaces[].crates`,
     /// not top-level `crates`) must still name the workspace crate's bucket in
-    /// the guard error — `blob_destinations` walks the same `crate_universe` the
+    /// the guard error — `blob_destinations` visits the same `crate_universe` the
     /// predicate does, so the operator is never left with `(none configured)`
     /// exactly when a workspace-only blob was about to be hit.
     #[test]
@@ -1234,7 +1234,7 @@ mod run_tests {
 
     /// `required: true` on a workspace-only crate's blob config must
     /// escalate the stage's aggregated required bit — the retain collapse
-    /// already walks the universe, so a `config.crates`-only required
+    /// already visits the universe, so a `config.crates`-only required
     /// derivation would silently demote the workspace crate's gate.
     #[test]
     fn derive_blob_required_sees_workspace_only_crate() {
@@ -1348,7 +1348,7 @@ mod run_tests {
         let msg = err.to_string();
         assert!(
             msg.contains("not compatible") && msg.contains("awskms://"),
-            "KMS mismatch must surface the scheme gate before upload; got: {msg}"
+            "KMS mismatch must report the scheme gate before upload; got: {msg}"
         );
     }
 

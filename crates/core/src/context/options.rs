@@ -123,7 +123,7 @@ pub struct ContextOptions {
     pub changelog_full_history: bool,
     /// `changelog <from>..<to>` / `changelog <tag>`: an explicit UPPER bound
     /// (range end) for changelog commit collection. When set, the changelog
-    /// stage walks `<from>..<to>` instead of `<from>..HEAD`, so commits AFTER
+    /// stage reads `<from>..<to>` instead of `<from>..HEAD`, so commits AFTER
     /// `<to>` are excluded. A dedicated option (rather than the always-populated
     /// `Tag` template var) so the pending / snapshot window — where `Tag`
     /// resolves to the latest EXISTING tag yet the range must still run to

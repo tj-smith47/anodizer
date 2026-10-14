@@ -32,10 +32,10 @@ use tempfile::TempDir;
 const HARNESS_COSIGN_PASSWORD: &str = "anodizer-harness";
 
 /// EdDSA ed25519 keypair config template for `gpg --batch --gen-key`.
-/// `%no-protection` skips the passphrase prompt; ed25519 + an SDE-pinned
+/// `%no-protection` skips the passphrase prompt; ed25519 + an SDE-fixed
 /// signing time gives byte-stable detached signatures per RFC 8032.
 /// `Creation-Date: {creation}` is filled in at provision time so the
-/// key's creation timestamp matches the harness's pinned epoch — sign
+/// key's creation timestamp matches the harness's fixed epoch — sign
 /// calls that use `--faked-system-time=<sde>` would otherwise see the
 /// key as "not yet existing at that time" and bail with `Unusable
 /// secret key`.
@@ -101,8 +101,8 @@ impl EphemeralSigningKeys {
 }
 
 /// Provision ephemeral cosign + GPG keys. `sde` is the harness's
-/// pinned `SOURCE_DATE_EPOCH`; the GPG key's creation timestamp is
-/// pinned to it so subsequent signs at the same epoch can use the key.
+/// fixed `SOURCE_DATE_EPOCH`; the GPG key's creation timestamp is
+/// set to it so subsequent signs at the same epoch can use the key.
 /// Returns `Err` when either tool is missing or key generation fails —
 /// bailing is preferable to silently skipping sign-stage validation.
 pub fn provision_ephemeral_keys(sde: i64) -> Result<EphemeralSigningKeys> {
@@ -265,7 +265,7 @@ fn provision_apk(tmpdir: &Path) -> Result<Option<PathBuf>> {
     // a missing `openssl` must NOT fail provisioning — bailing here would break
     // the macos/windows shards that pass today without any apk key.
     //
-    // `genpkey` (not `genrsa`) is pinned deliberately so the key is always
+    // `genpkey` (not `genrsa`) is chosen deliberately so the key is always
     // PKCS#8 (`BEGIN PRIVATE KEY`) across openssl versions. `genrsa` emits
     // PKCS#1 on openssl 1.x/LibreSSL and PKCS#8 on 3.x; a format nfpm's apk
     // packager rejects would — because provisioning is best-effort — silently
@@ -601,7 +601,7 @@ mod provision_tests {
         let gpg_calls = tools.calls("gpg");
         assert_eq!(gpg_calls[0], vec!["--version"]);
         assert_eq!(gpg_calls[1][..2], ["--batch", "--gen-key"]);
-        // The batch file handed to gen-key pins the key's creation time to
+        // The batch file handed to gen-key sets the key's creation time to
         // the SDE so faked-system-time signs see a usable key.
         let batch = std::fs::read_to_string(&gpg_calls[1][2]).unwrap();
         assert!(batch.contains("Creation-Date: 20250101T000000"), "{batch}");

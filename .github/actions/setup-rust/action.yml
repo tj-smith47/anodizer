@@ -139,9 +139,9 @@ runs:
 
     # Tools the suite runtime-probes and skips on when absent. Without them a
     # coverage run reports a percentage measured over a strictly smaller body of
-    # code than a developer box measures, so a floor calibrated on one lies about
-    # the other. Checksums are fetched from each project's own published manifest
-    # rather than hardcoded, so there is no digest to drift (same rationale as
+    # code than a developer box measures, so a minimum calibrated on one is wrong for
+    # the other. Checksums are fetched from each project's own published manifest,
+    # so there is no hardcoded digest to drift (same rationale as
     # nfpm above).
     - name: Install coverage-probed tools (apt + snap)
       if: ${{ inputs.coverage-tools == 'true' && runner.os == 'Linux' }}
@@ -196,7 +196,7 @@ runs:
         "${dir}/syft" --version
 
     # zig publishes its own shasum in index.json, so the digest is resolved at
-    # run time from upstream rather than pinned here.
+    # run time from upstream.
     - name: Install zig
       if: ${{ inputs.coverage-tools == 'true' && runner.os == 'Linux' }}
       shell: bash

@@ -900,7 +900,7 @@ fn crate_cfg(name: &str, path: &str, template: &str) -> CrateConfig {
 }
 
 /// A workspace root with no `Cargo.toml`, so `load_workspace` returns `Err`
-/// and the Cargo lockstep signal stays absent. Pinning the root explicitly
+/// and the Cargo lockstep signal stays absent. Setting the root explicitly
 /// (instead of `detect_repo_shape` reading the runner's cwd) keeps each
 /// shape assertion hermetic — run from the anodizer workspace root it would
 /// otherwise flip to `Lockstep` off the real `[workspace.package].version`.
@@ -2036,7 +2036,7 @@ fn detect_conventional_bump_major_wins_over_minor_and_patch() {
 /// consumer (`detect_conventional_bump`, feeding the auto-tag precedence
 /// layers) and the `bump` consumer (`inference::classify`, feeding the
 /// dry-run plan) — the two commands previewing/cutting different releases
-/// from the same range is the drift this pins against.
+/// from the same range is the drift this guards against.
 #[test]
 fn conventional_classification_is_lockstep_between_tag_and_bump() {
     use crate::commands::bump::inference;

@@ -358,7 +358,7 @@ fn resolve_use_job_token_empty_ci_env() {
 
 // gitlab_create_release retry behaviour
 //
-// Pin: a 503 on the GET-release-by-tag probe must be retried (transient
+// A 503 on the GET-release-by-tag probe must be retried (transient
 // GitLab 5xx), not fast-failed. Mirror the equivalent core::retry test
 // (`retry_http_async_retries_5xx_then_succeeds`) but at the publisher
 // layer so the caller-supplied policy reaches the helper.
@@ -1738,7 +1738,7 @@ async fn upload_asset_replace_with_no_matching_link_reports_the_create_failure()
         &tokio::sync::OnceCell::new(),
     )
     .await
-    .expect_err("a 400 that is not a duplicate must surface");
+    .expect_err("a 400 that is not a duplicate must be returned");
     let chain = format!("{err:#}");
     assert!(
         chain.contains("create release link for 'a.bin' failed (HTTP 400")
@@ -2674,7 +2674,7 @@ async fn detect_pre_v17_unparseable_version_field_has_no_answer() {
 /// line range 349-354) — the error names the create call and carries the
 /// HTTP status, and `max_attempts: 1` proves the 4xx fast-fails.
 #[tokio::test]
-async fn create_release_post_4xx_surfaces_error() {
+async fn create_release_post_4xx_returns_error() {
     let (addr, log) = spawn_scripted_responder(vec![
         ScriptedRoute {
             method: "GET",
@@ -2714,7 +2714,7 @@ async fn create_release_post_4xx_surfaces_error() {
 
     let err = gitlab_create_release(&ctx, &spec)
         .await
-        .expect_err("create POST 400 must surface");
+        .expect_err("create POST 400 must be returned");
     assert!(
         format!("{err:#}").contains("create release failed (HTTP 400"),
         "error must name the create call + status, got: {err:#}"
@@ -2730,7 +2730,7 @@ async fn create_release_post_4xx_surfaces_error() {
 /// closure (asset of line range 713-724): the error names the failing
 /// upload + status and no version probe / link POST is attempted.
 #[tokio::test]
-async fn upload_asset_project_uploads_4xx_surfaces_error() {
+async fn upload_asset_project_uploads_4xx_returns_error() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file = dir.path().join("a.bin");
     tokio::fs::write(&file, b"xyz")
@@ -2774,7 +2774,7 @@ async fn upload_asset_project_uploads_4xx_surfaces_error() {
         &tokio::sync::OnceCell::new(),
     )
     .await
-    .expect_err("413 project-uploads POST must surface");
+    .expect_err("413 project-uploads POST must be returned");
     assert!(
         format!("{err:#}").contains("project upload 'a.bin' failed (HTTP 413"),
         "error must name the upload + status, got: {err:#}"
@@ -3084,7 +3084,7 @@ fn run_backend_creates_release_and_uploads_one_asset() {
     );
 }
 
-/// The resume-idempotency pin: a re-run whose artifact is ALREADY linked
+/// The resume-idempotency test: a re-run whose artifact is ALREADY linked
 /// on the release with byte-identical size must NOT re-upload — no
 /// package-registry PUT, no link POST, no link DELETE. Before the shared
 /// upload loop, run_gitlab_backend had no pre-upload probe at all, so

@@ -1,6 +1,6 @@
 //! Pure plan-builder for `anodizer bump`.
 //!
-//! Walks the workspace, resolves each member's current version, computes the
+//! Reads every workspace member, resolves each member's current version, computes the
 //! next version from `BumpOpts`, and emits one `PlanRow` per crate. No IO,
 //! no filesystem writes; `run()` handles both.
 
@@ -92,7 +92,7 @@ fn parse_positional(arg: &Option<String>) -> Result<Positional> {
     }
 }
 
-/// Walk the workspace and build the plan.
+/// Read every workspace member and build the plan.
 ///
 /// `anodizer_cfg` is the command's single shared `.anodizer.yaml` load
 /// (`None` when the repo has no config) — used so per-crate `tag_template`

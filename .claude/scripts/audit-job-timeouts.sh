@@ -62,7 +62,7 @@ matrix_timeout_values() {
 for f in "${FILES[@]}"; do
     # Emit one TSV row per non-reusable-workflow job: <job> <timeout-tag> <timeout-value>.
     # `tag` is yq's type tag ("!!int" only for a literal integer); a missing
-    # key surfaces as "!!null", a quoted/expression value as "!!str".
+    # key reads as "!!null", a quoted/expression value as "!!str".
     #
     # Capture yq's output (and exit status) BEFORE the loop — a `while … < <(yq)`
     # process substitution hides yq's failure, so a parse error would read zero

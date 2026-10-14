@@ -23,9 +23,9 @@ Four independently-toggleable checks:
 | Check | What it catches | Needs |
 |---|---|---|
 | **asset existence + content** | A produced artifact that never made it onto the published release (the partial uploads GitHub silently tolerates), an uploaded asset whose **size or sha256 digest** doesn't match the local bytes (truncated/corrupted uploads, stale assets from a prior re-cut), **and** a signature / SBOM asset your `signs:` / `sboms:` config demands that was never produced at all (a silently no-op'd sign or SBOM stage) | network |
-| **publisher landing checks** | A publisher that reported success without the artifact actually landing: a crate version missing from the crates.io index, an npm version the registry doesn't serve, a wheel the PyPI index doesn't list, a blob object absent from its bucket, a snap held for manual store review and live in no channel, a docker image tag the registry does not serve (or serves at a digest this release never pushed) | network |
+| **publisher landing checks** | A publisher that reported success without the artifact actually arriving: a crate version missing from the crates.io index, an npm version the registry doesn't serve, a wheel the PyPI index doesn't list, a blob object absent from its bucket, a snap held for manual store review and live in no channel, a docker image tag the registry does not serve (or serves at a digest this release never pushed) | network |
 | **install smoke-test** | A `.deb` / `.rpm` / `.apk` that won't install or whose binary won't run `--version` | Docker |
-| **libc ceiling** | A glibc-linked `.deb` that requires a glibc newer than your support floor | — |
+| **libc ceiling** | A glibc-linked `.deb` that requires a glibc newer than your lowest supported version | — |
 
 ## Minimal config
 
@@ -301,7 +301,7 @@ verify_release:
 ```
 
 For each produced Linux package, anodizer runs the install + a version check in
-a fresh pinned container, with the container platform pinned to the package's
+a fresh pinned container, with the container platform set to the package's
 **build architecture**:
 
 ```bash
@@ -315,7 +315,7 @@ fixup), `.rpm` → `rpm -i --nodeps`, `.apk` → `apk add --allow-untrusted`. Ea
 image defaults to a sane base (`debian:stable-slim`, `fedora:latest`,
 `alpine:latest`); override only the ones you care about.
 
-The `--platform` pin comes from the package's build target — an arm64 `.deb`
+The `--platform` value comes from the package's build target — an arm64 `.deb`
 is installed in an arm64 container whatever the runner's native platform is. Running a
 non-native platform needs cross-arch emulation (qemu/binfmt) on the Docker
 host; anodizer probes for it once per platform and, when it is missing,
@@ -346,7 +346,7 @@ verify_release:
 
 anodizer reads the required glibc symbol versions from each glibc-linked
 `.deb`'s embedded ELF (`.gnu.version_r`) and fails if the **maximum** required
-version exceeds your floor — catching the classic "built on a too-new builder,
+version exceeds your ceiling — catching the classic "built on a too-new builder,
 won't run on the target distro" regression:
 
 ```
@@ -357,7 +357,7 @@ won't run on the target distro" regression:
 The comparison is **numeric, component-wise** (so `2.36 > 2.4`, which a
 lexical ordering gets wrong). **musl** binaries have no glibc requirement and are
 **skipped** — which is the whole point: a musl build would otherwise hide a
-glibc-floor regression, so a ceiling-checked release should ship glibc `.deb`s
+glibc-requirement regression, so a ceiling-checked release should ship glibc `.deb`s
 to be meaningful.
 
 `glibc_ceiling` absent → the libc check is off.

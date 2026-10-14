@@ -249,7 +249,7 @@ mod tests {
     }
 
     /// Sanity for the parse path — the function must report whatever
-    /// branch name the API returns, not pin to a hardcoded value.
+    /// branch name the API returns instead of a hardcoded value.
     #[test]
     fn fetch_default_branch_returns_main_on_200() {
         let (addr, _calls) = spawn_oneshot_http_responder(vec![
@@ -260,7 +260,7 @@ mod tests {
         assert_eq!(got.as_deref(), Some("main"));
     }
 
-    /// 404 returns `None` so the caller falls back to `"main"` — pins
+    /// 404 returns `None` so the caller falls back to `"main"` — checks
     /// the documented "non-existent repo silently degrades" contract.
     /// A regression that propagated the error instead would break
     /// `submit_pr_via_gh_with_opts` on any typo'd `repository:` slug.

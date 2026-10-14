@@ -160,7 +160,7 @@ const NON_SCHEMA_KEYS: &[&str] = &["default", "const", "examples", "enum"];
 /// Every `"format"` value anywhere in `schema` that [`AJV_KNOWN_FORMATS`] does
 /// not list, sorted and deduplicated.
 ///
-/// The walk covers the whole JSON tree because a schema may declare a format at
+/// The scan covers the whole JSON tree because a schema may declare a format at
 /// any depth (`$defs`, `properties`, `items`, `oneOf`, …), and SchemaStore's
 /// validator reports every one it cannot resolve. Data-carrying subtrees
 /// ([`NON_SCHEMA_KEYS`]) are skipped so a sample value that happens to hold a

@@ -46,7 +46,7 @@
 //!   close its pipe promptly.
 //! - `process_tree` — child-subtree isolation and reaping (Unix process
 //!   group, Windows Job Object), the live-subtree registry, and the external
-//!   SIGTERM/SIGINT handler that drains it.
+//!   SIGTERM/SIGINT handler that empties it.
 
 mod exec;
 mod pipe;

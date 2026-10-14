@@ -286,7 +286,7 @@ pub(crate) struct RefreshTarget {
     /// workspace root so the section aggregates the whole release.
     pub crate_dir: PathBuf,
     /// Lower bound of the commit range: the crate's last matching tag, or
-    /// `None` to walk full history.
+    /// `None` to read the full history.
     pub from_tag: Option<String>,
     /// Upper bound of the commit range, or `None` for `HEAD`.
     pub to_ref: Option<String>,

@@ -39,7 +39,7 @@ pub(crate) struct PollCandidate<C> {
     pub(crate) poll_cfg: Option<PostPublishPollConfig>,
 }
 
-/// Walk the shared chocolatey/winget poll-eligibility ladder and return one
+/// Step through the shared chocolatey/winget poll-eligibility ladder and return one
 /// [`PollCandidate`] per crate that should be considered for moderation
 /// polling.
 ///
@@ -146,7 +146,7 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
     // as `Error` rows so a resolution failure is visible in the release
     // summary instead of silently narrowing the polled set.
     let mut errors: Vec<(usize, post_publish::PostPublishResult)> = Vec::new();
-    // The three row classes are filled by one walk but finished at different
+    // The three row classes are filled by one pass but finished at different
     // times, so each row records the position it was issued at and the classes
     // are merged back on it — an unresolvable candidate keeps its place in the
     // listing instead of sinking to the end.

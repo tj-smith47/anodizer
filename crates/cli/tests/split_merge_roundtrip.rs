@@ -3,7 +3,7 @@
 //!
 //! The split leg names its shard directory after the resolved partial
 //! target (`dist/linux/` for a host build under `partial.by: os`, but
-//! `dist/<triple>/` when `--single-target` or `TARGET=` pins an exact
+//! `dist/<triple>/` when `--single-target` or `TARGET=` selects an exact
 //! triple), while `matrix.json` is keyed on the configured `partial.by`
 //! axis. The merge leg must identify each shard by the targets it built,
 //! through the same key function that wrote the matrix, so the two flag

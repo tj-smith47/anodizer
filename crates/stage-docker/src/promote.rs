@@ -374,7 +374,7 @@ mod tests {
             ctx: &ctx,
         };
 
-        // The target version (1.4.0) — not the context version (2.0.0) — must
+        // The target version (1.4.0), and never the context version (2.0.0), must
         // drive Major/Minor/Patch, so the immutable source tag is v1.4.0.
         assert_eq!(resolve_source_tag(&repo, &req).expect("resolve"), "v1.4.0");
     }

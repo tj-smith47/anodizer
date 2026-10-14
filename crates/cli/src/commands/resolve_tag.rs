@@ -179,7 +179,7 @@ workspaces:
     /// running test workspace, run() may either bail with no-crate-matches
     /// (because Config::default() has no crates) or with no-anodizer-config
     /// (when neither anodizer.yaml nor Cargo.toml is reachable). Both
-    /// outcomes are valid "missing config" failure modes — pin the family
+    /// outcomes are valid "missing config" failure modes — check the family
     /// rather than the exact message.
     #[test]
     #[serial(cwd)]

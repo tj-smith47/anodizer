@@ -152,7 +152,7 @@ fn always_hooks_fire_on_the_split_build_leg() {
 /// The `--merge` leg is a separate process invocation that runs its own
 /// `before:` hooks, so it must run its own `always:` hooks too. Driven
 /// against an empty dist: the merge fails for lack of split contexts, which
-/// is exactly the case a teardown hook exists for — and pins the failure
+/// is exactly the case a teardown hook exists for — and checks the failure
 /// ordering, `on_error:` first and `always:` last.
 #[test]
 fn always_hooks_fire_last_on_the_split_merge_leg() {
@@ -227,7 +227,7 @@ fn always_hooks_run_after_the_after_hooks_on_success() {
 
 /// Config for the `build`-command bracket, named after the
 /// `create_test_project` package so the build stage compiles a real
-/// binary. Carries all four root lanes so the assertions pin which ones
+/// binary. Carries all four root lanes so the assertions check which ones
 /// `anodizer build` reaches AND which it does not.
 fn build_config_with_hook_lanes(marker: &Path, before: &str) -> String {
     let marker = marker.display();

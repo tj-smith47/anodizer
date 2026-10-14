@@ -1204,7 +1204,7 @@ fn test_universal_binary_artifact_has_correct_metadata() {
     );
 }
 
-/// Pins C-new-1: universal-binary metadata copy is the FULL `Extra` map of
+/// Universal-binary metadata copy is the FULL `Extra` map of
 /// the first source binary (the extra-map copy
 /// `maps.Copy(extra, binaries[0].Extra)`), not a hardcoded whitelist. A
 /// regression that re-introduces the old 4-key whitelist would silently
@@ -1279,7 +1279,7 @@ fn test_universal_binary_copies_full_extras_from_first_source() {
     );
 }
 
-/// Pins C-new-3: universal-binary id-only filter (no `binary`-key fallback).
+/// Universal-binary id-only filter (no `binary`-key fallback).
 /// A binary whose `id` does not match the universal binary's id list must
 /// NOT be matched by its `binary`-key value.
 #[test]
@@ -1466,7 +1466,7 @@ fn test_resolve_target_env_exact_match() {
 
 #[test]
 fn test_resolve_target_env_glob_match() {
-    // Pins C-new-2: a glob-keyed env entry now matches its targets instead
+    // A glob-keyed env entry now matches its targets instead
     // of being silently ignored.
     let log = test_logger();
     let env: HashMap<String, HashMap<String, String>> = HashMap::from([(
@@ -1629,7 +1629,7 @@ fn test_resolve_target_env_empty_map_returns_none() {
 #[test]
 fn test_resolve_target_env_alphabetic_not_specific() {
     // The documented merge contract: when two glob keys both
-    // legitimately apply, ASCII order — not pattern specificity — decides.
+    // legitimately apply, ASCII order decides, whatever the pattern specificity.
     // Here `*-linux-*` and `*-linux-gnu` both match. ASCII: `*` is 0x2A,
     // `g` is 0x67; so `*-linux-*` sorts before `*-linux-gnu`. The later
     // (alphabetically-greater) key `*-linux-gnu` wins on conflict.
@@ -2043,7 +2043,7 @@ fn test_detect_cross_strategy_host_linux_gnu_prefers_zigbuild() {
     // because the host-triple build short-circuited to native cargo and
     // linked the ubuntu-24.04 runner's ambient glibc. With zigbuild
     // available, even the exact-host linux-gnu target must go through
-    // zigbuild so the glibc floor stays hermetic.
+    // zigbuild so the minimum glibc version stays hermetic.
     let strategy = detect_cross_strategy_for_target_impl(
         "x86_64-unknown-linux-gnu",
         "x86_64-unknown-linux-gnu",
@@ -2243,7 +2243,7 @@ fn cross_gnu_cargo_fallback_gate_table() {
             want: Want::Warn,
             ..base(".cargo/config mentions linker")
         },
-        // Existing silent behavior pinned: not plain cargo / not cross gnu.
+        // Existing silent behavior kept: not plain cargo / not cross gnu.
         Case {
             resolved: CrossStrategy::Zigbuild,
             want: Want::Silent,
@@ -3367,7 +3367,7 @@ fn test_rustup_target_add_failure_is_hard_error() {
     let result = ensure_targets_installed(&ctx, &[target_prep(&bogus_target)], &log, false);
 
     // Detect rustup presence by attempting the same probe the helper uses.
-    // Pin cwd: a peer test that deletes the process-global cwd would otherwise
+    // Fix the cwd: a peer test that deletes the process-global cwd would otherwise
     // make this forked probe fail spuriously and silently skip the assertion.
     let rustup_present = std::process::Command::new("rustup")
         .arg("--version")
@@ -3613,7 +3613,7 @@ fn test_duplicate_glibc_pins_collapse_to_single_rustup_call() {
 /// of N library crates it would print N near-identical lines at default
 /// verbosity, so it routes through `log.skip_line(ctx.options.show_skipped, …)`
 /// — Debug by default (invisible at Normal and Verbose), Status only under
-/// `--show-skipped`. These two tests pin that visibility contract on the
+/// `--show-skipped`. These two tests check that visibility contract on the
 /// exact message the planner emits at `run.rs`.
 mod no_binary_skip_visibility {
     use anodizer_core::context::ContextOptions;
@@ -3661,7 +3661,7 @@ mod no_binary_skip_visibility {
     }
 
     #[test]
-    fn no_binary_skip_surfaces_with_show_skipped() {
+    fn no_binary_skip_is_shown_with_show_skipped() {
         // --show-skipped forces the line back to Status for diagnosis.
         let lines = capture_build_skip(true, Verbosity::Normal);
         assert_eq!(lines.len(), 1, "{lines:?}");
@@ -3672,11 +3672,11 @@ mod no_binary_skip_visibility {
 // Projection agreement: real artifact registration + real archive naming
 // vs the config-time projection
 
-/// Executable both-sides pin for the config-time projection: artifacts are
+/// Executable both-sides test for the config-time projection: artifacts are
 /// registered through the runner's own `add_artifact` in the REAL
 /// registration order (compile results before drained copy_from jobs), the
 /// REAL archive stage names the groups — one per CPU variant — and the
-/// config-time projection, walking the same crate config where the copy_from
+/// config-time projection, reading the same crate config where the copy_from
 /// entry is listed FIRST, must name a variant one of those archives actually
 /// carries: the first-registered build's, not raw config order's.
 #[test]

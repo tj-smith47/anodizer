@@ -5,12 +5,12 @@ fn resolve_msi_tools_threads_resolved_wix_tool_from_config() {
     use anodizer_core::config::{Config, CrateConfig, MsiConfig};
 
     // The dispatcher must thread the WiX tool requirement resolved from
-    // config into the harness gate — not a host-static guess. A `version:
+    // config into the harness gate. A `version:
     // v4` config resolves deterministically to the single `wix` CLI
     // (V4 is never downgraded), so this proves the config→tools wiring
     // independent of which WiX binaries the test host happens to carry.
     // (The host-aware v3 → candle+light path — the actual release-blocker
-    // — is pinned by `anodizer_stage_msi`'s `required_msi_tools` tests.)
+    // — is tested by `anodizer_stage_msi`'s `required_msi_tools` tests.)
     let msi_cfg = MsiConfig {
         wxs: Some("app.wxs".to_string()),
         version: Some("v4".to_string()),
@@ -332,7 +332,7 @@ fn host_default_none_config_is_full_partition() {
 /// result. The dispatcher then hard-fails it under `--require-tools` /
 /// explicit `--stages=docker`. Contrast with the harness's
 /// `docker_stage_declared_but_all_skipped_warns_not_errors_even_when_explicit`,
-/// which pins the LEGITIMATE-skip (empty, no error) case.
+/// which tests the LEGITIMATE-skip (empty, no error) case.
 #[test]
 fn resolve_docker_configs_propagates_render_error() {
     use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
@@ -413,7 +413,7 @@ fn resolve_docker_configs_truthy_skip_resolves_empty_without_error() {
 /// child build's premise — it runs against the just-cut release tag),
 /// a fixture this unit test would have to fabricate by mutating this
 /// repository's own tags, which is neither hermetic nor safe. Isolating
-/// `setup_env` pins precisely the mechanism this fix restores without
+/// `setup_env` tests precisely the mechanism this fix restores without
 /// that unrelated git-state coupling.
 #[test]
 fn setup_env_release_mode_skips_token_gate_with_determinism_skip_stages() {
@@ -555,7 +555,7 @@ fn parse_stages_accepts_full_byte_stable_set() {
     // Every stage name reachable from anodizer-action's per-OS
     // determinism-stages default must parse cleanly. Drift between
     // this parser and the action's expanded default shows up as
-    // "unknown stage(s): makeself, snapcraft" in CI. This test pins
+    // "unknown stage(s): makeself, snapcraft" in CI. This test holds
     // the parser to the action's current Linux default CSV.
     let stages = parse_stages(Some(
         "build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum",

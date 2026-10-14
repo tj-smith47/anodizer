@@ -369,7 +369,7 @@ const EXEC_PROBE_VAR: &str = "ANODIZER_FAKE_TOOL_PROBE";
 /// open and its close inherits the writable descriptor until its own `exec`
 /// (the descriptor is `CLOEXEC`, so the child releases it at `exec`, not at
 /// `fork`). The spawn that trips over it is usually production code, which
-/// has no business retrying `ETXTBSY` — so the window is drained here
+/// has no business retrying `ETXTBSY` — so the window is waited out here
 /// instead, by exec'ing the script once under [`EXEC_PROBE_VAR`]. A guard
 /// line inserted below the shebang exits on that marker, so the probe records
 /// no call and creates no file; once it succeeds the inode carries no writer
@@ -433,7 +433,7 @@ pub fn write_executable_script(path: &Path, script: &str) {
 
 /// `Command::output` with a bounded retry on `ETXTBSY` ("Text file busy").
 ///
-/// [`write_executable_script`] already drains that window before it returns,
+/// [`write_executable_script`] already waits out that window before it returns,
 /// so a stub installed through it cannot report `ETXTBSY` here. This stays as
 /// the safety net for a command built from a path the caller wrote some other
 /// way, and it keeps the real spawn-the-tool code path under test rather than

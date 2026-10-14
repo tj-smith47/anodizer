@@ -53,7 +53,7 @@ pub(crate) fn prepare_v2_config(
     // dirs / stale staged artifacts when
     // `dockerfile: "{{ if .IsSnapshot }}Dockerfile{{ end }}"` renders to ""
     // during release). Check the *rendered*
-    // template for emptiness — not the raw template.
+    // template for emptiness.
     let rendered_dockerfile = ctx.render_template(&v2_cfg.dockerfile).with_context(|| {
         format!(
             "dockers_v2: render dockerfile path '{}' for crate {}",

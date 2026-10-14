@@ -2,7 +2,7 @@
 //!
 //! Scoop's bucket tooling validates every app manifest against the project's
 //! published JSON Schema (`ScoopInstaller/Scoop/schema.json`) — a draft-07
-//! schema that pins the `architecture` keys to `64bit`/`32bit`/`arm64`, the
+//! schema that limits the `architecture` keys to `64bit`/`32bit`/`arm64`, the
 //! `hash` format, and the `version`/`homepage`/`license` required set. anodizer
 //! renders that manifest per crate; this validator renders the exact JSON the
 //! live publish would push — via the same render path — and checks it against
@@ -21,7 +21,7 @@ use crate::scoop::{
     render_scoop_manifest_for_crate,
 };
 
-/// The Scoop project's vendored app-manifest schema (draft-07). Pinned and
+/// The Scoop project's vendored app-manifest schema (draft-07). Held at a fixed version and
 /// embedded so validation is fully offline; refresh via `schemas/SOURCES.md`.
 const SCOOP_SCHEMA: &str = include_str!("../../schemas/scoop.schema.json");
 
@@ -42,7 +42,7 @@ impl PublisherSchemaValidator for ScoopSchemaValidator {
         let log = ctx.logger("publish");
         let mut findings = Vec::new();
 
-        // Walk exactly the crate set the live scoop publisher's `run` iterates
+        // Visit exactly the crate set the live scoop publisher's `run` iterates
         // (honoring `--crate` selection, else every scoop-configured crate) so
         // the validated set equals the published set in all config modes.
         let selected =
@@ -312,7 +312,7 @@ mod tests {
                 .pointer("/architecture/64bit/hash")
                 .and_then(|v| v.as_str())
                 .is_some_and(|h| h.len() == 64),
-            "hash lands under architecture.64bit"
+            "hash is written under architecture.64bit"
         );
         // `bin` is an array carrying the binary name from artifact metadata.
         let bin = value
@@ -535,19 +535,19 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(
             msg.contains("no Windows archive artifact") && msg.contains("scoop"),
-            "surfaces the genuine full-build absence, naming scoop: {msg}"
+            "reports the genuine full-build absence, naming scoop: {msg}"
         );
     }
 
     /// A PRESENT Windows archive missing its sha256 is a REAL defect the live
-    /// publish refuses to push — the validator must SURFACE it (the render's
-    /// bail propagates through `validate`), NOT collapse it to a shard skip.
+    /// publish refuses to push — the validator must return it as an error (the render's
+    /// bail propagates through `validate`) and must not collapse it to a shard skip.
     /// The presence probe is a bare `bool` that does not read sha256, so this
     /// is the validator-PATH guard against a future refactor reintroducing the
     /// silent-skip bug (propagation itself is proven one layer down in
     /// `scoop_sha256_empty_metadata_bails_with_actionable_error`).
     #[test]
-    fn present_archive_missing_sha256_surfaces_not_skips() {
+    fn present_archive_missing_sha256_errors_instead_of_skipping() {
         let cfg = every_option_scoop_cfg();
         let mut ctx = TestContextBuilder::new()
             .snapshot(true)
@@ -590,16 +590,16 @@ mod tests {
                 &crate::schema_validation::test_current_version_resolver(),
             )
             .expect_err(
-                "a present-but-broken Windows archive (missing sha256) must surface as an \
+                "a present-but-broken Windows archive (missing sha256) must be returned as an \
              error, not a silent skip",
             );
         assert!(
             format!("{err:#}").contains("sha256"),
-            "the surfaced error must name the missing sha256, got: {err:#}"
+            "the returned error must name the missing sha256, got: {err:#}"
         );
     }
 
-    /// The check must BITE: the `architecture` block pins its keys to
+    /// The check catches a bad key: the `architecture` block limits its keys to
     /// `64bit`/`32bit`/`arm64` with `additionalProperties: false`, so an
     /// out-of-place architecture key is rejected — with a finding naming the
     /// offending field.
@@ -637,7 +637,7 @@ mod tests {
         assert_eq!(arch_finding.publisher, "scoop");
     }
 
-    /// A required-key omission also bites: dropping `version` from the manifest
+    /// A required-key omission is also caught: dropping `version` from the manifest
     /// is rejected at the document root.
     #[test]
     fn missing_required_key_is_reported() {
@@ -686,7 +686,7 @@ mod tests {
         scope_version(&mut ctx, "1.0.0");
         // The admitted archive (id=main, binary=widget) and an excluded one
         // (id=extra, binary=sneaky). Both are Windows zips on the same arch, so
-        // a looser Windows-only `bin` walk would collect `sneaky.exe` even
+        // a looser Windows-only `bin` scan would collect `sneaky.exe` even
         // though the `ids` filter drops its arch entry.
         add_windows_zip_with_id(&mut ctx, "widget", "main", "widget");
         add_windows_zip_with_id(&mut ctx, "widget", "extra", "sneaky");
@@ -770,7 +770,7 @@ mod tests {
         scope_version(&mut ctx_single, "1.0.0");
         assert_rejects(&mut ctx_single, "single-crate");
 
-        // (b) Workspace-lockstep: one bad crate among several must still bite.
+        // (b) Workspace-lockstep: one bad crate among several must still be reported.
         let mut ctx_lockstep = TestContextBuilder::new()
             .snapshot(true)
             .crates(vec![

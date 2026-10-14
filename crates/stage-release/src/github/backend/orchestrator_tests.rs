@@ -3,7 +3,7 @@
 //! These tests drive the orchestrator against a scripted in-process
 //! HTTP responder so the create-vs-update-vs-replace branching,
 //! upload-asset happy path, and 422 `already_exists` recovery arms
-//! are pinned against the production wiring — not just the helper
+//! are tested against the production wiring, in addition to the helper
 //! classifiers (which have their own unit tests).
 //!
 //! ## Fixture wiring
@@ -716,7 +716,7 @@ fn retention_keep_last_prunes_old_release_and_tag() {
 }
 
 // replace_existing_draft = true with the NEW release published
-// (`draft: false`): the leftover draft must still be deleted. This pins
+// (`draft: false`): the leftover draft must still be deleted. This checks
 // the self-heal path: publishes while replacing a stale
 // draft from a prior failed run; gating the delete on the new release's
 // draft flag would skip cleanup and the stale id later 404s on upload.
@@ -1929,7 +1929,7 @@ fn readiness_guard_absorbs_transient_404_before_upload() {
 // Backstop: even past the readiness guard, a parallel replica can lag
 // independently and 404 the `GET` inside `upload_asset(...).send()`. With
 // the stateful policy (attempts=1) that single 404 used to be fatal; the
-// per-upload bounded-404 floor must retry it instead.
+// per-upload bounded-404 minimum must retry it instead.
 #[test]
 fn per_upload_404_retries_under_stateful_attempts_one() {
     let tmp = TempDir::new().expect("tempdir");
@@ -1950,7 +1950,7 @@ fn per_upload_404_retries_under_stateful_attempts_one() {
         // (1) Readiness guard GET — readable on the first probe.
         // (2) upload_asset's upload_url GET on the FIRST attempt — 404
         //     (independent replica still lagging). attempts=1 would make
-        //     this fatal without the per-upload bounded-404 floor.
+        //     this fatal without the per-upload bounded-404 minimum.
         ScriptedRoute {
             method: "GET",
             path_pattern: "/repos/o/r/releases/42",
@@ -2067,8 +2067,8 @@ fn multi_asset_routes(release: String, names: &[(&'static str, u64)]) -> Vec<Scr
 
 /// With a non-zero pace, successive upload STARTS are spaced by at least
 /// the (jittered) pace interval. Three assets => two inter-start gaps, so
-/// total wall-clock must be at least `2 * pace * 0.8` (the jitter floor).
-/// A 120 ms pace yields a >= ~192 ms floor — comfortably above scheduler
+/// total wall-clock must be at least `2 * pace * 0.8` (the jitter minimum).
+/// A 120 ms pace yields a >= ~192 ms minimum, comfortably above scheduler
 /// noise yet fast enough to keep the test cheap.
 #[test]
 fn upload_pace_spaces_successive_upload_starts() {
@@ -2113,7 +2113,7 @@ fn upload_pace_spaces_successive_upload_starts() {
     .expect("returns Some");
     let elapsed = t0.elapsed();
 
-    // 2 gaps * 120 ms * 0.8 jitter floor = 192 ms.
+    // 2 gaps * 120 ms * 0.8 jitter minimum = 192 ms.
     assert!(
         elapsed >= std::time::Duration::from_millis(192),
         "upload pace must space the 3 starts by >= 2 * 120ms * 0.8; elapsed: {elapsed:?}"

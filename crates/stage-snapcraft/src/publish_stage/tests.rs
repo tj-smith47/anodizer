@@ -57,49 +57,49 @@ fn tagless_project_root() -> (tempfile::TempDir, anodizer_core::context::Context
     (dir, options)
 }
 
-// Idempotent retry floor — the snapcraft upload is an opaque subprocess
+// Idempotent retry minimum: the snapcraft upload is an opaque subprocess
 // (`run_capture_timeout`) with no in-process retry-mock point, so the
 // strongest feasible proof is that the effective upload policy equals
 // `max(global, IDEMPOTENT_PUT_ATTEMPTS)`. This is the same expression the
-// production upload site applies (`retry_policy.with_idempotent_floor()`),
-// so reverting the floor fails this test.
+// production upload site applies (`retry_policy.with_idempotent_minimum()`),
+// so reverting the minimum fails this test.
 
 #[test]
-fn upload_policy_applies_idempotent_floor() {
+fn upload_policy_applies_idempotent_minimum() {
     use anodizer_core::retry::{IDEMPOTENT_PUT_ATTEMPTS, RetryPolicy};
     use std::time::Duration;
 
     // A `--publish-only`-shaped policy (attempts: 1) must be raised to the
-    // shared idempotent floor so a transient 5xx still retries.
+    // shared idempotent minimum so a transient 5xx still retries.
     let capped = RetryPolicy {
         max_attempts: 1,
         base_delay: Duration::from_millis(1),
         max_delay: Duration::from_millis(1),
     };
     assert_eq!(
-        capped.with_idempotent_floor().max_attempts,
+        capped.with_idempotent_minimum().max_attempts,
         IDEMPOTENT_PUT_ATTEMPTS,
-        "a single-attempt snapcraft policy must be floored to the idempotent minimum"
+        "a single-attempt snapcraft policy must be raised to the idempotent minimum"
     );
 
-    // An operator-set cap above the floor must be preserved, never lowered.
+    // An operator-set cap above the minimum must be preserved.
     let generous = RetryPolicy {
         max_attempts: 9,
         ..capped
     };
     assert_eq!(
-        generous.with_idempotent_floor().max_attempts,
+        generous.with_idempotent_minimum().max_attempts,
         9,
-        "an operator cap above the floor must be preserved"
+        "an operator cap above the minimum must be preserved"
     );
 }
 
-// build_snapcraft_evidence — pin the success-path wire shape
+// build_snapcraft_evidence : check the success-path wire shape
 
 #[test]
 fn build_snapcraft_evidence_pins_success_wire_shape() {
     // Success-path evidence is what `anodizer tag rollback`
-    // and any replay consumer reads back. Pin the three essential
+    // and any replay consumer reads back. Check the three essential
     // fields: publisher name, primary_ref pointing at the first
     // package's snapcraft.io listing, and the full per-target
     // snapshot in extra.snapcraft_targets.
@@ -885,7 +885,7 @@ fn skip_template_error_fast_fails_stage_without_recording() {
     let stage = SnapcraftPublishStage;
     let err = stage
         .run(&mut ctx)
-        .expect_err("template-error must surface as stage error");
+        .expect_err("template-error must be returned as stage error");
     let msg = format!("{err:#}");
     assert!(
         msg.contains("render publish.skip template"),
@@ -1555,7 +1555,7 @@ fn co_occurring_5xx_and_definitive_dedup_marker_still_retries() {
 // Regression guard for the misclassified transient: `Error checking
 // upload uniqueness.` with NO co-occurring 5xx must retry (it reports
 // the store's uniqueness-check step faulting, a transient backend
-// error — not a confirmed content duplicate). It previously fast-failed
+// error, with no confirmed content duplicate). It previously fast-failed
 // as a permanent dedup and emitted a false "contents must change"
 // verdict, which sank the whole release. A freshly-versioned snap's
 // bytes cannot collide with an older revision, so this marker is never a
@@ -1748,7 +1748,7 @@ fn dedup_rejection_with_matching_revision_promotes_instead_of_failing() {
         upload_attempts.len(),
         1,
         "recovery via promotion must not retry the upload — the bytes \
-             already landed"
+             were already uploaded"
     );
 
     let release_calls = std::fs::read_to_string(&release_log).unwrap();

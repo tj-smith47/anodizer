@@ -86,7 +86,7 @@ If the problem is real, the release then fails when it creates the release. The 
 - accepts a template that renders to `true`, `false`, `1` or `0` in any letter case, e.g. `fail_on_error: "{{ not IsNightly }}"` to only warn on nightly runs. Any other render, an empty one included (an unset `{{ Env.X }}`), stops the run with an error naming the field and the rendered value, and that error carries the failed check's own message when there is one;
 - also covers a check that [`preflight.strict`](../general/preflight.md) turned into a failure.
 
-The token is also an environment requirement of the release: `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` or `GH_TOKEN` on GitHub, `GITLAB_TOKEN` on GitLab, `GITEA_TOKEN` on Gitea, or `--token`. A run with no token therefore still stops at the environment check whatever `fail_on_error` says; with `false` the release preflight reports the missing token as a warning beside that failure.
+The token is also an environment requirement of the release: `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` or `GH_TOKEN` on GitHub, `GITLAB_TOKEN` on GitLab, `GITEA_TOKEN` on Gitea, the forge's token file, or `--token`. A run with no token therefore still stops at the environment check whatever `fail_on_error` says; with `false` the release preflight reports the missing token as a warning beside that failure.
 
 `--quiet` and `--json` keep the warning off stderr; `--json` lists it under `publishers.warnings`.
 
@@ -240,8 +240,20 @@ anodizer release
 ```
 
 On GitHub the token is read from `--token`, then `ANODIZER_GITHUB_TOKEN`,
-`GITHUB_TOKEN` and `GH_TOKEN`, the first one set and not blank. On GitLab it
-is `GITLAB_TOKEN`, and on Gitea `GITEA_TOKEN`.
+`GITHUB_TOKEN` and `GH_TOKEN`, the first one set and not blank, then the
+GitHub token file. On GitLab it is `GITLAB_TOKEN`, then the GitLab token file,
+and on Gitea `GITEA_TOKEN`, then the Gitea token file.
+
+The token file is the path `env_files.github_token` (or `gitlab_token`,
+`gitea_token`) names, else `~/.config/anodizer/github_token`, else
+`~/.config/goreleaser/github_token`. Its first line is the token. A file is
+read only when every variable before it is unset or blank, and a file that
+exists but cannot be read stops the run:
+
+```yaml
+env_files:
+  github_token: ~/.secrets/release_token
+```
 
 ### Forge selection {#choosing-the-forge}
 
@@ -252,9 +264,9 @@ GitLab or Gitea:
 |---|---|---|
 | 1 | `release.provider` | `github`, `gitlab`, `gitea` |
 | 2 | top-level `force_token` | `github`, `gitlab`, `gitea` |
-| 3 | `ANODIZER_FORCE_TOKEN`, else `GORELEASER_FORCE_TOKEN` | the same three, in any letter case; any other value is ignored |
-| 4 | `GITLAB_TOKEN` in the environment | GitLab |
-| 5 | `GITEA_TOKEN` in the environment | Gitea |
+| 3 | `ANODIZER_FORCE_TOKEN`; when it is unset or blank, `GORELEASER_FORCE_TOKEN`; both are trimmed | the same three, in any letter case; any other value is ignored |
+| 4 | `GITLAB_TOKEN` in the environment, or a GitLab token file | GitLab |
+| 5 | `GITEA_TOKEN` in the environment, or a Gitea token file | Gitea |
 | 6 | nothing set | GitHub |
 
 A project whose CI holds a `GITLAB_TOKEN` for another job and releases to

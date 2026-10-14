@@ -210,7 +210,7 @@ fn webhook_submit_errors_on_genuine_failure() {
     let chain = format!("{err:#}");
     assert!(
         chain.contains("500") && chain.contains("validating plugin spec"),
-        "error must surface status + body: {chain}"
+        "error must carry status + body: {chain}"
     );
 }
 
@@ -1031,7 +1031,7 @@ fn krew_skip_upload_template_expands_to_true_on_snapshot() {
 // The krew publish path threads PR submission through the Context's
 // injectable `EnvSource` (`maybe_submit_pr_with_env` /
 // `submit_pr_via_gh_with_opts_with_env`), so the responder address is a
-// per-Context value set via `inject_api_base` — not a process-global
+// per-Context value set via `inject_api_base` with no process-global
 // mutation. Tokens come from `repository.token` config.
 
 use anodizer_core::artifact::{Artifact, ArtifactKind};
@@ -1418,7 +1418,7 @@ fn render_manifest_multi_binary_archive_bails() {
 
 /// The rendered manifest carries the crate's real sha256 + url from
 /// the registered artifact (not a placeholder), with the resolved
-/// plugin-name override in `metadata.name`. Pins the field plumbing
+/// plugin-name override in `metadata.name`. Tests the field plumbing
 /// from artifact metadata → manifest YAML end-to-end.
 #[test]
 fn render_manifest_embeds_real_sha256_and_url() {
@@ -2172,7 +2172,7 @@ fn publish_to_krew_dry_run_makes_no_push() {
 
 /// With no `krew.homepage` and no Cargo.toml `meta_homepage`, the
 /// manifest's `homepage:` falls back to the crate's `release.github`
-/// slug — `https://github.com/<owner>/<repo>`. Pins the GitHub-slug
+/// slug — `https://github.com/<owner>/<repo>`. Tests the GitHub-slug
 /// arm of the homepage-fallback chain (the crate's own repo, not the
 /// krew-index fork owner).
 #[test]

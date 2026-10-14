@@ -363,8 +363,8 @@ mod tag_family_tests {
 
     /// A monorepo namespace and a per-crate track are two coordinates of the
     /// same tag, not alternatives: dropping either one makes the family span a
-    /// neighbouring subproject or a neighbouring crate. Pinned on both halves
-    /// — the matcher that tests membership and the prefix the minter glues a
+    /// neighbouring subproject or a neighbouring crate. Tested on both halves
+    /// — the matcher that tests membership and the prefix the tag builder glues a
     /// literal tag onto — because a drift between them creates a tag outside the
     /// family that is later swept for it.
     #[test]
@@ -400,14 +400,14 @@ mod tag_family_tests {
             tag_family_prefix("sub/core-v{{ Version }}", Some("sub/")).as_deref(),
             Some("sub/core-v")
         );
-        // Minter half: the prefix a rolling nightly tag is glued onto ends up
+        // Builder half: the prefix a rolling nightly tag is glued onto ends up
         // inside the family the matcher tests.
-        let minted = format!(
+        let built = format!(
             "{}edge",
             tag_family_prefix("core-v{{ Version }}", Some("sub/")).unwrap()
         );
-        assert_eq!(minted, "sub/core-vedge");
-        assert!(tag_in_family(&minted, "core-v{{ Version }}", Some("sub/")));
+        assert_eq!(built, "sub/core-vedge");
+        assert!(tag_in_family(&built, "core-v{{ Version }}", Some("sub/")));
     }
 }
 
@@ -459,7 +459,7 @@ mod repository_unreadable_tests {
 
     #[test]
     #[serial_test::serial(tracing)]
-    fn tags_at_surfaces_git_stderr_on_a_non_zero_exit() {
+    fn tags_at_reports_git_stderr_on_a_non_zero_exit() {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         let captured = crate::test_helpers::tracing_capture::capture_tracing_warnings(|| {

@@ -98,7 +98,7 @@ Override the install directory with `INSTALL_DIR=`:
 curl -fsSL .../install.sh | INSTALL_DIR="$HOME/bin" sh
 ```
 
-`--help` prints that surface from the script itself, so a `curl | sh` user who
+`--help` prints those options from the script itself, so a `curl | sh` user who
 never opens the file can still discover it:
 
 ```console

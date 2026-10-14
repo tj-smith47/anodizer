@@ -38,10 +38,10 @@ When `cross: auto` (the default):
 1. If the target is glibc-linked Linux (`*-linux-gnu*`) and `cargo-zigbuild`
    is installed (with a working `zig` — binary on PATH or the pip `ziglang`
    wheel) → use zigbuild, **even when the target matches the host triple**.
-   zig links against its own bundled libc, so the binary's glibc floor stays
+   zig links against its own bundled libc, so the binary's minimum glibc version stays
    fixed by zig, independent of the build machine — a CI runner image upgrade
    can't silently raise the glibc requirement of your releases. (musl targets
-   are exempt: static libc, no glibc floor.)
+   are exempt: static libc, no minimum glibc version.)
 2. If the target matches the host triple → use native `cargo build`
 3. If host and target are both Apple, or both Windows → use native
    `cargo build` (clang / MSVC cross-compile across their own arches)

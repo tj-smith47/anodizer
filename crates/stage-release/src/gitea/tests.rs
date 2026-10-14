@@ -147,13 +147,13 @@ fn gitea_auth_header_format() {
     let err = build_gitea_client("bad\ntoken", false).unwrap_err();
     assert!(
         format!("{err:#}").contains("invalid token value"),
-        "a control-char token must surface the Authorization header error: {err:#}"
+        "a control-char token must report the Authorization header error: {err:#}"
     );
 }
 
 // gitea_create_release retry behaviour
 //
-// Pin: a 503 on the find-release-by-tag GET must retry through
+// A 503 on the find-release-by-tag GET must retry through
 // `retry_http_async` rather than fast-fail, and a 404 there falls through to
 // the listing instead of failing the release.
 
@@ -508,7 +508,7 @@ async fn create_release_posts_when_absent() {
 /// `max_attempts: 1` proves the 4xx is fast-failed) and carries the
 /// gitea create-release context.
 #[tokio::test]
-async fn create_release_surfaces_422() {
+async fn create_release_returns_422() {
     let (addr, log) = spawn_scripted_responder(vec![
         ScriptedRoute {
             method: "GET",
@@ -551,7 +551,7 @@ async fn create_release_surfaces_422() {
 
     let err = gitea_create_release(&ctx, &spec)
         .await
-        .expect_err("422 must surface as an error");
+        .expect_err("422 must be returned as an error");
     let chain = format!("{err:#}");
     assert!(
         chain.contains("create release failed (HTTP 422"),
@@ -1072,7 +1072,7 @@ async fn find_release_sweeps_past_ten_pages_on_an_old_server() {
 /// A by-tag probe that fails on anything but a 404 ends the lookup with that
 /// error; the listing is never asked.
 #[tokio::test]
-async fn find_release_surfaces_a_non_404_probe_failure() {
+async fn find_release_returns_a_non_404_probe_failure() {
     let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
         method: "GET",
         path_pattern: "/api/v1/repos/o/r/releases/tags/v2.0.0",
@@ -1539,7 +1539,7 @@ async fn upload_asset_retries_5xx() {
 /// A 4xx on the asset POST returns an error naming the asset, the
 /// release id, and the status.
 #[tokio::test]
-async fn upload_asset_surfaces_4xx() {
+async fn upload_asset_returns_4xx() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file = dir.path().join("a.bin");
     tokio::fs::write(&file, b"xyz")
@@ -1575,7 +1575,7 @@ async fn upload_asset_surfaces_4xx() {
 
     let err = gitea_upload_asset(&ctx, 4, &asset)
         .await
-        .expect_err("400 must surface");
+        .expect_err("400 must be returned");
     let chain = format!("{err:#}");
     assert!(
         chain.contains("upload asset 'a.bin' to release 4 failed (HTTP 400"),
@@ -1731,7 +1731,7 @@ async fn delete_asset_by_name_retries_5xx_on_list() {
 /// release id, and the status — never returning `true`. `max_attempts: 1`
 /// proves the 4xx fast-fails rather than retrying.
 #[tokio::test]
-async fn delete_asset_by_name_surfaces_delete_failure() {
+async fn delete_asset_by_name_returns_delete_failure() {
     let assets = serde_json::json!([
         {"id": 44, "name": "target.bin", "size": 7}
     ])
@@ -1769,7 +1769,7 @@ async fn delete_asset_by_name_surfaces_delete_failure() {
 
     let err = gitea_delete_asset_by_name(&ctx, 3, "target.bin")
         .await
-        .expect_err("a 403 on the DELETE must surface as an error");
+        .expect_err("a 403 on the DELETE must be returned as an error");
     let chain = format!("{err:#}");
     assert!(
         chain.contains("delete asset 'target.bin' (id=44) from release 3 failed (HTTP 403"),
@@ -1895,7 +1895,7 @@ async fn find_asset_size_non_numeric_size_is_none() {
 /// distinct from the delete path's list). `max_attempts: 1` proves the
 /// 4xx fast-fails.
 #[tokio::test]
-async fn find_asset_size_list_failure_surfaces_error() {
+async fn find_asset_size_list_failure_returns_error() {
     let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
         method: "GET",
         path_pattern: "/api/v1/repos/o/r/releases/8/assets",
@@ -1921,7 +1921,7 @@ async fn find_asset_size_list_failure_surfaces_error() {
 
     let err = gitea_find_asset_size(&ctx, 8, "a.bin")
         .await
-        .expect_err("a 401 on the size-probe list must surface");
+        .expect_err("a 401 on the size-probe list must be returned");
     assert!(
         format!("{err:#}").contains("list release assets failed (HTTP 401"),
         "error must name the failing list call + status, got: {err:#}"

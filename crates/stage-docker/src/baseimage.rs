@@ -99,7 +99,7 @@ static SHA256_HEX_RE: LazyLock<Regex> =
 ///   image string are substituted with the ARG table (defaulting to the
 ///   inline `:-default`, then to empty). The bare-dash `${NAME-default}`
 ///   form is NOT supported (the `:-` separator is matched literally).
-/// - Alias chains (`FROM a AS b` followed by `FROM b`) walk to the root;
+/// - Alias chains (`FROM a AS b` followed by `FROM b`) are followed to the root;
 ///   cyclic aliases (`a→b, b→a`) terminate on revisit via a visited set.
 pub fn parse_base_image(content: &str, build_args: &[(String, String)]) -> String {
     let logical_lines = join_continuations(content);
@@ -143,7 +143,7 @@ pub fn parse_base_image(content: &str, build_args: &[(String, String)]) -> Strin
         }
     }
 
-    // Walk alias chain with a visited set so cyclic aliases terminate
+    // Follow the alias chain with a visited set so cyclic aliases terminate
     // deterministically. The chain length is bounded by the number of
     // distinct aliases; revisiting a name closes a cycle.
     let mut visited: HashSet<String> = HashSet::new();
@@ -245,7 +245,7 @@ fn split_at_directive_boundary(line: &str) -> Vec<String> {
         return vec![line.to_string()];
     }
 
-    // Walk subsequent whitespace-bounded tokens in `after_first`,
+    // Scan subsequent whitespace-bounded tokens in `after_first`,
     // looking for any further directive keyword. The first hit is the
     // split boundary; everything before becomes the head, everything
     // from that token on becomes a fresh logical line.
@@ -788,8 +788,8 @@ mod tests {
     #[test]
     fn parse_base_image_alias_cycle_terminates() {
         let got = parse_base_image("FROM alpine:3.20 AS a\nFROM a AS b\nFROM b AS a\n", &[]);
-        // Final FROM is `b AS a`. Walking aliases: a→b, b→a. From base
-        // `a` the walk goes a→b, then b→a (revisit `a`) → stop. The walk
+        // Final FROM is `b AS a`. Following aliases: a→b, b→a. From base
+        // `a` the lookup goes a→b, then b→a (revisit `a`) → stop. The lookup
         // halts without panic or hang.
         assert!(got == "a" || got == "b" || got == "alpine:3.20");
     }

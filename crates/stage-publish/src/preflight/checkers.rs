@@ -621,7 +621,7 @@ fn run_preflight_inner(
     let deadline = ctx.retry_deadline();
     let version = ctx.version();
 
-    // Walk every crate in the universe and collect per-publisher entries.
+    // Visit every crate in the universe and collect per-publisher entries.
     let crates = ctx.config.crate_universe();
     let selected = &ctx.options.selected_crates;
 

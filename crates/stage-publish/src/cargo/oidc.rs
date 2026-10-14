@@ -259,7 +259,7 @@ mod tests {
                 Some(Instant::now()),
                 &log(),
             )
-            .expect_err("a wedged revoke endpoint must surface an error");
+            .expect_err("a wedged revoke endpoint must return an error");
             let chain = format!("{err:#}");
             assert!(
                 chain.contains("cargo: DELETE") && chain.contains("503"),
@@ -287,7 +287,7 @@ mod tests {
                 max_delay: Duration::from_millis(2),
             };
             let err = delete_minted_token(&client(), &url, "cio-minted-abc", &policy, None, &log())
-                .expect_err("a wedged revoke endpoint must surface an error");
+                .expect_err("a wedged revoke endpoint must return an error");
             assert!(format!("{err:#}").contains("cargo: DELETE"), "{err:#}");
             assert_eq!(
                 calls.load(Ordering::SeqCst),

@@ -175,7 +175,10 @@ pub(super) fn run_with_logger(
                 &log,
             )
         };
-        let winget_token = winget_probe_token(&anodizer_core::ProcessEnvSource);
+        let winget_token = winget_probe_token(
+            &anodizer_core::ProcessEnvSource,
+            repo_config.env_files.as_ref(),
+        );
         let choco_probe = |package: &str, version: &str| {
             anodizer_stage_publish::post_publish::chocolatey::version_blocked_on_gallery(
                 "https://community.chocolatey.org",

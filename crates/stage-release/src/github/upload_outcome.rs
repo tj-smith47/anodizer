@@ -58,7 +58,7 @@ pub(crate) enum UploadAttemptOutcome {
     /// idempotent-safe. The loop sleeps an exponential-backoff slot and
     /// retries — bounded by [`MIN_UPLOAD_TRANSIENT_ATTEMPTS`] even in
     /// stateful modes whose policy caps attempts at 1, so a genuinely
-    /// missing release still fails once the floor is exhausted.
+    /// missing release still fails once the minimum is exhausted.
     ///
     /// [`MIN_UPLOAD_TRANSIENT_ATTEMPTS`]: super::upload::MIN_UPLOAD_TRANSIENT_ATTEMPTS
     NotFound,

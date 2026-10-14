@@ -13,7 +13,7 @@
 //! Calling this endpoint up front (vs. the lazier
 //! `generate_release_notes: true` toggle on the create-release POST) is the
 //! parity decision that matters: the dedicated endpoint accepts an
-//! explicit `previous_tag_name`, which lets monorepos and re-releases pin
+//! explicit `previous_tag_name`, which lets monorepos and re-releases fix
 //! the commit range. The create-release POST flag silently uses GitHub's
 //! "most recent published release" as the base — wrong for tag-prefixed
 //! workflows.
@@ -55,7 +55,7 @@ pub(crate) fn generate_release_notes(
              generate-notes rejects empty `tag_name`. This usually means the \
              pipeline did not populate `Tag` in template vars (snapshot mode \
              without a `--tag` override). Re-run with an explicit tag or \
-             configure `release.tag:` so the changelog stage can pin the \
+             configure `release.tag:` so the changelog stage can fix the \
              commit range.",
             owner,
             repo
@@ -498,7 +498,7 @@ mod tests {
         // Monorepo regression case: tag `service-a/v2.0.0` with previous
         // tag `service-a/v1.0.0` must round-trip verbatim — GitHub
         // accepts arbitrary tag strings, and the entire reason for using
-        // this endpoint over `generate_release_notes: true` is to pin
+        // this endpoint over `generate_release_notes: true` is to fix
         // such prefixed ranges reproducibly.
         let body = build_request_body("service-a/v2.0.0", Some("service-a/v1.0.0"));
         assert_eq!(body["tag_name"], "service-a/v2.0.0");

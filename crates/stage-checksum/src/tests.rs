@@ -20,7 +20,7 @@ use super::hashing::{
 };
 use super::run::ChecksumStage;
 
-/// Divergence test — pins the inherited sort behavior for
+/// Divergence test: checks the inherited sort behavior for
 /// filenames that contain a two-space sequence. If this assertion ever
 /// breaks, someone "fixed" the sort and diverged from the canonical order.
 /// Update the source comment if that is intentional.
@@ -39,7 +39,10 @@ fn test_combined_sort_doublespace_divergence() {
     // a double-space picks up only the prefix before the *next*
     // double-space — the documented divergence point.
     let key = rest.split_once("  ").map(|(p, _)| p).unwrap_or(rest);
-    assert_eq!(key, "weird", "inherited divergence — not a real filename");
+    assert_eq!(
+        key, "weird",
+        "inherited divergence: the key is not a real filename"
+    );
 }
 
 /// Regression:
@@ -48,7 +51,7 @@ fn test_combined_sort_doublespace_divergence() {
 /// separator. Upstream's prior `strings.Split(a, "  ")[1]` panicked
 /// with index-out-of-range; the fix uses `strings.Cut` with a fallback
 /// to the whole line. Anodizer's port already uses `split_once("  ")`
-/// + `unwrap_or(a)`, so this test pins that contract — a future
+/// + `unwrap_or(a)`, so this test checks that contract — a future
 ///   "simplification" to `split.unwrap()` would regress and panic here.
 #[test]
 fn refresh_sort_tolerates_malformed_lines() {
@@ -2636,7 +2639,7 @@ fn checksum_stage_never_produces_recursive_sidecar_chains() {
 // same byte stream produces an identical digest, and the formatted
 // `{hash}  {filename}` line is a pure function of those two inputs. The
 // audit found no `Utc::now()` / `SystemTime::now()` callsites in
-// stage-checksum. This test pins the trivial fact so a future refactor
+// stage-checksum. This test checks the trivial fact so a future refactor
 // that introduces a timestamp into the checksum file format (e.g. a
 // generated-on header) regresses the test.
 

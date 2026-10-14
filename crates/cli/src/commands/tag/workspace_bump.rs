@@ -149,18 +149,18 @@ pub(crate) fn apply_workspace_bump(
             log,
         )?;
         // Preview exactly the heals the real run will make: every member
-        // resolves to the version this bump writes, and the floors
+        // resolves to the version this bump writes, and the minimums
         // `apply_plan`'s propagation owns are left to it in both modes.
         let bumped: std::collections::BTreeMap<String, String> = rows
             .iter()
             .filter(|r| r.level != BumpLevel::Skip)
             .map(|r| (r.crate_name.clone(), r.next.clone()))
             .collect();
-        heal_dep_floors(workspace_root, Propagated::EveryTable(&bumped), true, log)?;
+        heal_dep_minimums(workspace_root, Propagated::EveryTable(&bumped), true, log)?;
         return Ok(false);
     }
 
-    // `apply_plan` heals every floor in this workspace as the last step of its
+    // `apply_plan` heals every minimum in this workspace as the last step of its
     // dep-spec propagation, so the real path needs no separate sweep.
     apply_plan(workspace_root, &rows, false, log)?;
 

@@ -324,7 +324,7 @@ If you hit a construct not covered here, open an issue with the failing template
 | `Arm64` | 64-bit ARM feature level (build, makeself, AppImage, sign) | `v8` |
 | `Amd64` | x86-64 micro-architecture level from the binary's build metadata; untagged binaries carry the `v1` baseline in every context. Default name templates suppress `v1` (`{% if Amd64 and Amd64 != "v1" %}`), so only tuned `v2`/`v3` builds get a suffix | `v1`, `v3` |
 | `Mips` | Always empty — `Arch` carries the full mips token (`mips64el`), so a suffix would double it | (empty) |
-| `I386` | 32-bit x86 instruction floor (build, makeself, AppImage, sign) | `sse2` |
+| `I386` | minimum 32-bit x86 instruction set (build, makeself, AppImage, sign) | `sse2` |
 | `Ppc64` | 64-bit PowerPC level (build, makeself, AppImage, sign); every `powerpc64` / `powerpc64le` build carries the `power8` baseline, which `targetVariant` suppresses | `power8` |
 | `Riscv64` | 64-bit RISC-V profile (build, makeself, AppImage, sign); every `riscv64gc` build carries the `rva20u64` baseline, which `targetVariant` suppresses | `rva20u64` |
 | `Target` | Full target triple | `x86_64-unknown-linux-gnu` |

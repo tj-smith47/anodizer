@@ -7,7 +7,7 @@ template = "docs.html"
 
 When a release fails partway through, several publishers leave durable state behind that blocks a clean re-run. Each publisher exposes a flag that lets anodizer take the appropriate recovery action — delete-and-recreate, force-push, or re-submit — where it would otherwise fail with a conflict.
 
-These flags are all **defaults-off**. Set them when you want anodizer to overwrite prior state on conflict; leave them off when you want the conflict surfaced as an error so an operator can review.
+These flags are all **defaults-off**. Set them when you want anodizer to overwrite prior state on conflict; leave them off when you want the conflict reported as an error so an operator can review.
 
 ## Per-publisher flags
 

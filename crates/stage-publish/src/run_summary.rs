@@ -549,7 +549,7 @@ pub(crate) fn mark_withdrawn_in_summary(
 /// layout) and `<dist>/<crate>/run-*/` (per-crate workspace layout).
 /// The two layouts are the writer-side contract of [`summary_path`]:
 /// per-crate publish runs re-anchor `dist` onto `dist/<crate>/`, so a
-/// reader that wants the whole run's evidence must walk both levels.
+/// reader that wants the whole run's evidence must read both levels.
 pub fn collect_run_summary_paths(dist: &Path) -> Vec<std::path::PathBuf> {
     fn summaries_in(dir: &Path) -> Vec<std::path::PathBuf> {
         let Ok(entries) = fs::read_dir(dir) else {
@@ -1006,7 +1006,7 @@ mod tests {
     /// The outcome space as a chain: every variant names the one after it and
     /// the last names `None`. Both matches are exhaustive, so a new
     /// `PublisherOutcome` or `SkipReason` cannot reach the enum without being
-    /// linked in here — and every pin that walks the space then sees it.
+    /// linked in here — and every test that scans the space then sees it.
     fn next_outcome(outcome: &PublisherOutcome) -> Option<PublisherOutcome> {
         fn next_reason(reason: &SkipReason) -> Option<SkipReason> {
             Some(match reason {
@@ -1039,7 +1039,7 @@ mod tests {
         })
     }
 
-    /// Every outcome a publisher result can carry, walked from
+    /// Every outcome a publisher result can carry, collected from
     /// [`next_outcome`]'s chain.
     fn every_outcome() -> Vec<PublisherOutcome> {
         let mut out = vec![PublisherOutcome::Succeeded];
@@ -1110,7 +1110,7 @@ mod tests {
     /// Every `PublisherOutcome` variant except `Skipped`, plus one member per
     /// `SkipReason` that variant carries. Counted by the compiler, so adding
     /// a variant to either enum moves the expected number with no bookkeeping
-    /// here — an orphan that is named but never reached fails the walk below
+    /// here — an orphan that is named but never reached fails the scan below
     /// instead of passing a restated literal.
     const OUTCOME_COUNT: usize = PublisherOutcome::COUNT - 1 + SkipReason::COUNT;
 
@@ -1238,7 +1238,7 @@ mod tests {
     /// surprise in a consumer's pipeline. Selected by shape (an object
     /// carrying a `results` array) rather than by one block's contents,
     /// because a second summary block on the same page went on contradicting
-    /// the first for two rounds while a pin aimed at one of them kept passing.
+    /// the first for two rounds while a test aimed at one of them kept passing.
     #[test]
     fn every_documented_summary_json_parses_back_into_a_run_summary() {
         let text = anodizer_core::test_helpers::docs_pages::read_docs_page(
@@ -1271,7 +1271,7 @@ mod tests {
 
     /// Naming a variant in the chain is not reaching it: an arm returning
     /// `None` beside the terminator compiles, and the variant then vanishes
-    /// from every walk below without any of them failing. The count is what
+    /// from every scan below without any of them failing. The count is what
     /// notices.
     #[test]
     fn every_outcome_yields_every_variant() {
@@ -1321,7 +1321,7 @@ mod tests {
 
     /// Published = the publish action reached the remote at some point. Only
     /// never-ran (skipped) and ran-but-published-nothing (failed) are unpublished;
-    /// a rolled-back Submitter publish still burned its version slot. Walked
+    /// a rolled-back Submitter publish still burned its version slot. Checked
     /// over the whole outcome space, so a new variant is classified before it
     /// can reach a rollback decision unseen.
     #[test]
@@ -1338,8 +1338,8 @@ mod tests {
                 PublisherGroup::Submitter,
                 PublisherOutcome::Skipped(SkipReason::EntriesSkipped)
             )),
-            "a publisher whose every entry disqualified itself landed nothing — \
-             which is why one that DID land keeps its own outcome instead"
+            "a publisher whose every entry disqualified itself published nothing, \
+             so one that DID publish keeps its own outcome"
         );
     }
 
@@ -1391,9 +1391,9 @@ mod tests {
         }
     }
 
-    /// Every status token, walked over the whole outcome space: these strings
+    /// Every status token, checked over the whole outcome space: these strings
     /// are the consumer-visible `status` field of the report and summary JSON,
-    /// so a new skip reason must not be able to ship an unpinned wire token.
+    /// so a new skip reason must not be able to ship an untested wire token.
     #[test]
     fn outcome_to_status_string_for_each_variant() {
         for outcome in every_outcome() {

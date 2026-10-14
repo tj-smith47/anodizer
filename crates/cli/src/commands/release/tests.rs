@@ -287,7 +287,7 @@ fn a_lockstep_tag_selects_every_crate() {
 }
 
 /// `anodizer resolve-tag` and `--publish-only` crate selection must answer a
-/// tag identically; a second prefix walk with its own fallback is how they
+/// tag identically; a second prefix scan with its own fallback is how they
 /// once disagreed.
 #[test]
 fn resolve_tag_command_and_release_selection_agree() {
@@ -943,7 +943,7 @@ fn test_apply_prepare_mode_to_skip_from_empty() {
             .collect::<Vec<_>>(),
         "--prepare on empty skip should add the full upstream-touching classification"
     );
-    // Pin the members that historically leaked upstream from --prepare
+    // Check the members that historically leaked upstream from --prepare
     // (docker pushed images, docker-sign pushed signatures, and
     // verify-release fired live API calls against a release --prepare
     // never created) so the shared classification can't silently lose
@@ -1044,7 +1044,7 @@ fn should_run_preflight_skip_preflight_skips() {
 
 /// The global `--strict` and `preflight.strict` fold into one effective
 /// flag (`Context::preflight_is_strict`): either one turns on strict
-/// per-publisher preflight promotion, neither leaves it off. Pin it
+/// per-publisher preflight promotion, neither leaves it off. Test it
 /// against the real combiner.
 #[test]
 fn strict_or_config_strict_promotes_preflight_to_strict() {
@@ -1346,7 +1346,7 @@ fn nightly_renders_tag_as_the_minted_tag() {
 }
 
 /// The same seed on a SINGLE-family workspace — one crate, one track, which is
-/// what anodizer and every lockstep repo actually are. The two-family pin above
+/// what anodizer and every lockstep repo actually are. The two-family test above
 /// cannot catch a seed that only works because a family prefix was there to
 /// scope it.
 #[test]
@@ -1410,7 +1410,7 @@ fn nightly_tag_name_renders_tag_as_the_rolling_tag() {
     assert_eq!(
         ctx.template_vars().get("Tag").map(String::as_str),
         Some("operator-vedge"),
-        "the covered crate decides the family the run-wide tag lands in",
+        "the covered crate decides the family the run-wide tag belongs to",
     );
 }
 
@@ -2004,7 +2004,7 @@ fn dist_holding_only_its_own_bookkeeping_passes_the_dist_gate() {
     let dist = tmp.path().join("dist");
     std::fs::create_dir_all(&dist).unwrap();
     // Spelled out rather than read from `RUN_BOOKKEEPING_FILES`, so a
-    // shrunken set fails this pin instead of shrinking the fixture with it.
+    // shrunken set fails this test instead of shrinking the fixture with it.
     for name in ["config.yaml", "release-notes.md", "matrix.json"] {
         std::fs::write(dist.join(name), "x").unwrap();
     }
@@ -2301,7 +2301,7 @@ fn refused_repository() -> anyhow::Error {
 /// The whole tagless-mode population, asked both questions: a mode that never
 /// consults HEAD's tags tolerates a repository git cannot read, and one that
 /// does consult them never does. The two answers come from one list, so the
-/// walk is what proves a new mode joined it.
+/// scan is what proves a new mode joined it.
 #[test]
 fn every_tagless_mode_answers_both_questions_the_same_way() {
     type ModeSetter = fn(&mut ReleaseOpts);
@@ -2524,9 +2524,9 @@ fn quoted_error_lines(relative: &str) -> Vec<String> {
 /// wrapper passes it leaves the page showing a line the binary no longer
 /// prints.
 ///
-/// The page's other errors come from four more producers and are pinned where
+/// The page's other errors come from four more producers and are tested where
 /// each of them lives; the error count is asserted in every one of those
-/// tests, so a newly quoted line fails until it is pinned somewhere.
+/// tests, so a newly quoted line fails until it is tested somewhere.
 #[test]
 fn the_required_failure_exit_quoted_in_the_resilience_docs_is_what_the_gate_produces() {
     use anodizer_core::publish_report::PublisherOutcome;

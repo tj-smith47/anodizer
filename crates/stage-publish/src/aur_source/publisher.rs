@@ -297,7 +297,7 @@ impl anodizer_core::Publisher for AurSourcePublisher {
         let log = ctx.logger("publish");
         let mut targets: Vec<AurSourceTarget> = Vec::new();
         let mut any_pushed = false;
-        // Implicit-all: when --crate is not passed, walk every crate with a
+        // Implicit-all: when --crate is not passed, visit every crate with a
         // `publish.aur_source` block. Reading `selected_crates` raw here
         // would silently skip per-crate configs — see
         // [`crate::publisher_helpers::effective_publish_crates`].

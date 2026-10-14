@@ -151,12 +151,12 @@ pub(crate) fn resolve_release_flags(
     } else {
         None
     };
-    // A pinned `nightly.tag_name` is a ROLLING tag: every run moves it onto the
+    // A fixed `nightly.tag_name` is a ROLLING tag: every run moves it onto the
     // new commit and re-creates the release on it. The second run therefore
     // always finds the prior run's assets on that release, which the
     // existing-assets pre-check refuses to overwrite unless replacement is
     // permitted — so a rolling nightly would fail on every run but the first.
-    // Pinning the tag IS the opt-in to replacing what the last run left.
+    // Fixing the tag IS the opt-in to replacing what the last run left.
     let nightly_rolling_tag = ctx.is_nightly()
         && nightly_cfg
             .and_then(|n| n.tag_name.as_deref())
@@ -172,7 +172,7 @@ pub(crate) fn resolve_release_flags(
     // `prerelease` / `make_latest` do NOT fall through to `release.*` on a
     // nightly run, because both of that block's unset values are wrong here:
     // `release.prerelease` unset is `false`, and `auto` cannot rescue it
-    // either — `auto` reads the cut tag, so a pinned `nightly.tag_name` parses
+    // either — `auto` reads the cut tag, so a fixed `nightly.tag_name` parses
     // as no semver and answers `false` too. `release.make_latest` unset means
     // GitHub's own default, which IS latest. Falling through would publish
     // every nightly as the stable release. The nightly block's own fields

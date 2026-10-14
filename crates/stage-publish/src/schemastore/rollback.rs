@@ -489,7 +489,7 @@ mod tests {
         let warns = capture.warn_messages();
         assert!(
             warns.iter().any(|m| m.contains("schemastore")),
-            "a close failure must surface a per-failure warn; got: {warns:?}"
+            "a close failure must log a per-failure warn; got: {warns:?}"
         );
     }
 

@@ -22,7 +22,7 @@
 #     the citation, with `[text](url)` markup stripped first. The cited path and
 #     its URL therefore never masquerade as a symbol, and a config key sitting
 #     in the row's *first* column is out of scope: that column documents the
-#     YAML surface, not the Rust surface.
+#     YAML configuration; the later columns document the Rust code.
 #   * only three shapes count as a Rust symbol: snake_case
 #     (`status_table_rows`), UpperCamelCase with two or more humps
 #     (`ReconcileState`), and SCREAMING_SNAKE (`ANODIZER_ARCH`). A single
@@ -30,11 +30,11 @@
 #     prose or config, never checked.
 #   * anything that is a key in the generated JSON schema is dropped before the
 #     shape test. A prose sentence naming `dockers_v2` or `retain_on_rollback`
-#     beside an unrelated source path is discussing the config surface, not
-#     claiming that file defines a Rust item — and those two vocabularies
+#     beside an unrelated source path is discussing the configuration and is not
+#     claiming that file defines a Rust item. The two two vocabularies
 #     collide on shape often enough that shape alone cannot separate them. The
 #     schema is the generated, authoritative list of config keys, so the
-#     exclusion never drifts from the config surface it protects.
+#     exclusion always matches the configuration keys it protects.
 #   * a symbol passes when it word-matches ANY path cited in the same cell —
 #     the impl-plus-tests pair on one row is the common case and must not
 #     force the author to split the row.
@@ -71,7 +71,7 @@ broken=""
 while IFS= read -r path; do
     [[ -z "$path" ]] && continue
     if [[ ! -f "$path" ]]; then
-        # Report every page that cites it so the fix is one pass, not a hunt.
+        # Report every page that cites it so the fix is one pass.
         # This sits inside an already-failed verdict, so a grep that never ran
         # could only shorten the message — it still goes through the shared
         # collector, because a silently empty "cited by:" reads as a finding

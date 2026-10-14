@@ -226,7 +226,7 @@ fn fill_empty_repo_fields(block: &mut GitHubConfig, slug: Option<&git::RepoSlug>
 ///   4. Load environment variables and `.env` files
 ///   5. Resolve git context (tag discovery, git info)
 pub fn setup_context(ctx: &mut Context, config: &Config, log: &StageLogger) -> Result<()> {
-    resolve_scm_token_type(ctx, config);
+    resolve_scm_token_type(ctx, config)?;
     ctx.populate_time_vars()?;
     ctx.populate_runtime_vars();
     // Default the `IsPrepare` template var to `"false"` for every
@@ -251,12 +251,24 @@ pub fn setup_context(ctx: &mut Context, config: &Config, log: &StageLogger) -> R
 /// 5. Environment variable presence — `GITLAB_TOKEN` → GitLab, `GITEA_TOKEN` → Gitea
 /// 6. Default — GitHub
 ///
+/// A token file (`env_files.github_token` / `gitlab_token` / `gitea_token`,
+/// or the default `~/.config/anodizer/<forge>_token` then
+/// `~/.config/goreleaser/<forge>_token`) counts as the variable it stands
+/// for in the detection above.
+///
 /// It also resolves the token value into `ctx.options.token` (if not already
-/// set by a CLI flag) from the appropriate environment variable:
-/// - GitLab: `GITLAB_TOKEN`
-/// - Gitea: `GITEA_TOKEN`
-/// - GitHub: `ANODIZER_GITHUB_TOKEN` or `GITHUB_TOKEN`
-pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) {
+/// set by a CLI flag), the first that holds a value of:
+/// - GitLab: `GITLAB_TOKEN`, then the GitLab token file
+/// - Gitea: `GITEA_TOKEN`, then the Gitea token file
+/// - GitHub: `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, then the
+///   GitHub token file
+///
+/// A token file that exists but cannot be read is an error.
+pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) -> Result<()> {
+    let file_tokens =
+        anodizer_core::config::token_file_tokens(config.env_files.as_ref(), ctx.env_source())
+            .map_err(anyhow::Error::msg)?;
+    let from_file = |var: &str| file_tokens.get(var).cloned();
     // Detect which SCM backend to use from environment variables. The
     // EnvSource indirection lets tests build a `Context` via
     // `TestContextBuilder::env(...)` and drive every branch without
@@ -265,6 +277,7 @@ pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) {
         ctx.env_var(name)
             .as_deref()
             .and_then(anodizer_core::git::non_blank_token)
+            .or_else(|| from_file(name))
             .is_some()
     };
     let env_hint = if is_set("GITLAB_TOKEN") {
@@ -302,16 +315,20 @@ pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) {
                 .and_then(anodizer_core::git::non_blank_token)
         };
         ctx.options.token = match ctx.token_type {
-            ScmTokenType::GitLab => env("GITLAB_TOKEN"),
-            ScmTokenType::Gitea => env("GITEA_TOKEN"),
+            ScmTokenType::GitLab => env("GITLAB_TOKEN").or_else(|| from_file("GITLAB_TOKEN")),
+            ScmTokenType::Gitea => env("GITEA_TOKEN").or_else(|| from_file("GITEA_TOKEN")),
             // Route through the canonical resolver so an empty
             // `GITHUB_TOKEN=""` (the shape GH Actions gives a missing secret)
-            // falls through to the next source.
+            // falls through to the next source. The GitHub token file is held
+            // under `GITHUB_TOKEN` and is read only when the whole ladder is
+            // unset or blank, so it comes last.
             ScmTokenType::GitHub => {
                 anodizer_core::git::resolve_github_token_with_env(None, &|key| ctx.env_var(key))
+                    .or_else(|| from_file("GITHUB_TOKEN"))
             }
         };
     }
+    Ok(())
 }
 
 /// Load config, auto-detect GitHub, build a `Context`, and rehydrate

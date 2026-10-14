@@ -94,8 +94,8 @@ fn apply_monorepo_to_top_level(config: &mut Config, dir: &str) {
     }
     // Top-level uploads / blobs are publisher-attached only; their
     // extra_files live under `crate.publish.*` — handled by the per-crate
-    // walk below via `prefix_publisher_extras`. Walk every crate's
-    // publisher configs. Raw chained walk (not `crate_universe()`): this is
+    // scan below via `prefix_publisher_extras`. Visit every crate's
+    // publisher configs. Raw chained scan (not `crate_universe()`): this is
     // a mutation pass and the universe walker only hands out shared
     // borrows; prefixing every entry as written (shadowed ones included)
     // is also correct here since dedup happens at read time.

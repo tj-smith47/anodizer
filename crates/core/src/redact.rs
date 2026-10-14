@@ -48,7 +48,7 @@ const SECRET_VALUE_PREFIXES: &[&str] = &[
 /// The empty string is the only excluded value — every non-empty value
 /// matching the heuristics is redacted, mirroring upstream
 /// Secret-detection heuristic after the
-/// length-floor was removed (commit `d1cdbb2`).
+/// minimum-length check was removed (commit `d1cdbb2`).
 pub fn is_secret_env(key: &str, value: &str) -> bool {
     if value.is_empty() {
         return false;
@@ -131,7 +131,7 @@ fn stands_alone(before: Option<char>, value: &str, after: Option<char>) -> bool 
 /// `secrets` must be ordered longest-value-first (as [`secret_pairs`] returns
 /// them) so the longest match at a position wins. `stop` is asked at every
 /// position whether the remainder cannot be decided yet; the first position it
-/// answers `true` for ends the walk and that remainder is returned unconsumed.
+/// answers `true` for ends the scan and that remainder is returned unconsumed.
 /// `before` is the character immediately preceding `input` in the stream, if
 /// any; the return carries the last character of the text scanned so a caller
 /// feeding chunks can pass it back.
@@ -299,7 +299,7 @@ impl StreamRedacter {
 
     /// Split `s` into `(safe_to_emit, withheld)`.
     ///
-    /// Walks `s` masking whole secrets, and stops at the first position whose
+    /// Scans `s` masking whole secrets, and stops at the first position whose
     /// remainder is a strict prefix of some secret — that remainder is the
     /// withheld tail.
     fn replace_partial(&self, s: &str) -> (String, String, Option<char>) {
@@ -387,7 +387,7 @@ pub fn redact_process_env(input: &str) -> String {
 /// as an env var (e.g. a `git_url` config string the user templated with a
 /// literal `https://user:pass@host`).
 pub fn redact_url_credentials(input: &str) -> String {
-    // Walk the string and rewrite each `<scheme>://<userinfo>@` segment.
+    // Scan the string and rewrite each `<scheme>://<userinfo>@` segment.
     // For each `://`, look up to the next path / query / fragment /
     // whitespace boundary; if that authority segment contains an `@`, the
     // text before the LAST `@` is the userinfo (RFC 3986 §3.2.1 allows
@@ -727,7 +727,7 @@ mod tests {
     #[test]
     fn test_redact_includes_short_secret_when_key_looks_secret() {
         // Reflects the secret-key rename after
-        // the length-floor was removed: a 5-char value under a `*_KEY` key
+        // the minimum-length check was removed: a 5-char value under a `*_KEY` key
         // must still be redacted.
         let env = vec![("API_KEY".to_string(), "short".to_string())];
         let result = string("Value is short", &env);
@@ -1190,7 +1190,7 @@ mod tests {
     fn a_two_character_secret_is_masked_on_a_word_boundary() {
         let env = vec![("VER_TOKEN".to_string(), "v2".to_string())];
         // Standing alone it is a credential; inside `dev2x` and `v2x` it is
-        // someone else's text, and a length floor of two let both through.
+        // someone else's text, and a minimum length of two let both through.
         assert_eq!(
             string("use v2 for dev2x and v2x", &env),
             "use $VER_TOKEN for dev2x and v2x"

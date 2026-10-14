@@ -258,7 +258,7 @@ fn aur_source_target_extra_roundtrips() {
 
 #[test]
 fn aur_source_target_extra_carries_no_secret_material() {
-    // Structural pin: build a typed-variant evidence and assert
+    // Structural check: build a typed-variant evidence and assert
     // (a) no credential-shaped keys appear AND (b) the
     // operator-public coordinates are preserved. The
     // `AurSourceTargetSnapshot` type has no field for

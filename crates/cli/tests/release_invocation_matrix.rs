@@ -1,6 +1,6 @@
 //! Skip-stage matrix for every documented `anodizer release` /
 //! `anodizer publish` / `anodizer announce` / `anodizer continue`
-//! invocation. Each test pins one row of the table in
+//! invocation. Each test checks one row of the table in
 //! `docs/site/content/docs/general/release-workflow.md`: the
 //! documented stages run, the documented stages skip.
 //!
@@ -113,7 +113,7 @@ fn run_anodizer(tmp: &Path, args: &[&str]) -> std::process::Output {
 }
 
 /// Assert every `must_skip` stage appears as `[<stage>] skipped` in
-/// stderr; assert every `must_not_skip` does NOT. Tests pin "did the
+/// stderr; assert every `must_not_skip` does NOT. Tests check "did the
 /// stage skip" instead of "did the stage run" because skip is the
 /// contract that matters (a run that produces no artifacts is
 /// ambiguous in dry-run / heavy-skip mode).
@@ -303,7 +303,7 @@ fn release_announce_only_bails_without_prior_report() {
 
 /// Clap-level: `--announce-only` cannot be combined with `--prepare`,
 /// `--publish-only`, `--snapshot`, `--split`,
-/// `--merge`. Pin two representative combinations (the rest share the
+/// `--merge`. Test two representative combinations (the rest share the
 /// same `conflicts_with_all` list).
 #[test]
 fn release_announce_only_conflicts_with_publish_only() {
@@ -356,7 +356,7 @@ fn publish_subcommand_dispatches_to_publish_only_pipeline() {
     // The publish-only path needs artifacts.json + git state; failing
     // here is expected. The failure mode must NOT be the dist-not-empty
     // pre-check (which fires only on the full `release` pipeline), so
-    // dispatch correctness is what's being pinned.
+    // dispatch correctness is what's being tested.
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !stderr.contains("dist directory") || !stderr.contains("not empty"),
@@ -368,7 +368,7 @@ fn publish_subcommand_dispatches_to_publish_only_pipeline() {
 
 /// Row: `anodizer announce` runs only the announce stage. With no
 /// configured announce providers the stage emits "no announce config
-/// — skipping"; that is the dispatch this pins.
+/// — skipping"; that is the dispatch this tests.
 #[test]
 fn announce_subcommand_dispatches_to_announce_pipeline() {
     let tmp = TempDir::new().unwrap();
@@ -417,7 +417,7 @@ fn continue_no_merge_does_not_recompile() {
 
 // `--merge` is accepted on publish and announce subcommands
 
-/// Pin the `--merge` flag on `anodizer publish`. Clap-only check — the merge
+/// Test the `--merge` flag on `anodizer publish`. Clap-only check — the merge
 /// branch's body needs a real dist tree, which is covered by
 /// `commands::publish_cmd::tests::merge_missing_config_bails`.
 #[test]
@@ -447,7 +447,7 @@ fn announce_merge_flag_parses() {
 
 /// Snapshot mode auto-skips the publish/blob/announce chain but the
 /// `release` (GitHub release creation) stage itself stays in the pipeline.
-/// Pins the negative invariant: snapshot does NOT touch the release stage.
+/// Tests the negative invariant: snapshot does NOT touch the release stage.
 #[test]
 fn release_snapshot_does_not_skip_release_stage() {
     let tmp = TempDir::new().unwrap();
@@ -470,7 +470,7 @@ fn release_snapshot_does_not_skip_release_stage() {
 /// `release --publish-only` must bypass the full-release "dist not empty"
 /// pre-check (the publish-only branch consumes a preserved dist) AND must
 /// fail with the publish-only "no context.json" error when none is present.
-/// Pins dispatch correctness via these two assertions because the
+/// Tests dispatch correctness via these two assertions because the
 /// publish-only branch bails before the pipeline emits per-stage skip lines.
 #[test]
 fn publish_only_bypasses_dist_precheck_requires_context_json() {
@@ -498,9 +498,9 @@ fn publish_only_bypasses_dist_precheck_requires_context_json() {
 }
 
 /// `continue --merge` is the split-merge resume path: it consumes a preserved
-/// dist tree rather than recompiling. Pins the negative invariant — no build,
-/// archive, or nfpm banner appears — and confirms dispatch reaches the merge
-/// branch rather than the full-release dist pre-check.
+/// dist tree and compiles nothing. Tests the negative invariant (no build,
+/// archive, or nfpm banner appears) and confirms dispatch reaches the merge
+/// branch and skips the full-release dist pre-check.
 #[test]
 fn continue_merge_does_not_trigger_build_pipeline() {
     let tmp = TempDir::new().unwrap();

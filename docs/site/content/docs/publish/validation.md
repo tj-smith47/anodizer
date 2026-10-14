@@ -62,20 +62,20 @@ nothing (or a config-driven skip, for `mcp`) and report no error. See
 
 Validation runs in two layers per publisher.
 
-**An always-on hermetic floor.** Every artifact is checked with no external
+**An always-on hermetic minimum check.** Every artifact is checked with no external
 tools and no network:
 
-- Vendored JSON schemas (pinned and embedded at build time) for winget, scoop,
+- Vendored JSON schemas (held at fixed versions and embedded at build time) for winget, scoop,
   krew, mcp, snapcraft, and nfpm.
 - Pure-Rust structural checks for the artifacts that have no JSON schema: the
   chocolatey nuspec XML, the Homebrew Ruby formula/cask, the AUR
   `PKGBUILD`/`.SRCINFO`, and the nix derivation.
 
-This floor always runs and always reports — it never depends on host tooling.
+This minimum check always runs and always reports. It does not depend on host tooling.
 
 **Optional stronger checks, gated on tool presence.** When the matching tool is
 installed (typical on CI and consumer hosts), anodizer runs a deeper check on
-top of the floor:
+top of the minimum check:
 
 | Tool | Deeper check |
 |------|--------------|
@@ -86,7 +86,7 @@ top of the floor:
 | `nix-instantiate --parse` | Parse the rendered nix expression |
 
 When a gated tool is absent the check is **skipped** and does not fail — the
-hermetic floor still stands, so a missing tool can never turn into a false
+hermetic minimum check still stands, so a missing tool can never turn into a false
 rejection.
 
 ## Checks
@@ -97,12 +97,12 @@ rejection.
 | scoop | App manifest JSON | The Scoop project's draft-07 manifest schema |
 | krew | Plugin manifest | krew's plugin-validation rules (transcribed schema) |
 | mcp | `server.json` | The MCP registry's `server.json` schema |
-| chocolatey | `.nuspec` XML | Pure-Rust structural floor; XSD via `xmllint` when present |
+| chocolatey | `.nuspec` XML | Pure-Rust minimum structural check; XSD via `xmllint` when present |
 | snapcraft | `snap.yaml` metadata | snapd's `snap.yaml` validation rules (transcribed schema) |
-| homebrew | Formula + cask Ruby | Structural stanza floor; `ruby -c` when present |
+| homebrew | Formula + cask Ruby | Minimum structural stanza check; `ruby -c` when present |
 | nfpm | nfpm config + built `.deb`/`.rpm` | nfpm's config schema; control fields via `dpkg-deb`/`rpm` when present |
-| aur | `PKGBUILD` + `.SRCINFO` | Structural floor; `bash -n` when present |
-| nix | Derivation + flake | Structural floor; `nix-instantiate --parse` when present |
+| aur | `PKGBUILD` + `.SRCINFO` | Minimum structural check; `bash -n` when present |
+| nix | Derivation + flake | Minimum structural check; `nix-instantiate --parse` when present |
 
 ## Example: a defect caught in snapshot
 
@@ -122,9 +122,9 @@ made before anything is released.
 
 ## Schema provenance
 
-The vendored schemas live in `crates/stage-publish/schemas/` and are pinned to
+The vendored schemas live in `crates/stage-publish/schemas/` and are held at
 the registry / tool versions anodizer targets. Each is self-contained (no
 external `$ref` that would trigger a network fetch), so validation stays
 hermetic. Refreshing a schema is a deliberate, reviewed bump documented in
 `crates/stage-publish/schemas/SOURCES.md`, which records each schema's source,
-pinned version, and refresh procedure.
+fixed version, and refresh procedure.

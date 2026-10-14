@@ -47,7 +47,7 @@ use detect::BuildxVersionProbe;
 
 /// Probe closure used by `DockerStage` to classify the buildx-version probe
 /// outcome. Production code leaves the override unset; tests inject a
-/// deterministic closure that pins the probe-invocation contract end-to-end
+/// deterministic closure that checks the probe-invocation contract end-to-end
 /// without spawning `docker`.
 pub(crate) type BuildxVersionProbeFn = dyn Fn() -> BuildxVersionProbe + Send + Sync;
 

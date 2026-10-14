@@ -29,7 +29,7 @@
 //!   container and `<bin> --version` is run (`smoke`). Skipped with a
 //!   notice when Docker is unavailable.
 //! - **libc ceiling** — no glibc-linked binary shipped in a `.deb`, `.rpm`,
-//!   or `.apk` may require a glibc newer than the configured floor
+//!   or `.apk` may require a glibc newer than the configured ceiling
 //!   (`libc_check`). musl binaries are skipped.
 //!
 //! ## Failure semantics
@@ -270,17 +270,17 @@ impl Stage for VerifyReleaseStage {
         // packages the run ships, so both are gated on the OS-package publishers.
         let os_pkg_selected = os_package_publisher_selected(ctx);
         let smoke_enabled = cfg.install_smoke.is_some();
-        let smoke_in_surface = smoke_enabled && os_pkg_selected;
+        let smoke_in_scope = smoke_enabled && os_pkg_selected;
         // Probe Docker only when smoke is actually in scope; an out-of-scope
         // run has nothing to smoke, so the probe would be wasted work.
-        let docker_ok = if smoke_in_surface {
+        let docker_ok = if smoke_in_scope {
             smoke::docker_available()
         } else {
             false
         };
-        if smoke_enabled && !smoke_in_surface {
+        if smoke_enabled && !smoke_in_scope {
             // status-ok: operator-visible axis skip, same class as the
-            // Docker-unavailable skip below — not a command echo.
+            // Docker-unavailable skip below, and no command echo.
             log.status(
                 "skipped install smoke-test — out of the selected publishers \
                  (no OS-package publisher selected)",
@@ -293,7 +293,7 @@ impl Stage for VerifyReleaseStage {
         }
         if cfg.glibc_check_enabled() && !os_pkg_selected {
             // status-ok: operator-visible axis skip, symmetric with the
-            // smoke-axis skip above — not a command echo.
+            // smoke-axis skip above, and no command echo.
             log.status(
                 "skipped libc-ceiling — out of the selected publishers \
                  (no OS-package publisher selected)",
@@ -670,7 +670,7 @@ fn local_asset_index(
 /// destination name when a release upload candidate renames the file,
 /// otherwise the artifact's registered name — so the exemption keys into the
 /// same namespace `diff_assets` and the byte check use.
-fn surface_dependent_asset_names(
+fn publisher_dependent_asset_names(
     ctx: &Context,
     crate_name: &str,
     ids: Option<&[String]>,

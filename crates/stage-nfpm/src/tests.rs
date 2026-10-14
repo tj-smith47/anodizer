@@ -7262,7 +7262,7 @@ fn build_nfpm_twice(format: &str, ext: &str) -> Option<(Vec<u8>, Vec<u8>)> {
     )
     .unwrap();
     // The determinism harness exports SOURCE_DATE_EPOCH into every stage's
-    // subprocess env; pin it here to reproduce that condition. nfpm uses it
+    // subprocess env; set it here to reproduce that condition. nfpm uses it
     // for the ar/cpio member mtimes that would otherwise carry wall-clock.
     let sde = "1704067200";
     let build = |out: &std::path::Path| {
@@ -7467,7 +7467,7 @@ fn build_signed_nfpm_twice(
         std::fs::read(out).unwrap()
     };
     let a = build(&dir.path().join(format!("a{ext}")));
-    // The GPG/RSA signature salt — not wall-clock — is what makes the two
+    // The GPG/RSA signature salt is what makes the two
     // whole-file outputs differ; this gap is incidental, so shortening or
     // removing it would not break the assert_ne on the signed files.
     std::thread::sleep(std::time::Duration::from_millis(1100));
@@ -7484,7 +7484,7 @@ fn build_signed_nfpm_twice(
 fn signed_deb_body_is_byte_reproducible_across_time() {
     use std::process::Command;
     let sig_block = |key: &std::path::Path| {
-        // Pin gzip so the hardcoded ar member names below (control.tar.gz,
+        // Choose gzip so the hardcoded ar member names below (control.tar.gz,
         // data.tar.gz) stay stable if nfpm changes its default deb compression.
         format!(
             "deb:\n  compression: gzip\n  signature:\n    key_file: \"{}\"\n    type: origin\n",
@@ -7624,7 +7624,7 @@ fn signed_apk_is_byte_reproducible_across_time() {
 
     let dir = TempDir::new().unwrap();
     let key_path = dir.path().join("apk.pem");
-    // `genpkey` (not `genrsa`) is pinned so the emitted key is always PKCS#8
+    // `genpkey` (not `genrsa`) is used so the emitted key is always PKCS#8
     // (`BEGIN PRIVATE KEY`) regardless of openssl version; `genrsa` emits
     // PKCS#1 on openssl 1.x/LibreSSL and PKCS#8 on 3.x, and a format nfpm's
     // apk packager rejects would leave the apk unsigned — defeating the

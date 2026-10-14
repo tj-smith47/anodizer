@@ -284,7 +284,7 @@ pub fn validate_defaults_axis(config: &Config) -> Result<(), String> {
 /// Silently no-op-ing unknown overrides has burned users typing
 /// Rust triples like `apple` or `pc-windows-msvc`.
 ///
-/// Walks every `archives[]` location in the config:
+/// Checks every `archives[]` location in the config:
 /// - `crates[].archives:`
 /// - `workspaces[].crates[].archives:`
 /// - `defaults.archives:` (an unknown `os` here would otherwise pass silently
@@ -330,7 +330,7 @@ pub fn validate_format_overrides(config: &Config) -> Result<(), String> {
         && let Some(ref archive) = defaults.archives
     {
         // defaults.archives is a single ArchiveConfig (not a list); wrap it
-        // into a one-element slice so the same checker walks it.
+        // into a one-element slice so the same checker reads it.
         check("defaults.archives", std::slice::from_ref(archive))?;
     }
     Ok(())
@@ -361,8 +361,8 @@ pub fn validate_homebrew_cask_url_template(config: &Config) -> Result<(), String
         Ok(())
     };
 
-    // Top-level homebrew_casks list (not nested under publish:) — not a
-    // publish axis, so it is scanned separately from the visitor.
+    // The top-level homebrew_casks list sits outside every publish axis, so
+    // it is scanned separately from the visitor.
     if let Some(ref casks) = config.homebrew_casks {
         for (i, cask) in casks.iter().enumerate() {
             check(&format!("homebrew_casks[{i}]"), cask)?;
@@ -384,7 +384,7 @@ pub fn validate_homebrew_cask_url_template(config: &Config) -> Result<(), String
 pub const WINGET_UPGRADE_BEHAVIORS: [&str; 3] = ["install", "uninstallPrevious", "deny"];
 
 /// Validate that every configured `winget.upgrade_behavior` is one of the
-/// winget-recognized values ([`WINGET_UPGRADE_BEHAVIORS`]). Walks the per-crate,
+/// winget-recognized values ([`WINGET_UPGRADE_BEHAVIORS`]). Checks the per-crate,
 /// per-workspace, and `defaults.publish` axes.
 pub fn validate_winget_upgrade_behavior(config: &Config) -> Result<(), String> {
     let check = |location: &str, winget: &WingetConfig| -> Result<(), String> {
@@ -409,7 +409,7 @@ pub fn validate_winget_upgrade_behavior(config: &Config) -> Result<(), String> {
 }
 
 /// Validate that every `winget.dependencies[].architectures` entry names a
-/// recognized WinGet architecture ([`WINGET_ARCHITECTURES`]). Walks the
+/// recognized WinGet architecture ([`WINGET_ARCHITECTURES`]). Checks the
 /// per-crate, per-workspace, and `defaults.publish` axes.
 ///
 /// The per-installer dependency emitter matches a scope value against each
@@ -462,11 +462,11 @@ pub fn validate_winget_dependency_architectures(config: &Config) -> Result<(), S
 /// build/sign stages already enforce id uniqueness; archive and
 /// universal_binary were missed.
 ///
-/// Walks every occurrence of `archives[]` and `universal_binaries[]`:
+/// Checks every occurrence of `archives[]` and `universal_binaries[]`:
 /// - `crates[].archives:` / `crates[].universal_binaries:`
 /// - `workspaces[].crates[].archives:` / `.universal_binaries:`
 /// - `defaults.archives:` is a single `ArchiveConfig`, so uniqueness within
-///   itself is vacuously true; not walked here.
+///   itself is vacuously true; not checked here.
 ///
 pub fn validate_id_uniqueness(config: &Config) -> Result<(), String> {
     fn check_unique(
@@ -866,7 +866,7 @@ pub fn validate_exclude_globs(config: &Config) -> Result<(), String> {
 /// Validate every configured macOS notarization `timeout` against
 /// [`MacOSNotarizeApiConfig::MAX_TIMEOUT`].
 ///
-/// Both receivers of a `NotarizeConfig` are walked — the top-level
+/// Both receivers of a `NotarizeConfig` are checked — the top-level
 /// `notarize:` block and `defaults.notarize:` — because the defaults fold
 /// runs after config validation, so a ceiling checked on the top-level block
 /// alone would wave the same value through when it is written under

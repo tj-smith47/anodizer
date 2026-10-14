@@ -11,7 +11,7 @@ This mirrors the semantics of [`brew bump-formula-pr`](https://docs.brew.sh/Manp
 
 ## homebrew-core vs. the Homebrew tap
 
-Two different Homebrew surfaces, two different publishers:
+Two different Homebrew targets, two different publishers:
 
 | Use | Publisher | What it does |
 |---|---|---|

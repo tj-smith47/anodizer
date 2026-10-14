@@ -1,6 +1,6 @@
 //! Publisher registry — single source of truth for which publishers run.
 //!
-//! [`configured_publishers`] walks the active [`Context`] and instantiates
+//! [`configured_publishers`] reads the active [`Context`] and instantiates
 //! a `Box<dyn Publisher>` for each configured publisher. The returned slice
 //! is what [`crate::dispatch::dispatch`] iterates over.
 
@@ -109,7 +109,7 @@ fn merge_collapsed(
 
 /// Returns the publishers configured for this release run.
 ///
-/// Walks the crate universe's `publish:` blocks
+/// Scans the crate universe's `publish:` blocks
 /// ([`anodizer_core::config::Config::crate_universe`] — top-level plus
 /// workspace crates) and the top-level publisher blocks (`dockerhub`,
 /// `artifactories`, `cloudsmiths`) and instantiates a `Box<dyn Publisher>`
@@ -351,7 +351,7 @@ pub fn rollback_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
 ///
 /// Built for environment-preflight requirement collection: each
 /// [`Publisher::requirements`] self-gates on the resolved config (returning
-/// empty when unconfigured) and walks the same FULL crate universe
+/// empty when unconfigured) and scans the same FULL crate universe
 /// [`configured_publishers`]'s registration predicates gate on. Never
 /// use this list for dispatch; `run`/`rollback` on an unconfigured
 /// publisher is not a supported path.
@@ -431,7 +431,7 @@ fn is_winget_configured(ctx: &Context) -> bool {
 fn is_homebrew_configured(ctx: &Context) -> bool {
     crate::publisher_helpers::is_any_crate_block_configured(
         ctx,
-        crate::homebrew::publisher::crate_surface,
+        crate::homebrew::publisher::crate_publish_block,
     ) || crate::publisher_helpers::is_top_level_block_configured(ctx.config.homebrew_casks.as_ref())
 }
 
@@ -1056,7 +1056,7 @@ mod tests {
 
     /// `release --publishers blob` on a pure-workspace config whose `blobs:`
     /// lives only under a workspace crate must validate — the out-of-dispatch
-    /// stage gate walks the universe. A `config.crates`-only gate hard-errored
+    /// stage gate scans the universe. A `config.crates`-only gate hard-errored
     /// "publisher 'blob' named in --publishers is not configured" for a config
     /// whose blob upload WOULD run.
     #[test]
@@ -1174,7 +1174,7 @@ mod tests {
             assert_eq!(p.group(), PublisherGroup::Assets, "{}", expected);
             assert!(!p.required(), "{} should not be required", expected);
         }
-        // Pin: BlobPublisher must NOT register from the stage-publish
+        // Check: BlobPublisher must NOT register from the stage-publish
         // registry. `BlobStage` is the runner that actually uploads and writes
         // its own entry into `ctx.publish_report`; registering the
         // publisher here would double-publish every blob target.
@@ -1476,13 +1476,13 @@ mod tests {
 
     #[test]
     fn snapcraft_unconditionally_unregistered_regardless_of_publish_flag() {
-        // Pin: SnapcraftPublisher must NOT register from the
+        // Check: SnapcraftPublisher must NOT register from the
         // stage-publish registry under any `publish:` flag value.
         // `SnapcraftPublishStage` is the runner that actually publishes and writes
         // its own entry into `ctx.publish_report`; a trait-based
         // wrapper here would double-publish every snap target (parallel
         // to the BlobPublisher fix in commit 026c854). The
-        // table form pins ALL three input shapes (unset, false, true)
+        // table form checks ALL three input shapes (unset, false, true)
         // so a future regression that re-introduces a `publish:
         // true`-gated registration is caught.
         use anodizer_core::config::SnapcraftConfig;
@@ -2087,7 +2087,7 @@ mod tests {
 
     /// A crate that exists ONLY under `workspaces[].crates` and carries a
     /// `publish.scoop` block must register the scoop publisher: the
-    /// registration gate walks the full crate universe, not just
+    /// registration gate scans the full crate universe, not just
     /// `config.crates`. A `config.crates`-only gate silently drops the
     /// publish (never registered, never preflighted, never dispatched)
     /// while `run()`/`requirements()` would have included the crate.
@@ -2124,7 +2124,7 @@ mod tests {
 
     /// `required: true` on a workspace crate's publisher block must
     /// escalate the release gate exactly like a top-level crate's: the
-    /// required/retain collapse walks the full crate universe.
+    /// required/retain collapse scans the full crate universe.
     #[test]
     fn workspace_crate_required_true_escalates_gate() {
         use anodizer_core::config::{KrewConfig, WorkspaceConfig};

@@ -219,8 +219,8 @@ pub(crate) fn render_or_warn_with_vars(
 /// - **strict**: returns `Err`, failing the publish before any irreversible
 ///   step. Strict whenever [`Context::render_is_strict`] is set (the
 ///   prepublish guard's render pass, or the user's global `--strict`) OR
-///   whenever this is a real publish — not [`Context::is_dry_run`], not
-///   [`Context::is_snapshot`] — since a residual delimiter reaching an actual
+///   whenever this is a real publish (neither [`Context::is_dry_run`] nor
+///   [`Context::is_snapshot`]), since a residual delimiter reaching an actual
 ///   publisher call renders an invalid field that the registry may reject
 ///   after submission, with no way to undo it.
 /// - **non-strict** (dry-run / snapshot, and not otherwise strict):

@@ -6152,7 +6152,7 @@
           ]
         },
         "port": {
-          "description": "SMTP server port (default: 587 for STARTTLS).\n\nAnodizer-additive UX win (locked 2026-04-28): an unset SMTP `port` would otherwise be an error when it is unset (zero value). Anodizer defaults to 587 — the IETF submission port — so the common case (corporate / SaaS SMTP relays exposing STARTTLS on 587) works out of the box without a config knob. The `auto` encryption mode then resolves to STARTTLS for 587, which is the conventional pairing. Pinned by `test_email_smtp_port_defaults_to_587`.",
+          "description": "SMTP server port (default: 587 for STARTTLS).\n\nAnodizer-additive UX win (locked 2026-04-28): an unset SMTP `port` would otherwise be an error when it is unset (zero value). Anodizer defaults to 587 — the IETF submission port — so the common case (corporate / SaaS SMTP relays exposing STARTTLS on 587) works out of the box without a config knob. The `auto` encryption mode then resolves to STARTTLS for 587, which is the conventional pairing. Tested by `test_email_smtp_port_defaults_to_587`.",
           "default": null,
           "type": [
             "integer",
@@ -6239,7 +6239,7 @@
       "type": "object",
       "properties": {
         "gitea_token": {
-          "description": "Path to file containing the Gitea token. Default: `~/.config/goreleaser/gitea_token`.",
+          "description": "Path to file containing the Gitea token. Default: `~/.config/anodizer/gitea_token`, then `~/.config/goreleaser/gitea_token`.",
           "default": null,
           "type": [
             "string",
@@ -6247,7 +6247,7 @@
           ]
         },
         "github_token": {
-          "description": "Path to file containing the GitHub token. Default: `~/.config/goreleaser/github_token`.",
+          "description": "Path to file containing the GitHub token. Default: `~/.config/anodizer/github_token`, then `~/.config/goreleaser/github_token`.",
           "default": null,
           "type": [
             "string",
@@ -6255,7 +6255,7 @@
           ]
         },
         "gitlab_token": {
-          "description": "Path to file containing the GitLab token. Default: `~/.config/goreleaser/gitlab_token`.",
+          "description": "Path to file containing the GitLab token. Default: `~/.config/anodizer/gitlab_token`, then `~/.config/goreleaser/gitlab_token`.",
           "default": null,
           "type": [
             "string",
@@ -11802,7 +11802,7 @@
           ]
         },
         "engines": {
-          "description": "npm `engines` constraint map written verbatim into `package.json` (e.g. `{ node: \">=18\" }`). When unset, anodizer emits a sensible default of `{ node: \">=18\" }` — the floor every leading native-CLI wrapper (esbuild, biome, swc) declares. Set to an empty map to suppress the field entirely.",
+          "description": "npm `engines` constraint map written verbatim into `package.json` (e.g. `{ node: \">=18\" }`). When unset, anodizer emits a sensible default of `{ node: \">=18\" }` — the minimum every leading native-CLI wrapper (esbuild, biome, swc) declares. Set to an empty map to suppress the field entirely.",
           "default": null,
           "type": [
             "object",
@@ -13029,7 +13029,7 @@
       ]
     },
     "PypiConfig": {
-      "description": "PyPI publisher configuration.\n\nPublishes the project's prebuilt binaries as native Python wheels — one `py3-none-<platform>` wheel per built target, with the platform tag derived by inspecting each binary (glibc floor for `manylinux`, Mach-O deployment target for `macosx`) — and uploads them via PyPI's legacy (twine-protocol) upload API. Optionally also builds and uploads a source distribution via `maturin sdist`. Each `pypis[]` entry produces one publish.\n\n```yaml\npypis:\n  - name: my-tool\n    requires_python: \">=3.7\"\n    sdist: true\n    sdist_manifest: \"pypi/\"\n```",
+      "description": "PyPI publisher configuration.\n\nPublishes the project's prebuilt binaries as native Python wheels — one `py3-none-<platform>` wheel per built target, with the platform tag derived by inspecting each binary (minimum glibc version for `manylinux`, Mach-O deployment target for `macosx`) — and uploads them via PyPI's legacy (twine-protocol) upload API. Optionally also builds and uploads a source distribution via `maturin sdist`. Each `pypis[]` entry produces one publish.\n\n```yaml\npypis:\n  - name: my-tool\n    requires_python: \">=3.7\"\n    sdist: true\n    sdist_manifest: \"pypi/\"\n```",
       "type": "object",
       "properties": {
         "amd64_variant": {
@@ -13175,7 +13175,7 @@
           ]
         },
         "platform_tag_overrides": {
-          "description": "Per-target-triple wheel platform-tag overrides: `<target triple>` → explicit wheel platform tag. When a built target has an entry, its tag is used *verbatim* — binary inspection (the glibc floor for `manylinux`, the Mach-O deployment target for `macosx`) is skipped for that target. Every target without an entry keeps the auto-detected tag.\n\nThe escape hatch for toolchains whose emitted glibc floor is stricter than the compatibility a project wants to advertise — e.g. setting `aarch64-unknown-linux-gnu` to `manylinux_2_28` to match a `maturin`/PyO3 build environment when the binary's symbols imply a higher floor.\n\n```yaml\npypis:\n  - platform_tag_overrides:\n      aarch64-unknown-linux-gnu: manylinux_2_28_aarch64\n```",
+          "description": "Per-target-triple wheel platform-tag overrides: `<target triple>` → explicit wheel platform tag. When a built target has an entry, its tag is used *verbatim* — binary inspection (the minimum glibc version for `manylinux`, the Mach-O deployment target for `macosx`) is skipped for that target. Every target without an entry keeps the auto-detected tag.\n\nThe escape hatch for toolchains whose emitted minimum glibc version is stricter than the compatibility a project wants to advertise — e.g. setting `aarch64-unknown-linux-gnu` to `manylinux_2_28` to match a `maturin`/PyO3 build environment when the binary's symbols imply a higher minimum.\n\n```yaml\npypis:\n  - platform_tag_overrides:\n      aarch64-unknown-linux-gnu: manylinux_2_28_aarch64\n```",
           "default": null,
           "type": [
             "object",
@@ -13544,7 +13544,7 @@
           ]
         },
         "provider": {
-          "description": "Explicit publish target: the SCM provider (`github`, `gitlab` or `gitea`) whose `release.<provider>` block the publisher uses. The provider is the first of these that gives an answer:\n\n1. `release.provider`;\n2. the top-level `force_token`;\n3. the `ANODIZER_FORCE_TOKEN` environment variable, or `GORELEASER_FORCE_TOKEN` when `ANODIZER_FORCE_TOKEN` is unset (`github`, `gitlab` or `gitea` in any letter case; any other value gives no answer);\n4. `GITLAB_TOKEN` set in the environment: GitLab;\n5. `GITEA_TOKEN` set in the environment: Gitea;\n6. GitHub.\n\nSet it for cross-platform publishing, where the source repo lives on one provider (e.g. GitLab) and releases go to another (e.g. GitHub), or whenever more than one forge token is in the environment.\n\n```yaml\nrelease:\n  provider: github\n  github:\n    owner: my-org\n    name: my-app\n```",
+          "description": "Explicit publish target: the SCM provider (`github`, `gitlab` or `gitea`) whose `release.<provider>` block the publisher uses. The provider is the first of these that gives an answer:\n\n1. `release.provider`;\n2. the top-level `force_token`;\n3. the `ANODIZER_FORCE_TOKEN` environment variable; when it is unset or blank, `GORELEASER_FORCE_TOKEN` is read; both are trimmed (`github`, `gitlab` or `gitea` in any letter case; any other value gives no answer);\n4. `GITLAB_TOKEN` set in the environment, or a GitLab token file: GitLab;\n5. `GITEA_TOKEN` set in the environment, or a Gitea token file: Gitea;\n6. GitHub.\n\nSet it for cross-platform publishing, where the source repo lives on one provider (e.g. GitLab) and releases go to another (e.g. GitHub), or whenever more than one forge token is in the environment.\n\n```yaml\nrelease:\n  provider: github\n  github:\n    owner: my-org\n    name: my-app\n```",
           "anyOf": [
             {
               "$ref": "#/definitions/ForceTokenKind"
@@ -13764,7 +13764,7 @@
       "type": "object",
       "properties": {
         "keep_last": {
-          "description": "Number of newest nightly releases to keep. `0` is treated as `1` (never delete every nightly), matching the `keep_single_release` floor. nushell keeps 10.",
+          "description": "Number of newest nightly releases to keep. `0` is treated as `1` (never delete every nightly), matching the `keep_single_release` minimum. nushell keeps 10.",
           "default": 0,
           "type": "integer",
           "format": "uint",
@@ -16649,7 +16649,7 @@
           "type": "boolean"
         },
         "glibc_ceiling": {
-          "description": "glibc version ceiling, e.g. `\"2.36\"`. When any glibc-linked `.deb` requires a glibc NEWER than this floor, the gate reports it and exits non-zero. Unset (the default) disables the libc check entirely. musl binaries have no glibc requirement and are skipped.",
+          "description": "glibc version ceiling, e.g. `\"2.36\"`. When any glibc-linked `.deb` requires a glibc NEWER than this ceiling, the gate reports it and exits non-zero. Unset (the default) disables the libc check entirely. musl binaries have no glibc requirement and are skipped.",
           "type": [
             "string",
             "null"

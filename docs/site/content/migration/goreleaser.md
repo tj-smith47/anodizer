@@ -107,11 +107,11 @@ The anodizer equivalent is:
 The `pkg`, `nsis`, `msi`, and `dmg` stages now default to
 `'{{ ProjectName }}_{{ Arch }}'` (matching GoReleaser's convention). The prior
 default was `'{{ ProjectName }}_{{ Version }}_{{ Arch }}.<ext>'`. If you relied on
-the version being part of the installer filename, pin `name:` explicitly in each
+the version being part of the installer filename, set `name:` explicitly in each
 stage config block:
 
 ```yaml
-# Pin to preserve the old naming:
+# Set it to preserve the old naming:
 crates:
   - name: myapp
     pkgs:
@@ -176,7 +176,7 @@ homebrew_casks:
       - cask: other-tool
     caveats: "Run `myapp init` to set up."
     commit_msg_template: "Brew cask update for {{ ProjectName }} version {{ Tag }}"
-    # Cask-exclusive surface (no Formula equivalent):
+    # Cask-only fields (no Formula equivalent):
     completions:
       bash: "completions/myapp.bash"
       zsh:  "completions/_myapp"

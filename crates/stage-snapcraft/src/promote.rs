@@ -324,8 +324,8 @@ fn recorded_revisions(report: &PublishReport, snap_name: &str) -> Vec<String> {
 }
 
 /// Run `snapcraft list-revisions <name>` (bounded) and return its stdout.
-/// `Ok(None)` means the snap is simply absent from the store — not yet
-/// registered or holding no revisions — which promotion treats as "nothing to
+/// `Ok(None)` means the snap is simply absent from the store (not yet
+/// registered, or holding no revisions), which promotion treats as "nothing to
 /// promote" (a skip). `Err` is reserved for a genuine probe/auth error (the
 /// probe could not run, or the store answered with an authentication /
 /// connectivity fault), which must be reported as an error.
@@ -1190,7 +1190,7 @@ Rev    Uploaded              Arches  Version  Channels
     #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]
-    fn promote_surfaces_genuine_probe_error() {
+    fn promote_returns_genuine_probe_error() {
         use anodizer_core::test_helpers::fake_tool::FakeToolDir;
         let tools = FakeToolDir::new();
         tools
@@ -1217,7 +1217,7 @@ Rev    Uploaded              Arches  Version  Channels
             .expect_err("a genuine store probe error must hard-fail, not skip");
         assert!(
             format!("{err:#}").contains("failed to list revisions"),
-            "the honest probe error must surface; got {err:#}"
+            "the honest probe error must be returned; got {err:#}"
         );
     }
 }

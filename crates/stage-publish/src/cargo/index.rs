@@ -172,7 +172,7 @@ pub(crate) fn poll_crates_io_index(
 ) -> Result<()> {
     use std::time::Duration;
     // First SLEEP is 1s, not 5s: the sparse index frequently propagates a
-    // freshly-published crate within 1-2s, so a hard 5s floor wastes the
+    // freshly-published crate within 1-2s, so a fixed 5s minimum wait wastes the
     // common case. The first probe is free (no wait), and the early backoff
     // doubles 1→2→4→8… capped at MAX_POLL_DELAY, so a slow-propagating index
     // still backs off promptly without hammering the endpoint.

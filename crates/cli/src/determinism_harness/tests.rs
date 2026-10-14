@@ -81,7 +81,7 @@ fn empty_harness() -> Harness {
         crate_name: None,
         verbosity: Verbosity::Normal,
         config_tools: BTreeMap::new(),
-        disk_abs_floor_bytes: anodizer_core::disk::DEFAULT_ABS_FLOOR_BYTES,
+        disk_abs_min_free_bytes: anodizer_core::disk::DEFAULT_ABS_MIN_FREE_BYTES,
         disk_safety_factor: anodizer_core::disk::DEFAULT_SAFETY_FACTOR,
     }
 }
@@ -289,7 +289,7 @@ fn aggregate_fails_when_gated_member_drifts_even_if_member_row_suppressed() {
     let report = h.build_report(runs);
     assert_eq!(
         report.drift_count, 1,
-        "a gated member drifting inside the aggregate must surface as drift"
+        "a gated member drifting inside the aggregate must be reported as drift"
     );
     assert!(
         report
@@ -607,7 +607,7 @@ fn artifacts_manifest_recut_excuses_only_nondeterministic_members() {
     let report = h.build_report(runs);
     assert!(
         report.drift_count >= 1,
-        "a gated archive regression must surface"
+        "a gated archive regression must be reported"
     );
     assert!(
         report
@@ -1100,7 +1100,7 @@ fn installer_explicit_request_missing_tool_is_hard_error() {
 
 /// A non-explicit (auto-included) installer stage with a missing tool
 /// must warn-and-drop, not error, so the gate's available set still
-/// returns the non-installer stages. Pins the fork the hard-error
+/// returns the non-installer stages. Tests the fork the hard-error
 /// test's sibling branch depends on.
 #[test]
 fn installer_non_explicit_missing_tool_warns_and_drops() {
@@ -1391,8 +1391,8 @@ fn docker_context_staging_thin_dockerfile_and_extra_files() {
             .is_file(),
         "binary must land at <context>/linux/amd64/cfgd"
     );
-    // The RENDERED (thin) dockerfile — not the fat repo-root one — is the
-    // copied `Dockerfile`.
+    // The RENDERED (thin) dockerfile is the copied `Dockerfile`; the fat
+    // repo-root one is left out.
     let staged_dockerfile = std::fs::read_to_string(context_dir.join("Dockerfile")).unwrap();
     assert!(
         staged_dockerfile.contains("COPY ${TARGETOS}/${TARGETARCH}/cfgd"),
@@ -1432,20 +1432,20 @@ fn docker_stage_podman_auto_included_warns_and_skips() {
 }
 
 /// The headroom guard must ABORT before a run when free space is below
-/// the floor, and the error must carry the actionable numbers so a
+/// the minimum, and the error must carry the actionable numbers so a
 /// recurrence is diagnosable from the log alone — never let the harness
 /// limp into the opaque `hdiutil` ENOSPC.
 #[test]
-fn headroom_guard_aborts_below_floor_with_actionable_message() {
+fn headroom_guard_aborts_below_minimum_with_actionable_message() {
     const GIB: u64 = 1024 * 1024 * 1024;
     let mut h = empty_harness();
-    h.disk_abs_floor_bytes = 45 * GIB;
+    h.disk_abs_min_free_bytes = 45 * GIB;
     let log = StageLogger::new("test", Verbosity::Quiet);
     let vol = std::path::Path::new("/Volumes/scratch");
-    // run-0 (no prior peak), 30 GiB free, 45 GiB floor → abort.
+    // run-0 (no prior peak), 30 GiB free, 45 GiB minimum → abort.
     let err = h
         .guard_run_headroom(&log, 0, vol, Some(30 * GIB), None)
-        .expect_err("below-floor free space must abort the run");
+        .expect_err("below-minimum free space must abort the run");
     let msg = err.to_string();
     assert!(msg.contains("determinism run 1"), "1-based run: {msg}");
     assert!(
@@ -1459,8 +1459,8 @@ fn headroom_guard_aborts_below_floor_with_actionable_message() {
     assert!(msg.contains("/Volumes/scratch"), "volume: {msg}");
     assert!(msg.contains("reclaim-disk"), "remedy hint: {msg}");
     assert!(
-        msg.contains("absolute floor"),
-        "run-0 must state the floor basis, not a peak guarantee: {msg}"
+        msg.contains("absolute minimum"),
+        "run-0 must state the minimum basis, not a peak guarantee: {msg}"
     );
 }
 
@@ -1471,11 +1471,11 @@ fn headroom_guard_aborts_below_floor_with_actionable_message() {
 fn headroom_guard_proceeds_with_ample_space_and_gates_on_measured_peak() {
     const GIB: u64 = 1024 * 1024 * 1024;
     let mut h = empty_harness();
-    h.disk_abs_floor_bytes = 45 * GIB;
+    h.disk_abs_min_free_bytes = 45 * GIB;
     h.disk_safety_factor = 1.3;
     let log = StageLogger::new("test", Verbosity::Quiet);
     let vol = std::path::Path::new("/scratch");
-    // run-0 with 60 GiB free clears the 45 GiB floor.
+    // run-0 with 60 GiB free clears the 45 GiB minimum.
     assert!(
         h.guard_run_headroom(&log, 0, vol, Some(60 * GIB), None)
             .is_ok(),

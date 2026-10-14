@@ -986,7 +986,7 @@ fn test_validate_package_identifier_too_many_segments() {
 
 #[test]
 fn test_validate_package_identifier_segment_length_limit() {
-    // The regex pins each segment to 1..=32 chars.
+    // The regex limits each segment to 1..=32 chars.
     let segment_32 = "A".repeat(32);
     let segment_33 = "A".repeat(33);
     // OK: a 32-char segment is the upper bound.
@@ -1090,7 +1090,7 @@ fn test_winget_commit_msg_custom() {
 #[test]
 fn test_winget_commit_msg_tag_and_version_vars() {
     // Regression: `.Tag`/`.Version` (the standard cross-publisher vars)
-    // must resolve in winget's commit-msg context — not error and fall
+    // must resolve in winget's commit-msg context, without an error or a fall
     // back to the default. Mirrors the v0.6.0 production warning.
     let msg = render_winget_commit_msg(
         Some("x {{ Tag }} {{ Version }}"),
@@ -1747,7 +1747,7 @@ fn resolve_winget_moniker_derives_single_and_omits_ambiguous() {
 // threads submission through the Context's injectable `EnvSource`
 // (`maybe_submit_pr_with_env` / `submit_pr_via_gh_with_opts_with_env`),
 // so the responder address is a per-Context value set via
-// `inject_api_base` — not a process-global mutation. Each test still
+// `inject_api_base`, with no process-global mutation. Each test still
 // mutates PATH (the `gh` stub), so each is `#[serial(path_env)]`.
 mod live_pr {
     use super::*;
@@ -2148,7 +2148,7 @@ mod live_pr {
 
     /// A custom `commit_msg_template` referencing `{{ PackageIdentifier }}`
     /// / `{{ Version }}` must be rendered into the pushed commit's
-    /// subject. Pins `render_winget_commit_msg` end-to-end through the
+    /// subject. Tests `render_winget_commit_msg` end-to-end through the
     /// push (the in-process render test only proves the string; this
     /// proves it reaches the actual git commit).
     #[test]
@@ -2621,7 +2621,7 @@ mod live_pr {
     }
 
     /// Dry-run mode short-circuits AFTER identity resolution but BEFORE
-    /// clone/push/PR: no branch, no POST. Pins the `ctx.is_dry_run()`
+    /// clone/push/PR: no branch, no POST. Tests the `ctx.is_dry_run()`
     /// guard in `publish_to_winget`.
     #[test]
     #[serial(path_env)]
@@ -2669,7 +2669,7 @@ mod live_pr {
     /// A windows archive missing its `sha256` metadata must hard-fail the
     /// publish BEFORE any push: a manifest with `InstallerSha256: ''` is
     /// rejected by winget validation, so anodizer must error rather than
-    /// push it. Pins `build_archive_installer`'s sha256 guard through the
+    /// push it. Tests `build_archive_installer`'s sha256 guard through the
     /// live entrypoint, and confirms no branch leaked to the fork.
     #[test]
     #[serial(path_env)]
@@ -2724,7 +2724,7 @@ mod live_pr {
 
     /// No Windows artifact at all → the publish bails with the
     /// "no Windows archive or binary artifact" error before any push.
-    /// Pins `collect_winget_installers`'s empty guard through the live
+    /// Tests `collect_winget_installers`'s empty guard through the live
     /// entrypoint.
     #[test]
     #[serial(path_env)]
@@ -2740,7 +2740,7 @@ mod live_pr {
         let c = live_winget_crate("widget", &bare_url);
         let mut ctx = build_ctx(vec![c], "1.0.0");
         inject_api_base(&mut ctx, &addr);
-        // A LINUX archive only — not a winget Windows installer.
+        // A LINUX archive only, with no winget Windows installer.
         let mut meta = HashMap::new();
         meta.insert("format".to_string(), "tar.gz".to_string());
         meta.insert("sha256".to_string(), "a".repeat(64));
@@ -2771,7 +2771,7 @@ mod live_pr {
     /// force-push without a working tree), so an existing-PR 422 still
     /// records `PendingValidation` even with the flag set, and the
     /// publisher warns that `gh` CLI is required for in-place updates.
-    /// The branch push still happened. Pins the API-transport arm of the
+    /// The branch push still happened. Tests the API-transport arm of the
     /// `update_existing_pr` semantics.
     #[cfg(unix)]
     #[test]

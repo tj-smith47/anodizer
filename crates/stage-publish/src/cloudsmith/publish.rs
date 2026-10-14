@@ -503,7 +503,7 @@ pub(crate) fn publish_to_cloudsmith_into(
                         )? {
                             CloudsmithPackageState::SkipIdempotent => {
                                 let msg = format!(
-                                    "'{}' already landed on cloudsmith with matching md5 \
+                                    "'{}' was already uploaded to cloudsmith with matching md5 \
                                      (concurrent uploader); treating as idempotent skip",
                                     art_name
                                 );
@@ -541,7 +541,7 @@ pub(crate) fn publish_to_cloudsmith_into(
                                 // skip that cannot be proven.
                                 log.warn(&format!(
                                     "cloudsmith: step-3 conflict for '{}'; remote reports no md5 to \
-                                     verify the landed bytes match local — surfacing the conflict \
+                                     verify the uploaded bytes match local — reporting the conflict \
                                      instead of assuming an idempotent skip",
                                     art_name
                                 ));

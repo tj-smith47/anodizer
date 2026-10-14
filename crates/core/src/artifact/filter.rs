@@ -74,7 +74,7 @@ pub const COMBINED_CHECKSUM_VALUE: &str = "true";
 /// these artifacts at release-upload time to fold in PUBLISH-TIME artifacts
 /// (docker `.digest` files registered by the publish leg's docker push), so
 /// their published bytes are a function of WHICH PUBLISHERS RAN in the leg
-/// that uploaded them — not of the produced dist alone. The pre-submitter
+/// that uploaded them as well as on the produced dist. The pre-submitter
 /// verify-release gate consumes the same predicate to exempt exactly these
 /// artifacts from cross-leg byte comparison: a leg that did not itself upload
 /// the release assets (e.g. the split-topology OIDC job publishing only

@@ -35,7 +35,7 @@ use super::*;
 /// discriminator silently stops firing, causing spurious publish failures
 /// that look like hard errors instead of retryable propagation lag.
 ///
-/// The unit tests below pin the cargo version against which these strings
+/// The unit tests below record the cargo version against which these strings
 /// were last verified (`cargo_version_matches_pinned_strings`). If CI
 /// upgrades cargo to a different major.minor, that test fails and the
 /// maintainer must re-verify the substrings against the new cargo output

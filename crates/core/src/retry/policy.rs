@@ -5,7 +5,7 @@ use std::time::Duration;
 /// Names the operation a retry engine is driving and carries the logger that
 /// reports per-attempt failures.
 ///
-/// A required parameter on every retry engine — not an optional builder — so
+/// A required parameter on every retry engine, so
 /// a silent retry is unrepresentable: a backoff ladder can sleep for many
 /// minutes (10 attempts × 5m cap), and an operator watching a run must be
 /// able to tell "waiting on a transient failure" from "hung".
@@ -70,7 +70,7 @@ impl<'a> RetryLog<'a> {
     pub(super) fn note_succeeded(&self, attempts: u32) {
         // status, not warn: a recovered transient is a positive per-operation
         // result an operator wants at default verbosity, mirroring the
-        // rollback/dry-run default events — not a command echo.
+        // rollback/dry-run default events. It is a result line.
         self.log.status(&self.log.redact(&format!(
             "{} succeeded after {}",
             self.desc,
@@ -163,18 +163,17 @@ impl RetryPolicy {
     /// upload) writes the same bytes at the same path on every re-issue, so a
     /// transient 5xx/429 or dropped connection must retry a bounded number of
     /// times even when a stateful mode (`--publish-only`) resolves the
-    /// configured policy down to `attempts: 1`. The floor is a `max()` — it
+    /// configured policy down to `attempts: 1`. The minimum is a `max()` — it
     /// only widens the bound for the retriable classes and never lowers an
     /// operator-set higher value. 4xx responses still fast-fail inside the
-    /// per-attempt classifier regardless of this floor.
-    pub fn with_idempotent_floor(self) -> RetryPolicy {
-        self.with_floor(IDEMPOTENT_PUT_ATTEMPTS)
+    /// per-attempt classifier regardless of this minimum.
+    pub fn with_idempotent_minimum(self) -> RetryPolicy {
+        self.with_min_attempts(IDEMPOTENT_PUT_ATTEMPTS)
     }
 
     /// Raise this policy's `max_attempts` to at least `min`, leaving the backoff
-    /// shape untouched. A `max()` floor, never a clamp that lowers a higher
-    /// operator-set value.
-    pub fn with_floor(self, min: u32) -> RetryPolicy {
+    /// shape untouched. A higher operator-set value is kept.
+    pub fn with_min_attempts(self, min: u32) -> RetryPolicy {
         RetryPolicy {
             max_attempts: self.max_attempts.max(min),
             ..self
@@ -199,10 +198,10 @@ impl RetryPolicy {
     }
 }
 
-/// Total attempt floor for an idempotent PUT/POST, single-sourcing the
+/// Minimum total attempts for an idempotent PUT/POST, single-sourcing the
 /// "3 total attempts" guarantee shared by every idempotent-upload publisher
 /// (HTTP upload, GemFury, Snapcraft, GitHub asset, blob). Applied via
-/// [`RetryPolicy::with_idempotent_floor`] as a `max()` so a stateful mode
+/// [`RetryPolicy::with_idempotent_minimum`] as a `max()` so a stateful mode
 /// (`--publish-only`) that resolves `attempts: 1` still keeps a bounded
 /// transient retry, while an operator-set higher cap is preserved.
 pub const IDEMPOTENT_PUT_ATTEMPTS: u32 = 3;

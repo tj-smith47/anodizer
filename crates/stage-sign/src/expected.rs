@@ -170,7 +170,7 @@ pub fn expected_signature_assets(
 /// rather than extracted from `process.rs` because the execution path also
 /// needs the PRE-expansion strings for `$signature` argv substitution; the
 /// `expected_signature_assets_match_sign_stage_registrations` equivalence
-/// test in `tests.rs` pins the two paths together so they cannot drift.
+/// test in `tests.rs` holds the two paths together so they cannot drift.
 fn expected_output_names(
     cfg: &SignConfig,
     artifact: &anodizer_core::artifact::Artifact,
@@ -612,7 +612,7 @@ mod tests {
 
     #[test]
     fn expected_signature_assets_match_sign_stage_registrations() {
-        // Equivalence pin: the derivation is a parallel implementation of the
+        // Equivalence test: the derivation is a parallel implementation of the
         // execution path's selection + naming (see expected_output_names).
         // Run the REAL sign driver (cmd `true`) over a mixed artifact set and
         // assert the derivation predicted exactly the Signature/Certificate
@@ -672,7 +672,7 @@ mod tests {
         );
     }
 
-    /// The same equivalence pin for the `binary_signs:` slice, which names its
+    /// The same equivalence test for the `binary_signs:` slice, which names its
     /// assets through a second path (the crate's `archives:` config). Real
     /// files on disk, because the loop drops a binary it cannot find.
     #[test]

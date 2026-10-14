@@ -403,7 +403,7 @@ pub(crate) fn sign_retry_delay(
 ///
 /// Matches against the full error chain (`{:#}`), which carries the signer's
 /// captured stderr via `StageLogger::check_output`, lowercased. The needle
-/// classes, with the cosign stderr they pin:
+/// classes, with the cosign stderr they match:
 ///
 /// * CLI usage errors — cosign/gpg flag or subcommand typos
 ///   (`unknown flag: --keyy`, `unknown command "sing" for "cosign"`,

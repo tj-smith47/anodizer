@@ -255,7 +255,7 @@ impl anodizer_core::Publisher for GemFuryPublisher {
                 log.warn(&format!(
                     "gemfury push failed after {} — rolling back \
                      the partial push before failing the release",
-                    count_noun(pushed.len(), "artifact landed", "artifacts landed")
+                    count_noun(pushed.len(), "artifact was pushed", "artifacts were pushed")
                 ));
                 delete_recorded_targets(ctx, &pushed);
             }

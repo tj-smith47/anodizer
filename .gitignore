@@ -10,7 +10,7 @@
 .zig-cache/
 docs/site/public/
 CLAUDE.local.md
-# Ignore everything under .claude/ except the load-bearing CI/lint scripts.
+# Ignore everything under .claude/ except the CI/lint scripts the build needs.
 # `.claude/*` (not `.claude/`) keeps the directory itself traversable so
 # the per-file re-includes below are actually evaluated.
 .claude/*

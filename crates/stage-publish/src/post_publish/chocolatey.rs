@@ -80,7 +80,7 @@ enum PageVerdict {
 /// Render the operator-facing approval line. `'{package}-{version}'` is
 /// the package-version pair used throughout this module's messages; the
 /// parenthetical carries the scraped page detail. Factored out so a test
-/// can pin the argument order (a swapped detail/version renders garbage
+/// can check the argument order (a swapped detail/version renders garbage
 /// like `approved 'mytool-approved, ready for install' (1.2.3)`).
 fn approved_message(package: &str, version: &str, detail: &str) -> String {
     format!(
@@ -119,7 +119,7 @@ pub fn poll(
     // Track whether the page was ever observed as resolvable (HTTP 200
     // with any classification) during this poll run. Distinguishes
     // "never-yet-visible" (expected initial state on a fresh submission
-    // sitting in moderation — not actionable) from "was-visible-then-404"
+    // sitting in moderation, nothing to act on) from "was-visible-then-404"
     // (a regression: the package was delisted or rejected after
     // appearing, which IS actionable).
     let mut ever_visible = false;
@@ -239,7 +239,7 @@ fn scrape_once(url: &str) -> PageVerdict {
     classify_html(&body)
 }
 
-/// HTML classifier — pure, parameterizable, no IO. Tests pin the exact
+/// HTML classifier — pure, parameterizable, no IO. Tests check the exact
 /// substring rules used against live pages.
 ///
 /// Search order matters because the page can carry mixed signals:
@@ -310,7 +310,7 @@ const NO_CALLOUT_DETAIL: &str = "status callout not yet present on page";
 /// there yet still blocks a re-push of the same version. The HTML version
 /// page is the one public signal that covers both states, so this probe
 /// scrapes it, reusing the classifier the post-publish moderation poller
-/// pins against live pages.
+/// checks against live pages.
 ///
 /// The probe refuses only on POSITIVE evidence:
 ///

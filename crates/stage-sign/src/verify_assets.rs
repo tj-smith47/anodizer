@@ -1289,7 +1289,7 @@ mod tests {
 
     /// A `--key` arriving through a template makes the sign keyed. The
     /// re-verification classifies on the rendered argv, so it verifies with
-    /// the derived public key; with the tlog upload pinned off it consults no
+    /// the derived public key; with the tlog upload turned off it consults no
     /// transparency log and takes no host TUF lock.
     #[test]
     fn rendered_key_flag_reverifies_keyed_without_the_host_lock() {

@@ -445,7 +445,7 @@ fn crate_has_homebrew_archives_true_even_when_metadata_incomplete() {
 // body the publisher would write.
 
 /// The rendered formula carries the PascalCase class name, the version,
-/// each archive url + sha256, and a dependency declaration. Pins the
+/// each archive url + sha256, and a dependency declaration. Tests the
 /// essential formula content the tap commit would carry.
 #[test]
 fn render_formula_for_crate_emits_class_url_sha_and_deps() {
@@ -657,7 +657,7 @@ fn publish_to_homebrew_pushes_to_configured_branch() {
 }
 
 /// A custom `commit_msg_template` renders into the actual tap commit
-/// subject. Pins that the template (not a hard-coded string) drives the
+/// subject. Checks that the template (not a hard-coded string) drives the
 /// published commit message. `render_commit_msg` registers the formula name
 /// as `ProjectName` (it is invoked with `ident.formula_name`) and the
 /// version as `Version`; the Go-style leading dots are stripped by the
@@ -682,7 +682,7 @@ fn publish_to_homebrew_renders_custom_commit_message() {
     let subject = git_stdout(Path::new(&bare_url), &["log", "-1", "--pretty=%s", "main"]);
     assert_eq!(
         subject, "brew: mytool bumped to 1.2.3",
-        "the custom commit_msg_template must drive the landed commit subject; \
+        "the custom commit_msg_template must drive the pushed commit subject; \
              ProjectName = the formula name, Version = the release version"
     );
     drop(bare);
@@ -1505,7 +1505,7 @@ fn an_unrenderable_pull_request_token_skips_the_entry_before_any_push() {
 /// entry's `publish.homebrew` block, a `publish.homebrew` block, or a bare
 /// `homebrew` fragment, for a release of the page's `myapp` crate (or the
 /// crate the block names) with a darwin arm64 and a linux amd64 archive.
-/// The count is pinned, so a new ```ruby block is held to the renderer as
+/// The count is checked, so a new ```ruby block is held to the renderer as
 /// soon as it is added.
 #[test]
 fn every_ruby_example_in_the_formula_docs_is_part_of_the_render() {

@@ -78,7 +78,7 @@ impl Announcer for WebhookAnnouncer {
         // rate-limiting, and audit-log tagging. A static user-agent with
         // no version suffix would be the baseline; the
         // version-suffixed variant is tradeoff-free (same wire shape,
-        // strictly more debuggable). Pinned by
+        // strictly more debuggable). Tested by
         // `test_webhook_user_agent_is_anodizer_versioned`.
         let env_value = |name: &str| {
             ctx.env_var(name)

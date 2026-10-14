@@ -243,7 +243,7 @@ pub(crate) const PRESERVED_BIN_SUBDIR: &str = "_preserved-bin";
 ///
 /// This helper reads the harness child's `dist/artifacts.json` (already
 /// copied verbatim into `<dest>/artifacts.json` by `preserve_dist_tree`),
-/// walks every Binary-shaped or staticlib/cdylib/cdylib-style entry
+/// reads every Binary-shaped or staticlib/cdylib/cdylib-style entry
 /// (`Binary`, `UploadableBinary`, `Library`, `Header`, `CArchive`,
 /// `CShared`, `Wasm`), copies `<worktree>/<orig_path>` to
 /// `<dest>/_preserved-bin/<triple>/<basename>`, and rewrites the manifest
@@ -513,7 +513,7 @@ pub(super) fn write_preserved_dist_context(
         })
         .unwrap_or_default();
     // Fall back to the harness's `--targets=<csv>` list when the
-    // production walk produced nothing. Catches the case where the
+    // production scan produced nothing. Catches the case where the
     // child pipeline produced artifacts.json but no stage tagged
     // artifacts with a target (e.g. archive-only fixture runs).
     if targets.is_empty()
@@ -684,7 +684,7 @@ fn collect_preserved_entries(
         } else {
             // Fall back to a fresh hash — file is present in the
             // preserved tree but wasn't found by the harness's
-            // discover walk (or had drifted/missing hash). Better to
+            // discover scan (or had drifted/missing hash). Better to
             // ship a complete manifest than skip the entry.
             hash_file_streaming(&path)?
         };
@@ -1506,7 +1506,7 @@ mod tests {
     /// and calls write_preserved_dist_context with that dest, context.json
     /// must end up in `<base>/<crate>/context.json` (not at the flat root).
     /// This test simulates that call — the subdir computation is in mod.rs;
-    /// the write itself is what is pinned: it ends up in whatever dest is passed.
+    /// the write itself is what is tested: it ends up in whatever dest is passed.
     #[test]
     fn write_context_in_subdir_when_called_with_subdir_dest() {
         let tmp = TempDir::new().unwrap();

@@ -1267,21 +1267,18 @@ mod tests {
     /// not a read of the field.
     #[test]
     fn every_if_condition_presence_test_reads_the_active_gate() {
-        use crate::test_helpers::test_sources::{
-            function_bodies, production_half, workspace_production_sources,
-        };
+        use crate::test_helpers::test_sources::production_corpus;
 
         let this_file = std::path::Path::new(file!())
             .file_name()
             .expect("string_or_bool.rs");
         let mut strays: Vec<String> = Vec::new();
         let mut population = 0usize;
-        for source in workspace_production_sources() {
-            if source.file_name() == Some(this_file) {
+        for source in production_corpus() {
+            if source.path.file_name() == Some(this_file) {
                 continue;
             }
-            let text = std::fs::read_to_string(&source).expect("read source");
-            for body in function_bodies(production_half(&text)) {
+            for body in &source.bodies {
                 if !body.contains("if_condition") {
                     continue;
                 }
@@ -1330,7 +1327,7 @@ mod tests {
                     body.contains("active_if_gate") || body.contains("evaluate_if_condition")
                 };
                 if !folds {
-                    strays.push(source.display().to_string());
+                    strays.push(source.path.display().to_string());
                 }
             }
         }
@@ -1359,7 +1356,7 @@ mod tests {
     /// question.
     #[test]
     fn every_documented_if_field_says_an_empty_gate_runs() {
-        use crate::test_helpers::test_sources::{production_half, workspace_production_sources};
+        use crate::test_helpers::test_sources::production_corpus;
 
         const SENTENCE: &str = "An absent, empty or blank `if:` imposes no gate and \
                                 always runs; the falsy test applies to what a \
@@ -1367,10 +1364,9 @@ mod tests {
 
         let mut documented = 0usize;
         let mut silent: Vec<String> = Vec::new();
-        for path in workspace_production_sources() {
-            let src = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            let lines: Vec<&str> = production_half(&src).lines().collect();
+        for source in production_corpus() {
+            let path = &source.path;
+            let lines: Vec<&str> = source.text.lines().collect();
             for (at, line) in lines.iter().enumerate() {
                 if line.trim() != r#"#[serde(rename = "if")]"# {
                     continue;
@@ -1459,22 +1455,22 @@ mod tests {
     /// `.claude/rules/bool-or-template-values.md`.
     #[test]
     fn every_bool_or_template_enum_reads_one_and_zero() {
-        use crate::test_helpers::test_sources::{
-            function_bodies, production_half, workspace_production_sources,
-        };
+        use crate::test_helpers::test_sources::{function_bodies, production_corpus};
 
         /// Enums with a `Bool(bool)` variant that do not spell a bool, each
         /// with the reason.
         const NOT_A_BOOL_SPELLING: &[(&str, &str)] = &[];
 
-        let all: String = workspace_production_sources()
-            .into_iter()
-            .filter(|p| {
-                p.to_string_lossy()
+        let all: String = production_corpus()
+            .iter()
+            .filter(|source| {
+                source
+                    .path
+                    .to_string_lossy()
                     .replace('\\', "/")
                     .contains("crates/core/src/config/")
             })
-            .map(|p| production_half(&std::fs::read_to_string(&p).unwrap()).to_string())
+            .map(|source| source.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
         let lines: Vec<&str> = all.lines().collect();
@@ -2102,7 +2098,7 @@ mod tests {
     /// bool-or-template value; each entry must still match its line.
     #[test]
     fn no_production_function_matches_a_rendered_value_against_true_or_false() {
-        use crate::test_helpers::test_sources::workspace_production_sources;
+        use crate::test_helpers::test_sources::production_corpus;
 
         const HELPERS: &[Helper] = &[
             (
@@ -2247,16 +2243,16 @@ mod tests {
         let root = root.canonicalize().unwrap();
         let mut hits = std::collections::BTreeMap::new();
         let mut bodies_read = 0;
-        for path in workspace_production_sources() {
-            let rel = path
+        for source in production_corpus() {
+            let rel = source
+                .path
                 .canonicalize()
                 .unwrap()
                 .strip_prefix(&root)
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
-            let text = std::fs::read_to_string(&path).unwrap();
-            bodies_read += bool_word_comparisons(&rel, &text, &mut hits);
+            bodies_read += bool_word_comparisons(&rel, &source.text, &mut hits);
         }
         assert!(
             bodies_read > 5000,

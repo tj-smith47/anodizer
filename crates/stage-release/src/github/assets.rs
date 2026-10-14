@@ -279,7 +279,7 @@ mod tests {
                 uploaded: true,
                 digest: None
             }),
-            "must surface the matching asset's size and uploaded state"
+            "must report the matching asset's size and uploaded state"
         );
         assert_eq!(
             calls.load(Ordering::SeqCst),
@@ -336,10 +336,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_surfaces_remote_digest_when_the_api_serves_one() {
+    async fn find_returns_remote_digest_when_the_api_serves_one() {
         // Digest-aware idempotency (upload.rs's classify_already_exists)
         // needs the remote's `sha256:` digest, not just its size — this
-        // pins that the probe actually threads `Asset.digest` through.
+        // checks that the probe actually threads `Asset.digest` through.
         let body = format!(
             "[{}]",
             asset_json_with_digest(
@@ -365,7 +365,7 @@ mod tests {
                 uploaded: true,
                 digest: Some("sha256:deadbeef00112233".to_string()),
             }),
-            "the API-served digest must be surfaced on the probe"
+            "the API-served digest must be returned by the probe"
         );
     }
 

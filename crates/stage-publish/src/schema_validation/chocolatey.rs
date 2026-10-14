@@ -6,7 +6,7 @@
 //! `<requireLicenseAcceptance>` as `xs:boolean` and the url fields as
 //! `xs:anyURI`. anodizer renders that nuspec per crate; this validator renders
 //! the exact XML a live publish would stage — via the same render path — and
-//! checks it two ways: an always-on structural floor (a real read-only XML
+//! checks it two ways: an always-on minimum structural check (a real read-only XML
 //! parse plus the required-child / namespace / boolean / no-duplicate rules)
 //! and, when `xmllint` is on `PATH`, a full XSD validation against the vendored
 //! schema. A structural defect (a missing required element, an XML-escaping
@@ -23,7 +23,7 @@ use crate::chocolatey::{
 };
 
 /// The NuGet nuspec XML Schema, with the `{0}` namespace placeholders replaced
-/// by the `2015/06` namespace the renderer stamps. Pinned and embedded so the
+/// by the `2015/06` namespace the renderer stamps. Held at a fixed version and embedded so the
 /// `xmllint` layer is fully offline; refresh via `schemas/SOURCES.md`.
 const NUSPEC_XSD: &str = include_str!("../../schemas/chocolatey.nuspec.xsd");
 
@@ -51,11 +51,11 @@ impl PublisherSchemaValidator for ChocolateySchemaValidator {
     ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
         // Chocolatey's community feed is a moderation one-way door: on the strict
-        // pre-publish gate a missing `xmllint` must FAIL the floor, not skip it.
+        // pre-publish gate a missing `xmllint` must FAIL the validation.
         let strict = ctx.render_is_strict();
         let mut findings = Vec::new();
 
-        // Walk exactly the crate set the live chocolatey publisher iterates
+        // Visit exactly the crate set the live chocolatey publisher iterates
         // (honoring `--crate` selection, else every chocolatey-configured
         // crate) so the validated set equals the published set in all config
         // modes.
@@ -116,11 +116,11 @@ impl PublisherSchemaValidator for ChocolateySchemaValidator {
     }
 }
 
-/// The always-on, hermetic structural floor: parse the rendered nuspec with a
+/// The always-on, hermetic minimum structural check: parse the rendered nuspec with a
 /// real read-only XML parser and assert the rules the NuGet schema enforces
 /// that a registry rejection would otherwise be the first to report. Returns
 /// one [`SchemaFinding`] per violation; an empty Vec means the document clears
-/// the floor. Runs with no external tools, so it holds even where `xmllint` is
+/// the check. Runs with no external tools, so it holds even where `xmllint` is
 /// absent.
 pub(crate) fn validate_nuspec_structural(xml: &str) -> Vec<SchemaFinding> {
     let finding = |field: &str, expected: &str| SchemaFinding {
@@ -189,7 +189,7 @@ pub(crate) fn validate_nuspec_structural(xml: &str) -> Vec<SchemaFinding> {
     {
         let value = rla.text().map(str::trim).unwrap_or("");
         // xs:boolean's lexical space is exactly {true, false, 1, 0}; accept all
-        // four so the floor agrees with what `xmllint --schema` admits.
+        // four so the check agrees with what `xmllint --schema` admits.
         if !matches!(value, "true" | "false" | "1" | "0") {
             findings.push(finding(
                 "metadata/requireLicenseAcceptance",
@@ -217,9 +217,9 @@ pub(crate) fn validate_nuspec_structural(xml: &str) -> Vec<SchemaFinding> {
 /// the vendored XSD and the rendered nuspec to a tempdir and run
 /// `xmllint --noout --schema <xsd> <nuspec>`, parsing each
 /// `Schemas validity error` stderr line into a [`SchemaFinding`]. When
-/// `xmllint` is absent and the floor is lenient (local check / dry-run), log a
-/// note and return no findings — the structural floor stands. On the STRICT
-/// pre-publish gate, an absent `xmllint` instead fails the floor: chocolatey is
+/// `xmllint` is absent and the gate is lenient (local check / dry-run), log a
+/// note and return no findings — the minimum structural check stands. On the STRICT
+/// pre-publish gate, an absent `xmllint` instead fails the validation: chocolatey is
 /// a moderation one-way door, so a missing XSD layer there would let a malformed
 /// nuspec reach the irreversible queue unchecked (`tool_required: true`).
 fn validate_nuspec_xmllint(
@@ -237,8 +237,8 @@ fn validate_nuspec_xmllint(
                 ("chocolatey.nuspec.xsd", NUSPEC_XSD),
                 ("package.nuspec", xml),
             ],
-            skip_message: "xmllint not on PATH — relying on the structural nuspec floor \
-                 for schema validation",
+            skip_message: "xmllint not on PATH — relying on the minimum structural check for nuspec \
+                 schema validation",
             empty_fallback: "xmllint reported the nuspec schema-invalid but emitted no parseable validity line",
             tool_required: true,
         },
@@ -423,7 +423,7 @@ mod tests {
     }
 
     /// (a) Single-crate mode: one crate, every option set. The rendered nuspec
-    /// must clear the structural floor with zero findings and put each option
+    /// must pass the minimum structural check with zero findings and put each option
     /// in its schema-expected element.
     #[test]
     fn single_crate_every_option_validates_and_lands_in_fields() {
@@ -719,7 +719,7 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(
             msg.contains("no windows artifact") && msg.contains("chocolatey"),
-            "surfaces the genuine full-build absence, naming chocolatey: {msg}"
+            "reports the genuine full-build absence, naming chocolatey: {msg}"
         );
     }
 
@@ -746,7 +746,7 @@ mod tests {
     }
 
     /// (a) Single-crate mode, derived defaults: `<licenseUrl>` is the
-    /// derived GitHub LICENSE blob URL pinned at the tag (Chocolatey's only
+    /// derived GitHub LICENSE blob URL fixed at the tag (Chocolatey's only
     /// supported license metadata — no `<license>` element, CHCU0002),
     /// `<projectSourceUrl>` is the repo URL, `<bugTrackerUrl>` is
     /// `{repo}/issues` — and NO opensource.org URL is ever synthesized.
@@ -786,7 +786,7 @@ mod tests {
             nuspec.contains(
                 "<licenseUrl>https://github.com/acme/widget/blob/v1.0.0/LICENSE</licenseUrl>"
             ),
-            "licenseUrl must be the derived GitHub blob URL pinned at the tag: {nuspec}"
+            "licenseUrl must be the derived GitHub blob URL fixed at the tag: {nuspec}"
         );
         assert!(
             nuspec.contains("<projectSourceUrl>https://github.com/acme/widget</projectSourceUrl>"),
@@ -800,7 +800,7 @@ mod tests {
 
     /// (c) Workspace per-crate mode, derived defaults: each crate's nuspec
     /// resolves ITS OWN repo + version. alpha's licenseUrl/projectSourceUrl
-    /// must point at acme/alpha (not beta), pinned at alpha's own tag — proving
+    /// must point at acme/alpha (not beta), fixed at alpha's own tag — proving
     /// the derived fields resolve per published crate, not last-writer-wins.
     #[test]
     fn workspace_per_crate_derives_fields_per_crate() {
@@ -978,10 +978,10 @@ mod tests {
         );
     }
 
-    /// The structural floor must BITE: an empty `<authors>` (a required,
-    /// non-empty element per nuspec.xsd) is rejected with a finding naming the
+    /// The minimum structural check reports an empty `<authors>` (a required,
+    /// non-empty element per nuspec.xsd) with a finding naming the
     /// field. The corrected document produces zero findings, proving the test
-    /// bites rather than always-failing.
+    /// catches the defect instead of always failing.
     #[test]
     fn empty_required_element_is_reported_and_fix_clears_it() {
         let broken = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -1031,7 +1031,7 @@ mod tests {
     }
 
     /// A wrong-typed `<requireLicenseAcceptance>` (an `xs:boolean` set to a
-    /// non-boolean) bites the structural floor.
+    /// non-boolean) fails the minimum structural check.
     #[test]
     fn non_boolean_require_license_acceptance_is_reported() {
         let broken = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -1054,7 +1054,7 @@ mod tests {
         );
 
         // The full xs:boolean lexical space is {true, false, 1, 0}; each must
-        // clear the floor so it agrees with what the XSD admits.
+        // pass the check so it agrees with what the XSD admits.
         for boolean in ["true", "false", "1", "0"] {
             let ok = broken.replace(
                 "<requireLicenseAcceptance>yes</requireLicenseAcceptance>",
@@ -1065,7 +1065,7 @@ mod tests {
                 !ok_findings
                     .iter()
                     .any(|f| f.field == "metadata/requireLicenseAcceptance"),
-                "xs:boolean value '{boolean}' must clear the floor, got: {ok_findings:?}"
+                "xs:boolean value '{boolean}' must pass the minimum structural check, got: {ok_findings:?}"
             );
         }
     }
@@ -1157,9 +1157,9 @@ mod tests {
         );
     }
 
-    /// The XSD layer must BITE: a nuspec carrying an element the schema does not
+    /// The XSD layer catches a defect: a nuspec carrying an element the schema does not
     /// define (`<notAThing>`) must produce a finding from `xmllint --schema`,
-    /// proving the full-XSD pass catches what the structural floor does not.
+    /// proving the full-XSD pass catches what the minimum structural check does not.
     /// Skipped (with a visible marker) when `xmllint` is not on `PATH`.
     #[test]
     fn xmllint_rejects_unknown_element() {

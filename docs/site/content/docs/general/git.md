@@ -7,15 +7,15 @@ template = "docs.html"
 
 Anodizer detects the current version from git tags. The `git` section lets you control how tags are sorted and which tags are considered.
 
-## Git version floor
+## Minimum git version
 
 Anodizer shells out to the `git` on `PATH` and needs **git 2.13 or newer**.
-The floor comes from previous-tag discovery: when a crate's tag family has a
+The minimum comes from previous-tag discovery: when a crate's tag family has a
 nested sibling track (a bare `v*` family next to a `vault-v*` one), the
 search runs `git describe --match '<family>*' --exclude '<sibling>*'`, and
 `--exclude` first shipped in git 2.13. `anodizer healthcheck` compares the
-probed `git --version` against that floor and marks an older git `✗ ... —
-below the 2.13 floor`; a run that skips the healthcheck meets the floor later
+probed `git --version` against that minimum and marks an older git `✗ ... —
+below the minimum 2.13`; a run that skips the healthcheck meets the minimum later
 as a failed `git describe` (`error: unknown option 'exclude'`) the first time
 a multi-track repo searches for a previous tag.
 
@@ -44,8 +44,8 @@ git:
 
 Four sort modes are accepted:
 
-| Value | Sort surface | When to use |
-|-------|--------------|-------------|
+| Value | Sort method | When to use |
+|-------|-------------|-------------|
 | `-version:refname` (default) | git-delegated lexicographic version sort | The default |
 | `-version:creatordate` | git-delegated by tag creation date, newest first | When tags are created out of version order and creation order is the source of truth |
 | `semver` | Rust-side strict SemVer 2.0.0 sort | When you want pure-spec ordering with no shell-out; prereleases sort below their release per section 11 |

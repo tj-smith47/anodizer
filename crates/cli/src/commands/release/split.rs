@@ -74,7 +74,7 @@ pub struct SplitArtifact {
 /// will not run anything that the previous step already did"). With
 /// `HashMap`, key iteration order is randomized per-process and the
 /// resulting `context.json` would drift across re-runs even when the
-/// shard inputs (git HEAD, env, timestamps) are pinned.
+/// shard inputs (git HEAD, env, timestamps) are fixed.
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct SplitContext {
     /// The `dist/` subdirectory this shard wrote (its resolved partial

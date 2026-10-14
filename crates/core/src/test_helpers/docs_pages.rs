@@ -236,7 +236,7 @@ mod tests {
                 found.push(format!("{relative}:{}: {code}", at + 1));
             }
         }
-        assert!(sources.len() > 100, "the walk reads the workspace");
+        assert!(sources.len() > 100, "the scan reads the workspace");
         assert!(
             found.is_empty(),
             "read these docs pages through `read_docs_page`:\n{}",

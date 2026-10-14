@@ -546,18 +546,13 @@ mod tests {
     /// | `configured_build_targets` (`env_preflight.rs`) | hands the field to the shared `entry_inactive` predicate |
     #[test]
     fn every_build_skip_read_belongs_to_a_named_owner() {
-        use crate::test_helpers::test_sources::{
-            function_bodies, production_half, workspace_production_sources,
-        };
+        use crate::test_helpers::test_sources::production_corpus;
 
         const OWNERS: &[&str] = &["try_build_is_skipped", "configured_build_targets"];
 
-        let sources = workspace_production_sources();
-
         let mut strays: Vec<String> = Vec::new();
-        for source in &sources {
-            let text = std::fs::read_to_string(source).expect("read source");
-            for body in function_bodies(production_half(&text)) {
+        for source in production_corpus() {
+            for body in &source.bodies {
                 // Whitespace around `.` is erased so a receiver split across
                 // lines reads the same as one written inline.
                 let flat = body
@@ -577,7 +572,7 @@ mod tests {
                     .unwrap_or("<unnamed>")
                     .to_string();
                 if !OWNERS.contains(&name.as_str()) {
-                    strays.push(format!("{}: {name}", source.display()));
+                    strays.push(format!("{}: {name}", source.path.display()));
                 }
             }
         }
@@ -597,16 +592,11 @@ mod tests {
     /// names the entry in its own error context, so there is nothing to share.
     #[test]
     fn the_context_skip_adapter_is_spelled_once() {
-        use crate::test_helpers::test_sources::{
-            function_bodies, production_half, workspace_production_sources,
-        };
-
-        let sources = workspace_production_sources();
+        use crate::test_helpers::test_sources::production_corpus;
 
         let mut strays: Vec<String> = Vec::new();
-        for source in &sources {
-            let text = std::fs::read_to_string(source).expect("read source");
-            for body in function_bodies(production_half(&text)) {
+        for source in production_corpus() {
+            for body in &source.bodies {
                 // `try_build_is_skipped` is the STRICT gate: each caller
                 // wraps it in its own error context, so it has no single
                 // context adapter and its call sites are not strays.
@@ -623,7 +613,7 @@ mod tests {
                     .unwrap_or("<unnamed>")
                     .to_string();
                 if name != "skipped_in" {
-                    strays.push(format!("{}: {name}", source.display()));
+                    strays.push(format!("{}: {name}", source.path.display()));
                 }
             }
         }

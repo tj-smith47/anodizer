@@ -393,7 +393,7 @@ fn warn_tag_override_divergence(
 /// ran after the release left the tag and every asset live with no registry
 /// published.
 ///
-/// Walks the same crates, in the same order, that the release stage releases.
+/// Visits the same crates, in the same order, that the release stage releases.
 /// `ensure_release_url` leaves an already-set value alone, so the first crate
 /// that resolves a repo names the URL, exactly as the stage's own loop does,
 /// and the stage's authoritative post-create URL still overwrites this one.
@@ -1278,7 +1278,7 @@ mod tests {
 
     #[test]
     fn resolve_release_flags_rolling_nightly_tag_permits_replacing_assets() {
-        // A pinned nightly.tag_name re-creates the release on the same tag
+        // A fixed nightly.tag_name re-creates the release on the same tag
         // every run, so the second run always meets the first run's assets.
         let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
         ctx.options.nightly = true;
@@ -1307,7 +1307,7 @@ mod tests {
 
     #[test]
     fn resolve_release_flags_nightly_without_tag_name_keeps_assets_protected() {
-        // Without a pinned tag each run cuts its own tag, so an existing
+        // Without a fixed tag each run cuts its own tag, so an existing
         // release with assets really is debris and must still stop the run.
         let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
         ctx.options.nightly = true;
@@ -1317,7 +1317,7 @@ mod tests {
             .expect("resolve_release_flags returns Ok");
         assert!(
             !flags.replace_existing_artifacts,
-            "a nightly with no pinned tag must leave replace_existing_artifacts off"
+            "a nightly with no fixed tag must leave replace_existing_artifacts off"
         );
     }
 

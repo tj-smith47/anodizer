@@ -11,7 +11,7 @@
 //! that pair per binary-AUR crate, per source-AUR crate, and per top-level
 //! `aur_sources:` entry; this validator renders the exact artifacts a live
 //! publish would push — via the same render path — and checks them two ways: an
-//! always-on structural floor (pure-Rust line scanning) and, when `bash` is on
+//! always-on minimum structural check (pure-Rust line scanning) and, when `bash` is on
 //! `PATH`, a real `bash -n` syntax check of the PKGBUILD. A structural defect (a
 //! missing required variable, an unbalanced template that produced broken Bash)
 //! shows up in the emission-validate pass, before a pushed PKGBUILD can fail
@@ -52,11 +52,11 @@ impl PublisherSchemaValidator for AurSchemaValidator {
         let mut findings = Vec::new();
         // Every rendered entry claims its package name on its push remote
         // here; several claims on one pair are reported after all three
-        // walks, so each entry is still rendered and validated on its own
+        // scans, so each entry is still rendered and validated on its own
         // before the group is named.
         let mut claimed: Vec<AurClaim> = Vec::new();
 
-        // BINARY AUR (`publish.aur`). Walk exactly the crate set the live
+        // BINARY AUR (`publish.aur`). Visit exactly the crate set the live
         // binary-AUR publisher iterates (honoring `--crate` selection, else
         // every aur-configured crate) so the validated set equals the
         // published set in all config modes.
@@ -187,7 +187,7 @@ impl PublisherSchemaValidator for AurSchemaValidator {
     }
 }
 
-/// Run both layers (structural floor + `bash -n`) over one rendered
+/// Run both layers (minimum structural check + `bash -n`) over one rendered
 /// PKGBUILD/.SRCINFO pair, appending each finding to `findings`.
 fn validate_rendered(
     findings: &mut Vec<SchemaFinding>,
@@ -313,10 +313,10 @@ const CHECKSUM_PREFIXES: &[&str] = &[
     "cksums",
 ];
 
-/// The always-on, hermetic structural floor for a rendered PKGBUILD: scan for
+/// The always-on, hermetic minimum structural check for a rendered PKGBUILD: scan for
 /// the variables and the `package()` function `makepkg` HARD-requires, and
 /// report one [`SchemaFinding`] per missing one. An empty Vec means the script
-/// clears the floor. Runs with no external tools, so it holds even where `bash`
+/// passes the check. Runs with no external tools, so it holds even where `bash`
 /// is absent.
 ///
 /// The rendered output is template-controlled, so targeted line scanning is
@@ -400,7 +400,7 @@ pub(crate) fn validate_pkgbuild_structural(text: &str) -> Vec<SchemaFinding> {
 /// keys tab-indented).
 const REQUIRED_SRCINFO_KEYS: &[&str] = &["pkgbase", "pkgname", "pkgver", "pkgrel", "arch"];
 
-/// The always-on, hermetic structural floor for a rendered `.SRCINFO`: assert
+/// The always-on, hermetic minimum structural check for a rendered `.SRCINFO`: assert
 /// each AUR-required identity key is present as a `<key> = …` assignment.
 /// Returns one [`SchemaFinding`] per missing key. Lenient about optional keys
 /// (`url` / `license` / `depends` / … are optional) — requiring them would
@@ -430,7 +430,7 @@ pub(crate) fn validate_srcinfo_structural(text: &str) -> Vec<SchemaFinding> {
 /// in the generated PKGBUILD — parse each `<file>: line N: <message>` stderr
 /// line into a [`SchemaFinding`]. A non-zero exit with no parseable line still
 /// yields a `(root)` finding (never silent-pass). When `bash` is absent, log a
-/// visible skip marker and return no findings — the structural floor stands; a
+/// visible skip marker and return no findings — the minimum structural check stands; a
 /// missing tool is never a manifest defect.
 fn validate_pkgbuild_syntax(
     pkgbuild: &str,
@@ -443,7 +443,7 @@ fn validate_pkgbuild_syntax(
             tool: "bash",
             flags: &["-n"],
             files: &[("PKGBUILD", pkgbuild)],
-            skip_message: "bash not on PATH — relying on the structural PKGBUILD floor for \
+            skip_message: "bash not on PATH — relying on the minimum structural check for PKGBUILD \
                  syntax validation",
             empty_fallback: "bash -n reported the generated PKGBUILD invalid but emitted no parseable diagnostic",
             // An AUR push is a force-push (reversible), not a moderation queue —
@@ -640,7 +640,7 @@ mod tests {
     }
 
     /// (a) Single-crate mode, BINARY AUR: one crate, every option set. The
-    /// rendered PKGBUILD + .SRCINFO must clear both structural floors with zero
+    /// rendered PKGBUILD + .SRCINFO must pass both structural checks with zero
     /// findings and stamp the key fields a release ships.
     #[test]
     fn single_crate_binary_every_option_validates_and_lands_in_fields() {
@@ -709,7 +709,7 @@ mod tests {
     }
 
     /// (a) Single-crate mode, SOURCE AUR: one crate, every option set. The
-    /// rendered source PKGBUILD + .SRCINFO must clear both floors and stamp the
+    /// rendered source PKGBUILD + .SRCINFO must pass both structural checks and stamp the
     /// key fields.
     #[test]
     fn single_crate_source_every_option_validates_and_lands_in_fields() {
@@ -1059,7 +1059,7 @@ mod tests {
             .expect_err("a full build with binary AUR configured but no linux archive must error");
         assert!(
             format!("{err:#}").contains("no linux archives matched"),
-            "surfaces the genuine full-build absence: {err:#}"
+            "reports the genuine full-build absence: {err:#}"
         );
     }
 
@@ -1103,7 +1103,7 @@ mod tests {
         );
         assert!(
             result.is_err(),
-            "a matched-but-broken (missing sha256) archive must surface as an error, \
+            "a matched-but-broken (missing sha256) archive must be returned as an error, \
              not a silent skip; got: {result:?}"
         );
     }
@@ -1250,8 +1250,8 @@ mod tests {
         );
     }
 
-    /// The PKGBUILD structural floor must BITE: a script missing `package()` is
-    /// reported, and the corrected script produces zero findings.
+    /// The minimum structural check reports a PKGBUILD missing `package()`,
+    /// and the corrected script produces zero findings.
     #[test]
     fn pkgbuild_missing_package_fn_is_reported_and_fix_clears_it() {
         let broken = "pkgname='widget'\npkgver=1.0.0\npkgrel=1\narch=('x86_64')\nsource=(\"x.tar.gz\")\nsha256sums=('abc')\n";
@@ -1269,7 +1269,7 @@ mod tests {
         );
     }
 
-    /// The PKGBUILD structural floor must BITE on a missing checksum array.
+    /// The minimum structural check reports a PKGBUILD missing its checksum array.
     #[test]
     fn pkgbuild_missing_checksum_is_reported() {
         let broken = "pkgname='widget'\npkgver=1.0.0\npkgrel=1\narch=('x86_64')\nsource=(\"x.tar.gz\")\npackage() {\n  true\n}\n";
@@ -1280,8 +1280,8 @@ mod tests {
         );
     }
 
-    /// The .SRCINFO structural floor must BITE: a metadata file missing `pkgver`
-    /// is reported, and the corrected file produces zero findings.
+    /// The minimum structural check reports a `.SRCINFO` metadata file missing `pkgver`,
+    /// and the corrected file produces zero findings.
     #[test]
     fn srcinfo_missing_pkgver_is_reported_and_fix_clears_it() {
         let broken = "pkgbase = widget\n\tpkgrel = 1\n\tarch = x86_64\npkgname = widget\n";
@@ -1381,7 +1381,7 @@ mod tests {
         );
     }
 
-    /// The `bash -n` layer must BITE: a syntactically-broken PKGBUILD (an
+    /// The `bash -n` layer catches a syntactically-broken PKGBUILD (an
     /// unclosed function brace) must produce a finding from the real `bash -n`.
     /// Skipped (with a visible marker) when `bash` is not on `PATH`.
     #[test]

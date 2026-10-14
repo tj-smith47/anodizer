@@ -8,7 +8,7 @@
 
 /// The built-in Gitea instance — used when `gitea_urls.api` / `.download` are
 /// unset. Named once so the default cannot drift between the two fields and
-/// the tests that pin them.
+/// the tests that hold them.
 pub const DEFAULT_GITEA_INSTANCE: &str = "https://gitea.com";
 
 /// The Gitea instance root behind a configured `gitea_urls.api`.

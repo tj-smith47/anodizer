@@ -475,8 +475,8 @@ pub fn dispatch(
             // `--skip cargo,chocolatey,winget`-style run that deselects
             // every Submitter publisher must never pay for a live network
             // round-trip that would gate nothing, and an
-            // operator-deselected publisher must record `Skipped(Deselected)`
-            // — not `Skipped(VerifyGateBlocked)` — even when a sibling
+            // operator-deselected publisher must record `Skipped(Deselected)`,
+            // even when a sibling
             // publisher already tripped the gate (the deselect check above
             // always runs first). Evaluation is shared with
             // `SnapcraftPublishStage` — which runs as its own pipeline stage
@@ -530,7 +530,7 @@ pub fn dispatch(
                     None,
                 )
             } else {
-                // Drain any stale override / partial evidence before
+                // Clear any stale override / partial evidence before
                 // invoking `run` so a prior publisher cannot bleed its
                 // outcome or evidence forward.
                 let _ = ctx.take_pending_outcome();
@@ -861,7 +861,7 @@ mod tests {
             false,
         )];
         let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
-            .expect("dispatch does not surface the fake's run() error");
+            .expect("dispatch does not return the fake's run() error");
         assert_eq!(report.results.len(), 1);
         assert_eq!(report.results[0].name, "inert");
         assert!(matches!(
@@ -885,7 +885,7 @@ mod tests {
             false,
         )];
         let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
-            .expect("dispatch does not surface the fake's run() error");
+            .expect("dispatch does not return the fake's run() error");
         assert_eq!(report.results.len(), 1);
         assert!(
             matches!(
@@ -1058,7 +1058,7 @@ mod tests {
         // (Submitter, required) fails; the later irreversible submitter
         // (winget) must be skipped via the gate, NOT run against a release
         // whose required cargo publish already broke. fail_fast stays false
-        // (the default) so the gate — not fail-fast — is what stops winget.
+        // (the default) so the gate is what stops winget.
         let mut ctx = Context::test_fixture();
         let publishers = vec![
             fake(
@@ -1188,7 +1188,7 @@ mod tests {
         // F1 regression: the one-way-door gate must cover the Manager group,
         // not just Submitter. A required blob (Assets) upload failure recorded
         // before dispatch must SKIP homebrew/scoop/nix/aur/mcp (Manager,
-        // one-way doors) — not fire them and rely on a best-effort rollback.
+        // one-way doors) instead of firing them and relying on a best-effort rollback.
         // Before the fix the gate was scoped to `group == Submitter`, so these
         // Manager doors published against an incomplete release: the live
         // v0.13.1 incident where blob failed yet the homebrew tap push and MCP
@@ -1364,7 +1364,7 @@ mod tests {
         // for the current run, so a required-Submitter failure while scoped
         // to one crate gates the remaining irreversible submitters in THAT
         // run — and a separate, clean run for a different crate is unaffected
-        // (fresh report ⇒ open gate). This pins the recurring per-crate-mode
+        // (fresh report ⇒ open gate). This tests the recurring per-crate-mode
         // failure family: the gate must never bleed state across crate runs.
         let mut ctx = Context::test_fixture();
         ctx.options.selected_crates = vec!["cfgd-core".to_string()];
@@ -1756,7 +1756,7 @@ mod tests {
             Some("https://crates.io/crates/crate-a/1.0.0"),
             "the partial evidence (crate-a) must survive into the report row"
         );
-        // The slot is single-shot — drained by the recovery.
+        // The slot is single-shot — emptied by the recovery.
         assert!(
             ctx.take_pending_evidence().is_none(),
             "pending evidence must be consumed, not left to bleed forward"
@@ -1767,7 +1767,7 @@ mod tests {
     fn dispatch_drains_stale_override_between_publishers() {
         // The override slot is single-shot: an earlier publisher's
         // override must not bleed into a later publisher whose `run`
-        // recorded nothing. Without the slot drain at the top of every
+        // recorded nothing. Without clearing the slot at the top of every
         // `run` invocation, a chocolatey moderation skip would
         // contaminate the next publisher's row.
         let mut ctx = Context::test_fixture();
@@ -1816,7 +1816,7 @@ mod tests {
         // normally (brew is ordered first so the one-way-door gate is still
         // open when it dispatches) — keeping this test focused on the
         // substitution mechanic, not the gate (whose Manager coverage is
-        // pinned by `required_manager_failure_gates_later_manager_oneway_door`).
+        // tested by `required_manager_failure_gates_later_manager_oneway_door`).
         let mut ctx = Context::test_fixture();
         ctx.options.simulate_failure_publishers = vec!["cargo".to_string()];
         let publishers = vec![
@@ -2896,13 +2896,13 @@ mod tests {
         dispatch(&[p], &mut ctx, &DispatchOptions::default()).expect("Ok");
 
         let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 3, "every seam must have been reached");
-        let first = seen[0].expect("the dispatch seam must install a budget");
+        assert_eq!(seen.len(), 3, "every call site must have been reached");
+        let first = seen[0].expect("the dispatch call site must install a budget");
         for (i, observed) in seen.iter().enumerate() {
             assert_eq!(
                 *observed,
                 Some(first),
-                "seam {i} observed a different deadline — something re-anchored inside the publisher"
+                "call site {i} observed a different deadline — something re-anchored inside the publisher"
             );
         }
     }
@@ -2929,7 +2929,11 @@ mod tests {
         crate::rollback::execute_rollback_step(&row, &evidence, &publishers, &[], &mut ctx, "", "");
 
         let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 4, "three run seams plus the rollback seam");
+        assert_eq!(
+            seen.len(),
+            4,
+            "three run call sites plus the rollback call site"
+        );
         let publish = seen[0].expect("publish anchors");
         let rollback = seen[3].expect("rollback anchors");
         assert!(

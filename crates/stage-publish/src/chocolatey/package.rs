@@ -71,7 +71,7 @@ pub(super) fn create_nupkg(
     zip.start_file(&nuspec_filename, options)?;
     zip.write_all(&nuspec_content)?;
 
-    // tools/** — walk the tools directory and add all files
+    // tools/** — scan the tools directory and add all files
     if tools_dir.exists() {
         for entry in walkdir(tools_dir)? {
             let rel_path = entry
@@ -658,7 +658,7 @@ mod tests {
         assert!(msg.contains("403"), "error must mention 403: {msg}");
         assert!(
             msg.contains("credentials that you supplied") || msg.contains("Access is denied"),
-            "error must surface the registry's own message: {msg}"
+            "error must carry the registry's own message: {msg}"
         );
         assert!(
             !msg.to_ascii_lowercase().contains("edge challenge"),

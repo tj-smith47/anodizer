@@ -935,7 +935,7 @@ mod binary_sign_asset_name_tests {
     /// one command and not the other. What this holds is the `ProjectName`
     /// rebinding alone: the multi-crate default template renders the same
     /// string as the single-crate one, so the template half of the decision
-    /// is held by the structural pin in `tests.rs` instead.
+    /// is checked by the structural test in `tests.rs`.
     #[test]
     fn the_base_is_stable_when_an_artifact_only_sibling_crate_has_nothing_registered_yet() {
         let run = |register_sibling_archive: bool| {

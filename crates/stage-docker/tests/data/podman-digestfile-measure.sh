@@ -13,7 +13,7 @@
 # on 127.0.0.1:5000; both containers, and any image this script pulled, are
 # removed on exit.
 #
-# Run it by hand when the transcript needs regenerating — nothing runs it
+# Run it by hand when the transcript needs regenerating; nothing runs it
 # automatically. It needs docker, root-equivalent privilege, a free port 5000
 # and docker's data root under 80% full, and it is Linux-only: rootful podman
 # inside a container needs `--privileged`, and `--network host` is what lets

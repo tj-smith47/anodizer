@@ -209,7 +209,7 @@ mod tests {
             &log(),
             "cargo",
         )
-        .expect_err("a wedged mint endpoint must surface an error");
+        .expect_err("a wedged token-exchange endpoint must return an error");
         let chain = format!("{err:#}");
         assert!(
             chain.contains("cargo: POST") && chain.contains("503"),
@@ -245,7 +245,7 @@ mod tests {
             &log(),
             "pypi",
         )
-        .expect_err("a wedged mint endpoint must surface an error");
+        .expect_err("a wedged token-exchange endpoint must return an error");
         let chain = format!("{err:#}");
         assert!(chain.contains("pypi: POST"), "{chain}");
         assert_eq!(

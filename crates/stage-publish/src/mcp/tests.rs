@@ -907,7 +907,7 @@ fn truncate_response_snippet_steps_back_to_utf8_char_boundary() {
     // backward to a boundary. The snippet must be valid UTF-8 (the
     // `format!` formatter would panic on a slice through a multi-byte
     // char), strictly shorter than the cap, and end on a clean
-    // codepoint — not mid-sequence.
+    // codepoint.
     let mut body = "a".repeat(MAX_RESPONSE_SNIPPET_BYTES - 2);
     // U+1F600 GRINNING FACE is 4 bytes in UTF-8. With 510 leading 'a's
     // the char straddles bytes 510..514, so a 512-byte cut ends up inside

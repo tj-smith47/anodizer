@@ -313,7 +313,7 @@ fn detect_missing_files_in_errors_on_absent_absolute_path() {
     );
     assert!(
         msg.contains("preserved dist is incomplete"),
-        "error must surface the incomplete-dist hypothesis; got: {msg}"
+        "error must name the incomplete-dist hypothesis; got: {msg}"
     );
 }
 
@@ -346,7 +346,7 @@ fn detect_missing_files_in_ignores_files_not_in_manifest() {
 
 // hash_verify_preserved_dist
 
-/// `sha256("hello world")` — pinned literal so the matching-bytes
+/// `sha256("hello world")` — fixed literal so the matching-bytes
 /// test doesn't recompute the hash via the very function under test.
 const HELLO_WORLD_SHA256: &str = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
 
@@ -386,7 +386,7 @@ fn hash_verify_preserved_dist_rejects_mismatched_bytes() {
     let msg = format!("{err:#}");
     assert!(
         msg.contains("diverge"),
-        "error must surface the divergence wording; got: {msg}"
+        "error must include the divergence wording; got: {msg}"
     );
     assert!(
         msg.contains(rel),
@@ -528,7 +528,7 @@ fn hash_verify_preserved_dist_bails_when_no_shard_matches_disk() {
     let msg = format!("{err:#}");
     assert!(
         msg.contains("recorded across 2 shards"),
-        "error must surface the shard count; got: {msg}"
+        "error must name the shard count; got: {msg}"
     );
     assert!(
         msg.contains("source.tar.gz"),
@@ -552,7 +552,7 @@ fn hash_verify_preserved_dist_rejects_missing_file() {
     let msg = format!("{err:#}");
     assert!(
         msg.contains("hashing preserved artifact"),
-        "error must surface the hash-failure wording; got: {msg}"
+        "error must include the hash-failure wording; got: {msg}"
     );
     assert!(
         msg.contains("absent.tar.gz"),
@@ -966,7 +966,7 @@ fn preserved_dist_ctx(config: &anodizer_core::config::Config) -> anodizer_core::
 /// preserved-context discovery — AFTER its loop-top reset. A reset
 /// hoisted above the loop would clear only the pre-seeded outer
 /// state and leave iteration 1's outcome behind, failing the final
-/// asserts — this pins the per-iteration placement, not just
+/// asserts — this tests the per-iteration placement, not just
 /// outer-stale clearing.
 #[test]
 #[serial_test::serial(cwd)]
@@ -1070,7 +1070,7 @@ fn run_per_crate_pipeline_marks_publish_attempted() {
 /// root `after:` hook ran N times for N crates, which nothing in the config
 /// fields announce.
 ///
-/// Pinned in all three config modes, each through its real dispatch path:
+/// Tested in all three config modes, each through its real dispatch path:
 /// single-crate takes the flat-dist `run`, and both workspace modes take
 /// `run_per_crate` over two seeded crate subdirs (the only shape that can
 /// multiply the lane). The hook appends one line per firing, so the
@@ -1539,7 +1539,7 @@ mod per_crate_tag {
     /// crate templates `v{{ Version }}` → `v0.4.0`; cfgd-core
     /// templates `core-v{{ Version }}` → `core-v0.4.0`. Without the
     /// restore, both inherit whichever tag `resolve_git_context`
-    /// pinned once at HEAD.
+    /// resolved once at HEAD.
     #[test]
     #[serial(cwd)]
     fn restores_per_crate_tag_from_tag_template() {
@@ -2186,16 +2186,16 @@ fn raw_string_start(chars: &[char], index: usize) -> Option<(usize, usize)> {
     (chars.get(cursor) == Some(&'"')).then_some((cursor, hashes))
 }
 
-/// A function body reduced to the text a structural walk may read: the
+/// A function body reduced to the text a structural scan may read: the
 /// signature dropped at the opening brace, `//` and `/* */` comment text
 /// removed, string-literal content emptied, and char literals dropped.
 ///
 /// Dropping one LINE would keep a wrapped signature's parameters, and a
 /// comment or a literal holding the word being searched for is prose, not a
 /// use of the binding. A `'"'` read as the start of a string would swallow
-/// the rest of the body and leave the walk passing over nothing.
+/// the rest of the body and leave the scan passing over nothing.
 ///
-/// Newlines inside a literal or a block comment are kept, so a line the walk
+/// Newlines inside a literal or a block comment are kept, so a line the scan
 /// reports is the line the reader opens — a line continuation (`\` then a
 /// newline) included.
 fn scannable_code(body: &str) -> String {
@@ -2306,7 +2306,7 @@ fn scannable_code(body: &str) -> String {
 /// An allowlist rather than a list of rebinding spellings: a mutation handed
 /// to a helper (`apply_env_overlay(config, ws)`) carries no `&mut` token and
 /// no `= config;`, so only "always followed by `.`" catches every way the
-/// binding can leave the walk's sight.
+/// binding can leave the scan's sight.
 fn every_config_use_names_a_field(body: &str) -> Result<(), String> {
     let body = scannable_code(body);
     let body = body.as_str();
@@ -2398,7 +2398,7 @@ fn a_config_handed_to_a_helper_fails_the_overlay_walk() {
     ] {
         assert!(
             every_config_use_names_a_field(rejected).is_err(),
-            "the walk must refuse: {rejected}"
+            "the scan must refuse: {rejected}"
         );
     }
 }
@@ -2411,11 +2411,11 @@ fn a_config_handed_to_a_helper_fails_the_overlay_walk() {
 /// iterations until someone remembers the rewind. `filled_from_defaults`
 /// did exactly that.
 ///
-/// The walk reads `config.<field>` text, which cannot tell a read from a
+/// The scan reads `config.<field>` text, which cannot tell a read from a
 /// write: a plain `if config.dist.is_some()` in the overlay would demand a
 /// restore entry it does not need. Add the field to `restore_into` or spell
 /// the read through a local — never a bogus restore. A mutation reached any
-/// other way is invisible to the walk, so the overlay is held to naming a
+/// other way is invisible to the scan, so the overlay is held to naming a
 /// field on every use of the binding ([`every_config_use_names_a_field`]).
 #[test]
 fn every_overlay_mutation_is_rewound_by_the_guard() {
@@ -2453,12 +2453,12 @@ fn every_overlay_mutation_is_rewound_by_the_guard() {
     assert_eq!(
         mutated.len(),
         9,
-        "the overlay touches a different set of fields than the walk expects: \
+        "the overlay touches a different set of fields than the scan expects: \
          {mutated:?}"
     );
     if let Err(line) = every_config_use_names_a_field(&overlay) {
         panic!(
-            "`apply_workspace_overlay` hands the config somewhere this walk \
+            "`apply_workspace_overlay` hands the config somewhere this scan \
              cannot read — spell every mutation `config.<field>`: {line}"
         );
     }

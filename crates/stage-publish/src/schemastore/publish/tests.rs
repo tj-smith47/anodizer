@@ -1051,7 +1051,7 @@ fn sync_to_upstream_propagates_fetch_error_in_a_non_repo_dir() {
     let not_a_repo = tempfile::tempdir().expect("scratch dir");
 
     let err = sync_to_upstream(not_a_repo.path(), &quiet_log())
-        .expect_err("git fetch in a non-repo dir must surface as an error");
+        .expect_err("git fetch in a non-repo dir must return an error");
     assert!(
         err.to_string().contains("git fetch upstream"),
         "expected the fetch-upstream failure context (the `?`-propagated \
@@ -1481,7 +1481,7 @@ fn run_publish_propagates_malformed_if_render_error() {
         schemas: vec![entry],
         ..Default::default()
     };
-    let err = run_publish(&mut ctx).expect_err("malformed `if:` must surface as Err");
+    let err = run_publish(&mut ctx).expect_err("malformed `if:` must return Err");
     let chain = format!("{err:#}");
     assert!(
         chain.contains("if") || chain.contains("template") || chain.contains("render"),
@@ -1688,13 +1688,13 @@ fn fetch_raw_optional_errors_on_non_404_non_success() {
     let err = fetch_raw_optional(&http_client(), &url).expect_err("500 must error");
     assert!(
         err.to_string().contains("500"),
-        "non-404 non-success must surface the status; got {err}"
+        "non-404 non-success must name the status; got {err}"
     );
 }
 
 // probe request budget (HTTP-mock, local TCP)
 
-/// The catalog route every probe pin needs, answering with a catalog that
+/// The catalog route every probe test needs, answering with a catalog that
 /// already holds the external entry so the probe resolves NoOp.
 fn probe_catalog_route(body: &'static str) -> ScriptedRoute {
     ScriptedRoute {

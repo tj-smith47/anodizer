@@ -204,7 +204,7 @@ mod tests {
 
     // The strategy-detector core is reused, so its host/target routing is the
     // contract under test here. On a non-linux-gnu host the Auto cases would
-    // route differently; pin the host the assertions assume.
+    // route differently; check the host the assertions assume.
     fn host_is_x86_64_linux_gnu() -> bool {
         anodizer_core::partial::detect_host_target()
             .as_deref()

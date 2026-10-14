@@ -101,7 +101,7 @@ mod tests {
     #[test]
     fn product_code_uses_upgradecode_namespace() {
         // The derivation namespace IS the .wxs UpgradeCode GUID. Recomputing the
-        // UUIDv5 against a literal-parsed copy of that GUID must match, pinning
+        // UUIDv5 against a literal-parsed copy of that GUID must match, checking
         // the documented relationship between the two constants.
         let ns = Uuid::parse_str("6f3a2b1c-0d4e-5a6b-7c8d-9e0f1a2b3c4d").unwrap();
         let key = format!("anodizer\0{}\0x64", "1.0.0");

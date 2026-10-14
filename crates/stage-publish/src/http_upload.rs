@@ -1,6 +1,6 @@
 //! Shared helpers for HTTP-based publishers (Artifactory + generic uploads).
 //!
-//! Both publishers walk the same per-entry credential cascade
+//! Both publishers follow the same per-entry credential cascade
 //! (config → env), the same mTLS pair-check, and the same anonymous-upload
 //! refusal pattern. The patterns used to be open-coded twice; this module
 //! is the single source of truth so a fix in one place reaches both.
@@ -223,9 +223,9 @@ pub(crate) fn upload_artifact_set(
     log: &StageLogger,
     mut rewrite_url: impl FnMut(&str, &Artifact) -> Result<String>,
 ) -> Result<UploadEntryCounts> {
-    // Idempotent uploads keep a transient-error retry floor even when a
+    // Idempotent uploads keep a transient-error retry minimum even when a
     // stateful mode (`--publish-only`) resolves `max_attempts` to 1.
-    let policy = policy.with_idempotent_floor();
+    let policy = policy.with_idempotent_minimum();
     let deadline = ctx.retry_deadline();
 
     // Render every target URL AND custom-header set serially: both touch the
@@ -310,31 +310,31 @@ mod tests {
     use anodizer_core::retry::{IDEMPOTENT_PUT_ATTEMPTS, RetryPolicy};
     use std::time::Duration;
 
-    /// The HTTP-upload set applies the shared idempotent floor to its resolved
-    /// policy (`upload_artifact_set` calls `policy.with_idempotent_floor()`).
-    /// A `--publish-only`-shaped `attempts: 1` is raised to the floor; an
-    /// operator cap above the floor is preserved. Fails if the floor reverts.
+    /// The HTTP-upload set applies the shared idempotent minimum to its resolved
+    /// policy (`upload_artifact_set` calls `policy.with_idempotent_minimum()`).
+    /// A `--publish-only`-shaped `attempts: 1` is raised to the minimum; an
+    /// operator cap above the minimum is preserved. Fails if the minimum reverts.
     #[test]
-    fn idempotent_floor_raises_single_attempt_preserves_higher() {
+    fn idempotent_minimum_raises_single_attempt_preserves_higher() {
         let base = RetryPolicy {
             max_attempts: 1,
             base_delay: Duration::from_millis(1),
             max_delay: Duration::from_millis(1),
         };
         assert_eq!(
-            base.with_idempotent_floor().max_attempts,
+            base.with_idempotent_minimum().max_attempts,
             IDEMPOTENT_PUT_ATTEMPTS,
-            "a single-attempt upload policy must be floored to the idempotent minimum"
+            "a single-attempt upload policy must be raised to the idempotent minimum"
         );
         assert_eq!(
             RetryPolicy {
                 max_attempts: 7,
                 ..base
             }
-            .with_idempotent_floor()
+            .with_idempotent_minimum()
             .max_attempts,
             7,
-            "an operator cap above the floor must be preserved, not lowered"
+            "an operator cap above the minimum must be preserved"
         );
     }
 }

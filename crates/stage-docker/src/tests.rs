@@ -2161,7 +2161,7 @@ fn dockerfile_template_renders_to_empty_skips_pipe() {
     ctx.template_vars_mut().set("Tag", "v1.0.0");
 
     let stage = DockerStage::new();
-    // Must succeed with a clean skip — not error out trying to copy a
+    // Must succeed with a clean skip and must not error out trying to copy a
     // missing Dockerfile.
     stage
         .run(&mut ctx)
@@ -4122,7 +4122,7 @@ fn docker_v2_baseimage_unset_after_iteration() {
     stage.run(&mut ctx).unwrap();
 
     // After the docker_v2 iteration finishes, both keys must be absent
-    // from the regular vars map — not present with an empty value.
+    // from the regular vars map; an empty value is not enough.
     assert!(
         ctx.template_vars().get("BaseImage").is_none(),
         "BaseImage must be unset (not set-to-empty) after docker_v2 iteration"

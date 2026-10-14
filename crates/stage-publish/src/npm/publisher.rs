@@ -790,7 +790,7 @@ mod preflight_tests {
     }
 
     /// optional-deps mode publishes the METAPACKAGE name, so preflight must
-    /// probe that name — not `resolve_name`'s `name:` — for duplicate
+    /// probe that name, instead of `resolve_name`'s `name:`, for duplicate
     /// versions. The Warning must cite the metapackage.
     #[test]
     fn npm_preflight_optional_deps_probes_metapackage_name() {
@@ -975,7 +975,7 @@ mod sealed_env_pin {
     /// (the receiver and the binding name vary, so neither is matched exactly).
     ///
     /// Asked only of a function that takes no parameters, which is every
-    /// `#[test]` — the predicates of this pin quote the same call spellings and
+    /// `#[test]` — the predicates of this test quote the same call spellings and
     /// would otherwise report themselves.
     fn reads_env(head: &str, body: &str) -> bool {
         head.contains("()")
@@ -998,7 +998,7 @@ mod sealed_env_pin {
 
     /// Every test-carrying region under `src/npm`: a whole test source, and the
     /// inline test module of a production source — `publisher.rs` keeps its
-    /// preflight tests inline, and a walk of `test_sources` alone never saw
+    /// preflight tests inline, and a scan of `test_sources` alone never saw
     /// them.
     fn test_regions(dir: &Path) -> Vec<(String, String)> {
         let mut out = Vec::new();
@@ -1042,7 +1042,7 @@ mod sealed_env_pin {
         }
         assert!(
             total >= 24,
-            "the walk found only {total} preflight/run tests; it stopped seeing the population"
+            "the scan found only {total} preflight/run tests; it stopped seeing the population"
         );
         assert!(
             unsealed.is_empty(),

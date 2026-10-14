@@ -482,10 +482,10 @@ fn read_dep_version_in(
 }
 
 /// A workspace member that no release group declares is never bumped, so the
-/// same-run propagation never touches floors that reference it. The bump commit
+/// same-run propagation never touches minimums that reference it. The bump commit
 /// must still raise them against that member's manifest version.
 #[test]
-fn per_crate_bump_heals_floor_on_crate_outside_this_run() {
+fn per_crate_bump_heals_minimum_on_crate_outside_this_run() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
     flat_two_crate_workspace(root);
@@ -530,7 +530,7 @@ core = { path = "../core", version = "0.0.2" }
     fs::write(root.join("crates/core/src/lib.rs"), "// touched\n").unwrap();
     git_add_commit(root, "feat: core change");
 
-    // The dry run names the floor it would raise and writes nothing.
+    // The dry run names the minimum it would raise and writes nothing.
     let before = fs::read_to_string(root.join("crates/cli/Cargo.toml")).unwrap();
     let root_before = fs::read_to_string(root.join("Cargo.toml")).unwrap();
     let preview = anodizer()
@@ -549,17 +549,17 @@ core = { path = "../core", version = "0.0.2" }
         "dry-run must preview the heal: {preview_err}"
     );
     // `sync_workspace_deps` reaches the top-level sections, so cli's stale
-    // `core` floor is that leg's — the preview must not claim it.
+    // `core` minimum is that leg's — the preview must not claim it.
     assert!(
         !preview_err.contains("would heal dependency minimum core 0.0.2"),
-        "a floor the same-run propagation owns must not be previewed as a heal: {preview_err}"
+        "a minimum the same-run propagation owns must not be previewed as a heal: {preview_err}"
     );
-    // …but it never reaches `[workspace.dependencies]`, so that floor on the
+    // …but it never reaches `[workspace.dependencies]`, so that minimum on the
     // same bumped crate IS the sweep's, in both modes.
     assert!(
         preview_err
             .contains("(dry-run) would heal dependency minimum core 0.0.4 → 0.2.0 in Cargo.toml"),
-        "dry-run must preview the root floor heal: {preview_err}"
+        "dry-run must preview the root minimum heal: {preview_err}"
     );
     assert_eq!(
         fs::read_to_string(root.join("crates/cli/Cargo.toml")).unwrap(),
@@ -590,11 +590,11 @@ core = { path = "../core", version = "0.0.2" }
     // The same two lines the preview promised, and only those.
     assert!(
         stderr.contains("healed dependency minimum core 0.0.4 → 0.2.0 in Cargo.toml"),
-        "the root floor must heal: {stderr}"
+        "the root minimum must heal: {stderr}"
     );
     assert!(
         !stderr.contains("heal dependency minimum core 0.0.2"),
-        "a floor the same-run propagation owns must not be reported as a heal: {stderr}"
+        "a minimum the same-run propagation owns must not be reported as a heal: {stderr}"
     );
     assert_eq!(
         read_dep_version(root, "crates/cli/Cargo.toml", "core"),
@@ -622,7 +622,7 @@ core = { path = "../core", version = "0.0.2" }
 }
 
 /// Two independent Cargo workspaces in one repo: each is swept on its own root,
-/// and a floor naming a crate that belongs to the other workspace is left
+/// and a minimum naming a crate that belongs to the other workspace is left
 /// alone — the sweep never crosses a Cargo-workspace boundary.
 #[test]
 fn per_crate_bump_heals_each_workspace_scope_without_crossing() {
@@ -660,7 +660,7 @@ resolver = "2"
         )
         .unwrap();
     }
-    // a1 floors its own workspace's a2 (stale) and, across the boundary, b2.
+    // a1 sets minimums on its own workspace's a2 (stale) and, across the boundary, b2.
     fs::write(
         root.join("crates/a1/Cargo.toml"),
         r#"[package]
@@ -718,7 +718,7 @@ crates:
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    // Each scope heals its own stale floor.
+    // Each scope heals its own stale minimum.
     assert_eq!(
         read_dep_version(root, "crates/a1/Cargo.toml", "a2"),
         "0.9.0"
@@ -727,7 +727,7 @@ crates:
         read_dep_version(root, "sub/crates/b1/Cargo.toml", "b2"),
         "0.8.0"
     );
-    // b2 is no member of a1's workspace, so a1's floor on it is not the sweep's
+    // b2 is no member of a1's workspace, so a1's minimum on it is not the sweep's
     // to raise even though the path resolves.
     assert_eq!(
         read_dep_version(root, "crates/a1/Cargo.toml", "b2"),
@@ -880,7 +880,7 @@ fn per_crate_no_output_when_push_fails() {
     assert!(
         !stdout.contains("anodizer-output"),
         "no anodizer-output line may be emitted when the push fails \
-         (would advertise tags that never landed): stdout={stdout}"
+         (would advertise tags that were never pushed): stdout={stdout}"
     );
 }
 
@@ -1023,7 +1023,7 @@ fn per_crate_groups_tag_in_their_own_family_without_a_template() {
     let bare_v = String::from_utf8_lossy(&out.stdout);
     assert!(
         bare_v.trim().is_empty(),
-        "no group may mint a bare `v` tag it would collide on: {bare_v}"
+        "no group may create a bare `v` tag it would collide on: {bare_v}"
     );
 }
 

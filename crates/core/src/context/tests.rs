@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 /// must still redact that secret: the logger holds a live handle to the
 /// context's redaction table, not a frozen construction-time snapshot.
 #[test]
-fn stage_logger_redacts_secret_minted_after_construction() {
+fn stage_logger_redacts_secret_issued_after_construction() {
     let mut ctx = Context::new(Config::default(), ContextOptions::default());
     ctx.set_env_source(crate::MapEnvSource::new());
     let log = ctx.logger("cargo");
@@ -21,7 +21,7 @@ fn stage_logger_redacts_secret_minted_after_construction() {
     let redacted = log.redact("publish failed: token=supersecret123 rejected");
     assert!(
         !redacted.contains("supersecret123"),
-        "logger built before the mint must still redact a secret added afterward: {redacted}"
+        "logger built before the secret is added must still redact it: {redacted}"
     );
     assert!(
         redacted.contains("$SOMETHING_TOKEN"),
@@ -54,7 +54,7 @@ fn env_for_redact_honors_injected_env_source_not_real_process_env() {
 
 /// `VALID_RELEASE_SKIPS` MUST recognize every publisher token. Driven off
 /// [`PublisherKind::iter`] so a newly added publisher that is not folded
-/// into the `--skip` vocabulary trips immediately. Pins the nine tokens
+/// into the `--skip` vocabulary fails immediately. Holds the nine tokens
 /// that had silently dropped out of the former hand-maintained literal.
 #[test]
 fn valid_release_skips_is_superset_of_every_publisher_token() {
@@ -107,7 +107,7 @@ fn non_publisher_release_skips_disjoint_from_publisher_tokens() {
 /// [`VALID_RELEASE_SKIPS`] exactly — same members, no duplicates. Both are
 /// derived from the same SSOT ([`NON_PUBLISHER_RELEASE_SKIPS`] ∪
 /// [`PublisherKind::iter`]), so a newly added publisher or stage token
-/// flows into both at once; this pins that they can never diverge.
+/// flows into both at once; this test checks that they never diverge.
 #[test]
 fn release_skip_vocabulary_token_set_equals_valid_release_skips() {
     let vocab = release_skip_vocabulary();
@@ -178,7 +178,7 @@ fn both_skip_vocabularies_carry_every_root_hook_lane() {
     assert_eq!(
         ROOT_HOOK_LANE_SKIPS,
         &["before", "after", "always", "on-error"],
-        "the lane tokens are a published CLI surface — changing one is a breaking change \
+        "the lane tokens are part of the published CLI; changing one is a breaking change \
          for every consumer scripting against it"
     );
 }
@@ -187,7 +187,7 @@ fn both_skip_vocabularies_carry_every_root_hook_lane() {
 /// no-op: an ignored token means the operator's suppression request quietly
 /// did not happen.
 ///
-/// `pre-hooks` / `post-hooks` are pinned by name. They were in the `build`
+/// `pre-hooks` / `post-hooks` are checked by name. They were in the `build`
 /// vocabulary while nothing in the codebase read either one, so passing them
 /// was accepted and did nothing at all.
 #[test]
@@ -269,8 +269,8 @@ fn test_context_template_vars() {
 fn validate_skip_values_hint_dedups_overlapping_vocabulary() {
     // The release skip vocabulary is `VALID_RELEASE_SKIPS ++ publisher
     // names`, which legitimately overlap. A bad token must report a hint
-    // listing each valid option exactly ONCE, in first-seen order — not the
-    // doubled list a raw `valid.join(", ")` produces.
+    // listing each valid option exactly ONCE, in first-seen order, without the
+    // duplicates a raw `valid.join(", ")` produces.
     let valid = ["homebrew", "cargo", "npm", "homebrew", "cargo", "uploads"];
     let err = validate_skip_values(&["bogus".to_string()], &valid).unwrap_err();
     let opts = err
@@ -1060,7 +1060,7 @@ fn test_populate_release_notes_var_deterministic_with_multiple_crates() {
 #[test]
 fn test_populate_release_notes_var_sees_workspace_only_crates() {
     // Pure-`workspaces:` config: the crates carrying the changelogs never
-    // appear in the top-level `crates:` list, so the lookup must walk the
+    // appear in the top-level `crates:` list, so the lookup must read the whole
     // crate universe or `ReleaseNotes` renders empty.
     let config = Config {
         workspaces: Some(vec![crate::config::WorkspaceConfig {
@@ -2069,7 +2069,7 @@ fn retry_deadline_defaults_to_the_built_in_budget_when_config_omits_retry() {
 
 #[test]
 fn retry_deadline_is_one_value_for_a_whole_publisher_invocation() {
-    // The gap this pins: `retry_deadline` used to create `now + budget` on every
+    // The gap this test covers: `retry_deadline` used to create `now + budget` on every
     // call, so a publisher resolving it at three points got three budgets and a
     // wedged registry could burn `retry.max_elapsed` once per point. Inside a
     // `PublisherRetryScope` the deadline is a READ of one anchor, so every point
@@ -2084,24 +2084,27 @@ fn retry_deadline_is_one_value_for_a_whole_publisher_invocation() {
     let ctx = Context::new(config, ContextOptions::default());
 
     let scope = crate::retry::PublisherRetryScope::enter("cargo");
-    let auth_seam = ctx.retry_deadline().expect("configured budget resolves");
+    let auth_deadline = ctx.retry_deadline().expect("configured budget resolves");
     std::thread::sleep(std::time::Duration::from_millis(20));
-    let publish_seam = ctx.retry_deadline().expect("configured budget resolves");
-    let cleanup_seam = {
+    let publish_deadline = ctx.retry_deadline().expect("configured budget resolves");
+    let cleanup_deadline = {
         // Even a helper that enters its own scope cannot widen the budget.
         let _nested = crate::retry::PublisherRetryScope::enter("cargo: cleanup");
         ctx.retry_deadline().expect("configured budget resolves")
     };
-    assert_eq!(auth_seam, publish_seam, "two seams, one budget");
-    assert_eq!(auth_seam, cleanup_seam, "a nested scope must not re-anchor");
+    assert_eq!(auth_deadline, publish_deadline, "two reads, one budget");
+    assert_eq!(
+        auth_deadline, cleanup_deadline,
+        "a nested scope must not re-anchor"
+    );
 
     // A distinct later invocation (the rollback pass) anchors afresh.
     drop(scope);
     std::thread::sleep(std::time::Duration::from_millis(20));
     let _rollback = crate::retry::PublisherRetryScope::enter("cargo");
-    let rollback_seam = ctx.retry_deadline().expect("configured budget resolves");
+    let rollback_deadline = ctx.retry_deadline().expect("configured budget resolves");
     assert!(
-        rollback_seam > auth_seam,
+        rollback_deadline > auth_deadline,
         "a later invocation must get its own budget"
     );
 }

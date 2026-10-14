@@ -364,7 +364,7 @@ violations="$(printf '%s\n' "$mutators" |
 opaque="$(printf '%s\n' "$records" |
     sed -n 's/^O [^ ]* \([^ ]*\) \([^ ]*\)$/\1: [variable] fn \2 names the variable it mutates through a value the scan cannot resolve/p')"
 
-# A helper no test reaches: walk the call edges from every test.
+# A helper no test reaches: follow the call edges from every test.
 run_scanner orphans '
     $1 == "H" { helper[$2 ":" $3] = $4 }
     $1 == "T" { test[$2 ":" $4] = 1 }

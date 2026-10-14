@@ -241,7 +241,7 @@ fn resolve_milestone_repo(
 
     // Single pass over crates that prefers a release block matching the
     // active SCM (ctx.token_type) but accepts any block as a fallback.
-    // One pass, not two: walking the crate list once for the matching
+    // One pass: reading the crate list once for the matching
     // provider and again for any provider produced two near-identical
     // loops with different short-circuit behaviour.
     let mut fallback: Option<(String, String)> = None;
@@ -857,7 +857,7 @@ mod tests {
 
     #[test]
     fn resolve_milestone_for_close_returns_target_with_resolved_fields() {
-        // Pin the user-facing artifact: when pre-flight emits its status log
+        // Tests the user-facing artifact: when pre-flight emits its status log
         // ("milestone: will close 'X' on Y/Z"), the resolved fields must come
         // through as expected. Asserting on the helper's return value catches
         // a regression where `log.status` is dropped from preflight_milestones
@@ -962,7 +962,7 @@ mod tests {
 
     // retry plumbing through close_milestone_gitlab
     //
-    // Pin: each milestone HTTP call must route through retry_http_async so
+    // Each milestone HTTP call must route through retry_http_async so
     // transient 5xx / 429 / network failures retry per the user's policy.
     // GitLab is the easiest to test end-to-end because the function already
     // accepts a base API URL. The GitHub / Gitea functions share the same
@@ -1310,7 +1310,7 @@ mod tests {
     // The first line of each provider close is a token presence check. An
     // empty token must bail with a provider-specific message BEFORE any HTTP
     // is attempted (no runtime block_on, no socket). Asserting the exact
-    // substring pins the per-provider diagnostic.
+    // substring checks the per-provider diagnostic.
 
     fn dummy_rt() -> tokio::runtime::Runtime {
         tokio::runtime::Runtime::new().expect("runtime")
@@ -1571,7 +1571,7 @@ mod tests {
         let chained = format!("{err:#}");
         assert!(
             chained.contains("Gitea close failed (HTTP 403"),
-            "the 403 must surface through the close classifier, got: {chained}"
+            "the 403 must be reported through the close classifier, got: {chained}"
         );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }

@@ -539,7 +539,7 @@ fn ctx_with_env_inner(config: &Config, env: &[(&str, &str)], cli_token: Option<S
 fn test_resolve_scm_token_type_default_is_github() {
     let config = Config::default();
     let mut ctx = ctx_with_env(&config, &[]);
-    resolve_scm_token_type(&mut ctx, &config);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
 
     assert_eq!(ctx.token_type, ScmTokenType::GitHub);
     assert!(ctx.options.token.is_none());
@@ -552,7 +552,7 @@ fn test_resolve_scm_token_type_force_gitlab() {
         ..Default::default()
     };
     let mut ctx = ctx_with_env(&config, &[("GITLAB_TOKEN", "glpat-test123")]);
-    resolve_scm_token_type(&mut ctx, &config);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
 
     assert_eq!(ctx.token_type, ScmTokenType::GitLab);
     assert_eq!(ctx.options.token.as_deref(), Some("glpat-test123"));
@@ -565,7 +565,7 @@ fn test_resolve_scm_token_type_force_gitea() {
         ..Default::default()
     };
     let mut ctx = ctx_with_env(&config, &[("GITEA_TOKEN", "gitea-tok")]);
-    resolve_scm_token_type(&mut ctx, &config);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
 
     assert_eq!(ctx.token_type, ScmTokenType::Gitea);
     assert_eq!(ctx.options.token.as_deref(), Some("gitea-tok"));
@@ -575,7 +575,7 @@ fn test_resolve_scm_token_type_force_gitea() {
 fn test_resolve_scm_token_type_env_gitlab_detected() {
     let config = Config::default();
     let mut ctx = ctx_with_env(&config, &[("GITLAB_TOKEN", "glpat-env")]);
-    resolve_scm_token_type(&mut ctx, &config);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
 
     assert_eq!(ctx.token_type, ScmTokenType::GitLab);
     assert_eq!(ctx.options.token.as_deref(), Some("glpat-env"));
@@ -585,7 +585,7 @@ fn test_resolve_scm_token_type_env_gitlab_detected() {
 fn test_resolve_scm_token_type_env_gitea_detected() {
     let config = Config::default();
     let mut ctx = ctx_with_env(&config, &[("GITEA_TOKEN", "gitea-env")]);
-    resolve_scm_token_type(&mut ctx, &config);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
 
     assert_eq!(ctx.token_type, ScmTokenType::Gitea);
     assert_eq!(ctx.options.token.as_deref(), Some("gitea-env"));
@@ -595,7 +595,7 @@ fn test_resolve_scm_token_type_env_gitea_detected() {
 fn test_resolve_scm_token_type_github_token_from_env() {
     let config = Config::default();
     let mut ctx = ctx_with_env(&config, &[("GITHUB_TOKEN", "ghp-from-env")]);
-    resolve_scm_token_type(&mut ctx, &config);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
 
     assert_eq!(ctx.token_type, ScmTokenType::GitHub);
     assert_eq!(ctx.options.token.as_deref(), Some("ghp-from-env"));
@@ -611,7 +611,7 @@ fn test_resolve_scm_token_type_anodizer_github_token_takes_precedence() {
             ("GITHUB_TOKEN", "gh-tok"),
         ],
     );
-    resolve_scm_token_type(&mut ctx, &config);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
 
     assert_eq!(ctx.token_type, ScmTokenType::GitHub);
     assert_eq!(
@@ -625,7 +625,7 @@ fn test_resolve_scm_token_type_anodizer_github_token_takes_precedence() {
 fn test_resolve_scm_token_type_cli_token_preserved() {
     let config = Config::default();
     let mut ctx = ctx_with_env_and_cli_token(&config, &[("GITHUB_TOKEN", "from-env")], "from-cli");
-    resolve_scm_token_type(&mut ctx, &config);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
 
     assert_eq!(ctx.token_type, ScmTokenType::GitHub);
     assert_eq!(
@@ -643,7 +643,7 @@ fn test_resolve_scm_token_type_force_overrides_env_detection() {
         ..Default::default()
     };
     let mut ctx = ctx_with_env(&config, &[("GITLAB_TOKEN", "glpat-ignored")]);
-    resolve_scm_token_type(&mut ctx, &config);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
 
     assert_eq!(
         ctx.token_type,
@@ -663,7 +663,7 @@ fn test_resolve_scm_token_type_gitlab_priority_over_gitea() {
         &config,
         &[("GITLAB_TOKEN", "gl-tok"), ("GITEA_TOKEN", "gt-tok")],
     );
-    resolve_scm_token_type(&mut ctx, &config);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
 
     assert_eq!(
         ctx.token_type,
@@ -683,7 +683,7 @@ fn test_resolve_scm_token_type_anodizer_force_token_env_gitlab() {
             ("GITLAB_TOKEN", "glpat-env"),
         ],
     );
-    resolve_scm_token_type(&mut ctx, &config);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
 
     assert_eq!(
         ctx.token_type,
@@ -704,7 +704,7 @@ fn test_resolve_scm_token_type_anodizer_force_token_env_github() {
             ("GITHUB_TOKEN", "ghp-forced"),
         ],
     );
-    resolve_scm_token_type(&mut ctx, &config);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
 
     assert_eq!(
         ctx.token_type,
@@ -724,7 +724,7 @@ fn test_resolve_scm_token_type_reads_the_compat_force_token_alias() {
             ("GITEA_TOKEN", "gitea-compat"),
         ],
     );
-    resolve_scm_token_type(&mut ctx, &config);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
 
     assert_eq!(
         ctx.token_type,
@@ -746,7 +746,7 @@ fn test_resolve_scm_token_type_anodizer_force_token_overrides_the_compat_alias()
             ("GITLAB_TOKEN", "glpat-loses"),
         ],
     );
-    resolve_scm_token_type(&mut ctx, &config);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
 
     assert_eq!(
         ctx.token_type,
@@ -769,7 +769,7 @@ fn test_resolve_scm_token_type_config_force_token_overrides_env() {
             ("GITHUB_TOKEN", "ghp-config"),
         ],
     );
-    resolve_scm_token_type(&mut ctx, &config);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
 
     assert_eq!(
         ctx.token_type,
@@ -789,7 +789,7 @@ fn test_resolve_scm_token_type_invalid_force_token_env_ignored() {
             ("GITLAB_TOKEN", "glpat-detected"),
         ],
     );
-    resolve_scm_token_type(&mut ctx, &config);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
 
     assert_eq!(
         ctx.token_type,
@@ -894,8 +894,8 @@ fn test_collect_build_targets_unset_defaults_falls_back_to_canonical_set() {
     use anodizer_core::config::BuildConfig;
 
     // A producing build with targets=None and NO defaults.targets inherits
-    // the canonical DEFAULT_TARGETS set the planner compiles over — not an
-    // empty list. This is the fallback the cross-toolchain self-report and
+    // the canonical DEFAULT_TARGETS set the planner compiles over. This is
+    // the fallback the cross-toolchain self-report and
     // host filter rely on. An explicit `binary` clears the compile/artifact
     // gate so the build produces (a `binary: None` build on a crate with no
     // `--bin` would correctly compile nothing under the planner's gate).
@@ -3351,8 +3351,8 @@ fn resolve_git_context_nightly_lockstep_base_unchanged() {
     });
 }
 
-/// The base's family — not the first-declared crate's — bounds the
-/// previous-tag look-back. A `0.10.0` base paired with a `crd-v` previous tag
+/// The base's family bounds the previous-tag look-back, even when it differs
+/// from the first-declared crate's family. A `0.10.0` base paired with a `crd-v` previous tag
 /// yields a compare link and changelog window across two different tracks.
 #[cfg(unix)]
 #[test]

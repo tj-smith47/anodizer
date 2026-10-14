@@ -767,9 +767,9 @@ fn find_version_files_block(config_text: &str) -> Option<BlockInsertion> {
         }
     }
     let start = start?;
-    // Walk past the list items belonging to the block, capturing the first
+    // Skip past the list items belonging to the block, capturing the first
     // item's indent. A line indented DEEPER than that is a continuation of the
-    // item above it (an anchored `- path:` item's `match:` line), so the walk
+    // item above it (an anchored `- path:` item's `match:` line), so the scan
     // must swallow it — stopping there would insert new items inside a mapping.
     let mut last_item = start;
     let mut indent: Option<String> = None;

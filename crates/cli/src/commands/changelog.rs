@@ -161,14 +161,14 @@ pub(crate) fn run(opts: ChangelogOpts) -> Result<()> {
 }
 
 /// Resolve the positional `[<tag>|<range>]` into a [`RangeStart`] + upper
-/// bound plus an optional crate pin.
+/// bound plus an optional single-crate selection.
 ///
 /// - `None` → `start: Pending`; each target resolves its own last tag (the
 ///   pending window since its last release).
 /// - `..` / `..<ref>` → empty left side ⇒ `start: FullHistory` (no lower
-///   bound); `<ref>..` / `<ref>..<ref>` ⇒ `start: Ref(<ref>)`. No pin (applies
+///   bound); `<ref>..` / `<ref>..<ref>` ⇒ `start: Ref(<ref>)`. No crate selection (applies
 ///   to all targets).
-/// - `<tag>` → resolve the owning crate from its tag prefix, pin to it, and set
+/// - `<tag>` → resolve the owning crate from its tag prefix, select it, and set
 ///   `start` to `Ref(predecessor)` (the tag immediately below `<tag>` in that
 ///   crate's semver-sorted list) or `FullHistory` when `<tag>` is the earliest
 ///   (full history up to it), with `to = <tag>`.
@@ -268,7 +268,7 @@ fn predecessor_tag(workspace_root: &Path, prefix: &str, tag: &str) -> Result<Opt
 }
 
 /// Enumerate the crates selected for rendering across all three config modes,
-/// honoring `--crate` and a single-tag crate pin.
+/// honoring `--crate` and a single-tag crate selection.
 ///
 /// Each entry is `(crate_name, crate_dir, tag_prefix)`. For lockstep the sole
 /// entry is the workspace root aggregate, prefixed by the resolved
@@ -332,7 +332,7 @@ fn select_crates(
 /// exactly ONE workspace-root entry; only a distinct-prefix `PerCrate` yields N.
 /// So the flat-aggregate vs multi-track decision is fully made by the shape, and
 /// this helper only marks the rendering flag:
-/// - `crate_filtered` (an explicit `--crate`/single-tag pin): `false`, so a
+/// - `crate_filtered` (an explicit `--crate`/single-tag selection): `false`, so a
 ///   genuine multi-track repo refreshes only THAT crate's `### <crate>`
 ///   subsection.
 /// - A multi-entry selection (only a distinct-prefix `PerCrate`): `false`,
@@ -604,7 +604,7 @@ fn run_release_notes(
         ..Default::default()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
-    helpers::resolve_scm_token_type(&mut ctx, &config);
+    helpers::resolve_scm_token_type(&mut ctx, &config)?;
     ctx.populate_time_vars()?;
     ctx.populate_runtime_vars();
     helpers::resolve_git_context(&mut ctx, &config, log)?;
@@ -625,7 +625,7 @@ fn run_release_notes(
     stage.run(&mut ctx)?;
 
     // Stable iteration order (HashMap iteration is non-deterministic, which
-    // makes stdout flicker across runs and breaks test pinning).
+    // makes stdout flicker across runs and breaks the tests that compare it).
     let mut entries: Vec<(&String, &String)> = ctx.stage_outputs.changelogs.iter().collect();
     entries.sort_by(|a, b| a.0.cmp(b.0));
 
@@ -735,7 +735,7 @@ mod tests {
     fn release_notes_render_set_includes_workspace_crates() {
         // Mixed shape: one top-level crate plus one `workspaces[].crates`
         // member. The render set must carry BOTH so the workspace crate
-        // gets its own release-notes track (a top-level-only walk dropped
+        // gets its own release-notes track (a top-level-only scan dropped
         // it entirely).
         let dir = tempfile::tempdir().unwrap();
         let mut config = Config {

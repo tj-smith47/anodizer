@@ -1,7 +1,7 @@
 //! Planning pass of the archive stage: every output path the run will write,
 //! resolved before a single byte is copied.
 //!
-//! The stage runs in two passes. This one is read-only: it walks every
+//! The stage runs in two passes. This one is read-only: it visits every
 //! crate × `archives:` entry × build target × format, renders the name
 //! templates and records the output path each would produce, together with
 //! the [`Claim`] the run-scoped [`ArchPathGuard`] checks. The driver runs the

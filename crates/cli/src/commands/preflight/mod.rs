@@ -117,7 +117,7 @@ macro_rules! gated_stage {
 
 /// The SINGLE enumeration of every stage whose requirements preflight
 /// collects. [`collect_requirements`] iterates this table and the
-/// stage-name existence test pins every entry against the real release
+/// stage-name existence test checks every entry against the real release
 /// pipeline, so a new gated stage cannot be added to the collection loop
 /// without also being covered by the test (they are the same list).
 const GATED_STAGES: &[GatedStage] = &[
@@ -295,9 +295,9 @@ const GATED_STAGES: &[GatedStage] = &[
 ];
 
 /// Collect every environment requirement the resolved config implies,
-/// honoring `--skip` stage selection and the pipeline scope, by walking
+/// honoring `--skip` stage selection and the pipeline scope, by reading
 /// the [`GATED_STAGES`] table. Per-crate workspace configs union across
-/// all publishable crates: the stage/publisher derivations walk the full
+/// all publishable crates: the stage/publisher derivations read the full
 /// crate universe, so one pass covers single-crate, lockstep, and
 /// per-crate modes alike.
 pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<SourcedRequirement> {
@@ -550,7 +550,7 @@ fn gpg_sign_cmds(requirements: &[SourcedRequirement]) -> Vec<String> {
 
 /// Probe every configured gpg signing command for `--faked-system-time`
 /// support. When `SOURCE_DATE_EPOCH` is set, the sign stage injects
-/// `--faked-system-time=<epoch>!` into every gpg invocation to pin the
+/// `--faked-system-time=<epoch>!` into every gpg invocation to fix the
 /// OpenPGP signature timestamp — a gpg too old for the flag (< 2.0.10)
 /// would otherwise die mid-pipeline with a raw "invalid option" after the
 /// full build.

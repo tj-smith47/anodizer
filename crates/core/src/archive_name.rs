@@ -66,7 +66,7 @@ pub const DEFAULT_BINARY_NAME_TEMPLATE: &str = concat!(
 /// default that appends it — only the suffix is shared, not the whole template:
 /// the archive defaults prefix it with the dotted `{{ .ProjectName }}…` stem
 /// while the makeself default uses the bare `{{ ProjectName }}…` form, so the
-/// prefixes differ by design. Each consumer carries a drift test pinning its own
+/// prefixes differ by design. Each consumer carries a drift test holding its own
 /// default to this const so the shared tail cannot drift between them.
 pub const MICRO_ARCH_VARIANT_SUFFIX: &str = micro_arch_variant_suffix!();
 
@@ -199,7 +199,7 @@ pub const RISCV64_BASELINE_VARIANT: &str = "rva20u64";
 /// non-empty `Arm`/`Mips` doubles every default filename that appends
 /// [`MICRO_ARCH_VARIANT_SUFFIX`]'s `{% if Arm %}v{{ Arm }}` /
 /// `{% if Mips %}_{{ Mips }}` clauses (`…_armv7v7.run`,
-/// `…_mips64el_mips64el`) — the same contract [`seed_target_vars`] pins for
+/// `…_mips64el_mips64el`) — the same contract [`seed_target_vars`] holds for
 /// archive names, where the composite token instead splits into
 /// `Arch="arm"` + `Arm="7"`.
 ///
@@ -907,7 +907,7 @@ mod tests {
     fn variant_vars_arm_stays_empty_for_every_arm_token() {
         // Consumers of this policy carry the composite armv7/armv6 token in
         // `Arch`, so a seeded Arm would render the doubled `…_armv7v7.run`
-        // default filename — the same doubling class the Mips guard pins.
+        // default filename — the same doubling class the Mips guard checks.
         use crate::template::TemplateVars;
         for target in [
             "armv7-unknown-linux-gnueabihf",

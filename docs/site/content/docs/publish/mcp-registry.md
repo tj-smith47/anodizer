@@ -96,7 +96,7 @@ permissions:
 ```
 
 See [Docker (`dockers_v2:`)](../packages/docker.md) for the image build
-surface and the Dockerfile pattern that makes the container speak MCP over
+configuration and the Dockerfile pattern that makes the container speak MCP over
 stdio out of the box (`ENTRYPOINT ["/usr/local/bin/myapp"] / CMD ["mcp"]`).
 
 ## Full config reference

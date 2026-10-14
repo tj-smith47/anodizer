@@ -164,14 +164,14 @@ fn filename_default_appends_amd64_variant_suffix() {
         resolve_appimage_filename(&ctx, None, "myapp", "1.2.3", "x86_64").unwrap();
     assert_eq!(name, "myapp-1.2.3-x86_64v3.AppImage");
     // The composed default carries the v3 suffix, so the guard cites the
-    // suffixed template — not an empty string.
+    // suffixed template.
     assert_eq!(resolved_template, "myapp-1.2.3-x86_64v3.AppImage");
 }
 
 /// A user `filename:` carrying the standard `{{ Arch }}{% if Arm %}v{{ Arm }}`
 /// idiom must render the single composite `armv7` token — the seeded vars
 /// carry the whole arch in `Arch` with `Arm` empty, so the clause can never
-/// double to `armv7v7` (the same contract the makeself default pins).
+/// double to `armv7v7` (the same contract the makeself default tests).
 #[test]
 fn filename_user_template_armv7_renders_single_token() {
     let mut ctx = ctx_v("1.2.3");
@@ -622,7 +622,7 @@ fn build_ctx_with_binaries(dist: &Path, targets: &[&str]) -> Context {
 }
 
 /// A binary artifact without `binary` metadata is staged under its file
-/// name — the same name every other stage gives it — not under an empty or
+/// name, the same name every other stage gives it, instead of an empty or
 /// crate-derived one.
 #[test]
 fn metadata_less_binary_is_staged_under_its_file_name() {
@@ -1179,7 +1179,7 @@ fn locate_built_appimage_falls_back_to_newest() {
 }
 
 /// `group_by_platform` groups by `os_arch` and iterates in deterministic
-/// (alphabetical) key order via `BTreeMap`, pinning the order-regression
+/// (alphabetical) key order via `BTreeMap`, testing the order-regression
 /// guard so `dist/artifacts.json` does not drift between runs.
 #[test]
 fn group_by_platform_is_deterministic() {

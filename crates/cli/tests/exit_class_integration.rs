@@ -168,7 +168,7 @@ fn tag_rollback_parent_only_flag_exits_two_with_marker() {
     // `tag rollback` rejects the parent `tag` command's flags (--push family,
     // --changelog, --version). These rejections are argv-determined, so they
     // must carry the deterministic exit code + marker like every other usage
-    // error — not a bare exit 1 that a retry wrapper would re-attempt.
+    // error. A bare exit 1 would be re-attempted by a retry wrapper.
     let tmp = TempDir::new().unwrap();
     minimal_fixture(tmp.path());
     let out = run_anodizer(tmp.path(), &["tag", "--changelog", "rollback"]);

@@ -1,7 +1,7 @@
 //! MCP `server.json` schema validation.
 //!
 //! The MCP registry validates every published server document against its
-//! `server.schema.json` (a draft-07 schema pinning the reverse-DNS `name`
+//! `server.schema.json` (a draft-07 schema constraining the reverse-DNS `name`
 //! pattern, the `registryType` / `transport` package shape, the
 //! required `name`/`description`/`version` set, and the `repository`
 //! `url`+`source` requirement). anodizer renders ONE such document per
@@ -25,7 +25,7 @@ use anyhow::{Context as _, Result};
 
 use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, validate_json};
 
-/// The MCP registry's vendored `server.json` schema (draft-07). Pinned to the
+/// The MCP registry's vendored `server.json` schema (draft-07). Fixed at the
 /// `$schema` version anodizer stamps onto every published document
 /// (`CURRENT_SCHEMA_URL` in `mcp/manifest.rs`) and embedded so validation is
 /// fully offline; refresh via `schemas/SOURCES.md`.
@@ -193,7 +193,7 @@ mod tests {
         assert_eq!(npm["version"], "1.0.0");
         assert_eq!(npm["transport"]["type"], "stdio");
 
-        // The OCI package pins its version in the `:tag` of the templated
+        // The OCI package fixes its version in the `:tag` of the templated
         // identifier, so the redundant `version` field is omitted on the wire.
         let oci = &v["packages"][1];
         assert_eq!(oci["registryType"], "oci");
@@ -274,7 +274,7 @@ mod tests {
     /// (no `/` separating namespace from server name) is genuinely rejected by
     /// the vendored schema — the finding must name the offending `/name` field.
     /// Proves the validation is non-vacuous: the schema's `pattern` constraint
-    /// bites a real defect anodizer could otherwise ship.
+    /// catches a real defect anodizer could otherwise ship.
     #[test]
     fn name_pattern_violation_is_reported() {
         let server = crate::mcp::render_server_json(&ctx_with_mcp(every_option_mcp_cfg(), "1.0.0"))

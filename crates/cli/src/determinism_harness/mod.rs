@@ -19,7 +19,7 @@
 //!    from the host; plus an identity-only allow-list — see [`mod@env`].
 //! 3. Invokes the build-side pipeline (`anodizer release --snapshot
 //!    --skip=<SIDE_EFFECT_STAGES>`) inside the worktree with that env.
-//! 4. Walks `<worktree>/dist` AND `<worktree>/.det-tmp/target/`,
+//! 4. Scans `<worktree>/dist` AND `<worktree>/.det-tmp/target/`,
 //!    SHA256s every file, returns a `BTreeMap<artifact_name, info>`
 //!    for the run.
 //! 5. Once all runs complete, diffs the maps and constructs a
@@ -542,18 +542,18 @@ pub struct Harness {
     /// A stage absent from this map carries no config-resolved requirement and
     /// falls back to the host-static probe table (or passes through).
     pub config_tools: BTreeMap<StageId, Vec<String>>,
-    /// Absolute free-space floor (bytes) the headroom guard requires before
+    /// Absolute free-space minimum (bytes) the headroom guard requires before
     /// each determinism run starts. The SOLE gate before run-0 (no prior
     /// peak measured yet, so a liveness backstop, not a peak guarantee) and
     /// a backstop for run-1..N when their measured peak × factor is below
     /// it.
     ///
     /// Derived, not required: the dispatcher resolves it via
-    /// [`anodizer_core::disk::abs_floor_bytes_from_env`] (the
+    /// [`anodizer_core::disk::abs_min_free_bytes_from_env`] (the
     /// `ANODIZER_DET_DISK_FLOOR_GIB` override, else
-    /// [`anodizer_core::disk::DEFAULT_ABS_FLOOR_BYTES`]). Tests inject a
+    /// [`anodizer_core::disk::DEFAULT_ABS_MIN_FREE_BYTES`]). Tests inject a
     /// value directly to exercise the guard without a real low-disk host.
-    pub disk_abs_floor_bytes: u64,
+    pub disk_abs_min_free_bytes: u64,
     /// Multiplier applied to a prior run's MEASURED peak consumption when
     /// gating run-1..N (slack above the observed peak for sampling jitter,
     /// not a net→peak amplification). Derived via
@@ -568,7 +568,7 @@ pub struct Harness {
 /// windows-msvc host build with no explicit `--target`) and `clang-cl` is
 /// not on PATH.
 ///
-/// `clang-cl` is the deterministic C/C++ compiler pin the harness's child
+/// `clang-cl` is the deterministic C/C++ compiler the harness's child
 /// env wires in for cc-rs/cmake-driven crates (see
 /// [`env::build_subprocess_env`] /
 /// `anodizer_core::determinism::msvc_c_toolchain_env`). Without this gate a

@@ -250,7 +250,7 @@ workspaces:
   # ... cfgd-operator, cfgd-csi
 ```
 
-Every cell of [What works (with proof)](https://tj-smith47.github.io/anodizer/dogfooding/) links to a real published cfgd artifact for the feature in question — that's the verification surface.
+Every cell of [What works (with proof)](https://tj-smith47.github.io/anodizer/dogfooding/) links to a real published cfgd artifact for the feature in question — that's where the verification lives.
 
 ## GitHub Actions
 
@@ -304,7 +304,7 @@ $ anodizer mcp tools              # dump the tool list to mcp-tools.json for ins
 ```
 
 23 tools ship by default (`completion` and `man` are shell-prompt artifacts and are
-withheld). Three groups narrow that for a client that shouldn't see the whole surface:
+withheld). Three groups narrow that for a client that shouldn't see every tool:
 
 | Selection | Tools | Covers |
 |---|---|---|

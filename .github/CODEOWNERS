@@ -1,6 +1,6 @@
 * @tj-smith47
 
-# Security & governance surface — changes route to the owner explicitly.
+# Security and governance files: changes route to the owner explicitly.
 /SECURITY.md @tj-smith47
 /THREAT_MODEL.md @tj-smith47
 /INCIDENT_RESPONSE.md @tj-smith47

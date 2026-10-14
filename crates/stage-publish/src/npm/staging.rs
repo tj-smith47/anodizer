@@ -251,7 +251,7 @@ fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
 /// `.js` shim is `0o755`, all else `0o644`. This reproduces the staging writers'
 /// intended modes WITHOUT depending on the host filesystem — `write_with_mode`
 /// only sets the exec bit under `#[cfg(unix)]`, so a Windows build host would
-/// otherwise ship the embedded binary at `0o644`. Sorting the walk by relative
+/// otherwise ship the embedded binary at `0o644`. Sorting the traversal by relative
 /// path + zeroing mtime/uid/gid keeps the tarball byte-identical across runs and
 /// across build hosts.
 fn pack_tarball(

@@ -48,14 +48,14 @@ pub(crate) fn check_workspace_package(crate_path: &str, flags: &[String]) -> Res
     Ok(())
 }
 
-// find_workspace_root — walk up from crate path to find workspace Cargo.toml
+// find_workspace_root : search upward from the crate path to find workspace Cargo.toml
 
-/// Walk up from `crate_path` looking for a `Cargo.toml` that contains a
+/// Search upward from `crate_path` looking for a `Cargo.toml` that contains a
 /// `[workspace]` section.  Returns the directory containing the workspace
 /// root `Cargo.toml`, or `None` if no workspace root is found.
 pub(crate) fn find_workspace_root(crate_path: &str) -> Option<PathBuf> {
     let mut dir = std::fs::canonicalize(crate_path).ok()?;
-    // Walk upward from the crate directory
+    // Search upward from the crate directory
     loop {
         let cargo_toml = dir.join("Cargo.toml");
         if cargo_toml.exists()

@@ -18,7 +18,7 @@ const CATALOG: &str = r#"{ "schemas": [
 /// `Anodizer`, both `.anodizer.{yaml,yml}` globs). Against that catalog the
 /// verdict MUST be `NoOp` so no further PR is ever generated. Probed live
 /// against the real catalog (`name="Anodizer"` ⇒ NoOp, `name="anodizer"` ⇒
-/// Update); this pins that contract with a self-contained fixture so the suite
+/// Update); this checks that contract with a self-contained fixture so the suite
 /// stays offline.
 #[test]
 fn verdict_noop_for_live_anodizer_catalog_entry() {
@@ -534,7 +534,7 @@ fn add_high_schema_version_handles_empty_array() {
     let arr = v["highSchemaVersion"].as_array().unwrap();
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0], "cfgd-module");
-    // Formatting is pinned, not just JSON-validity: the key line is indented 2
+    // Formatting is checked as well as JSON validity: the key line is indented 2
     // spaces, so the element ends up at 4 and the closing `]` at 2 (prettier).
     assert!(
         out.contains("\n    \"cfgd-module\"\n  ]"),
@@ -549,7 +549,7 @@ fn add_high_schema_version_handles_empty_array() {
 /// UPDATED in place was not created here, and unwinding it would delete
 /// somebody else's registration.
 ///
-/// Pinned two ways — running the rollback path leaves a catalog file's bytes
+/// Checked two ways — running the rollback path leaves a catalog file's bytes
 /// untouched, and the module carries no reference to the catalog editors at
 /// all, so a future `catalog::splice_entry` / `upsert_schema_options` call in
 /// `rollback.rs` trips this test rather than shipping.
@@ -620,7 +620,7 @@ fn upsert_schema_options_adds_a_block_for_a_new_file() {
         schema_options_block(&out, "cfgd-config-0.5.0.json").is_some(),
         "the retained prior version's file keeps its block; got:\n{out}"
     );
-    // Formatting is pinned: members sit at the existing member indent (4) and
+    // Formatting is checked: members sit at the existing member indent (4) and
     // the object closes at the key indent (2).
     assert!(
         out.contains("\n    \"cfgd-config-0.10.0.json\": {"),

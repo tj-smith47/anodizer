@@ -19,7 +19,7 @@ a link, and the status tells you exactly what the link proves.
 | ✅ **Verified (tests)** | Implemented and covered by tests; no live release has exercised the code path. The link points at the implementation or its tests. |
 | ⏳ **Pending** | Wired into a live config, but the code path only fires on a condition no release has hit yet: a failure branch, an override nothing passes, an output no workflow consumes, or an upstream gate we're waiting on. |
 | 🤝 **Help wanted** | Tests pass. We can't run the production path ourselves: a paid account, a missing runtime, or a target that doesn't fit any of our three projects. Open an issue if you want to validate it on yours. |
-| ⛔ **Removed (date)** | The surface was deleted. The row stays, with the run evidence that motivated the removal, so the history isn't rewritten. |
+| ⛔ **Removed (date)** | The feature was deleted. The row stays, with the run evidence that motivated the removal, so the history isn't rewritten. |
 
 ### Evidence behind each link
 
@@ -36,7 +36,7 @@ in this order:
    demonstrated it, the run URL is cited alongside.
 3. **The implementation, plus the run log line it emitted**, for behavior that
    is only observable in a release's output — a rollback that fired, a gate that
-   skipped a publisher, a warning that surfaced.
+   skipped a publisher, a warning that was printed.
 
 So: a ✅ row always means *this ran*. It does not always mean *there is a file
 you can download because it ran* — many of these features exist precisely so

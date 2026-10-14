@@ -332,7 +332,7 @@ fn run_hooks_inner(
 /// Each `hooks[*]` entry runs **once per matching artifact** (the
 /// Pro `before_publish:` semantics). For each entry:
 ///
-/// 1. Resolve the entry's `ids:` + `artifacts:` filters and walk
+/// 1. Resolve the entry's `ids:` + `artifacts:` filters and visit
 ///    `ctx.artifacts.all()` for matches.
 /// 2. For each match, bind per-artifact template variables
 ///    (`ArtifactPath`, `ArtifactName`, `ArtifactExt`, `Os`, `Arch`,
@@ -777,7 +777,7 @@ mod tests {
         let log = test_logger();
         let vars = vars_with_snapshot(true);
         let hooks = vec![structured("true", Some("{{ IsSnapshot }}"))];
-        // dry_run=true → no actual exec; the function still walks the gate.
+        // dry_run=true → no actual exec; the function still evaluates the gate.
         run_hooks(&hooks, "test", HookRunContext::new(true, &log, Some(&vars)))
             .expect("snapshot=true must let the hook proceed");
     }
@@ -842,7 +842,7 @@ mod tests {
 
     #[test]
     fn hook_if_falsy_literal_no_vars_skips() {
-        // The complementary pin: an explicitly-falsy literal still skips on
+        // The complementary test: an explicitly-falsy literal still skips on
         // the no-vars path. `false-cmd` would error if spawned; a non-dry-run
         // call succeeding proves it was skipped, not executed.
         let log = test_logger();
@@ -1149,7 +1149,7 @@ mod tests {
         let vars = vars_with_snapshot(false);
         let hooks = vec![structured("true", Some("{{ UndefinedSymbol }}"))];
         let err = run_hooks(&hooks, "test", HookRunContext::new(true, &log, Some(&vars)))
-            .expect_err("unrenderable template must surface as Err");
+            .expect_err("unrenderable template must return Err");
         let chain = format!("{err:#}");
         assert!(
             chain.contains("template render failed") || chain.contains("UndefinedSymbol"),
@@ -1424,7 +1424,7 @@ mod tests {
     #[cfg(feature = "test-helpers")]
     #[test]
     fn hook_output_summary_present_at_normal() {
-        // The complementary pin: at non-verbose verbosity the live stream is
+        // The complementary test: at non-verbose verbosity the live stream is
         // suppressed, so the `[hook output]` summary IS the only output for
         // the hook's stdout and must still fire.
         let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
@@ -1974,7 +1974,7 @@ mod tests {
     /// The documented `$ANODIZER_ARTIFACT` env channel: a per-artifact
     /// `before_publish` hook that reads the ENVIRONMENT variable (not the
     /// template var) must see each artifact's filename. Proves the channel is
-    /// wired, not fiction.
+    /// wired.
     #[test]
     fn before_publish_binds_anodizer_artifact_env_per_artifact() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2132,7 +2132,7 @@ mod tests {
     }
 
     /// A WORKSPACE-only crate's `crates[].before` fires on the plain-release
-    /// path (empty selection): the walk is the crate universe, not the
+    /// path (empty selection): the scan covers the crate universe, not the
     /// top-level `crates:` list, so a pure-`workspaces:` config gets the same
     /// hooks `--publish-only`'s per-crate loop already honors.
     #[test]

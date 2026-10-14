@@ -38,7 +38,7 @@ use regex::Regex;
 use std::path::{Path, PathBuf};
 
 use crate::commands::bump::cargo_edit::{
-    Propagated, WorkspaceInfo, apply_plan, heal_dep_floors, load_workspace, member_version,
+    Propagated, WorkspaceInfo, apply_plan, heal_dep_minimums, load_workspace, member_version,
 };
 use crate::commands::bump::plan::{BumpLevel, PlanRow};
 use crate::commands::changelog_sync::{
@@ -260,7 +260,7 @@ fn skip_ci_suffix(skip_ci_on_bump: bool) -> &'static str {
 ///
 /// Rewrites `[workspace.package].version`, every member manifest that doesn't
 /// inherit, and every `[workspace.dependencies].*.version` / sibling
-/// `[dependencies].*.version` pin for bumped crates. Then regenerates
+/// `[dependencies].*.version` requirement for bumped crates. Then regenerates
 /// Cargo.lock and creates a single `chore(release): bump workspace → X`
 /// commit covering the edits.
 ///

@@ -1068,7 +1068,7 @@ fn non_dry_run_missing_file_still_errors() {
     assert!(
         err.to_string().contains("hashing")
             || err.chain().any(|c| c.to_string().contains("hashing")),
-        "the real hashing error must surface, got: {err:#}"
+        "the real hashing error must be returned, got: {err:#}"
     );
 }
 

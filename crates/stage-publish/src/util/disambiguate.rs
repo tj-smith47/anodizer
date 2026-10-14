@@ -123,7 +123,7 @@ pub(crate) fn disambiguate_by_format_with_sink<T>(
                  allowed. Narrow `ids:` further."
             );
         }
-        // Walk preferred_formats in priority order; first format with exactly
+        // Scan preferred_formats in priority order; first format with exactly
         // one match wins.
         let mut chosen_idx: Option<usize> = None;
         for fmt in preferred_formats {

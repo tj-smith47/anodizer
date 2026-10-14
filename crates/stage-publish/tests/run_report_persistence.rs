@@ -125,8 +125,8 @@ fn publish_stage_writes_report_and_rollback_run_can_read_it() {
     for r in &updated.results {
         // Either RolledBack (if a matching publisher were in the
         // registry) or RollbackFailed (registry mismatch — the case here).
-        // The assertion below pins "not Succeeded" to confirm
-        // rollback::run actually walked the entries; an unchanged
+        // The assertion below checks "not Succeeded" to confirm
+        // rollback::run actually visited the entries; an unchanged
         // `Succeeded` would mean the dispatcher didn't see them at
         // all, which would be a real bug.
         assert!(

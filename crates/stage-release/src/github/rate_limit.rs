@@ -39,7 +39,7 @@ pub(crate) fn tokio_sleep() -> SleepFn {
 /// Compute the seconds to sleep waiting for the GitHub rate-limit window
 /// to reset. Returns `None` when `remaining > threshold` (no sleep needed).
 /// Returns `Some(reset_epoch - now + 1)` when the reset is in the future,
-/// and `Some(5)` (the past-reset floor) when `reset_epoch <= now`.
+/// and `Some(5)` (the past-reset minimum) when `reset_epoch <= now`.
 ///
 /// Pure — no IO, no clock reads. Callers pass `now` as the current epoch
 /// seconds; the wrapper reads `SystemTime::now()`.
@@ -71,7 +71,7 @@ pub(crate) fn compute_rate_limit_sleep_secs(
 /// returns without aborting the outer release flow.
 ///
 /// Process-env-fed shim retained for the transport-failure test (which
-/// pins the `silently degrade on connect refused` contract through the
+/// tests the `silently degrade on connect refused` contract through the
 /// default `ProcessEnvSource`).
 // Test-only shim whose sole consumer is unix-gated; gating it the same way
 // keeps it from reading as dead code on a Windows build.
@@ -268,7 +268,7 @@ mod sigterm_tests {
         let _ = SignalKind::terminate();
     }
 
-    /// Pin the silent-degrade contract: when the rate-limit HTTP request
+    /// Test the silent-degrade contract: when the rate-limit HTTP request
     /// fails at the transport layer (connection refused), the function
     /// must return promptly instead of propagating or panicking.
     ///
@@ -393,7 +393,7 @@ mod http_tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
-    /// 500 walks the same `!is_success()` branch as 401 — pinned
+    /// 500 takes the same `!is_success()` branch as 401, tested
     /// separately because GitHub can return either on a transient
     /// outage. A regression that added retry logic to this function
     /// would inflate the call count above 1.
@@ -440,7 +440,7 @@ mod http_tests {
 
     /// Missing JSON pointers (`/resources/core/remaining`) must
     /// `unwrap_or(u64::MAX)` — i.e. treat the response as "infinite
-    /// quota" and skip the sleep. This pins the defensive default; a
+    /// quota" and skip the sleep. This tests the defensive default; a
     /// regression to `unwrap_or(0)` would force every release to sleep
     /// on a schema drift.
     #[tokio::test]
@@ -461,7 +461,7 @@ mod http_tests {
 
     /// Drive `check_github_rate_limit` through the real sleep + select
     /// path with a ~1 s reset window. The pure helper covers the
-    /// branch logic; this test pins the WIRING — that the function
+    /// branch logic; this test checks the WIRING — that the function
     /// actually awaits `sleep_secs`, races it against the signal arms,
     /// and resumes cleanly. A regression that dropped the `.await` (or
     /// swapped `select!` for a bare `sleep.await` then forgot to wake)
@@ -526,15 +526,15 @@ mod compute_tests {
     }
 
     /// Reset strictly in the past AND reset == now both fall to the
-    /// 5 s floor. The boundary matters: a regression to `>=` would
+    /// 5 s minimum. The boundary matters: a regression to `>=` would
     /// underflow `reset_epoch - now` when they're equal (or yield 1 s
     /// instead of 5 s on the equal case), shrinking the retry budget
     /// below the upstream window's grace.
     #[test]
-    fn compute_returns_past_reset_floor_when_reset_in_past_or_equal_to_now() {
+    fn compute_returns_past_reset_minimum_when_reset_in_past_or_equal_to_now() {
         // Reset strictly in the past.
         assert_eq!(compute_rate_limit_sleep_secs(0, 100, 500, 1000), Some(5),);
-        // Reset exactly equal to now — pinned because the production
+        // Reset exactly equal to now, tested because the production
         // code branches on `reset_epoch > now`, not `>=`.
         assert_eq!(compute_rate_limit_sleep_secs(0, 100, 1000, 1000), Some(5),);
     }
@@ -551,7 +551,7 @@ mod compute_tests {
         );
     }
 
-    /// Zero remaining is the canonical depleted case; pinned
+    /// Zero remaining is the canonical depleted case, tested
     /// separately from the threshold boundary because real GitHub
     /// responses often hit zero (not threshold-exact) before the
     /// pre-flight check fires.
@@ -571,7 +571,7 @@ mod sleep_injection_tests {
     //! These tests use [`check_github_rate_limit_with_sleep`] with a
     //! no-op sleep recorder that captures the requested [`Duration`]
     //! without blocking. The pure branch logic is already covered by
-    //! `compute_tests`; these tests pin that the wiring between the
+    //! `compute_tests`; these tests check that the wiring between the
     //! HTTP-response parser and the sleep callback is correct — i.e.
     //! the computed duration actually reaches the injected callback.
     use super::test_helpers::{canned_json_200, env_with_base};
@@ -632,10 +632,10 @@ mod sleep_injection_tests {
     }
 
     /// When `reset_epoch <= now` (reset already passed), the 5-second
-    /// floor applies. Pins the past-reset branch through the full
+    /// minimum applies. Tests the past-reset branch through the full
     /// HTTP + sleep-injection path.
     #[tokio::test]
-    async fn past_reset_records_five_second_floor() {
+    async fn past_reset_records_five_second_minimum() {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock is post-epoch")

@@ -74,7 +74,7 @@ pub fn compute_skip_arg(extra: &[&str]) -> String {
 /// Invoke the running `anodizer` binary against `worktree_path` with the
 /// supplied isolated env.
 ///
-/// Pinning args:
+/// Fixed args:
 /// - `release` — drives the full build-side pipeline.
 /// - `--snapshot` (when `snapshot` is `true`) — disables tag-cutting and
 ///   tells stages to use the pre-resolved SDE. The release workflow
@@ -422,7 +422,7 @@ mod tests {
         });
         assert!(
             res.is_err(),
-            "missing binary should surface as an error, not a panic"
+            "missing binary should return an error instead of panicking"
         );
     }
 
@@ -611,7 +611,7 @@ mod tests {
                 .and_then(|(_, v)| v)
                 .and_then(|v| v.to_str())
                 .map(str::to_string);
-            // Pin presence + the `+2` floor rather than an exact value:
+            // Check presence and the `+2` minimum instead of an exact value:
             // SECTION_DEPTH is process-global and sibling tests open
             // sections concurrently, so the exact depth at build time is
             // not stable under a parallel test runner.
@@ -900,7 +900,7 @@ mod tests {
     /// classification `release --prepare` skips: everything that reaches
     /// upstream is also a hermetic-rebuild side effect (the harness merely
     /// adds host-state extras like notarize on top). Holds by construction
-    /// since the derivation, but pins the relation against a future rewrite
+    /// since the derivation, but holds the relation against a future rewrite
     /// of either set.
     #[test]
     fn side_effect_stages_superset_of_upstream_stages() {

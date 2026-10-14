@@ -402,7 +402,7 @@ pub(crate) fn render_krew_manifest_for_crate(
     let amd64_variant = amd64_variant(krew_cfg);
     let arm_variant = arm_variant(krew_cfg);
 
-    // Krew plugins support a single binary per archive. Walk the eligible
+    // Krew plugins support a single binary per archive. Scan the eligible
     // archives — through the SAME `ids` allow-list `find_all_platform_artifacts_with_variant`
     // applies (via the shared `filter_by_ids`), never a hand-rolled inline copy —
     // so an `ids`-excluded archive's binary count is not mistakenly enforced.

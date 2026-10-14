@@ -101,7 +101,7 @@ impl AnnounceSentMarker {
                     }
                 }
             },
-            // Missing file is the common first-run case — not an error.
+            // Missing file is the common first-run case and is no error.
             Err(_) => SentRecord {
                 version: version.to_string(),
                 sent: BTreeSet::new(),

@@ -2,7 +2,7 @@
 //! deterministic PEP 427 wheel assembly.
 //!
 //! The platform tag is derived from the artifact's target triple plus the
-//! binary's own bytes — the glibc floor of an ELF, the Mach-O deployment
+//! binary's own bytes — the minimum glibc version of an ELF, the Mach-O deployment
 //! target — so the wheel never claims broader compatibility than the binary
 //! actually has. Wheel bytes are deterministic: entries are written in
 //! sorted order, deflate-compressed, with every mtime pinned to the commit
@@ -18,7 +18,7 @@ use sha2::{Digest as _, Sha256};
 use super::pep::escape_distribution_name;
 
 /// macOS deployment-target fallback when the Mach-O declares no version
-/// load command, keyed by arch: Intel builds default to the 10.12 floor
+/// load command, keyed by arch: Intel builds default to the 10.12 minimum
 /// Rust itself targets; arm64 hardware starts at Big Sur.
 const MACOS_FALLBACK_X86_64: (u16, u16) = (10, 12);
 const MACOS_FALLBACK_ARM64: (u16, u16) = (11, 0);
@@ -28,21 +28,21 @@ const MACOS_FALLBACK_ARM64: (u16, u16) = (11, 0);
 /// ancient x86_64 baseline symbol `GLIBC_2.2.5` derives `(2, 2)` after the
 /// third component is dropped — but `manylinux_2_2` is below every
 /// recognized manylinux platform, so pip/packaging would not match it. The
-/// tag is floored to this pair so such a binary tags `manylinux_2_5` (which
+/// tag is raised to this pair so such a binary tags `manylinux_2_5` (which
 /// it genuinely runs on) instead of an unrecognized `manylinux_2_2`.
-const MANYLINUX_GLIBC_FLOOR: (u64, u64) = (2, 5);
+const MANYLINUX_GLIBC_MINIMUM: (u64, u64) = (2, 5);
 
 /// Lowest manylinux glibc pair a *fully-static* gnu binary may claim for
 /// `arch`. A static binary imports no versioned glibc symbol, so it runs on any
 /// glibc host — but the tag's arch must actually exist at that manylinux level.
 /// manylinux1 (`2_5`) and manylinux2010 (`2_12`) are x86-only; aarch64's first
 /// manylinux profile is manylinux2014 (`2_17`), so a static aarch64 binary
-/// floors to `2_17` (a `manylinux_2_5_aarch64` tag names a platform pip never
-/// enumerates). x86_64/i686 floor to the manylinux1 baseline.
-fn static_manylinux_floor(arch: &str) -> (u64, u64) {
+/// is raised to `2_17` (a `manylinux_2_5_aarch64` tag names a platform pip never
+/// enumerates). x86_64/i686 are raised to the manylinux1 baseline.
+fn static_manylinux_minimum(arch: &str) -> (u64, u64) {
     match arch {
         "aarch64" => (2, 17),
-        _ => MANYLINUX_GLIBC_FLOOR,
+        _ => MANYLINUX_GLIBC_MINIMUM,
     }
 }
 
@@ -117,8 +117,8 @@ fn wheel_arch(triple: &str) -> Result<&'static str> {
 ///
 /// | target family | tag |
 /// |---|---|
-/// | `*-linux-gnu*` (dynamic) | `manylinux_<glibc maj>_<min>_<arch>` (from the binary's glibc floor) |
-/// | `*-linux-gnu*` (fully static) | `manylinux_<floor>_<arch>` (arch-aware floor: `2_5` x86, `2_17` aarch64) |
+/// | `*-linux-gnu*` (dynamic) | `manylinux_<glibc maj>_<min>_<arch>` (from the binary's minimum glibc version) |
+/// | `*-linux-gnu*` (fully static) | `manylinux_<minimum>_<arch>` (arch-aware minimum: `2_5` x86, `2_17` aarch64) |
 /// | `*-linux-musl*` | `musllinux_1_2_<arch>` |
 /// | `*-apple-darwin` (thin) | `macosx_<minos maj>_<min>_<x86_64\|arm64>` |
 /// | `*-apple-darwin` (fat) | `macosx_<minos maj>_<min>_universal2` |
@@ -130,7 +130,7 @@ fn wheel_arch(triple: &str) -> Result<&'static str> {
 /// A gnu-target binary with no glibc requirement is only accepted when it is a
 /// fully-static ELF (no `PT_INTERP` — anodizer's default build): it imports no
 /// versioned glibc symbol and runs on any glibc host, so it tags at an
-/// arch-aware manylinux floor. A *dynamically linked* gnu binary always imports
+/// arch-aware manylinux minimum. A *dynamically linked* gnu binary always imports
 /// versioned glibc symbols, so a missing requirement there (or a non-ELF under
 /// a gnu triple) means the artifact is not the gnu binary it claims to be, and
 /// the tag hard-errors.
@@ -194,12 +194,12 @@ pub(crate) fn platform_tag(triple: &str, traits: &BinaryTraits) -> Result<String
         if triple.contains("gnu") {
             return match traits.glibc {
                 Some((maj, min)) => {
-                    // Floor below-baseline pairs (e.g. `2.2` from the truncated
+                    // Raise below-baseline pairs (e.g. `2.2` from the truncated
                     // `GLIBC_2.2.5` baseline symbol) up to the manylinux1
                     // baseline — `manylinux_2_2` is below any recognized
                     // manylinux platform.
-                    let (maj, min) = if (maj, min) < MANYLINUX_GLIBC_FLOOR {
-                        MANYLINUX_GLIBC_FLOOR
+                    let (maj, min) = if (maj, min) < MANYLINUX_GLIBC_MINIMUM {
+                        MANYLINUX_GLIBC_MINIMUM
                     } else {
                         (maj, min)
                     };
@@ -209,15 +209,15 @@ pub(crate) fn platform_tag(triple: &str, traits: &BinaryTraits) -> Result<String
                 // glibc symbol, so "no GLIBC_* requirement" is correct, not a
                 // wrong-binary tell — anodizer ships fully-static linux-gnu
                 // binaries. It runs on any glibc host; tag at the arch's lowest
-                // manylinux floor.
+                // manylinux minimum.
                 None if traits.elf && !traits.dynamically_linked => {
-                    let (maj, min) = static_manylinux_floor(arch);
+                    let (maj, min) = static_manylinux_minimum(arch);
                     Ok(format!("manylinux_{maj}_{min}_{arch}"))
                 }
                 // A dynamically linked gnu ELF always imports versioned glibc
                 // symbols; their absence means a stripped verneed. A non-ELF
                 // under a gnu triple is likewise the wrong binary. Either way,
-                // no trustworthy manylinux floor can be derived — hard-error
+                // no trustworthy manylinux minimum can be derived — hard-error
                 // rather than ship an immutable wheel with a guessed tag.
                 None => bail!(
                     "pypi: binary for gnu target '{triple}' declares no GLIBC_* \

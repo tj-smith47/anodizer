@@ -221,7 +221,7 @@ run_scanner violations -v ENTRY_RE="$ENTRY_RE" \
     }
 
     # One hop: the body plus the body of every same-file function it calls. A
-    # deeper walk would let an unrelated helper three levels down excuse a
+    # deeper search would let an unrelated helper three levels down excuse a
     # reach the test itself never bounded.
     function with_helpers(body,   helper, combined) {
         combined = body

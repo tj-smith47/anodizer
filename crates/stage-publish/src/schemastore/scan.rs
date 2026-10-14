@@ -8,7 +8,7 @@
 //! `{}[]` only when they lie outside any string literal or comment. This module
 //! is that scanner stack — pure byte arithmetic, no catalog domain types.
 
-/// Cursor that walks JSON/JSONC bytes while tracking whether the current
+/// Cursor that steps through JSON/JSONC bytes while tracking whether the current
 /// position is inside a string literal or a `//` line comment, so that
 /// structural `{}[]"` only count when they are *outside* both.
 ///

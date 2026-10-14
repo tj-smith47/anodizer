@@ -135,8 +135,8 @@ pub fn try_compile_glob(
 /// lexicographic order; later (alphabetically-greater) matching keys override
 /// earlier ones on conflicting values. With both `*-linux-gnu` and the exact
 /// target string matching, the exact key sorts later and wins coincidentally.
-/// For two glob keys (e.g. `*-linux-gnu` and `x86_64-*`), ASCII order — not
-/// pattern specificity — decides. Authors of multiple overlapping keys must
+/// For two glob keys (e.g. `*-linux-gnu` and `x86_64-*`), ASCII order
+/// decides; pattern specificity is ignored. Authors of multiple overlapping keys must
 /// keep that in mind; prefer non-overlapping patterns or rely on the exact
 /// target string to override globs.
 ///
@@ -314,7 +314,7 @@ pub fn declared_amd64_variant(build: &BuildConfig, target: &str) -> Option<Strin
 ///
 /// When BOTH a declaration and a detected level exist and they differ, a
 /// `log.warn` names the two — the stale-declaration catcher for a tuning env
-/// bumped to a new level while `amd64_variant:` still pins the old one. The
+/// bumped to a new level while `amd64_variant:` still names the old one. The
 /// declaration still wins, exactly as documented on the config field.
 pub fn build_amd64_variant(
     build: &BuildConfig,
@@ -359,7 +359,7 @@ pub fn prebuilt_amd64_variant(build: &BuildConfig, target: &str) -> Option<Strin
 /// twin of the artifact `amd64_variant` metadata that names a v2/v3-tuned
 /// group's release assets.
 ///
-/// Walks the crate's planned builds in the planner's artifact-registration
+/// Visits the crate's planned builds in the planner's artifact-registration
 /// order and projects the first producing, non-skipped, non-ignored build
 /// that covers `target` — the same build whose binary the archive stage
 /// names the target's group by. `builder: prebuilt` builds mirror the
@@ -413,7 +413,7 @@ pub fn config_time_amd64_variant(
     // group is named by its first binary in artifact-registration order,
     // which is not raw config order: prebuilt imports register during
     // planning, compile jobs are registered in planned order after them, and
-    // copy_from jobs run last. Walk the builds in the same three passes so
+    // copy_from jobs run last. Visit the builds in the same three passes so
     // the projected variant belongs to a group that is really produced.
     let pass_matches = |pass: usize, b: &BuildConfig| -> bool {
         let prebuilt = matches!(b.builder, Some(BuilderKind::Prebuilt));
@@ -1052,7 +1052,7 @@ mod tests {
     #[test]
     fn rustflags_shadows_cargo_target_rustflags() {
         // Cargo's extra-flags sources are mutually exclusive, first present
-        // wins (empirically pinned against cargo 1.96.0: with both set, only
+        // wins (measured against cargo 1.96.0: with both set, only
         // RUSTFLAGS reaches rustc; RUSTFLAGS="" still suppresses the
         // target-specific var).
         let both = HashMap::from([
@@ -1296,7 +1296,7 @@ mod tests {
         // The planner never renders a copy_from job's env: a tuning level
         // that only exists post-render stays undetected for it (the compile
         // path detects it), while a raw literal token still detects. Both
-        // halves pin the projection to the planner's raw-map behavior.
+        // halves hold the projection to the planner's raw-map behavior.
         let mut build = tuned_build(LINUX_AMD64, "-Ctarget-cpu={{ CpuVar }}");
         build.copy_from = Some("other".to_string());
         let krate = crate_with_build(build);

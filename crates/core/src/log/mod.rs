@@ -86,8 +86,8 @@ mod tests;
 pub use capture::{LogCapture, LogLevel};
 pub use depth::{IndentGuard, LOG_DEPTH_ENV, SectionGuard, current_depth, indent_one_level};
 pub use render::{indent, render_error, render_note, render_warning, stage_header};
-/// Renderer internals a test pins a document against. Gated behind the same
-/// feature `test_helpers` sits behind: a document-to-renderer pin is a test
+/// Renderer internals a test checks a document against. Gated behind the same
+/// feature `test_helpers` sits behind: a document-to-renderer check is a test
 /// need, and a library that promises these in its public API cannot stop
 /// promising them without a breaking change.
 #[cfg(feature = "test-helpers")]

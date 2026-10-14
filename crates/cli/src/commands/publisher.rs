@@ -487,10 +487,10 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    /// Exact-equality pin on both run-line registers. The live and
+    /// Exact-equality test on both run-line registers. The live and
     /// dry-run lines must stay symmetric (same label/path/command order,
     /// same `via` tail) — a swapped argument here renders garbage on
-    /// every publisher invocation, so the full strings are pinned, not
+    /// every publisher invocation, so the full strings are compared, not
     /// fragments.
     #[test]
     fn run_line_renders_symmetric_live_and_dry_run_lines() {
@@ -679,7 +679,7 @@ mod tests {
         );
     }
 
-    /// Pins S3: end-to-end check that the always-set `id` default
+    /// End-to-end check that the always-set `id` default
     /// (populated by stage-build's `artifact_meta` when `build.id` is unset)
     /// flows through the publisher ids filter. A user with `build.id` unset
     /// and `publishers[].ids: [<binary_name>]` must see their artifacts pass.
@@ -1309,7 +1309,7 @@ crates:
     #[test]
     fn test_publisher_dir_sets_working_directory() {
         // Command::current_dir cannot be observed without running the command,
-        // so this pins the config parsing round-trip instead: the dir field is
+        // so this tests the config parsing round-trip instead: the dir field is
         // present and survives the round-trip.
         let publisher = PublisherConfig {
             name: Some("test".to_string()),
@@ -1506,7 +1506,7 @@ crates:
             1,
             None,
         )
-        .expect_err("malformed `if:` template must surface as a hard error");
+        .expect_err("malformed `if:` template must return a hard error");
         let chain = format!("{err:#}");
         assert!(
             chain.contains("template render failed") || chain.contains("if"),

@@ -49,7 +49,7 @@ pub fn toml_value_to_yaml(
 /// Read a discovered config file into a raw `serde_yaml_ng::Value`,
 /// format-detected by extension (YAML parsed directly, TOML transcoded
 /// through its own parser), so raw-field readers handle every
-/// [`CONFIG_CANDIDATES`] entry — not just the YAML spellings — with one
+/// [`CONFIG_CANDIDATES`] entry, YAML and TOML alike, with one
 /// traversal API. Deliberately performs none of the CLI loader's
 /// include/validation machinery; callers that need the typed [`Config`]
 /// go through the CLI's `load_config`.
@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn toml_value_to_yaml_preserves_non_finite_floats() {
-        // Pins the direct toml→yaml route: a serde_json hop would reject
+        // Tests the direct toml→yaml route: a serde_json hop would reject
         // `inf`/`nan` (JSON cannot represent them) even though both TOML
         // and YAML can. These must survive the transcode.
         let value: toml::Value = toml::from_str("a = inf\nb = -inf\nc = nan\n").unwrap();

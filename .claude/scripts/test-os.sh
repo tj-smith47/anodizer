@@ -106,7 +106,7 @@ poll_windows() { ssh "$1" "Get-Content C:\anodizer\win_test_gate.rc -ea 0" 2>/de
 launch_macos() {
   local host="$1"
   scp -q "$BUNDLE" "$host:gate.bundle" || return 1
-  # Run clone/fetch/checkout SYNCHRONOUSLY (set -e) so a setup failure surfaces
+  # Run clone/fetch/checkout SYNCHRONOUSLY (set -e) so a setup failure shows up
   # as a non-zero ssh exit (→ FAIL(launch)) instead of a one-hour timeout;
   # hard-verify HEAD==$SHA; background ONLY the suite. The runner script ships
   # inside the bundle (it lives in-repo), so the checkout makes it available at
@@ -119,7 +119,7 @@ launch_macos() {
 poll_macos() { ssh "$1" "cat ~/anodizer/mac_test_gate.rc 2>/dev/null" 2>/dev/null | rc_of; }
 
 # Roles are fixed; the machine behind each is configuration. A role with no host
-# configured is reported, not silently dropped — "Windows never ran" and
+# configured is reported: "Windows never ran" and
 # "Windows ran and passed" must never look alike in the verdict.
 ROLES="windows macos"
 HOST_OF[windows]="$WINDOWS_HOST"
@@ -178,8 +178,8 @@ say "verdict ($SHORT):"
 fail=0
 ran=0
 for role in local $ROLES; do
-  # Default to FAIL, not SKIP: an unset result for a processed role is an
-  # internal bug, and the gate must surface it rather than pass silently.
+  # Default to FAIL: an unset result for a processed role is an
+  # internal bug, and the gate must report it.
   v="${R[$role]:-FAIL(internal-unset)}"
   printf '  %-10s %s\n' "$role" "$v"
   case "$v" in

@@ -165,7 +165,7 @@ re-key it by hand:
 `Context.deprecated` field, the `Context.deprecate()` method, the per-key
 detection branches and their unit tests, and the `DEPRECATED:` print in
 `anodizer check` were all deleted. The CLI is now strictly
-"parse → validate → run"; there is no warning surface for legacy keys.
+"parse → validate → run"; no warning is printed for legacy keys.
 Unknown fields error from serde directly with the list of accepted
 spellings (no migration hint).
 
@@ -174,7 +174,7 @@ spellings (no migration hint).
 - `resolve_repo_owner_name(publisher, legacy_field, modern, legacy_owner, legacy_name)` →
   `resolve_repo_owner_name(modern)`. The legacy-field bail path
   (modern + legacy both set with full owner/name pairs → error) was dead
-  surface — every call site already passed `None, None` for the legacy
+  code — every call site already passed `None, None` for the legacy
   pair. The `publisher: &str` param survived the first cleanup but was
   also dead (every call site passed a string-literal that never reached
   any branch); dropped along with the `Result<>` wrapper (the function

@@ -2,13 +2,13 @@
 # Guard: status labels come ONLY from the log module, never open-coded.
 #
 # Contract (crates/core/src/log/): the Warning / Error / Note status labels
-# are rendered by render_warning / render_error / render_note (and surfaced via
+# are rendered by render_warning / render_error / render_note (and printed via
 # StageLogger::warn / ::error / the tracing formatter). Those are the single
 # source of truth for the label text, palette, AND format — a right-aligned
 # gutter label with NO colon, aligned to the section-verb column. A stage that
 # open-codes `format!("Warning: …")` / `.status("Error: …")` bypasses that
 # authority and reintroduces the anti-Cargo `:`-suffixed, mis-aligned line the
-# format test pins against.
+# format test checks against.
 #
 # This audit fails (exit 1) when a string literal OPENS (immediately after its
 # `"`) with a `Warning: ` / `Error: ` / `Note: ` label — colon then one space —
@@ -197,7 +197,7 @@ if [[ -n "$violations" ]]; then
     echo "$violations"
     echo "These string literals open-code a status-label prefix instead of going"
     echo "through the single authority in crates/core/src/log/. That reintroduces"
-    echo "the colon-suffixed, mis-aligned line the format is pinned against."
+    echo "the colon-suffixed, mis-aligned line the format test checks against."
     echo
     echo "Fix: call log.warn(msg) / log.error(msg) (or render_warning / render_error"
     echo "/ render_note for the loggerless tracing path) with the bare message; the"

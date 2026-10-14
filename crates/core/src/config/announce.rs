@@ -16,12 +16,12 @@ use super::{HumanDuration, StringOrBool, deserialize_string_or_bool_opt};
 /// this deadline are abandoned with a warning and are not awaited further.
 pub const DEFAULT_ANNOUNCE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(90);
 
-/// Floor for the resolved announce deadline.
+/// Minimum for the resolved announce deadline.
 ///
 /// An explicit `deadline: "0s"` (or any sub-second value) would let the runner
 /// abandon every channel on its first scheduling tick — traffic still leaves,
 /// but every result is warned as "did not complete", which is a useless and
-/// surprising state. Clamping the resolved deadline up to this floor makes that
+/// surprising state. Clamping the resolved deadline up to this minimum makes that
 /// footgun unrepresentable: the smallest meaningful aggregate budget is one
 /// second, enough for a reachable local relay to report.
 pub const MIN_ANNOUNCE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1);
@@ -129,7 +129,7 @@ impl AnnounceConfig {
     /// [`DEFAULT_ANNOUNCE_DEADLINE`] when `deadline:` is unset.
     ///
     /// An explicit but degenerate value (`"0s"` or anything below
-    /// [`MIN_ANNOUNCE_DEADLINE`]) is clamped UP to the floor: a zero/sub-second
+    /// [`MIN_ANNOUNCE_DEADLINE`]) is clamped UP to the minimum: a zero/sub-second
     /// deadline would make the runner abandon every channel on the first tick
     /// (traffic leaves, every result warned as "did not complete"), so it is
     /// raised to the smallest budget under which a reachable channel can report.
@@ -390,7 +390,7 @@ pub struct EmailAnnounce {
     /// port — so the common case (corporate / SaaS SMTP relays exposing
     /// STARTTLS on 587) works out of the box without a config knob. The
     /// `auto` encryption mode then resolves to STARTTLS for 587, which is
-    /// the conventional pairing. Pinned by
+    /// the conventional pairing. Tested by
     /// `test_email_smtp_port_defaults_to_587`.
     pub port: Option<u16>,
     /// SMTP username (can also be set via SMTP_USERNAME env var).
@@ -590,11 +590,11 @@ mod tests {
         assert_eq!(
             announcers,
             properties - 4,
-            "an announcer was skipped by the walk"
+            "an announcer was skipped by the scan"
         );
         assert_eq!(
             checked, 80,
-            "the schema walk found a different number of fields"
+            "the schema scan found a different number of fields"
         );
     }
 
@@ -693,9 +693,9 @@ announce:
     }
 
     #[test]
-    fn deadline_zero_is_clamped_to_floor() {
+    fn deadline_zero_is_clamped_to_minimum() {
         // An explicit `deadline: "0s"` must NOT abandon every channel on the
-        // first tick — it is raised to the 1s floor.
+        // first tick — it is raised to the 1s minimum.
         let cfg = AnnounceConfig {
             deadline: Some(HumanDuration(Duration::ZERO)),
             ..Default::default()
@@ -704,7 +704,7 @@ announce:
     }
 
     #[test]
-    fn deadline_subsecond_is_clamped_to_floor() {
+    fn deadline_subsecond_is_clamped_to_minimum() {
         let cfg = AnnounceConfig {
             deadline: Some(HumanDuration(Duration::from_millis(250))),
             ..Default::default()
@@ -713,7 +713,7 @@ announce:
     }
 
     #[test]
-    fn deadline_above_floor_is_preserved() {
+    fn deadline_above_minimum_is_preserved() {
         let cfg = AnnounceConfig {
             deadline: Some(HumanDuration(Duration::from_secs(45))),
             ..Default::default()

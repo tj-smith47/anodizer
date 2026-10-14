@@ -238,7 +238,7 @@ impl<'a> PerCrateOverlayGuard<'a> {
     }
 
     /// Reborrow the wrapped `&mut Context` for one loop iteration.
-    /// Bypasses the borrow that would otherwise pin the original `ctx`
+    /// Bypasses the borrow that would otherwise hold the original `ctx`
     /// alias for the entire lifetime of the guard.
     pub(super) fn ctx_mut(&mut self) -> &mut Context {
         self.ctx
@@ -473,7 +473,7 @@ pub(super) fn run_one_crate_dist(
         anodizer_core::text::count_noun(preserved.artifacts.len(), "artifact", "artifacts"),
     ));
 
-    // Pin the determinism-check → publish-only safety invariant: hash
+    // Holds the determinism-check → publish-only safety invariant: hash
     // every preserved artifact's bytes BEFORE the commit cross-check
     // and any registry mutation. A mismatch here means the dist tree
     // is no longer the bytes the harness verified — refuse to ship
@@ -610,8 +610,8 @@ pub(super) fn run_one_crate_dist(
     //     filters it out via `is_directory_bundle_artifact`; the presence
     //     check must share that classifier, else a legitimately-preserved
     //     `.app` directory fails the `is_file()` probe and reads as
-    //     "missing". Same classifier — not a runtime `is_dir()` probe,
-    //     which would misbehave under dry-run before the dir is materialized.
+    //     "missing". A runtime `is_dir()` probe
+    //     would misbehave under dry-run before the dir is materialized.
     crate::commands::helpers::detect_missing_files(
         ctx.artifacts
             .all()
@@ -784,7 +784,7 @@ pub(super) fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
     ));
 }
 
-/// Walk `ctx.artifacts` grouped by `path` and fail if any path appears
+/// Read `ctx.artifacts` grouped by `path` and fail if any path appears
 /// more than once. Called post-rehydration so a sharded matrix that
 /// accidentally overlapped on a target is reported as a hard error rather
 /// than a double-publish downstream.

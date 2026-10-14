@@ -257,7 +257,7 @@ Templates use the Tera engine with a preprocessor that auto-translates GoRelease
 `text/template` syntax — `{{ .Field }}`, `eq`/`ne`/`and`/`or`/`not`, positional function
 calls, `len`, `printf`. Existing GoReleaser template strings work without modification.
 
-anodizer extends the template surface with hash helpers (`sha256`, `blake3`, `md5`),
+anodizer extends the template functions with hash helpers (`sha256`, `blake3`, `md5`),
 `readFile`/`mustReadFile`, time formatting, `reReplaceAll`, `urlPathEscape`, and `mdv2escape`.
 
 ```yaml

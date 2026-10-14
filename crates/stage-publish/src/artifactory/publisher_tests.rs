@@ -26,7 +26,7 @@ fn artifactory_preflight_defaults_to_pass() {
 #[test]
 fn artifactory_rollback_warns_when_no_targets_recorded() {
     // Empty evidence drives rollback into the no-targets branch.
-    // The capture pins that production actually invoked `log.warn`
+    // The capture checks that production actually invoked `log.warn`
     // with the helper-formatted message — a hand-constructed expected
     // string compared against the helper output would pass even if
     // the rollback body forgot the warn entirely.
@@ -48,7 +48,7 @@ fn artifactory_rollback_warns_when_no_targets_recorded() {
 
 /// The empty-evidence warn text comes from the shared helper. Tests
 /// across the Assets-group publishers reuse this helper so the
-/// message wording can be pinned in one place.
+/// message wording can be checked in one place.
 #[test]
 fn artifactory_rollback_empty_warning_msg_shape() {
     let ctx = anodizer_core::context::Context::test_fixture();
@@ -140,7 +140,7 @@ fn artifactory_rollback_target_extra_roundtrips() {
 
 #[test]
 fn artifactory_target_extra_carries_no_secret_material() {
-    // Structural pin: build typed evidence with a populated
+    // Structural check: build typed evidence with a populated
     // variant and assert (a) no credential-shaped keys appear AND
     // (b) the operator-public upload coordinates are preserved.
     let mut e = anodizer_core::PublishEvidence::new("artifactory");

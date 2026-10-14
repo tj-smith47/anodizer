@@ -8,7 +8,7 @@
 //! --no-edit`, and pushes the revert back to the same branch.
 //!
 //! CREDENTIAL HANDLING: `NixTarget` stores `token_env_var` — the
-//! NAME of the env var — not the resolved token VALUE. The token is
+//! NAME of the env var, and never the resolved token VALUE. The token is
 //! read from the live env at rollback time so persisted evidence
 //! carries no secret material. Same rule applies to the homebrew /
 //! scoop git-revert publishers.
@@ -73,7 +73,7 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 }
 
 /// Decision predicate for the no-eligible-crates warning. True when the
-/// publisher walked the selection but the configured-predicate filtered
+/// publisher scanned the selection but the configured-predicate filtered
 /// every crate out — distinct from "ran successfully in dry-run mode".
 ///
 /// `processed` is the count of crates whose `is_nix_per_crate_configured`
@@ -230,7 +230,7 @@ impl anodizer_core::Publisher for NixPublisher {
     }
 
     fn advisory_requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        // Same active-entry walk as `requirements`, but for tools whose
+        // Same active-entry scan as `requirements`, but for tools whose
         // absence only degrades the publish: the schema check's
         // `nix-instantiate --parse` pass over the rendered expression
         // warn+skips without the tool, and `gh pr create` is the preferred
@@ -787,7 +787,7 @@ mod publisher_tests {
 
     #[test]
     fn nix_target_extra_carries_no_secret_material() {
-        // Structural pin: build a typed-variant evidence and assert
+        // Structural check: build a typed-variant evidence and assert
         // (a) no credential-shaped keys appear AND (b) the
         // operator-public shape is preserved.
         let mut e = PublishEvidence::new("nix");
@@ -834,7 +834,7 @@ mod publisher_tests {
 
     #[test]
     fn nix_effective_publish_crates_implicit_all_when_selection_empty() {
-        // Regression pin for the `selected_crates = Vec::new()` failure
+        // Regression test for the `selected_crates = Vec::new()` failure
         // mode: the run path used to iterate the empty Vec and silently
         // skip every configured overlay. The helper now resolves to
         // implicit-all over `publish.nix`-carrying crates.

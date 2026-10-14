@@ -302,7 +302,7 @@ mod tests {
     /// not a count, and each entry must still match text in the tree.
     #[test]
     fn no_production_string_spells_a_plural_in_parentheses() {
-        use crate::test_helpers::test_sources::{production_half, workspace_production_sources};
+        use crate::test_helpers::test_sources::production_corpus;
         const NOT_A_COUNT: &[(&str, &str, &str)] = &[
             (
                 "crates/stage-publish/src/schemastore/manifest.rs",
@@ -328,11 +328,10 @@ mod tests {
         let mut offenders = Vec::new();
         let mut allowed_seen = vec![false; NOT_A_COUNT.len()];
         let mut sources = 0;
-        for source in workspace_production_sources() {
-            let path = source.to_string_lossy().replace('\\', "/");
-            let text = std::fs::read_to_string(&source).expect("read source");
+        for source in production_corpus() {
+            let path = source.path.to_string_lossy().replace('\\', "/");
             sources += 1;
-            let (literals, docs) = literals_and_docs(production_half(&text));
+            let (literals, docs) = literals_and_docs(&source.text);
             let lines = literals
                 .iter()
                 .flat_map(|literal| plural_lines(literal, false))
@@ -347,7 +346,7 @@ mod tests {
                 }
             }
         }
-        assert!(sources > 500, "the walk found only {sources} sources");
+        assert!(sources > 500, "the scan found only {sources} sources");
         assert!(
             offenders.is_empty(),
             "spell these counts with anodizer_core::text::count_noun, or write the \

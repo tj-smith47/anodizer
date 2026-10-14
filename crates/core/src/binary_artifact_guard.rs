@@ -69,8 +69,8 @@ pub fn check(
             continue;
         }
 
-        let surfaces = binary_requiring_surfaces(krate);
-        if surfaces.is_empty() {
+        let outputs = binary_requiring_outputs(krate);
+        if outputs.is_empty() {
             continue;
         }
 
@@ -86,7 +86,7 @@ pub fn check(
              but the build produced no binary artifacts for it — check build.targets \
              and that the release is scoped to the right crate",
             krate.name,
-            surfaces.join(" + "),
+            outputs.join(" + "),
         );
     }
     Ok(())
@@ -101,48 +101,48 @@ pub fn check(
 /// `homebrew_casks:` bind to crates by id / artifact filter rather than a
 /// crate name, so attributing their binary requirement to one specific
 /// crate would risk a false positive and they are intentionally excluded.
-fn binary_requiring_surfaces(krate: &CrateConfig) -> Vec<&'static str> {
-    let mut surfaces = Vec::new();
+fn binary_requiring_outputs(krate: &CrateConfig) -> Vec<&'static str> {
+    let mut outputs = Vec::new();
 
     if has_entries(&krate.dockers_v2) {
-        surfaces.push("dockers_v2");
+        outputs.push("dockers_v2");
     }
     if has_entries(&krate.nfpms) {
-        surfaces.push("nfpm");
+        outputs.push("nfpm");
     }
     if has_entries(&krate.snapcrafts) {
-        surfaces.push("snapcraft");
+        outputs.push("snapcraft");
     }
     if has_entries(&krate.dmgs) {
-        surfaces.push("dmg");
+        outputs.push("dmg");
     }
     if has_entries(&krate.msis) {
-        surfaces.push("msi");
+        outputs.push("msi");
     }
     if has_entries(&krate.pkgs) {
-        surfaces.push("pkg");
+        outputs.push("pkg");
     }
     if has_entries(&krate.nsis) {
-        surfaces.push("nsis");
+        outputs.push("nsis");
     }
     if has_entries(&krate.flatpaks) {
-        surfaces.push("flatpak");
+        outputs.push("flatpak");
     }
     if has_entries(&krate.app_bundles) {
-        surfaces.push("app_bundle");
+        outputs.push("app_bundle");
     }
     if binstall_enabled(krate) {
         // binstall metadata points cargo-binstall at the release archives;
         // a crate with no produced binary would write pkg-url / overrides for
         // assets the release never uploads, so `cargo binstall` 404s.
-        surfaces.push("binstall");
+        outputs.push("binstall");
     }
 
     if let Some(publish) = &krate.publish {
-        surfaces.extend(binary_requiring_publishers(publish));
+        outputs.extend(binary_requiring_publishers(publish));
     }
 
-    surfaces
+    outputs
 }
 
 /// Names of the binary-consuming publishers configured under a crate's
@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn errors_when_binary_surface_configured_but_no_binary() {
+    fn errors_when_binary_output_configured_but_no_binary() {
         let mut krate = crate_named("svc");
         krate.dockers_v2 = Some(vec![DockerV2Config::default()]);
         krate.publish = Some(PublishConfig {
@@ -256,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn ok_for_library_crate_with_no_binary_surface() {
+    fn ok_for_library_crate_with_no_binary_output() {
         // Only a source archive, no binary-requiring output configured —
         // the inverse of the failure case: must NOT trip the guard.
         let config = config_with(crate_named("libonly"));
@@ -268,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn ok_when_binary_surface_has_binary() {
+    fn ok_when_binary_output_has_binary() {
         let mut krate = crate_named("svc");
         krate.dockers_v2 = Some(vec![DockerV2Config::default()]);
         let config = config_with(krate);
@@ -303,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_surface_list_does_not_arm_guard() {
+    fn empty_output_list_does_not_arm_guard() {
         // `dockers_v2: []` is present-but-empty: it declares no output and
         // must not fire even though the field is `Some`.
         let mut krate = crate_named("svc");
@@ -313,7 +313,7 @@ mod tests {
         let mut artifacts = ArtifactRegistry::new();
         artifacts.add(source_artifact("svc"));
 
-        check(&config, &artifacts, &[], None).expect("empty surface list must pass");
+        check(&config, &artifacts, &[], None).expect("empty output list must pass");
     }
 
     #[test]
@@ -459,8 +459,8 @@ mod tests {
     #[test]
     fn workspace_only_crate_with_missing_binary_is_caught() {
         // A crate declared only under `workspaces[].crates` builds like any
-        // other; if its expected binary was not produced the guard must fire
-        // rather than silently pass a top-level-only walk.
+        // other; if its expected binary was not produced the guard fires,
+        // so a scan of the top-level crates alone is not enough to pass.
         let mut member = crate_named("ws-svc");
         member.dockers_v2 = Some(vec![DockerV2Config::default()]);
         let config = Config {

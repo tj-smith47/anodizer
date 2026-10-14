@@ -201,7 +201,7 @@ invocation**, however many crates it covers, including a per-crate publish
 (`anodizer release --publish-only` over a `dist/<crate>/` tree), where the
 root `after` block fires once, after the last crate.
 
-Per-crate hooks are a separate surface with per-crate cardinality:
+Per-crate hooks are a separate setting with per-crate cardinality:
 
 ```yaml
 after:                              # once per run, after the last crate

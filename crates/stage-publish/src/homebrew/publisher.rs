@@ -18,7 +18,7 @@
 //! everything it needs without depending on the ephemeral tempdir.
 //!
 //! CREDENTIAL HANDLING: `HomebrewTarget` stores `token_env_var` —
-//! the NAME of the env var to consult at rollback time — not the
+//! the NAME of the env var to consult at rollback time, and never the
 //! resolved token VALUE. The actual token is read from the live env
 //! at yank time so persisted evidence (`dist/run-<id>/report.json`,
 //! the announce-time release-body summary) carries no secret
@@ -848,12 +848,12 @@ pub(crate) fn block(
 /// (`publish.homebrew_cask:` or `publish.homebrew.cask:`). The single
 /// accessor the registry gate and the per-crate dispatch predicate key on,
 /// so a cask-only crate is published.
-pub(crate) fn crate_surface(p: &anodizer_core::config::PublishConfig) -> Option<&()> {
+pub(crate) fn crate_publish_block(p: &anodizer_core::config::PublishConfig) -> Option<&()> {
     (p.homebrew.is_some() || p.homebrew_cask().is_some()).then_some(&())
 }
 
 pub(crate) fn is_homebrew_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
-    crate::publisher_helpers::is_per_crate_block_configured(ctx, crate_name, crate_surface)
+    crate::publisher_helpers::is_per_crate_block_configured(ctx, crate_name, crate_publish_block)
 }
 
 #[cfg(test)]

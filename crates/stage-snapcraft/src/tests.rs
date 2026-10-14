@@ -443,7 +443,7 @@ fn test_generate_snapcraft_yaml_minimal_with_required_fields() {
 // rejects the field with "Additional properties are not allowed
 // ('icon' was unexpected)", so a stray top-level `icon:` line blocks
 // snap upload even though `snapcraft pack` accepts it locally. These
-// tests pin the omit-when-None behaviour so a future serde refactor
+// tests check the omit-when-None behaviour so a future serde refactor
 // (e.g. dropping `skip_serializing_if`) can't silently regress this
 // behaviour back into emitting a Store-rejected `icon:` key.
 
@@ -560,7 +560,7 @@ fn test_copy_snap_icon_preserves_svg_extension() {
     assert!(meta_dir.join("gui").join("myapp.svg").exists());
 }
 
-/// `copy_snap_icon` must overwrite an existing destination file. Pins the
+/// `copy_snap_icon` must overwrite an existing destination file. Checks the
 /// `fs::copy` truncate-on-conflict contract so a re-run never silently
 /// preserves a stale icon from a prior pack attempt.
 #[test]
@@ -890,7 +890,7 @@ fn snap_is_byte_reproducible_across_time() {
     // snapcraft persists per-user state under $XDG_CACHE_HOME/snapcraft
     // (default ~/.cache); xdg's save_cache_path is not race-safe, so two
     // snapcraft processes from parallel tests creating that shared dir collide
-    // (Errno 17 File exists). Pin every XDG base to this test's tempdir so the
+    // (Errno 17 File exists). Point every XDG base to this test's tempdir so the
     // invocation is hermetic and cannot race a concurrent test.
     let xdg_cache = dir.path().join("xdg-cache");
     let xdg_data = dir.path().join("xdg-data");
@@ -3593,7 +3593,7 @@ fn test_apps_completer_existing_file_is_copied_to_prime() {
         false,
     );
     ctx.options.project_root = Some(tmp.path().to_path_buf());
-    // The contract pinned here: with a valid (relative) completer
+    // The contract tested here: with a valid (relative) completer
     // source at `<project_root>/<completer>`, the staging branch
     // completes without reporting a `copy completer` error. The
     // subsequent snapcraft spawn may succeed (snapcraft installed)
@@ -3613,7 +3613,7 @@ fn test_apps_completer_existing_file_is_copied_to_prime() {
 fn test_apps_completer_absolute_path_is_rejected_with_actionable_error() {
     // An absolute completer path collapses source and destination
     // because `Path::join(absolute)` discards the prefix on every
-    // platform. The stage rejects absolute paths up front; this pins
+    // platform. The stage rejects absolute paths up front; this checks
     // the bail message + the app-naming contract.
     let tmp = TempDir::new().unwrap();
     let bin_path = tmp.path().join("myapp");
@@ -3758,7 +3758,7 @@ fn test_selected_crates_filter_excludes_unmatched_crate() {
 #[test]
 fn test_name_template_with_explicit_snap_suffix_is_not_doubled() {
     // The stage appends `.snap` only when the rendered template doesn't
-    // already end in `.snap` (build_stage.rs:369-373). Pin both branches.
+    // already end in `.snap` (build_stage.rs:369-373). Test both branches.
     let tmp = TempDir::new().unwrap();
     let snap_cfg = SnapcraftConfig {
         name: Some("mysnap".to_string()),
@@ -3989,7 +3989,7 @@ fn test_templated_extra_files_missing_source_errors() {
 fn test_replace_false_does_not_remove_archives() {
     // build_stage.rs:602-609: collect_if_replace is a no-op when
     // replace=false. Pairs with test_stage_dry_run_replace_removes_archives
-    // (which pins the replace=true branch) to fence both arms of the
+    // (which tests the replace=true branch) to fence both arms of the
     // conditional.
     let tmp = TempDir::new().unwrap();
 
@@ -4048,7 +4048,7 @@ fn test_replace_false_does_not_remove_archives() {
 fn test_name_template_with_uppercase_snap_suffix_is_not_doubled() {
     // build_stage.rs:369 uses `rendered.to_lowercase().ends_with(".snap")`
     // — uppercase `.SNAP` must also be detected so the suffix isn't
-    // doubled. Pins the case-insensitive branch separately from the
+    // doubled. Checks the case-insensitive branch separately from the
     // lowercase test above.
     let tmp = TempDir::new().unwrap();
     let snap_cfg = SnapcraftConfig {

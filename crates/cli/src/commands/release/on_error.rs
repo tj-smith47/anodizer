@@ -106,7 +106,7 @@ mod tests {
 
     /// Root `on_error:` hooks fire on a pipeline failure with the error
     /// text delivered via `ANODIZER_*` env vars (never interpolated into
-    /// the command string). `ANODIZER_ROLLED_BACK` is pinned to `false`:
+    /// the command string). `ANODIZER_ROLLED_BACK` is always `false`:
     /// the pipeline withdraws nothing on its own.
     #[test]
     #[cfg(unix)]

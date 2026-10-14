@@ -749,7 +749,7 @@ fn source_prefix_var_set_from_rendered_prefix_template() {
         .dist(tmp.path().join("dist"))
         .project_root(tmp.path().to_path_buf())
         .build();
-    // Pin Version so the rendered prefix is deterministic regardless of the
+    // Set Version so the rendered prefix is deterministic regardless of the
     // synthetic git tag.
     ctx.template_vars_mut().set("Version", "0.5.0-SNAPSHOT-abc");
     ctx.config.source = Some(SourceConfig {
@@ -1562,7 +1562,7 @@ fn test_source_archive_zip_extras_deterministic_under_sde() {
     init_git_repo(tmp.path());
 
     // Several untracked extras whose `src` order differs from any plausible
-    // filesystem-walk order, so the sort is required.
+    // filesystem traversal order, so the sort is required.
     let extras_dir = tmp.path().join("extras");
     std::fs::create_dir_all(&extras_dir).unwrap();
     for name in ["zeta.txt", "alpha.txt", "mid.txt"] {
@@ -2002,7 +2002,7 @@ fn duplicate_extras_are_reported_once_per_archive() {
     }
 }
 
-/// A context over a real git repository, with `Version` pinned so rendered
+/// A context over a real git repository, with `Version` set so rendered
 /// names are deterministic, and the source stage enabled with `prefix`.
 fn source_ctx_in_repo(
     tmp: &TempDir,

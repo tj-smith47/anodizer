@@ -68,7 +68,13 @@ pub(crate) fn run_gitlab_backend(
     let token_str = match token {
         Some(t) => t.clone(),
         None => {
-            bail!("release: no GitLab token available (set GITLAB_TOKEN, or pass --token)");
+            bail!(
+                "release: no GitLab token available ({})",
+                anodizer_core::config::token_hint(
+                    "GITLAB_TOKEN",
+                    anodizer_core::config::DEFAULT_GITLAB_TOKEN_FILE
+                )
+            );
         }
     };
 

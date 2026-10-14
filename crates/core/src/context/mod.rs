@@ -42,7 +42,7 @@ pub struct Context {
     /// The resolved SCM token type (GitHub, GitLab, or Gitea).
     pub token_type: ScmTokenType,
     /// Aggregated skips from per-sub-config loops (signs, docker_signs,
-    /// publishers, …). Drained by the pipeline runner at end-of-pipeline so
+    /// publishers, …). Emptied by the pipeline runner at end-of-pipeline so
     /// the summary shows what was intentionally skipped — mirroring
     /// the skip-memento pattern. The inner `Arc<Mutex<…>>`
     /// lets parallel stage workers contribute without extra plumbing.
@@ -51,7 +51,7 @@ pub struct Context {
     /// target-restricted build (an expectation whose target subset was not
     /// built in this run, or a cross-platform aggregate with no eligible
     /// artifact). Kept SEPARATE from [`Self::skip_memento`] on purpose: that
-    /// memento is drained into the default-visible end-of-pipeline summary,
+    /// memento is emptied into the default-visible end-of-pipeline summary,
     /// while these skips show only as verbose lines plus an aggregate
     /// count in the stage's one RESULT line — a sharded run would otherwise
     /// print one summary line per unbuilt-target expectation.
@@ -132,7 +132,7 @@ pub struct Context {
     /// `Ok` path `run` returns its evidence directly; on the `Err` path
     /// dispatch consumes this slot via [`Context::take_pending_evidence`]
     /// and records it on the failed publisher's report row so rollback has
-    /// something to act on. Single-shot — the slot is drained at the start of every
+    /// something to act on. Single-shot — the slot is emptied at the start of every
     /// `run` and cleared on the `Ok` path.
     pub pending_evidence: Option<crate::PublishEvidence>,
     /// Distinct set of crate names the build stage actually built — i.e.
@@ -415,8 +415,7 @@ impl Context {
     /// (template-engine values win because they reflect any user
     /// overrides).
     ///
-    /// Routes through `self.env_source` — not a raw `std::env::vars()` read
-    /// — so `TestContextBuilder::sealed_env`'s
+    /// Routes through `self.env_source` so `TestContextBuilder::sealed_env`'s
     /// documented "never the ambient process environment" promise also
     /// covers log/announce redaction, not just [`Context::env_var`] point
     /// lookups. A hermetic test that seals its env must not have an

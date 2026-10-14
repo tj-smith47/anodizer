@@ -81,7 +81,7 @@ mod tests {
     #[test]
     fn regex_fragment_agrees_with_scanner_on_boundaries() {
         // The regex alternation and the byte scanner implement the same rule;
-        // this pins them together so neither can drift alone.
+        // this test ties them together so neither can drift alone.
         let re = regex::Regex::new(RAW_STRING_RE_ALT).expect("valid fragment");
         let samples = [
             r#""plain" x"#,

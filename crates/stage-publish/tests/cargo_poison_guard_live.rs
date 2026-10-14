@@ -13,7 +13,7 @@
 //! It deliberately sets NO `SOURCE_DATE_EPOCH`: `cargo package` does not consult
 //! it for the `.crate` bytes (proven separately by packaging the same source
 //! under two different SDE values and getting one digest), so the guard must NOT
-//! seed it either. This test pins that contract.
+//! seed it either. This test checks that contract.
 //!
 //! `#[ignore]`d so ordinary CI never reaches the network. Run it explicitly:
 //!

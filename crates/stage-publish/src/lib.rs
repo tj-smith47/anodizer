@@ -81,7 +81,7 @@ pub use report::{
 /// Collect crate names that match the selection filter and have a specific
 /// publisher configured (as determined by the predicate `has_config`).
 ///
-/// Walks the same crate universe as `cargo.rs::publish_to_cargo` —
+/// Scans the same crate universe as `cargo.rs::publish_to_cargo` —
 /// `ctx.config.crates` plus every `ctx.config.workspaces[].crates` —
 /// so a workspace-only crate carrying a non-cargo publisher block
 /// (`homebrew:`, `scoop:`, `aur:`, ...) is dispatched alongside the
@@ -120,7 +120,7 @@ fn fire_on_error_hooks(ctx: &Context, log: &StageLogger) {
         )
     });
     // Clone targets to release the borrow on `report` before calling
-    // `fire_on_error`, which itself needs to walk `ctx`.
+    // `fire_on_error`, which itself needs to read `ctx`.
     let targets: Vec<(anodizer_core::PublisherResult, String)> = report
         .results
         .iter()
@@ -976,8 +976,8 @@ mod tests {
         ));
     }
 
-    /// Pins that the non-release version guard is WIRED into
-    /// `PublishStage::run` — not merely that `guard_release_version` works in
+    /// Checks that the non-release version guard is WIRED into
+    /// `PublishStage::run`, beyond `guard_release_version` working in
     /// isolation. Drives the real `Stage::run` entrypoint with a configured
     /// cargo publisher and a `0.0.0~SNAPSHOT-<sha>` version in a real-release
     /// (non-snapshot, non-dry-run) context, and asserts it bails BEFORE any
@@ -1028,7 +1028,7 @@ mod tests {
     #[test]
     fn publish_stage_skips_under_snapshot() {
         // Snapshot mode short-circuits `Stage::run` before dispatch fires,
-        // leaving `ctx.publish_report` as `None`. This pins the gate in
+        // leaving `ctx.publish_report` as `None`. This tests the gate in
         // `ctx.skip_in_snapshot` so a future refactor can't silently
         // start running publishers under `--snapshot`.
         let mut config = Config::default();
@@ -1058,8 +1058,8 @@ mod tests {
 
     /// A workspace-only crate that carries a non-cargo publisher block
     /// (homebrew/scoop/aur/...) must be visible to `crates_with_publisher`,
-    /// matching the universe `cargo.rs::publish_to_cargo` walks. Under a
-    /// `config.crates`-only walk, this crate would silently disappear from
+    /// matching the universe `cargo.rs::publish_to_cargo` scans. Under a
+    /// `config.crates`-only scan, this crate would silently disappear from
     /// every non-cargo dispatcher even though cargo would still publish it.
     #[test]
     fn test_crates_with_publisher_includes_workspace_only_crates() {
@@ -1246,7 +1246,7 @@ mod tests {
         assert_eq!(results[1]["status"]["kind"], "not_polled");
     }
 
-    /// Build the one-crate config both `package_identifier` render pins use:
+    /// Build the one-crate config both `package_identifier` render tests use:
     /// a winget block whose identifier is a template that cannot parse.
     fn winget_crate_with_unrenderable_identifier() -> Config {
         use anodizer_core::config::{PostPublishPollConfig, WingetConfig};
@@ -1783,7 +1783,7 @@ mod tests {
 
     // derive_run_id + write_report_to_run_dir — writer half of the
     // `anodizer tag rollback` contract (`rollback::run` is the reader).
-    // Tests below pin: (a) the run_id fallback chain (tag -> short_commit ->
+    // Tests below check: (a) the run_id fallback chain (tag -> short_commit ->
     // "local") with the validator gate, and (b) the writer's no-op/IO
     // behavior including snapshot/dry-run skip and empty-results skip.
 

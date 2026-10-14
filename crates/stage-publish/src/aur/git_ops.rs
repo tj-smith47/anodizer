@@ -255,7 +255,7 @@ pub(crate) fn aur_commit_and_push(
         ctx.render_is_strict(),
     )?;
     let commit_opts = util::resolve_commit_opts(ctx, aur_cfg.commit_author.as_ref(), log)?;
-    // AUR repositories are always on `master`. Pin the push branch via the
+    // AUR repositories are always on `master`. Set the push branch from the
     // shared [`AUR_REPO_BRANCH`] constant so the publish and rollback
     // paths can never drift (e.g. one renamed to `main`).
     let outcome = util::commit_and_push_with_opts(

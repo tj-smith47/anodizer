@@ -518,7 +518,7 @@ mod tests {
         let missing = tmp.path().join("nonexistent-aws");
 
         let err = preflight_kms_cli_with_binary(&missing, "aws")
-            .expect_err("missing aws CLI must surface as an error");
+            .expect_err("missing aws CLI must be reported as an error");
         let msg = format!("{err:#}");
         assert!(
             msg.contains("aws") && msg.contains("PATH"),
@@ -578,7 +578,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]
-    fn run_kms_cli_surfaces_stderr_on_failure() {
+    fn run_kms_cli_reports_stderr_on_failure() {
         let tools = FakeToolDir::new();
         tools
             .tool("gcloud")
@@ -598,7 +598,7 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(
             msg.contains("PERMISSION_DENIED") && msg.contains("gcloud kms encrypt"),
-            "failure must surface the CLI stderr and the label; got: {msg}"
+            "failure must include the CLI stderr and the label; got: {msg}"
         );
     }
 
@@ -888,7 +888,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]
-    fn encrypt_azure_surfaces_cli_failure_stderr() {
+    fn encrypt_azure_reports_cli_failure_stderr() {
         let tools = FakeToolDir::new();
         tools
             .tool("az")
@@ -906,7 +906,7 @@ mod tests {
         .expect_err("az nonzero exit must error");
         assert!(
             format!("{err:#}").contains("Forbidden: key not found"),
-            "az failure must surface the CLI stderr; got: {err:#}"
+            "az failure must include the CLI stderr; got: {err:#}"
         );
     }
 

@@ -169,7 +169,7 @@ pub fn resolve_git_context(
     if let Some(crate_cfg) = first_crate {
         // The crate's own tag family, resolved once. A nightly / snapshot base
         // may come from a SIBLING family instead (see below), in which case
-        // that family — not this one — bounds the previous-tag look-back.
+        // that sibling family bounds the previous-tag look-back.
         let crate_tag_template = crate_cfg.tag_family_template();
         let mut base_tag_template = crate_tag_template.clone();
         // An override is the operator NAMING the version this run targets;

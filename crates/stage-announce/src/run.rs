@@ -444,7 +444,7 @@ mod gate_tests {
     fn evaluate_gate_all_skips_on_any_failure() {
         // AllPublishers gates on Failed (regardless of required), not
         // on "any non-Succeeded". This test covers the base failure
-        // case; the dedicated tests below pin every happy-path-pending
+        // case; the dedicated tests below check every happy-path-pending
         // / skip-not-configured variant to NOT gate.
         let mut r = PublishReport::default();
         r.results
@@ -680,7 +680,7 @@ mod gate_tests {
         }
     }
 
-    /// Pins that the non-release version guard is WIRED into `AnnounceStage::run`,
+    /// Checks that the non-release version guard is WIRED into `AnnounceStage::run`,
     /// not merely that the shared `guard_release_version` works in isolation.
     /// Drives the real `Stage::run` entrypoint with a configured webhook
     /// announcer and a `0.0.0~SNAPSHOT-<sha>` version on a real-release
@@ -891,7 +891,7 @@ mod gate_tests {
     }
 
     /// With no selector, the same announce config DOES run (guard would
-    /// dry-render). Pins that the deselect gate is the only thing suppressing
+    /// dry-render). Checks that the deselect gate is the only thing suppressing
     /// the run in the test above.
     #[test]
     fn announce_should_run_true_when_not_deselected() {
@@ -909,7 +909,7 @@ mod gate_tests {
         );
     }
 
-    /// Pins that the deselect short-circuit is driven by `announce_decision`
+    /// Checks that the deselect short-circuit is driven by `announce_decision`
     /// itself (the `Deselected` enum arm), NOT a predicate added ahead of
     /// it. `Deselected` must be the FIRST arm evaluated — it wins even when the
     /// `skip` template would error — so a deselected announce never renders a
@@ -1033,7 +1033,7 @@ mod summary_tests {
     // `emit_summary` is invoked at the pipeline layer (see
     // `crates/cli/src/pipeline/mod.rs::Pipeline::run`), not from inside
     // `AnnounceStage::run`. These tests exercise `emit_summary`
-    // directly to keep the stage-level contract pinned; the
+    // directly to test the stage-level contract; the
     // pipeline-layer integration that ensures the call always fires
     // (including under `--skip=announce`) is covered by the
     // integration test

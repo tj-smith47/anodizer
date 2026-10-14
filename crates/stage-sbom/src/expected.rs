@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn expected_sbom_assets_match_external_typed_stage_registrations() {
-        // Equivalence pin for the external-command TYPED path: the stage
+        // Equivalence test for the external-command TYPED path: the stage
         // renders the documents template per matched artifact and registers
         // the on-disk outputs; the derivation must predict the same names.
         let dist = tempfile::tempdir().expect("tempdir");
@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn expected_sbom_assets_match_external_any_stage_registrations() {
-        // Equivalence pin for the external-command `artifacts: any` path:
+        // Equivalence test for the external-command `artifacts: any` path:
         // EVERY documents entry is rendered once against the synthetic
         // empty-path artifact (ArtifactName "artifact"), and the derivation
         // must bind the same synthetic vars the stage binds.
@@ -574,7 +574,7 @@ mod tests {
         //
         // Per-artifact document rendering is exclusive to the external-command
         // path (the built-in generator emits one archive-independent workspace
-        // SBOM), so this hermeticity contract is pinned against `cmd:`.
+        // SBOM), so this hermeticity contract is tested against `cmd:`.
         let dist = tempfile::tempdir().expect("tempdir");
         let cfg = SbomConfig {
             id: Some("default".to_string()),
@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     fn expected_sbom_assets_match_builtin_stage_registrations() {
-        // Equivalence pin: run the REAL built-in SBOM generator over archives
+        // Equivalence test: run the REAL built-in SBOM generator over archives
         // in a temp dist and assert the derivation predicted exactly the Sbom
         // artifact names the stage registered — a SINGLE workspace document.
         let dist = tempfile::tempdir().expect("tempdir");

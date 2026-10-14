@@ -7,7 +7,7 @@ struct ToolCheck {
     name: &'static str,
     description: &'static str,
     /// Lowest version the tool may report and still be usable, when the
-    /// tool has a floor at all. `None` means any version that runs is fine.
+    /// tool has a minimum at all. `None` means any version that runs is fine.
     min_version: Option<&'static str>,
 }
 
@@ -111,9 +111,9 @@ fn parse_tool_version(line: &str) -> Option<semver::Version> {
     None
 }
 
-/// Whether a probed version line puts the tool below its declared floor.
+/// Whether a probed version line puts the tool below its declared minimum.
 ///
-/// A tool with no floor is never below one, and neither is a tool whose
+/// A tool with no minimum is never below one, and neither is a tool whose
 /// version line does not parse: an unreadable line is not evidence of an old
 /// tool, and reporting one as outdated would send the operator to upgrade
 /// something that is already current.
@@ -122,13 +122,13 @@ fn below_min_version(min_version: Option<&str>, version_line: Option<&str>) -> b
         return false;
     };
     match (parse_tool_version(min), parse_tool_version(line)) {
-        (Some(floor), Some(found)) => found < floor,
+        (Some(minimum), Some(found)) => found < minimum,
         _ => false,
     }
 }
 
 /// Probe every external tool the configured stages need and report each one's
-/// presence and version floor.
+/// presence and minimum version.
 pub(crate) fn run() -> Result<()> {
     let log = StageLogger::new("healthcheck", Verbosity::Normal);
 
@@ -152,7 +152,7 @@ pub(crate) fn run() -> Result<()> {
                         None
                     }
                 };
-                // A tool that runs but reports a version below its floor is
+                // A tool that runs but reports a version below its minimum is
                 // not available for anodizer's purposes; reporting it with a
                 // success tick sends the operator away from the real cause.
                 let outdated = below_min_version(tool.min_version, version.as_deref());
@@ -161,7 +161,7 @@ pub(crate) fn run() -> Result<()> {
                     .unwrap_or_default();
                 if outdated {
                     log.status(&format!(
-                        "{} {:<20} {}{} \u{2014} below the {} floor",
+                        "{} {:<20} {}{} \u{2014} below the minimum {}",
                         "\u{2717}".red().bold(),
                         tool.name,
                         tool.description.dimmed(),
@@ -213,7 +213,7 @@ pub(crate) fn run() -> Result<()> {
     );
     if outdated_count > 0 {
         summary.push_str(&format!(
-            ", {} below floor",
+            ", {} below minimum",
             outdated_count.to_string().red().bold()
         ));
     }
@@ -262,23 +262,23 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_version_nonexistent_surfaces_error() {
+    fn test_tool_version_nonexistent_returns_error() {
         let res = tool_version("this-tool-does-not-exist-12345");
-        assert!(res.is_err(), "nonexistent tool must surface a spawn error");
+        assert!(res.is_err(), "nonexistent tool must return a spawn error");
     }
 
     #[test]
-    fn a_git_below_the_floor_is_reported_below_it_and_a_newer_one_is_not() {
-        // The floor is 2.13 because `git describe --exclude` first shipped
+    fn a_git_below_the_minimum_is_reported_below_it_and_a_newer_one_is_not() {
+        // The minimum is 2.13 because `git describe --exclude` first shipped
         // there. A 2.9 git runs fine and fails only later, inside previous-tag
         // discovery, so the health report must name it here.
         assert!(
             below_min_version(Some("2.13"), Some("git version 2.9.5")),
-            "2.9.5 is below the 2.13 floor"
+            "2.9.5 is below the 2.13 minimum"
         );
         assert!(
             !below_min_version(Some("2.13"), Some("git version 2.13.0")),
-            "the floor itself is not below the floor"
+            "the minimum itself is not below the minimum"
         );
         assert!(
             !below_min_version(Some("2.13"), Some("git version 2.39.5 (Apple Git-154)")),
@@ -286,11 +286,11 @@ mod tests {
         );
         assert!(
             !below_min_version(Some("2.13"), Some("git version 2.13.windows.1")),
-            "a non-numeric third component reads as 2.13, which meets the floor"
+            "a non-numeric third component reads as 2.13, which meets the minimum"
         );
         assert!(
             !below_min_version(None, Some("nfpm version v2.35.3")),
-            "a tool with no declared floor is never below one"
+            "a tool with no declared minimum is never below one"
         );
         assert!(
             !below_min_version(Some("2.13"), Some("no digits here")),
@@ -299,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn the_git_row_declares_the_floor_its_description_states() {
+    fn the_git_row_declares_the_minimum_its_description_states() {
         let git = TOOLS
             .iter()
             .find(|t| t.name == "git")
@@ -307,12 +307,12 @@ mod tests {
         assert_eq!(
             git.min_version,
             Some("2.13"),
-            "the floor the description spells out must also be declared, or \
+            "the minimum the description spells out must also be declared, or \
              nothing compares against it"
         );
         assert!(
             git.description.contains("2.13"),
-            "the description and the declared floor must name the same version; \
+            "the description and the declared minimum must name the same version; \
              got {}",
             git.description
         );

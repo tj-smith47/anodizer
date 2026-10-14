@@ -37,7 +37,7 @@ pub(crate) fn parse_csv_list(
     }
 }
 
-/// Walk an artifact path iterator and fail if any path appears more than
+/// Read an artifact path iterator and fail if any path appears more than
 /// once. Used by post-load manifest validators (publish-only's per-shard
 /// merge, `release --merge`'s split-worker merge) to report accidental
 /// shard overlap as a hard error rather than a silent double-publish
@@ -74,7 +74,7 @@ where
     );
 }
 
-/// Walk an artifact path iterator and verify each file exists on disk
+/// Read an artifact path iterator and verify each file exists on disk
 /// under `dist/`. Tries the literal path first (absolute or relative),
 /// then `dist.join(<path>)`. Missing files are fatal so SignStage /
 /// ChecksumStage emit an operator-friendly manifest-shaped diagnostic

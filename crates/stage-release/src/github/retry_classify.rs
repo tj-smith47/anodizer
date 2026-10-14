@@ -34,7 +34,7 @@ mod tests {
             let err = synth_github_error(status, body).await;
             assert!(
                 matches!(err, octocrab::Error::GitHub { .. }),
-                "status {status} must surface as Error::GitHub, got: {err:?}"
+                "status {status} must be returned as Error::GitHub, got: {err:?}"
             );
             assert_eq!(status_is_retriable(status), retriable);
             assert_eq!(classify_retriability(&err), (status, retriable));

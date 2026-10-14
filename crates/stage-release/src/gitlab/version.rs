@@ -32,7 +32,7 @@ pub(crate) async fn detect_pre_v17_gitlab(
 
 /// Env-injectable form of [`detect_pre_v17_gitlab`]. Production wires up
 /// [`ProcessEnvSource`]; tests inject a
-/// [`anodizer_core::MapEnvSource`] to pin the `CI_SERVER_VERSION` short
+/// [`anodizer_core::MapEnvSource`] to fix the `CI_SERVER_VERSION` short
 /// circuit without mutating the process env.
 pub(crate) async fn detect_pre_v17_gitlab_with_env<E: EnvSource + ?Sized>(
     client: &Client,

@@ -183,7 +183,7 @@ pub(crate) fn resolve_tag_to_crates<'a>(
 /// stages (`release`, `docker`, `docker-sign`, `verify-release`) gate their
 /// upstream side effects on snapshot mode internally (the release stage
 /// short-circuits, docker's push flag is disabled) and keep local work
-/// worth running in a snapshot. Pinned as a subset of `UPSTREAM_STAGES` by
+/// worth running in a snapshot. Held as a subset of `UPSTREAM_STAGES` by
 /// test so a future upstream stage must be classified here explicitly.
 pub(crate) const SNAPSHOT_AUTO_SKIP: &[&str] =
     &["publish", "snapcraft-publish", "blob", "announce"];

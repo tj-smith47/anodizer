@@ -1232,7 +1232,7 @@ mod tests {
     /// banner as the "error".
     #[cfg(unix)]
     #[test]
-    fn smoke_failure_detail_attributes_version_check_and_surfaces_exit() {
+    fn smoke_failure_detail_attributes_version_check_and_reports_exit() {
         let stdout = format!(
             "(1/1) Installing anodizer (0.9.0-r1)\nExecuting busybox trigger\nOK: 17.8 MiB in 17 packages\n{SMOKE_STEP_MARKER}\n"
         );
@@ -1250,7 +1250,7 @@ mod tests {
         );
         assert!(
             detail.contains("anodizer: not found"),
-            "must surface the real stderr: {detail}"
+            "must include the real stderr: {detail}"
         );
         // The install success banner must NOT masquerade as the failure detail.
         assert!(
@@ -1287,7 +1287,7 @@ mod tests {
         );
         assert!(
             detail.contains("manifest unknown"),
-            "must surface the real docker error: {detail}"
+            "must include the real docker error: {detail}"
         );
     }
 
@@ -1343,7 +1343,7 @@ mod tests {
         );
         assert!(
             detail.contains("conflicts"),
-            "must surface the install error: {detail}"
+            "must include the install error: {detail}"
         );
     }
 

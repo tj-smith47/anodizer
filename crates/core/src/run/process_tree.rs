@@ -15,8 +15,8 @@ use std::process::{Child, Command};
 use std::sync::{Mutex, OnceLock};
 
 /// Place a to-be-spawned, timeout-bounded child in its OWN process group so the
-/// watchdog can kill the WHOLE subtree on expiry — not just the immediate
-/// child.
+/// watchdog can kill the WHOLE subtree on expiry, the immediate child and
+/// every descendant.
 ///
 /// A bare `Child::kill()` reaps only the direct child; a child that forked a
 /// grandchild holding the inherited stdout/stderr pipe (e.g. a `sh -c` wrapper
@@ -60,9 +60,9 @@ pub(super) fn set_own_process_group(_cmd: &mut Command) {}
 /// - **Windows**: the child's pid (registry key + `taskkill` fallback target)
 ///   plus an optional `JobHandle` (see `windows_job`) for the Job Object
 ///   the child and every process it spawns belong to; reaped via
-///   `TerminateJobObject`. Job membership — not a live root — anchors the tree,
+///   `TerminateJobObject`. Job membership anchors the tree,
 ///   so descendants are reaped after the direct child exits. `taskkill /T`
-///   cannot serve that case: it walks from a LIVE root present in a process
+///   cannot serve that case: it traverses from a LIVE root present in a process
 ///   snapshot, and a terminated child is absent from that snapshot, so its
 ///   orphans survive (the bug the Job Object replaces).
 ///
@@ -104,7 +104,7 @@ impl ChildTree {
                 // of the direct child's liveness — the drain-reap case.
                 Some(job) => job.terminate(),
                 // No job (assignment failed): fall back to the `taskkill /T`
-                // walk, which still reaps a LIVE root's descendants.
+                // traversal, which still reaps a LIVE root's descendants.
                 None => taskkill_tree(self.pid),
             }
         }
@@ -112,7 +112,7 @@ impl ChildTree {
 }
 
 /// Best-effort `taskkill /T /F /PID <pid>` — the Windows fallback used ONLY when
-/// a child could not be enclosed in a Job Object. Walks the process tree from a
+/// a child could not be enclosed in a Job Object. Traverses the process tree from a
 /// LIVE root (a terminated root is absent from the snapshot, so this cannot reap
 /// a drain-orphaned grandchild — that is the Job Object's role). Resolved by
 /// absolute System32 path so a sanitized PATH can't strip the tool. NOT
@@ -262,7 +262,7 @@ pub(super) mod windows_job {
     ///
     /// Returns `None` if any step fails — notably a pre-Win8 nested-job
     /// restriction blocking assignment; the caller then falls back to the
-    /// `taskkill /T` walk (which still reaps a LIVE root's descendants).
+    /// `taskkill /T` traversal (which still reaps a LIVE root's descendants).
     ///
     /// The assignment races a grandchild the child might fork in the microseconds
     /// between spawn and assignment: such a grandchild escapes the job. The

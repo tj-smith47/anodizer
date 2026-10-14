@@ -1,7 +1,7 @@
 //! OCI registry manifest probe for the docker landing check.
 //!
 //! A `docker buildx build --push` (or `docker manifest push`) returning OK
-//! proves the client finished its upload — not that the registry serves the
+//! proves the client finished its upload. It does not prove that the registry serves the
 //! tag afterwards. A registry garbage-collecting a half-written upload, a
 //! proxy that accepted and dropped it, or a retention policy that reclaimed
 //! the tag all leave a release whose images cannot be pulled.

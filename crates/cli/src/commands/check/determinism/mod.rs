@@ -320,7 +320,7 @@ pub(crate) fn run(
         crate_name: args.crate_name.clone(),
         verbosity,
         config_tools,
-        disk_abs_floor_bytes: anodizer_core::disk::abs_floor_bytes_from_env(),
+        disk_abs_min_free_bytes: anodizer_core::disk::abs_min_free_bytes_from_env(),
         disk_safety_factor: anodizer_core::disk::safety_factor_from_env(),
     };
 

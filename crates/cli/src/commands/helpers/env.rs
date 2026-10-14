@@ -125,30 +125,17 @@ pub fn setup_env(
     // Supports both list form (array of .env files) and struct form (token file paths).
     // These are user-configured, so use set_config_env (safe for cross-platform
     // serialization and subprocess injection).
-    if let Some(ref env_files_config) = config.env_files {
-        match env_files_config {
-            anodizer_core::config::EnvFilesConfig::List(files) => {
-                let env_vars = anodizer_core::config::load_env_files(files, log, ctx.is_strict())
-                    .map_err(anyhow::Error::msg)?;
-                for (key, value) in &env_vars {
-                    ctx.template_vars_mut().set_config_env(key, value);
-                }
-            }
-            anodizer_core::config::EnvFilesConfig::TokenFiles(token_config) => {
-                let token_vars = anodizer_core::config::load_token_files(token_config, log)
-                    .map_err(anyhow::Error::msg)?;
-                for (key, value) in &token_vars {
-                    ctx.template_vars_mut().set_config_env(key, value);
-                    set_env_var_single_threaded(key, value);
-                }
-            }
-        }
-    } else {
-        // always check default
-        // token file paths even when env_files is not configured.
-        let default_config = anodizer_core::config::EnvFilesTokenConfig::default();
-        let token_vars = anodizer_core::config::load_token_files(&default_config, log)
+    if let Some(anodizer_core::config::EnvFilesConfig::List(files)) = config.env_files.as_ref() {
+        let env_vars = anodizer_core::config::load_env_files(files, log, ctx.is_strict())
             .map_err(anyhow::Error::msg)?;
+        for (key, value) in &env_vars {
+            ctx.template_vars_mut().set_config_env(key, value);
+        }
+    }
+    if let Some(paths) = anodizer_core::config::token_file_config(config.env_files.as_ref()) {
+        let token_vars =
+            anodizer_core::config::load_token_files_with_env(&paths, log, ctx.env_source())
+                .map_err(anyhow::Error::msg)?;
         for (key, value) in &token_vars {
             ctx.template_vars_mut().set_config_env(key, value);
             set_env_var_single_threaded(key, value);
@@ -326,10 +313,22 @@ pub fn setup_env(
         if needs_token {
             let hint = match ctx.token_type {
                 anodizer_core::scm::ScmTokenType::GitLab => {
-                    "no GitLab token found. Set GITLAB_TOKEN.".to_string()
+                    format!(
+                        "no GitLab token found: {}.",
+                        anodizer_core::config::token_hint(
+                            "GITLAB_TOKEN",
+                            anodizer_core::config::DEFAULT_GITLAB_TOKEN_FILE
+                        )
+                    )
                 }
                 anodizer_core::scm::ScmTokenType::Gitea => {
-                    "no Gitea token found. Set GITEA_TOKEN.".to_string()
+                    format!(
+                        "no Gitea token found: {}.",
+                        anodizer_core::config::token_hint(
+                            "GITEA_TOKEN",
+                            anodizer_core::config::DEFAULT_GITEA_TOKEN_FILE
+                        )
+                    )
                 }
                 anodizer_core::scm::ScmTokenType::GitHub => {
                     // The release command accepts `--token`, so the hint is

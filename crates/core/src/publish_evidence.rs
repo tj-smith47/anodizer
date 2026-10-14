@@ -562,13 +562,41 @@ pub struct HomebrewCoreTargetSnapshot {
     pub pr_url: Option<String>,
     /// Where the bump's token came from. Never the token value.
     ///
-    /// On the wire a variable is written as `token_env_var`, the field
-    /// releases before `token_source` existed read and write, and any other
-    /// source as `token_source`. A report carrying `token_env_var` decodes
-    /// to [`TokenSource::EnvVar`] here, so a report read and written again
-    /// keeps its source, and an old and a new record of the same bump are
-    /// equal.
+    /// On the wire every source is written as `token_env_var`, the one field
+    /// releases up to 0.29.0 read, because those releases refuse a target
+    /// with any field they do not know: a variable as its name, and the
+    /// other sources as `pull_request.token`, `repository.token` and
+    /// `--token`, spellings no variable a publisher reads can have. An older
+    /// release reads such a spelling as the name of an unset variable and
+    /// goes on to the GitHub variables. A report is decoded back to the same
+    /// source, so a report read and written again keeps its source, and an
+    /// old and a new record of the same bump are equal.
     pub token_source: Option<TokenSource>,
+}
+
+/// The `token_env_var` spelling of each source that is not a variable.
+const TOKEN_SOURCE_SPELLINGS: [(&str, TokenSource); 3] = [
+    ("pull_request.token", TokenSource::PullRequestField),
+    ("repository.token", TokenSource::RepositoryField),
+    ("--token", TokenSource::RunToken),
+];
+
+fn token_source_from_wire(name: String) -> TokenSource {
+    TOKEN_SOURCE_SPELLINGS
+        .iter()
+        .find(|(spelling, _)| *spelling == name)
+        .map_or(TokenSource::EnvVar(name), |(_, source)| source.clone())
+}
+
+fn token_source_to_wire(source: TokenSource) -> String {
+    match source {
+        TokenSource::EnvVar(name) => name,
+        other => TOKEN_SOURCE_SPELLINGS
+            .iter()
+            .find(|(_, source)| *source == other)
+            .map(|(spelling, _)| (*spelling).to_string())
+            .unwrap_or_default(),
+    }
 }
 
 /// The JSON shape of [`HomebrewCoreTargetSnapshot`].
@@ -586,8 +614,6 @@ struct HomebrewCoreTargetWire {
     pr_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     token_env_var: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    token_source: Option<TokenSource>,
 }
 
 impl From<HomebrewCoreTargetWire> for HomebrewCoreTargetSnapshot {
@@ -601,17 +627,13 @@ impl From<HomebrewCoreTargetWire> for HomebrewCoreTargetSnapshot {
             branch: w.branch,
             direct_commit: w.direct_commit,
             pr_url: w.pr_url,
-            token_source: w.token_source.or(w.token_env_var.map(TokenSource::EnvVar)),
+            token_source: w.token_env_var.map(token_source_from_wire),
         }
     }
 }
 
 impl From<HomebrewCoreTargetSnapshot> for HomebrewCoreTargetWire {
     fn from(s: HomebrewCoreTargetSnapshot) -> Self {
-        let (token_env_var, token_source) = match s.token_source {
-            Some(TokenSource::EnvVar(name)) => (Some(name), None),
-            other => (None, other),
-        };
         Self {
             formula: s.formula,
             version: s.version,
@@ -621,8 +643,7 @@ impl From<HomebrewCoreTargetSnapshot> for HomebrewCoreTargetWire {
             branch: s.branch,
             direct_commit: s.direct_commit,
             pr_url: s.pr_url,
-            token_env_var,
-            token_source,
+            token_env_var: s.token_source.map(token_source_to_wire),
         }
     }
 }
@@ -646,7 +667,8 @@ pub enum TokenSource {
     EnvVar(String),
     /// The run's GitHub token: `--token`, or the first of
     /// `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN` the CLI read at
-    /// startup when `--token` is unset.
+    /// startup when `--token` is unset, or the GitHub token file when all
+    /// three are unset.
     RunToken,
 }
 
@@ -1241,7 +1263,7 @@ mod tests {
     #[test]
     fn empty_variant_serializes_as_null() {
         // The Empty variant is the default for newly constructed evidence;
-        // pinning its wire shape ensures back-compat with the prior `{}` /
+        // testing its wire shape ensures back-compat with the prior `{}` /
         // null default and avoids accidental shape drift.
         let e = PublishEvidence::new("homebrew");
         let s = serde_json::to_string(&e).expect("serialize");
@@ -1252,7 +1274,7 @@ mod tests {
     #[test]
     fn empty_variant_deserializes_from_null() {
         // Untagged enum: null reaches Empty (the unit variant is the
-        // only one that accepts a null payload). Pin the wire shape
+        // only one that accepts a null payload). Check the wire shape
         // so a future variant addition that breaks this path fails
         // here.
         let from_null = serde_json::from_str::<PublishEvidenceExtra>("null").expect("null");
@@ -1263,7 +1285,7 @@ mod tests {
     fn krew_extra_roundtrips_pr_direct_targets() {
         // The PrDirect flow records one `KrewTargetSnapshot` per crate
         // whose publish opened a krew-index PR; the BotWebhook flow
-        // records none. Pin the round-trip so the rollback consumer
+        // records none. Check the round-trip so the rollback consumer
         // always reads back the coordinates it needs to close the PR.
         let extra = KrewExtra {
             krew_targets: vec![KrewTargetSnapshot {
@@ -1368,12 +1390,70 @@ mod tests {
         x.homebrew_core_targets[0].token_source = Some(TokenSource::RepositoryField);
         let json = serde_json::to_string(&field).expect("serialize");
         assert!(
-            json.contains(r#""token_source":{"kind":"repository_field"}"#)
-                && !json.contains("token_env_var"),
+            json.contains(r#""token_env_var":"repository.token""#)
+                && !json.contains("token_source"),
             "{json}"
         );
         let back: PublishEvidence = serde_json::from_str(&json).expect("decode");
         assert_eq!(back, field);
+    }
+
+    /// Every report this build writes for a homebrew-core bump decodes with
+    /// the target struct of 0.28.1, copied here as it shipped
+    /// (`deny_unknown_fields`, no `token_source`), and decodes back to the
+    /// same source with this build's struct.
+    #[test]
+    fn a_homebrew_core_report_from_this_build_decodes_in_0_28_1() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct HomebrewCoreTargetSnapshotV0281 {
+            formula: String,
+            version: String,
+            upstream_owner: String,
+            upstream_repo: String,
+            head_owner: String,
+            branch: String,
+            direct_commit: bool,
+            #[serde(default)]
+            pr_url: Option<String>,
+            #[serde(default)]
+            token_env_var: Option<String>,
+        }
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct HomebrewCoreExtraV0281 {
+            homebrew_core_targets: Vec<HomebrewCoreTargetSnapshotV0281>,
+        }
+
+        for source in [
+            None,
+            Some(TokenSource::EnvVar("COMMITTER_TOKEN".into())),
+            Some(TokenSource::PullRequestField),
+            Some(TokenSource::RepositoryField),
+            Some(TokenSource::RunToken),
+        ] {
+            let extra = HomebrewCoreExtra {
+                homebrew_core_targets: vec![HomebrewCoreTargetSnapshot {
+                    formula: "my-tool".into(),
+                    version: "1.2.3".into(),
+                    upstream_owner: "Homebrew".into(),
+                    upstream_repo: "homebrew-core".into(),
+                    head_owner: "forkuser".into(),
+                    branch: "bump-my-tool-1.2.3".into(),
+                    direct_commit: false,
+                    pr_url: Some("https://github.com/Homebrew/homebrew-core/pull/1".into()),
+                    token_source: source.clone(),
+                }],
+            };
+            let json = serde_json::to_string(&extra).expect("serialize");
+            let old: HomebrewCoreExtraV0281 = serde_json::from_str(&json)
+                .unwrap_or_else(|e| panic!("0.28.1 refuses {source:?}: {e}: {json}"));
+            assert_eq!(old.homebrew_core_targets.len(), 1);
+            let back: HomebrewCoreExtra = serde_json::from_str(&json).expect("decode");
+            assert_eq!(back, extra, "{json}");
+        }
     }
 
     #[test]
@@ -1386,7 +1466,7 @@ mod tests {
 
     #[test]
     fn publish_evidence_extra_json_shape_matches_pre_typed_form() {
-        // Wire-format pin: downstream consumers of
+        // Wire-format test: downstream consumers of
         // `dist/run-<id>/report.json` see the same byte shape that
         // shipped pre-typed-enum. A variant addition that drifts the
         // shape (e.g. wraps the homebrew_targets array in an extra
@@ -1413,7 +1493,7 @@ mod tests {
         assert_eq!(t["token_env_var"], "ANODIZER_GITHUB_TOKEN");
         // Defense-in-depth: no credential-shaped keys in the rendered
         // form (matches the per-publisher `*_extra_carries_no_secret_material`
-        // tests but pinned at the core wire-format level).
+        // tests but tested at the core wire-format level).
         assert!(!s.contains("\"token\":"), "{s}");
         assert!(!s.contains("\"password\":"), "{s}");
         assert!(!s.contains("\"pat\":"), "{s}");

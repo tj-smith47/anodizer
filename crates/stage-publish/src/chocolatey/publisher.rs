@@ -1052,7 +1052,7 @@ mod publisher_tests {
 
     #[test]
     fn chocolatey_target_extra_carries_no_secret_material() {
-        // Structural pin: build a typed-variant evidence and assert
+        // Structural check: build a typed-variant evidence and assert
         // (a) no credential-shaped keys appear AND (b) the
         // operator-public gallery coordinates are preserved.
         let mut e = PublishEvidence::new("chocolatey");

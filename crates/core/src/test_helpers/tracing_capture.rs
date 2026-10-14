@@ -177,7 +177,7 @@ mod tests {
         }
         assert!(
             total >= 8,
-            "the walk found only {total} capture tests; it stopped seeing the population"
+            "the scan found only {total} capture tests; it stopped seeing the population"
         );
         assert!(
             unmarked.is_empty(),

@@ -21,20 +21,20 @@ use crate::provider::Provider;
 /// do.
 const OBJECT_STORE_RETRY_TIMEOUT_CAP: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
-/// Floor on `object_store::RetryConfig::max_retries` for an idempotent blob
+/// Minimum for `object_store::RetryConfig::max_retries` for an idempotent blob
 /// PUT, decoupled from the global attempt cap. A bucket PUT to a fixed key is
 /// idempotent — re-issuing it after a transient 5xx/429 or a dropped
 /// connection writes the same bytes at the same key. Stateful modes like
 /// `--publish-only` resolve `attempts: 1` → `max_retries: 0`, which strips the
 /// SDK's own transient retry entirely and turns a recoverable network blip
-/// into a failed release. Flooring at 2 retries (3 total attempts) restores a
+/// into a failed release. Raising it to at least 2 retries (3 total attempts) restores a
 /// bounded retry for the recoverable case while a real 4xx (auth/permission)
 /// still fails fast inside object_store. Mirrors the HTTP-upload and GitHub
-/// asset idempotent-retry floors.
+/// asset idempotent-retry minimums.
 ///
 /// Sourced from the shared [`anodizer_core::retry::IDEMPOTENT_PUT_ATTEMPTS`]
 /// so the "3 total attempts" guarantee is single-sourced. object_store counts
-/// RETRIES (not attempts), so the floor is `IDEMPOTENT_PUT_ATTEMPTS - 1`: 2
+/// RETRIES (not attempts), so the minimum is `IDEMPOTENT_PUT_ATTEMPTS - 1`: 2
 /// retries == 3 total attempts.
 const OBJECT_STORE_MIN_RETRIES: usize = anodizer_core::retry::IDEMPOTENT_PUT_ATTEMPTS as usize - 1;
 
@@ -49,7 +49,7 @@ const OBJECT_STORE_MIN_RETRIES: usize = anodizer_core::retry::IDEMPOTENT_PUT_ATT
 /// lifetime — see [`OBJECT_STORE_RETRY_TIMEOUT_CAP`].
 pub(crate) fn to_object_store_retry(cfg: &RetryConfig) -> ObjectStoreRetryConfig {
     let policy = cfg.to_policy();
-    // Idempotent PUTs keep a transient-error retry floor even when a stateful
+    // Idempotent PUTs keep a transient-error retry minimum even when a stateful
     // mode (`--publish-only`) resolves `attempts: 1` → `max_retries: 0`.
     let max_retries =
         (policy.max_attempts.saturating_sub(1) as usize).max(OBJECT_STORE_MIN_RETRIES);
@@ -341,10 +341,10 @@ mod retry_bridge_tests {
     }
 
     #[test]
-    fn max_retries_floored_for_idempotent_put_under_single_attempt() {
+    fn max_retries_raised_for_idempotent_put_under_single_attempt() {
         // A stateful mode (`--publish-only`) resolves `attempts: 1`, which
         // would naively yield `max_retries: 0` and strip the SDK's own
-        // transient retry from an idempotent PUT. The floor keeps a bounded
+        // transient retry from an idempotent PUT. The minimum keeps a bounded
         // retry (2) so a recoverable 5xx/429/dropped-connection still re-issues
         // the PUT.
         let cfg = RetryConfig {
@@ -394,8 +394,8 @@ mod allow_http_regression {
     /// Shared setup for the two dead-port S3 regression tests below: the
     /// AWS_* env dance, `BlobConfig`/`RetryConfig`/`Context` construction,
     /// and the build+PUT are identical between them — only the endpoint
-    /// scheme and `disable_ssl` (the config axis each test is actually
-    /// pinning) differ. skip_signature avoids an IMDS credential stall and
+    /// scheme and `disable_ssl` (the config axis each test actually
+    /// checks) differ. skip_signature avoids an IMDS credential stall and
     /// isolates each test to the behavior it's checking (no creds, no
     /// signing, no network beyond the localhost connect attempt). Callers
     /// must hold `#[serial(aws_env)]` — this mutates the same AWS_* vars a
@@ -431,7 +431,7 @@ mod allow_http_regression {
             .await
     }
 
-    /// The bug this pins: `AmazonS3Builder::with_allow_http` writes into
+    /// The bug this tests: `AmazonS3Builder::with_allow_http` writes into
     /// `client_options`, and `build_s3_store`'s later
     /// `with_client_options(timed_client_options(..))` replaced that struct
     /// wholesale — silently reverting `allow_http` to `false`, so every blob
@@ -457,7 +457,7 @@ mod allow_http_regression {
     /// captured endpoint is `http://`. `build_s3_store` must still enable
     /// `allow_http` from the endpoint scheme alone, or every rollback DELETE
     /// against an in-cluster MinIO endpoint is rejected pre-flight with the
-    /// same opaque "builder error" the upload-path regression above pins.
+    /// same opaque "builder error" the upload-path regression above tests.
     #[tokio::test]
     #[serial_test::serial(aws_env)]
     async fn disable_ssl_none_with_http_endpoint_is_attempted_not_rejected() {
@@ -476,11 +476,11 @@ mod allow_http_regression {
     /// `aws-lc-rs` alongside the process-wide `ring` provider installed by
     /// `install_default_crypto_provider()`. rustls 0.23 panics on the first
     /// TLS handshake if two `CryptoProvider`s are linked and neither call
-    /// site pins one explicitly ("Could not automatically determine the
+    /// site installs one explicitly ("Could not automatically determine the
     /// process-level CryptoProvider"). Driving a real handshake attempt
     /// (an https endpoint that fails at the transport layer, same shape as
     /// `disable_ssl_http_endpoint_is_attempted_not_rejected`) after installing
-    /// `ring` pins that no panic reaches the caller — only an ordinary
+    /// `ring` checks that no panic reaches the caller — only an ordinary
     /// transport error.
     #[tokio::test]
     #[serial_test::serial(aws_env)]

@@ -63,7 +63,7 @@ pub fn apply_workspace_overlay(config: &mut Config, ws: &WorkspaceConfig) {
     // The overlaid run IS this workspace: its crates are now the top-level
     // list, so the sibling workspaces must not stay visible. Leaving them in
     // place would put every sibling crate back into `crate_universe()`, and
-    // the stages' "empty selection = all" walks would build/publish sibling
+    // the stages' "empty selection = all" loops would build/publish sibling
     // crates under THIS workspace's env/signs/skip.
     config.workspaces = None;
     if ws.changelog.is_some() {

@@ -1,8 +1,8 @@
 //! Dogfood test: anodizer's CLI tree must produce a valid brontes tool list
 //! under the configuration the binary actually ships.
 //!
-//! `generate_tools` rejects a config path that names no walked command, so
-//! this test also pins every command path in `anodizer_cli::mcp` against the
+//! `generate_tools` rejects a config path that names no visited command, so
+//! this test also checks every command path in `anodizer_cli::mcp` against the
 //! clap tree — rename a subcommand without updating the table and it fails.
 use anodizer_cli::{Cli, mcp};
 use clap::CommandFactory;

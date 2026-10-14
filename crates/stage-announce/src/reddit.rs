@@ -362,14 +362,17 @@ mod tests {
             "{:#}",
             send_reddit(&post("rust"), &log_s, &ONE_SHOT).unwrap_err()
         );
-        assert!(err.contains("401"), "status must surface: {err}");
+        assert!(
+            err.contains("401"),
+            "status must appear in the error: {err}"
+        );
         let entries = log.lock().unwrap();
         assert_eq!(entries.len(), 1, "submit must not fire after token 401");
     }
 
     #[test]
     #[serial_test::serial(announce_env)]
-    fn send_reddit_submit_json_errors_surface() {
+    fn send_reddit_submit_json_errors_are_returned() {
         let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         // Reddit returns HTTP 200 even on a logical submit rejection; a
         // non-empty `json.errors` array must be returned as an error.
@@ -399,7 +402,7 @@ mod tests {
         );
         assert!(
             err.contains("SUBREDDIT_NOEXIST"),
-            "submit errors must surface: {err}"
+            "submit errors must appear in the error: {err}"
         );
     }
 

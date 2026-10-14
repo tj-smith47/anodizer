@@ -17,7 +17,7 @@ pub(crate) fn os_arch_from_target(target: Option<&str>) -> (String, String) {
 
 /// Resolve `extra_files` specs to `(source_path, destination_filename)` pairs.
 ///
-/// Walks the configured glob patterns, keeps only regular files, and pairs
+/// Expands the configured glob patterns, keeps only regular files, and pairs
 /// each match with the spec's `name_template` (or, if unset, the source
 /// basename). Invalid glob patterns are warned-and-skipped to match the
 /// previous in-place behaviour. Centralises the spec-iteration shape so the

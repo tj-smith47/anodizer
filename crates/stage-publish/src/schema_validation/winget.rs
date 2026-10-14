@@ -23,7 +23,7 @@ use crate::winget::{
     render_winget_manifests_for_crate,
 };
 
-/// Microsoft's vendored manifest schemas (ManifestVersion 1.12.0). Pinned and
+/// Microsoft's vendored manifest schemas (ManifestVersion 1.12.0). Held at a fixed version and
 /// embedded so validation is fully offline; refresh via `schemas/SOURCES.md`.
 /// The emitted `ManifestVersion` (`crate::winget`) and these schema versions
 /// must agree — a renderer bump requires a matching schema re-vendor.
@@ -50,7 +50,7 @@ impl PublisherSchemaValidator for WingetSchemaValidator {
         let log = ctx.logger("publish");
         let mut findings = Vec::new();
 
-        // Walk exactly the crate set the live winget publisher's `run` iterates
+        // Visit exactly the crate set the live winget publisher's `run` iterates
         // (honoring `--crate` selection, else every winget-configured crate) so
         // the validated set equals the published set in all config modes.
         let selected =
@@ -478,7 +478,7 @@ mod tests {
     /// the fix, the validator rendered EVERY crate's `PackageVersion` against
     /// that global 2.0.0, so beta's manifest carried the wrong version. With the
     /// per-crate resolver each crate is re-scoped to its own tag, so beta renders
-    /// 3.1.0. This pins each crate's rendered version to ITS OWN version and
+    /// 3.1.0. This checks each crate's rendered version to ITS OWN version and
     /// fails against the pre-fix global-version code.
     #[test]
     fn multi_crate_independent_versions_render_each_crate_own_version() {
@@ -693,14 +693,14 @@ mod tests {
     }
 
     /// A PRESENT Windows archive missing its sha256 is a REAL defect the live
-    /// publish refuses to push — the validator must SURFACE it (the render's
-    /// bail propagates through `validate`), NOT collapse it to a shard skip.
+    /// publish refuses to push — the validator must return it as an error (the render's
+    /// bail propagates through `validate`) and must not collapse it to a shard skip.
     /// The presence probe is a bare `bool` that does not read sha256, so this
     /// is the validator-PATH guard against a future refactor reintroducing the
     /// silent-skip bug (propagation itself is proven one layer down in
     /// `winget_archive_without_sha256_metadata_bails_with_actionable_error`).
     #[test]
-    fn present_archive_missing_sha256_surfaces_not_skips() {
+    fn present_archive_missing_sha256_errors_instead_of_skipping() {
         let cfg = every_option_winget_cfg();
         let mut ctx = TestContextBuilder::new()
             .snapshot(true)
@@ -743,12 +743,12 @@ mod tests {
                 &crate::schema_validation::test_current_version_resolver(),
             )
             .expect_err(
-                "a present-but-broken Windows archive (missing sha256) must surface as an \
+                "a present-but-broken Windows archive (missing sha256) must be returned as an \
              error, not a silent skip",
             );
         assert!(
             format!("{err:#}").contains("sha256"),
-            "the surfaced error must name the missing sha256, got: {err:#}"
+            "the returned error must name the missing sha256, got: {err:#}"
         );
     }
 
@@ -791,11 +791,11 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(
             msg.contains("no Windows archive or binary artifact") && msg.contains("winget"),
-            "surfaces the genuine full-build absence, naming winget: {msg}"
+            "reports the genuine full-build absence, naming winget: {msg}"
         );
     }
 
-    /// The check must BITE: an installer manifest whose `Architecture` is set to
+    /// The check catches a bad value: an installer manifest whose `Architecture` is set to
     /// an out-of-enum value is rejected by the installer schema, with a finding
     /// naming the offending field and the schema's expectation.
     #[test]
@@ -835,7 +835,7 @@ mod tests {
         );
     }
 
-    /// A required-key omission also bites: dropping `PackageIdentifier` from the
+    /// A required-key omission is also caught: dropping `PackageIdentifier` from the
     /// version manifest is rejected at the document root.
     #[test]
     fn missing_required_key_is_reported() {
@@ -867,8 +867,8 @@ mod tests {
 
     /// `resolve_winget_identity` is resolved exactly once per render, so the
     /// "publisher not explicitly set; falling back to repo owner" warning it
-    /// emits when `publish.winget.publisher` is unset fires once — not twice.
-    /// Pins the point where a re-resolving renderer would double-warn.
+    /// emits when `publish.winget.publisher` is unset fires once.
+    /// Tests the point where a re-resolving renderer would double-warn.
     #[test]
     fn publisher_fallback_warning_fires_once_per_render() {
         // No explicit `publisher` — resolution falls back to the repo owner and

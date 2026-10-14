@@ -913,7 +913,7 @@ fn test_preprocess_printf_named_unchanged() {
 #[test]
 fn test_preprocess_preserves_emoji_in_literal_text() {
     // A non-ASCII char in plain literal text (no template syntax) must survive
-    // the byte-walk intact, not get Latin-1-decoded into mojibake.
+    // the byte scan intact, not get Latin-1-decoded into mojibake.
     let input = "Released with anodizer 🦀";
     let result = preprocess(input);
     assert!(result.contains('🦀'), "emoji must survive, got: {result:?}");
@@ -931,7 +931,7 @@ fn test_preprocess_preserves_multibyte_mix_in_literal_text() {
 #[test]
 fn test_preprocess_preserves_emoji_inside_block_string() {
     // A non-ASCII char inside a quoted block string must survive the
-    // dots_dollars/strip_dots byte-walk that copies quoted-string content.
+    // dots_dollars/strip_dots byte scan that copies quoted-string content.
     let input = "{{ printf \"%s\" \"🦀\" }}";
     let result = preprocess(input);
     assert!(
@@ -954,7 +954,7 @@ fn test_optional_index_dot_survives_go_leading_dot_strip() {
 
 #[test]
 fn test_plain_index_dot_survives_go_leading_dot_strip() {
-    // Pins existing (now-correct) behavior for plain, non-optional
+    // Tests existing (now-correct) behavior for plain, non-optional
     // indexing: `Some[0].Field` is chained field access after an index,
     // same reasoning as the `?[` case above but without the `?`.
     let input = "{{ Some[0].Field }}";

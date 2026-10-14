@@ -105,7 +105,7 @@ nightly:
 | `nightly.skip_if_no_changes` | `bool` | `false` | Skip the nightly release when the run's changelog resolved to zero notable entries — on a quiet day the nightly does nothing, so the last release's content is not re-cut. Decided per crate in a per-crate workspace. A run with `--skip=changelog` has no signal and never skips. |
 | `nightly.draft` | `bool` | (inherits `release.draft`) | Override the draft flag for nightly runs only. |
 
-`retention` only has something to sweep while `tag_name` is unset. A pinned
+`retention` only has something to sweep while `tag_name` is unset. A set
 `tag_name` re-creates one release on one tag every run, so there is never more
 than a single nightly release for `keep_last` to keep.
 

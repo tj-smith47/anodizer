@@ -97,7 +97,7 @@ fn fetch_index_file(
     match result {
         Ok((_status, body)) => Ok(Some(body)),
         Err(err) => {
-            // 404 = crate has never been published — not already published.
+            // 404 = crate has never been published.
             // The retry helper Breaks 4xx with HttpError(status) in the chain;
             // catch the 404 here and return Ok(None). Other 4xx and 5xx
             // exhaustion propagate.

@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 # actions/checkout's internal `git init` prints a defaultBranch hint on GitHub
-# runners that don't set init.defaultBranch; pin it via git's env-config so the
+# runners that don't set init.defaultBranch; set it via git's env-config so the
 # hint never fires (this binds every git invocation regardless of HOME or global config, which a
 # `git config --global` would not).
 env:
@@ -151,7 +151,7 @@ jobs:
           # Upholds publish-only's "shipped bytes == harness-verified bytes"
           # invariant: upload-artifact drops dotfiles by default, which would
           # silently strip any hidden deliverable from the preserved dist and
-          # only surface as a cryptic hash-verify failure at publish time.
+          # only show up as a cryptic hash-verify failure at publish time.
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 90

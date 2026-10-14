@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn full_flag_surface_deserializes() {
+    fn full_flag_set_deserializes() {
         let w: UpxWrapper = serde_yaml_ng::from_str(
             "upx:\n  - id: pack\n    binary: /opt/upx\n    args: [\"-9\", \"--brute\"]\n    required: true\n    targets: [\"x86_64-unknown-linux-gnu\"]\n    compress: \"9\"\n    lzma: true\n    brute: false\n    ids: [\"cli\"]\n",
         )

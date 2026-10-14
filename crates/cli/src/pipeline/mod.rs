@@ -427,7 +427,7 @@ mod tests {
         }
     }
 
-    fn binary_surface_config() -> Config {
+    fn binary_packager_config() -> Config {
         Config {
             crates: vec![CrateConfig {
                 name: "svc".to_string(),
@@ -464,7 +464,7 @@ mod tests {
             skip_stages: vec!["build".to_string()],
             ..Default::default()
         };
-        let mut ctx = Context::new(binary_surface_config(), opts);
+        let mut ctx = Context::new(binary_packager_config(), opts);
         ctx.artifacts.add(source_artifact());
 
         let _dist_guard = isolate_dist(&mut ctx);
@@ -490,7 +490,7 @@ mod tests {
             skip_stages: vec!["build".to_string()],
             ..Default::default()
         };
-        let mut ctx = Context::new(binary_surface_config(), opts);
+        let mut ctx = Context::new(binary_packager_config(), opts);
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
             path: PathBuf::from("dist/svc"),
@@ -552,7 +552,7 @@ mod tests {
             .expect_err("a failing prepublish-guard must abort the pipeline");
         assert!(
             err.to_string().contains("broken template"),
-            "abort surfaces the guard's error: {err}"
+            "abort returns the guard's error: {err}"
         );
         assert!(
             !published.load(std::sync::atomic::Ordering::SeqCst),
@@ -573,7 +573,7 @@ mod tests {
     }
 
     /// A stage whose body logs one status line through the context's
-    /// logger, so capture order can pin where the consolidated skip row
+    /// logger, so capture order can show where the consolidated skip row
     /// is resolved relative to a running stage's output.
     struct ChattyStage;
     impl Stage for ChattyStage {
@@ -590,7 +590,7 @@ mod tests {
     /// while consecutive stages are skipped flush BEFORE the next running
     /// stage's body output and are not lost when that stage fails — the
     /// row precedes the failure line on the early error return. (Capture
-    /// records messages, not section headers, so the pinned bound is the
+    /// records messages, not section headers, so the tested bound is the
     /// stage's first body line rather than its section opening.)
     #[test]
     fn buffered_skips_flush_before_next_stage_and_survive_its_failure() {

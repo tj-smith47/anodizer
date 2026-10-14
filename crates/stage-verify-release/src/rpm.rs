@@ -4,7 +4,7 @@
 //! boundary), a main header, and then the payload: a cpio *newc* archive
 //! compressed with gzip, xz, or zstd. This module hand-rolls just enough of
 //! the container — header skipping, payload-codec sniffing by magic, and a
-//! newc cpio walk — to return the largest ELF member as the binary to
+//! newc cpio scan — to return the largest ELF member as the binary to
 //! glibc-check.
 //!
 //! Everything here is pure (operates on in-memory bytes) so it is
@@ -109,9 +109,9 @@ fn decompress_payload(payload: &[u8]) -> Result<Option<Vec<u8>>> {
     Ok(Some(out))
 }
 
-/// Walk a cpio *newc* archive and return the bytes of the LARGEST member
+/// Scan a cpio *newc* archive and return the bytes of the LARGEST member
 /// whose contents begin with the ELF magic, or `None` when there is no ELF
-/// (or the archive is malformed — best-effort, like the tar walk).
+/// (or the archive is malformed — best-effort, like the tar scan).
 fn largest_elf_in_cpio_newc(cpio: &[u8]) -> Option<Vec<u8>> {
     // newc header: 6-byte magic then 13 fields of 8 hex chars each (110 B
     // total). The name follows, NUL-terminated, padded so header+name is a
@@ -289,7 +289,7 @@ pub(crate) mod tests {
 
     #[test]
     fn unknown_payload_codec_returns_none() {
-        // bzip2 magic — not linked into this build; degrade to None.
+        // bzip2 magic, whose codec is not linked into this build; degrade to None.
         assert!(payload_largest_elf(&make_rpm(b"BZh9")).unwrap().is_none());
     }
 }

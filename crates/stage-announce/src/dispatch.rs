@@ -231,7 +231,7 @@ mod tests {
 
     /// Build a queue from `(provider, action)` pairs without touching Context
     /// (the render-phase enqueue is exercised by the announcer tests; these
-    /// pin the runner's concurrency/deadline/error semantics directly).
+    /// test the runner's concurrency/deadline/error semantics directly).
     fn queue_of(actions: Vec<(&str, SendAction)>) -> DispatchQueue {
         DispatchQueue {
             actions: actions

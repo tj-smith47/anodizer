@@ -5,7 +5,7 @@
 //! (`tests/common/mod.rs`) and be re-declared via `mod common;` from
 //! every test file that needs it. The harness fixture-bootstrap helpers
 //! (cargo workspace synthesis, git init, host triple detection,
-//! recursive file walks, file hashing) used to be duplicated across
+//! recursive file scans, file hashing) used to be duplicated across
 //! `check_determinism.rs` and `preserve_dist.rs`; consolidating them
 //! here keeps the bootstrap in one place so a future contributor
 //! editing the fixture shape doesn't have to chase N copies.
@@ -134,7 +134,7 @@ path = "src/main.rs"
     run_git(dir, &["commit", "-q", "-m", "init"]);
 }
 
-/// Walk `<dir>` recursively and return a sorted list of `(relpath, abspath)`
+/// Scan `<dir>` recursively and return a sorted list of `(relpath, abspath)`
 /// for every regular file. Sorted by relpath so iteration order is
 /// stable for assertion error messages.
 ///

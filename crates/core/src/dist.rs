@@ -78,7 +78,7 @@ pub fn layout_roots(dist: &Path) -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
-    /// Pin the on-disk basenames. The whole module exists to stop a
+    /// Test the on-disk basenames. The whole module exists to stop a
     /// writer/reader rename from silently desyncing a sidecar; a typo in a
     /// const here would propagate that typo everywhere, so the literal
     /// values are asserted directly.
@@ -94,7 +94,7 @@ mod tests {
     }
 
     /// The two dist layouts are probed in one fixed order — the root first,
-    /// then each crate subdirectory sorted — so a reader walking the tree twice
+    /// then each crate subdirectory sorted — so a reader scanning the tree twice
     /// sees the same sequence and a per-crate run's evidence is never missed.
     #[test]
     fn layout_roots_lists_the_root_then_sorted_subdirs() {

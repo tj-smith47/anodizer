@@ -48,7 +48,7 @@ pub(crate) fn preflight_checks(ctx: &Context) -> anyhow::Result<PreflightCheck> 
 
         // Resolve+sanitize through the SAME path the publish stage uses, so a
         // DERIVED description (the omitted-`description` case) is validated here
-        // too — not just an explicit one. A derived Cargo description containing
+        // too, as well as an explicit one. A derived Cargo description containing
         // "schema" would otherwise pass preflight and fail mid-publish.
         if let Err(e) = super::publish::resolve_description(ctx, entry) {
             // `e` already carries the entry label; append a hint pointing at the

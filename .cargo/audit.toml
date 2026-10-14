@@ -4,5 +4,5 @@
 # ^0.40.1). Low real risk: XML is parsed from the operator's own configured
 # S3/blob endpoint during artifact upload — not attacker-controlled input;
 # worst case DoS-hangs the release tool, not production. REMOVE when the
-# dependabot PR bumping object_store to a release using quick-xml >=0.41.0 lands.
+# dependabot PR bumping object_store to a release using quick-xml >=0.41.0 is merged.
 ignore = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]

@@ -77,7 +77,7 @@ pub(crate) fn resolve_snap_name(
 ///   (genuine first upload) or the probe itself failed (snapcraft missing,
 ///   not logged in, snap not registered, network error) → proceed to
 ///   upload. Never falsely skip a genuine first publish just because the
-///   existence check couldn't run; a true auth/network problem resurfaces
+///   existence check couldn't run; a true auth/network problem appears again
 ///   from the upload itself.
 /// - `Some((revision, missing))` where `missing` is empty → the revision
 ///   already occupies every requested channel — a true re-run at an
@@ -119,7 +119,7 @@ pub(crate) fn revision_missing_channels(
         Err(e) => {
             // Spawn failure or a deadline kill (probe stalled). Either way the
             // existence check couldn't run — proceed to upload rather than
-            // falsely skip; a real auth/network fault resurfaces (bounded) from
+            // falsely skip; a real auth/network fault appears again (bounded) from
             // the upload itself.
             log.debug(&format!(
                 "snapcraft list-revisions for '{}' could not run ({}); proceeding with upload",

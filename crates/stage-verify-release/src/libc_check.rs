@@ -114,7 +114,7 @@ pub(crate) fn extract_package_main_elf(pkg_path: &std::path::Path) -> Result<Opt
     } else if name.ends_with(".apk") {
         // An apk is (possibly concatenated) gzip streams of tar segments;
         // MultiGzDecoder crosses the stream boundaries so the data segment's
-        // members are walked the same way the deb data.tar walk is.
+        // members are read the same way the deb data.tar scan reads them.
         use std::io::Read as _;
         let mut tar_bytes = Vec::new();
         if flate2::read::MultiGzDecoder::new(bytes.as_slice())

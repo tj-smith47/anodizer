@@ -82,7 +82,7 @@ pub(crate) fn detect_cross_strategy_impl(
 ///   when run from an arm64 runner.
 /// - **Any host → *-linux-gnu target**: zigbuild whenever cargo-zigbuild
 ///   is available, including for the exact host triple — zig's bundled
-///   libc keeps the binary's glibc floor independent of the build
+///   libc keeps the binary's minimum glibc version independent of the build
 ///   machine's glibc, so a CI runner image upgrade cannot silently raise
 ///   the released binary's glibc requirement. Without zigbuild, the host
 ///   triple falls back to native cargo (local dev) and cross-arch falls
@@ -109,9 +109,9 @@ pub(crate) fn detect_cross_strategy_for_target_impl(
     // glibc-linked Linux targets route through zigbuild whenever it is
     // available — even when the target is the exact host triple. Native
     // cargo links the build machine's ambient glibc, so the binary's glibc
-    // floor silently tracks the CI runner image (ubuntu-24.04 produces a
+    // minimum version silently tracks the CI runner image (ubuntu-24.04 produces a
     // GLIBC_2.39 requirement, uninstallable on Debian 12 / Ubuntu 22.04).
-    // zig ships its own libc headers, keeping the floor hermetic and
+    // zig ships its own libc headers, keeping the minimum glibc version hermetic and
     // independent of runner upgrades.
     //
     // musl Linux triples route through zigbuild for a different reason:
@@ -361,7 +361,7 @@ pub(crate) fn resolve_build_program(
     // supplied one: native darwin/windows/musl targets use cargo even if
     // cargo-zigbuild or cross are available (zig has known issues linking
     // for Apple hosts, cross can't cross to the same host), while
-    // linux-gnu targets prefer zigbuild for a hermetic glibc floor.
+    // linux-gnu targets prefer zigbuild for a hermetic minimum glibc version.
     let resolved = match target {
         Some(t) => resolved_strategy_for_target(strategy, t),
         None if *strategy == CrossStrategy::Auto => detect_cross_strategy(),

@@ -333,8 +333,8 @@ fn test_dockerhub_fails_when_username_empty() {
 }
 
 /// A `username:` that IS set but whose template renders to "" must fail
-/// naming the template — not "'username' is required (set in config…)",
-/// which tells an operator who DID set it to set it.
+/// naming the template. The message "'username' is required (set in config…)"
+/// would tell an operator who DID set it to set it.
 #[test]
 fn test_dockerhub_username_template_rendering_empty_names_the_template() {
     let mut config = Config::default();

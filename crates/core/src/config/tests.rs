@@ -1249,7 +1249,7 @@ fn test_changelog_resolved_format_default_scm() {
         );
         // Changelog-entry format:
         // the SCM-mode default uses the FULL SHA, not the abbreviated
-        // ShortSHA. Pin the prefix to catch silent ShortSHA regressions.
+        // ShortSHA. Check the prefix to catch silent ShortSHA regressions.
         assert!(
             tmpl.starts_with("{{ SHA }}: "),
             "SCM default must use full SHA (not ShortSHA) for backend \
@@ -2146,7 +2146,7 @@ fn test_binary_signs_artifacts_schema_is_runtime_constrained() {
     // shared with the top-level `signs:` field (which legitimately
     // accepts a wider artifact filter set). The JSON schema therefore
     // inherits the unconstrained `Option<String>` shape from `SignConfig`
-    // — this test pins that contract so any future schema-typing attempt
+    // — this test holds that contract so any future schema-typing attempt
     // shows up as a deliberate decision (and updates this test + the
     // documenting comment above `deserialize_binary_signs`).
     let json = super::config_schema();
@@ -5339,7 +5339,7 @@ crates:
 // `meta_homepage` / `meta_description` / `meta_license` back the
 // `or_else(|| ctx.config.meta_*())` fallbacks that the per-publisher
 // blocks (homebrew formula + cask, scoop, dockerhub, mcp, nix, …)
-// consult when their own field is unset. These tests pin the
+// consult when their own field is unset. These tests hold the
 // reference shape so a regression in the accessor (renaming
 // metadata fields, switching MetadataConfig storage) shows up
 // before the publishers silently emit empty homepage / description
@@ -5674,7 +5674,7 @@ fn explicit_depends_on_is_preserved_as_override() {
 
 #[test]
 fn per_crate_workspace_derives_depends_on_independently() {
-    // Per-crate mode: each crate pins its OWN version (distinct from the
+    // Per-crate mode: each crate sets its OWN version (distinct from the
     // shared-version lockstep shape above) — the derivation must not care.
     let base = tempfile::tempdir().unwrap();
     write_workspace_root(base.path(), &["core", "cli", "csi"]);
@@ -7112,7 +7112,7 @@ before:
 fn test_validate_format_overrides_in_defaults_block_rejects_unknown_os() {
     // defaults.archives.format_overrides[].os = "pc-windows-msvc" is a
     // common Rust-triple typo for "windows" and used to slip past the
-    // validator because the defaults block was not walked.
+    // validator because the defaults block was not checked.
     let yaml = r#"
 project_name: test
 defaults:
@@ -7649,18 +7649,18 @@ fn test_try_evaluates_to_true_plain_literal_invokes_render() {
 }
 
 #[test]
-fn test_try_evaluates_to_true_invalid_template_surfaces_error() {
+fn test_try_evaluates_to_true_invalid_template_returns_error() {
     // A Tera-syntactically-invalid template must propagate as an Err rather
     // than being silently treated as a literal (which the old short-circuit
     // would have done for any value not containing '{', but a `{{ broken`
-    // string does contain '{'. The invariant pinned here is the post-fix one:
+    // string does contain '{'. The invariant tested here is the post-fix one:
     // the render closure's error always reaches the caller.
     let render = |_: &str| -> anyhow::Result<String> { anyhow::bail!("tera parse error") };
 
     let val = StringOrBool::String("{{ broken".to_string());
     let err = val
         .try_evaluates_to_true(render)
-        .expect_err("malformed template must surface as Err");
+        .expect_err("malformed template must return Err");
     assert!(
         err.to_string().contains("tera parse error"),
         "error must propagate from render closure: {err}",
@@ -8143,7 +8143,7 @@ fn test_source_prefix_template_remains_none_when_name_template_unset() {
 // HomebrewConflict is a strict superset (`Name` | `WithReason`), modeled as
 // an untagged enum so a YAML list of either bare strings, structured
 // `{name, because}` objects, or a mixed list all deserializes correctly.
-// These tests pin that behavior so a refactor cannot accidentally drop the
+// These tests hold that behavior so a refactor cannot accidentally drop the
 // string form, which would silently drop all conflicts: from imported
 // configs.
 
@@ -10615,7 +10615,7 @@ crates:
 fn builds_amd64_variant_is_rejected_at_parse_on_every_axis() {
     // Typed as an enum, so serde is the gate — a garbage level fails the
     // PARSE on the crates axis, the workspaces axis, AND `defaults.builds`
-    // (which the loader's validate_builds walk never visits, and which is
+    // (which the loader's validate_builds scan never visits, and which is
     // folded into crates only AFTER validation runs).
     let crates_yaml = r#"
 project_name: test
@@ -11434,16 +11434,14 @@ fn archive_top_level_dir_follows_the_trailing_slash() {
 /// and the code that writes or merges the fields themselves.
 #[test]
 fn every_crate_cask_read_goes_through_the_accessor() {
-    use crate::test_helpers::test_sources::{
-        function_bodies, production_half, workspace_production_sources,
-    };
+    use crate::test_helpers::test_sources::production_corpus;
     const OWNERS: &[&str] = &[
         "fn homebrew_cask(",
         "fn homebrew_cask_mut(",
         "fn homebrew_cask_slots(",
         "fn merge_publish_defaults(",
     ];
-    // The walk covers every production function body in the workspace;
+    // The scan covers every production function body in the workspace;
     // a rename that empties it falls far below this.
     const MIN_BODIES: usize = 5000;
 
@@ -11610,14 +11608,12 @@ fn every_crate_cask_read_goes_through_the_accessor() {
     let mut bodies = 0usize;
     let mut owners_found = std::collections::BTreeSet::new();
     let mut strays = Vec::new();
-    for source in workspace_production_sources() {
-        let file = workspace_path(&source);
-        let text = std::fs::read_to_string(&source).expect("read source");
-        let production = production_half(&text);
+    for source in production_corpus() {
+        let file = workspace_path(&source.path);
         if CASK_SCOPE.iter().any(|scope| file.starts_with(scope)) {
             // The struct whose braced field list the line sits in.
             let mut current = None;
-            for line in production.lines() {
+            for line in source.text.lines() {
                 if let Some(head) = struct_head.captures(line) {
                     current = line.trim_end().ends_with('{').then(|| head[1].to_string());
                 } else if line.trim_start().starts_with('}') {
@@ -11629,14 +11625,14 @@ fn every_crate_cask_read_goes_through_the_accessor() {
                 }
             }
         }
-        for body in function_bodies(production) {
+        for body in &source.bodies {
             bodies += 1;
             let head = body.lines().next().unwrap_or("");
             if let Some(owner) = OWNERS.iter().find(|owner| head.contains(**owner)) {
                 owners_found.insert(*owner);
                 continue;
             }
-            for statement in statements(&body) {
+            for statement in statements(body) {
                 for m in field.find_iter(&statement) {
                     let receiver = receiver_before(&statement, m.start());
                     if allowed_receiver(receiver, &file) {
@@ -11651,7 +11647,7 @@ fn every_crate_cask_read_goes_through_the_accessor() {
     }
     assert!(
         bodies >= MIN_BODIES,
-        "the walk saw only {bodies} function bodies"
+        "the scan saw only {bodies} function bodies"
     );
     assert_eq!(
         owners_found.into_iter().collect::<Vec<_>>(),

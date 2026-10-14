@@ -634,7 +634,7 @@ fn quiet_log() -> StageLogger {
 
 /// crates.io index probe stub that must never be consulted — used by
 /// tests whose fixtures carry no repo config (no tag→crate mapping
-/// exists), pinning that the probe layer stays quiet on that path.
+/// exists), checking that the probe layer stays quiet on that path.
 fn probe_untouched(_: &str, _: &str) -> Result<bool> {
     panic!("crates.io index probe must not be consulted on this path")
 }
@@ -661,7 +661,7 @@ fn immutable_probe_clear(_: &str, _: &str, _: &str) -> Result<bool> {
     Ok(false)
 }
 
-/// npm/pypi probe stub that must never be consulted — pins that a path
+/// npm/pypi probe stub that must never be consulted. It checks that a path
 /// leaves the immutable-registry probe layer quiet (no npm/pypi config, or
 /// the tag doesn't version the entry).
 fn immutable_probe_untouched(_: &str, _: &str, _: &str) -> Result<bool> {
@@ -1181,7 +1181,7 @@ fn release_cleanup_retains_tag_when_release_delete_fails() {
 // Summary-based published-state guard: the run summary on disk is
 // the primary evidence; the gh probe is consulted only for tags
 // with no summary. Proven with gh stubs whose answer CONTRADICTS
-// the summary, so the assertion pins which source decided.
+// the summary, so the assertion shows which source decided.
 
 /// Write a run summary for `tag` under the repo's dist tree.
 /// `rel` is the run-dir path relative to dist (e.g. "run-v1.0.0"
@@ -1439,7 +1439,7 @@ fn guard_refuses_on_legacy_summary_without_the_flag() {
         &probes_with_crates_io(&probe_untouched),
         &quiet_log(),
     )
-    .expect_err("legacy summary with a landed Submitter must block");
+    .expect_err("legacy summary with a Submitter that published must block");
     assert!(err.to_string().contains("version burned at cargo"));
 }
 
@@ -2597,14 +2597,17 @@ fn winget_probe_token_prefers_github_token_via_env_seam() {
     let env = anodizer_core::MapEnvSource::new()
         .with("GITHUB_TOKEN", "gh-primary")
         .with("GH_TOKEN", "gh-fallback");
-    assert_eq!(winget_probe_token(&env).as_deref(), Some("gh-primary"));
+    assert_eq!(
+        winget_probe_token(&env, None).as_deref(),
+        Some("gh-primary")
+    );
     let fallback_only = anodizer_core::MapEnvSource::new().with("GH_TOKEN", "gh-fallback");
     assert_eq!(
-        winget_probe_token(&fallback_only).as_deref(),
+        winget_probe_token(&fallback_only, None).as_deref(),
         Some("gh-fallback")
     );
     let empty = anodizer_core::MapEnvSource::new();
-    assert_eq!(winget_probe_token(&empty), None);
+    assert_eq!(winget_probe_token(&empty, None), None);
 }
 
 #[test]
@@ -2641,7 +2644,7 @@ fn run_force_bypasses_crates_io_probe() {
     // included: with a committed config whose crate family matches the
     // tag (the probe WOULD map v1.0.0 → mycrate@1.0.0), the rollback
     // still completes without consulting any registry. Companion to
-    // `run_force_bypasses_published_release_guard`, which pins the same
+    // `run_force_bypasses_published_release_guard`, which tests the same
     // bypass for the GitHub-release layer.
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -2712,7 +2715,7 @@ fn write_run_report(repo: &Path, rel: &str, publisher: &str) {
 fn run_unwinds_recorded_publishers_before_deleting_tags() {
     // A clean run summary clears the published-state guard with no
     // network (a summarized tag never reaches the gh release probe, and
-    // the config publishes to no immutable registry), so what this pins
+    // the config publishes to no immutable registry), so what this tests
     // is the step after it: the recorded publisher state is withdrawn,
     // and the tag is deleted.
     let tmp = tempfile::tempdir().unwrap();
@@ -2916,9 +2919,9 @@ fn run_dry_run_previews_the_unwind_without_withdrawing() {
 /// longer prints. The documented situation — a run summary recording a cargo
 /// and a chocolatey landing for `v0.8.0` — is reproduced here.
 ///
-/// The page's other errors come from four more producers and are pinned where
+/// The page's other errors come from four more producers and are tested where
 /// each of them lives; the error count is asserted in every one of those
-/// tests, so a newly quoted line fails until it is pinned somewhere.
+/// tests, so a newly quoted line fails until it is tested somewhere.
 #[test]
 #[cfg(unix)]
 fn the_rollback_refusal_quoted_in_the_resilience_docs_is_what_the_guard_produces() {

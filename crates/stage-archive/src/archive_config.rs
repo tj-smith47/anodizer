@@ -348,7 +348,7 @@ pub(crate) fn write_crate_archives(
                 {
                     // Overlay the archive-identity vars onto the hook's snapshot
                     // ONLY (not `ctx`), so a `before:` hook referencing
-                    // `{{ .ArtifactPath }}` sees THIS archive's path — not a
+                    // `{{ .ArtifactPath }}` sees THIS archive's path, with no
                     // stale carry-over from the previous (target, format)
                     // iteration, and not an empty value — while the
                     // templated_files render below still sees them unset.

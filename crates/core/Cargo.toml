@@ -24,7 +24,7 @@ jsonschema.workspace = true
 # Test-only: redirect the process stderr fd (dup/dup2) so the section-header
 # regression guard can capture the EXACT bytes `flush_pending`/`step` emit via
 # `eprintln!` and prove both real paths delegate to `render_header`. Never
-# linked into the shipped binary, so it cannot perturb the hermetic glibc floor.
+# linked into the shipped binary, so it cannot perturb the hermetic minimum glibc version.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
 
@@ -53,7 +53,7 @@ crc32fast.workspace = true
 md-5.workspace = true
 percent-encoding.workspace = true
 reqwest.workspace = true
-# Always-on: `tls::install_default_crypto_provider` pins the process-default
+# Always-on: `tls::install_default_crypto_provider` sets the process-default
 # rustls provider to `ring` at startup (the binary links two providers; rustls
 # panics otherwise). Not gated behind `test-helpers` — it must compile into the
 # shipped library.
@@ -74,6 +74,6 @@ tracing-subscriber = { workspace = true, optional = true }
 # Process-group SIGKILL for the bounded-subprocess watchdog (run.rs) so a hung,
 # timeout-bounded child's whole subtree is reaped, not just the direct child.
 # `libc` is already pervasive transitively in the dependency graph, so this
-# direct Unix entry adds nothing to the shipped glibc floor.
+# direct Unix entry adds nothing to the shipped minimum glibc version.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

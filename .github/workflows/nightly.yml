@@ -32,7 +32,7 @@ concurrency:
   cancel-in-progress: false
 
 # actions/checkout's internal `git init` prints a defaultBranch hint on GitHub
-# runners that don't set init.defaultBranch; pin it via git's env-config so the
+# runners that don't set init.defaultBranch; set it via git's env-config so the
 # hint never fires (binds every git invocation regardless of HOME or global config).
 env:
   GIT_CONFIG_COUNT: '1'
@@ -43,7 +43,7 @@ jobs:
   build:
     strategy:
       # A missing shard fails the merge's matrix.json cross-check anyway;
-      # letting the siblings finish surfaces every per-OS failure in one run.
+      # letting the siblings finish reports every per-OS failure in one run.
       fail-fast: false
       matrix:
         # auto-install mirrors the determinism shards: ubuntu needs zig +
@@ -82,7 +82,7 @@ jobs:
         with:
           from-branch: master
           auto-install: ${{ matrix.auto_install }}
-          # --all --force pins selection to the whole workspace instead of
+          # --all --force fixes selection to the whole workspace instead of
           # falling back to tags-at-HEAD. anodizer is lockstep, so the
           # fallback happens to select every crate today — but that holds only
           # while no crate carries a distinct tag_template, and a nightly
@@ -92,7 +92,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
       # upload-artifact drops dotfiles by default; a hidden deliverable
-      # silently stripped here would only surface as a merge-time failure.
+      # silently stripped here would only show up as a merge-time failure.
       - name: Upload shard dist
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -133,7 +133,7 @@ jobs:
       # `--skip` covers the two STAGES a whitelist cannot reach: blob targets an
       # in-cluster MinIO endpoint no GitHub-hosted runner can resolve (release.yml
       # runs its publish leg on arc-anodizer for exactly this reason), and a
-      # nightly that announced itself every morning is noise, not signal.
+      # nightly that announced itself every morning is noise.
       - name: Publish the merged nightly (release --nightly --merge)
         uses: tj-smith47/anodizer-action@v1
         with:
@@ -144,7 +144,7 @@ jobs:
           # fails on GPG_KEY_PATH / APK_PRIVATE_KEY_PATH before any stage runs.
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
-          # Same selection pin as the split legs: the merge validates shard
+          # Same fixed selection as the split legs: the merge validates shard
           # contexts against its own selection, so the two must agree.
           args: >-
             release --nightly --merge --all --force

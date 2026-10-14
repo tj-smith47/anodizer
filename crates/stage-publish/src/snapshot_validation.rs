@@ -102,8 +102,8 @@ fn validate_emissions_with_resolver(
     // the pipeline ran); in a real release or its dry-run it is the real
     // version. The asset cross-check MUST render
     // binstall `pkg_url` / nix derivation URLs with THIS version so a correct
-    // `{{ .Version }}` resolves to the same stem the archives carry — not a
-    // tag-re-derived version that would never match the `-SNAPSHOT-<sha>` asset.
+    // `{{ .Version }}` resolves to the same stem the archives carry. A
+    // tag-re-derived version would never match the `-SNAPSHOT-<sha>` asset.
     let artifact_version = ctx.version();
 
     // Baseline for the aggregate RESULT line: only the skips THIS pass
@@ -267,7 +267,7 @@ fn restore_artifact_version(ctx: &mut Context, prior: (Option<String>, Option<St
     }
 }
 
-/// The crate universe the validator walks: every top-level + workspace crate,
+/// The crate universe the validator scans: every top-level + workspace crate,
 /// filtered to the `--crate` selection when one is present. Mirrors the build
 /// stage's selection semantics so the validated set equals the released set in
 /// all four config modes.
@@ -1643,7 +1643,7 @@ mod tests {
 
     /// Mutation-style proof: with the cross-check disabled, the broken
     /// `pkg_url` would be accepted. `binstall_asset_matches` IS the check —
-    /// if it always returned true, the 404 config would pass. This pins that
+    /// if it always returned true, the 404 config would pass. This checks that
     /// the matcher actually rejects the mismatched stem.
     #[test]
     fn binstall_matcher_rejects_mismatched_stem() {
@@ -1673,7 +1673,7 @@ mod tests {
 
     /// Token-substitution stress: a fully cargo-binstall-tokened stem
     /// (`{ name }-{ version }-{ target }`) is resolved to an EXACT filename
-    /// match from the name/version/triple anodizer knows — not left to the loose
+    /// match from the name/version/triple anodizer knows, without falling back to the loose
     /// literal-segment fallback. The same stem must REJECT a wrong-version and a
     /// wrong-name produced asset.
     #[test]
@@ -2202,7 +2202,7 @@ mod tests {
         );
         assert!(
             format!("{err}").contains("Linux/Darwin"),
-            "surfaces the genuine full-build absence: {err}"
+            "reports the genuine full-build absence: {err}"
         );
     }
 
@@ -2466,7 +2466,7 @@ mod tests {
         (ctx, cfg)
     }
 
-    /// BEFORE-FIX behavior pin: rendering the cross-check with the per-crate
+    /// BEFORE-FIX behavior test: rendering the cross-check with the per-crate
     /// TAG version (`0.5.0`) against the snapshot-named asset is exactly the
     /// false-positive — `{{ .Version }}` renders `0.5.0`, the asset carries
     /// `0.5.0-SNAPSHOT-421f4c3`, no match → fail. This is what the old code
@@ -2609,7 +2609,7 @@ mod tests {
                 .expect_err("an underivable URL must stay a loud failure, not a dry-run exemption");
         assert!(
             format!("{err:#}").contains("no 'url' metadata"),
-            "must surface the actionable missing-url remedy: {err:#}"
+            "must name the actionable missing-url remedy: {err:#}"
         );
     }
 
@@ -2817,7 +2817,7 @@ mod tests {
     }
 
     /// Per-crate workspace mode: a workspace-declared crate is validated on a
-    /// shard exactly like a top-level one — the universe walk feeds the same
+    /// shard exactly like a top-level one — the universe scan feeds the same
     /// RESULT-line accounting, and a genuinely missing SAME-target asset (the
     /// bug class the old wholesale skip masked) still FAILS.
     #[test]

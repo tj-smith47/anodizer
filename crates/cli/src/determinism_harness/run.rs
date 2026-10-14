@@ -226,7 +226,7 @@ impl Harness {
             // Probe free space BEFORE this run touches disk and apply the
             // fail-fast headroom guard. run-1..N are gated on the largest
             // measured peak of any prior run (× safety factor); run-0 has
-            // no prior peak and is gated by the absolute floor alone.
+            // no prior peak and is gated by the absolute minimum alone.
             // `worktree_root` is the parent of the per-run worktree, so it
             // backs the same volume — probe it (it exists; the per-run
             // `worktree_path` does not until `Worktree::add`).
@@ -505,7 +505,7 @@ impl Harness {
     /// `vol` is the worktree-root path (its parent volume backs the
     /// per-run worktree); `free` is the available bytes already probed on
     /// it. `prior_peak` is the largest MEASURED peak consumption of any
-    /// prior run (`None` before run-0, when only the absolute floor gates;
+    /// prior run (`None` before run-0, when only the absolute minimum gates;
     /// `None` thereafter only if the probe was unavailable).
     ///
     /// Routine readings go to `verbose` (per the log-status-vs-verbose
@@ -543,7 +543,7 @@ impl Harness {
         match evaluate_headroom(
             run_idx,
             free,
-            self.disk_abs_floor_bytes,
+            self.disk_abs_min_free_bytes,
             prior_peak,
             self.disk_safety_factor,
             &vol.display().to_string(),

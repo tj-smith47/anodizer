@@ -220,7 +220,7 @@ pub struct NpmConfig {
 
     /// npm `engines` constraint map written verbatim into `package.json`
     /// (e.g. `{ node: ">=18" }`). When unset, anodizer emits a sensible
-    /// default of `{ node: ">=18" }` — the floor every leading native-CLI
+    /// default of `{ node: ">=18" }` — the minimum every leading native-CLI
     /// wrapper (esbuild, biome, swc) declares. Set to an empty map to
     /// suppress the field entirely.
     pub engines: Option<std::collections::BTreeMap<String, String>>,

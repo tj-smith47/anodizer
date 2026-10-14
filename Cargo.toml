@@ -86,7 +86,7 @@ edition = "2024"
 # declares 1.94. Clippy's incompatible_msrv lint holds the code to this
 # version, `task check:msrv` (the CI msrv job) proves the locked graph builds
 # on it, and `declared_msrv_covers_every_locked_dependency` (crates/cli/tests)
-# fails when a dependency bump raises the floor above it.
+# fails when a dependency bump raises the minimum above it.
 rust-version = "1.94"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/tj-smith47/anodizer"
@@ -154,7 +154,7 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 tempfile = "3"
 # Cross-platform free-space probe (statvfs on unix, GetDiskFreeSpaceExW on
 # Windows) for the determinism harness's disk-headroom guard. `sync` only —
-# no async runtime, no file-locking surface pulled in.
+# no async runtime, no file-locking API pulled in.
 fs4 = { version = "1", default-features = false, features = ["sync"] }
 # RustCrypto hash/MAC stack. anodizer's own sha1/sha2/sha3/md-5/hmac/blake2
 # deps share one `digest` line (0.11); a transitive `digest 0.10` (crc-fast)
@@ -208,7 +208,7 @@ chrono-tz = "0.10"
 # under zigbuild) instead of pkg-config-probing the build host. A dynamically
 # linked system liblzma.so adds a runtime dependency on the host's lzma AND
 # drags host-glibc-versioned symbols into the link, breaking the hermetic
-# glibc floor that routing linux-gnu builds through zigbuild protects.
+# glibc minimum that routing linux-gnu builds through zigbuild protects.
 xz2 = { version = "0.1", features = ["static"] }
 zstd = "0.14"
 filetime = "0.2"

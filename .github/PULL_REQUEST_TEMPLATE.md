@@ -22,7 +22,7 @@
 - [ ] No `unwrap()` or `expect()` on user-reachable paths in library code
 - [ ] `thiserror` for library errors, `anyhow` only in `main.rs` / `cli/`
 - [ ] Import grouping: std, external, internal (blank line separated)
-- [ ] New config fields documented in the JSON schema and surfaced in `anodizer jsonschema`
+- [ ] New config fields documented in the JSON schema and shown in `anodizer jsonschema`
 
 ### Testing
 - [ ] `cargo test --workspace` passes

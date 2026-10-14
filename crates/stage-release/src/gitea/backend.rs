@@ -68,7 +68,13 @@ pub(crate) fn run_gitea_backend(
     let token_str = match token {
         Some(t) => t.clone(),
         None => {
-            bail!("release: no Gitea token available (set GITEA_TOKEN, or pass --token)");
+            bail!(
+                "release: no Gitea token available ({})",
+                anodizer_core::config::token_hint(
+                    "GITEA_TOKEN",
+                    anodizer_core::config::DEFAULT_GITEA_TOKEN_FILE
+                )
+            );
         }
     };
 

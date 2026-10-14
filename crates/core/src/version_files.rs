@@ -22,8 +22,8 @@ use regex::Regex;
 
 /// Outcome of rewriting one enrolled entry.
 ///
-/// `replacements == 0` means the version string was not found — not an error
-/// for a bare entry; the caller decides whether to warn (an enrolled file that
+/// `replacements == 0` means the version string was not found. For a
+/// bare entry that is not an error; the caller decides whether to warn (an enrolled file that
 /// does not contain the old version is usually a stale enrollment). An anchored
 /// entry that selects no region is an error and never reaches an outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +117,7 @@ fn occurrences_in<'a>(
     let mut pos = start;
     std::iter::from_fn(move || {
         let m = occurrence.find_at(text, pos)?;
-        // A match reaching past the region ends the walk: every later match
+        // A match reaching past the region ends the scan: every later match
         // starts further right, so none can fit either.
         if m.end() > end || m.end() == pos {
             return None;
@@ -376,7 +376,7 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    /// The version-matcher walk skips a `tests/` module directory, not only a
+    /// The version-matcher scan skips a `tests/` module directory, not only a
     /// `tests.rs` sibling. A test module scanned as production would report a
     /// version literal inside a fixture as a matcher the population declares.
     #[test]
@@ -404,7 +404,7 @@ mod tests {
     /// one of two functions here. A second builder is exactly the drift that
     /// once split `tag` from `check` (`version_regexes` beside
     /// `occurrence_regex`, one used by each), and nothing mechanical stopped it
-    /// coming back: this walk does, across the production half of every file
+    /// coming back: this scan does, across the production half of every file
     /// either command resolves through.
     ///
     /// The two rollback entries are the deliberate exception, named here rather
@@ -609,7 +609,7 @@ mod tests {
         assert_eq!(read(&dir, &f), "tag v0.2.0-beta here\n");
     }
 
-    /// Pin the raw engine behavior at the prerelease boundary: a hyphen is a
+    /// Test the raw engine behavior at the prerelease boundary: a hyphen is a
     /// non-word char, so `\b` sits between the trailing digit and the `-`, and
     /// the bare `old = "0.1.0"` matcher DOES fire inside `0.1.0-rc1`, rewriting
     /// the release core and leaving the `-rc1` suffix intact (→ `0.2.0-rc1`).

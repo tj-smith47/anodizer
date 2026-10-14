@@ -93,7 +93,7 @@ pub(super) const HEAD_SAMPLE_BYTES: usize = 16 * 1024;
 ///     entirely past the head window.
 pub(super) const TAIL_SAMPLE_BYTES: usize = 16 * 1024;
 
-/// Walk `<worktree>/dist` and collect every regular file. Sorted by path
+/// Scan `<worktree>/dist` and collect every regular file. Sorted by path
 /// for deterministic iteration order in tests.
 ///
 /// Also returns the **shipped raw cargo build outputs** under
@@ -120,7 +120,7 @@ pub(super) const TAIL_SAMPLE_BYTES: usize = 16 * 1024;
 ///     intermittent codegen non-determinism on windows-msvc — so it is
 ///     excluded from the comparison set.
 ///
-/// The function only walks the immediate `release/` directory (not
+/// The function only scans the immediate `release/` directory (not
 /// `deps/`, `build/`, `.fingerprint/`, etc.) and filters to files
 /// without an extension or with `.exe` — anodizer ships single-binary
 /// crates, so this returns the actual `anodizer` / `anodizer.exe`
@@ -167,7 +167,7 @@ fn visit_dir(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 ///   host-native consumer building with no `--target`). The exclusion is
 ///   keyed on the presence of any per-triple build, not on inspecting the
 ///   binary's provenance. It is sound because anodizer's build stage always
-///   pins `--target`, so a shipped binary never ends up at the bare
+///   passes `--target`, so a shipped binary never ends up at the bare
 ///   `release/<bin>` path — when a per-triple build exists, anything at that
 ///   path is a host `cargo run` hook byproduct (e.g. the man-page `before:`
 ///   hook running `cargo run --release --bin anodizer -- man` to emit
@@ -220,7 +220,7 @@ fn collect_raw_binaries(target_root: &Path, out: &mut Vec<PathBuf>) -> Result<()
     }
     // The decision keys on whether any per-triple build is present, not on
     // the bare binary's provenance. That is sound because anodizer's build
-    // stage always pins `--target`, so a shipped binary never ends up at the
+    // stage always passes `--target`, so a shipped binary never ends up at the
     // bare `release/<bin>` path — when a per-triple build exists, anything
     // there is only ever a host `cargo run` hook byproduct (the man-page
     // emitter), never a shipped artifact, so it is excluded.
@@ -989,7 +989,7 @@ mod tests {
         assert_eq!(
             names.iter().filter(|n| n.as_str() == "anodizer").count(),
             1,
-            "host-native `target/release/anodizer` must be surfaced when no triple build exists, got: {names:?}"
+            "host-native `target/release/anodizer` must be reported when no triple build exists, got: {names:?}"
         );
         for forbidden in ["anodizer.d", "libfoo.rlib"] {
             assert!(

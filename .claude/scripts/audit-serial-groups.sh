@@ -9,9 +9,9 @@
 # out from under a plain `#[serial]` one (fixed in 06b87d6e).
 #
 # The failure is order-dependent — passing locally, red at a different shard
-# count — so it does not reproduce on demand and cannot be relied on to surface
+# count — so it does not reproduce on demand and cannot be relied on to show up
 # in review. Naming the group is what makes the protection real, and it is a
-# purely syntactic property, so it is enforced here rather than remembered.
+# purely syntactic property, so this script enforces it.
 #
 # Choosing the key: name the shared resource the test actually mutates, so that
 # two tests serialise only when they genuinely contend. The groups in use are
@@ -57,8 +57,8 @@ if [[ "$MODE" == "groups" ]]; then
     exit 0
 fi
 
-# Sites awaiting conversion, pinned as "<path>:<line>". This is a RATCHET, not
-# an exemption: the list may only shrink, and the audit fails if a pinned line
+# Sites awaiting conversion, listed as "<path>:<line>". This is a RATCHET and
+# grants no exemption: the list may only shrink, and the audit fails if a listed line
 # no longer holds an unkeyed attribute (it was converted — drop the entry) or if
 # any unlisted one appears. That blocks every NEW unkeyed attribute while the
 # remaining conversions are done.
@@ -82,7 +82,7 @@ for line in "${ALL_UNKEYED[@]}"; do
     [[ -n "$matched" ]] || violations+="$line"$'\n'
 done
 
-# A pinned site that no longer matches has been converted; the pin must go with
+# A listed site that no longer matches has been converted; the entry must go with
 # it, otherwise the list silently grows stale and stops meaning anything.
 stale=""
 for p in "${SERIAL_PENDING[@]}"; do
@@ -93,7 +93,7 @@ for p in "${SERIAL_PENDING[@]}"; do
     [[ -n "$found" ]] || stale+="  $p"$'\n'
 done
 if [[ -n "$stale" ]]; then
-    echo "STALE SERIAL_PENDING ENTRY — pinned site no longer carries an unkeyed #[serial]."
+    echo "STALE SERIAL_PENDING ENTRY — listed site no longer carries an unkeyed #[serial]."
     echo
     printf '%s' "$stale"
     echo
@@ -132,6 +132,6 @@ total_keyed=${#KEYED_ATTRS[@]}
 n_groups="$(serial_keys | sort -u | wc -l | tr -d ' ')"
 echo "audit-serial-groups: all $total_keyed #[serial] attributes name a group ($n_groups distinct groups)."
 if [[ ${#SERIAL_PENDING[@]} -gt 0 ]]; then
-    echo "audit-serial-groups: $(plural "${#SERIAL_PENDING[@]}" site sites) still unkeyed and pinned for conversion:"
+    echo "audit-serial-groups: $(plural "${#SERIAL_PENDING[@]}" site sites) still unkeyed and listed for conversion:"
     printf '  %s\n' "${SERIAL_PENDING[@]}"
 fi

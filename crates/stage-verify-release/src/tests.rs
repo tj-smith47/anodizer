@@ -298,7 +298,7 @@ fn os_package_axes_gated_to_os_package_publishers() {
 }
 
 #[test]
-fn artifactory_only_surface_runs_os_package_axes() {
+fn artifactory_only_selection_runs_os_package_axes() {
     // `--publishers artifactory` ships installable OS packages, so the stage
     // must NOT self-skip and the libc-ceiling axis must actually inspect the
     // produced package: the deb here carries an ELF above the ceiling, so the
@@ -313,7 +313,7 @@ fn artifactory_only_surface_runs_os_package_axes() {
 
     let err = VerifyReleaseStage
         .run(&mut ctx)
-        .expect_err("artifactory-only surface must run the libc-ceiling axis");
+        .expect_err("artifactory-only selection must run the libc-ceiling axis");
     assert!(
         format!("{err:#}").contains("2.99"),
         "the axis inspected the deb and found the defect: {err:#}"
@@ -325,7 +325,7 @@ fn artifactory_only_surface_runs_os_package_axes() {
 }
 
 #[test]
-fn custom_exec_publisher_surface_keeps_os_package_axes_in_scope() {
+fn custom_exec_publisher_selection_keeps_os_package_axes_in_scope() {
     // A configured custom `publishers:` entry with no artifact_types filter
     // (default set includes linux_package) is an OS-package carrier: selecting
     // only it must keep the OS-package axes in scope, and the stage must not
@@ -368,7 +368,7 @@ fn custom_exec_publisher_surface_keeps_os_package_axes_in_scope() {
     ctx.options.publisher_allowlist = vec!["other".to_string()];
     assert!(
         !os_package_publisher_selected(&ctx),
-        "a deselected custom publisher is out of the surface"
+        "a deselected custom publisher is out of the selection"
     );
     ctx.options.publisher_allowlist = vec!["mypub".to_string()];
     ctx.config.publishers = Some(vec![anodizer_core::config::PublisherConfig {
@@ -379,7 +379,7 @@ fn custom_exec_publisher_surface_keeps_os_package_axes_in_scope() {
     }]);
     assert!(
         !os_package_publisher_selected(&ctx),
-        "a skip=true custom publisher is out of the surface"
+        "a skip=true custom publisher is out of the selection"
     );
     ctx.config.publishers = Some(vec![anodizer_core::config::PublisherConfig {
         name: Some("mypub".to_string()),
@@ -393,7 +393,7 @@ fn custom_exec_publisher_surface_keeps_os_package_axes_in_scope() {
 }
 
 #[test]
-fn custom_exec_publisher_only_surface_runs_libc_axis_end_to_end() {
+fn custom_exec_publisher_only_selection_runs_libc_axis_end_to_end() {
     // End-to-end companion: with ONLY a custom exec publisher selected, the
     // stage must not self-skip and the libc-ceiling axis must inspect the
     // produced deb (whose ELF exceeds the ceiling => failing verdict).
@@ -412,7 +412,7 @@ fn custom_exec_publisher_only_surface_runs_libc_axis_end_to_end() {
 
     let err = VerifyReleaseStage
         .run(&mut ctx)
-        .expect_err("custom-exec-only surface must run the libc-ceiling axis");
+        .expect_err("custom-exec-only selection must run the libc-ceiling axis");
     assert!(
         format!("{err:#}").contains("2.99"),
         "the axis inspected the deb and found the defect: {err:#}"
@@ -420,7 +420,7 @@ fn custom_exec_publisher_only_surface_runs_libc_axis_end_to_end() {
 }
 
 #[test]
-fn npm_surface_skips_smoke_without_stamping() {
+fn npm_selection_skips_smoke_without_stamping() {
     // End-to-end: install_smoke configured and an arm64 .deb present, but the
     // selected publishers are npm-only. The stage must NOT attempt the smoke matrix
     // (which would fail on a runner without qemu/binfmt) and, with no other
@@ -443,7 +443,7 @@ fn npm_surface_skips_smoke_without_stamping() {
     ctx.options.publisher_allowlist = vec!["npm".to_string()];
     assert!(
         VerifyReleaseStage.run(&mut ctx).is_ok(),
-        "npm-only surface must skip smoke instead of failing on it"
+        "npm-only selection must skip smoke instead of failing on it"
     );
     assert!(
         ctx.verify_release.is_none(),
@@ -452,7 +452,7 @@ fn npm_surface_skips_smoke_without_stamping() {
 }
 
 #[test]
-fn npm_surface_skips_libc_ceiling_without_stamping() {
+fn npm_selection_skips_libc_ceiling_without_stamping() {
     // End-to-end companion to the smoke test: a glibc ceiling is configured and
     // an OS package is present, but the selected publishers are npm-only. The
     // libc-ceiling axis inspects `.deb`/`.rpm`/`.apk` symbols, so with no
@@ -476,7 +476,7 @@ fn npm_surface_skips_libc_ceiling_without_stamping() {
     ctx.options.publisher_allowlist = vec!["npm".to_string()];
     assert!(
         VerifyReleaseStage.run(&mut ctx).is_ok(),
-        "npm-only surface must skip libc-ceiling instead of running it"
+        "npm-only selection must skip libc-ceiling instead of running it"
     );
     assert!(
         ctx.verify_release.is_none(),
@@ -486,7 +486,7 @@ fn npm_surface_skips_libc_ceiling_without_stamping() {
 
 #[test]
 fn libc_ceiling_over_zero_packages_stamps_no_verdict() {
-    // The vacuous-green guard: an OS-package publisher IS selected (blob), so
+    // The vacuous-pass guard: an OS-package publisher IS selected (blob), so
     // the libc axis is in scope, and a ceiling is configured — but the run
     // produced zero `.deb`s, so the axis inspects nothing. github-release is
     // NOT selected (blob-only selection), so the asset check is also out of
@@ -871,7 +871,7 @@ fn verify_release_records_summary_slot_on_pass() {
 fn verify_release_records_summary_slot_before_bail() {
     // Failure path: the slot is set with the issue(s) BEFORE the bail, so the
     // pipeline-end summary (emit_summary fires after the stage returns Err)
-    // can render the FAILED verify-release row instead of a false all-green.
+    // can render the FAILED verify-release row instead of a false all-passing row.
     let (addr, _log) = spawn_release_route(&["app.tar.gz"]);
 
     let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
@@ -957,7 +957,7 @@ fn asset_existence_bails_when_release_not_found_for_tag() {
     assert!(
         msg.contains("could not fetch published release assets")
             || msg.contains("no GitHub release found"),
-        "error surfaces the failed fetch: {msg}"
+        "error reports the failed fetch: {msg}"
     );
 }
 
@@ -1009,7 +1009,7 @@ fn asset_existence_bails_when_no_token_available() {
     let msg = format!("{err:#}");
     assert!(
         msg.contains("could not fetch published release assets"),
-        "error surfaces the fetch failure: {msg}"
+        "error reports the fetch failure: {msg}"
     );
     assert!(
         msg.contains(PUBLISHED_NOTE),
@@ -1112,7 +1112,7 @@ fn make_deb(data_tar_gz: &[u8]) -> Vec<u8> {
 }
 
 /// A structurally-valid 32-bit LE ELF declaring a `GLIBC_2.99` requirement via
-/// `.gnu.version_r` (the `object` verneed walk extracts 2.99). Mirrors the
+/// `.gnu.version_r` (the `object` verneed scan extracts 2.99). Mirrors the
 /// fixture proven in `libc_check.rs::elf32_le_with_glibc_2_99`.
 fn elf32_le_with_glibc_2_99() -> Vec<u8> {
     const SHT_STRTAB: u32 = 3;
@@ -1478,7 +1478,7 @@ fn linux_packages_resolves_absolute_path_and_basename() {
     assert_eq!(pkgs.len(), 1, "the one LinuxPackage artifact is returned");
     let (abs, name, target) = &pkgs[0];
     assert!(abs.is_absolute(), "path is absolute: {}", abs.display());
-    assert_eq!(name, "pkg_amd64.deb", "basename surfaced for the caller");
+    assert_eq!(name, "pkg_amd64.deb", "basename returned to the caller");
     assert_eq!(target, &None, "host build carries no target triple");
     // A non-existent crate must yield no packages (per-crate isolation).
     assert!(
@@ -1511,7 +1511,7 @@ fn linux_packages_resolves_absolute_path_and_basename() {
 
 #[test]
 fn extract_package_main_elf_picks_largest_elf_member() {
-    // extract_package_main_elf walks the .deb's data.tar and returns the
+    // extract_package_main_elf reads the .deb's data.tar and returns the
     // LARGEST ELF member (the shipped binary in the single-binary case),
     // skipping non-ELF members.
     let tmp = tempfile::TempDir::new().expect("tempdir");
@@ -2655,7 +2655,7 @@ fn content_check_exempts_certificate_assets_from_digest_comparison() {
 fn content_check_flags_a_zero_byte_published_signature_as_a_silent_signing_failure() {
     // The non-empty-residual guarantee in the signature/certificate
     // exemption's rustdoc ("present and non-empty") is otherwise asserted in
-    // prose only — this pins the actual issue path: a 0-byte PUBLISHED
+    // prose only. This tests the actual issue path: a 0-byte PUBLISHED
     // signature must fail the gate, naming the exact asset, rather than
     // silently passing because the digest comparison is exempted.
     let checksum_bytes = b"app.tar.gz  deadbeef";
@@ -3045,7 +3045,7 @@ fn run_asset_gate_submitter_only_exempts_combined_checksum_byte_mismatch() {
     let result = run_asset_gate(&mut ctx).expect("gate must not error");
     assert!(
         result,
-        "a cross-leg combined-checksum byte difference is a publish-surface \
+        "a cross-leg combined-checksum byte difference is a publisher-selection \
          difference, not corruption — it must not block the submitters"
     );
 }
@@ -3518,13 +3518,13 @@ mod signature_crypto_verification {
         );
         assert!(
             cross_leg_issues.is_empty(),
-            "cross-leg surface-dependent manifest + signature must be exempted: \
+            "cross-leg publisher-dependent manifest + signature must be exempted: \
              {cross_leg_issues:?}"
         );
     }
 
     #[test]
-    fn cross_leg_empty_surface_dependent_signature_still_fails() {
+    fn cross_leg_empty_publisher_dependent_signature_still_fails() {
         // The signature exemption sits AFTER the empty-asset check: a 0-byte
         // published signature is a silent signing failure regardless of
         // which leg uploaded it.

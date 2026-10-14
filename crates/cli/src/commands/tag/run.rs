@@ -176,7 +176,7 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
     {
         anyhow::bail!(
             "--version {:?} is incompatible with per-crate workspace mode; \
-             pass --crate <name> to pin a single crate's version",
+             pass --crate <name> to set a single crate's version",
             v
         );
     }
@@ -338,7 +338,7 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
     // Workspace-mode: with no --crate, treat a Cargo workspace whose members
     // inherit [workspace.package].version as a single versioned unit. The
     // tag-derived version gets applied to root Cargo.toml + every member
-    // manifest + workspace.dependencies pins before the tag is created, so
+    // manifest + workspace.dependencies version requirements before the tag is created, so
     // the tagged commit has Cargo.toml at the version the tag advertises.
     let workspace_info: Option<&WorkspaceInfo> = if opts.crate_name.is_none() {
         loaded_workspace

@@ -87,7 +87,7 @@ pub(crate) enum ConfigVerifyMode {
 /// executed right after its sign job succeeds.
 pub(crate) struct VerifyJob {
     /// Verifier binary — the same resolved `cmd` the sign job used, so a
-    /// test double or a pinned cosign path verifies with itself.
+    /// test double or a fixed cosign path verifies with itself.
     pub(crate) cmd: String,
     pub(crate) args: Vec<String>,
     /// Same rendered env the sign job ran under (key material, redaction
@@ -190,8 +190,8 @@ fn is_gpg_cmd(cmd: &str) -> bool {
 /// derived but the issuer was resolved *ambiently* from GitHub Actions, fall
 /// back to matching any identity under that issuer — strictly weaker, but
 /// still proves the certificate chains to Fulcio via GitHub's OIDC. A
-/// *config-pinned* issuer with no identity is refused instead of widened to
-/// `.*`, since silently accepting any certificate under a pinned issuer
+/// *config-set* issuer with no identity is refused instead of widened to
+/// `.*`, since silently accepting any certificate under a set issuer
 /// inverts the operator's intent. When even the issuer is unknown, return the
 /// skip reason naming what was missing.
 pub(crate) fn resolve_keyless_identity(
@@ -234,14 +234,14 @@ pub(crate) fn resolve_keyless_identity(
         (None, Some(iss)) if on_github_actions && issuer_from_config.is_none() => {
             Ok((IdentitySelector::Regexp(".*".to_string()), iss))
         }
-        // The issuer was explicitly pinned but no identity was given.
+        // The issuer was explicitly set but no identity was given.
         // Defaulting the identity to `.*` here would silently accept EVERY
         // certificate that issuer ever signed — the opposite of the
-        // tightening an operator who pins an issuer intends. Refuse rather
+        // tightening an operator who sets an issuer intends. Refuse rather
         // than widen; an operator who genuinely wants any-identity-under-issuer
         // opts in explicitly with `certificate_identity_regexp: ".*"`.
         (None, Some(iss)) => Err(format!(
-            "keyless verify: `verify.certificate_oidc_issuer` is pinned to `{iss}` but \
+            "keyless verify: `verify.certificate_oidc_issuer` is set to `{iss}` but \
              no identity was given. Set `verify.certificate_identity` (exact SAN) or \
              `verify.certificate_identity_regexp` (use `.*` to deliberately accept any \
              identity under that issuer). Refusing to default the identity to `.*`, \
@@ -862,7 +862,7 @@ mod tests {
 
     #[test]
     fn keyless_config_issuer_without_identity_refuses_rather_than_widening() {
-        // Pinning only the issuer (off Actions) must NOT silently default the
+        // Setting only the issuer (off Actions) must NOT silently default the
         // identity to `.*` — that would accept every certificate the issuer
         // ever signed, inverting the operator's intent.
         let cfg = SignVerifyConfig {
@@ -880,7 +880,7 @@ mod tests {
 
     #[test]
     fn keyless_config_issuer_without_identity_refuses_even_on_actions() {
-        // A config-pinned issuer is explicit intent regardless of environment;
+        // A config-set issuer is explicit intent regardless of environment;
         // a degraded Actions env (no workflow ref) must not turn it into `.*`.
         let cfg = SignVerifyConfig {
             certificate_oidc_issuer: Some("https://accounts.example.com".to_string()),
@@ -888,7 +888,7 @@ mod tests {
         };
         let env = MapEnvSource::new().with("GITHUB_ACTIONS", "true");
         resolve_keyless_identity(Some(&cfg), &env)
-            .expect_err("config-pinned issuer with no identity must refuse, not widen");
+            .expect_err("config-set issuer with no identity must refuse, not widen");
     }
 
     #[test]

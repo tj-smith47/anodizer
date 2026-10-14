@@ -152,7 +152,7 @@ fn aur_collect_run_targets_uses_default_bin_suffix() {
 
 #[test]
 fn aur_effective_publish_crates_implicit_all_when_selection_empty() {
-    // Regression pin for the `selected_crates = Vec::new()` failure
+    // Regression test for the `selected_crates = Vec::new()` failure
     // mode: the run path used to iterate the empty Vec and silently
     // skip every configured AUR repo. The helper now resolves to
     // implicit-all over `publish.aur`-carrying crates.
@@ -193,7 +193,7 @@ fn aur_our_target_extra_omits_private_key_after_serde_roundtrip() {
     // would leak the SSH key publicly. The
     // `AurTargetSnapshot` core type has no field for either
     // credential, so the type system rejects any future leak
-    // attempt at the encode boundary. This test pins the
+    // attempt at the encode boundary. This test checks the
     // resulting wire shape: a populated AurOurTarget converts
     // into the snapshot WITHOUT carrying the secret bytes.
     let with_secrets = AurOurTarget {
@@ -288,7 +288,7 @@ fn aur_our_rollback_re_reads_private_key_from_config() {
 
 #[test]
 fn aur_branch_constant_matches_publish_path() {
-    // Pin the constant so both publish and rollback are guaranteed
+    // Check the constant so both publish and rollback are guaranteed
     // to push to the same branch name; a stray rename (e.g. to
     // `main`) would have to edit this line.
     assert_eq!(AUR_REPO_BRANCH, "master");
@@ -325,7 +325,7 @@ fn aur_dedup_targets_collapses_shared_git_url() {
 fn aur_collect_run_targets_records_derived_url_when_git_url_absent() {
     // No git_url: the live push derives the canonical AUR remote and
     // pushes, so the rollback collector must record that same derived
-    // target — not skip it (else a pushed package has no rollback entry).
+    // target, or a pushed package would have no rollback entry.
     let mut crate_cfg = aur_crate("demo");
     if let Some(p) = crate_cfg.publish.as_mut()
         && let Some(a) = p.aur.as_mut()
@@ -368,8 +368,8 @@ fn run_no_eligible_crates_warning_names_remediation() {
 }
 
 /// The no-eligible-crates warning must fire only when the iteration
-/// loop's configured-predicate filtered every selected crate out — not
-/// when the publish path was reached successfully.
+/// loop's configured-predicate filtered every selected crate out, and
+/// stay silent when the publish path was reached successfully.
 #[test]
 fn should_warn_no_eligible_only_fires_when_predicate_filtered_everything() {
     // One configured crate reached the publish path → no warning.
@@ -435,7 +435,7 @@ fn aur_publisher_run_no_eligible_crates_returns_ok() {
 /// Implicit-all selection (empty `selected_crates`) + dry-run must
 /// produce empty evidence. The implicit-all path resolves through
 /// `effective_publish_crates` to every aur-configured crate, so this
-/// pins the gate where phantom rollback targets used to leak.
+/// checks the gate where phantom rollback targets used to leak.
 #[test]
 fn test_publish_to_aur_dry_run_implicit_all_produces_empty_evidence() {
     let repo = crate::testing::hermetic_tagged_repo();

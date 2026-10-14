@@ -23,7 +23,7 @@ use crate::{
 
 /// The stage's own format resolution, driven through the shared resolver with
 /// an entry that sets no `formats:` of its own — so an override list and the
-/// project-wide default are the only inputs, the shape these cases pin.
+/// project-wide default are the only inputs, the shape these cases test.
 fn formats_for_target(
     target: &str,
     default_format: &str,
@@ -210,7 +210,7 @@ fn test_copy_binary_single() {
 
 // New tests: glob pattern resolution
 
-/// Pins W3: a single license/readme/changelog file produces exactly one
+/// A single license/readme/changelog file produces exactly one
 /// resolved entry, regardless of which case glob hit it first. The dedup
 /// logic in `resolve_default_extra_files` (HashSet on resolved path)
 /// must collapse the two case-globs that resolve to the same file on
@@ -649,7 +649,7 @@ fn test_archive_stage_run() {
     assert!(archives[0].path.to_string_lossy().ends_with(".tar.gz"));
 }
 
-/// Pins C-new-4: when `archives: []` (or omitted) is set on a crate WITH
+/// When `archives: []` (or omitted) is set on a crate WITH
 /// builds, the stage auto-injects `ArchiveConfig::default()` so the user
 /// still gets a default `tar.gz`:
 /// `if len(ctx.Config.Archives) == 0 { Archives = append(Archives, Archive{}) }`.
@@ -1358,7 +1358,7 @@ fn test_archive_stage_multiple_binaries_per_archive() {
         size: None,
     });
 
-    // Pin project_root to the test tmp dir so default-extra-files glob
+    // Set project_root to the test tmp dir so default-extra-files glob
     // (LICENSE/README/CHANGELOG) doesn't pick up the workspace's own
     // files when `cargo test` runs from /opt/repos/anodizer.
     ctx.options.project_root = Some(tmp.path().to_path_buf());
@@ -2927,7 +2927,7 @@ fn test_create_gz_nonexistent_fails() {
 }
 
 // `xz` single-file format. A top-level xz container holds exactly
-// one file. The unit-level writer + the stage-level dispatch both pin
+// one file. The unit-level writer + the stage-level dispatch both test
 // this contract.
 
 #[test]
@@ -3277,7 +3277,7 @@ fn test_format_override_prefix_match() {
     );
 }
 
-/// Negative pin for C-new-5: a prefix that does NOT match the target's os
+/// Negative case: a prefix that does NOT match the target's os
 /// field falls through to the default (e.g., `os: "darw"` against linux).
 #[test]
 fn test_format_override_prefix_no_match() {
@@ -3293,7 +3293,7 @@ fn test_format_override_prefix_no_match() {
     );
 }
 
-/// Pins W2: empty `FormatOverride.os` is rejected as a typo guard. A user
+/// Empty `FormatOverride.os` is rejected as a typo guard. A user
 /// who accidentally writes `os:` (yaml-empty) gets a clean fallback to the
 /// default format instead of an empty-prefix match-everything override.
 /// Stricter than the upstream.
@@ -4622,7 +4622,7 @@ fn test_archive_default_name_renders_group_amd64_variant_suffix() {
 }
 
 /// A user `name_template` referencing `{{ Amd64 }}` on a v3-tuned group must
-/// render the group's real level — not the target-derived "v1" baseline.
+/// render the group's real level (v3) instead of the target-derived "v1" baseline.
 #[test]
 fn test_archive_user_template_amd64_var_renders_group_variant() {
     use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
@@ -4772,8 +4772,8 @@ fn test_multi_crate_archive_projectname_resolves_to_crate() {
 //
 // stage-archive's tar writer reads `mtime` from the SDE-derived value
 // resolved in `run.rs` (CommitTimestamp template var or SOURCE_DATE_EPOCH
-// env override). The audit found no `Utc::now()` / `SystemTime::now()`
-// callsites in stage-archive, so this test only pins the contract that
+// env override). stage-archive has no `Utc::now()` / `SystemTime::now()`
+// callsites, so this test only checks the contract that
 // `create_tar` with the same `mtime` produces byte-identical output
 // across calls. A future refactor that introduces a clock read inside
 // `write_tar_entries` (e.g. defaulting an mtime when None) regresses
@@ -5829,7 +5829,7 @@ fn mode_a_artifact_path_does_not_leak_into_name_or_templated_files() {
 /// default verbosity, so it routes through
 /// `log.skip_line(ctx.options.show_skipped, …)` — Debug by default (invisible
 /// at Normal and Verbose), Status only under `--show-skipped`. These tests
-/// pin that visibility contract on the message the stage emits at `run.rs`.
+/// test that visibility contract on the message the stage emits at `run.rs`.
 mod no_binaries_skip_visibility {
     use anodizer_core::context::ContextOptions;
     use anodizer_core::log::{LogCapture, LogLevel, StageLogger, Verbosity};
@@ -5876,7 +5876,7 @@ mod no_binaries_skip_visibility {
     }
 
     #[test]
-    fn no_binaries_skip_surfaces_with_show_skipped() {
+    fn no_binaries_skip_is_shown_with_show_skipped() {
         // --show-skipped forces the line back to Status for diagnosis.
         let lines = capture_archive_skip(true, Verbosity::Normal);
         assert_eq!(lines.len(), 1, "{lines:?}");
@@ -6328,7 +6328,7 @@ mod archive_name_guard {
         // A meta archive holds only extra files, and `binary` carries none, so
         // the pair produces no artifact at all — GoReleaser's archive pipe
         // reaches the same place, iterating binaries the meta entry does not
-        // have. Pinned because the outcome is an empty dist/, not an error.
+        // have. Tested because the outcome is an empty dist/, not an error.
         let tmp = TempDir::new().unwrap();
         let mut c = cfg("default", None, &["binary"]);
         c.meta = Some(true);
@@ -6799,7 +6799,7 @@ mod archive_name_guard {
     #[test]
     fn archive_stem_binary_var_falls_back_to_file_name() {
         // The `.Binary` var backing the ARCHIVE stem needs the same fallback
-        // as the per-binary outputs: targets are walked in sorted order, so a
+        // as the per-binary outputs: targets are visited in sorted order, so a
         // binary with no `binary` metadata would otherwise render the stem of
         // whichever target was processed before it.
         let tmp = TempDir::new().unwrap();
@@ -6878,7 +6878,7 @@ mod archive_name_guard {
 
     #[test]
     fn multi_binary_entry_with_a_binary_less_template_bails() {
-        // The escape hatch the docs offer -- pin the old asset name with an
+        // The escape hatch the docs offer -- keep the old asset name with an
         // explicit name_template -- only holds for an entry shipping ONE
         // binary. Two binaries through a template carrying no `.Binary`
         // render one path, and the second would overwrite the first.
@@ -7138,7 +7138,7 @@ mod binary_name_read_policy {
     #[test]
     fn metadata_binary_is_never_read_raw_in_this_stage() {
         // The workspace-wide guard is `.claude/scripts/audit-binary-name.sh`;
-        // this pin keeps the stage's own population at zero even when the
+        // this test keeps the stage's own population at zero even when the
         // audit is not on the path a contributor ran.
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut hits: Vec<(String, usize)> = Vec::new();
@@ -7310,7 +7310,7 @@ fn write_archive_in_format_syncs_every_arm() {
 
 #[test]
 #[cfg(unix)]
-fn finish_archive_file_surfaces_a_write_back_error() {
+fn finish_archive_file_returns_a_write_back_error() {
     // A socket is a descriptor no unix can synchronize, so `fsync` fails on
     // every platform the CI matrix builds — unlike `fsync` on a character
     // device, which is EINVAL on Linux and a silent success on macOS.
@@ -7341,7 +7341,7 @@ fn copy_binary_finishes_through_the_helper() {
     );
     assert!(
         !body.contains("fs::copy("),
-        "fs::copy drops the destination without surfacing its close error; got: {body}"
+        "fs::copy drops the destination without reporting its close error; got: {body}"
     );
 }
 
@@ -7367,7 +7367,7 @@ fn copy_binary_keeps_the_executable_bit() {
 }
 
 /// Every writer that opens an output file closes it through
-/// `finish_archive_file`, pinned as a RATIO rather than a hand-written total:
+/// `finish_archive_file`, checked as a RATIO of two counts, with no hand-written total:
 /// a writer added with its own `File::create` and no helper call moves one side
 /// of the equality and fails here. The tar and zip containers open and close in
 /// `write_tar_archive` / `write_zip_archive`, so each format contributes one
@@ -7394,7 +7394,7 @@ fn every_archive_writer_matches_a_finish_call() {
     assert!(
         opens >= 5,
         "the writer population shrank to {opens}; a removed writer needs a \
-         deliberate decision, not a silently smaller pin"
+         deliberate decision and an update to this test"
     );
     assert_eq!(
         include_str!("formats.rs").matches("sync_all()").count(),

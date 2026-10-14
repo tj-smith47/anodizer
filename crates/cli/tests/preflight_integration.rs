@@ -253,14 +253,14 @@ fn preflight_publishers_allowlist_keeps_selected_drops_deselected_publisher() {
     // hand-skip, so its cosign key demand is gone.
     assert!(
         !combined.contains("PF_COSIGN_KEY"),
-        "--publishers npm must auto-deselect the signs surface (no --skip):\n{combined}"
+        "--publishers npm must auto-deselect the signs requirements (no --skip):\n{combined}"
     );
     // The binary_signs slice hangs off the SAME consumer set, so its DISTINCT
     // cosign key demand is ALSO gone WITHOUT a hand-skip — this is the second
     // half of the npm-clean invariant.
     assert!(
         !combined.contains("PF_BINARY_COSIGN_KEY"),
-        "--publishers npm must auto-deselect the binary_signs surface (no --skip):\n{combined}"
+        "--publishers npm must auto-deselect the binary_signs requirements (no --skip):\n{combined}"
     );
     // Neither sign slice contributes anything: every signature consumer is
     // deselected, so no `stage:sign` requirement may appear at all.
@@ -280,7 +280,7 @@ fn preflight_publishers_allowlist_keeps_selected_drops_deselected_publisher() {
 /// asset of the same job. Guards the gate against over-firing and silently
 /// shipping a release with no signatures.
 #[test]
-fn preflight_publish_only_empty_allowlist_keeps_both_sign_surfaces() {
+fn preflight_publish_only_empty_allowlist_keeps_both_sign_requirements() {
     if !tool_on_path("git") {
         eprintln!("skipping: git not on PATH");
         return;
@@ -300,11 +300,11 @@ fn preflight_publish_only_empty_allowlist_keeps_both_sign_surfaces() {
     );
     assert!(
         combined.contains("PF_COSIGN_KEY"),
-        "publish-only empty allowlist must keep the signs surface:\n{combined}"
+        "publish-only empty allowlist must keep the signs requirements:\n{combined}"
     );
     assert!(
         combined.contains("PF_BINARY_COSIGN_KEY"),
-        "publish-only empty allowlist must keep the binary_signs surface:\n{combined}"
+        "publish-only empty allowlist must keep the binary_signs requirements:\n{combined}"
     );
 }
 
@@ -313,7 +313,7 @@ fn preflight_publish_only_empty_allowlist_keeps_both_sign_surfaces() {
 /// scope with an empty allowlist) must KEEP BOTH sign requirements — `signs:` AND
 /// `binary_signs:` — so the binaries that ship are still signed.
 #[test]
-fn preflight_full_scope_keeps_both_sign_surfaces() {
+fn preflight_full_scope_keeps_both_sign_requirements() {
     if !tool_on_path("git") {
         eprintln!("skipping: git not on PATH");
         return;
@@ -331,11 +331,11 @@ fn preflight_full_scope_keeps_both_sign_surfaces() {
     );
     assert!(
         combined.contains("PF_COSIGN_KEY"),
-        "full-scope run must keep the signs surface:\n{combined}"
+        "full-scope run must keep the signs requirements:\n{combined}"
     );
     assert!(
         combined.contains("PF_BINARY_COSIGN_KEY"),
-        "full-scope run must keep the binary_signs surface (main-job binary signing preserved):\n{combined}"
+        "full-scope run must keep the binary_signs requirements (main-job binary signing preserved):\n{combined}"
     );
 }
 
@@ -347,7 +347,7 @@ fn preflight_full_scope_keeps_both_sign_surfaces() {
 /// three-consumer conjunction, so `--publishers uploads` falsely dropped
 /// `stage:sign` and the selected uploads publisher would mirror an unsigned set.
 #[test]
-fn preflight_publishers_uploads_keeps_signs_surface() {
+fn preflight_publishers_uploads_keeps_signs_requirements() {
     if !tool_on_path("git") {
         eprintln!("skipping: git not on PATH");
         return;
@@ -366,7 +366,7 @@ fn preflight_publishers_uploads_keeps_signs_surface() {
     // requirements (and its cosign key demand) must NOT be deselected.
     assert!(
         combined.contains("PF_COSIGN_KEY"),
-        "--publishers uploads must keep the signs surface (uploads consumes the sidecars):\n{combined}"
+        "--publishers uploads must keep the signs requirements (uploads consumes the sidecars):\n{combined}"
     );
     assert!(
         combined.contains("stage:sign"),
@@ -435,7 +435,7 @@ fn reconcile_fixture(
     // One run asks the feed up to three times — the publisher-state probe,
     // the credential probe against the service document, and the reconcile
     // sweep — plus one spare, which keeps a retry from falling through to the
-    // drain phase's 503 that would read as "absent" and quietly turn a
+    // final phase's 503 that would read as "absent" and quietly turn a
     // divergence assertion into a false pass.
     let (addr, calls) =
         anodizer_core::test_helpers::responder::spawn_oneshot_http_responder_with(|_| {
@@ -1508,7 +1508,7 @@ fn reconcile_sweep_skipped_end_to_end_when_head_advanced_past_the_tag() {
 /// End-to-end, HEAD EXACTLY AT the tag: the resolved version IS the version
 /// this run would publish, so the sweep runs, the required publisher's
 /// `diverged` verdict reaches the gate, and the command exits NON-ZERO with
-/// the divergence bail — not the environment bail.
+/// the divergence bail.
 #[test]
 fn reconcile_sweep_probes_end_to_end_and_diverged_exits_nonzero_at_the_tag() {
     if !tool_on_path("git") {
@@ -2716,14 +2716,16 @@ fn a_missing_token_goes_through_fail_on_error_and_stops_at_the_environment_check
         ),
         (
             "gitlab",
-            "release: no GitLab token available (set GITLAB_TOKEN, or pass --token); cannot \
-             create the release in myorg/myapp",
+            "release: no GitLab token available (set GITLAB_TOKEN, pass --token, or write the \
+             token to ~/.config/anodizer/gitlab_token); cannot create the release in \
+             myorg/myapp",
             "1 env var missing or empty: GITLAB_TOKEN",
         ),
         (
             "gitea",
-            "release: no Gitea token available (set GITEA_TOKEN, or pass --token); cannot \
-             create the release in myorg/myapp",
+            "release: no Gitea token available (set GITEA_TOKEN, pass --token, or write the \
+             token to ~/.config/anodizer/gitea_token); cannot create the release in \
+             myorg/myapp",
             "1 env var missing or empty: GITEA_TOKEN",
         ),
     ];

@@ -738,7 +738,7 @@ fn test_aur_resolve_push_git_url_derives_from_name() {
 //
 // Four defaults are applied at config-load time: name auto-suffixed
 // `-bin`, conflicts/provides default to the project name, and pkgrel
-// defaults to "1". These tests pin each rule
+// defaults to "1". These tests check each rule
 // against the helper pair (`aur_default_package_name` →
 // `aur_resolve_defaults`) so a regression trips a unit test instead of
 // slipping through to a malformed PKGBUILD on disk.
@@ -1162,7 +1162,7 @@ fn test_generate_pkgbuild_extensionless_source_has_no_rename_suffix() {
 
 /// `.SRCINFO` rename builder mirrors the PKGBUILD one: an extensionless
 /// source omits the trailing `.<ext>`. The .SRCINFO template embeds the
-/// raw `source_<arch>` URL (not the rename), so the assertion here pins
+/// raw `source_<arch>` URL (not the rename), so the assertion here checks
 /// the raw URL survives the empty-extension path without a panic and the
 /// arch/source/sha lines render.
 #[test]
@@ -1384,7 +1384,7 @@ fn unknown_arch_hard_fails_not_relabeled() {
 
 /// Dual-licensed crate (`MIT OR Apache-2.0`) renders the pacman
 /// `license=()` array with both SPDX ids — matching the zoxide-bin /
-/// starship-bin convention — not a single understated id.
+/// starship-bin convention.
 #[test]
 fn dual_license_renders_license_array() {
     let aur = AurConfig {
@@ -1894,7 +1894,7 @@ fn resolve_credentials_skips_non_aur_crates() {
         resolve_aur_credentials_from_config(&ctx, "ssh://aur@aur.archlinux.org/withkey.git")
             .unwrap();
     assert_eq!(pk.as_deref(), Some("KEYBYTES"));
-    // Unknown url → (None, None) after walking past the skipped crate.
+    // Unknown url → (None, None) after scanning past the skipped crate.
     let (pk_none, ssh_none) =
         resolve_aur_credentials_from_config(&ctx, "ssh://aur@x/y.git").unwrap();
     assert!(pk_none.is_none() && ssh_none.is_none());

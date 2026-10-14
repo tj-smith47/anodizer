@@ -809,7 +809,7 @@ fn cloudsmith_multi_distribution_stages_one_file_per_distro() {
 // Pure-function tests for the packages-list response classifier. The
 // network-bound `check_cloudsmith_package_exists` is exercised
 // indirectly via the same retry helper as `retry_request` (already
-// covered above); these tests pin the JSON decision rule.
+// covered above); these tests check the JSON decision rule.
 
 #[test]
 fn cloudsmith_classify_not_found_when_empty_array() {
@@ -1416,7 +1416,7 @@ fn live_precheck_bails_on_md5_mismatch() {
 /// A files/create that 4xxs reports the HTTP status and the response
 /// body in the error chain (and does not retry — 4xx fast-fails).
 #[test]
-fn live_files_create_4xx_surfaces_body() {
+fn live_files_create_4xx_reports_body() {
     let (result, log) = run_deb_with_routes(
         move |_base| {
             vec![ScriptedRoute {
@@ -2100,7 +2100,7 @@ fn live_prune_delete_4xx_is_nonfatal() {
 /// project name so the upload routes to `/files/app-org/app-repo/`.
 /// Top-level publishers like cloudsmith don't resolve per-crate config,
 /// but they DO render their config values against the active context —
-/// this pins that the rendered values reach the wire.
+/// this checks that the rendered values reach the wire.
 #[test]
 fn live_templated_org_repo_render_into_request_paths() {
     let tmp = tempfile::tempdir().unwrap();

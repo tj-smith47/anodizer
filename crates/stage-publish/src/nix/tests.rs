@@ -166,7 +166,7 @@ fn test_derivation_url_map_pairs_nix_double_with_go_arch_asset() {
     // The derivation's `urlMap` is keyed by Nix system doubles
     // (`<arch>-<os>`) but each value is the go-arch-named release asset
     // for that system. A wrong pairing is a 404 at `nix-build` time, the
-    // same failure class as a binstall asset-name bug. Pin that each
+    // same failure class as a binstall asset-name bug. Check that each
     // standard system selects the correctly-named asset:
     //   x86_64-linux   -> ...-linux-amd64.tar.gz
     //   aarch64-linux  -> ...-linux-arm64.tar.gz
@@ -973,7 +973,7 @@ fn test_publish_to_nix_dry_run_returns_false() {
 
 /// An unmappable explicit `nix.license` no longer aborts the release: it
 /// degrades to a quoted string literal (always valid in `meta`) rather than
-/// emit a bogus `lib.licenses.<id>` attr-path. Pin the safe fallback so an
+/// emit a bogus `lib.licenses.<id>` attr-path. Check the safe fallback so an
 /// exotic-but-legitimate license never blocks a release nor ships an
 /// unbuildable derivation.
 #[test]
@@ -1086,7 +1086,7 @@ fn nix_sha256_empty_metadata_bails_with_actionable_error() {
 // dispatches helpers up to `is_dry_run()` and returns Ok(false).
 
 /// `skip` is a template string that evaluates to `"true"` — must short-circuit
-/// just like `Bool(true)`. Pins the template-render branch of `check_skip_guards`.
+/// just like `Bool(true)`. Tests the template-render branch of `check_skip_guards`.
 #[test]
 fn test_publish_to_nix_skip_template_string_true_returns_false() {
     use anodizer_core::config::{NixConfig, RepositoryConfig, StringOrBool};
@@ -1161,7 +1161,7 @@ fn test_publish_to_nix_repo_coords_render_templates() {
 
 /// Repository `name:` field is also template-rendered (paired with the
 /// `owner` render covered above). Both halves of the rendered destination
-/// must appear in the dry-run log line — pins the `repo_name` branch of
+/// must appear in the dry-run log line — tests the `repo_name` branch of
 /// `resolve_repo_coords` independently of `repo_owner`.
 #[test]
 fn test_publish_to_nix_repo_name_template_rendered_in_dry_run() {
@@ -1195,7 +1195,7 @@ fn test_publish_to_nix_repo_name_template_rendered_in_dry_run() {
 }
 
 /// Project-level `metadata.description` is the fallback when the per-crate
-/// `nix.description` is unset. Pins `resolve_nix_metadata`'s
+/// `nix.description` is unset. Tests `resolve_nix_metadata`'s
 /// `or_else(|| ctx.config.meta_description())` chain.
 #[test]
 fn test_publish_to_nix_description_falls_back_to_project_metadata() {
@@ -1244,7 +1244,7 @@ fn test_publish_to_nix_description_falls_back_to_project_metadata() {
 }
 
 /// Bad homepage template (Tera syntax error) shows up as a render error
-/// with the crate name in the chain. Pins the
+/// with the crate name in the chain. Tests the
 /// `.with_context(|| "render homepage template for '<crate>'")` plumbing.
 #[test]
 fn test_publish_to_nix_bad_homepage_template_errors_with_crate_name() {
@@ -1268,7 +1268,7 @@ fn test_publish_to_nix_bad_homepage_template_errors_with_crate_name() {
 }
 
 /// `formatter:` is wired but no artifacts present — orchestrator bails on
-/// the no-archives guard BEFORE reaching `run_formatter`. Pins that the
+/// the no-archives guard BEFORE reaching `run_formatter`. Checks that the
 /// formatter wiring doesn't fire prematurely (would attempt to spawn the
 /// binary against a file that hasn't been written yet).
 #[test]
@@ -1484,7 +1484,7 @@ fn derived_compound_with_exception_falls_back_to_string_literal() {
 }
 
 /// Workspace per-crate mode: two crates with *different* Cargo SPDX ids each
-/// resolve their own nix attribute. Pins that the derived-license path is
+/// resolve their own nix attribute. Checks that the derived-license path is
 /// per-crate, not a single shared value.
 #[test]
 fn per_crate_workspace_each_crate_derives_its_own_nix_license() {
@@ -1794,12 +1794,12 @@ fn render_rejects_invalid_maintainer_handle() {
     );
 }
 
-/// Syntax floor for a POPULATED maintainers list (real handles): the rendered
+/// Syntax check for a POPULATED maintainers list (real handles): the rendered
 /// derivation must keep balanced delimiters and parse under `nix-instantiate`
 /// when present. The empty `[ ]` case is covered elsewhere; this exercises the
 /// `with lib.maintainers; [ … ]` shape end-to-end.
 #[test]
-fn populated_maintainers_list_passes_syntax_floor() {
+fn populated_maintainers_list_passes_the_syntax_check() {
     let expr = render_single_crate(
         "MIT OR Apache-2.0",
         |nix| {
@@ -1887,7 +1887,7 @@ fn dual_license_rust_crate_emits_license_list_in_meta() {
 }
 
 /// Validate the concrete expected `meta` block for a representative crate
-/// against the nixpkgs ripgrep/fd shape — not just round-trip. Asserts every
+/// against the nixpkgs ripgrep/fd shape, beyond a round-trip. Asserts every
 /// new attribute appears with the exact syntax nixpkgs uses.
 #[test]
 fn representative_crate_emits_full_expected_meta_block() {
@@ -1920,12 +1920,12 @@ fn representative_crate_emits_full_expected_meta_block() {
         );
     }
 
-    // Syntax floor 1 (always-on, tool-free): the new fields must not unbalance
+    // Syntax check 1 (always-on, tool-free): the new fields must not unbalance
     // the derivation's `{}`/`[]`/`()`/string delimiters.
     super::nix_delimiters_balanced(&expr)
         .expect("rendered derivation must have balanced nix delimiters");
 
-    // Syntax floor 2 (best-effort): if `nix-instantiate` is on PATH, the
+    // Syntax check 2 (best-effort): if `nix-instantiate` is on PATH, the
     // derivation must parse. Skip gracefully when the tool is absent so the
     // suite never hard-fails on a host without nix installed.
     assert_nix_parses_or_skip(&expr);
@@ -1938,11 +1938,11 @@ fn assert_nix_parses_or_skip(expr: &str) {
     match anodizer_core::tool_detect::runs("nix-instantiate") {
         anodizer_core::tool_detect::ToolProbe::Available => {}
         anodizer_core::tool_detect::ToolProbe::Unavailable => {
-            eprintln!("nix-instantiate not on PATH — skipping nix syntax floor check");
+            eprintln!("nix-instantiate not on PATH — skipping the nix syntax check");
             return;
         }
         anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
-            eprintln!("nix-instantiate probe failed ({e}) — skipping nix syntax floor check");
+            eprintln!("nix-instantiate probe failed ({e}) — skipping the nix syntax check");
             return;
         }
     }

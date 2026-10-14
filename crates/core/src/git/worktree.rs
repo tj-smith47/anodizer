@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn worktree_add_surfaces_stderr_on_failure() {
+    fn worktree_add_reports_stderr_on_failure() {
         // Invalid commit-ish: git emits a `fatal:` stderr line. The
         // returned error must carry that detail through, not the
         // previous opaque "git worktree add failed" string.

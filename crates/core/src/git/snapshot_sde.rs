@@ -81,7 +81,7 @@ mod tests {
             },
             "git",
         );
-        // Pin commit timestamp deterministically so test assertions are stable.
+        // Fix the commit timestamp deterministically so test assertions are stable.
         anodizer_core::test_helpers::output_with_spawn_retry(
             || {
                 let mut cmd = Command::new("git");

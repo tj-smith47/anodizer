@@ -197,7 +197,7 @@ impl Harness {
             );
             return Ok(());
         }
-        // Pin the image tag to a deterministic per-config constant so the
+        // Set the image tag to a deterministic per-config constant so the
         // manifest's `org.opencontainers.image.ref.name` annotation does not
         // itself drift between runs based on time-derived names.
         let output = anodizer_core::docker_build::oci_build_fixture(

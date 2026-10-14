@@ -350,7 +350,7 @@ fn winget_pr_item_without_url_is_unknown_signal() {
     .expect("ok");
     assert!(
         matches!(result, OpenPrLookup::ItemWithoutUrl),
-        "items[0] without html_url must surface as a distinct outcome"
+        "items[0] without html_url must be reported as a distinct outcome"
     );
 }
 
@@ -560,7 +560,7 @@ fn crates_io_checker_unknown_on_network_error() {
     };
     assert!(
         matches!(checker_state, PublisherState::Unknown { .. }),
-        "network error must surface as Unknown, got: {:?}",
+        "network error must be reported as Unknown, got: {:?}",
         checker_state
     );
     // Sanity: the underlying error mentioned the host/port in play.
@@ -1586,7 +1586,7 @@ mod publish_simulation {
     }
 
     #[test]
-    fn unknown_transport_error_is_surfaced_not_silently_passed() {
+    fn unknown_transport_error_is_reported_as_a_blocker() {
         let mut ctx = two_crate_ctx();
         let log = quiet_log();
         let mut report = PreflightReport::new();
@@ -1601,7 +1601,7 @@ mod publish_simulation {
         };
         let dry = |_crates: &[String]| DryRunOutcome::Ok;
         run_cargo_publish_simulation_with(&mut ctx, &log, &mut report, &index, &dry);
-        assert_eq!(report.blockers.len(), 1, "Unknown surfaces a blocker");
+        assert_eq!(report.blockers.len(), 1, "Unknown reports a blocker");
         let b = &report.blockers[0];
         assert!(b.contains("could not determine crates.io state"), "{b}");
         assert!(b.contains("connection reset"), "carries the reason: {b}");
@@ -1744,7 +1744,7 @@ mod publish_simulation {
     }
 
     #[test]
-    fn cargo_deselected_surface_skips_simulation_entirely() {
+    fn deselected_cargo_skips_simulation_entirely() {
         // `--publishers npm` (or `--skip cargo`) leaves the irreversible
         // cargo door out of this run's selection, so the simulation has
         // nothing to guard. PanicFactory + panic_runner prove the wrapper
@@ -1799,7 +1799,7 @@ mod publish_simulation {
         let report = run_preflight_with_factory(&mut ctx, &log, &factory).expect("ok");
         assert!(
             report.blockers.is_empty(),
-            "factory seam must not produce a simulation blocker: {:?}",
+            "the factory hook must not produce a simulation blocker: {:?}",
             report.blockers
         );
     }
@@ -2028,7 +2028,7 @@ mod publish_simulation {
     }
 
     #[test]
-    fn render_failure_in_skip_template_surfaces_as_blocker() {
+    fn render_failure_in_skip_template_reports_a_blocker() {
         use anodizer_core::config::StringOrBool;
         // An unterminated `skip:` template breaks `cargo_publish_plan` — the
         // same failure the real publish would hit — so the simulation must

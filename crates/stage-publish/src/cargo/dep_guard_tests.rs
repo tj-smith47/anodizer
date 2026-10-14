@@ -280,7 +280,7 @@ fn guard_resolves_package_renamed_dep() {
     );
     assert!(
         format!("{err:#}").contains("declared as 'core' via package rename"),
-        "error must surface the in-code alias: {err:#}"
+        "error must name the in-code alias: {err:#}"
     );
 }
 
@@ -389,7 +389,7 @@ fn guard_resolves_workspace_inherited_renamed_dep() {
     );
     assert!(
         format!("{err:#}").contains("declared as 'core' via package rename"),
-        "error must surface the in-code alias: {err:#}"
+        "error must name the in-code alias: {err:#}"
     );
     assert_eq!(
         *seen.borrow(),

@@ -39,7 +39,7 @@ pub(crate) fn is_keyless_cosign(cmd: &str, args: &[String]) -> bool {
 /// mode does too whenever the transparency-log upload is left on: the sign
 /// leg uploads to Rekor and checks the returned entry against Rekor's public
 /// key, and the verify leg demands a tlog entry, and both fetch that key
-/// through the same store. Only a keyed invocation whose argv pins
+/// through the same store. Only a keyed invocation whose argv sets
 /// `--tlog-upload=false` stays offline — that is what the determinism harness
 /// appends. `args` is the RENDERED argv, as for [`is_keyless_cosign`].
 pub(crate) fn contends_tuf_store(cmd: &str, args: &[String]) -> bool {

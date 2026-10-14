@@ -223,7 +223,8 @@ fn load_context(opts: &PromoteOpts, log: &StageLogger) -> Result<Context> {
         debug: opts.debug,
         ..Default::default()
     };
-    let mut ctx = Context::new(config, ctx_opts);
+    let mut ctx = Context::new(config.clone(), ctx_opts);
+    crate::commands::helpers::resolve_scm_token_type(&mut ctx, &config)?;
     ctx.populate_time_vars()?;
     Ok(ctx)
 }

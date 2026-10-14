@@ -4,7 +4,7 @@
 use super::*;
 use crate::publisher_helpers::count_noun;
 
-/// Walk `depends_on` from each crate in `seed` to produce a de-duplicated
+/// Follow `depends_on` from each crate in `seed` to produce a de-duplicated
 /// list containing every seed crate plus every transitive dependency that
 /// lives in the same config. The `all_crates` slice is searched by name;
 /// deps pointing at crates outside the config are ignored (same as cargo's
@@ -202,7 +202,7 @@ pub(crate) fn wait_for_workspace_deps_to_appear(
                 anyhow::bail!(
                     "publish: wait_for_workspace_deps timed out after {}s waiting for \
                      {}@{} (dep of '{}') to appear on crates.io. Either the upstream \
-                     publish has not yet landed, or the version pin in {}'s Cargo.toml \
+                     publish has not yet been indexed, or the version pin in {}'s Cargo.toml \
                      does not match what was published. Raise `wait_for_workspace_deps.max_wait` \
                      or verify the upstream Release.yml run completed.",
                     max_wait.as_secs(),
@@ -277,7 +277,7 @@ pub(crate) struct RootDepPin {
 
 /// Lazily-populated `[workspace.dependencies]` maps, keyed by resolved
 /// workspace-root manifest path and shared across the per-crate manifest
-/// walks of one publish run: each distinct root is parsed once, and a crate
+/// scans of one publish run: each distinct root is parsed once, and a crate
 /// living under a different root (a nested standalone `[workspace]`) can
 /// never resolve its inherits against another crate's root. Empty until the
 /// first inherit edge forces a parse.
@@ -357,7 +357,7 @@ fn publish_required_workspace_deps(
     )
 }
 
-/// Walk the given dependency `sections` of one crate manifest (plus their
+/// Scan the given dependency `sections` of one crate manifest (plus their
 /// `[target.*.<section>]` variants) and collect a [`WorkspaceDepEntry`] for
 /// every entry whose effective package name is a workspace crate.
 ///
@@ -388,7 +388,7 @@ fn collect_workspace_dep_entries(
         return Vec::new();
     };
 
-    // Resolve inherited entries lazily — the root manifest walk happens at
+    // Resolve inherited entries lazily — the root manifest read happens at
     // most once per crate (memoized below), and the parse at most once per
     // distinct root across the whole run (keyed cache).
     let mut crate_root: Option<Option<std::path::PathBuf>> = None;
@@ -493,7 +493,7 @@ fn collect_workspace_dep_entries(
 
 /// Pre-publish dep-completeness guard.
 ///
-/// For every crate in the resolved cargo-publish set, walk its
+/// For every crate in the resolved cargo-publish set, scan its
 /// `Cargo.toml` non-dev dependencies and assert each workspace-internal
 /// dependency is EITHER (a) also in the publish set OR (b) already live on
 /// crates.io at the required version. A dep that is in NEITHER would make the
@@ -678,7 +678,7 @@ pub(crate) fn check_tp_new_crates(
         "cargo publish is running under a crates.io Trusted Publishing (OIDC) token, but \
          {crates} {have} never been published: Trusted Publishing cannot CREATE a crate, so \
          {each} would be rejected (403) partway through the publish loop — after {its} \
-         dependencies already landed at the release version. Aborting before any crate \
+         dependencies were already published at the release version. Aborting before any crate \
          publishes.\n\
          Remediation, once per new crate:\n\
          1. `cargo publish -p <crate>` with a regular crates.io API token to create the \

@@ -799,7 +799,7 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
 
 /// Which transport `maybe_submit_pr` / `submit_pr_via_gh_with_opts`
 /// should dispatch to, given the runtime availability of `gh` and a
-/// GitHub token. Pure data so unit tests can pin the decision without
+/// GitHub token. Pure data so unit tests can check the decision without
 /// touching the process env or PATH.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum PrTransport {
@@ -1045,7 +1045,7 @@ mod tests {
 
     /// Neither available → NoneAvailable. The caller MUST map this to
     /// PublisherOutcome::Failed; returning None would let dispatch
-    /// record Succeeded for a publisher that did no work. Pins the
+    /// record Succeeded for a publisher that did no work. Tests the
     /// silent-skip contract fix at the decision-logic boundary.
     #[test]
     fn classify_pr_transport_neither_available_returns_none_available() {
@@ -1129,7 +1129,7 @@ mod tests {
     }
 
     /// `maybe_submit_pr` with `repo = None` must short-circuit to `None`
-    /// before ever touching git, gh, or the network. Pins the
+    /// before ever touching git, gh, or the network. Tests the
     /// "PR-disabled is the default" contract: a publisher that forgets
     /// to wire `repo` cannot accidentally open a PR.
     #[test]
@@ -1157,7 +1157,7 @@ mod tests {
     }
 
     /// `maybe_submit_pr` with a repo whose `pull_request` field is
-    /// `None` must short-circuit to `None`. Pins the
+    /// `None` must short-circuit to `None`. Tests the
     /// pull_request-block-missing branch of the early-return guard.
     #[test]
     fn maybe_submit_pr_returns_none_when_pull_request_block_absent() {
@@ -1190,7 +1190,7 @@ mod tests {
     }
 
     /// `maybe_submit_pr` with `pull_request.enabled = Some(false)` must
-    /// short-circuit to `None`. Pins the explicit opt-out branch:
+    /// short-circuit to `None`. Tests the explicit opt-out branch:
     /// configuring the block but leaving it disabled is NOT an approval.
     #[test]
     fn maybe_submit_pr_returns_none_when_pull_request_disabled() {
@@ -1226,7 +1226,7 @@ mod tests {
     }
 
     /// `maybe_submit_pr` with `pull_request.enabled = None` (the field
-    /// defaulted) must short-circuit to `None`. Pins the
+    /// defaulted) must short-circuit to `None`. Tests the
     /// "enabled defaults to off" contract — the early-return guard
     /// requires `enabled == Some(true)`, not just "block present".
     #[test]
@@ -1415,7 +1415,7 @@ mod tests {
 
     /// 422 with "already exists" + `update_existing_pr=false` is the
     /// "PR for this head already exists, leave it alone" branch.
-    /// Returning `PendingValidation` pins the silent-skip fix at the
+    /// Returning `PendingValidation` tests the silent-skip fix at the
     /// transport boundary — dispatch would otherwise record this
     /// publisher as `succeeded` even though no PR was created.
     #[test]
@@ -1465,7 +1465,7 @@ mod tests {
         assert!(
             matches!(outcome, Some(PublisherOutcome::PendingValidation)),
             "API transport cannot force-push; update_existing_pr=true \
-             must still surface PendingValidation, not None. Got {outcome:?}"
+             must still return PendingValidation. Got {outcome:?}"
         );
     }
 
@@ -1497,7 +1497,7 @@ mod tests {
 
     /// 4xx (e.g. 401 Unauthorized) that is NOT the 422 already-exists
     /// pattern maps to Failed — the API rejected the request and the
-    /// PR was not created. Pins the bucket-failures-as-Failed contract
+    /// PR was not created. Tests the bucket-failures-as-Failed contract
     /// for the catch-all branch in `create_pr_via_api`.
     #[test]
     fn create_pr_via_api_returns_failed_on_401() {
@@ -1559,7 +1559,7 @@ mod tests {
     }
 
     /// 422 with a body that does NOT mention "already exists" must NOT
-    /// be reclassified as PendingValidation — it stays a Failed. Pins
+    /// be reclassified as PendingValidation — it stays a Failed. Tests
     /// the body-text discriminator that separates the legitimate
     /// "validation error" case (e.g. invalid base ref) from the
     /// "PR already exists" duplicate case.
@@ -1829,7 +1829,7 @@ mod tests {
 
     /// Idempotence / re-entry: calling `sync_fork` twice must not fail on
     /// the second `git remote add upstream` (the remote already exists).
-    /// The function explicitly ignores that error; this pins the contract
+    /// The function explicitly ignores that error; this tests the contract
     /// so a future refactor doesn't start bailing on the duplicate-remote
     /// case.
     #[test]
@@ -1983,7 +1983,7 @@ mod tests {
     /// Same-repo PR (upstream == fork) must NOT take the cross-repo
     /// fork-sync branch — the release branch is NOT force-pushed to origin
     /// as a side effect — yet the PR is still created, targeting the fork's
-    /// own slug. Pins the `is_cross_repo` guard AND that the non-cross-repo
+    /// own slug. Tests the `is_cross_repo` guard AND that the non-cross-repo
     /// path still reaches the transport with the fork as upstream.
     #[cfg(unix)]
     #[test]
@@ -2265,7 +2265,7 @@ mod tests {
 
     // `create_pr_via_api_with_env` — REQUEST-CONTENT assertions. The
     // existing tests assert the returned outcome per status code; these
-    // pin the actual request the API transport emits (method, path, and
+    // check the actual request the API transport emits (method, path, and
     // JSON payload fields) via the scripted responder's request log.
 
     /// `pull_request.token` wins over `repository.token` and over the
@@ -2452,7 +2452,7 @@ mod tests {
         assert_eq!(payload["draft"], true);
     }
 
-    /// Pins that a custom (non-default) base branch and `draft=false`
+    /// Checks that a custom (non-default) base branch and `draft=false`
     /// round-trip into the emitted request payload — complementing the
     /// draft=true case above so both branches of the bool are covered in
     /// the request body, not just the return value.
@@ -2489,7 +2489,7 @@ mod tests {
 
     /// `maybe_submit_pr` renders `body`, `base.owner`, `base.name`, and
     /// `base.branch` through the caller-supplied render closure before they
-    /// reach the upstream slug and the API payload. Pins that the PR
+    /// reach the upstream slug and the API payload. Checks that the PR
     /// request carries the expanded values, never the literal template strings.
     #[cfg(unix)]
     #[test]

@@ -124,7 +124,7 @@ mod tests {
     }
 
     /// `remove` is `set`'s mirror: the variable is absent for the guard's
-    /// life and its prior value — not its absence — comes back on drop.
+    /// life and its prior value comes back on drop.
     #[test]
     fn remove_restores_the_prior_value_on_drop() {
         let _lock = env_mutex().lock().unwrap_or_else(|e| e.into_inner());

@@ -158,8 +158,8 @@ pub(super) fn default_stages_for_host() -> Vec<StageId> {
     for token in anodizer_core::env_preflight::os_native_producer_tokens(host_os) {
         // Core's producer table is keyed by the same canonical token
         // vocabulary as `StageId::as_str`, so an absent mapping is an internal
-        // invariant breach (a producer token with no `StageId`) — not operator
-        // input — and must fail loud rather than silently drop a producer.
+        // invariant breach (a producer token with no `StageId`) and
+        // must fail loud instead of silently dropping a producer.
         stages.push(
             StageId::from_token(token).expect("core producer token must map to a StageId variant"),
         );

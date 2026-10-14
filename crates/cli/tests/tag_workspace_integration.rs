@@ -317,7 +317,7 @@ struct DryRunResult {
 
 /// Run `tag --dry-run -q` against an explicit `--config` (the root
 /// `.anodizer.yaml`) from `run_dir`. The explicit config isolates the
-/// workspace-root concern: the fix walks up from the config's parent to the
+/// workspace-root concern: the fix climbs from the config's parent to the
 /// root, so the same config resolves the same root from any subdirectory.
 fn tag_dry_run_from(run_dir: &Path, config: &Path) -> DryRunResult {
     let out = anodizer()
@@ -600,7 +600,7 @@ fn read_member_version(root: &Path, member: &str) -> String {
 }
 
 /// Lockstep workspace where `--version` (in both `1.2.3` and `v1.2.3` forms)
-/// pins the workspace version verbatim, bypassing autotag derivation.
+/// sets the workspace version verbatim, bypassing autotag derivation.
 fn lockstep_version_override(arg: &str, expected_tag: &str) {
     let tmp = TempDir::new().unwrap();
     inheriting_workspace_with_deps(tmp.path());
@@ -640,7 +640,7 @@ fn lockstep_version_override(arg: &str, expected_tag: &str) {
     );
     assert!(
         !git_tag_exists(tmp.path(), "v0.1.1"),
-        "derived patch tag v0.1.1 must NOT be created when --version pins"
+        "derived patch tag v0.1.1 must NOT be created when --version is set"
     );
 }
 
@@ -736,7 +736,7 @@ fn version_override_invalid_errors() {
     );
 }
 
-// dependency-floor healing
+// dependency-minimum healing
 
 /// Read a member manifest's `[dependencies].<dep>.version`.
 fn read_dep_version(root: &Path, manifest_rel: &str, dep_name: &str) -> String {
@@ -772,7 +772,7 @@ fn read_dep_version_in(
 }
 
 /// Lockstep workspace whose member `c` already carries the version the next tag
-/// resolves to (so its plan row is `Skip`), while `b` still floors it at a
+/// resolves to (so its plan row is `Skip`), while `b` still requires it at a
 /// pre-bump `0.0.1`.
 fn lockstep_workspace_with_skipped_member(tmp: &Path) {
     fs::write(
@@ -819,10 +819,10 @@ c = { path = "../c", version = "0.0.1" }
 }
 
 /// A lockstep member already at the target version is skipped by the plan, so
-/// the same-run propagation never looks at floors that reference it. The bump
+/// the same-run propagation never looks at minimums that reference it. The bump
 /// commit must still raise them.
 #[test]
-fn lockstep_bump_heals_stale_floor_on_skipped_member() {
+fn lockstep_bump_heals_stale_minimum_on_skipped_member() {
     let tmp = TempDir::new().unwrap();
     lockstep_workspace_with_skipped_member(tmp.path());
     git_init(tmp.path());
@@ -843,7 +843,7 @@ fn lockstep_bump_heals_stale_floor_on_skipped_member() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(read_workspace_package_version(tmp.path()), "0.2.0");
-    // c was never bumped (it was already at 0.2.0), yet b's floor on it heals.
+    // c was never bumped (it was already at 0.2.0), yet b's minimum on it heals.
     assert_eq!(read_member_version(tmp.path(), "crates/c"), "0.2.0");
     assert_eq!(
         read_dep_version(tmp.path(), "crates/b/Cargo.toml", "c"),
@@ -857,7 +857,7 @@ fn lockstep_bump_heals_stale_floor_on_skipped_member() {
     );
     assert!(
         !stderr.contains("healed dependency minimum a "),
-        "a floor the same-run propagation owns must not be reported as a heal: {stderr}"
+        "a minimum the same-run propagation owns must not be reported as a heal: {stderr}"
     );
     // Stale against `a`'s new version, yet the dep-spec propagation reaches
     // `[workspace.dependencies]` too, so it is raised there and not by the sweep.
@@ -892,7 +892,7 @@ fn lockstep_bump_heals_stale_floor_on_skipped_member() {
     );
 }
 
-/// The same heal, previewed: `--dry-run` names the floor it would raise and
+/// The same heal, previewed: `--dry-run` names the minimum it would raise and
 /// leaves the manifest byte-for-byte alone.
 #[test]
 fn lockstep_dry_run_previews_heal_and_writes_nothing() {
@@ -921,12 +921,12 @@ fn lockstep_dry_run_previews_heal_and_writes_nothing() {
         stderr.contains("(dry-run) would heal dependency minimum c 0.0.1 → 0.2.0"),
         "dry-run must preview the heal: {stderr}"
     );
-    // `a` is bumped by this run, so its floor belongs to the same-run
+    // `a` is bumped by this run, so its minimum belongs to the same-run
     // propagation; previewing it as a heal would announce an edit the real run
     // attributes elsewhere.
     assert!(
         !stderr.contains("would heal dependency minimum a "),
-        "a floor the same-run propagation owns must not be previewed as a heal: {stderr}"
+        "a minimum the same-run propagation owns must not be previewed as a heal: {stderr}"
     );
     assert_eq!(
         fs::read_to_string(tmp.path().join("Cargo.toml")).unwrap(),
@@ -941,10 +941,10 @@ fn lockstep_dry_run_previews_heal_and_writes_nothing() {
 }
 
 /// Single-crate mode: the configured crate's own bump propagates its own
-/// version, but a floor on an unreleased sibling is outside that propagation.
+/// version, but a minimum on an unreleased sibling is outside that propagation.
 /// The bump commit heals it against the sibling's manifest version.
 #[test]
-fn single_crate_bump_heals_floor_on_unreleased_sibling() {
+fn single_crate_bump_heals_minimum_on_unreleased_sibling() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
     fs::write(
@@ -984,7 +984,7 @@ util = { path = "../util", version = "0.1.0" }
     fs::write(root.join("crates/app/src/lib.rs"), "// touched\n").unwrap();
     git_add_commit(root, "feat: app change");
 
-    // The preview names the same floor and leaves the tree untouched — the one
+    // The preview names the same minimum and leaves the tree untouched — the one
     // shape where `sync_workspace_deps` previews its own edits alongside.
     let before = fs::read_to_string(root.join("crates/app/Cargo.toml")).unwrap();
     let preview = anodizer()
@@ -1042,7 +1042,7 @@ util = { path = "../util", version = "0.1.0" }
 }
 
 /// The stranded-bump topology: a bump commit gets its tag but never reaches
-/// the branch, so the branch keeps a floor that references a sibling at a
+/// the branch, so the branch keeps a minimum that references a sibling at a
 /// version the sibling's manifest has already moved past. The next run's bump
 /// commit must heal it even though that sibling is not part of the run.
 #[test]
@@ -1085,7 +1085,7 @@ core = { path = "../core", version = "0.1.0" }
     run_git(root, &["tag", "core-v0.1.0"]);
     run_git(root, &["tag", "cli-v0.1.0"]);
 
-    // Release core: its bump commit carries core 0.2.0 AND cli's 0.2.0 floor.
+    // Release core: its bump commit carries core 0.2.0 AND cli's 0.2.0 minimum.
     fs::write(root.join("crates/core/src/lib.rs"), "// touched\n").unwrap();
     git_add_commit(root, "feat: core change");
     let out = anodizer().current_dir(root).args(["tag"]).output().unwrap();
@@ -1102,7 +1102,7 @@ core = { path = "../core", version = "0.1.0" }
 
     // The branch never absorbs that bump commit; the tag keeps pointing at it.
     run_git(root, &["reset", "--hard", "HEAD~1"]);
-    // Only core's own version is restored onto the branch — the floor drift the
+    // Only core's own version is restored onto the branch — the minimum drift the
     // stranded commit was carrying stays behind.
     fs::write(
         root.join("crates/core/Cargo.toml"),
@@ -1113,11 +1113,11 @@ core = { path = "../core", version = "0.1.0" }
     assert_eq!(
         read_dep_version(root, "crates/cli/Cargo.toml", "core"),
         "0.1.0",
-        "the branch must start this run with the drifted floor"
+        "the branch must start this run with the drifted minimum"
     );
 
     // Release cli only. core is not in this run, so nothing propagates its
-    // version — the heal is the only thing that can fix cli's floor.
+    // version — the heal is the only thing that can fix cli's minimum.
     fs::write(root.join("crates/cli/src/lib.rs"), "// touched\n").unwrap();
     git_add_commit(root, "feat: cli change");
     let out = anodizer().current_dir(root).args(["tag"]).output().unwrap();
@@ -1132,7 +1132,7 @@ core = { path = "../core", version = "0.1.0" }
     assert_eq!(
         read_dep_version(root, "crates/cli/Cargo.toml", "core"),
         "0.2.0",
-        "the stranded floor must heal against core's manifest version"
+        "the stranded minimum must heal against core's manifest version"
     );
 }
 
@@ -1253,7 +1253,7 @@ fn tag_crate_path_emits_static_config_warnings_once() {
     }
 }
 
-/// `--version` WITH `--crate` in per-crate mode pins exactly that one crate's
+/// `--version` WITH `--crate` in per-crate mode sets exactly that one crate's
 /// version, leaving its siblings untouched.
 #[test]
 fn version_override_with_crate_in_per_crate_mode() {

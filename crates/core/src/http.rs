@@ -92,7 +92,7 @@ pub fn github_api_base_with_config<E: crate::EnvSource + ?Sized>(
 /// Used by [`body_of`] / [`body_of_blocking`]: a transport-level
 /// read error becomes `"could not read response body: <err>"` rather than
 /// silently truncating to `""`. Exposed as a free function so unit tests can
-/// pin the exact wording without standing up a fault-injecting HTTP server.
+/// check the exact wording without standing up a fault-injecting HTTP server.
 pub fn body_read_error_message<E: std::fmt::Display>(err: E) -> String {
     format!("could not read response body: {err}")
 }
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn test_body_read_error_message_uses_descriptive_prefix() {
-        // Pin the exact wording: callers may parse / match on this string,
+        // Check the exact wording: callers may parse / match on this string,
         // and the error-body contract requires the
         // `"could not read response body: "` prefix verbatim.
         let formatted = body_read_error_message("connection reset by peer");

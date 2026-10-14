@@ -222,7 +222,7 @@ pub fn deterministic_uuid_from(seed: &str) -> String {
     )
 }
 
-/// Search for Cargo.lock starting from `start_dir` and walking up parent directories.
+/// Search for Cargo.lock starting from `start_dir` and searching upward through parent directories.
 pub fn find_cargo_lock(start_dir: &Path) -> Result<PathBuf> {
     let mut dir = start_dir.to_path_buf();
     loop {
