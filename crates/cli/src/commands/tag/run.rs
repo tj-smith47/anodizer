@@ -3,6 +3,9 @@ use super::*;
 /// Run `anodizer tag`: resolve the next version for every unit the repo shape
 /// dispatches, write it back, and cut the tag.
 pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
+    // The changelog heading and the API tag's tagger date read the source
+    // date, so a malformed value stops the run before any file is written.
+    anodizer_core::sde::ambient_epoch_with_env(&anodizer_core::env_source::ProcessEnvSource)?;
     // Discover the workspace root once, config-derived, so `tag` resolves the
     // same root whether invoked from the repo root or a subdirectory (matching
     // `bump` and `changelog`); every workspace-load / git-working-dir site below

@@ -458,7 +458,7 @@ fn is_duration_space(c: char) -> bool {
 /// Parse a duration string, the one grammar every duration config field and
 /// the `--timeout` flag share. Recognizes `ms`, `s`, `m`, `h` and `d` units
 /// and concatenated forms like `"1h30m"`, with spaces or tabs allowed between
-/// the parts. A number longer than [`MAX_DURATION_DIGITS`] digits is an
+/// the parts. A number longer than 19 digits is an
 /// error, and so is a total longer than [`MAX_DURATION`] (one year); both
 /// errors name the value.
 pub fn parse_humantime_duration(input: &str) -> Result<std::time::Duration, String> {

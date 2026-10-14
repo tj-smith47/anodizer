@@ -12,7 +12,7 @@ use anyhow::{Context as _, Result, bail};
 /// The `from_url` branch routes through [`retry_http_blocking_deadline`] so
 /// transient 5xx / 429 / network failures retry per the user's top-level
 /// `retry:` policy and stop once the invocation's wall-clock budget is spent;
-/// 4xx fast-fails so a typo'd URL surfaces immediately.
+/// 4xx fails at once so a typo'd URL is reported immediately.
 ///
 /// Both `from_file.path` and `from_url.url` are template-rendered through
 /// `ctx` before use so configs like
@@ -43,7 +43,19 @@ pub fn resolve_full_description(
                 from_url.url
             )
         })?;
-        let headers = from_url.headers.clone();
+        let headers = from_url
+            .headers
+            .iter()
+            .flatten()
+            .map(|(k, v)| {
+                let value = crate::util::render_secret(
+                    ctx,
+                    &format!("dockerhub.full_description.from_url.headers[{k}]"),
+                    v,
+                )?;
+                Ok((k.clone(), value))
+            })
+            .collect::<Result<Vec<(String, String)>>>()?;
         let label = format!("dockerhub: fetch full_description from {}", url);
         let (_, body) = retry_http_blocking_deadline(
             RetryLog::new(&label, log),
@@ -52,10 +64,8 @@ pub fn resolve_full_description(
             SuccessClass::Strict,
             |_| {
                 let mut req = client.get(&url);
-                if let Some(ref h) = headers {
-                    for (key, value) in h {
-                        req = req.header(key, value);
-                    }
+                for (key, value) in &headers {
+                    req = req.header(key, value);
                 }
                 req.send()
             },

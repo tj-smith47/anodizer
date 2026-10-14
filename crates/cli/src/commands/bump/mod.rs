@@ -42,6 +42,9 @@ pub(crate) struct BumpOpts {
 /// Run `anodizer bump`: resolve each selected crate's next version and write
 /// it into the manifests, or print what a write would do.
 pub(crate) fn run(opts: BumpOpts) -> Result<()> {
+    // The changelog heading reads the source date, so a malformed value stops
+    // the run before any manifest is written.
+    anodizer_core::sde::ambient_epoch_with_env(&anodizer_core::env_source::ProcessEnvSource)?;
     let log = StageLogger::new(
         "bump",
         Verbosity::from_flags(opts.quiet, opts.verbose, opts.debug),

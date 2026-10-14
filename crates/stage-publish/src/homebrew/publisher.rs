@@ -249,7 +249,7 @@ fn formula_inactive(ctx: &Context, formula: &anodizer_core::config::HomebrewConf
     )
 }
 
-/// True when [`publish_cask`](super::publish_cask) pushes this crate's cask
+/// True when [`publish_cask`](fn@super::publish_cask) pushes this crate's cask
 /// on its own commit: it names its own tap, or the formula whose tap commit
 /// it would ride is gated off this run.
 fn cask_pushed_alone(ctx: &Context, crate_cask: &super::CrateCask<'_>) -> bool {

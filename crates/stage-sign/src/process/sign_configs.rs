@@ -517,8 +517,7 @@ pub(crate) fn process_sign_configs(
             // the literal template string. `stdin_file` is a path read raw.
             let rendered_stdin = match sign_cfg.stdin.as_deref() {
                 Some(s) => Some(expand_shell_vars(
-                    &ctx.render_template(s)
-                        .with_context(|| format!("sign: render {label} stdin"))?,
+                    &ctx.render_secret(&format!("{sub_label}.stdin"), s)?,
                     &shell_vars,
                 )),
                 None => None,

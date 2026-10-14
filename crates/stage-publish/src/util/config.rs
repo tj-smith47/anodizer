@@ -14,10 +14,6 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
-// ---------------------------------------------------------------------------
-// Secret rendering
-// ---------------------------------------------------------------------------
-
 /// Render the credential template `raw` of the config field `field` (an
 /// `api_key`, a `token`, a `password`, a `private_key`, a signing key, or a
 /// `secret_name` that names the variable holding one) and return it trimmed.
@@ -28,7 +24,7 @@ use anyhow::{Context as _, Result};
 /// credential fails upstream with an error that names nothing, and on a
 /// one-way-door registry it is sent before anything can stop it.
 pub(crate) fn render_secret(ctx: &Context, field: &str, raw: &str) -> Result<String> {
-    anodizer_core::git::render_secret(field, raw, &|s| ctx.render_template(s))
+    ctx.render_secret(field, raw)
 }
 
 /// Resolve the name of the variable that holds a secret: the configured
@@ -68,10 +64,6 @@ pub(crate) fn config_or_env_secret(
         .unwrap_or_default())
 }
 
-// ---------------------------------------------------------------------------
-// Publisher config lookup
-// ---------------------------------------------------------------------------
-
 /// Look up a crate's config and its `publish` section by name, returning a
 /// descriptive error when either is missing.
 ///
@@ -110,10 +102,6 @@ pub(crate) fn find_crate_in_universe<'a>(
     ctx.config.find_crate(crate_name)
 }
 
-// ---------------------------------------------------------------------------
-// Artifact kind resolution
-// ---------------------------------------------------------------------------
-
 /// Map the `use` config value (e.g. "archive", "msi", "nsis") to an
 /// `ArtifactKind`.  Defaults to `Archive` when the value is `None` or
 /// unrecognised.
@@ -124,10 +112,6 @@ pub(crate) fn resolve_artifact_kind(use_value: Option<&str>) -> ArtifactKind {
         _ => ArtifactKind::Archive,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Token resolution
-// ---------------------------------------------------------------------------
 
 /// Resolve a GitHub token from the environment for a publisher's repository:
 /// the publisher-specific env var, then the run's GitHub token (`--token`, or
@@ -148,14 +132,18 @@ pub(crate) fn resolve_artifact_kind(use_value: Option<&str>) -> ArtifactKind {
 /// [`MapEnvSource`](anodizer_core::MapEnvSource) without mutating the
 /// process env.
 pub(crate) fn resolve_token(ctx: &Context, env_var: Option<&str>) -> Option<String> {
-    env_var
-        .and_then(|v| ctx.env_var(v))
-        .as_deref()
-        .and_then(anodizer_core::git::non_blank_token)
-        .or_else(|| run_github_token(ctx))
-        .or_else(|| {
+    use super::pr_token::{PUSH_TOKEN_ORDER, TokenLink};
+    PUSH_TOKEN_ORDER.iter().find_map(|link| match link {
+        TokenLink::PublisherVariable => env_var
+            .and_then(|v| ctx.env_var(v))
+            .as_deref()
+            .and_then(anodizer_core::git::non_blank_token),
+        TokenLink::RunToken => run_github_token(ctx),
+        TokenLink::GithubVariables => {
             anodizer_core::git::resolve_github_token_with_env(None, &|key| ctx.env_var(key))
-        })
+        }
+        TokenLink::PullRequestToken | TokenLink::RepositoryToken => None,
+    })
 }
 
 /// The run's SCM token when it is a GitHub credential, else `None`.
@@ -168,10 +156,6 @@ pub(crate) fn run_github_token(ctx: &Context) -> Option<String> {
         .as_deref()
         .and_then(anodizer_core::git::non_blank_token)
 }
-
-// ---------------------------------------------------------------------------
-// Repository owner/name resolution
-// ---------------------------------------------------------------------------
 
 /// Resolve repository owner/name from a RepositoryConfig.
 ///
@@ -186,10 +170,6 @@ pub(crate) fn resolve_repo_owner_name(
         _ => None,
     })
 }
-
-// ---------------------------------------------------------------------------
-// Skip-gate evaluation
-// ---------------------------------------------------------------------------
 
 /// Resolve `skip_upload` to a boolean for publisher entry-points, emitting
 /// the canonical skip-upload log line when the upload is skipped.
@@ -290,11 +270,8 @@ pub(crate) fn should_skip_publisher_with_if(
     Ok(false)
 }
 
-// ---------------------------------------------------------------------------
-// Repository token resolution
-// ---------------------------------------------------------------------------
-
-/// Resolve the token that pushes to a publisher's GitHub repository:
+/// Resolve the token that pushes to a publisher's GitHub repository in
+/// [`PUSH_TOKEN_ORDER`](super::pr_token::PUSH_TOKEN_ORDER):
 /// `repository.token`, then the publisher's own variable `env_var`, then the
 /// run token (GitHub only), then `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` /
 /// `GH_TOKEN` ([`resolve_token`]).
@@ -313,7 +290,8 @@ pub(crate) fn resolve_repo_token(
 }
 
 /// Resolve the token that opens a pull request against a publisher's
-/// upstream: `pull_request.token`, then the chain of [`resolve_repo_token`]
+/// upstream in [`PR_TOKEN_ORDER`](super::pr_token::PR_TOKEN_ORDER):
+/// `pull_request.token`, then the chain of [`resolve_repo_token`]
 /// (`repository.token`, the publisher's own variable, the run token on a
 /// GitHub run, then `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`).
 ///
@@ -596,8 +574,8 @@ mod tests {
         }
     }
 
-    /// A `repository.token` that does not render is an error naming the
-    /// field, never the template's text, in every mode: the template is
+    /// A `repository.token` that does not render is an error that names the
+    /// field and leaves out the template's text, in every mode: the template is
     /// never sent as the credential, and the publisher variable is not used
     /// in its place.
     #[test]

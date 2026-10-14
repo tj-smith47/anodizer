@@ -2174,3 +2174,63 @@ fn render_only_email_surfaces_broken_subject() {
     let mut ctx = render_ctx(announce.clone());
     assert!(EmailAnnouncer.render_only(&mut ctx, &announce).is_err());
 }
+
+/// The webhook `endpoint_url` and every `headers:` value are credentials:
+/// padded renders are sent trimmed, and a template that does not render is
+/// an error naming the field without the template's text.
+#[test]
+fn webhook_endpoint_url_and_headers_are_rendered_as_credentials() {
+    let run = |endpoint_url: &str, token: &str| {
+        let (addr, req_log) = spawn_scripted_responder(vec![ok_route("/hook")]);
+        let announce = AnnounceConfig {
+            webhook: Some(WebhookConfig {
+                enabled: Some(StringOrBool::Bool(true)),
+                endpoint_url: Some(endpoint_url.to_string()),
+                headers: Some(HashMap::from([("X-Token".to_string(), token.to_string())])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        ctx.template_vars_mut()
+            .set_env("HOOK_URL", &format!(" http://{addr}/hook\n"));
+        ctx.template_vars_mut().set_env("HOOK_TOKEN", " t0k\n");
+        let log = ctx.logger("announce");
+        let mut errors = vec![];
+        dispatch_all_announcers(
+            &mut ctx,
+            &announce,
+            &no_retry(),
+            &log,
+            test_deadline(),
+            &mut errors,
+            None,
+        )
+        .unwrap();
+        let requests = req_log.lock().unwrap().clone();
+        (errors, requests)
+    };
+
+    let (errors, requests) = run("{{ .Env.HOOK_URL }}", "{{ .Env.HOOK_TOKEN }}");
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(requests.len(), 1, "the trimmed URL is posted to");
+    assert_eq!(requests[0].header("X-Token"), Some("t0k"));
+
+    let (errors, requests) = run("http://hunter2{{ Undefined }}", "{{ .Env.HOOK_TOKEN }}");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("announce.webhook.endpoint_url does not render"),
+        "{errors:?}"
+    );
+    assert!(!errors[0].contains("hunter2"), "{errors:?}");
+    assert!(requests.is_empty());
+
+    let (errors, requests) = run("{{ .Env.HOOK_URL }}", "Bearer hunter2{{ Undefined }}");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("announce.webhook.headers[X-Token] does not render"),
+        "{errors:?}"
+    );
+    assert!(!errors[0].contains("hunter2"), "{errors:?}");
+    assert!(requests.is_empty());
+}

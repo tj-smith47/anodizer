@@ -118,7 +118,7 @@ pub struct FormulaOptions<'a> {
     pub service: Option<&'a str>,
     /// Pre-rendered `livecheck do … end` block body (the lines *between*
     /// `livecheck do` and `end`, already indented). `None` ⇒ no livecheck
-    /// stanza. Build via [`render_livecheck`].
+    /// stanza. Build via [`render_livecheck`](super::render_livecheck).
     pub livecheck: Option<String>,
     /// License stanza override. When `Some`, this raw Ruby replaces the
     /// `license "<id>"` form so dual-license SPDX expressions can render as

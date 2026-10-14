@@ -1600,6 +1600,27 @@ fn write_metadata_and_artifacts_applies_mod_timestamp() {
     );
 }
 
+/// A `metadata.mod_timestamp` no file time can hold is an error that names
+/// the value.
+#[test]
+fn write_metadata_and_artifacts_refuses_a_mod_timestamp_out_of_range() {
+    for raw in ["18446744073709551615", "1969-12-31T23:59:59Z"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = Config {
+            project_name: "demo".to_string(),
+            dist: tmp.path().to_path_buf(),
+            metadata: Some(anodizer_core::config::MetadataConfig {
+                mod_timestamp: Some(raw.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config.clone(), ContextOptions::default());
+        let err = write_metadata_and_artifacts(&mut ctx, &config, &quiet_log()).unwrap_err();
+        assert!(format!("{err:#}").contains(&format!("'{raw}'")), "{err:#}");
+    }
+}
+
 /// metadata.json must register as a Metadata artifact so downstream stages
 /// can pick it up; artifacts.json must NOT self-register.
 #[test]

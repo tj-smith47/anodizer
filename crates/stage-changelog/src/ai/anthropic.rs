@@ -52,7 +52,8 @@ impl AiProvider for AnthropicProvider {
         let api_key = self
             .env
             .var("ANTHROPIC_API_KEY")
-            .filter(|v| !v.is_empty())
+            .as_deref()
+            .and_then(anodizer_core::git::non_blank_token)
             .ok_or_else(|| {
                 anyhow::anyhow!("ANTHROPIC_API_KEY is not set; required for the anthropic provider")
             })?;

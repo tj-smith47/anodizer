@@ -42,7 +42,7 @@ impl Announcer for WebhookAnnouncer {
         // Skip-when-empty UX: missing endpoint_url skips this announcer
         // in normal mode (warn) and bails in strict mode.
         let url = match cfg.endpoint_url.as_deref() {
-            Some(raw) => ctx.render_template(raw)?,
+            Some(raw) => ctx.render_secret("announce.webhook.endpoint_url", raw)?,
             None => {
                 ctx.strict_guard(log, "missing endpoint_url in announce.webhook")?;
                 return Ok(());
@@ -61,11 +61,7 @@ impl Announcer for WebhookAnnouncer {
             WEBHOOK_DEFAULT_MESSAGE_TEMPLATE,
         )?;
 
-        let raw_headers = cfg.headers.clone().unwrap_or_default();
-        let mut user_headers = HashMap::new();
-        for (k, v) in &raw_headers {
-            user_headers.insert(k.clone(), ctx.render_template(v)?);
-        }
+        let user_headers = render_headers(ctx, cfg.headers.as_ref())?;
 
         // `BASIC_AUTH_HEADER_VALUE` / `BEARER_TOKEN_HEADER_VALUE` populate
         // `Authorization` only when the config didn't already set one —
@@ -80,8 +76,13 @@ impl Announcer for WebhookAnnouncer {
         // version-suffixed variant is tradeoff-free (same wire shape,
         // strictly more debuggable). Pinned by
         // `test_webhook_user_agent_is_anodizer_versioned`.
-        let basic_auth_env = ctx.env_var("BASIC_AUTH_HEADER_VALUE");
-        let bearer_token_env = ctx.env_var("BEARER_TOKEN_HEADER_VALUE");
+        let env_value = |name: &str| {
+            ctx.env_var(name)
+                .as_deref()
+                .and_then(anodizer_core::git::non_blank_token)
+        };
+        let basic_auth_env = env_value("BASIC_AUTH_HEADER_VALUE");
+        let bearer_token_env = env_value("BEARER_TOKEN_HEADER_VALUE");
         let headers = resolve_webhook_headers(
             user_headers,
             basic_auth_env.as_deref(),
@@ -129,7 +130,7 @@ impl Announcer for WebhookAnnouncer {
             return Ok(());
         };
         if let Some(raw) = cfg.endpoint_url.as_deref() {
-            let url = ctx.render_template(raw)?;
+            let url = ctx.render_secret("announce.webhook.endpoint_url", raw)?;
             validate_webhook_endpoint_url(&url)?;
         }
         render_message_with_default(
@@ -137,9 +138,24 @@ impl Announcer for WebhookAnnouncer {
             cfg.message_template.as_deref(),
             WEBHOOK_DEFAULT_MESSAGE_TEMPLATE,
         )?;
-        for (_, v) in cfg.headers.clone().unwrap_or_default() {
-            ctx.render_template(&v)?;
-        }
+        render_headers(ctx, cfg.headers.as_ref())?;
         Ok(())
     }
+}
+
+/// The configured `headers:` with every value rendered as a credential: an
+/// `Authorization` header carries one, so a value that fails to render is an
+/// error naming its key, and its template text is not sent.
+fn render_headers(
+    ctx: &Context,
+    headers: Option<&HashMap<String, String>>,
+) -> Result<HashMap<String, String>> {
+    headers
+        .into_iter()
+        .flatten()
+        .map(|(k, v)| {
+            let value = ctx.render_secret(&format!("announce.webhook.headers[{k}]"), v)?;
+            Ok((k.clone(), value))
+        })
+        .collect()
 }

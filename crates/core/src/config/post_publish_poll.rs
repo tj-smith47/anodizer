@@ -38,7 +38,7 @@ pub struct PostPublishPollConfig {
     /// How long to wait between successive status checks. Default `30s`.
     pub interval: HumanDuration,
     /// Total wall-clock budget for polling. When exhausted, the poller
-    /// emits `PostPublishStatus::Timeout` with the last observed state.
+    /// warns that polling timed out and names the last observed state.
     /// Default `30m`.
     pub timeout: HumanDuration,
 }

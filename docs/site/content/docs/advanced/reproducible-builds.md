@@ -60,12 +60,16 @@ It is resolved in this order:
    `SOURCE_DATE_EPOCH` is unset or empty.
 3. The HEAD commit's committer time (`CommitTimestamp`).
 
-The `Date`, `Timestamp` and `Now` template variables read the first two as well, and fall
-back to the current time.
+The `Date`, `Timestamp` and `Now` template variables, the `time()` template function, the
+`now_format` filter and the date in a changelog heading that `anodizer tag --changelog` writes
+read the first two as well, and fall back to the current time. Announcements (the email `Date`
+header, the Bluesky `createdAt` field and the X OAuth timestamp) carry the current time, since
+they are not build output.
 
 An empty or whitespace-only value counts as unset. Any other value must be a whole number of
-seconds from 0 up, such as `1700000000`. A value that is not stops the run before any stage
-starts, in every mode, with a message that names the variable and the value:
+seconds from 0 up, such as `1700000000`. A value that is not is an error in every command
+and mode, raised before a stage or a file write reads it, with a message that names the
+variable and the value:
 `SOURCE_DATE_EPOCH is set to "soon", which is not a whole number of seconds since 1970-01-01
 UTC; set it to a value such as 1700000000, or unset it`.
 

@@ -99,8 +99,7 @@ pub struct CaskParams<'a> {
     /// `livecheck do` and `end`, already trimmed — the template indents each).
     /// `None` ⇒ the default `skip "Auto-generated on release."` line: a cask
     /// the release rewrites on every tag has nothing for `brew livecheck` to
-    /// find. Build via
-    /// [`render_cask_livecheck`](super::livecheck::render_cask_livecheck).
+    /// find. Build via `render_cask_livecheck`.
     pub livecheck: Option<String>,
     /// Manpage file paths.
     pub manpages: &'a [String],
@@ -113,13 +112,13 @@ pub struct CaskParams<'a> {
     /// depends_on directives (e.g. `cask: "other-app"`).
     pub depends_on: &'a [String],
     /// The `depends_on_macos:` override. `None` takes the verdict of
-    /// [`custom_block_os_facts`](super::cask_custom_block::custom_block_os_facts);
+    /// `custom_block_os_facts`;
     /// `Some(true)` renders `depends_on :macos`
     /// with a flat download, `Some(false)` renders neither and places a flat
     /// download inside `on_macos`.
     pub depends_on_macos: Option<bool>,
     /// Names of the casks this cask conflicts with, unescaped. Rendered as
-    /// one `conflicts_with cask: …` stanza; build via [`conflicting_casks`].
+    /// one `conflicts_with cask: …` stanza; build via `conflicting_casks`.
     pub conflicts_with: &'a [String],
     /// Preflight hook Ruby code. Each hook body is re-indented under its
     /// `do` line, so it may be written with or without leading indentation.
@@ -135,10 +134,10 @@ pub struct CaskParams<'a> {
     /// (`using`, `cookies`, `referer`, `headers`, `user_agent`, `data`) are
     /// configured. When non-empty, starts with `,\n      using: …` so it
     /// splices directly after the closing `"` of `url "..."`. Build with
-    /// [`render_additional_url_params`] and [`URL_ARGS_INDENT`].
+    /// `render_additional_url_params` and `URL_ARGS_INDENT`.
     pub url_extras: &'a str,
     /// Same payload as [`Self::url_extras`], built with
-    /// [`ARCH_URL_ARGS_INDENT`] so it lines up under the `url` nested inside
+    /// `ARCH_URL_ARGS_INDENT` so it lines up under the `url` nested inside
     /// `on_<os> do` and `on_<arch> do`.
     pub url_extras_indented: &'a str,
     /// Multi-platform entries (when set, replaces top-level url/sha256).

@@ -236,15 +236,7 @@ impl Context {
     /// malformed value. Every command sets up its context through this call,
     /// so a malformed value stops the run before any stage reads it.
     pub fn populate_time_vars(&mut self) -> anyhow::Result<()> {
-        crate::sde::ambient_epoch_with_env(self.env_source())?;
-        // Resolution order (SDE first, else wall-clock) is centralized in
-        // `crate::sde::resolve_now_with_env` so any caller —
-        // `populate_time_vars`, Tera built-ins, stage-srpm's `%changelog`
-        // date, nightly `date_str` — sees identical "now" semantics.
-        // Routes through the injected `env_source` so tests can inject
-        // SOURCE_DATE_EPOCH via TestContextBuilder::env() without
-        // mutating the process env.
-        let now = crate::sde::resolve_now_with_env(self.env_source());
+        let now = crate::sde::resolve_now_with_env(self.env_source())?;
         self.template_vars.set("Date", &now.to_rfc3339());
         self.template_vars
             .set("Timestamp", &now.timestamp().to_string());

@@ -93,7 +93,7 @@ fn single_subsection_promote_curated_regrouped_date() {
     )
     .expect("some output");
 
-    let date = today_yyyy_mm_dd();
+    let date = today_yyyy_mm_dd().unwrap();
     let expected = format!(
         "# Changelog\n\
 \n\
@@ -546,7 +546,7 @@ fn no_groups_emits_curated_bullets_flat() {
     )
     .expect("some output");
 
-    let date = today_yyyy_mm_dd();
+    let date = today_yyyy_mm_dd().unwrap();
     // No group headings — bullets stay flat under the version heading.
     assert!(
         out.contains(&format!(
@@ -584,7 +584,7 @@ fn degenerate_flat_root_uses_bare_version_heading() {
 
     // The flat path emits a bare-version heading. Drive it through the
     // same merge the degenerate branch of render_root_section uses.
-    let date = today_yyyy_mm_dd();
+    let date = today_yyyy_mm_dd().unwrap();
     let new_section = format!("## [0.7.0] - {date}\n\n- a feature\n");
     let merged = merge_into_changelog(MergeArgs {
         file_path: &path,
@@ -917,7 +917,7 @@ fn render_root_section_absent_file_creates_initial_root() {
         "writes the root file, not a per-crate file"
     );
     let text = &update.rendered_text;
-    let date = today_yyyy_mm_dd();
+    let date = today_yyyy_mm_dd().unwrap();
     assert!(
         text.contains(&format!("## [0.7.0] - {date}")),
         "initial root carries a bare-version first-write heading: {text}"
@@ -979,7 +979,7 @@ fn render_root_section_degenerate_flat_uses_bare_version_heading() {
     .expect("curated flat Unreleased → an update is produced");
 
     let text = &update.rendered_text;
-    let date = today_yyyy_mm_dd();
+    let date = today_yyyy_mm_dd().unwrap();
     assert!(
         text.contains(&format!("## [0.7.0] - {date}")),
         "degenerate flat root uses the bare-version heading: {text}"
@@ -1041,7 +1041,7 @@ fn render_root_section_subsection_promote_uses_full_tag_heading() {
     .expect("curated ### cfgd subsection → an update is produced");
 
     let text = &update.rendered_text;
-    let date = today_yyyy_mm_dd();
+    let date = today_yyyy_mm_dd().unwrap();
     assert_eq!(
         update.file_path,
         root.join("CHANGELOG.md"),
@@ -1114,7 +1114,7 @@ fn render_root_section_multitrack_flag_promotes_to_flat_dated_section() {
     .expect("multitrack flag → subsection promote");
 
     let text = &update.rendered_text;
-    let date = today_yyyy_mm_dd();
+    let date = today_yyyy_mm_dd().unwrap();
     assert!(
         text.contains(&format!("## [v0.7.0] - {date}")),
         "multitrack flag promotes to the full-tag dated heading: {text}"

@@ -547,6 +547,42 @@ notarize: {}
         );
     }
 
+    /// The certificate password is a credential: a template that fails to
+    /// render stops the stage naming the field without its text, and one
+    /// that renders blank reads as unset.
+    #[test]
+    fn a_password_that_does_not_render_names_the_field_and_a_blank_one_is_missing() {
+        for (password, expected) in [
+            (
+                "hunter2{{ Undefined }}",
+                "notarize.macos[0].sign.password does not render",
+            ),
+            ("  {{ .Env.NOTARIZE_BLANK }}\n", "sign.password is required"),
+        ] {
+            let mut config = Config::default();
+            config.notarize = Some(NotarizeConfig {
+                skip: None,
+                macos: Some(vec![MacOSSignNotarizeConfig {
+                    skip: None,
+                    sign: Some(MacOSSignConfig {
+                        certificate: Some("cert.p12".to_string()),
+                        password: Some(password.to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }]),
+                macos_native: None,
+            });
+            let mut ctx = make_ctx_with_notarize(config);
+            let err = NotarizeStage
+                .run(&mut ctx)
+                .expect_err("the stage must stop");
+            let msg = format!("{err:#}");
+            assert!(msg.contains(expected), "{msg}");
+            assert!(!msg.contains("hunter2"), "{msg}");
+        }
+    }
+
     #[test]
     fn test_native_requires_sign_config() {
         let mut config = Config::default();

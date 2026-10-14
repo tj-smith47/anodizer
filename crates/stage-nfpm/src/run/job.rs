@@ -538,7 +538,7 @@ fn render_offline_nfpm_yaml(
     );
 
     let mut rendered_cfg = render_nfpm_config_fields(nfpm_cfg, &ctx.config, &vars, crate_name)?;
-    default_nfpm_mtime_to_sde(&mut rendered_cfg, ctx.env_source());
+    default_nfpm_mtime_to_sde(&mut rendered_cfg, ctx.env_source())?;
     fill_deb_arch_variant(&mut rendered_cfg, render_target.arch, amd64_variant);
 
     generate_nfpm_yaml_with_env(

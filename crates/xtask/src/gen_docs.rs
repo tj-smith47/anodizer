@@ -574,6 +574,11 @@ const SECOND_LEVEL_SECTIONS: &[(&str, &str, &str)] = &[
     ("crates[].nfpms", "CrateConfig", "nfpms"),
     ("crates[].publish", "CrateConfig", "publish"),
     ("crates[].publish.cargo", "PublishConfig", "cargo"),
+    (
+        "crates[].publish.cargo.wait_for_workspace_deps",
+        "CargoPublishConfig",
+        "wait_for_workspace_deps",
+    ),
     ("crates[].publish.homebrew", "PublishConfig", "homebrew"),
     (
         "crates[].publish.homebrew_cask",
@@ -582,12 +587,34 @@ const SECOND_LEVEL_SECTIONS: &[(&str, &str, &str)] = &[
     ),
     ("crates[].publish.scoop", "PublishConfig", "scoop"),
     ("crates[].publish.chocolatey", "PublishConfig", "chocolatey"),
+    (
+        "crates[].publish.chocolatey.post_publish_poll",
+        "ChocolateyConfig",
+        "post_publish_poll",
+    ),
     ("crates[].publish.winget", "PublishConfig", "winget"),
+    (
+        "crates[].publish.winget.post_publish_poll",
+        "WingetConfig",
+        "post_publish_poll",
+    ),
     ("crates[].publish.aur", "PublishConfig", "aur"),
     ("crates[].publish.aur_source", "PublishConfig", "aur_source"),
     ("crates[].publish.krew", "PublishConfig", "krew"),
     ("crates[].publish.nix", "PublishConfig", "nix"),
     ("release.preflight", "ReleaseConfig", "preflight"),
+    ("notarize.macos", "NotarizeConfig", "macos"),
+    (
+        "notarize.macos[].notarize",
+        "MacOSSignNotarizeConfig",
+        "notarize",
+    ),
+    ("notarize.macos_native", "NotarizeConfig", "macos_native"),
+    (
+        "notarize.macos_native[].notarize",
+        "MacOSNativeSignNotarizeConfig",
+        "notarize",
+    ),
 ];
 
 /// Build a [`NestedSection`] for the schema definition `def_name`, titled
@@ -1303,29 +1330,45 @@ mod tests {
         assert!(row.starts_with("| `deadline` | string | "), "{row}");
     }
 
-    /// Every duration field the reference lists (`announce.deadline`,
-    /// `release.upload_pace` and the three `retry` fields) states the grammar
-    /// and the one-year cap the loader enforces.
+    /// Every field whose schema references `HumanDuration` has a row in the
+    /// section documenting its struct, and that row states the grammar and the
+    /// one-year cap the loader enforces, once.
     #[test]
     fn every_duration_field_row_states_the_one_year_cap() {
+        const CAP: &str = "at most one year (31536000s)";
         let md = generate_config_reference(&load_templates()).expect("render");
-        let rows: Vec<&str> = md
-            .lines()
-            .filter(|l| l.contains("at most one year (31536000s)"))
-            .collect();
-        for field in [
-            "deadline",
-            "upload_pace",
-            "delay",
-            "max_delay",
-            "max_elapsed",
-        ] {
-            assert!(
-                rows.iter()
-                    .any(|r| r.starts_with(&format!("| `{field}` | string | "))),
-                "no `{field}` row states the cap"
-            );
+        let root = anodizer_core::config::config_schema();
+        let defs = root["definitions"].as_object().expect("definitions");
+        let anchors =
+            collect_section_anchors(object_properties(&root, "Config schema").unwrap(), defs);
+        let mut checked = 0;
+        for (def_name, def) in defs {
+            let Some(props) = def.get("properties").and_then(Value::as_object) else {
+                continue;
+            };
+            for (field, schema) in props {
+                if resolve_ref_type_name(schema).as_deref() != Some("HumanDuration") {
+                    continue;
+                }
+                let sections = anchors
+                    .0
+                    .get(def_name)
+                    .unwrap_or_else(|| panic!("no section documents {def_name}.{field}"));
+                for (section, _) in sections {
+                    let heading = format!("## `{section}` ");
+                    let row = md
+                        .lines()
+                        .skip_while(|l| !l.starts_with(&heading))
+                        .skip(1)
+                        .take_while(|l| !l.starts_with("## "))
+                        .find(|l| l.starts_with(&format!("| `{field}` | string | ")))
+                        .unwrap_or_else(|| panic!("no `{field}` row under {section}"));
+                    assert_eq!(row.matches(CAP).count(), 1, "{section}.{field}: {row}");
+                    checked += 1;
+                }
+            }
         }
+        assert!(checked > 0, "the schema names duration fields");
     }
 
     #[test]

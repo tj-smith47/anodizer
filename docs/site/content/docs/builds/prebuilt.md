@@ -308,8 +308,8 @@ the archive template can't express — supplying a top-level `pkg_url` **or** an
 
 `cargo-binstall`'s own tokens only ever expand to its target words —
 `{ target }` yields the Rust triple and the OS/arch tokens resolve to
-`macos`/`x86_64`/`aarch64`; they cannot produce `darwin`, `amd64` or `arm64`. To pin each Rust
-target triple to a specific asset name, map it under `binstall.overrides`.
+`macos`/`x86_64`/`aarch64`; they cannot produce `darwin`, `amd64` or `arm64`. To give each Rust
+target triple a specific asset name, map it under `binstall.overrides`.
 Each entry overrides `pkg_url`/`pkg_fmt`/`bin_dir` for that triple and is
 emitted as a `[package.metadata.binstall.overrides.<triple>]` sub-table.
 anodizer templates (`{{ Version }}`) are rendered; cargo-binstall's own

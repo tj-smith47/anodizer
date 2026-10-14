@@ -2638,3 +2638,50 @@ fn render_message_with_default_respects_literal_message() {
     let literal_default = render_message_with_default(&mut ctx, None, provider_default).unwrap();
     assert_eq!(literal_default, "fallback {{ Env.LEAK }}");
 }
+
+/// A webhook URL or bot token configured in the config is a credential: a
+/// padded render is trimmed, a blank render falls through to the variable
+/// (read trimmed, a blank one counting as unset), and a template that does
+/// not render is an error naming the field and leaving out its text.
+#[test]
+fn a_configured_announce_secret_is_rendered_trimmed_and_falls_through_when_blank() {
+    let mut ctx = make_ctx(None);
+    set_test_env(&mut ctx, &[("TELEGRAM_TOKEN", " env-token\n")]);
+    ctx.template_vars_mut().set_env("BOT", " cfg-token ");
+    ctx.template_vars_mut().set_env("BLANK", "  ");
+    let field = "announce.telegram.bot_token";
+
+    let got =
+        crate::helpers::config_or_env_secret(&ctx, field, Some("{{ .Env.BOT }}"), "TELEGRAM_TOKEN")
+            .unwrap();
+    assert_eq!(got.as_deref(), Some("cfg-token"));
+
+    let got = crate::helpers::config_or_env_secret(
+        &ctx,
+        field,
+        Some("{{ .Env.BLANK }}"),
+        "TELEGRAM_TOKEN",
+    )
+    .unwrap();
+    assert_eq!(got.as_deref(), Some("env-token"));
+
+    set_test_env(&mut ctx, &[("TELEGRAM_TOKEN", " \n")]);
+    let got = crate::helpers::config_or_env_secret(&ctx, field, None, "TELEGRAM_TOKEN").unwrap();
+    assert_eq!(got, None, "a blank variable counts as unset");
+
+    let msg = format!(
+        "{:#}",
+        crate::helpers::config_or_env_secret(
+            &ctx,
+            field,
+            Some("123:hunter2{{ Undefined }}"),
+            "TELEGRAM_TOKEN",
+        )
+        .expect_err("a token that does not render is an error")
+    );
+    assert!(
+        msg.contains("announce.telegram.bot_token does not render"),
+        "{msg}"
+    );
+    assert!(!msg.contains("hunter2"), "{msg}");
+}

@@ -23,7 +23,7 @@ use super::publish::publish_to_homebrew_core;
 use super::publisher::HomebrewCorePublisher;
 use super::resolve::{
     TOKEN_ENV_VARS, bump_branch, resolve_commit_message, resolve_download_url,
-    resolve_formula_name, resolve_token, resolve_upstream,
+    resolve_formula_name, resolve_pr_token, resolve_token, resolve_upstream,
 };
 
 const OLD_URL: &str = "https://github.com/acme/my-tool/archive/refs/tags/v1.0.0.tar.gz";
@@ -1840,6 +1840,88 @@ fn preflight_warns_when_no_token_resolvable() {
             "the missing-token warn must name the shortfall; got: {m}"
         ),
         other => panic!("expected a missing-token Warning, got {other:?}"),
+    }
+}
+
+/// A `pull_request.token` makes preflight probe the upstream repository with
+/// the token the publish opens the pull request with, and a repository that
+/// token cannot read is a warning naming the pull request.
+#[test]
+fn preflight_probes_the_pull_request_token_the_publish_opens_with() {
+    let cfg = || {
+        let mut cfg = pinned_cfg();
+        cfg.repository = Some(RepositoryConfig {
+            pull_request: Some(PullRequestConfig {
+                token: Some("{{ .Env.UPSTREAM_PR_TOKEN }}".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        cfg
+    };
+    let ctx_for = |addr: &std::net::SocketAddr| {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("demo")
+            .tag("v1.2.3")
+            .crates(vec![demo_crate("my-tool", ".")])
+            .sealed_env()
+            .env("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"))
+            .env("HOMEBREW_CORE_GITHUB_TOKEN", "ghp_test")
+            .env("GITHUB_TOKEN", "ghp_ladder")
+            .build();
+        ctx.template_vars_mut()
+            .set_env("UPSTREAM_PR_TOKEN", "ghp_pr_token");
+        ctx.config.homebrew_cores = Some(vec![cfg()]);
+        ctx
+    };
+
+    let routes = vec![
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/Homebrew/homebrew-core",
+            response: repo_resp("master", false),
+            times: None,
+        },
+        ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/Homebrew/homebrew-core/contents/Formula/m/my-tool.rb?ref=master",
+            response: contents_resp(&archive_formula()),
+            times: None,
+        },
+    ];
+    let (addr, log) = spawn_scripted_responder(routes);
+    let ctx = ctx_for(&addr);
+    let publish_token = resolve_pr_token(&ctx, &cfg()).expect("renders");
+    assert_eq!(publish_token.as_deref(), Some("ghp_pr_token"));
+    assert!(matches!(
+        HomebrewCorePublisher::new()
+            .preflight(&ctx)
+            .expect("preflight"),
+        PreflightCheck::Pass
+    ));
+    let probed: Vec<_> = logged(&log)
+        .into_iter()
+        .filter(|r| r.method == "GET" && r.path == "/repos/Homebrew/homebrew-core")
+        .filter_map(|r| r.header("Authorization").map(str::to_string))
+        .collect();
+    assert!(
+        probed.contains(&"Bearer ghp_pr_token".to_string()),
+        "preflight reads the upstream with the pull request token; got {probed:?}"
+    );
+
+    let routes = vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/repos/Homebrew/homebrew-core",
+        response: leak_resp("404 Not Found", "{}"),
+        times: None,
+    }];
+    let (addr, _log) = spawn_scripted_responder(routes);
+    match HomebrewCorePublisher::new()
+        .preflight(&ctx_for(&addr))
+        .expect("preflight")
+    {
+        PreflightCheck::Warning(m) => assert!(m.contains("pull request token"), "{m}"),
+        other => panic!("expected a pull request token warning, got {other:?}"),
     }
 }
 

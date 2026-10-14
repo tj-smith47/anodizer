@@ -225,7 +225,7 @@ pub(crate) fn roll_keep_a_changelog(args: KacRollArgs<'_>) -> Result<String> {
             (start, end)
         });
 
-    let date = today_yyyy_mm_dd();
+    let date = today_yyyy_mm_dd()?;
     let promoted_heading = format!("## [{}] - {}", to_version, date);
 
     let mut out_lines: Vec<String> = Vec::new();

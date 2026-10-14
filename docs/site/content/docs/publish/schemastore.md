@@ -267,14 +267,9 @@ For a `versioned` entry, every other option in the previous version's block (`un
 
 ## Authentication
 
-The push to your fork uses the first token that is set:
+{{ token_order(target="your fork", publisher_var="SCHEMASTORE_TOKEN") }}
 
-1. `repository.token`
-2. `SCHEMASTORE_TOKEN`
-3. the run's GitHub token (`--token`, or the `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` value read at startup); a GitLab or Gitea token is never sent to GitHub
-4. `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`
-
-The pull request is opened with `repository.pull_request.token`, then `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. With none of these set, the `gh` CLI's own login opens it; with neither a token nor `gh`, the publish fails. Set `pull_request.token` when the fork token cannot open pull requests against `SchemaStore/schemastore`.
+Set `pull_request.token` when the fork token cannot open pull requests against `SchemaStore/schemastore`.
 
 ```yaml
 schemastore:
@@ -345,7 +340,7 @@ schemastore:
     name: schemastore
     pull_request:
       enabled: true
-      token: ""                      # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
+      token: ""                      # token used to open the PR (default: repository.token, then SCHEMASTORE_TOKEN, then the GitHub token chain)
       base:
         owner: SchemaStore
         name: schemastore

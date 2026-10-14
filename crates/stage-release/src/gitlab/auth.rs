@@ -29,12 +29,12 @@ pub(crate) fn resolve_use_job_token_with_env<E: EnvSource + ?Sized>(
     token: &str,
     env: &E,
 ) -> bool {
-    let ci_token = env.var("CI_JOB_TOKEN").unwrap_or_default();
-    if ci_token.is_empty() {
+    let Some(ci_token) = env
+        .var("CI_JOB_TOKEN")
+        .as_deref()
+        .and_then(anodizer_core::git::non_blank_token)
+    else {
         return false;
-    }
-    if !config_flag {
-        return false;
-    }
-    token == ci_token
+    };
+    config_flag && token.trim() == ci_token
 }

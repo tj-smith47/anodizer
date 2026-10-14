@@ -5,7 +5,7 @@ use anodizer_core::retry::RetryPolicy;
 use anyhow::Result;
 
 use crate::dispatch::{DispatchQueue, dispatch};
-use crate::helpers::{is_enabled, render_message};
+use crate::helpers::{config_or_env_secret, is_enabled, render_message};
 use crate::teams;
 
 use super::Announcer;
@@ -34,18 +34,20 @@ impl Announcer for TeamsAnnouncer {
             .teams
             .as_ref()
             .expect("send only called when enabled returned Ok(true)");
-        let url = match cfg.webhook_url.as_deref() {
-            Some(u) => ctx.render_template(u)?,
-            None => match ctx.env_var("TEAMS_WEBHOOK").filter(|s| !s.is_empty()) {
-                Some(env) => env,
-                None => {
-                    ctx.strict_guard(
-                        log,
-                        "missing webhook_url in announce.teams (set config or TEAMS_WEBHOOK env var)",
-                    )?;
-                    return Ok(());
-                }
-            },
+        let url = match config_or_env_secret(
+            ctx,
+            "announce.teams.webhook_url",
+            cfg.webhook_url.as_deref(),
+            "TEAMS_WEBHOOK",
+        )? {
+            Some(url) => url,
+            None => {
+                ctx.strict_guard(
+                    log,
+                    "missing webhook_url in announce.teams (set config or TEAMS_WEBHOOK env var)",
+                )?;
+                return Ok(());
+            }
         };
         let message = render_message(ctx, cfg.message_template.as_deref())?;
         let title_template = cfg
@@ -71,9 +73,7 @@ impl Announcer for TeamsAnnouncer {
         let Some(cfg) = announce.teams.as_ref() else {
             return Ok(());
         };
-        if let Some(raw) = cfg.webhook_url.as_deref() {
-            ctx.render_template(raw)?;
-        }
+        ctx.render_secret_opt("announce.teams.webhook_url", cfg.webhook_url.as_deref())?;
         render_message(ctx, cfg.message_template.as_deref())?;
         ctx.render_template(
             cfg.title_template

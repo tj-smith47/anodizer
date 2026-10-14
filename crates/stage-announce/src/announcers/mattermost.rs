@@ -5,7 +5,7 @@ use anodizer_core::retry::RetryPolicy;
 use anyhow::Result;
 
 use crate::dispatch::{DispatchQueue, dispatch};
-use crate::helpers::{DEFAULT_DISPLAY_NAME, is_enabled, render_message};
+use crate::helpers::{DEFAULT_DISPLAY_NAME, config_or_env_secret, is_enabled, render_message};
 use crate::mattermost;
 
 use super::Announcer;
@@ -34,18 +34,20 @@ impl Announcer for MattermostAnnouncer {
             .mattermost
             .as_ref()
             .expect("send only called when enabled returned Ok(true)");
-        let url = match cfg.webhook_url.as_deref() {
-            Some(u) => ctx.render_template(u)?,
-            None => match ctx.env_var("MATTERMOST_WEBHOOK").filter(|s| !s.is_empty()) {
-                Some(env) => env,
-                None => {
-                    ctx.strict_guard(
-                        log,
-                        "missing webhook_url in announce.mattermost (set config or MATTERMOST_WEBHOOK env var)",
-                    )?;
-                    return Ok(());
-                }
-            },
+        let url = match config_or_env_secret(
+            ctx,
+            "announce.mattermost.webhook_url",
+            cfg.webhook_url.as_deref(),
+            "MATTERMOST_WEBHOOK",
+        )? {
+            Some(url) => url,
+            None => {
+                ctx.strict_guard(
+                    log,
+                    "missing webhook_url in announce.mattermost (set config or MATTERMOST_WEBHOOK env var)",
+                )?;
+                return Ok(());
+            }
         };
         let message = render_message(ctx, cfg.message_template.as_deref())?;
         // Anodizer-additive UX win: channel,
@@ -103,9 +105,10 @@ impl Announcer for MattermostAnnouncer {
         let Some(cfg) = announce.mattermost.as_ref() else {
             return Ok(());
         };
-        if let Some(raw) = cfg.webhook_url.as_deref() {
-            ctx.render_template(raw)?;
-        }
+        ctx.render_secret_opt(
+            "announce.mattermost.webhook_url",
+            cfg.webhook_url.as_deref(),
+        )?;
         render_message(ctx, cfg.message_template.as_deref())?;
         ctx.render_template_opt(cfg.channel.as_deref())?;
         ctx.render_template_opt(cfg.username.as_deref().or(Some(DEFAULT_DISPLAY_NAME)))?;

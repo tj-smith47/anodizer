@@ -157,7 +157,7 @@ A reusable workflow fans the determinism harness across four shards (one per hos
 
 ### 4. `release` — publication of the proven bytes
 
-The publish job downloads and merges all four shards' preserved dist, asserts every shard arrived, then runs `release --publish-only`. **It does not rebuild** — it publishes the byte-stable artifacts the shards already proved. `--skip=npm,pypi,cargo` peels the OIDC publishers onto the standalone workflow dispatched below.
+The publish job downloads and merges all four shards' preserved dist, asserts every shard arrived, then runs `release --publish-only`. **It does not rebuild** — it publishes the byte-stable artifacts the shards already proved. `--skip=npm,pypi,cargo` leaves the OIDC publishers to the standalone workflow dispatched below.
 
 ```yaml
 # not an anodizer config
@@ -247,7 +247,7 @@ These do **not** run as a job inside `release.yml`. crates.io and PyPI Trusted P
       - uses: tj-smith47/anodizer-action@v1
         with:
           auto-install: true
-          # --publishers npm,pypi,cargo auto-determines the surface: it deselects
+          # --publishers npm,pypi,cargo picks the publishers that run: it deselects
           # every publisher outside the hosted set (including github-release) and
           # self-skips the sign loops, so this runner is never asked for cosign/GPG
           # material — none of npm, pypi, cargo consumes it.

@@ -40,7 +40,7 @@ mod faked_time_tests {
     /// An empty source date is unset, so no `--faked-system-time=!` reaches
     /// gpg; the older spelling is read when it is the only one set.
     #[test]
-    fn reads_the_source_date_through_the_shared_reader() {
+    fn an_empty_source_date_adds_no_faked_time_and_the_older_spelling_is_read_trimmed() {
         let mut args = vec!["--batch".into()];
         inject_gpg_faked_system_time("gpg", &mut args, &env_with_sde(""));
         assert_eq!(args, vec!["--batch".to_string()]);

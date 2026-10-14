@@ -69,7 +69,9 @@ pub struct DockerHubFullDescription {
 pub struct DockerHubFromUrl {
     /// URL to fetch the full description from.
     pub url: String,
-    /// Optional HTTP headers for the request.
+    /// Optional HTTP headers for the request. Each value is a template, read
+    /// as a credential: trimmed, and a value that fails to render stops the
+    /// run with an error naming its header.
     pub headers: Option<HashMap<String, String>>,
 }
 

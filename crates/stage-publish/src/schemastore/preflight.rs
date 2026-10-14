@@ -75,10 +75,75 @@ pub(crate) fn preflight_checks(ctx: &Context) -> anyhow::Result<PreflightCheck> 
         }
     }
 
+    if cfg.schemas.iter().any(|entry| !cfg.resolved_skip(entry)) {
+        match token_checks(ctx) {
+            PreflightCheck::Blocker(m) => return Ok(PreflightCheck::Blocker(m)),
+            PreflightCheck::Warning(w) => {
+                first_warning.get_or_insert(w);
+            }
+            PreflightCheck::Pass => {}
+        }
+    }
+
     if let Some(w) = first_warning {
         return Ok(PreflightCheck::Warning(w));
     }
     Ok(PreflightCheck::Pass)
+}
+
+/// Probe the fork with the token the publish pushes with
+/// ([`crate::util::resolve_repo_token`]) and `SchemaStore/schemastore` with
+/// the token the publish opens the pull request with
+/// ([`crate::util::resolve_pr_token`]), both read through
+/// `SCHEMASTORE_TOKEN` as the publish reads them. A token template that does
+/// not render is a blocker naming its field. No pull request probe runs
+/// when no pull request token resolves, since `gh` then opens it with its
+/// own login. A block with no fork configured is left to the publish, which
+/// names the missing `repository`.
+fn token_checks(ctx: &Context) -> PreflightCheck {
+    use super::publish::{TOKEN_ENV_VAR, UPSTREAM_OWNER, UPSTREAM_REPO};
+    let Some(repo) = ctx.config.schemastore.repository.as_ref() else {
+        return PreflightCheck::Pass;
+    };
+    if crate::util::resolve_repo_owner_name(Some(repo)).is_none() {
+        return PreflightCheck::Pass;
+    }
+    let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+    // The push probe reads `repository.token` only; the pull request goes to
+    // the fixed upstream below, so the fork probe is asked for no pull
+    // request of its own.
+    let fork = anodizer_core::config::RepositoryConfig {
+        pull_request: None,
+        ..repo.clone()
+    };
+    let push = crate::publisher_preflight::github_repo_config_check(
+        ctx,
+        Some(&fork),
+        TOKEN_ENV_VAR,
+        None,
+        &policy,
+    );
+    let pr_token = match crate::util::resolve_pr_token(ctx, Some(repo), Some(TOKEN_ENV_VAR)) {
+        Ok(Some(token)) => token,
+        Ok(None) => return push,
+        Err(e) => return push.merge(PreflightCheck::Blocker(format!("schemastore: {e:#}"))),
+    };
+    let probe = anodizer_core::git::GithubRepoProbe {
+        owner: UPSTREAM_OWNER,
+        repo: UPSTREAM_REPO,
+        token: Some(&pr_token),
+        policy: &policy,
+        deadline: ctx.retry_deadline(),
+        strict: ctx.preflight_is_strict(),
+    };
+    let base = anodizer_core::http::github_api_base(ctx.env_source());
+    push.merge(
+        crate::publisher_preflight::github_pull_request_repo_check_at(
+            &format!("{base}/repos/{UPSTREAM_OWNER}/{UPSTREAM_REPO}"),
+            &probe,
+            &ctx.logger("preflight"),
+        ),
+    )
 }
 
 /// Vendor-entry preflight: read the schema file off disk, parse it, and check
@@ -416,6 +481,111 @@ mod tests {
                 assert!(msg.contains("not valid JSON"), "{msg}");
             }
             other => panic!("expected Blocker for non-JSON schema, got {other:?}"),
+        }
+    }
+
+    /// Preflight probes the fork with the token the publish pushes with and
+    /// `SchemaStore/schemastore` with the token the publish opens the pull
+    /// request with, each chosen by the resolvers the publish calls, and a
+    /// pull request token template that does not render is a blocker.
+    #[test]
+    fn preflight_probes_the_tokens_the_publish_sends() {
+        use super::super::publish::TOKEN_ENV_VAR;
+        use anodizer_core::config::{PullRequestConfig, RepositoryConfig};
+        use anodizer_core::test_helpers::scripted_responder::{
+            ScriptedRoute, spawn_scripted_responder,
+        };
+
+        let body = r#"{"permissions":{"push":true}}"#;
+        let ok: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        );
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/me/schemastore",
+                response: ok,
+                times: None,
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/SchemaStore/schemastore",
+                response: ok,
+                times: None,
+            },
+        ];
+        let (addr, log) = spawn_scripted_responder(routes);
+        let repo = |pr_token: &str| RepositoryConfig {
+            owner: Some("me".into()),
+            name: Some("schemastore".into()),
+            pull_request: Some(PullRequestConfig {
+                token: Some(pr_token.into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx_with = |repo: RepositoryConfig| {
+            let mut ctx = TestContextBuilder::new()
+                .sealed_env()
+                .env("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"))
+                .env(TOKEN_ENV_VAR, "push-tok")
+                .env("GITHUB_TOKEN", "ladder-tok")
+                .build();
+            ctx.template_vars_mut().set_env("PR_TOKEN", "pr-tok");
+            ctx.config.schemastore = SchemastoreConfig {
+                repository: Some(repo),
+                schemas: vec![SchemaEntry {
+                    name: "Anodizer".into(),
+                    file_match: vec![".anodizer.yaml".into()],
+                    url: Some("https://example.com/a.json".into()),
+                    description: Some("Anodizer config".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            ctx
+        };
+
+        let ctx = ctx_with(repo("{{ .Env.PR_TOKEN }}"));
+        let configured = ctx.config.schemastore.repository.as_ref();
+        let push = crate::util::resolve_repo_token(&ctx, configured, Some(TOKEN_ENV_VAR))
+            .expect("renders")
+            .expect("a push token");
+        let pr = crate::util::resolve_pr_token(&ctx, configured, Some(TOKEN_ENV_VAR))
+            .expect("renders")
+            .expect("a pull request token");
+        assert_eq!((push.as_str(), pr.as_str()), ("push-tok", "pr-tok"));
+        assert!(matches!(
+            preflight_checks(&ctx).expect("preflight ok"),
+            PreflightCheck::Pass
+        ));
+        let auth = |path: &str| -> Vec<String> {
+            log.lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.method == "GET" && r.path == path)
+                .filter_map(|r| r.header("Authorization").map(str::to_string))
+                .collect()
+        };
+        assert_eq!(
+            auth("/repos/me/schemastore"),
+            vec![format!("Bearer {push}")]
+        );
+        assert_eq!(
+            auth("/repos/SchemaStore/schemastore"),
+            vec![format!("Bearer {pr}")]
+        );
+
+        let broken = ctx_with(repo("{{ Undefined }}"));
+        match preflight_checks(&broken).expect("preflight ok") {
+            PreflightCheck::Blocker(m) => {
+                assert!(m.contains("pull_request.token does not render"), "{m}")
+            }
+            other => panic!("expected a blocker for an unrenderable token, got {other:?}"),
         }
     }
 }

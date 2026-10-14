@@ -43,7 +43,9 @@ pub fn send_bluesky(
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("bluesky: missing did in session response"))?;
 
-    let now = anodizer_core::sde::resolve_now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    // A post is dated when it is sent; SOURCE_DATE_EPOCH fixes the dates of
+    // build output, which an announcement is not part of.
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let mut record = json!({
         "$type": "app.bsky.feed.post",
         "text": message,
@@ -178,6 +180,47 @@ mod tests {
             entries[1].body.contains("\"text\":\"hi there\""),
             "text in record: {:?}",
             entries[1].body
+        );
+    }
+
+    /// The post's `createdAt` is the real clock even when a source date is set.
+    #[test]
+    fn the_post_is_dated_by_the_real_clock_under_a_source_date() {
+        use anodizer_core::test_helpers::env::{EnvGuard, env_mutex};
+        let _lock = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let _sde = EnvGuard::set("SOURCE_DATE_EPOCH", "1000000000");
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/xrpc/com.atproto.server.createSession",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 54\r\n\r\n{\"accessJwt\":\"jwt-token\",\"did\":\"did:plc:abc123xyz456\"}",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/xrpc/com.atproto.repo.createRecord",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\n{\"uri\":\"at://x\"}",
+                times: None,
+            },
+        ]);
+        let pds = format!("http://{addr}");
+        send_bluesky(
+            "alice.bsky.social",
+            "app-pw",
+            "hi there",
+            None,
+            Some(&pds),
+            &no_retry_policy(),
+            anodizer_core::test_helpers::test_logger(),
+        )
+        .unwrap();
+        let entries = log.lock().unwrap();
+        let body: serde_json::Value = serde_json::from_str(&entries[1].body).unwrap();
+        let created = body["record"]["createdAt"].as_str().expect("createdAt");
+        let created = chrono::DateTime::parse_from_rfc3339(created).unwrap();
+        assert!(
+            (created.timestamp() - chrono::Utc::now().timestamp()).abs() < 600,
+            "createdAt {created} must be the real clock"
         );
     }
 

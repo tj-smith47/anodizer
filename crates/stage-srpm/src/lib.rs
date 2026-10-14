@@ -135,7 +135,7 @@ impl Stage for SrpmStage {
                 &source_prefix,
                 &effective_bins,
                 ctx.env_source(),
-            )
+            )?
         } else {
             // Read the user-provided spec template and render it
             let template = fs::read_to_string(spec_file)
@@ -293,7 +293,11 @@ impl Stage for SrpmStage {
         let effective_signature = if skip_sign {
             None
         } else {
-            srpm_cfg.signature.as_ref()
+            srpm_cfg
+                .signature
+                .as_ref()
+                .map(|sig| sig.render("srpm.signature", &|s| ctx.render_template(s)))
+                .transpose()?
         };
 
         // Run rpmbuild
@@ -312,7 +316,7 @@ impl Stage for SrpmStage {
         // and the determinism gate sees drift. Gated on SDE being present so
         // non-harness production runs keep rpmbuild's wall-clock default,
         // mirroring stage-makeself's `--packaging-date`.
-        if anodizer_core::sde::source_date_epoch_with_env(ctx.env_source()).is_some() {
+        if anodizer_core::sde::source_date_epoch_with_env(ctx.env_source())?.is_some() {
             rpmbuild_cmd
                 .arg("--define")
                 .arg("use_source_date_epoch_as_buildtime 1")
@@ -321,7 +325,7 @@ impl Stage for SrpmStage {
         }
 
         // Wire signing options when signature config is present
-        if let Some(sig) = effective_signature
+        if let Some(sig) = effective_signature.as_ref()
             && let Some(ref key_file) = sig.key_file
         {
             rpmbuild_cmd
@@ -333,8 +337,10 @@ impl Stage for SrpmStage {
             // passphrase is configured inline.
             if let Some(ref passphrase) = sig.key_passphrase {
                 rpmbuild_cmd.env("GPG_PASSPHRASE", passphrase);
-            } else if let Some(passphrase) = ctx.env_var("SRPM_PASSPHRASE")
-                && !passphrase.is_empty()
+            } else if let Some(passphrase) = ctx
+                .env_var("SRPM_PASSPHRASE")
+                .as_deref()
+                .and_then(anodizer_core::git::non_blank_token)
             {
                 rpmbuild_cmd.env("GPG_PASSPHRASE", &passphrase);
             }
@@ -550,7 +556,7 @@ fn generate_default_spec(
     source_prefix: &str,
     bins: &BTreeMap<String, String>,
     env: &dyn anodizer_core::env_source::EnvSource,
-) -> String {
+) -> Result<String> {
     let summary = cfg.summary.as_deref().unwrap_or(package_name);
     let license = cfg.license.as_deref().unwrap_or("MIT");
     let url = cfg.url.as_deref().unwrap_or("");
@@ -704,7 +710,7 @@ fn generate_default_spec(
         format!("%autosetup -n {source_prefix}")
     };
 
-    format!(
+    Ok(format!(
         r#"{compression_macros}Name:           {package_name}
 Version:        {version_field}
 Release:        1%{{?dist}}
@@ -732,8 +738,8 @@ Source0:        {source_name}
         // SDE-aware: honor SOURCE_DATE_EPOCH so the spec's %changelog
         // header is byte-stable across reproducible-build runs. Wall-
         // clock fallback when SDE is unset matches the legacy behavior.
-        date = anodizer_core::sde::resolve_now_with_env(env).format("%a %b %d %Y"),
-    )
+        date = anodizer_core::sde::resolve_now_with_env(env)?.format("%a %b %d %Y"),
+    ))
 }
 
 /// Environment requirements for the srpm stage, derived from the same config
@@ -865,7 +871,8 @@ mod tests {
             "",
             &BTreeMap::new(),
             &anodizer_core::env_source::MapEnvSource::new(),
-        );
+        )
+        .unwrap();
         assert!(spec.contains("Name:           myapp"));
         assert!(spec.contains("Version:        1.0.0"));
         assert!(spec.contains("Summary:        A test package"));
@@ -897,7 +904,8 @@ mod tests {
             "anodizer-0.5.0-SNAPSHOT-abc",
             &BTreeMap::new(),
             &anodizer_core::env_source::MapEnvSource::new(),
-        );
+        )
+        .unwrap();
         assert!(
             spec.contains("%autosetup -n anodizer-0.5.0-SNAPSHOT-abc"),
             "non-empty prefix must emit `%autosetup -n <prefix>`; got:\n{spec}"
@@ -930,7 +938,8 @@ mod tests {
             "",
             &BTreeMap::new(),
             &env,
-        );
+        )
+        .unwrap();
         // 1715000000 → 2024-05-06 Mon (UTC).
         assert!(
             spec.contains("* Mon May 06 2024"),
@@ -957,7 +966,8 @@ mod tests {
             "",
             &BTreeMap::new(),
             &anodizer_core::env_source::MapEnvSource::new(),
-        );
+        )
+        .unwrap();
         // Version field carries prerelease (~) and metadata (+) suffixes.
         assert!(
             spec.contains("Version:        1.0.0~rc1+g1234abc"),
@@ -997,7 +1007,8 @@ mod tests {
                 "",
                 &BTreeMap::new(),
                 &anodizer_core::env_source::MapEnvSource::new(),
-            );
+            )
+            .unwrap();
             let version_line = spec
                 .lines()
                 .find(|l| l.starts_with("Version:"))
@@ -1031,7 +1042,8 @@ mod tests {
             "",
             &BTreeMap::new(),
             &anodizer_core::env_source::MapEnvSource::new(),
-        );
+        )
+        .unwrap();
         assert!(
             spec.contains("Version:        0.5.0~SNAPSHOT_abc~rc1+g1234abc"),
             "sanitized base must precede cfg ~prerelease/+metadata; got:\n{spec}"
@@ -1057,7 +1069,8 @@ mod tests {
             "",
             &BTreeMap::new(),
             &anodizer_core::env_source::MapEnvSource::new(),
-        );
+        )
+        .unwrap();
         let version_line = spec
             .lines()
             .find(|l| l.starts_with("Version:"))
@@ -1258,7 +1271,8 @@ mod tests {
             "",
             &resolved,
             &anodizer_core::env_source::MapEnvSource::new(),
-        );
+        )
+        .unwrap();
         // Both install paths end up in %files, sorted by binary name
         // (myapp before myapp-helper).
         let files_idx = spec.find("%files").expect("spec has %files");
@@ -1301,7 +1315,8 @@ mod tests {
             "",
             &resolved,
             &anodizer_core::env_source::MapEnvSource::new(),
-        );
+        )
+        .unwrap();
         let files_tail = &spec[spec.find("%files").unwrap()..];
         assert!(files_tail.contains("%{_bindir}/myapp\n"), "got:\n{spec}");
         assert!(
@@ -1376,7 +1391,8 @@ mod tests {
             "",
             &effective_bins,
             &anodizer_core::env_source::MapEnvSource::new(),
-        );
+        )
+        .unwrap();
         let files = &spec[spec.find("%files").unwrap()..];
         assert!(files.contains("%{_bindir}/alpha\n"), "got:\n{spec}");
         assert!(files.contains("%{_bindir}/beta\n"), "got:\n{spec}");
@@ -1493,7 +1509,8 @@ mod tests {
             "",
             &BTreeMap::new(),
             &anodizer_core::env_source::MapEnvSource::new(),
-        );
+        )
+        .unwrap();
 
         // epoch — upgrade-ordering tag.
         assert!(
@@ -1543,7 +1560,8 @@ mod tests {
             "",
             &BTreeMap::new(),
             &anodizer_core::env_source::MapEnvSource::new(),
-        );
+        )
+        .unwrap();
         assert!(spec.contains("%define _source_payload      w9.lz4io"));
         assert!(spec.contains("%define _source_compressor   lz4"));
     }
@@ -2041,6 +2059,94 @@ crates:
             "from-env",
             "SRPM_PASSPHRASE must be exported as GPG_PASSPHRASE"
         );
+    }
+
+    /// `key_file` and `key_passphrase` are templates read as credentials:
+    /// rendered and trimmed before they reach `_gpg_name` and
+    /// `GPG_PASSPHRASE`, and a padded `SRPM_PASSPHRASE` is trimmed the same
+    /// way.
+    #[cfg(all(test, unix))]
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn the_signature_key_and_passphrase_are_rendered_and_trimmed() {
+        for (configured, env, expected) in [
+            (Some("{{ .Env.SRPM_KEY_PASS }}"), None, "rendered-pass"),
+            (None, Some("  from-env\n"), "from-env"),
+        ] {
+            let fx = SrpmFixture::new();
+            let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
+            ctx.template_vars_mut()
+                .set_env("SRPM_KEY_NAME", " release.gpg\n");
+            ctx.template_vars_mut()
+                .set_env("SRPM_KEY_PASS", " rendered-pass\n");
+            if let Some(env) = env {
+                ctx.set_env_source(
+                    anodizer_core::env_source::MapEnvSource::new().with("SRPM_PASSPHRASE", env),
+                );
+            }
+            ctx.config.srpms = Some(SrpmConfig {
+                enabled: Some(true),
+                signature: Some(anodizer_core::config::NfpmSignatureConfig {
+                    key_file: Some("{{ .Env.SRPM_KEY_NAME }}".to_string()),
+                    key_passphrase: configured.map(str::to_string),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+            let srpms_file = "myapp-1.0.0-1.src.rpm";
+            let tools = FakeToolDir::new();
+            tools
+                .tool("rpmbuild")
+                .script(format!(
+                    "printf '%s' \"$GPG_PASSPHRASE\" > {}",
+                    fx.srpms_output(srpms_file).display()
+                ))
+                .install();
+            let _g = tools.activate();
+
+            SrpmStage.run(&mut ctx).expect("signed run should succeed");
+
+            let argv = &tools.calls("rpmbuild")[0];
+            assert!(
+                argv.iter().any(|a| a == "_gpg_name release.gpg"),
+                "got {argv:?}"
+            );
+            let out = fx.dist.join("myapp-1.0.0.src.rpm");
+            assert_eq!(std::fs::read_to_string(&out).unwrap(), expected);
+        }
+    }
+
+    /// A `key_passphrase` that fails to render stops the stage before
+    /// rpmbuild runs, naming the field and leaving the template's text out.
+    #[cfg(all(test, unix))]
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn a_passphrase_that_does_not_render_names_the_field_without_its_text() {
+        let fx = SrpmFixture::new();
+        let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
+        ctx.config.srpms = Some(SrpmConfig {
+            enabled: Some(true),
+            signature: Some(anodizer_core::config::NfpmSignatureConfig {
+                key_file: Some("release.gpg".to_string()),
+                key_passphrase: Some("hunter2{{ Undefined }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let tools = FakeToolDir::new();
+        tools.tool("rpmbuild").script("exit 0").install();
+        let _g = tools.activate();
+
+        let err = SrpmStage
+            .run(&mut ctx)
+            .expect_err("an unrenderable passphrase is an error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("srpm.signature.key_passphrase does not render"),
+            "{msg}"
+        );
+        assert!(!msg.contains("hunter2"), "{msg}");
+        assert!(tools.calls("rpmbuild").is_empty(), "rpmbuild ran");
     }
 
     /// `--skip=sign` clears the signature config even when one is present: the

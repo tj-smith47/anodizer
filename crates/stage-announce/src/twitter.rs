@@ -107,7 +107,9 @@ fn build_oauth1_header(
     token_secret: &str,
 ) -> Result<String> {
     let method = method.to_uppercase();
-    let timestamp = anodizer_core::sde::resolve_now().timestamp().to_string();
+    // The server rejects a timestamp far from its own clock, so this reads the
+    // real clock even when SOURCE_DATE_EPOCH fixes the build's dates.
+    let timestamp = chrono::Utc::now().timestamp().to_string();
     let nonce = generate_nonce();
 
     let mut params = BTreeMap::new();
@@ -193,6 +195,32 @@ mod tests {
         assert_eq!(percent_encode("/"), "%2F");
         assert_eq!(percent_encode(":"), "%3A");
         assert_eq!(percent_encode("+"), "%2B");
+    }
+
+    #[test]
+    fn the_oauth_timestamp_is_the_real_clock_under_a_source_date() {
+        use anodizer_core::test_helpers::env::{EnvGuard, env_mutex};
+        let _lock = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let _sde = EnvGuard::set("SOURCE_DATE_EPOCH", "1000000000");
+        let header = build_oauth1_header(
+            "POST",
+            "https://api.x.com/2/tweets",
+            "ck",
+            "cs",
+            "at",
+            "ats",
+        )
+        .unwrap();
+        let stamp: i64 = header
+            .split("oauth_timestamp=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|v| v.parse().ok())
+            .expect("oauth_timestamp in header");
+        assert!(
+            (stamp - chrono::Utc::now().timestamp()).abs() < 600,
+            "oauth_timestamp {stamp} must be the real clock"
+        );
     }
 
     #[test]

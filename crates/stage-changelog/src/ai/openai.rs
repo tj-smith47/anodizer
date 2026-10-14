@@ -51,7 +51,8 @@ impl AiProvider for OpenAiProvider {
         let api_key = self
             .env
             .var("OPENAI_API_KEY")
-            .filter(|v| !v.is_empty())
+            .as_deref()
+            .and_then(anodizer_core::git::non_blank_token)
             .ok_or_else(|| {
                 anyhow::anyhow!("OPENAI_API_KEY is not set; required for the openai provider")
             })?;

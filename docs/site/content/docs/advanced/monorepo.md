@@ -321,13 +321,14 @@ for how this fits alongside `check config`'s other static lints.
 
 When `version_sync.enabled: true` is set per-crate, the tag command also updates that crate's `Cargo.toml` version, any intra-workspace `path + version` dependency specs that reference it, and `Cargo.lock`. The update is committed with `[skip ci]` and the tag points at that commit.
 
-The same commit also heals **every** internal `path + version` floor in the
+The same commit also heals **every** internal `path + version` requirement
+(the dependency's minimum version, which the log calls its dep floor) in the
 workspace against the path crate's post-bump version, including crates that
 were not bumped in that run, so a bump commit that never reached the default branch
-cannot leave a stale floor behind to break the next `cargo publish`:
+cannot leave a stale requirement behind to break the next `cargo publish`:
 
 ```toml
-# before — cfgd-core is already published at 0.7.0, master still floors 0.6.1
+# before — cfgd-core is already published at 0.7.0, master still requires 0.6.1
 [dependencies]
 cfgd-core = { path = "../cfgd-core", version = "0.6.1" }
 
@@ -355,15 +356,15 @@ anodizer-output crates=["cfgd"]
 anodizer-output versions={"cfgd":"0.7.0"}
 ```
 
-A floor the run's own version bump already rewrites is reported once, by that
-step: only floors the bump leaves behind are reported as heals, in both
+A requirement the run's own version bump already rewrites is reported once, by
+that step: only requirements the bump leaves behind are reported as heals, in both
 modes.
 
-A floor already at or above the path crate's version is left untouched, and the
-operator and precision the floor was written with (`"0.6"`, `"^0.6.1"`,
+A requirement already at or above the path crate's version is left untouched,
+and the operator and precision it was written with (`"0.6"`, `"^0.6.1"`,
 `"=0.6.1"`) are preserved. `[dependencies]`, `[dev-dependencies]`,
 `[build-dependencies]`, their `[target.'cfg(...)']` forms and the root
-`[workspace.dependencies]` table are all swept; a floor whose requirement is
+`[workspace.dependencies]` table are all swept; a requirement that is
 not a single lower-bounded comparator (`"*"`, `"<0.9"`, `">=0.6, <0.8"`) is
 left alone, as is a whole dependency section written as an inline
 `dependencies = { … }` value.

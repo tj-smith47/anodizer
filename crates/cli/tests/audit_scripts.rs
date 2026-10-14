@@ -1139,6 +1139,7 @@ fn the_path_stub_audit_walks_every_crate_that_stubs_a_tool() {
             "stage-docker",
             "stage-makeself",
             "stage-notarize",
+            "stage-nsis",
             "stage-publish",
             "stage-sign",
             "stage-snapcraft",

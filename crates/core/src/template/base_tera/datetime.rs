@@ -83,7 +83,8 @@ pub(super) fn register(tera: &mut tera::Tera) {
                 .and_then(|v| v.as_str())
                 .unwrap_or("%Y-%m-%dT%H:%M:%SZ");
             let chrono_fmt = translate_go_time_format(fmt);
-            let now = crate::sde::resolve_now();
+            let now = crate::sde::resolve_now_with_env(&crate::env_source::ProcessEnvSource)
+                .map_err(|e| tera::Error::message(e.to_string()))?;
             Ok(Value::String(now.format(&chrono_fmt).to_string()))
         },
     );
@@ -212,7 +213,8 @@ pub(super) fn register(tera: &mut tera::Tera) {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| tera::Error::message("now_format requires a `format` argument"))?;
             let chrono_fmt = translate_go_time_format(fmt);
-            let now = crate::sde::resolve_now();
+            let now = crate::sde::resolve_now_with_env(&crate::env_source::ProcessEnvSource)
+                .map_err(|e| tera::Error::message(e.to_string()))?;
             Ok(Value::String(now.format(&chrono_fmt).to_string()))
         },
     );

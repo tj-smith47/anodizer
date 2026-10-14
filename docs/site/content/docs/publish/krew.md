@@ -96,7 +96,7 @@ crates:
           pull_request:
             enabled: true
             draft: false
-            token: ""                      # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
+            token: ""                      # token used to open the PR (default: repository.token, then KREW_INDEX_TOKEN, then the GitHub token chain)
             base:
               owner: kubernetes-sigs
               name: krew-index
@@ -129,7 +129,7 @@ crates:
           pull_request:
             enabled: true
             draft: false
-            token: ""                    # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
+            token: ""                    # token used to open the PR (default: repository.token, then KREW_INDEX_TOKEN, then the GitHub token chain)
             base:
               owner: kubernetes-sigs
               name: krew-index
@@ -145,14 +145,9 @@ crates:
 
 ## Authentication
 
-The push to your krew-index fork uses the first token that is set:
+{{ token_order(target="your krew-index fork", publisher_var="KREW_INDEX_TOKEN") }}
 
-1. `repository.token`
-2. `KREW_INDEX_TOKEN`
-3. the run's GitHub token (`--token`, or the `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` value read at startup); a GitLab or Gitea token is never sent to GitHub
-4. `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`
-
-The pull request is opened with `repository.pull_request.token`, then `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. With none of these set, the `gh` CLI's own login opens it; with neither a token nor `gh`, the publish fails. Set `pull_request.token` when the fork token cannot open pull requests against the upstream index.
+Set `pull_request.token` when the fork token cannot open pull requests against the upstream index.
 
 ```yaml
 crates:

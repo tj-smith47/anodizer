@@ -31,7 +31,19 @@ fn project(config: &str) -> TempDir {
 
 /// Run `anodizer promote <args>` in `dir` and return `(success, stderr)`.
 fn promote(dir: &Path, args: &[&str]) -> (bool, String) {
-    let out = anodizer()
+    promote_with(anodizer(), dir, args)
+}
+
+/// Run `anodizer promote <args>` with `SOURCE_DATE_EPOCH` set to `value`.
+fn promote_with_source_date(dir: &Path, value: &str, args: &[&str]) -> (bool, String) {
+    let mut cmd = anodizer();
+    cmd.env("SOURCE_DATE_EPOCH", value)
+        .env_remove("ANODIZE_SOURCE_DATE_EPOCH");
+    promote_with(cmd, dir, args)
+}
+
+fn promote_with(mut cmd: Command, dir: &Path, args: &[&str]) -> (bool, String) {
+    let out = cmd
         .current_dir(dir)
         .arg("promote")
         .args(args)
@@ -158,5 +170,27 @@ fn promote_invalid_channel_fails_before_any_publisher_runs() {
     assert!(
         out.contains("1 publisher failed to promote: snapcraft"),
         "the verb must aggregate the failure by publisher; got:\n{out}"
+    );
+}
+
+/// A malformed `SOURCE_DATE_EPOCH` is the same error in `promote` as in a
+/// release, and a valid one lets the promotion run.
+#[test]
+fn promote_reads_the_source_date_through_the_release_reader() {
+    let dir = project(SINGLE_CRATE);
+    let args = ["--to", "stable", "--dry-run"];
+    let (ok, out) = promote_with_source_date(dir.path(), "soon", &args);
+    assert!(
+        !ok,
+        "a malformed source date must exit non-zero; got:\n{out}"
+    );
+    assert!(
+        out.contains("SOURCE_DATE_EPOCH is set to \"soon\""),
+        "the error must name the variable and its value; got:\n{out}"
+    );
+    let (ok, out) = promote_with_source_date(dir.path(), "1715000000", &args);
+    assert!(
+        ok,
+        "a valid source date must not stop the promotion; got:\n{out}"
     );
 }

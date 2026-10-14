@@ -237,7 +237,9 @@ pub fn render_with_env(
 
     // BASE_TERA's `time` / `now_format` read the source date from the
     // process env; a render handed another env must read it from that one.
-    let source_date = crate::sde::source_date_epoch_with_env(host_env);
+    // A malformed value fails only a template that asks for the time.
+    let source_date = crate::sde::source_date_epoch_with_env(host_env).map_err(|e| e.to_string());
+    let source_date_for_filter = source_date.clone();
     tera.register_json_function(
         "time",
         move |args: &HashMap<String, Value>| -> TeraResult<Value> {
@@ -246,7 +248,10 @@ pub fn render_with_env(
                 .and_then(|v| v.as_str())
                 .unwrap_or("%Y-%m-%dT%H:%M:%SZ");
             let chrono_fmt = translate_go_time_format(fmt);
-            let now = source_date.unwrap_or_else(chrono::Utc::now);
+            let now = source_date
+                .clone()
+                .map_err(tera::Error::message)?
+                .unwrap_or_else(chrono::Utc::now);
             Ok(Value::String(now.format(&chrono_fmt).to_string()))
         },
     );
@@ -259,7 +264,10 @@ pub fn render_with_env(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| tera::Error::message("now_format requires a `format` argument"))?;
             let chrono_fmt = translate_go_time_format(fmt);
-            let now = source_date.unwrap_or_else(chrono::Utc::now);
+            let now = source_date_for_filter
+                .clone()
+                .map_err(tera::Error::message)?
+                .unwrap_or_else(chrono::Utc::now);
             Ok(Value::String(now.format(&chrono_fmt).to_string()))
         },
     );

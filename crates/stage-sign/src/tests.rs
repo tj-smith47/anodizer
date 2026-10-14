@@ -1687,6 +1687,99 @@ fn test_docker_sign_stdin_is_template_rendered() {
     );
 }
 
+/// `stdin` usually carries a passphrase: a template that does not render
+/// stops the sign with an error naming the field and leaving out the
+/// template's text, and a padded render reaches the signer trimmed.
+#[test]
+fn a_sign_stdin_is_rendered_as_a_credential() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+
+    let run = |stdin: &str| {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let marker_path = tmp.path().join("stdin_check.txt");
+        let (cmd, args) = shell_stdin_capture_to_file(&marker_path.to_string_lossy());
+        let artifact_path = tmp.path().join("checksums.sha256");
+        std::fs::write(&artifact_path, b"checksum content").unwrap();
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .signs(vec![SignConfig {
+                id: Some("gpg".to_string()),
+                cmd: Some(cmd),
+                args: Some(args),
+                artifacts: Some("checksum".to_string()),
+                stdin: Some(stdin.to_string()),
+                ..Default::default()
+            }])
+            .build();
+        ctx.template_vars_mut().set_env("GPG_PASSPHRASE", " pass\n");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            name: String::new(),
+            path: artifact_path,
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: combined_meta(),
+            size: None,
+        });
+        let result = SignStage.run(&mut ctx);
+        (result, std::fs::read_to_string(&marker_path).ok())
+    };
+
+    let (result, piped) = run("{{ Env.GPG_PASSPHRASE }}");
+    result.expect("a stdin that renders signs");
+    assert_eq!(piped.as_deref().map(str::trim_end), Some("pass"));
+    assert!(!piped.unwrap().starts_with(' '), "stdin is trimmed");
+
+    let (result, piped) = run("hunter2{{ Undefined }}");
+    let msg = format!(
+        "{:#}",
+        result.expect_err("a stdin that does not render fails")
+    );
+    assert!(msg.contains("gpg.stdin does not render"), "{msg}");
+    assert!(!msg.contains("hunter2"), "{msg}");
+    assert!(piped.is_none(), "the signer never ran");
+}
+
+/// The docker-sign half of `a_sign_stdin_is_rendered_as_a_credential`.
+#[test]
+fn a_docker_sign_stdin_that_does_not_render_names_the_field() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::DockerSignConfig;
+
+    let mut ctx = TestContextBuilder::new().dry_run(false).build();
+    ctx.config.docker_signs = Some(vec![DockerSignConfig {
+        id: Some("cosign".to_string()),
+        cmd: Some("true".to_string()),
+        artifacts: Some("all".to_string()),
+        stdin: Some("hunter2{{ Undefined }}".to_string()),
+        ..Default::default()
+    }]);
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("digest".to_string(), "sha256:abc123def456".to_string());
+    metadata.insert("id".to_string(), "my-docker-image".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::DockerImage,
+        name: String::new(),
+        path: std::path::PathBuf::from("ghcr.io/myorg/app:latest"),
+        target: None,
+        crate_name: "test".to_string(),
+        metadata,
+        size: None,
+    });
+
+    let msg = format!(
+        "{:#}",
+        DockerSignStage
+            .run(&mut ctx)
+            .expect_err("a stdin that does not render fails")
+    );
+    assert!(
+        msg.contains("docker_signs[cosign].stdin does not render"),
+        "{msg}"
+    );
+    assert!(!msg.contains("hunter2"), "{msg}");
+}
+
 /// The dry-run lines a stage logged, once the echo opening with `(dry-run)
 /// would run:` is known to carry `masked` and no line carries `secret`.
 fn assert_dry_run_echo_masked(

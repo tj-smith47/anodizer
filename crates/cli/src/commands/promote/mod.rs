@@ -207,7 +207,8 @@ fn select_publishers(ctx: &Context, requested: &[String]) -> Result<Vec<Box<dyn 
 /// repositories from, through the same inference the release pipeline runs:
 /// a `release.github` block naming only a token takes its owner and name
 /// from the `origin` remote here too, so the flip targets the real
-/// repository.
+/// repository. The date variables are read through the source date reader,
+/// so a malformed `SOURCE_DATE_EPOCH` is the same error here as in a release.
 fn load_context(opts: &PromoteOpts, log: &StageLogger) -> Result<Context> {
     let config_path =
         crate::pipeline::find_config_with_logger(opts.config_override.as_deref(), Some(log))?;
@@ -222,7 +223,9 @@ fn load_context(opts: &PromoteOpts, log: &StageLogger) -> Result<Context> {
         debug: opts.debug,
         ..Default::default()
     };
-    Ok(Context::new(config, ctx_opts))
+    let mut ctx = Context::new(config, ctx_opts);
+    ctx.populate_time_vars()?;
+    Ok(ctx)
 }
 
 #[cfg(test)]

@@ -717,7 +717,7 @@ impl anodizer_core::Publisher for PypiPublisher {
                         out.push(anodizer_core::EnvRequirement::EnvAnyOf { vars: any });
                     }
                     // secret_requirement only yields EnvAnyOf/None today; forward
-                    // any other shape verbatim rather than dropping the gate.
+                    // any other shape verbatim so its gate is kept.
                     Some(other) => out.push(other),
                 },
             }

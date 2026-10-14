@@ -5613,7 +5613,7 @@
       "type": "object",
       "properties": {
         "headers": {
-          "description": "Optional HTTP headers for the request.",
+          "description": "Optional HTTP headers for the request. Each value is a template, read as a credential: trimmed, and a value that fails to render stops the run with an error naming its header.",
           "default": null,
           "type": [
             "object",
@@ -12457,7 +12457,7 @@
           ]
         },
         "timeout": {
-          "description": "Total wall-clock budget for polling. When exhausted, the poller emits `PostPublishStatus::Timeout` with the last observed state. Default `30m`.",
+          "description": "Total wall-clock budget for polling. When exhausted, the poller warns that polling timed out and names the last observed state. Default `30m`.",
           "default": "30m",
           "allOf": [
             {
@@ -12998,7 +12998,7 @@
           ]
         },
         "token": {
-          "description": "Token used to open the pull request. Supports templates. Falls back to `repository.token`, then to `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. Set it when the token that pushes to the fork may not open pull requests against the upstream repository (a fine-grained token scoped to the fork beside a classic token for `microsoft/winget-pkgs`, for example).\n\n```yaml\nrepository:\n  token: \"{{ .Env.FORK_TOKEN }}\"\n  pull_request:\n    enabled: true\n    token: \"{{ .Env.UPSTREAM_PR_TOKEN }}\"\n```",
+          "description": "Token used to open the pull request. Supports templates. A value that renders blank falls through to `repository.token`, then the publisher's own variable (`HOMEBREW_TAP_TOKEN`, `SCOOP_BUCKET_TOKEN`, `KREW_INDEX_TOKEN`, …), then the run's GitHub token (`--token`), then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. Set it when the token that pushes to the fork may not open pull requests against the upstream repository (a fine-grained token scoped to the fork beside a classic token for `microsoft/winget-pkgs`, for example).\n\n```yaml\nrepository:\n  token: \"{{ .Env.FORK_TOKEN }}\"\n  pull_request:\n    enabled: true\n    token: \"{{ .Env.UPSTREAM_PR_TOKEN }}\"\n```",
           "default": null,
           "type": [
             "string",
@@ -16710,7 +16710,7 @@
       "additionalProperties": false
     },
     "WaitForWorkspaceDepsConfig": {
-      "description": "Pre-publish polling gate for `cargo publish`. When `enabled`, the cargo publisher reads its crate's manifest, identifies every dep that points at another crate in the same anodizer workspace, and polls `https://index.crates.io/<prefix>/<name>` until each `(name, version)` pair is queryable. Only then does `cargo publish` run.\n\nDefault: disabled. Anodizer's own workspaces publish lockstep with one tag; this feature only kicks in for multi-tag-multi-crate workspaces like cfgd where downstream crates can otherwise race the sparse-index propagation of their upstream deps.\n\nComplementary to `cargo.index_timeout`: this gate runs BEFORE publish (waits for *upstream* deps to arrive), while `index_timeout` runs AFTER publish (waits for the *just-published* crate to arrive before the next dependent in the same run starts).\n\n```yaml\npublish:\n  cargo:\n    wait_for_workspace_deps:\n      enabled: true\n      poll_interval: 5s\n      max_wait: 5m\n```",
+      "description": "Pre-publish polling gate for `cargo publish`. When `enabled`, the cargo publisher reads its crate's manifest, identifies every dep that points at another crate in the same anodizer workspace, and polls `https://index.crates.io/<prefix>/<name>` until each `(name, version)` pair is queryable. Only then does `cargo publish` run.\n\nDefault: disabled. Anodizer's own workspaces publish lockstep with one tag; this feature only kicks in for multi-tag-multi-crate workspaces like cfgd where downstream crates can otherwise race the sparse-index propagation of their upstream deps.\n\nComplementary to `cargo.index_timeout`: this gate runs BEFORE publish (waits for *upstream* deps to arrive), while `index_timeout` runs AFTER publish (waits for the *just-published* crate to arrive before the next dependent in the same run starts).\n\n```yaml\ncrates:\n  - name: myapp\n    path: .\n    publish:\n      cargo:\n        wait_for_workspace_deps:\n          enabled: true\n          poll_interval: 5s\n          max_wait: 5m\n```",
       "type": "object",
       "properties": {
         "enabled": {

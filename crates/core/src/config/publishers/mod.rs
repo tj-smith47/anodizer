@@ -115,9 +115,11 @@ pub struct PullRequestConfig {
     pub body: Option<String>,
     /// Target base repository/branch for the PR.
     pub base: Option<PullRequestBaseConfig>,
-    /// Token used to open the pull request. Supports templates. Falls back
-    /// to `repository.token`, then to `ANODIZER_GITHUB_TOKEN`,
-    /// `GITHUB_TOKEN` and `GH_TOKEN`. Set it when the token that pushes
+    /// Token used to open the pull request. Supports templates. A value
+    /// that renders blank falls through to `repository.token`, then the
+    /// publisher's own variable (`HOMEBREW_TAP_TOKEN`, `SCOOP_BUCKET_TOKEN`,
+    /// `KREW_INDEX_TOKEN`, …), then the run's GitHub token (`--token`), then
+    /// `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. Set it when the token that pushes
     /// to the fork may not open pull requests against the upstream
     /// repository (a fine-grained token scoped to the fork beside a classic
     /// token for `microsoft/winget-pkgs`, for example).
@@ -485,12 +487,15 @@ pub enum CargoAuthMode {
 /// dependent in the same run starts).
 ///
 /// ```yaml
-/// publish:
-///   cargo:
-///     wait_for_workspace_deps:
-///       enabled: true
-///       poll_interval: 5s
-///       max_wait: 5m
+/// crates:
+///   - name: myapp
+///     path: .
+///     publish:
+///       cargo:
+///         wait_for_workspace_deps:
+///           enabled: true
+///           poll_interval: 5s
+///           max_wait: 5m
 /// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]

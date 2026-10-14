@@ -1269,3 +1269,45 @@ fn requirements_follow_the_auth_method() {
         }]
     );
 }
+
+/// `auth.token` and every transport header value are credentials: a padded
+/// render is stored trimmed, and a template that does not render is an
+/// error naming the field without the template's text.
+#[test]
+fn render_strings_renders_the_auth_token_and_header_values_as_credentials() {
+    use anodizer_core::config::McpHeader;
+
+    let mut ctx = mcp_ctx(|mcp| {
+        mcp.packages[0].transport = McpTransport {
+            kind: McpTransportType::StreamableHttp,
+            url: "https://example.com/v1".to_string(),
+            headers: vec![McpHeader {
+                name: "Authorization".to_string(),
+                value: "{{ .Env.MCP_HDR }}".to_string(),
+            }],
+        };
+        mcp.auth.token = "{{ .Env.MCP_TOKEN }}".to_string();
+    });
+    ctx.template_vars_mut().set_env("MCP_HDR", " Bearer h \n");
+    ctx.template_vars_mut().set_env("MCP_TOKEN", " tok\n");
+
+    let mut mcp = ctx.config.mcp.clone();
+    super::render_strings(&ctx, &mut mcp).expect("render_strings succeeds");
+    assert_eq!(mcp.packages[0].transport.headers[0].value, "Bearer h");
+    assert_eq!(mcp.auth.token, "tok");
+
+    let mut mcp = ctx.config.mcp.clone();
+    mcp.packages[0].transport.headers[0].value = "Bearer hunter2{{ Undefined }}".to_string();
+    let msg = format!("{:#}", super::render_strings(&ctx, &mut mcp).unwrap_err());
+    assert!(
+        msg.contains("mcp.packages[0].transport.headers[0] does not render"),
+        "{msg}"
+    );
+    assert!(!msg.contains("hunter2"), "{msg}");
+
+    let mut mcp = ctx.config.mcp.clone();
+    mcp.auth.token = "hunter2{{ Undefined }}".to_string();
+    let msg = format!("{:#}", super::render_strings(&ctx, &mut mcp).unwrap_err());
+    assert!(msg.contains("mcp.auth.token does not render"), "{msg}");
+    assert!(!msg.contains("hunter2"), "{msg}");
+}

@@ -221,7 +221,7 @@ pub(crate) fn render_and_generate_nfpm_yaml(
 
     let mut rendered_cfg =
         render_nfpm_config_fields(nfpm_cfg, &ctx.config, ctx.template_vars(), crate_name)?;
-    default_nfpm_mtime_to_sde(&mut rendered_cfg, ctx.env_source());
+    default_nfpm_mtime_to_sde(&mut rendered_cfg, ctx.env_source())?;
 
     process_templated_contents(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
     process_templated_scripts(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
@@ -323,23 +323,20 @@ pub(crate) fn render_nfpm_config_fields(
     // Render signature key_file, key_name, AND key_passphrase for all
     // formats. Skipping key_passphrase would leave an unrendered `{{ .Env.X
     // }}` reaching the signing backend, which fails as "bad passphrase".
+    let render = |s: &str| anodizer_core::template::render(s, vars);
     if let Some(ref mut deb) = rendered_cfg.deb
         && let Some(ref mut sig) = deb.signature
     {
-        render_in_place(&mut sig.key_file, vars)?;
-        render_in_place(&mut sig.key_passphrase, vars)?;
+        *sig = sig.render("nfpm.deb.signature", &render)?;
     }
     if let Some(ref mut rpm) = rendered_cfg.rpm
         && let Some(ref mut sig) = rpm.signature
     {
-        render_in_place(&mut sig.key_file, vars)?;
-        render_in_place(&mut sig.key_passphrase, vars)?;
+        *sig = sig.render("nfpm.rpm.signature", &render)?;
     }
     if let Some(ref mut apk) = rendered_cfg.apk {
         if let Some(ref mut sig) = apk.signature {
-            render_in_place(&mut sig.key_file, vars)?;
-            render_in_place(&mut sig.key_name, vars)?;
-            render_in_place(&mut sig.key_passphrase, vars)?;
+            *sig = sig.render("nfpm.apk.signature", &render)?;
         }
         // apk's upgrade scripts are file paths like the top-level `scripts:`
         // entries, so they get the same `{{ .Env.* }}` render — otherwise an
@@ -403,12 +400,13 @@ pub(crate) fn render_nfpm_config_fields(
 pub(crate) fn default_nfpm_mtime_to_sde(
     cfg: &mut anodizer_core::config::NfpmConfig,
     env: &dyn anodizer_core::env_source::EnvSource,
-) {
+) -> anyhow::Result<()> {
     if cfg.mtime.is_none()
-        && let Some(sde) = anodizer_core::sde::source_date_epoch_with_env(env)
+        && let Some(sde) = anodizer_core::sde::source_date_epoch_with_env(env)?
     {
         cfg.mtime = Some(sde.to_rfc3339());
     }
+    Ok(())
 }
 
 /// `templated_contents`: render each entry's body through

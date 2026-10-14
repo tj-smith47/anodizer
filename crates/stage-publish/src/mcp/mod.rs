@@ -582,10 +582,10 @@ fn render_strings(ctx: &Context, mcp: &mut McpConfig) -> Result<()> {
             &format!("packages[{}].transport.url", i),
         )?;
         for (j, header) in pkg.transport.headers.iter_mut().enumerate() {
-            render_in_place(
+            header.value = crate::util::render_secret(
                 ctx,
-                &mut header.value,
-                &format!("packages[{}].transport.headers[{}].value", i, j),
+                &format!("mcp.packages[{i}].transport.headers[{j}]"),
+                &header.value,
             )?;
         }
     }

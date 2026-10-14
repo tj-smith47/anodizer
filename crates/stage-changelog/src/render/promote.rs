@@ -55,12 +55,12 @@ pub(crate) struct MultitrackPromoteArgs<'a> {
 /// `### <GroupTitle>` (or a bare bullet) directly under the heading — no blank
 /// line between — matching the Keep-a-Changelog shape of existing released
 /// sections.
-pub(crate) fn build_promoted_section(tag: &str, body: &str) -> Vec<String> {
+pub(crate) fn build_promoted_section(tag: &str, body: &str) -> Result<Vec<String>> {
     let mut promoted: Vec<String> = Vec::with_capacity(body.lines().count() + 2);
-    promoted.push(format!("## [{}] - {}", tag, today_yyyy_mm_dd()));
+    promoted.push(format!("## [{}] - {}", tag, today_yyyy_mm_dd()?));
     promoted.extend(body.lines().map(|s| s.to_string()));
     promoted.push(String::new());
-    promoted
+    Ok(promoted)
 }
 
 /// Slot a promoted section among the existing released sections of `tail` and
@@ -175,7 +175,7 @@ pub(crate) fn promote_multitrack_section(
         .skip_while(|l| l.trim().is_empty())
         .collect();
 
-    let promoted = build_promoted_section(tag, generated_body);
+    let promoted = build_promoted_section(tag, generated_body)?;
 
     let mut out: Vec<String> = head;
     out.push(String::new());
@@ -274,7 +274,7 @@ pub(crate) fn promote_subsection(args: PromoteArgs<'_>) -> Result<Option<String>
         return Ok(None);
     };
 
-    let promoted = build_promoted_section(tag, &body);
+    let promoted = build_promoted_section(tag, &body)?;
 
     // Rebuild the `[Unreleased]` block with this crate's subsection removed and
     // every other subsection byte-identical, then slot the promoted section among
@@ -559,21 +559,17 @@ pub(crate) fn push_root_footer(
     }
 }
 
-pub(crate) fn today_yyyy_mm_dd() -> String {
-    let secs = anodizer_core::sde::resolve_now().timestamp();
-    // Days since the Unix epoch, then convert to a (y,m,d) triple via the
-    // Howard Hinnant date algorithm (`days_from_civil` inverse). Avoids a
-    // chrono dep purely for date formatting in changelog headings.
-    let days = secs.div_euclid(86_400);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{:04}-{:02}-{:02}", y, m, d)
+/// Today's date for a changelog heading, `YYYY-MM-DD` in UTC: the source
+/// date when the process environment sets one, otherwise the wall clock.
+/// Fails with the source date reader's error on a malformed value.
+pub(crate) fn today_yyyy_mm_dd() -> Result<String> {
+    today_yyyy_mm_dd_with_env(&anodizer_core::env_source::ProcessEnvSource)
+}
+
+pub(crate) fn today_yyyy_mm_dd_with_env(
+    env: &dyn anodizer_core::env_source::EnvSource,
+) -> Result<String> {
+    Ok(anodizer_core::sde::resolve_now_with_env(env)?
+        .format("%Y-%m-%d")
+        .to_string())
 }

@@ -41,7 +41,7 @@ pub fn render_crate_section(
     let section_heading = format!(
         "## [{ver}] - {date}",
         ver = to_version,
-        date = today_yyyy_mm_dd()
+        date = today_yyyy_mm_dd()?
     );
     let new_section = format!("{}\n\n{}\n", section_heading, body.trim_end());
 
@@ -200,7 +200,7 @@ pub fn render_root_section(
     let section_heading = format!(
         "## [{ver}] - {date}",
         ver = to_version,
-        date = today_yyyy_mm_dd()
+        date = today_yyyy_mm_dd()?
     );
     let new_section = format!("{}\n\n{}\n", section_heading, body.trim_end());
     // Root file: a synthesized H1 is the project header, never a crate name (a

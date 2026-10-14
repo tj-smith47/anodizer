@@ -176,9 +176,13 @@ pub(crate) fn render_custom_headers(
             artifact.target.as_deref(),
             artifact.metadata.get("amd64_variant").map(String::as_str),
         );
-        let rendered_v = anodizer_core::template::render(v, &vars).with_context(|| {
-            format!("rendering custom header '{}' for '{}'", k, artifact.name())
-        })?;
+        let rendered_v =
+            anodizer_core::git::render_secret(&format!("custom_headers[{k}]"), v, &|s| {
+                anodizer_core::template::render(s, &vars)
+            })
+            .with_context(|| {
+                format!("rendering custom header '{}' for '{}'", k, artifact.name())
+            })?;
         rendered_headers.push((k.clone(), rendered_v));
     }
     Ok(rendered_headers)
@@ -549,16 +553,10 @@ pub(crate) fn publish_to_artifactory_recording(
                 "(dry-run) would upload artifacts to Artifactory '{}' at {} (mode={}, method={}, user={})",
                 name, log.redact(&target_url), mode, method, username
             ));
-            if !custom_headers.is_empty() {
-                for (k, v) in custom_headers {
-                    let rendered_v =
-                        crate::util::render_or_warn(ctx, log, "artifactory.headers", v)?;
-                    log.status(&format!(
-                        "(dry-run) would send custom header {}={}",
-                        k,
-                        log.redact(&rendered_v)
-                    ));
-                }
+            // A header value can carry a credential, so the preview names the
+            // header only; its value renders per artifact below.
+            for k in custom_headers.keys() {
+                log.status(&format!("(dry-run) would send custom header {k}"));
             }
             if entry.client_x509_cert.is_some() {
                 log.status("(dry-run) would present a client certificate");
@@ -629,6 +627,7 @@ pub(crate) fn publish_to_artifactory_recording(
             for a in &artifacts {
                 let url = render_artifact_url(ctx, target_template, a, custom_artifact_name)?;
                 let url = append_deb_matrix_params(&url, a, entry)?;
+                render_custom_headers(ctx, custom_headers, a)?;
                 log.status(&format!("(dry-run) {} ({}) → {}", a.name(), a.kind, url));
             }
             continue;

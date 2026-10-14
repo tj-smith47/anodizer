@@ -141,17 +141,12 @@ fn make_args(
 /// keeps tests off process-env mutation.
 fn resolve_packaging_date_with_env<E: anodizer_core::env_source::EnvSource + ?Sized>(
     env: &E,
-) -> Option<String> {
+) -> Result<Option<String>> {
     // Format mirrors `LC_ALL=C date -u` output (which is what makeself's
     // default `DATE=`LC_ALL=C date`` produces in the harness's UTC=Etc/UTC
     // env), keeping the embedded `Date of packaging:` line readable.
-    anodizer_core::sde::source_date_epoch_with_env(env)
-        .map(|dt| dt.format("%a %b %e %H:%M:%S UTC %Y").to_string())
-}
-
-/// Process-env convenience wrapper over [`resolve_packaging_date_with_env`].
-fn resolve_packaging_date() -> Option<String> {
-    resolve_packaging_date_with_env(&anodizer_core::env_source::ProcessEnvSource)
+    Ok(anodizer_core::sde::source_date_epoch_with_env(env)?
+        .map(|dt| dt.format("%a %b %e %H:%M:%S UTC %Y").to_string()))
 }
 
 /// Recursively pin every regular file's mtime in `dir` to `epoch_secs`.
@@ -352,18 +347,17 @@ fn execute_makeself_job(
     // per-file timestamps across runs. Without this, fs::copy stamps the
     // destination with the current wallclock and the resulting tar.gz
     // payload differs between consecutive runs.
-    if let Some(epoch) = anodizer_core::sde::source_date_epoch().map(|dt| dt.timestamp()) {
+    if let Some(epoch) = job.source_date_epoch {
         pin_workdir_mtimes(&job.work_dir, epoch)?;
     }
 
-    let packaging_date = resolve_packaging_date();
     let args = make_args(
         &job.rendered_name,
         &job.filename,
         job.rendered_compression.as_deref(),
         &format!("./{}", job.script_basename),
         &job.extra_args,
-        packaging_date.as_deref(),
+        job.packaging_date.as_deref(),
     );
 
     thread_log.status(&format!("creating makeself package {}", job.filename));
@@ -483,6 +477,11 @@ struct MakeselfJob {
     /// → baseline), stamped onto the produced `.run` artifact's metadata so
     /// downstream stages can tell two amd64 builds of one target apart.
     amd64_variant: Option<String>,
+    /// The source date from the run's environment, which every file in the
+    /// work dir is stamped with.
+    source_date_epoch: Option<i64>,
+    /// The source date as makeself's `--packaging-date` value.
+    packaging_date: Option<String>,
 }
 
 impl Stage for MakeselfStage {
@@ -843,6 +842,9 @@ fn build_makeself_platform_job(
         primary_crate_name: primary.crate_name.clone(),
         primary_replaces: primary.metadata.get("replaces").cloned(),
         amd64_variant: amd64_variant.map(str::to_string),
+        source_date_epoch: anodizer_core::sde::source_date_epoch_with_env(ctx.env_source())?
+            .map(|dt| dt.timestamp()),
+        packaging_date: resolve_packaging_date_with_env(ctx.env_source())?,
     });
 
     Ok(())
@@ -1032,7 +1034,9 @@ mod tests {
     fn test_resolve_packaging_date_honors_sde() {
         let env =
             anodizer_core::env_source::MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1715000000");
-        let date = resolve_packaging_date_with_env(&env).expect("packaging date under SDE");
+        let date = resolve_packaging_date_with_env(&env)
+            .unwrap()
+            .expect("packaging date under SDE");
         // 1715000000 = 2024-05-06 16:53:20 UTC; format mirrors `LC_ALL=C date -u`.
         assert!(date.contains("2024"), "date string: {date}");
         assert!(date.contains("UTC"), "date string: {date}");
@@ -1041,7 +1045,7 @@ mod tests {
     #[test]
     fn test_resolve_packaging_date_none_without_sde() {
         let env = anodizer_core::env_source::MapEnvSource::new();
-        assert!(resolve_packaging_date_with_env(&env).is_none());
+        assert!(resolve_packaging_date_with_env(&env).unwrap().is_none());
     }
 
     #[test]
@@ -1718,7 +1722,9 @@ crates:
         // structure of a known epoch matches that exactly.
         let env =
             anodizer_core::env_source::MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1577836800");
-        let date = resolve_packaging_date_with_env(&env).expect("epoch set");
+        let date = resolve_packaging_date_with_env(&env)
+            .unwrap()
+            .expect("epoch set");
         // 1577836800 = 2020-01-01 00:00:00 UTC
         assert!(date.contains("2020"), "{date}");
         assert!(date.contains("Jan"), "{date}");
@@ -1856,6 +1862,61 @@ crates:
         );
         assert_eq!(made[0].metadata.get("id").map(String::as_str), Some("d"));
         assert_eq!(made[0].target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+    }
+
+    /// The source date comes from the context's environment: a sealed env
+    /// carrying `SOURCE_DATE_EPOCH` stamps every staged file and the
+    /// packaging date with it.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn the_source_date_is_read_from_the_context_environment() {
+        let fx = MakeselfFixture::new();
+        let mut ctx = fx.ctx(&[("x86_64-unknown-linux-gnu", "proj")]);
+        ctx.set_env_source(
+            anodizer_core::env_source::MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1577836800"),
+        );
+        ctx.config.makeselfs = vec![MakeselfConfig {
+            id: Some("d".into()),
+            script: Some(fx.script_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        }];
+        let tools = FakeToolDir::new();
+        tools
+            .tool("makeself")
+            .creates(linux_amd64_run_name(), "#!installer")
+            .install();
+        let _g = tools.activate();
+
+        MakeselfStage.run(&mut ctx).expect("run should succeed");
+
+        let argv = &tools.calls("makeself")[0];
+        let at = argv
+            .iter()
+            .position(|a| a == "--packaging-date")
+            .expect("--packaging-date present under a source date");
+        assert_eq!(argv[at + 1], "Wed Jan  1 00:00:00 UTC 2020");
+        let mut staged = vec![fx.dist.join("makeself")];
+        let mut files = 0;
+        while let Some(dir) = staged.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    staged.push(path);
+                    continue;
+                }
+                let mtime = std::fs::metadata(&path)
+                    .unwrap()
+                    .modified()
+                    .unwrap()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                assert_eq!(mtime, 1_577_836_800, "{}", path.display());
+                files += 1;
+            }
+        }
+        assert!(files > 0, "the work dir holds the staged files");
     }
 
     #[cfg(unix)]

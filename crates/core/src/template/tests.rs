@@ -2147,6 +2147,24 @@ fn test_now_format_filter_honors_source_date_epoch() {
     );
 }
 
+#[test]
+fn a_malformed_source_date_fails_only_a_template_that_reads_the_time() {
+    let mut vars = test_vars();
+    vars.set("Now", "ignored");
+    let host = MapEnvSource::new().with("SOURCE_DATE_EPOCH", "soon");
+    for template in [
+        "{{ time(format=\"%Y\") }}",
+        "{{ Now | now_format(format=\"%Y\") }}",
+    ] {
+        let err = render_with_env(template, &vars, &host).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("SOURCE_DATE_EPOCH is set to \"soon\""),
+            "{template}: {err:#}"
+        );
+    }
+    assert_eq!(render_with_env("plain", &vars, &host).unwrap(), "plain");
+}
+
 // --- now_format filter tests ---
 
 #[test]

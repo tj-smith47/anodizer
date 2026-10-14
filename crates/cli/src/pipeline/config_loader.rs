@@ -1015,41 +1015,6 @@ crates:
         );
     }
 
-    /// A config file with an empty `hooks: []` beside a non-empty `post:`
-    /// list loads with the `post:` commands as the hook list of every hook
-    /// block, and no `post:` left over.
-    #[test]
-    fn load_config_reads_post_as_the_hook_list_beside_an_empty_hooks_list() {
-        use anodizer_core::config::HookEntry;
-        let tmp = TempDir::new().unwrap();
-        let cfg_path = tmp.path().join("anodizer.yaml");
-        let block = "{ hooks: [], post: [legacy.sh] }";
-        fs::write(
-            &cfg_path,
-            format!(
-                "project_name: test\nbefore: {block}\nafter: {block}\non_error: {block}\n\
-                 always: {block}\nbefore_publish: {block}\n"
-            ),
-        )
-        .unwrap();
-        let cfg = load_config(&cfg_path).expect("loads");
-        for (name, hooks) in [
-            ("before", &cfg.before),
-            ("after", &cfg.after),
-            ("on_error", &cfg.on_error),
-            ("always", &cfg.always),
-            ("before_publish", &cfg.before_publish),
-        ] {
-            let hooks = hooks.as_ref().expect(name);
-            assert_eq!(
-                hooks.hooks,
-                Some(vec![HookEntry::Simple("legacy.sh".to_string())]),
-                "{name}"
-            );
-            assert!(hooks.post.is_none(), "{name}");
-        }
-    }
-
     /// Apple derives the App Store Connect token lifetime from the
     /// notarization timeout and refuses a token that lives longer, so a
     /// timeout past the ceiling is an auth failure whose message never

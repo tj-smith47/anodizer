@@ -829,7 +829,7 @@ pub(crate) fn secret_requirement(
 /// Precedence: the `configured` value rendered through
 /// [`crate::util::render_secret`] when it renders non-blank, else the first
 /// env var in `env_ladder` with a non-blank value, else an empty string (the
-/// caller surfaces a clear "missing token" error). Every value is trimmed,
+/// caller reports a clear "missing token" error). Every value is trimmed,
 /// and an empty or whitespace-only value falls through to the next rung. A
 /// `configured` template that does not render is an error naming `field`.
 pub(crate) fn resolve_token_with_ladder(

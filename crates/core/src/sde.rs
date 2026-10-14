@@ -15,13 +15,13 @@
 //! applies it to a run, so the cargo child, binary and archive mtimes,
 //! wheels, the docker `created` label and SBOM timestamps carry one date.
 //!
-//! The infallible helpers ([`resolve_now_with_env`],
-//! [`source_date_epoch_with_env`]) read a malformed value as unset. They run
-//! after the context is set up, and setting up the context
-//! ([`Context::populate_time_vars`](crate::context::Context::populate_time_vars))
-//! already refuses a malformed value with the reader's error.
+//! [`resolve_now_with_env`] and [`source_date_epoch_with_env`] read through
+//! the same reader, so a malformed value is the same error in every command,
+//! whether it reads the date through
+//! [`Context::populate_time_vars`](crate::context::Context::populate_time_vars)
+//! or directly.
 
-use crate::env_source::{EnvSource, ProcessEnvSource};
+use crate::env_source::EnvSource;
 use chrono::{DateTime, Utc};
 
 /// The standard variable that fixes every reproducible timestamp.
@@ -83,38 +83,22 @@ pub fn reproducible_epoch_with_env<E: EnvSource + ?Sized>(
 /// Resolve "now": the source date from [`ambient_epoch_with_env`] when set,
 /// otherwise `chrono::Utc::now()`.
 ///
-/// The injected [`EnvSource`] keeps tests off process-env mutation;
-/// production callers without a context use [`resolve_now`].
-pub fn resolve_now_with_env<E: EnvSource + ?Sized>(env: &E) -> DateTime<Utc> {
-    source_date_epoch_with_env(env).unwrap_or_else(Utc::now)
-}
-
-/// Resolve "now" honoring `SOURCE_DATE_EPOCH` from the process environment.
-///
-/// Thin wrapper over [`resolve_now_with_env`] that uses [`ProcessEnvSource`].
-pub fn resolve_now() -> DateTime<Utc> {
-    resolve_now_with_env(&ProcessEnvSource)
+/// Fails with the reader's error when a source date variable is malformed.
+pub fn resolve_now_with_env<E: EnvSource + ?Sized>(env: &E) -> anyhow::Result<DateTime<Utc>> {
+    Ok(source_date_epoch_with_env(env)?.unwrap_or_else(Utc::now))
 }
 
 /// Return the source date from [`ambient_epoch_with_env`] as a
 /// `DateTime<Utc>` when one is set, else `None`.
 ///
-/// Distinct from [`resolve_now_with_env`], which always returns a value
-/// (falling back to `Utc::now`). Use this when a call site needs to
-/// behave conditionally on whether reproducibility is in effect — e.g.
-/// `stage-makeself` only injects `--packaging-date` under SDE so
-/// non-harness production runs keep makeself's default
-/// `LC_ALL=C date` behavior.
-pub fn source_date_epoch_with_env<E: EnvSource + ?Sized>(env: &E) -> Option<DateTime<Utc>> {
-    ambient_epoch_with_env(env)
-        .ok()
-        .flatten()
-        .and_then(|secs| DateTime::<Utc>::from_timestamp(secs, 0))
-}
-
-/// Process-env convenience wrapper over [`source_date_epoch_with_env`].
-pub fn source_date_epoch() -> Option<DateTime<Utc>> {
-    source_date_epoch_with_env(&ProcessEnvSource)
+/// Use this when a call site behaves differently when reproducibility is in
+/// effect: `stage-makeself` passes `--packaging-date` only under a source
+/// date, so other runs keep makeself's default `LC_ALL=C date`. Fails with the
+/// reader's error when a source date variable is malformed.
+pub fn source_date_epoch_with_env<E: EnvSource + ?Sized>(
+    env: &E,
+) -> anyhow::Result<Option<DateTime<Utc>>> {
+    Ok(ambient_epoch_with_env(env)?.and_then(|secs| DateTime::<Utc>::from_timestamp(secs, 0)))
 }
 
 /// Format a seconds-since-epoch value as an RFC 3339 / ISO-8601 UTC string
@@ -194,17 +178,18 @@ mod tests {
     #[test]
     fn resolve_now_honors_source_date_epoch() {
         let env = MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1715000000");
-        let now = resolve_now_with_env(&env);
+        let now = resolve_now_with_env(&env).unwrap();
         assert_eq!(now.timestamp(), 1715000000);
     }
 
     #[test]
-    fn resolve_now_ignores_malformed_sde() {
+    fn resolve_now_refuses_a_malformed_source_date() {
         let env = MapEnvSource::new().with("SOURCE_DATE_EPOCH", "not-a-number");
-        let now = resolve_now_with_env(&env);
-        // Falls back to Utc::now(); assert only that it succeeded and is
-        // a wall-clock value (post-2020).
-        assert!(now.timestamp() > 1_577_836_800);
+        let err = resolve_now_with_env(&env).unwrap_err().to_string();
+        assert!(
+            err.starts_with("SOURCE_DATE_EPOCH is set to \"not-a-number\""),
+            "{err}"
+        );
     }
 
     #[test]
@@ -305,26 +290,26 @@ mod tests {
     #[test]
     fn resolve_now_falls_back_when_unset() {
         let env = MapEnvSource::new();
-        let now = resolve_now_with_env(&env);
+        let now = resolve_now_with_env(&env).unwrap();
         assert!(now.timestamp() > 1_577_836_800);
     }
 
     #[test]
     fn source_date_epoch_returns_some_when_set() {
         let env = MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1715000000");
-        let dt = source_date_epoch_with_env(&env);
+        let dt = source_date_epoch_with_env(&env).unwrap();
         assert_eq!(dt.map(|d| d.timestamp()), Some(1715000000));
     }
 
     #[test]
     fn source_date_epoch_returns_none_when_unset() {
         let env = MapEnvSource::new();
-        assert!(source_date_epoch_with_env(&env).is_none());
+        assert!(source_date_epoch_with_env(&env).unwrap().is_none());
     }
 
     #[test]
-    fn source_date_epoch_returns_none_when_malformed() {
+    fn source_date_epoch_refuses_a_malformed_value() {
         let env = MapEnvSource::new().with("SOURCE_DATE_EPOCH", "not-a-number");
-        assert!(source_date_epoch_with_env(&env).is_none());
+        assert!(source_date_epoch_with_env(&env).is_err());
     }
 }

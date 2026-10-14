@@ -387,6 +387,44 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
                 );
             }
             let token_value = token.as_ref().map(|t| t.token.as_str()).unwrap_or("");
+            // The pull request opens with its own token when the config names
+            // one, so that token is resolved and probed the way the publish
+            // opens the pull request with it.
+            let pr_token = match resolve_pr_token(ctx, cfg) {
+                Ok(t) => t,
+                Err(e) => {
+                    acc = merge(acc, PreflightCheck::Warning(format!("{e:#}")));
+                    continue;
+                }
+            };
+            if let Some(pr_token) = pr_token.as_deref().filter(|t| *t != token_value) {
+                let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+                let probe = anodizer_core::git::GithubRepoProbe {
+                    owner: &up_owner,
+                    repo: &up_repo,
+                    token: Some(pr_token),
+                    policy: &policy,
+                    deadline: ctx.retry_deadline(),
+                    strict: ctx.preflight_is_strict(),
+                };
+                let base = anodizer_core::http::github_api_base(ctx.env_source());
+                let check = crate::publisher_preflight::github_pull_request_repo_check_at(
+                    &format!("{base}/repos/{up_owner}/{up_repo}"),
+                    &probe,
+                    &ctx.logger("preflight"),
+                );
+                // Every homebrew-core preflight finding is a warning, since
+                // the publisher is optional by default.
+                acc = merge(
+                    acc,
+                    match check {
+                        PreflightCheck::Blocker(m) => {
+                            PreflightCheck::Warning(format!("homebrew-core: {m}"))
+                        }
+                        other => other,
+                    },
+                );
+            }
             let Ok(api) = GithubApi::new(ctx.env_source(), token_value) else {
                 continue;
             };

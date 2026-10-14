@@ -604,7 +604,7 @@ evaluates skip-inactive right now — `skip:`/`skip_upload:` truthy or `if:`
 falsy on all of them, including with `--crate <name>` selection narrowed to
 one of those inactive entries. Distinct from `NotConfigured` (the block is
 absent entirely): a `ConfigSkipped` publisher was registered but had nothing
-active to publish, so it is recorded, never reaches `run()`, and is not
+active to publish, so it is recorded, does not reach `run()`, and is not
 reported as `Succeeded`.
 
 `EntriesSkipped` (`skipped-entries-skipped` in the run summary and

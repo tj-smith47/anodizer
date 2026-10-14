@@ -71,7 +71,7 @@ pub(super) fn unwind_published_state(
     }
 
     for target in targets {
-        let mut ctx = unwind_context(repo_config, &target, opts);
+        let mut ctx = unwind_context(repo_config, &target, opts)?;
         if !anodizer_stage_publish::rollback::prior_state_exists(&ctx, &target.tag) {
             log.warn(&format!(
                 "no publisher report under {} — skipping the publisher unwind for {} \
@@ -157,8 +157,13 @@ fn discover_unwind_targets(dist_root: &Path, tags: &[String]) -> Vec<UnwindTarge
 /// rewrites the right `run-<tag>/` in a per-crate workspace. `Tag` (and
 /// `Version`, when the tag carries a parseable one) are seeded from the tag
 /// being withdrawn so `on_rollback` hooks render the release they are
-/// firing for rather than an empty string.
-fn unwind_context(repo_config: &Config, target: &UnwindTarget, opts: &RollbackOpts) -> Context {
+/// firing for, and the date variables are read
+/// through the source date reader the release run used.
+fn unwind_context(
+    repo_config: &Config,
+    target: &UnwindTarget,
+    opts: &RollbackOpts,
+) -> Result<Context> {
     let mut config = repo_config.clone();
     config.dist = target.dist.clone();
     let mut ctx = Context::new(
@@ -176,7 +181,8 @@ fn unwind_context(repo_config: &Config, target: &UnwindTarget, opts: &RollbackOp
         ctx.template_vars_mut().set("Version", &version);
         ctx.template_vars_mut().set("RawVersion", &version);
     }
-    ctx
+    ctx.populate_time_vars()?;
+    Ok(ctx)
 }
 
 #[cfg(test)]
@@ -441,8 +447,14 @@ mod tests {
             tag: "crate-a-v2.5.1".to_string(),
             dist: per_crate.clone(),
         };
-        let ctx = unwind_context(&Config::default(), &target, &opts(false, false));
+        let ctx = unwind_context(&Config::default(), &target, &opts(false, false)).unwrap();
         assert_eq!(ctx.config.dist, per_crate);
+        assert!(
+            ctx.template_vars()
+                .get("Date")
+                .is_some_and(|date| !date.is_empty()),
+            "on_rollback hooks read the run date"
+        );
         assert_eq!(
             ctx.template_vars().get("Tag").map(String::as_str),
             Some("crate-a-v2.5.1")

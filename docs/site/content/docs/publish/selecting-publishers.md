@@ -275,5 +275,5 @@ registry — you fix the name and re-run.
 ## See also
 
 - [`required:`](./_index.md) — control which publisher failures fail the release.
-- [NPM](./npm.md) — npm provenance requires a GitHub-hosted runner, so CI peels npm
+- [NPM](./npm.md) — npm provenance requires a GitHub-hosted runner, so CI moves npm
   onto a separate github-hosted job while the rest of the release runs elsewhere.

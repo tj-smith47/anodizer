@@ -70,9 +70,9 @@ pub fn resolve(
                             k
                         );
                     }
-                    let rendered_v = ctx.render_template(v).with_context(|| {
-                        format!("{kind}: render header value for '{k}' at URL {rendered_url}")
-                    })?;
+                    let rendered_v = ctx
+                        .render_secret(&format!("{kind}.from_url.headers[{k}]"), v)
+                        .with_context(|| format!("{kind}: render header value for '{k}'"))?;
                     if rendered_v.contains('\r') || rendered_v.contains('\n') {
                         anyhow::bail!(
                             "{kind} from_url header '{}' rendered to a value containing \
@@ -367,5 +367,56 @@ mod tests {
             max_attempts as u32,
             "all POLICY.max_attempts retries must run before bailing"
         );
+    }
+
+    /// A header value can carry `Authorization`: a padded render is sent
+    /// trimmed, and a template that does not render is an error naming the
+    /// header without the template's text.
+    #[test]
+    fn from_url_renders_header_values_as_credentials() {
+        let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+        let (addr, captured) = spawn_request_capturing_responder(response);
+        let mut ctx = ctx();
+        ctx.template_vars_mut()
+            .set_env("HDR_TOKEN", " Bearer t0k\n");
+        let src = ContentSource::FromUrl {
+            from_url: format!("http://{addr}/h.md"),
+            headers: Some(HashMap::from([(
+                "Authorization".to_string(),
+                "{{ .Env.HDR_TOKEN }}".to_string(),
+            )])),
+        };
+        assert_eq!(resolve(&src, "release header", &ctx, tlog()).unwrap(), "ok");
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let captured_str = loop {
+            let s = captured.lock().unwrap().clone();
+            if !s.is_empty() || std::time::Instant::now() >= deadline {
+                break s;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            captured_str
+                .to_ascii_lowercase()
+                .contains("authorization: bearer t0k\r\n"),
+            "{captured_str:?}"
+        );
+
+        let src = ContentSource::FromUrl {
+            from_url: "http://127.0.0.1:1/h.md".to_string(),
+            headers: Some(HashMap::from([(
+                "Authorization".to_string(),
+                "Bearer hunter2{{ Undefined }}".to_string(),
+            )])),
+        };
+        let msg = format!(
+            "{:#}",
+            resolve(&src, "release header", &ctx, tlog()).unwrap_err()
+        );
+        assert!(
+            msg.contains("release header.from_url.headers[Authorization] does not render"),
+            "{msg}"
+        );
+        assert!(!msg.contains("hunter2"), "{msg}");
     }
 }

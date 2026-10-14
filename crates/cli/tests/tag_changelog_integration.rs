@@ -167,6 +167,77 @@ crates:
     );
 }
 
+/// Write the single-crate fixture `single_crate_refreshes_changelog` uses,
+/// tagged `v0.1.0` with one `feat:` commit after it.
+fn single_crate_fixture(root: &Path) {
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/app\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/app/src")).unwrap();
+    fs::write(
+        root.join("crates/app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/app/src/lib.rs"), "").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: single\nchangelog: {}\ncrates:\n  - name: app\n    path: crates/app\n    tag_template: \"v{{ .Version }}\"\n    version_sync:\n      enabled: true\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/app/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "feat: add a thing");
+}
+
+fn tag_with_source_date(root: &Path, value: &str) -> std::process::Output {
+    anodizer()
+        .current_dir(root)
+        .env("SOURCE_DATE_EPOCH", value)
+        .env_remove("ANODIZE_SOURCE_DATE_EPOCH")
+        .args(["tag", "--crate", "app", "--changelog"])
+        .output()
+        .unwrap()
+}
+
+/// The changelog heading carries the source date when one is set.
+#[test]
+fn tag_dates_the_changelog_section_with_the_source_date() {
+    let tmp = TempDir::new().unwrap();
+    single_crate_fixture(tmp.path());
+    let out = tag_with_source_date(tmp.path(), "1715000000");
+    assert!(
+        out.status.success(),
+        "tag failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let changelog = read(tmp.path(), "CHANGELOG.md");
+    assert!(
+        changelog.contains("## [0.2.0] - 2024-05-06"),
+        "expected the source date in the heading: {changelog}"
+    );
+}
+
+/// A malformed source date stops `tag` with the release reader's error
+/// before any file is written or any tag is cut.
+#[test]
+fn tag_refuses_a_malformed_source_date() {
+    let tmp = TempDir::new().unwrap();
+    single_crate_fixture(tmp.path());
+    let out = tag_with_source_date(tmp.path(), "soon");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "tag must fail: {stderr}");
+    assert!(
+        stderr.contains("SOURCE_DATE_EPOCH is set to \"soon\""),
+        "the error must name the variable and its value: {stderr}"
+    );
+    assert!(!tmp.path().join("CHANGELOG.md").exists());
+}
+
 /// The new default: WITHOUT `--changelog`, `tag` writes no `CHANGELOG.md` even
 /// though `changelog:` is configured (the refresh is opt-in).
 #[test]

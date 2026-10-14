@@ -544,6 +544,8 @@ pub fn create_tag_via_github_api_in(
     // single sha resolver, not a private `rev-parse` here.
     let sha = super::get_head_commit_in(cwd)?;
 
+    let tagger_date =
+        crate::sde::resolve_now_with_env(&crate::env_source::ProcessEnvSource)?.to_rfc3339();
     let body = serde_json::json!({
         "tag": tag,
         "message": message,
@@ -552,7 +554,7 @@ pub fn create_tag_via_github_api_in(
         "tagger": {
             "name": git_output_in(cwd, &["config", "user.name"]).unwrap_or_else(|_| "anodizer".to_string()),
             "email": git_output_in(cwd, &["config", "user.email"]).unwrap_or_else(|_| "anodizer@users.noreply.github.com".to_string()),
-            "date": crate::sde::resolve_now().to_rfc3339(),
+            "date": tagger_date,
         }
     });
 

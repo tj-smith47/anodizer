@@ -1904,7 +1904,7 @@ fn test_default_nfpm_mtime_to_sde_fills_unset_mtime() {
     };
     // 1704067200 == 2024-01-01T00:00:00+00:00
     let env = MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1704067200");
-    super::run::default_nfpm_mtime_to_sde(&mut cfg, &env);
+    super::run::default_nfpm_mtime_to_sde(&mut cfg, &env).unwrap();
     assert_eq!(cfg.mtime.as_deref(), Some("2024-01-01T00:00:00+00:00"));
 }
 
@@ -1917,7 +1917,7 @@ fn test_default_nfpm_mtime_to_sde_preserves_user_mtime() {
         ..Default::default()
     };
     let env = MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1704067200");
-    super::run::default_nfpm_mtime_to_sde(&mut cfg, &env);
+    super::run::default_nfpm_mtime_to_sde(&mut cfg, &env).unwrap();
     assert_eq!(cfg.mtime.as_deref(), Some("2020-06-15T12:00:00Z"));
 }
 
@@ -1931,7 +1931,7 @@ fn test_default_nfpm_mtime_to_sde_noop_without_sde() {
         ..Default::default()
     };
     let env = MapEnvSource::new();
-    super::run::default_nfpm_mtime_to_sde(&mut cfg, &env);
+    super::run::default_nfpm_mtime_to_sde(&mut cfg, &env).unwrap();
     assert_eq!(cfg.mtime, None);
 }
 

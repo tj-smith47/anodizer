@@ -173,7 +173,7 @@ pub(crate) fn default_formats() -> Vec<&'static str> {
 /// wins; otherwise the env var named by `secret_name`. Each value is
 /// trimmed, and one that is empty or only whitespace falls through
 /// ([`crate::util::config_or_env_secret`]). Empty string when both are unset
-/// — caller surfaces a clear "missing token" error rather than invoking the
+/// — the caller reports a clear "missing token" error and never runs the
 /// push anonymously. A `token` template that does not render is an error.
 pub(crate) fn resolve_push_token(ctx: &Context, cfg: &GemFuryConfig) -> Result<String> {
     crate::util::config_or_env_secret(

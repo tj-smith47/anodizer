@@ -593,7 +593,7 @@ pub(super) fn render_formula_inner(
 /// The formula's gates and the cask's are independent: when the formula's
 /// `skip_upload:` or `if:` leaves it out, a same-tap cask whose own gates
 /// pass is still pushed, on its own commit and pull request
-/// ([`publish_cask`](super::super::publish_cask)).
+/// ([`publish_cask`](fn@super::super::publish_cask)).
 ///
 /// Returns `Ok(true)` when an actual git push was made to the tap repo;
 /// `Ok(false)` when the publish was skipped (skip_upload, dry-run, or

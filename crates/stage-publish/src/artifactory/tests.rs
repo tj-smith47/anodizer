@@ -2458,3 +2458,50 @@ fn an_untargeted_artifact_renders_no_stale_target_in_the_url_or_the_headers() {
         vec![("X-Platform".to_string(), "[|||]".to_string())]
     );
 }
+
+/// A custom header can carry a credential (`Authorization: Bearer …`): its
+/// value is rendered trimmed, and a value that fails to render is an error
+/// naming the header without the template's text, in every mode.
+#[test]
+fn a_custom_header_is_rendered_as_a_credential() {
+    let mut ctx = Context::new(Config::default(), ContextOptions::default());
+    ctx.template_vars_mut().set_env("UPLOAD_TOKEN", " tok\n");
+    let artifact = Artifact {
+        kind: ArtifactKind::Archive,
+        name: "app.tar.gz".to_string(),
+        path: PathBuf::from("dist/app.tar.gz"),
+        target: None,
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    };
+    let headers = crate::artifactory::render_custom_headers(
+        &ctx,
+        &HashMap::from([(
+            "Authorization".to_string(),
+            " {{ .Env.UPLOAD_TOKEN }} ".to_string(),
+        )]),
+        &artifact,
+    )
+    .unwrap();
+    assert_eq!(
+        headers,
+        vec![("Authorization".to_string(), "tok".to_string())]
+    );
+
+    let err = crate::artifactory::render_custom_headers(
+        &ctx,
+        &HashMap::from([(
+            "Authorization".to_string(),
+            "Bearer ghp_secret{{ Undefined }}".to_string(),
+        )]),
+        &artifact,
+    )
+    .expect_err("a header that does not render is an error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("custom_headers[Authorization] does not render"),
+        "{msg}"
+    );
+    assert!(!msg.contains("ghp_secret"), "{msg}");
+}

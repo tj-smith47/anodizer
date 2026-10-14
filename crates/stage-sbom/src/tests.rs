@@ -83,20 +83,15 @@ fn sbom_documents_glob_expands_to_matched_filenames() {
     }
 }
 
-// -----------------------------------------------------------------------
-// SOURCE_DATE_EPOCH wiring regression
-// -----------------------------------------------------------------------
-//
-// These tests pin the contract that the CycloneDX `metadata.timestamp`
-// field is derived from the run's SOURCE_DATE_EPOCH (via
-// `Context::reproducible_epoch`), not wall-clock `Utc::now()`. Without this
-// wiring, two pipeline retries of the same release tag emit different
+// The CycloneDX `metadata.timestamp` field is derived from the run's
+// SOURCE_DATE_EPOCH (via `Context::reproducible_epoch`). With the wall clock
+// in its place, two pipeline retries of the same release tag emit different
 // SBOM bytes and the second upload fails with GitHub ReleaseAsset
 // `already_exists` (size mismatch).
 
 /// `generate_cyclonedx` is byte-stable for the same `timestamp` input
 /// across repeated calls. Trivially true for a pure function, but
-/// pinned so a future refactor that introduces clock reads inside the
+/// tested so a future refactor that introduces clock reads inside the
 /// generator (e.g. via `chrono::Utc::now()` in a helper) regresses
 /// the test.
 #[test]
@@ -167,10 +162,6 @@ fn sbom_metadata_timestamp_varies_with_sde() {
     );
 }
 
-// -----------------------------------------------------------------------
-// External-command (subprocess) path — driven by the fake-tool harness.
-// -----------------------------------------------------------------------
-//
 // The `cmd:` field is configurable, so each test points it straight at a
 // stub installed via `FakeToolDir` (no PATH mutation, no `#[serial]`). The
 // stub records its argv (`tools.calls`), can create output files
@@ -1307,11 +1298,6 @@ fn duplicate_sbom_ids_bail() {
     );
     assert!(!tools.was_called("syft"));
 }
-
-// -----------------------------------------------------------------------
-// Pure-helper coverage: parse_cargo_lock, find_cargo_lock, SPDX shape,
-// deterministic_uuid_from.
-// -----------------------------------------------------------------------
 
 /// `parse_cargo_lock` extracts name/version/source for each `[[package]]`
 /// and tolerates a missing `source` (path/workspace members).

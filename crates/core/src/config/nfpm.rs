@@ -624,6 +624,45 @@ pub struct NfpmSignatureConfig {
     pub type_: Option<String>,
 }
 
+impl NfpmSignatureConfig {
+    /// This signature with its templated fields rendered by `render`, for
+    /// the config block `field` (`nfpms[0].rpm.signature`,
+    /// `srpm.signature`). `key_file` and `key_passphrase` are credentials
+    /// and go through [`crate::git::render_secret`]: trimmed, an error naming
+    /// the field when the template fails, and a blank render left unset so
+    /// the stage's passphrase variable is read next. `key_name` is a public
+    /// key name and renders as written.
+    pub fn render(
+        &self,
+        field: &str,
+        render: &dyn Fn(&str) -> anyhow::Result<String>,
+    ) -> anyhow::Result<Self> {
+        let non_blank = |v: String| (!v.is_empty()).then_some(v);
+        let key_file = match self.key_file.as_deref() {
+            Some(raw) => non_blank(crate::git::render_secret(
+                &format!("{field}.key_file"),
+                raw,
+                render,
+            )?),
+            None => None,
+        };
+        let key_passphrase = match self.key_passphrase.as_deref() {
+            Some(raw) => non_blank(crate::git::render_secret(
+                &format!("{field}.key_passphrase"),
+                raw,
+                render,
+            )?),
+            None => None,
+        };
+        Ok(Self {
+            key_file,
+            key_passphrase,
+            key_name: self.key_name.as_deref().map(render).transpose()?,
+            ..self.clone()
+        })
+    }
+}
+
 #[cfg(test)]
 mod is_empty_tests {
     use super::*;

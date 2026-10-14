@@ -510,13 +510,14 @@ impl anodizer_core::Publisher for CargoPublisher {
         if !probes_crates_io {
             return Ok(anodizer_core::PreflightCheck::Pass);
         }
-        let token = ctx
+        let Some(token) = ctx
             .env_source()
             .var("CARGO_REGISTRY_TOKEN")
-            .unwrap_or_default();
-        if token.is_empty() {
+            .as_deref()
+            .and_then(anodizer_core::git::non_blank_token)
+        else {
             return Ok(anodizer_core::PreflightCheck::Pass);
-        }
+        };
         let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
         let api_url = format!("{}/api/v1/me", crates_io_api_base());
         Ok(

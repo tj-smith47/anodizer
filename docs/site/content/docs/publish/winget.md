@@ -153,7 +153,7 @@ You can configure the target repository with either the legacy `manifests_repo` 
 | `repository.pull_request.enabled` | bool | Enable PR creation |
 | `repository.pull_request.draft` | bool | Create PR as draft |
 | `repository.pull_request.body` | string | Body text for the PR |
-| `repository.pull_request.token` | string | Token used to open the PR (templates allowed); falls back to `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. Set it when the fork token cannot open PRs against `microsoft/winget-pkgs`. |
+| `repository.pull_request.token` | string | Token used to open the PR (templates allowed); falls back to `repository.token`, then `WINGET_PKGS_TOKEN`, then the GitHub token chain (see [Authentication](#authentication)). Set it when the fork token cannot open PRs against `microsoft/winget-pkgs`. |
 | `repository.pull_request.base.owner` | string | Upstream repo owner to PR against |
 | `repository.pull_request.base.name` | string | Upstream repo name to PR against |
 | `repository.pull_request.base.branch` | string | Upstream base branch to target |
@@ -211,7 +211,7 @@ crates:
           branch: ""
           pull_request:
             enabled: true
-            token: ""                    # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
+            token: ""                    # token used to open the PR (default: repository.token, then WINGET_PKGS_TOKEN, then the GitHub token chain)
             base:
               owner: microsoft
               name: winget-pkgs
@@ -223,14 +223,9 @@ crates:
 
 ## Authentication
 
-The push to your winget-pkgs fork uses the first token that is set:
+{{ token_order(target="your winget-pkgs fork", publisher_var="WINGET_PKGS_TOKEN") }}
 
-1. `repository.token`
-2. `WINGET_PKGS_TOKEN`
-3. the run's GitHub token (`--token`, or the `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` value read at startup); a GitLab or Gitea token is never sent to GitHub
-4. `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`
-
-The pull request is opened with `repository.pull_request.token`, then `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. With none of these set, the `gh` CLI's own login opens it; with neither a token nor `gh`, the publish fails. Both the `gh` and the REST API transports use this order. The pull request needs `pull_request:write` on `microsoft/winget-pkgs`.
+Both the `gh` and the REST API transports use this order. The pull request needs `pull_request:write` on `microsoft/winget-pkgs`.
 
 ```yaml
 crates:

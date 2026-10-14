@@ -779,6 +779,57 @@ fn pre_appends_prerelease() {
 // Bundled changelog (via stage-changelog::render_crate_section)
 // ---------------------------------------------------------------------------
 
+/// A malformed source date stops `bump` with the release reader's error
+/// before any manifest is written; a valid one dates the changelog heading.
+#[test]
+fn bump_reads_the_source_date_through_the_release_reader() {
+    let tmp = TempDir::new().unwrap();
+    single_crate_workspace(tmp.path());
+    fs::write(
+        tmp.path().join(".anodizer.yaml"),
+        "project_name: demo\ncrates:\n  - name: demo\n    path: .\n    tag_template: \"v{{ Version }}\"\nchangelog: {}\n",
+    )
+    .unwrap();
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "feat: groundwork");
+    run_git(tmp.path(), &["tag", "v0.1.0"]);
+    git_commit_empty_on_path(tmp.path(), "src/feature.rs", "pub fn f() {}", "feat: more");
+    let manifest = fs::read_to_string(tmp.path().join("Cargo.toml")).unwrap();
+    let bump = |value: &str| {
+        anodizer()
+            .current_dir(tmp.path())
+            .env("SOURCE_DATE_EPOCH", value)
+            .env_remove("ANODIZE_SOURCE_DATE_EPOCH")
+            .args(["bump", "patch", "--commit", "--changelog", "-y"])
+            .output()
+            .unwrap()
+    };
+
+    let out = bump("soon");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "bump must fail: {stderr}");
+    assert!(
+        stderr.contains("SOURCE_DATE_EPOCH is set to \"soon\""),
+        "the error must name the variable and its value: {stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("Cargo.toml")).unwrap(),
+        manifest
+    );
+
+    let out = bump("1715000000");
+    assert!(
+        out.status.success(),
+        "bump failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let changelog = fs::read_to_string(tmp.path().join("CHANGELOG.md")).unwrap();
+    assert!(
+        changelog.contains("] - 2024-05-06"),
+        "expected the source date in the heading: {changelog}"
+    );
+}
+
 /// `bump --commit --changelog` folds the rendered `## [<version>]` section into
 /// the same bump commit as the Cargo.toml edits. The refresh is opt-in: it runs
 /// only because `--changelog` is passed alongside the configured `changelog:`

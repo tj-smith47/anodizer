@@ -213,8 +213,8 @@ fn demote_group_headings_relevels_only_exact_h3() {
 
 #[test]
 fn build_promoted_section_shapes_dated_heading_and_trailing_blank() {
-    let date = today_yyyy_mm_dd();
-    let promoted = build_promoted_section("v0.7.0", "### Features\n- feat: x");
+    let date = today_yyyy_mm_dd().unwrap();
+    let promoted = build_promoted_section("v0.7.0", "### Features\n- feat: x").unwrap();
     assert_eq!(
         promoted,
         vec![
@@ -228,13 +228,30 @@ fn build_promoted_section_shapes_dated_heading_and_trailing_blank() {
 
 #[test]
 fn today_yyyy_mm_dd_is_iso_shaped() {
-    let date = today_yyyy_mm_dd();
+    let date = today_yyyy_mm_dd().unwrap();
     let parts: Vec<&str> = date.split('-').collect();
     assert_eq!(parts.len(), 3, "YYYY-MM-DD has three dash-joined parts");
     assert_eq!(parts[0].len(), 4);
     assert_eq!(parts[1].len(), 2);
     assert_eq!(parts[2].len(), 2);
     assert!(date.chars().all(|c| c.is_ascii_digit() || c == '-'));
+}
+
+#[test]
+fn the_changelog_date_is_the_source_date_when_one_is_set() {
+    let env =
+        anodizer_core::env_source::MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1715000000");
+    assert_eq!(today_yyyy_mm_dd_with_env(&env).unwrap(), "2024-05-06");
+}
+
+#[test]
+fn a_malformed_source_date_fails_the_changelog_date() {
+    let env = anodizer_core::env_source::MapEnvSource::new().with("SOURCE_DATE_EPOCH", "soon");
+    let err = today_yyyy_mm_dd_with_env(&env).unwrap_err().to_string();
+    assert!(
+        err.starts_with("SOURCE_DATE_EPOCH is set to \"soon\""),
+        "{err}"
+    );
 }
 
 // ---- heading / footer predicates ----

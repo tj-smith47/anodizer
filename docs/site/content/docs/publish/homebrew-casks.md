@@ -56,7 +56,7 @@ homebrew_casks:
       branch: main                   # optional; push branch (default: repo default branch, or versioned <cask>-<version> when pull_request.enabled)
       pull_request:
         enabled: false               # optional; true opens a PR in place of a direct push
-        token: ""                    # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
+        token: ""                    # token used to open the PR (default: repository.token, then HOMEBREW_TAP_TOKEN, then the GitHub token chain)
         base:
           branch: main               # optional; PR target branch
     directory: Casks                 # optional; directory in the tap repo
@@ -110,14 +110,8 @@ homebrew_casks:
 
 ## Authentication
 
-The push to your tap repository uses the first token that is set:
+{{ token_order(target="your tap repository", publisher_var="HOMEBREW_TAP_TOKEN") }}
 
-1. `repository.token`
-2. `HOMEBREW_TAP_TOKEN`
-3. the run's GitHub token (`--token`, or the `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` value read at startup); a GitLab or Gitea token is never sent to GitHub
-4. `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`
-
-The pull request is opened with `repository.pull_request.token`, then `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. With none of these set, the `gh` CLI's own login opens it; with neither a token nor `gh`, the publish fails.
 
 ```yaml
 homebrew_casks:

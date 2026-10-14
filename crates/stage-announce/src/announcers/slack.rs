@@ -5,7 +5,9 @@ use anodizer_core::retry::RetryPolicy;
 use anyhow::Result;
 
 use crate::dispatch::{DispatchQueue, dispatch};
-use crate::helpers::{DEFAULT_DISPLAY_NAME, is_enabled, render_json_template, render_message};
+use crate::helpers::{
+    DEFAULT_DISPLAY_NAME, config_or_env_secret, is_enabled, render_json_template, render_message,
+};
 use crate::slack;
 
 use super::Announcer;
@@ -34,21 +36,23 @@ impl Announcer for SlackAnnouncer {
             .slack
             .as_ref()
             .expect("send only called when enabled returned Ok(true)");
-        let url = match cfg.webhook_url.as_deref() {
-            Some(u) => ctx.render_template(u)?,
-            None => match ctx.env_var("SLACK_WEBHOOK").filter(|s| !s.is_empty()) {
-                Some(env) => env,
-                None => {
-                    // Skip-when-empty UX policy: strict_guard bails in
-                    // strict mode (collected at end-of-stage); in normal
-                    // mode it warns and skips just this announcer.
-                    ctx.strict_guard(
-                        log,
-                        "missing webhook_url in announce.slack (set config or SLACK_WEBHOOK env var)",
-                    )?;
-                    return Ok(());
-                }
-            },
+        let url = match config_or_env_secret(
+            ctx,
+            "announce.slack.webhook_url",
+            cfg.webhook_url.as_deref(),
+            "SLACK_WEBHOOK",
+        )? {
+            Some(url) => url,
+            None => {
+                // Skip-when-empty UX policy: strict_guard bails in
+                // strict mode (collected at end-of-stage); in normal
+                // mode it warns and skips just this announcer.
+                ctx.strict_guard(
+                    log,
+                    "missing webhook_url in announce.slack (set config or SLACK_WEBHOOK env var)",
+                )?;
+                return Ok(());
+            }
         };
         let message = render_message(ctx, cfg.message_template.as_deref())?;
         let channel = ctx.render_template_opt(cfg.channel.as_deref())?;
@@ -91,9 +95,7 @@ impl Announcer for SlackAnnouncer {
         let Some(cfg) = announce.slack.as_ref() else {
             return Ok(());
         };
-        if let Some(raw) = cfg.webhook_url.as_deref() {
-            ctx.render_template(raw)?;
-        }
+        ctx.render_secret_opt("announce.slack.webhook_url", cfg.webhook_url.as_deref())?;
         render_message(ctx, cfg.message_template.as_deref())?;
         ctx.render_template_opt(cfg.channel.as_deref())?;
         ctx.render_template_opt(cfg.username.as_deref().or(Some(DEFAULT_DISPLAY_NAME)))?;

@@ -42,7 +42,8 @@ pub(super) fn resolve_passphrase_from_env(
             .get(name)
             .cloned()
             .or_else(|| std::env::var(name).ok())
-            .filter(|v| !v.is_empty())
+            .as_deref()
+            .and_then(anodizer_core::git::non_blank_token)
     };
     let id_upper = nfpm_id.to_uppercase();
     // Level 1: NFPM_{ID}_{format}_PASSPHRASE (format preserved as-is)

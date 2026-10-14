@@ -686,8 +686,8 @@ When `monorepo` is configured, it takes precedence over `tag.tag_prefix` for `Pr
 Top-level notarization configuration supporting both cross-platform (`rcodesign`) and native macOS (`codesign` + `xcrun notarytool`) modes.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `macos` | list of object | — | Cross-platform signing/notarization (rcodesign-based, works on any OS). |
-| `macos_native` | list of object | — | Native signing/notarization (codesign + xcrun, macOS only). |
+| `macos` | list of [object](#notarize-macos) | — | Cross-platform signing/notarization (rcodesign-based, works on any OS). |
+| `macos_native` | list of [object](#notarize-macos-native) | — | Native signing/notarization (codesign + xcrun, macOS only). |
 | `skip` | 0 \| 1 \| bool \| string | — | Skip all notarization. Accepts a bool or a template string; a template skips when it renders `true` or `1`. When absent, notarization runs for every entry that is not skipped on its own. |
 
 ## `npms` {#npms}
@@ -1233,7 +1233,31 @@ Fields intentionally omitted because anodizer owns them:
 | `skip` | 0 \| 1 \| bool \| string | — | Skip this publisher; supports template strings or bool. Truthy renders disable the publisher without removing the block. |
 | `target` | string | — | Build target triple for the verification step (`--target`). |
 | `target_dir` | string | — | Override the cargo target directory (`--target-dir`). |
-| `wait_for_workspace_deps` | object | — | Pre-publish gate that polls crates.io for every workspace-internal dep of the crate being published, blocking until each is queryable at its expected version. Required for multi-tag-multi-crate workspaces (e.g. cfgd) where per-crate tags fire independent `Release.yml` runs that would otherwise race the sparse-index propagation.<br><br>Single-crate workspaces and lockstep-bumped monorepos (anodizer itself) leave this off — there is no inter-tag race to gate on. |
+| `wait_for_workspace_deps` | [object](#crates-publish-cargo-wait-for-workspace-deps) | — | Pre-publish gate that polls crates.io for every workspace-internal dep of the crate being published, blocking until each is queryable at its expected version. Required for multi-tag-multi-crate workspaces (e.g. cfgd) where per-crate tags fire independent `Release.yml` runs that would otherwise race the sparse-index propagation.<br><br>Single-crate workspaces and lockstep-bumped monorepos (anodizer itself) leave this off — there is no inter-tag race to gate on. |
+
+## `crates[].publish.cargo.wait_for_workspace_deps` {#crates-publish-cargo-wait-for-workspace-deps}
+Pre-publish polling gate for `cargo publish`. When `enabled`, the cargo publisher reads its crate's manifest, identifies every dep that points at another crate in the same anodizer workspace, and polls `https://index.crates.io/<prefix>/<name>` until each `(name, version)` pair is queryable. Only then does `cargo publish` run.
+
+Default: disabled. Anodizer's own workspaces publish lockstep with one tag; this feature only kicks in for multi-tag-multi-crate workspaces like cfgd where downstream crates can otherwise race the sparse-index propagation of their upstream deps.
+
+Complementary to `cargo.index_timeout`: this gate runs BEFORE publish (waits for *upstream* deps to arrive), while `index_timeout` runs AFTER publish (waits for the *just-published* crate to arrive before the next dependent in the same run starts).
+
+```yaml
+crates:
+  - name: myapp
+    path: .
+    publish:
+      cargo:
+        wait_for_workspace_deps:
+          enabled: true
+          poll_interval: 5s
+          max_wait: 5m
+```
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | — | Master switch. Default `false` preserves today's behavior for single-crate workspaces and lockstep monorepos. |
+| `max_wait` | string | — | Hard ceiling on the total wait. The publisher bails with a clear error once `max_wait` elapses without every dep appearing. Humantime-style string (e.g. `"5m"`, `"30s"`). Default: `"5m"`.<br><br>A duration: one or more whole numbers, each followed by a unit (ms, s, m, h or d), such as 90s, 1h30m or 2d. Spaces and tabs may separate the parts. The total may be at most one year (31536000s); a longer value is refused when the config loads. |
+| `poll_interval` | string | — | Time between successive index probes. Humantime-style string (e.g. `"5s"`, `"500ms"`, `"1m"`). Default: `"5s"`.<br><br>A duration: one or more whole numbers, each followed by a unit (ms, s, m, h or d), such as 90s, 1h30m or 2d. Spaces and tabs may separate the parts. The total may be at most one year (31536000s); a longer value is refused when the config loads. |
 
 ## `crates[].publish.homebrew` {#crates-publish-homebrew}
 | Field | Type | Default | Description |
@@ -1361,7 +1385,7 @@ Every key is optional in both places.
 | `name` | string | — | Override the package name (default: crate name). |
 | `owners` | string | — | Package owners (Chocolatey gallery user). |
 | `package_source_url` | string | — | URL shown as the package source in the Chocolatey gallery. |
-| `post_publish_poll` | object | — | Post-publish moderation-queue polling settings. Polling is disabled by default — Chocolatey's community moderation queue routinely takes hours to days, and blocking a CI workflow on that wait is wrong. Opt in per-publisher with `post_publish_poll: { enabled: true }` when running locally and willing to wait, or disable globally via `--no-post-publish-poll`. |
+| `post_publish_poll` | [object](#crates-publish-chocolatey-post-publish-poll) | — | Post-publish moderation-queue polling settings. Polling is disabled by default — Chocolatey's community moderation queue routinely takes hours to days, and blocking a CI workflow on that wait is wrong. Opt in per-publisher with `post_publish_poll: { enabled: true }` when running locally and willing to wait, or disable globally via `--no-post-publish-poll`. |
 | `project_source_url` | string | — | Source code project URL (`<projectSourceUrl>`). Defaults to the derived `repository` URL when unset. |
 | `project_url` | string | — | Project homepage URL. |
 | `release_notes` | string | — | Release notes for this version. |
@@ -1377,6 +1401,16 @@ Every key is optional in both places.
 | `title` | string | — | Package title (default: project name). |
 | `url_template` | string | — | Custom URL template for download URLs (overrides release URL). |
 | `use` | string | — | Artifact selection: "archive" (default), "msi", or "nsis". |
+
+## `crates[].publish.chocolatey.post_publish_poll` {#crates-publish-chocolatey-post-publish-poll}
+Per-publisher post-publish polling config block.
+
+See module-level docs for the polling lifecycle. Default values: `enabled: true`, `interval: 30s`, `timeout: 30m`.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Whether to poll at all. Default `false` — the upstream moderation queues these publishers feed (Chocolatey, winget-pkgs) routinely take HOURS to DAYS; the publish stage cannot reasonably block on them in a CI workflow. Opt in to in-band verification by setting `true` per-publisher (e.g. when running locally and willing to wait). |
+| `interval` | string | `30s` | How long to wait between successive status checks. Default `30s`.<br><br>A duration: one or more whole numbers, each followed by a unit (ms, s, m, h or d), such as 90s, 1h30m or 2d. Spaces and tabs may separate the parts. The total may be at most one year (31536000s); a longer value is refused when the config loads. |
+| `timeout` | string | `30m` | Total wall-clock budget for polling. When exhausted, the poller warns that polling timed out and names the last observed state. Default `30m`.<br><br>A duration: one or more whole numbers, each followed by a unit (ms, s, m, h or d), such as 90s, 1h30m or 2d. Spaces and tabs may separate the parts. The total may be at most one year (31536000s); a longer value is refused when the config loads. |
 
 ## `crates[].publish.winget` {#crates-publish-winget}
 | Field | Type | Default | Description |
@@ -1403,7 +1437,7 @@ Every key is optional in both places.
 | `package_identifier` | string | — | WinGet package identifier (e.g. "Publisher.AppName"), template-rendered. Auto-generated as `<publisher>.<name>` if empty. |
 | `package_name` | string | — | Package name as displayed (default: same as name). |
 | `path` | string | — | Manifest file path (auto-generated if empty from publisher/name/version). |
-| `post_publish_poll` | object | — | Post-publish PR-validation polling settings. Polling is disabled by default — winget-pkgs PR validation routinely takes hours to days, and blocking a CI workflow on that wait is wrong. Opt in per-publisher with `post_publish_poll: { enabled: true }` when running locally and willing to wait, or disable globally via `--no-post-publish-poll`. |
+| `post_publish_poll` | [object](#crates-publish-winget-post-publish-poll) | — | Post-publish PR-validation polling settings. Polling is disabled by default — winget-pkgs PR validation routinely takes hours to days, and blocking a CI workflow on that wait is wrong. Opt in per-publisher with `post_publish_poll: { enabled: true }` when running locally and willing to wait, or disable globally via `--no-post-publish-poll`. |
 | `privacy_url` | string | — | Privacy policy URL. |
 | `product_code` | string | — | Product code for the installer (used in Add/Remove Programs). |
 | `publisher` | string | — | Publisher name (required). |
@@ -1422,6 +1456,16 @@ Every key is optional in both places.
 | `upgrade_behavior` | string | — | Installer `UpgradeBehavior` for every installer entry. winget accepts `install`, `uninstallPrevious`, and `deny`. Defaults to `install` — the correct behavior for portable-zip CLI tools (`uninstallPrevious` forces a clobbering reinstall).<br><br>Example: `upgrade_behavior: "uninstallPrevious"`. |
 | `url_template` | string | — | Custom URL template for download URLs (overrides release URL). |
 | `use` | string | — | Artifact selection: "archive" (default), "msi", or "nsis". |
+
+## `crates[].publish.winget.post_publish_poll` {#crates-publish-winget-post-publish-poll}
+Per-publisher post-publish polling config block.
+
+See module-level docs for the polling lifecycle. Default values: `enabled: true`, `interval: 30s`, `timeout: 30m`.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Whether to poll at all. Default `false` — the upstream moderation queues these publishers feed (Chocolatey, winget-pkgs) routinely take HOURS to DAYS; the publish stage cannot reasonably block on them in a CI workflow. Opt in to in-band verification by setting `true` per-publisher (e.g. when running locally and willing to wait). |
+| `interval` | string | `30s` | How long to wait between successive status checks. Default `30s`.<br><br>A duration: one or more whole numbers, each followed by a unit (ms, s, m, h or d), such as 90s, 1h30m or 2d. Spaces and tabs may separate the parts. The total may be at most one year (31536000s); a longer value is refused when the config loads. |
+| `timeout` | string | `30m` | Total wall-clock budget for polling. When exhausted, the poller warns that polling timed out and names the last observed state. Default `30m`.<br><br>A duration: one or more whole numbers, each followed by a unit (ms, s, m, h or d), such as 90s, 1h30m or 2d. Spaces and tabs may separate the parts. The total may be at most one year (31536000s); a longer value is refused when the config loads. |
 
 ## `crates[].publish.aur` {#crates-publish-aur}
 | Field | Type | Default | Description |
@@ -1549,4 +1593,43 @@ The `release.preflight:` block.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `fail_on_error` | 0 \| 1 \| bool \| string | `true` | Stop the run when a release preflight check fails. Default: `true`.<br><br>The checks, per forge:<br><br>- GitHub: the token can push to the release repository, and when a release already exists at the tag it is not immutable. An immutable release cannot be updated and its assets cannot be replaced, so the release would fail. - GitLab: the token has Developer access or higher on the project. A run authenticating with a CI job token skips this check, since a job token cannot read the project. - Gitea: the token can push to the repository. - A missing token is a failed check on every forge.<br><br>With `false`, a failed check is reported as a warning that ends in `continuing because release.preflight.fail_on_error is false`, and the run continues; the release then fails at creation if the problem is real. The token is also an environment requirement of the release (`ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` or `GH_TOKEN`; `GITLAB_TOKEN`; `GITEA_TOKEN`; or `--token`), so a missing token still stops the run at the environment check whatever this field says, and with `false` the release preflight's own report of it is a warning beside that failure. A check that `preflight.strict` turns into a failure is a failed check here too.<br><br>A crate's own value wins over the top-level `release:` block's; an empty value counts as unset. Accepts a bool, an unquoted `1` or `0`, or a template that renders to `true`, `false`, `1` or `0` (any letter case). Any other render, an empty one included, stops the run with an error naming the value.<br><br><code>release:</code><br><code>  preflight:</code><br><code>    fail_on_error: "{{ not IsNightly }}"   # warn only on nightly runs</code> |
+
+## `notarize.macos` {#notarize-macos}
+Cross-platform macOS signing and notarization via `rcodesign`.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | 0 \| 1 \| bool \| string | — | Older spelling of `skip:`, inverted: `enabled: true` is `skip: false` and `enabled: false` is `skip: true`. A template skips the entry when it renders empty, `false`, `0` or `no`. When both `enabled` and `skip` are absent, the entry runs. |
+| `ids` | list of string | — | Build IDs whose darwin binaries and universal binaries this entry signs. Default: the project name; with no project name, every darwin binary. |
+| `notarize` | [object](#notarize-macos-notarize) | — | Notarization configuration (App Store Connect API key). Omit for sign-only. |
+| `sign` | object | — | Signing configuration (P12 certificate). |
+| `skip` | 0 \| 1 \| bool \| string | — | Skip this entry. Accepts a bool or a template string; a template skips when it renders `true` or `1`. When absent, the entry runs.<br><br>The older `enabled:` key is still accepted and inverted: `enabled: true` becomes `skip: false`, `enabled: false` becomes `skip: true`. |
+
+## `notarize.macos[].notarize` {#notarize-macos-notarize}
+App Store Connect API key configuration for `rcodesign notary-submit`.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `issuer_id` | string | — | App Store Connect API key issuer UUID. Templates allowed. |
+| `key` | string | — | Path to .p8 key file or base64-encoded contents. Templates allowed. |
+| `key_id` | string | — | API key ID. Templates allowed. |
+| `timeout` | string | — | Timeout for notarization status polling. Humantime-style string (e.g. `"10m"`, `"15s"`). Default when omitted: `"10m"`, maximum `"20m"`. The App Store Connect token lifetime is derived from this value and Apple rejects a token that lives longer, so a larger timeout fails config validation.<br><br>A duration: one or more whole numbers, each followed by a unit (ms, s, m, h or d), such as 90s, 1h30m or 2d. Spaces and tabs may separate the parts. The total may be at most one year (31536000s); a longer value is refused when the config loads. |
+| `wait` | bool | — | Whether to wait for notarization to complete. Default: `false`; `timeout` applies only while waiting. |
+
+## `notarize.macos_native` {#notarize-macos-native}
+Native macOS signing and notarization via `codesign` + `xcrun notarytool`.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | 0 \| 1 \| bool \| string | — | Older spelling of `skip:`, inverted: `enabled: true` is `skip: false` and `enabled: false` is `skip: true`. A template skips the entry when it renders empty, `false`, `0` or `no`. When both `enabled` and `skip` are absent, the entry runs. |
+| `ids` | list of string | — | Build IDs whose darwin artifacts this entry signs and notarizes: app bundles and DMGs with `use: dmg`, PKGs with `use: pkg`. Default: the project name; with no project name, every matching artifact. |
+| `notarize` | [object](#notarize-macos-native-notarize) | — | Native notarization configuration (xcrun notarytool). |
+| `sign` | object | — | Native signing configuration (Keychain). |
+| `skip` | 0 \| 1 \| bool \| string | — | Skip this entry. Accepts a bool or a template string; a template skips when it renders `true` or `1`. When absent, the entry runs.<br><br>The older `enabled:` key is still accepted and inverted: `enabled: true` becomes `skip: false`, `enabled: false` becomes `skip: true`. |
+| `use` | "dmg" \| "pkg" | — | Artifact type to sign and notarize: `dmg` (default) or `pkg`. Any other value (`zip`, `app`, …) fails when the config loads. |
+
+## `notarize.macos_native[].notarize` {#notarize-macos-native-notarize}
+Native notarization configuration for `xcrun notarytool`.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `profile_name` | string | — | Notarytool stored credentials profile name. Templates allowed. |
+| `timeout` | string | — | Timeout for `xcrun notarytool submit --timeout`. Humantime-style string (e.g. `"10m"`, `"15s"`, `"1h"`). Default: `"10m"`.<br><br>A duration: one or more whole numbers, each followed by a unit (ms, s, m, h or d), such as 90s, 1h30m or 2d. Spaces and tabs may separate the parts. The total may be at most one year (31536000s); a longer value is refused when the config loads. |
+| `wait` | bool | — | Whether to wait for notarization to complete and staple the ticket. Default: `false`. |
 

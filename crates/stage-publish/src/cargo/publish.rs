@@ -276,7 +276,9 @@ pub(crate) fn resolve_workspace_cargo_token(
     let ambient_token_present = ctx
         .env_source()
         .var("CARGO_REGISTRY_TOKEN")
-        .is_some_and(|t| !t.is_empty());
+        .as_deref()
+        .and_then(anodizer_core::git::non_blank_token)
+        .is_some();
     let oidc_available = oidc::oidc_context_available(ctx);
 
     // A strict `oidc` block against a non-crates.io registry cannot be honored

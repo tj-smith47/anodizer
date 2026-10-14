@@ -378,19 +378,26 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         // Release creation + asset upload authenticate with the token the
-        // stage resolves for the run's forge: explicit `--token` option, else
-        // the forge's environment variable (the GitHub ladder, GITLAB_TOKEN or
+        // stage resolves for each crate: the `release.<forge>.token` its
+        // release block sets, else the run token (`--token`, else the forge's
+        // environment variable: the GitHub ladder, GITLAB_TOKEN or
         // GITEA_TOKEN). This requirement is also the release stage's, so it
-        // names the forge the stage releases on. Self-gates on a `release:`
-        // block existing anywhere in the crate universe so ungated
-        // requirement collection never demands a token from a config that
-        // creates no release.
-        let configured = ctx
+        // names the forge the stage releases on. Only a selected crate with a
+        // `release:` block and no release token of its own needs the run
+        // token, so a config that creates no release, or one whose every
+        // release names its token, demands nothing. A release token that
+        // does not render is reported by the release preflight with its
+        // cause, so it does not also ask for the run token here.
+        let needs_run_token = ctx
             .config
             .crate_universe()
             .into_iter()
-            .any(|c| c.release.is_some());
-        if !configured || ctx.options.token.as_deref().is_some_and(|t| !t.is_empty()) {
+            .filter(|c| {
+                anodizer_core::config::crate_is_selected(&ctx.options.selected_crates, &c.name)
+            })
+            .filter_map(|c| c.release.as_ref())
+            .any(|release_cfg| matches!(crate::resolve_release_token(ctx, release_cfg), Ok(None)));
+        if !needs_run_token || ctx.options.token.as_deref().is_some_and(|t| !t.is_empty()) {
             return Vec::new();
         }
         let owned = |vars: &[&str]| vars.iter().map(|v| v.to_string()).collect();
@@ -834,6 +841,59 @@ mod publisher_tests {
             PreflightCheck::Blocker(m) => assert!(m.contains("no GitHub token"), "{m}"),
             _ => panic!("expected Blocker when no token resolves"),
         }
+    }
+
+    /// A release whose `release.github.token` renders a value authenticates
+    /// with it, so the requirement asks for no run token, and the token the
+    /// release stage would send is that one. A crate with no release token
+    /// of its own still needs the run token.
+    #[test]
+    fn the_release_requirement_reads_the_release_token_the_stage_sends() {
+        let mut tokened = github_release_crate("demo");
+        tokened
+            .release
+            .as_mut()
+            .unwrap()
+            .github
+            .as_mut()
+            .unwrap()
+            .token = Some("{{ .Env.RELEASE_TOKEN }}".into());
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![tokened.clone()])
+            .sealed_env()
+            .build();
+        ctx.template_vars_mut()
+            .set_env("RELEASE_TOKEN", "release-tok");
+        let p = GithubReleasePublisher::new();
+        assert_eq!(
+            p.requirements(&ctx),
+            Vec::new(),
+            "a release token that renders needs no run token"
+        );
+        assert_eq!(
+            crate::resolve_release_token(&ctx, tokened.release.as_ref().unwrap())
+                .unwrap()
+                .as_deref(),
+            Some("release-tok"),
+            "the release stage sends the release token the requirement relied on"
+        );
+
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![tokened, github_release_crate("other")])
+            .sealed_env()
+            .build();
+        ctx.template_vars_mut()
+            .set_env("RELEASE_TOKEN", "release-tok");
+        assert_eq!(
+            p.requirements(&ctx),
+            vec![anodizer_core::EnvRequirement::EnvAnyOf {
+                vars: anodizer_core::git::GITHUB_TOKEN_ENV_LADDER
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect(),
+            }],
+            "a crate with no release token of its own needs the run token"
+        );
     }
 
     #[test]

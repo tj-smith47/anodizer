@@ -35,10 +35,13 @@ impl Announcer for DiscordAnnouncer {
             .discord
             .as_ref()
             .expect("send only called when enabled returned Ok(true)");
-        let id = ctx.env_var("DISCORD_WEBHOOK_ID").filter(|s| !s.is_empty());
-        let token = ctx
-            .env_var("DISCORD_WEBHOOK_TOKEN")
-            .filter(|s| !s.is_empty());
+        let env_value = |name: &str| {
+            ctx.env_var(name)
+                .as_deref()
+                .and_then(anodizer_core::git::non_blank_token)
+        };
+        let id = env_value("DISCORD_WEBHOOK_ID");
+        let token = env_value("DISCORD_WEBHOOK_TOKEN");
         let url = match (id, token) {
             (Some(id), Some(token)) => {
                 let base = ctx
@@ -61,7 +64,7 @@ impl Announcer for DiscordAnnouncer {
                 )
             }
             _ => match cfg.webhook_url.as_deref() {
-                Some(raw) => ctx.render_template(raw)?,
+                Some(raw) => ctx.render_secret("announce.discord.webhook_url", raw)?,
                 None => {
                     // Skip-when-empty UX policy: in strict mode this
                     // bails (collected by the closure-level wrapper
@@ -113,9 +116,7 @@ impl Announcer for DiscordAnnouncer {
         let Some(cfg) = announce.discord.as_ref() else {
             return Ok(());
         };
-        if let Some(raw) = cfg.webhook_url.as_deref() {
-            ctx.render_template(raw)?;
-        }
+        ctx.render_secret_opt("announce.discord.webhook_url", cfg.webhook_url.as_deref())?;
         render_message(ctx, cfg.message_template.as_deref())?;
         ctx.render_template_opt(cfg.author.as_deref().or(Some(DEFAULT_DISPLAY_NAME)))?;
         if let Some(raw) = cfg.color.as_deref() {

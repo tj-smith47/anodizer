@@ -104,7 +104,10 @@ impl Announcer for EmailAnnouncer {
             let smtp_password = if needs_password {
                 require_env_with_env("email", "SMTP_PASSWORD", ctx.env_source())?
             } else {
-                ctx.env_var("SMTP_PASSWORD").unwrap_or_default()
+                ctx.env_var("SMTP_PASSWORD")
+                    .as_deref()
+                    .and_then(anodizer_core::git::non_blank_token)
+                    .unwrap_or_default()
             };
             let port = smtp_port;
             let insecure = cfg.insecure_skip_verify.unwrap_or(false);

@@ -247,16 +247,20 @@ pub fn setup_env(
     // Multiple-token detection.
     // When multiple SCM tokens are set without force_token, error early.
     if resolved_force.is_none() {
-        // Empty-filtered on every leg: a blank `TOKEN=""` (the shape GitHub
-        // Actions materializes for a missing secret) is not a configured token
-        // and must not trip the multi-token ambiguity guard. GitHub routes
-        // through the canonical resolver; GitLab/Gitea filter inline since they
-        // have no canonical resolver of their own.
+        // A blank or whitespace-only `TOKEN=""` (the shape GitHub Actions
+        // materializes for a missing secret) is not a configured token and
+        // must not trip the multi-token ambiguity guard.
         let has_github =
             anodizer_core::git::resolve_github_token_with_env(None, &|key| ctx.env_var(key))
                 .is_some();
-        let has_gitlab = ctx.env_var("GITLAB_TOKEN").is_some_and(|v| !v.is_empty());
-        let has_gitea = ctx.env_var("GITEA_TOKEN").is_some_and(|v| !v.is_empty());
+        let is_set = |name: &str| {
+            ctx.env_var(name)
+                .as_deref()
+                .and_then(anodizer_core::git::non_blank_token)
+                .is_some()
+        };
+        let has_gitlab = is_set("GITLAB_TOKEN");
+        let has_gitea = is_set("GITEA_TOKEN");
         let count = [has_github, has_gitlab, has_gitea]
             .iter()
             .filter(|&&b| b)

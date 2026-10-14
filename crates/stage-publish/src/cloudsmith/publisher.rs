@@ -96,7 +96,7 @@ pub(crate) fn cloudsmith_manual_cleanup_msg(target: &CloudsmithTarget) -> String
 /// publish token of the entry that uploaded to `target` (its `secret_name`
 /// variable, default `CLOUDSMITH_TOKEN`). Cloudsmith authenticates the upload
 /// and the delete with one API key, so the credential the publish used is
-/// reused instead of being asked for a second time under a second name.
+/// reused, and no second variable is asked for.
 ///
 /// With no `target`, or no entry that names it, the first active entry whose
 /// variable is set supplies the key. A `secret_name` of the matching entry

@@ -398,7 +398,7 @@ pub(crate) fn clone_repo(
         // (`{{ .Env.X }}`). Render before they reach the git+ssh
         // subprocess, or the literal template text is written to the
         // SSH key file / used as the clone URL and ssh fails.
-        let rendered_url = render_or_warn(ctx, log, "repository.git.url", url)?;
+        let rendered_url = super::config::render_secret(ctx, "repository.git.url", url)?;
         let rendered_key = match git.private_key.as_deref() {
             Some(pk) => Some(super::config::render_secret(
                 ctx,
@@ -940,6 +940,41 @@ mod tests {
             dest.path().join("README").exists(),
             "clone must have used the rendered URL, not the literal template"
         );
+    }
+
+    /// `git.url` can carry `user:token@`: a padded render is cloned trimmed,
+    /// and a template that does not render is an error naming the field and
+    /// leaving out the template's text.
+    #[test]
+    fn clone_repo_renders_the_git_url_as_a_credential() {
+        let (url, _bare, _work) = make_bare_remote();
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.template_vars_mut()
+            .set_env("AUR_GIT_URL", &format!(" {url}\n"));
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let clone = |raw: &str, dest: &Path| {
+            let repo = RepositoryConfig {
+                git: Some(GitRepoConfig {
+                    url: Some(raw.to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            clone_repo(&ctx, Some(&repo), "o", "n", None, dest, "dispatch", &log)
+        };
+
+        let dest = tempfile::tempdir().unwrap();
+        clone("{{ .Env.AUR_GIT_URL }}", dest.path()).expect("a padded url clones trimmed");
+        assert!(dest.path().join("README").exists());
+
+        let dest = tempfile::tempdir().unwrap();
+        let msg = format!(
+            "{:#}",
+            clone("https://user:ghp_secret@x{{ Undefined }}", dest.path())
+                .expect_err("a url that does not render is an error")
+        );
+        assert!(msg.contains("repository.git.url does not render"), "{msg}");
+        assert!(!msg.contains("ghp_secret"), "{msg}");
     }
 
     /// A templated `git.private_key` (`{{ .Env.X }}`) must be rendered

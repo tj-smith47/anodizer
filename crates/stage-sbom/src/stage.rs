@@ -492,7 +492,7 @@ pub(crate) fn run_sbom_builtin(
                 "no SOURCE_DATE_EPOCH or commit time for sbom[{}]; SBOM timestamp will not be reproducible",
                 id
             ));
-            anodizer_core::sde::resolve_now().to_rfc3339()
+            anodizer_core::sde::resolve_now_with_env(ctx.env_source())?.to_rfc3339()
         }
     };
     let namespace_uuid = deterministic_uuid_from(&format!("{}-{}", project_name, version));

@@ -90,7 +90,7 @@ crates:
           token: "{{ Env.NIX_PKGS_TOKEN }}" # optional; default: NIX_PKGS_TOKEN, then the GitHub token chain
           pull_request:
             enabled: false                   # optional; true opens a PR in place of a direct push
-            token: ""                        # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
+            token: ""                        # token used to open the PR (default: repository.token, then NIX_PKGS_TOKEN, then the GitHub token chain)
             base:
               branch: master                 # optional; PR target branch
         dependencies:                        # optional; runtime deps as Nix attr paths
@@ -101,14 +101,8 @@ crates:
 
 ## Authentication
 
-The push to your nixpkgs-style repository uses the first token that is set:
+{{ token_order(target="your nixpkgs-style repository", publisher_var="NIX_PKGS_TOKEN") }}
 
-1. `repository.token`
-2. `NIX_PKGS_TOKEN`
-3. the run's GitHub token (`--token`, or the `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` value read at startup); a GitLab or Gitea token is never sent to GitHub
-4. `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`
-
-The pull request is opened with `repository.pull_request.token`, then `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. With none of these set, the `gh` CLI's own login opens it; with neither a token nor `gh`, the publish fails.
 
 ```yaml
 crates:
@@ -171,7 +165,7 @@ crates:
           token: "{{ Env.GITHUB_TOKEN }}"
           pull_request:
             enabled: true        # open a PR; no direct push
-            token: ""            # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
+            token: ""            # token used to open the PR (default: repository.token, then NIX_PKGS_TOKEN, then the GitHub token chain)
             base:
               branch: master
 ```

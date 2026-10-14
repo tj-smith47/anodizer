@@ -52,7 +52,7 @@ crates:
 |-------|------|---------|-------------|
 | `repository.owner` | string | — | GitHub owner of the bucket repo |
 | `repository.name` | string | — | Bucket repository name |
-| `repository.pull_request.token` | string | `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN` | Token used to open the PR when `repository.pull_request.enabled` is set (templates allowed). Set it when the bucket token cannot open pull requests. |
+| `repository.pull_request.token` | string | `repository.token`, then `SCOOP_BUCKET_TOKEN`, then the GitHub token chain (see [Authentication](#authentication)) | Token used to open the PR when `repository.pull_request.enabled` is set (templates allowed). Set it when the bucket token cannot open pull requests. |
 | `description` | string | Cargo `[package].description` | Manifest description. Derived from `Cargo.toml`; set to override. |
 | `directory` | string | `bucket` | Subdirectory in the bucket repo for manifest placement. Scoop resolves manifests only from `bucket/` when that directory exists (repo root otherwise), so `bucket/` is correct for both layouts. Set to `""` to target the repo root. A stale same-named root-level manifest is removed when publishing into a subdirectory. |
 | `license` | string | Cargo `[package].license` | License identifier. Derived from `Cargo.toml`; set to override. |
@@ -72,7 +72,7 @@ crates:
           branch: ""                # default: repo default branch (versioned <manifest>-<version> when pull_request.enabled)
           pull_request:
             enabled: false          # optional; true opens a PR in place of a direct push
-            token: ""               # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
+            token: ""               # token used to open the PR (default: repository.token, then SCOOP_BUCKET_TOKEN, then the GitHub token chain)
         description: "A fast CLI tool"   # optional; derived from Cargo.toml description
         license: MIT                     # optional; derived from Cargo.toml license
         directory: bucket                # optional; default "bucket" ("" targets the repo root)
@@ -82,14 +82,8 @@ crates:
 
 ## Authentication
 
-The push to the bucket repository uses the first token that is set:
+{{ token_order(target="the bucket repository", publisher_var="SCOOP_BUCKET_TOKEN") }}
 
-1. `repository.token`
-2. `SCOOP_BUCKET_TOKEN`
-3. the run's GitHub token (`--token`, or the `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` value read at startup); a GitLab or Gitea token is never sent to GitHub
-4. `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`
-
-The pull request is opened with `repository.pull_request.token`, then `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. With none of these set, the `gh` CLI's own login opens it; with neither a token nor `gh`, the publish fails.
 
 ```yaml
 crates:

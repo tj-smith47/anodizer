@@ -214,15 +214,10 @@ pub(crate) fn publish_uploads_recording(
                 method,
                 username
             ));
-            if !custom_headers.is_empty() {
-                for (k, v) in custom_headers {
-                    let rendered_v = crate::util::render_or_warn(ctx, log, "uploads.headers", v)?;
-                    log.status(&format!(
-                        "(dry-run) would send custom header {}={}",
-                        k,
-                        log.redact(&rendered_v)
-                    ));
-                }
+            // A header value can carry a credential, so the preview names the
+            // header only; its value renders per artifact below.
+            for k in custom_headers.keys() {
+                log.status(&format!("(dry-run) would send custom header {k}"));
             }
             if entry.client_x509_cert.is_some() {
                 log.status("(dry-run) would present a client certificate");
@@ -285,6 +280,7 @@ pub(crate) fn publish_uploads_recording(
             // dry-run reflects template behaviour exactly.
             for a in &artifacts {
                 let url = render_artifact_url(ctx, target_template, a, custom_artifact_name)?;
+                crate::artifactory::render_custom_headers(ctx, custom_headers, a)?;
                 log.status(&format!(
                     "(dry-run) {} ({}) → {} {}",
                     a.name(),
@@ -1520,9 +1516,10 @@ mod tests {
         let ctx = dry_run_ctx_versioned(config);
         let joined = capture_dry_run(&ctx).join("\n");
         assert!(
-            joined.contains("would send custom header X-Anodizer-Tag=v1.2.3"),
+            joined.contains("would send custom header X-Anodizer-Tag"),
             "{joined}"
         );
+        assert!(!joined.contains("X-Anodizer-Tag="), "{joined}");
         assert!(
             joined.contains("would send checksum header X-My-Sum"),
             "{joined}"

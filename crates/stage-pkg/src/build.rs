@@ -306,8 +306,7 @@ pub fn build_flat_pkg_linux(
     let stamp_epoch = parsed_mtime
         .map(system_time_to_epoch)
         .unwrap_or(PKG_FALLBACK_EPOCH);
-    let stamp_time =
-        std::time::UNIX_EPOCH + std::time::Duration::from_secs(stamp_epoch.max(0) as u64);
+    let stamp_time = anodizer_core::util::system_time_from_epoch(stamp_epoch)?;
     apply_mtime_recursive(&pkgroot, stamp_time)?;
 
     // Payload: cpio(odc) of the pkgroot, inode/dev-zeroed and gzipped in-process.

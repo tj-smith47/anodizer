@@ -6,7 +6,7 @@ use anyhow::Result;
 
 use super::validators::validate_telegram_thread_id;
 use crate::dispatch::{DispatchQueue, dispatch};
-use crate::helpers::{is_enabled, render_message_with_default};
+use crate::helpers::{config_or_env_secret, is_enabled, render_message_with_default};
 use crate::telegram;
 
 use super::Announcer;
@@ -43,20 +43,22 @@ impl Announcer for TelegramAnnouncer {
             .telegram
             .as_ref()
             .expect("send only called when enabled returned Ok(true)");
-        let bot_token = match cfg.bot_token.as_deref() {
-            Some(t) => ctx.render_template(t)?,
-            None => match ctx.env_var("TELEGRAM_TOKEN").filter(|s| !s.is_empty()) {
-                Some(env) => env,
-                None => {
-                    // Skip-when-empty UX: warn-and-skip in normal mode,
-                    // bail in strict mode.
-                    ctx.strict_guard(
-                        log,
-                        "missing bot_token in announce.telegram (set config or TELEGRAM_TOKEN env var)",
-                    )?;
-                    return Ok(());
-                }
-            },
+        let bot_token = match config_or_env_secret(
+            ctx,
+            "announce.telegram.bot_token",
+            cfg.bot_token.as_deref(),
+            "TELEGRAM_TOKEN",
+        )? {
+            Some(token) => token,
+            None => {
+                // Skip-when-empty UX: warn-and-skip in normal mode,
+                // bail in strict mode.
+                ctx.strict_guard(
+                    log,
+                    "missing bot_token in announce.telegram (set config or TELEGRAM_TOKEN env var)",
+                )?;
+                return Ok(());
+            }
         };
         let chat_id = match cfg.chat_id.as_deref() {
             Some(raw) => ctx.render_template(raw)?,
@@ -140,9 +142,7 @@ impl Announcer for TelegramAnnouncer {
         let Some(cfg) = announce.telegram.as_ref() else {
             return Ok(());
         };
-        if let Some(raw) = cfg.bot_token.as_deref() {
-            ctx.render_template(raw)?;
-        }
+        ctx.render_secret_opt("announce.telegram.bot_token", cfg.bot_token.as_deref())?;
         if let Some(raw) = cfg.chat_id.as_deref() {
             ctx.render_template(raw)?;
         }

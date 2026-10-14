@@ -363,7 +363,7 @@ pub(crate) fn run_token_revert_rollback<T: TokenRevertTarget>(
 /// `repository:` block among `repos` that names that repository
 /// ([`crate::util::resolve_repo_token`], so a `repository.token` the publish
 /// used is used again), else the chain the publish falls through to without
-/// one ([`crate::util::resolve_token`]). A `repository.token` that does not
+/// one ([`crate::util::config::resolve_token`]). A `repository.token` that does not
 /// render is an error.
 fn rollback_push_token(
     ctx: &Context,

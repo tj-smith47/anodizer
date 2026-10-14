@@ -3,7 +3,6 @@ use std::process::Command;
 
 use anodizer_core::config::EmailEncryption;
 use anodizer_core::retry::{Retriable, RetryLog, RetryPolicy, is_network_error, retry_sync};
-use anodizer_core::sde;
 use anodizer_core::template::{self, TemplateVars};
 use anyhow::{Context, Result};
 
@@ -258,9 +257,11 @@ pub(crate) fn build_rfc2822_message(params: &EmailParams<'_>) -> Result<String> 
     vars.set("from", &sanitize_header(params.from));
     vars.set("to", &to_header);
     vars.set("subject", &sanitize_header(params.subject));
+    // A message is dated when it is sent; SOURCE_DATE_EPOCH fixes the dates
+    // of build output, which an announcement is not part of.
     vars.set(
         "date",
-        &sde::resolve_now()
+        &chrono::Utc::now()
             .format("%a, %d %b %Y %H:%M:%S +0000")
             .to_string(),
     );
@@ -344,6 +345,26 @@ mod tests {
         assert!(msg.contains("MIME-Version: 1.0"));
         assert!(msg.contains("Date: "));
         assert!(msg.contains("A new version is available!"));
+    }
+
+    #[test]
+    fn the_message_is_dated_by_the_real_clock_under_a_source_date() {
+        use anodizer_core::test_helpers::env::{EnvGuard, env_mutex};
+        let _lock = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let _sde = EnvGuard::set("SOURCE_DATE_EPOCH", "1000000000");
+        let params = EmailParams {
+            from: "release-bot@example.com",
+            to: &["dev@example.com".to_string()],
+            subject: "s",
+            body: "b",
+        };
+        let msg = build_rfc2822_message(&params).unwrap();
+        let year = chrono::Utc::now().format(" %Y ").to_string();
+        let date = msg
+            .lines()
+            .find(|l| l.starts_with("Date: "))
+            .expect("Date header");
+        assert!(date.contains(&year), "{date}");
     }
 
     #[test]

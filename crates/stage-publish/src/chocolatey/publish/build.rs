@@ -649,8 +649,8 @@ pub(crate) fn resolve_api_key(
     ctx: &Context,
     choco_cfg: &anodizer_core::config::ChocolateyConfig,
 ) -> Result<String> {
-    // An empty key is turned into a skip by the caller rather than reaching
-    // the NuGet push API, where it would surface as an opaque 403.
+    // The caller turns an empty key into a skip, so it never reaches the
+    // NuGet push API, which would answer with an opaque 403.
     util::config_or_env_secret(
         ctx,
         "chocolatey.api_key",

@@ -111,26 +111,48 @@ pub fn topological_sort(items: &[(impl AsRef<str>, impl AsRef<[String]>)]) -> Ve
 /// Accepts:
 ///   - Unix epoch seconds as an integer (e.g. `"1704067200"`)
 ///   - RFC 3339 / ISO 8601 datetime (e.g. `"2024-01-01T00:00:00Z"`)
+///
+/// A time before 1970-01-01 UTC, or past the latest time a file can hold, is
+/// an error naming the value.
 pub fn parse_mod_timestamp(raw: &str) -> Result<SystemTime> {
-    // Try Unix epoch integer first (most common in CI)
-    if let Ok(epoch_secs) = raw.parse::<u64>() {
-        return Ok(SystemTime::UNIX_EPOCH + Duration::from_secs(epoch_secs));
-    }
-    // Try RFC 3339 / ISO 8601 via chrono
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
-        let epoch_secs = dt.timestamp() as u64;
-        return Ok(SystemTime::UNIX_EPOCH + Duration::from_secs(epoch_secs));
-    }
-    // Try chrono's more lenient parsing for formats like "2024-01-01T00:00:00"
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S") {
-        let epoch_secs = dt.and_utc().timestamp() as u64;
-        return Ok(SystemTime::UNIX_EPOCH + Duration::from_secs(epoch_secs));
-    }
-    anyhow::bail!(
-        "mod_timestamp value '{raw}' is not a valid timestamp. \
-         Accepted formats: Unix epoch seconds (e.g. \"1704067200\") or \
-         RFC 3339 datetime (e.g. \"2024-01-01T00:00:00Z\")"
-    )
+    let epoch_secs = if let Ok(secs) = raw.parse::<u64>() {
+        // Tried first because CI most often passes a commit timestamp.
+        i64::try_from(secs).ok()
+    } else if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
+        Some(dt.timestamp())
+    } else if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S") {
+        Some(dt.and_utc().timestamp())
+    } else {
+        anyhow::bail!(
+            "mod_timestamp value '{raw}' is not a valid timestamp. \
+             Accepted formats: Unix epoch seconds (e.g. \"1704067200\") or \
+             RFC 3339 datetime (e.g. \"2024-01-01T00:00:00Z\")"
+        )
+    };
+    epoch_secs
+        .and_then(|secs| system_time_from_epoch(secs).ok())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "mod_timestamp value '{raw}' is before 1970-01-01 UTC or past the latest \
+                 time a file can hold"
+            )
+        })
+}
+
+/// The file time `epoch_secs` seconds after 1970-01-01 UTC.
+///
+/// A negative value, or one past the latest time the platform's file times can
+/// hold, is an error naming the value.
+pub fn system_time_from_epoch(epoch_secs: i64) -> Result<SystemTime> {
+    u64::try_from(epoch_secs)
+        .ok()
+        .and_then(|secs| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{epoch_secs} is not a file time: it must be a whole number of seconds from \
+                 1970-01-01 UTC up to the latest time a file can hold"
+            )
+        })
 }
 
 /// Apply `mod_timestamp` to every regular file in a directory tree.
@@ -180,17 +202,12 @@ pub fn set_file_mtime(path: &Path, mtime: SystemTime) -> Result<()> {
     Ok(())
 }
 
-/// Set the modification time on a single file from a Unix epoch (seconds).
+/// Set the modification time on a single file from `SOURCE_DATE_EPOCH`-style
+/// seconds since 1970-01-01 UTC.
 ///
-/// Thin wrapper over `set_file_mtime` that accepts `SOURCE_DATE_EPOCH`-style
-/// `i64` seconds (signed to permit pre-1970 values per the spec).
+/// A value [`system_time_from_epoch`] refuses is an error naming the value.
 pub fn set_file_mtime_epoch(path: &Path, epoch_secs: i64) -> Result<()> {
-    let mtime = if epoch_secs >= 0 {
-        SystemTime::UNIX_EPOCH + Duration::from_secs(epoch_secs as u64)
-    } else {
-        SystemTime::UNIX_EPOCH - Duration::from_secs((-epoch_secs) as u64)
-    };
-    set_file_mtime(path, mtime)
+    set_file_mtime(path, system_time_from_epoch(epoch_secs)?)
 }
 
 /// Recursively pin every regular file's mtime under `dir` to `epoch_secs`
@@ -555,6 +572,37 @@ mod tests {
         let t = parse_mod_timestamp("2024-01-01T00:00:00").unwrap();
         let epoch = t.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
         assert_eq!(epoch, 1704067200);
+    }
+
+    #[test]
+    fn a_mod_timestamp_no_file_time_can_hold_is_an_error_naming_it() {
+        for raw in [
+            "18446744073709551615",
+            "9223372036854775808",
+            "1969-12-31T23:59:59Z",
+            "0001-01-01T00:00:00",
+        ] {
+            let err = parse_mod_timestamp(raw).unwrap_err().to_string();
+            assert!(err.contains(&format!("'{raw}'")), "{raw}: {err}");
+        }
+    }
+
+    #[test]
+    fn an_epoch_no_file_time_can_hold_is_an_error_naming_it() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        for secs in [i64::MIN, -1] {
+            let err = set_file_mtime_epoch(tmp.path(), secs)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.starts_with(&format!("{secs} is not a file time")),
+                "{err}"
+            );
+        }
+        assert_eq!(
+            system_time_from_epoch(1_704_067_200).unwrap(),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_704_067_200)
+        );
     }
 
     #[test]

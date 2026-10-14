@@ -43,8 +43,11 @@ pub(super) fn run_cross_platform(
         .ok_or_else(|| anyhow::anyhow!("notarize: macos[{idx}] requires a 'sign' configuration"))?;
 
     let certificate_raw = ctx
-        .render_template_opt(sign.certificate.as_deref())
-        .with_context(|| format!("notarize: macos[{idx}] render sign.certificate"))?
+        .render_secret_opt(
+            &format!("notarize.macos[{idx}].sign.certificate"),
+            sign.certificate.as_deref(),
+        )?
+        .filter(|v| !v.is_empty())
         .ok_or_else(|| anyhow::anyhow!("notarize: macos[{idx}] sign.certificate is required"))?;
 
     // `certificate:` may be either a path OR a base64-encoded
@@ -69,8 +72,11 @@ pub(super) fn run_cross_platform(
     }
 
     let password = ctx
-        .render_template_opt(sign.password.as_deref())
-        .with_context(|| format!("notarize: macos[{idx}] render sign.password"))?
+        .render_secret_opt(
+            &format!("notarize.macos[{idx}].sign.password"),
+            sign.password.as_deref(),
+        )?
+        .filter(|v| !v.is_empty())
         .ok_or_else(|| anyhow::anyhow!("notarize: macos[{idx}] sign.password is required"))?;
 
     let entitlements = ctx
@@ -87,14 +93,21 @@ pub(super) fn run_cross_platform(
     // for its Drop" without the misleading `_` prefix.
     #[allow(unused_variables)]
     let (notarize_api, key_secret) = if let Some(ref ncfg) = cfg.notarize {
-        let issuer_id = ctx.render_template_opt(ncfg.issuer_id.as_deref())
-            .with_context(|| format!("notarize: macos[{idx}] render notarize.issuer_id"))?
+        let issuer_id = ctx
+            .render_secret_opt(
+                &format!("notarize.macos[{idx}].notarize.issuer_id"),
+                ncfg.issuer_id.as_deref(),
+            )?
+            .filter(|v| !v.is_empty())
             .ok_or_else(|| {
                 anyhow::anyhow!("notarize: macos[{idx}] notarize.issuer_id is required when notarize block is present")
             })?;
         let key_raw = ctx
-            .render_template_opt(ncfg.key.as_deref())
-            .with_context(|| format!("notarize: macos[{idx}] render notarize.key"))?
+            .render_secret_opt(
+                &format!("notarize.macos[{idx}].notarize.key"),
+                ncfg.key.as_deref(),
+            )?
+            .filter(|v| !v.is_empty())
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "notarize: macos[{idx}] notarize.key is required when notarize block is present"

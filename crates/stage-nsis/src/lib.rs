@@ -570,7 +570,9 @@ impl Stage for NsisStage {
                         // stamps the wall clock. Pin the staging tree to SDE so the
                         // installer is reproducible by default; an explicit
                         // mod_timestamp below overrides on top.
-                        if let Some(sde) = anodizer_core::sde::source_date_epoch() {
+                        if let Some(sde) =
+                            anodizer_core::sde::source_date_epoch_with_env(ctx.env_source())?
+                        {
                             anodizer_core::util::pin_dir_mtimes_epoch(
                                 staging_dir,
                                 sde.timestamp(),
@@ -2248,6 +2250,65 @@ SectionEnd
 
         let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
         assert_eq!(installers.len(), 1);
+    }
+
+    /// The staging tree is stamped with the source date from the context's
+    /// environment: a sealed env carrying `SOURCE_DATE_EPOCH` gives every
+    /// file makensis bundles that mtime.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn the_staged_files_take_the_source_date_from_the_context_environment() {
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let binary = tmp.path().join("myapp.exe");
+        std::fs::write(&binary, b"MZ").unwrap();
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: Some("v{{ .Version }}".to_string()),
+            nsis: Some(vec![NsisConfig::default()]),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.set_env_source(
+            anodizer_core::env_source::MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1577836800"),
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: binary,
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+        let record = tmp.path().join("mtimes");
+        let tools = FakeToolDir::new();
+        tools
+            .tool("makensis")
+            .script(format!(
+                "stat -c %Y \"$(dirname \"$1\")\"/* > '{}'",
+                record.display()
+            ))
+            .install();
+        let _g = tools.activate();
+
+        NsisStage.run(&mut ctx).unwrap();
+
+        let mtimes = std::fs::read_to_string(&record).unwrap();
+        assert!(mtimes.lines().count() >= 2, "script and binary: {mtimes}");
+        assert!(
+            mtimes.lines().all(|m| m == "1577836800"),
+            "every staged file carries the source date: {mtimes}"
+        );
     }
 
     /// Global template vars must not be polluted by the NSIS-native `Arch`

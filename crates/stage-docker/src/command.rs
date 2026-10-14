@@ -87,7 +87,8 @@ pub(crate) fn podman_not_linux_message(os: &str) -> String {
 /// `podman build` does not recognise. Configs that opt into the podman
 /// backend via `use: podman` are checked against this list by the docker
 /// stage before it spawns anything, so a flag copied from a buildx config
-/// fails with an error naming it instead of podman's generic "unknown flag".
+/// fails with an error that names it. Podman's own message is a generic
+/// "unknown flag".
 ///
 /// The list is conservative: only flags whose presence under podman is a
 /// real UX bug (`--rewrite-timestamp` for byte-stable layers,

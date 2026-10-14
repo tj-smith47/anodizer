@@ -70,6 +70,24 @@ impl Context {
         crate::template::render(template, &vars)
     }
 
+    /// Render the credential template `raw` of the config field `field` and
+    /// return it trimmed; a template that fails to render is an error in every
+    /// mode, naming `field` without the template's text
+    /// ([`crate::git::render_secret`]).
+    pub fn render_secret(&self, field: &str, raw: &str) -> anyhow::Result<String> {
+        crate::git::render_secret(field, raw, &|s| self.render_template(s))
+    }
+
+    /// [`render_secret`](Self::render_secret) of an optional field, `None`
+    /// for `None` input.
+    pub fn render_secret_opt(
+        &self,
+        field: &str,
+        raw: Option<&str>,
+    ) -> anyhow::Result<Option<String>> {
+        raw.map(|r| self.render_secret(field, r)).transpose()
+    }
+
     /// Render a template if present, returning `None` for `None` input.
     pub fn render_template_opt(&self, template: Option<&str>) -> anyhow::Result<Option<String>> {
         template.map(|t| self.render_template(t)).transpose()

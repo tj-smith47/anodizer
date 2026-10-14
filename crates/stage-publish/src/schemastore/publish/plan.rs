@@ -11,8 +11,8 @@ use super::super::{catalog, entry_label};
 use super::*;
 
 /// Canonical upstream the SchemaStore PR targets.
-pub(super) const UPSTREAM_OWNER: &str = "SchemaStore";
-pub(super) const UPSTREAM_REPO: &str = "schemastore";
+pub(crate) const UPSTREAM_OWNER: &str = "SchemaStore";
+pub(crate) const UPSTREAM_REPO: &str = "schemastore";
 /// Default branch of `SchemaStore/schemastore`. The fork drifts behind, so the
 /// work branch is synced to this before splicing (see [`run_publish`]).
 pub(super) const UPSTREAM_DEFAULT_BRANCH: &str = "master";
@@ -20,8 +20,9 @@ pub(super) const UPSTREAM_DEFAULT_BRANCH: &str = "master";
 pub(super) const CATALOG_PATH: &str = "src/api/json/catalog.json";
 /// Repo-relative path of the dialect allowlist (`highSchemaVersion`).
 pub(super) const DIALECT_ALLOWLIST_PATH: &str = "src/schema-validation.jsonc";
-/// Env var the rollback path consults for the close-PR token.
-pub(super) const TOKEN_ENV_VAR: &str = "SCHEMASTORE_TOKEN";
+/// The publisher's own token variable, read by the publish, the preflight
+/// and the rollback for the push and pull request tokens.
+pub(crate) const TOKEN_ENV_VAR: &str = "SCHEMASTORE_TOKEN";
 
 /// The resolved publish action for one schema entry, computed purely from the
 /// entry, its resolved metadata, and (when available) the upstream catalog.

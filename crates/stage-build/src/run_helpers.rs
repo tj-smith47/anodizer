@@ -1431,10 +1431,6 @@ mod run_helpers_tests {
         StageLogger::new("test", Verbosity::Quiet)
     }
 
-    // -------------------------------------------------------------------------
-    // artifact_meta
-    // -------------------------------------------------------------------------
-
     /// amd64_variant is inserted only when Some — proves the conditional branch.
     #[test]
     fn artifact_meta_inserts_amd64_variant_only_when_some() {
@@ -1454,10 +1450,6 @@ mod run_helpers_tests {
         assert_eq!(m.get("id").map(String::as_str), Some("custom-id"));
         assert_eq!(m.get("binary").map(String::as_str), Some("mybin"));
     }
-
-    // -------------------------------------------------------------------------
-    // add_artifact — no_unique_dist_dir branch (lines 95-117)
-    // -------------------------------------------------------------------------
 
     /// no_unique_dist_dir=true, dry_run=true: artifact path placed flat under
     /// dist_dir but NO copy happens (dry-run). The artifact is registered with
@@ -1570,10 +1562,6 @@ mod run_helpers_tests {
             "normal path must not inject no_unique_dist_dir metadata"
         );
     }
-
-    // -------------------------------------------------------------------------
-    // apply_source_mutations — synthesized-version modes (snapshot / nightly)
-    // -------------------------------------------------------------------------
 
     /// Snapshot mode: mutations are completely skipped for every crate, even if
     /// version_sync and binstall are both enabled. The Cargo.toml stays unchanged.
@@ -1717,10 +1705,6 @@ mod run_helpers_tests {
             "nightly mode must not inject binstall metadata"
         );
     }
-
-    // -------------------------------------------------------------------------
-    // seed_determinism_state
-    // -------------------------------------------------------------------------
 
     /// Non-snapshot mode with a valid commit timestamp: determinism state is
     /// seeded from the epoch.
@@ -1878,10 +1862,6 @@ mod run_helpers_tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // run_dry_run (lines 322-370)
-    // -------------------------------------------------------------------------
-
     fn mk_exec<'a>(
         log: &'a StageLogger,
         tvars: &'a TemplateVars,
@@ -2023,10 +2003,6 @@ mod run_helpers_tests {
         assert_eq!(arts.len(), 2);
     }
 
-    // -------------------------------------------------------------------------
-    // run_dry_run with no_unique_dist_dir=true in a copy_jobs slot (line 367)
-    // -------------------------------------------------------------------------
-
     /// run_dry_run with no_unique_dist_dir=true on a copy_job: flat-path
     /// registration fires. dry_run=true so no copy happens.
     #[test]
@@ -2074,10 +2050,6 @@ mod run_helpers_tests {
         // Dry-run: file must NOT have been written.
         assert!(!dist.join("mybin").exists());
     }
-
-    // -------------------------------------------------------------------------
-    // process_universal_binaries — duplicate output path error (lines 736-746)
-    // -------------------------------------------------------------------------
 
     /// Two universal_binaries entries resolving to the same output path must
     /// produce a fail-loud error naming the conflicting path.
@@ -2149,10 +2121,6 @@ mod run_helpers_tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // run_copy_jobs (lines 711-723) — missing copy_from pair error
-    // -------------------------------------------------------------------------
-
     /// A copy_job with copy_from=None is a programmer bug; the function must
     /// return an error rather than panicking.
     #[test]
@@ -2199,10 +2167,6 @@ mod run_helpers_tests {
             "error must describe the missing copy_from pair, got: {msg}"
         );
     }
-
-    // -------------------------------------------------------------------------
-    // apply_source_mutations — version_sync only (no binstall) path (line 224)
-    // -------------------------------------------------------------------------
 
     /// A crate with version_sync enabled but binstall disabled: only Cargo.toml
     /// version is mutated, no binstall metadata is injected.
@@ -2252,10 +2216,6 @@ mod run_helpers_tests {
             "no binstall metadata should be injected when binstall is None"
         );
     }
-
-    // -------------------------------------------------------------------------
-    // apply_source_mutations — needs_mutation=false skips entirely (line 179)
-    // -------------------------------------------------------------------------
 
     /// A crate with neither version_sync nor binstall enabled must be skipped
     /// entirely (needs_mutation=false). The resolver must not be called and the
@@ -2401,10 +2361,6 @@ mod run_exec_tests {
             .unwrap()
             .as_secs()
     }
-
-    // -------------------------------------------------------------------------
-    // run_sequential
-    // -------------------------------------------------------------------------
 
     /// Happy path: the stub compiler is spawned with the job's argv, the
     /// resulting binary is registered as an artifact at its resolved path, and
@@ -2785,10 +2741,6 @@ mod run_exec_tests {
         assert_eq!(std::fs::read(dist.join("app")).unwrap(), b"BINARY");
     }
 
-    // -------------------------------------------------------------------------
-    // run_parallel
-    // -------------------------------------------------------------------------
-
     /// Parallel path across two jobs (parallelism=2): both stubs run, both
     /// binaries are registered with their respective targets.
     #[test]
@@ -2978,10 +2930,6 @@ mod run_exec_tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // run_copy_jobs — happy path (real copy)
-    // -------------------------------------------------------------------------
-
     /// A copy_from job copies the registered source binary to its destination
     /// and registers a new artifact at the copy destination.
     #[test]
@@ -3037,10 +2985,6 @@ mod run_exec_tests {
         assert!(arts.iter().any(|a| a.path == dst));
     }
 
-    // -------------------------------------------------------------------------
-    // process_universal_binaries — non-error paths
-    // -------------------------------------------------------------------------
-
     /// A crate with no universal_binaries config is a no-op (the `if let Some`
     /// guard is skipped); returns Ok with no artifacts added.
     #[test]
@@ -3061,10 +3005,6 @@ mod run_exec_tests {
             "no universal_binaries config must add no artifacts"
         );
     }
-
-    // -------------------------------------------------------------------------
-    // run_dry_run — neither the compiler nor hook bodies execute
-    // -------------------------------------------------------------------------
 
     /// In dry-run neither the compiler nor a hook's command body is executed
     /// (run_dry_run passes dry_run=true through to run_hooks), yet the planned
@@ -3119,10 +3059,6 @@ mod run_exec_tests {
         // Artifact still registered (planning output).
         assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Binary).len(), 1);
     }
-
-    // -------------------------------------------------------------------------
-    // Harness-gated cargo-intermediate pruning
-    // -------------------------------------------------------------------------
 
     /// Scaffold the four cargo-scratch subdirs under `profile_dir` so a prune
     /// (or retention) is observable after the stub build runs.
@@ -3352,10 +3288,6 @@ mod run_exec_tests {
         );
         assert!(profile.join("app1").exists() && profile.join("app2").exists());
     }
-
-    // -------------------------------------------------------------------------
-    // run_parallel analogs — exercise the post-chunk prune path
-    // -------------------------------------------------------------------------
 
     /// Without the marker, run_parallel retains the cargo cache.
     #[test]

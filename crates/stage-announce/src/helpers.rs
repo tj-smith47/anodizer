@@ -67,10 +67,8 @@ pub(crate) fn require_env_with_env<E: EnvSource + ?Sized>(
     let value = env
         .var(name)
         .ok_or_else(|| anyhow::anyhow!("announce.{provider}: {name} env var is required"))?;
-    if value.trim().is_empty() {
-        anyhow::bail!("announce.{provider}: {name} env var must not be empty");
-    }
-    Ok(value)
+    anodizer_core::git::non_blank_token(&value)
+        .ok_or_else(|| anyhow::anyhow!("announce.{provider}: {name} env var must not be empty"))
 }
 
 /// Read an env var that is required and must not be empty, returning a clear
@@ -97,9 +95,13 @@ pub(crate) fn require_non_empty_env_with_env<E: EnvSource + ?Sized>(
     name: &str,
     env: &E,
 ) -> Result<String> {
-    match env.var(name) {
-        Some(v) if !v.trim().is_empty() => Ok(v),
-        _ => Err(anyhow::anyhow!(
+    match env
+        .var(name)
+        .as_deref()
+        .and_then(anodizer_core::git::non_blank_token)
+    {
+        Some(v) => Ok(v),
+        None => Err(anyhow::anyhow!(
             "announce.{provider}: {name} env var is required and must not be empty"
         )),
     }
@@ -125,9 +127,10 @@ pub(crate) fn require_env_all_with_env<E: EnvSource + ?Sized>(
     let mut missing: Vec<String> = Vec::new();
     let mut values: Vec<String> = Vec::with_capacity(names.len());
     for name in names {
-        match env.var(name) {
-            Some(v) if !v.trim().is_empty() => values.push(v),
-            Some(_) => {
+        let value = env.var(name);
+        match value.as_deref().map(anodizer_core::git::non_blank_token) {
+            Some(Some(v)) => values.push(v),
+            Some(None) => {
                 missing.push(format!("{name} (empty)"));
                 values.push(String::new());
             }
@@ -144,6 +147,25 @@ pub(crate) fn require_env_all_with_env<E: EnvSource + ?Sized>(
         );
     }
     Ok(values)
+}
+
+/// A credential from the config field `field`, rendered through
+/// [`Context::render_secret`], or, when that is unset or renders blank, from
+/// the variable `env_var`; each trimmed, and `None` when neither has a value.
+pub(crate) fn config_or_env_secret(
+    ctx: &Context,
+    field: &str,
+    configured: Option<&str>,
+    env_var: &str,
+) -> Result<Option<String>> {
+    let configured = ctx
+        .render_secret_opt(field, configured)?
+        .filter(|v| !v.is_empty());
+    Ok(configured.or_else(|| {
+        ctx.env_var(env_var)
+            .as_deref()
+            .and_then(anodizer_core::git::non_blank_token)
+    }))
 }
 
 /// Render a message-BODY template, falling back to `default` when unset.

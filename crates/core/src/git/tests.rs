@@ -3495,18 +3495,236 @@ mod git_command_one_home {
 
 mod secret_renders {
     use crate::test_helpers::test_sources::{
-        function_bodies, production_half, workspace_production_sources,
+        function_bodies, production_half, rust_sources, workspace_crate_dirs,
+        workspace_production_sources,
     };
+    use std::collections::BTreeSet;
 
     /// The render calls a secret field could be handed to. `render_secret`
     /// renders through a closure that receives the template as a plain
     /// parameter, so a call inside it names no secret field.
     const RENDER_CALLS: &[&str] = &[
         "render_or_warn(",
+        "render_or_warn_with_vars(",
         "render_template(",
+        "render_template_opt(",
         "render_template_strict(",
+        "render_template_with_env(",
+        "render_template_for_version(",
+        "render_with_env(",
         "render_strict(",
+        "render_in_place(",
+        "render_opt_in_place(",
+        "template::render(",
         ".render(",
+    ];
+
+    /// The calls that render a credential: `render_secret` itself and the
+    /// helpers that hand their field label on to it. The first string literal
+    /// in a call's arguments is the label of the field it renders.
+    const SECRET_RENDERERS: &[&str] = &[
+        "render_secret(",
+        "render_secret_opt(",
+        "resolve_secret_name(",
+        "config_or_env_secret(",
+        "resolve_token_with_ladder(",
+        "resolve_token_with_ladder_tracked(",
+    ];
+
+    /// Functions whose returned literals are field labels another function
+    /// hands to `render_secret` by variable: `first_configured` renders the
+    /// `pull_request.token` / `repository.token` link that `config_field`
+    /// names.
+    const LABEL_FUNCTIONS: &[(&str, &str)] =
+        &[("stage-publish/src/util/pr_token.rs", "fn config_field(")];
+
+    /// A config field name that can hold a credential or a value carrying
+    /// one. Every config struct field with such a name is either a
+    /// credential below or listed in [`NOT_A_CREDENTIAL`] with its reason.
+    const CREDENTIAL_NAME: &str = r"^(token|[a-z_]+_token|api_key|password|password_env|[a-z_]*passphrase|private_key|key|key_file|certificate|issuer_id|[a-z_]*secret[a-z_]*|stdin|[a-z_]*headers|webhook_url|endpoint_url|git_url|url)$";
+
+    /// Every credential field of the config, as `Struct.field`, with the
+    /// label (placeholders written `*`) each of its renders passes to
+    /// `render_secret`.
+    const CREDENTIAL_FIELDS: &[(&str, &[&str])] = &[
+        ("ArtifactoryConfig.custom_headers", &["custom_headers[*]"]),
+        ("ArtifactoryConfig.password", &["*.password"]),
+        (
+            "AurConfig.private_key",
+            &["aur.private_key", "*.private_key"],
+        ),
+        ("AurSourceConfig.private_key", &["aur_source.private_key"]),
+        ("ChocolateyConfig.api_key", &["chocolatey.api_key"]),
+        ("CloudSmithConfig.secret_name", &["cloudsmith.secret_name"]),
+        ("CommitSigningConfig.key", &["commit_author.signing.key"]),
+        ("ContentFromUrl.headers", &["*.from_url.headers[*]"]),
+        (
+            "DiscordAnnounce.webhook_url",
+            &["announce.discord.webhook_url"],
+        ),
+        ("DockerHubConfig.secret_name", &["dockerhub.secret_name"]),
+        (
+            "DockerHubFromUrl.headers",
+            &["dockerhub.full_description.from_url.headers[*]"],
+        ),
+        ("DockerSignConfig.stdin", &["docker_signs[*].stdin"]),
+        (
+            "GemFuryConfig.api_secret_name",
+            &["gemfury.api_secret_name"],
+        ),
+        ("GemFuryConfig.api_token", &["gemfury.api_token"]),
+        ("GemFuryConfig.secret_name", &["gemfury.secret_name"]),
+        ("GemFuryConfig.token", &["gemfury.token"]),
+        ("GitRepoConfig.private_key", &["repository.git.private_key"]),
+        ("GitRepoConfig.url", &["repository.git.url"]),
+        (
+            "MacOSNotarizeApiConfig.issuer_id",
+            &["notarize.macos[*].notarize.issuer_id"],
+        ),
+        (
+            "MacOSNotarizeApiConfig.key",
+            &["notarize.macos[*].notarize.key"],
+        ),
+        (
+            "MacOSSignConfig.certificate",
+            &["notarize.macos[*].sign.certificate"],
+        ),
+        (
+            "MacOSSignConfig.password",
+            &["notarize.macos[*].sign.password"],
+        ),
+        (
+            "MattermostAnnounce.webhook_url",
+            &["announce.mattermost.webhook_url"],
+        ),
+        ("McpAuth.token", &["mcp.auth.token"]),
+        (
+            "McpTransport.headers",
+            &["mcp.packages[*].transport.headers[*]"],
+        ),
+        ("NfpmSignatureConfig.key_file", &["*.key_file"]),
+        ("NfpmSignatureConfig.key_passphrase", &["*.key_passphrase"]),
+        ("NpmConfig.token", &["npm.token"]),
+        ("PullRequestConfig.token", &["pull_request.token"]),
+        ("PypiConfig.token", &["pypi.token"]),
+        (
+            "RepositoryConfig.token",
+            &["repository.token", "homebrew_cores.repository.token"],
+        ),
+        ("ScmRepoConfig.token", &["release.*.token"]),
+        ("SignConfig.stdin", &["*.stdin"]),
+        ("SlackAnnounce.webhook_url", &["announce.slack.webhook_url"]),
+        ("TeamsAnnounce.webhook_url", &["announce.teams.webhook_url"]),
+        (
+            "TelegramAnnounce.bot_token",
+            &["announce.telegram.bot_token"],
+        ),
+        ("UploadConfig.custom_headers", &["custom_headers[*]"]),
+        ("UploadConfig.password", &["*.password"]),
+        (
+            "WebhookConfig.endpoint_url",
+            &["announce.webhook.endpoint_url"],
+        ),
+        ("WebhookConfig.headers", &["announce.webhook.headers[*]"]),
+    ];
+
+    /// The config fields whose name matches [`CREDENTIAL_NAME`] that hold no
+    /// credential, with the reason.
+    const NOT_A_CREDENTIAL: &[(&str, &str)] = &[
+        (
+            "AurConfig.git_url",
+            "the AUR ssh remote; `private_key` authenticates",
+        ),
+        (
+            "AurSourceConfig.git_url",
+            "the AUR ssh remote; `private_key` authenticates",
+        ),
+        (
+            "AuthenticodeConfig.password_env",
+            "the name of the variable holding the password",
+        ),
+        (
+            "AuthenticodeConfig.url",
+            "the program URL written into the signature",
+        ),
+        ("CommitAuthorConfig.use_github_app_token", "a bool"),
+        ("Config.force_token", "the forge whose token is used"),
+        (
+            "ContentFromUrl.url",
+            "the address fetched; a credential goes in `headers`",
+        ),
+        (
+            "DockerHubFromUrl.url",
+            "the address fetched; a credential goes in `headers`",
+        ),
+        (
+            "DockerSignConfig.certificate",
+            "the path of a public certificate file",
+        ),
+        (
+            "EnvFilesTokenConfig.gitea_token",
+            "the path of the file holding the token",
+        ),
+        (
+            "EnvFilesTokenConfig.github_token",
+            "the path of the file holding the token",
+        ),
+        (
+            "EnvFilesTokenConfig.gitlab_token",
+            "the path of the file holding the token",
+        ),
+        ("GitLabUrlsConfig.use_job_token", "a bool"),
+        ("HomebrewCaskConfig.url", "written into the published cask"),
+        ("HomebrewCaskURL.headers", "written into the published cask"),
+        (
+            "HomebrewConfig.url_headers",
+            "written into the published formula",
+        ),
+        (
+            "HomebrewLivecheck.url",
+            "written into the published formula or cask",
+        ),
+        (
+            "IncludeUrlConfig.headers",
+            "expanded from `${VAR}` when the config loads; the run does not render it",
+        ),
+        (
+            "IncludeUrlConfig.url",
+            "the address fetched; a credential goes in `headers`",
+        ),
+        (
+            "McpRepository.url",
+            "the public repository URL in the server manifest",
+        ),
+        (
+            "McpTransport.url",
+            "the public server URL in the server manifest",
+        ),
+        ("SchemaEntry.url", "the public schema URL in the catalog"),
+        (
+            "SignConfig.certificate",
+            "the path of a public certificate file",
+        ),
+        (
+            "TagConfig.major_string_token",
+            "a commit-message marker that picks the bump",
+        ),
+        (
+            "TagConfig.minor_string_token",
+            "a commit-message marker that picks the bump",
+        ),
+        (
+            "TagConfig.none_string_token",
+            "a commit-message marker that picks the bump",
+        ),
+        (
+            "TagConfig.patch_string_token",
+            "a commit-message marker that picks the bump",
+        ),
+        (
+            "WingetDocumentation.url",
+            "a public documentation link in the manifest",
+        ),
     ];
 
     /// The text between the `(` that `rest` follows and its matching `)`,
@@ -3532,16 +3750,55 @@ mod secret_renders {
         rest
     }
 
-    /// The secret fields a render call named in `body` is handed: an
-    /// `api_key`, a `password`, a `private_key`, a `secret_name`, or any
-    /// `token` / `*_token`, read as a field or named in a field label.
-    fn secret_render_calls(body: &str) -> Vec<String> {
-        let secret =
-            regex::Regex::new(r"\b(api_key|password|private_key|secret_name|[a-z_]*token)\b[^(]")
-                .expect("valid regex");
+    /// Whether the call found at `idx` of `body` is a call of `call` itself
+    /// and not of a longer name ending in it (`render_template(` inside
+    /// `my_render_template(`).
+    fn is_whole_call(body: &str, idx: usize, call: &str) -> bool {
+        call.starts_with('.')
+            || call.contains("::")
+            || !body[..idx]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+
+    /// `label` with every `{…}` placeholder written `*`.
+    fn normalized(label: &str) -> String {
+        regex::Regex::new(r"\{[^}]*\}")
+            .expect("valid regex")
+            .replace_all(label, "*")
+            .into_owned()
+    }
+
+    /// The labels a body hands to the secret renderers.
+    fn secret_labels(body: &str) -> Vec<String> {
+        let literal = regex::Regex::new(r#""([^"]+)""#).expect("valid regex");
+        let mut out = Vec::new();
+        for call in SECRET_RENDERERS {
+            for (idx, _) in body.match_indices(call) {
+                if !is_whole_call(body, idx, call) || body[..idx].ends_with("fn ") {
+                    continue;
+                }
+                let args = call_arguments(&body[idx + call.len()..]);
+                if let Some(cap) = literal.captures(args) {
+                    out.push(normalized(&cap[1]));
+                }
+            }
+        }
+        out
+    }
+
+    /// The render calls in `body` handed a credential field: one named in
+    /// `names`, read as a field or named in a field label.
+    fn secret_render_calls(body: &str, names: &BTreeSet<&str>) -> Vec<String> {
+        let alternatives = names.iter().copied().collect::<Vec<_>>().join("|");
+        let secret = regex::Regex::new(&format!(r"\b({alternatives})\b[^(]")).expect("valid regex");
         let mut out = Vec::new();
         for call in RENDER_CALLS {
             for (idx, _) in body.match_indices(call) {
+                if !is_whole_call(body, idx, call) || body[..idx].ends_with("fn ") {
+                    continue;
+                }
                 let args = call_arguments(&body[idx + call.len()..]);
                 let padded = format!("{args} ");
                 if secret.is_match(&padded) {
@@ -3555,49 +3812,310 @@ mod secret_renders {
         out
     }
 
+    /// Every `Struct.field` of the config structs whose name matches
+    /// [`CREDENTIAL_NAME`], read from `crates/core/src/config/**` and
+    /// `crates/core/src/signing.rs`.
+    fn credential_named_fields() -> BTreeSet<String> {
+        let core = workspace_crate_dirs()
+            .into_iter()
+            .find(|d| d.ends_with("core"))
+            .expect("the core crate");
+        let name = regex::Regex::new(CREDENTIAL_NAME).expect("valid regex");
+        let field = regex::Regex::new(r"^\s*pub ([a-z_0-9]+)\s*:").expect("valid regex");
+        let strukt = regex::Regex::new(r"^pub struct ([A-Za-z0-9_]+)").expect("valid regex");
+        let mut sources = rust_sources(&core.join("src/config"));
+        sources.push(core.join("src/signing.rs"));
+        let mut out = BTreeSet::new();
+        for source in sources {
+            let text = std::fs::read_to_string(&source).expect("readable source");
+            let mut current = String::new();
+            for line in production_half(&text).lines() {
+                if let Some(cap) = strukt.captures(line) {
+                    current = cap[1].to_string();
+                } else if let Some(cap) = field.captures(line)
+                    && name.is_match(&cap[1])
+                {
+                    out.insert(format!("{current}.{}", &cap[1]));
+                }
+            }
+        }
+        out
+    }
+
+    /// The labels every production render of a credential passes to
+    /// `render_secret`, read from the call sites.
+    fn observed_labels() -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        let literal = regex::Regex::new(r#"Some\("([^"]+)"\)"#).expect("valid regex");
+        for source in workspace_production_sources() {
+            let text = std::fs::read_to_string(&source).expect("readable source");
+            let production = production_half(&text);
+            for body in function_bodies(production) {
+                out.extend(secret_labels(&body));
+            }
+            let path = source.to_string_lossy().replace('\\', "/");
+            for (file, function) in LABEL_FUNCTIONS {
+                if !path.ends_with(file) {
+                    continue;
+                }
+                let body = function_bodies(production)
+                    .into_iter()
+                    .find(|b| b.contains(function))
+                    .unwrap_or_else(|| panic!("{file} has no {function}"));
+                out.extend(literal.captures_iter(&body).map(|c| c[1].to_string()));
+            }
+        }
+        out
+    }
+
+    /// The field names [`secret_render_calls`] looks for: the name of every
+    /// credential field that no field in [`NOT_A_CREDENTIAL`] shares. A
+    /// shared name (`url`, `headers`, `certificate`) is held by the label
+    /// comparison alone.
+    fn unshared_credential_names() -> BTreeSet<&'static str> {
+        let field = |entry: &'static str| entry.split_once('.').expect("Struct.field").1;
+        let shared: BTreeSet<&str> = NOT_A_CREDENTIAL.iter().map(|(f, _)| field(f)).collect();
+        CREDENTIAL_FIELDS
+            .iter()
+            .map(|(f, _)| field(f))
+            .filter(|name| !shared.contains(name))
+            .collect()
+    }
+
     #[test]
     fn a_secret_field_handed_to_a_plain_render_is_reported() {
+        let names = BTreeSet::from(["api_key", "password", "token"]);
         let body = "fn f() {\n    let k = render_or_warn(ctx, log, \"api_key\", raw)?;\n    \
                     let t = ctx.render_template(&cfg.repository.token)?;\n    \
-                    let p = ctx.render_template(&entry.password)?;\n    \
+                    let p = ctx.render_template_opt(entry.password.as_deref())?;\n    \
+                    let q = template::render(&entry.password, &vars)?;\n    \
                     let name = ctx.render_template(&cfg.name)?;\n    \
                     let kind = ctx.render_template(k.token())?;\n}";
         assert_eq!(
-            secret_render_calls(body),
+            secret_render_calls(body, &names),
             vec![
                 "render_or_warn(ctx, log, \"api_key\", raw)".to_string(),
                 "render_template(&cfg.repository.token)".to_string(),
-                "render_template(&entry.password)".to_string(),
+                "render_template_opt(entry.password.as_deref())".to_string(),
+                "template::render(&entry.password, &vars)".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn a_label_is_read_from_every_secret_renderer() {
+        let body = "fn f() {\n    ctx.render_secret(&format!(\"notarize.macos[{idx}].sign.key\"), k)?;\n    \
+                    crate::util::render_secret(ctx, \"npm.token\", raw)?;\n    \
+                    resolve_secret_name(ctx, \"gemfury.secret_name\", s, \"D\")?;\n    \
+                    render_secret(field, raw, render)?;\n}";
+        assert_eq!(
+            secret_labels(body),
+            vec![
+                "notarize.macos[*].sign.key".to_string(),
+                "npm.token".to_string(),
+                "gemfury.secret_name".to_string(),
+            ]
+        );
+    }
+
+    /// The credential fields of the config are exactly the fields whose name
+    /// can hold a credential, less the ones [`NOT_A_CREDENTIAL`] names: a
+    /// new `token` or `password` field fails here until it is classified.
+    #[test]
+    fn every_credential_named_config_field_is_classified() {
+        let found = credential_named_fields();
+        let classified: BTreeSet<String> = CREDENTIAL_FIELDS
+            .iter()
+            .map(|(f, _)| *f)
+            .chain(NOT_A_CREDENTIAL.iter().map(|(f, _)| *f))
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            found.difference(&classified).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "these config fields have a credential name and are in neither \
+             CREDENTIAL_FIELDS nor NOT_A_CREDENTIAL"
+        );
+        assert_eq!(
+            classified.difference(&found).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "these classified fields are not config fields with a credential name"
         );
     }
 
     /// Every production render of a credential field goes through
     /// `render_secret`, which refuses a template that fails to render in
-    /// every mode. `render_or_warn` returns the raw template text when a
-    /// render fails outside `--strict`, so a credential rendered through it
-    /// could be sent upstream as its own template.
+    /// every mode. The labels the call sites pass are compared with the
+    /// labels [`CREDENTIAL_FIELDS`] expects, both ways: a credential routed
+    /// through a plain render takes its label away, and a new
+    /// `render_secret` site whose field is not listed adds one. A plain
+    /// render handed an unshared credential field is reported by name.
     #[test]
     fn every_secret_field_render_goes_through_render_secret() {
+        let expected: BTreeSet<String> = CREDENTIAL_FIELDS
+            .iter()
+            .flat_map(|(_, labels)| labels.iter().map(|l| l.to_string()))
+            .collect();
+        let observed = observed_labels();
+        assert_eq!(
+            expected.difference(&observed).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "no render_secret call passes these labels; the credential is rendered \
+             some other way"
+        );
+        assert_eq!(
+            observed.difference(&expected).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "these render_secret labels belong to no field in CREDENTIAL_FIELDS"
+        );
+
+        let names = unshared_credential_names();
         let mut offenders = Vec::new();
-        let mut secret_renders = 0usize;
         for source in workspace_production_sources() {
             let text = std::fs::read_to_string(&source).expect("readable source");
-            let production = production_half(&text);
-            secret_renders += production.matches("render_secret(").count();
-            for body in function_bodies(production) {
-                for call in secret_render_calls(&body) {
+            for body in function_bodies(production_half(&text)) {
+                for call in secret_render_calls(&body, &names) {
                     offenders.push(format!("{}: {call}", source.display()));
                 }
             }
         }
         assert!(
-            secret_renders > 10,
-            "the scan found {secret_renders} render_secret calls; the source list is wrong"
+            offenders.is_empty(),
+            "these render a credential field without `render_secret`:\n{}",
+            offenders.join("\n")
+        );
+    }
+}
+
+mod credential_env_reads {
+    use crate::test_helpers::test_sources::{
+        function_bodies, production_half, workspace_production_sources,
+    };
+
+    /// The endings of a variable name that holds a credential. A chat
+    /// webhook URL carries its own secret, so `*_WEBHOOK` is one too.
+    const CREDENTIAL_ENDINGS: &[&str] = &[
+        "TOKEN",
+        "KEY",
+        "PASSPHRASE",
+        "PASSWORD",
+        "SECRET",
+        "WEBHOOK",
+    ];
+
+    fn is_credential_name(name: &str) -> bool {
+        let name = name.trim_end_matches(['}', '{']);
+        CREDENTIAL_ENDINGS.iter().any(|end| name.ends_with(end))
+    }
+
+    /// The offset of the first `;` or `{` in `text` outside a string literal.
+    fn statement_end(text: &str) -> usize {
+        let mut in_str = false;
+        let mut prev = '\0';
+        for (i, c) in text.char_indices() {
+            match c {
+                '"' if prev != '\\' => in_str = !in_str,
+                ';' | '{' if !in_str => return i,
+                _ => {}
+            }
+            prev = c;
+        }
+        text.len()
+    }
+
+    /// The env reads in `body` of a credential variable that decide whether
+    /// the value is set with a bare `is_empty`, so a whitespace-only value
+    /// counts as set and a padded one is sent with its padding. The
+    /// statement holding the read is the text from the read to the next `;`
+    /// or `{`; when it binds a name with `let`, a later `<name>.is_empty()`
+    /// in the body counts too.
+    fn bare_empty_credential_reads(body: &str) -> Vec<String> {
+        let read = regex::Regex::new(
+            r#"(?:env_var|env::var|\.var|lookup|env)\(\s*&?(?:format!\()?"([A-Za-z0-9_{}]+)""#,
+        )
+        .expect("valid regex");
+        let let_binding = regex::Regex::new(
+            r"let\s+(?:Some\()?(?:mut\s+)?([a-z_][a-z0-9_]*)\)?\s*(?::[^=]+)?=[^=]*$",
+        )
+        .expect("valid regex");
+        let mut out = Vec::new();
+        for cap in read.captures_iter(body) {
+            let name = &cap[1];
+            if !is_credential_name(name) {
+                continue;
+            }
+            let start = cap.get(0).expect("whole match").start();
+            let rest = &body[start..];
+            let end = statement_end(rest);
+            let statement = &rest[..end];
+            let opening = body[..start]
+                .rfind([';', '{', '}'])
+                .map_or(&body[..start], |i| &body[i + 1..start]);
+            let mut bare = statement.contains("is_empty()");
+            if let Some(bound) = let_binding.captures(opening.trim_end()) {
+                bare |= body[start + end..].contains(&format!("{}.is_empty()", &bound[1]));
+            }
+            let trimmed = statement.contains("non_blank_token") || statement.contains("trim");
+            if bare && !trimmed {
+                out.push(statement.split_whitespace().collect::<Vec<_>>().join(" "));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_credential_env_read_with_a_bare_is_empty_is_reported() {
+        let body = r#"fn f() {
+            let a = ctx.env_var("TELEGRAM_TOKEN").filter(|s| !s.is_empty());
+            let b = ctx.env_var("CI_JOB_TOKEN").unwrap_or_default();
+            if b.is_empty() { return; }
+            if let Some(p) = ctx.env_var("SRPM_PASSPHRASE")
+                && !p.is_empty()
+            {
+            }
+            let c = ctx.env_var("GITLAB_TOKEN").as_deref().and_then(non_blank_token);
+            let d = ctx.env_var("DOCKER_USERNAME").filter(|u| !u.is_empty());
+            let e = ctx.env_var(&format!("ARTIFACTORY_{}_SECRET", n)).filter(|s| !s.is_empty());
+            let f = ctx.env_var("SLACK_WEBHOOK").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        }"#;
+        assert_eq!(
+            bare_empty_credential_reads(body),
+            vec![
+                r#"env_var("TELEGRAM_TOKEN").filter(|s| !s.is_empty())"#.to_string(),
+                r#"env_var("CI_JOB_TOKEN").unwrap_or_default()"#.to_string(),
+                r#"env_var("SRPM_PASSPHRASE") && !p.is_empty()"#.to_string(),
+                r#"env_var(&format!("ARTIFACTORY_{}_SECRET", n)).filter(|s| !s.is_empty())"#
+                    .to_string(),
+            ]
+        );
+    }
+
+    /// Every production env read of a credential variable trims the value
+    /// and treats an empty one as unset, through
+    /// [`crate::git::non_blank_token`]: GitHub Actions passes a missing
+    /// secret as `""`, and a secret pasted with a trailing newline would be
+    /// sent with it.
+    #[test]
+    fn every_credential_env_read_goes_through_non_blank_token() {
+        let mut offenders = Vec::new();
+        let mut reads = 0usize;
+        for source in workspace_production_sources() {
+            let text = std::fs::read_to_string(&source).expect("readable source");
+            for body in function_bodies(production_half(&text)) {
+                reads += body.matches("non_blank_token").count();
+                for read in bare_empty_credential_reads(&body) {
+                    offenders.push(format!("{}: {read}", source.display()));
+                }
+            }
+        }
+        assert!(
+            reads > 0,
+            "the scan found no non_blank_token call; the source list is wrong"
         );
         assert!(
             offenders.is_empty(),
-            "these render a credential field without `render_secret`:\n{}",
+            "these read a credential variable and test it with a bare `is_empty`; \
+             read it through `anodizer_core::git::non_blank_token`:\n{}",
             offenders.join("\n")
         );
     }

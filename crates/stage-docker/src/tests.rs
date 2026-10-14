@@ -556,7 +556,7 @@ fn test_parse_duration_string_invalid_suffix() {
 
 /// The docker delays read the config duration format: hours, days and
 /// compound terms load, a number too large to multiply is an error naming
-/// the value instead of an overflow, and one year is the longest delay.
+/// the value and does not overflow, and one year is the longest delay.
 #[test]
 fn docker_retry_delays_read_the_config_duration_format_and_its_cap() {
     assert_eq!(
@@ -7091,6 +7091,7 @@ mod oci_labels {
         let wall_clock_now = anodizer_core::sde::resolve_now_with_env(
             &anodizer_core::env_source::MapEnvSource::new(),
         )
+        .unwrap()
         .to_rfc3339();
         assert_ne!(
             first.as_deref(),

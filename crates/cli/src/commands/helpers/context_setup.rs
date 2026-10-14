@@ -261,9 +261,15 @@ pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) {
     // EnvSource indirection lets tests build a `Context` via
     // `TestContextBuilder::env(...)` and drive every branch without
     // mutating process env.
-    let env_hint = if ctx.env_var("GITLAB_TOKEN").is_some() {
+    let is_set = |name: &str| {
+        ctx.env_var(name)
+            .as_deref()
+            .and_then(anodizer_core::git::non_blank_token)
+            .is_some()
+    };
+    let env_hint = if is_set("GITLAB_TOKEN") {
         Some("gitlab")
-    } else if ctx.env_var("GITEA_TOKEN").is_some() {
+    } else if is_set("GITEA_TOKEN") {
         Some("gitea")
     } else {
         None

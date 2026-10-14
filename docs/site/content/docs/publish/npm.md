@@ -311,7 +311,7 @@ current runner, it publishes **without** provenance, emits a warning, and the re
 goes on. The package still ships; only the provenance attestation is absent.
 
 To keep provenance, run npm on a separate GitHub-hosted job. Anodizer's own release does
-exactly this — and peels **every** publisher that authenticates from a GitHub Actions
+exactly this, and moves **every** publisher that authenticates from a GitHub Actions
 OIDC identity onto one hosted workflow: npm (provenance), pypi ([Trusted
 Publishing](./pypi.md#trusted-publishing-oidc)), and cargo ([crates.io Trusted
 Publishing](./crates-io.md#trusted-publishing-oidc)). The main publish runs on a
@@ -325,8 +325,8 @@ trigger — use push, release, or workflow_dispatch"`). The OIDC `event_name` cl
 fixed per workflow-run, so no job inside `release.yml` can present an accepted trigger.
 `publish-oidc.yml` is `on: workflow_dispatch` — an accepted trigger — and `release.yml`
 dispatches it after the main publish succeeds, then waits on its verdict. npm alone is
-unaffected (its provenance only *records* the trigger and does not gate on it), but it rides
-the same hosted workflow so a single job owns the whole OIDC surface.
+unaffected (its provenance only *records* the trigger and does not gate on it), but it runs in
+the same hosted workflow so a single job owns every OIDC publisher.
 
 ```yaml
 # not an anodizer config
