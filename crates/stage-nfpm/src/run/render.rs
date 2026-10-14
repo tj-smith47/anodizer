@@ -5,7 +5,7 @@ use super::*;
 /// One per-platform package group: `(target, amd64_variant, binary_paths,
 /// library_paths)`. The amd64 micro-architecture variant is part of the key so
 /// two amd64 builds of one triple (baseline + e.g. `v3`) form separate groups
-/// and each emits its own package instead of silently clobbering.
+/// and each emits its own package; neither overwrites the other.
 pub(crate) type PlatformGroup = (
     Option<String>,
     Option<String>,
@@ -384,16 +384,16 @@ pub(crate) fn render_nfpm_config_fields(
 
 /// Default the package `mtime` to `SOURCE_DATE_EPOCH` when the user leaves it
 /// unset, so nfpm stamps reproducible archive-entry timestamps into the
-/// .deb/.rpm payload instead of wall-clock.
+/// .deb/.rpm payload.
 ///
 /// Setting the top-level `mtime:` is the one knob that fixes the in-payload
 /// bytes: it governs every content entry's mtime AND the RPM header's
 /// BUILDTIME (verified empirically — an explicit `mtime` alone makes nfpm's
 /// .rpm byte-identical across builds with no `SOURCE_DATE_EPOCH` in the
 /// subprocess env). The post-build `set_file_mtime` only touches the outer
-/// file's filesystem mtime, never the bytes. Doing it in anodizer (rather
-/// than relying on nfpm's own env-`SOURCE_DATE_EPOCH` support) makes the
-/// pin version-independent across nfpm releases.
+/// file's filesystem mtime and leaves the bytes alone. Setting it in anodizer, with no
+/// reliance on nfpm's own env-`SOURCE_DATE_EPOCH` support, gives the same
+/// timestamp on every nfpm release.
 ///
 /// Gated on SDE being present so non-harness production runs keep nfpm's
 /// default behavior, mirroring the srpm stage's BUILDTIME clamp.
@@ -466,7 +466,7 @@ fn process_templated_contents(
 }
 
 /// The per-config staging root `<dist>/nfpm-tmp/<crate>/<nfpm_id>` where
-/// templated contents/scripts and pinned script copies live. An unnamed config
+/// templated contents/scripts and fixed-mtime script copies live. An unnamed config
 /// falls back to the `default` id.
 fn nfpm_tmp_dir(
     dist: &std::path::Path,
@@ -478,7 +478,7 @@ fn nfpm_tmp_dir(
 }
 
 /// Stage every lifecycle script into an anodizer-owned dir with its mtime
-/// pinned to the package's resolved `mtime`, then rewrite each script field to
+/// set to the package's resolved `mtime`, then rewrite each script field to
 /// the staged path.
 ///
 /// nfpm's `mtime:` field normalizes script timestamps inside the deb/rpm
@@ -488,11 +488,11 @@ fn nfpm_tmp_dir(
 /// harness checks the script out in two separate hermetic worktrees, so git
 /// sets two different checkout-time mtimes, the signed apk control segment
 /// differs between the rebuilds, and the harness flags a false repro
-/// regression. Copying each script to a pinned-mtime path before nfpm reads it
+/// regression. Copying each script to a fixed-mtime path before nfpm reads it
 /// makes the apk byte-stable without mutating the user's working tree; deb/rpm
 /// are unaffected (they normalize internally). No-op in dry-run, when no
 /// scripts are set, or when `mtime` is unset/unparseable (the package is not
-/// reproducible-by-config anyway, and `build_nfpm_job` surfaces the parse
+/// reproducible-by-config anyway, and `build_nfpm_job` reports the parse
 /// warning).
 pub(crate) fn pin_nfpm_script_mtimes(
     rendered_cfg: &mut anodizer_core::config::NfpmConfig,
@@ -521,7 +521,7 @@ pub(crate) fn pin_nfpm_script_mtimes(
         };
         if !dir_ready {
             fs::create_dir_all(&staged_dir).with_context(|| {
-                format!("nfpm: create script-pin dir: {}", staged_dir.display())
+                format!("nfpm: create script staging dir: {}", staged_dir.display())
             })?;
             dir_ready = true;
         }
@@ -533,7 +533,7 @@ pub(crate) fn pin_nfpm_script_mtimes(
             )
         })?;
         anodizer_core::util::set_file_mtime(&staged, mt)
-            .with_context(|| format!("nfpm: pin mtime on staged script {}", staged.display()))?;
+            .with_context(|| format!("nfpm: set mtime on staged script {}", staged.display()))?;
         *field = Some(staged.to_string_lossy().into_owned());
         Ok(())
     };

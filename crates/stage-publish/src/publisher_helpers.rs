@@ -14,13 +14,13 @@
 //!
 //! [`rollback_empty_warning_msg`] returns the exact message a publisher
 //! emits when `rollback()` is invoked with no evidence to act on. Exposed
-//! as a free function so unit tests can pin the wording without needing to
+//! as a free function so unit tests can check the wording without needing to
 //! capture stderr (`eprintln!` cannot be intercepted from the same process
 //! portably). Publishers whose `rollback()` is a no-op when evidence is
 //! empty call this helper for the user-facing warn line.
 //!
 //! [`is_top_level_block_configured`] is the canonical shape for the
-//! `is_X_configured` predicates that walk a `Option<Vec<_>>` field on
+//! `is_X_configured` predicates that read a `Option<Vec<_>>` field on
 //! [`anodizer_core::config::Config`]: a publisher counts as configured iff
 //! the field is `Some` and the inner vec is non-empty. Empty-vec keeps the
 //! field present in serialized config but disables the publisher, matching
@@ -37,7 +37,7 @@ pub(crate) use anodizer_core::rollback_empty_warning_msg;
 /// Why an entry is disqualified when its `repository:` names no `owner`/`name`
 /// pair: the index it pushes to (tap, bucket, overlay, plugin index, winget
 /// fork) has nowhere to go, but every sibling entry can still publish, so
-/// the entry is skipped rather than failing the publisher.
+/// the entry is skipped and the publisher continues.
 ///
 /// One spelling for every publisher, so the same defect reads the same way in
 /// the run summary whichever publisher hit it.
@@ -90,7 +90,7 @@ pub(crate) fn is_any_crate_block_configured<T>(
 /// Operator-facing publisher-entry line for a per-crate publisher: names
 /// the publisher and how many selected crates it is scanning. One format
 /// string for every per-crate publisher, so the `starting … publish —
-/// scanning` family stays a single grep surface (per-file copies kept the
+/// scanning` family stays a single grep target (per-file copies kept the
 /// wording aligned only by copy discipline, and upstream-AUR shipped with
 /// no entry line at all).
 pub(crate) fn run_start_message(publisher: &str, selected_total: usize) -> String {
@@ -148,8 +148,8 @@ pub(crate) fn run_no_eligible_crates_warning(publisher: &str, selected_total: us
 }
 
 /// As [`run_no_eligible_crates_warning`], for a publisher with a second
-/// configuration surface: `also_missing` extends the diagnosis clause and
-/// `also_fix` the remediation clause, so an operator on that surface learns it
+/// configuration block: `also_missing` extends the diagnosis clause and
+/// `also_fix` the remediation clause, so an operator using that block learns it
 /// satisfies the publisher too.
 pub(crate) fn run_no_eligible_crates_warning_with(
     publisher: &str,
@@ -174,8 +174,8 @@ pub(crate) fn run_no_eligible_crates_warning_with(
 
 /// Operator-facing line for a selected crate that carries no
 /// `publish.<X>` block. Replaces what used to be a silent `continue` —
-/// operators need to see why a per-crate publish was a no-op rather than
-/// guess from a blank log. Shared wording for the same reason as
+/// operators need to see why a per-crate publish was a no-op; a blank log
+/// leaves them guessing. Shared wording for the same reason as
 /// [`run_start_message`].
 pub(crate) fn no_config_block_message(publisher: &str, crate_name: &str) -> String {
     format!("skipped {publisher} for crate '{crate_name}' — no {publisher} config block")
@@ -417,7 +417,7 @@ pub(crate) fn effective_publish_crates(
 /// Fails loud when `crate_name` is absent from the crate universe, or when
 /// the crate has no resolvable tag matching its `tag_template`: a per-crate
 /// emission stamped with the wrong (first-crate) version ships a broken
-/// artifact, so the error must surface locally rather than be papered over.
+/// artifact, so the error must be reported locally.
 ///
 /// `resolve_tag` is the per-crate tag source — production passes
 /// [`anodizer_core::crate_scope::resolve_crate_tag`]; tests inject a
@@ -445,7 +445,7 @@ pub(crate) fn with_published_crate_scope<T>(
 
 /// Hand the dispatcher what a failing `run` had already committed.
 ///
-/// A publisher that walks several entries (crates, objects, taps) can push
+/// A publisher that handles several entries (crates, objects, taps) can push
 /// the first and fail on the second. Its `Err` return carries no evidence,
 /// so without this the pushed entry is missing from the run report and
 /// `anodizer tag rollback` leaves it live. On `Err`, `committed` builds the
@@ -544,11 +544,11 @@ pub(crate) fn rollback_failure_warning_msg(
 /// `required`, and `rollback_scope_needed` plus a `resolved_required()`
 /// helper that combines the config override with `PUBLISHER_REQUIRED`.
 ///
-/// Why constants on an inherent impl, not a `Publisher` impl? Rust requires
+/// The constants live on an inherent impl because Rust requires
 /// a trait impl to live in a single `impl Trait for Type { ... }` block,
 /// so `name`/`group`/`required`/`rollback_scope_needed` cannot be split
 /// (constants) away from `run`/`rollback`/`preflight` (per-publisher
-/// bodies). Instead, the macro pins the constants on the struct itself
+/// bodies). So the macro places the constants on the struct itself
 /// and each publisher's `impl Publisher for $struct { ... }` block just
 /// forwards to them.
 ///
@@ -647,11 +647,6 @@ macro_rules! simple_publisher {
         }
     };
 }
-
-// ---------------------------------------------------------------------------
-// Preflight requirement helpers shared by the per-publisher
-// `Publisher::requirements` implementations
-// ---------------------------------------------------------------------------
 
 /// Derive the env requirement for a git/GitHub-repo-backed publisher's
 /// token, mirroring `util::resolve_repo_token`'s chain: `repo.token`
@@ -799,7 +794,7 @@ pub(crate) fn pull_request_enabled(repo: Option<&anodizer_core::config::Reposito
 }
 
 /// Requirement for a secret resolved as "templated config value, else the
-/// env vars `fallback_env` in order" ([`crate::util::config_or_env_secret`]
+/// env vars `fallback_env` in order" ([`Context::config_or_env_secret`](anodizer_core::context::Context::config_or_env_secret)
 /// and [`resolve_token_with_ladder`]): nothing when the config holds a
 /// literal, any one of the fallback vars when the config value is absent or
 /// blank, and any one of the config value's `{{ .Env.X }}` references or the
@@ -838,46 +833,29 @@ pub(crate) fn resolve_token_with_ladder(
     field: &str,
     env_ladder: &[&str],
 ) -> anyhow::Result<String> {
-    Ok(resolve_token_with_ladder_tracked(ctx, configured, field, env_ladder)?.0)
-}
-
-/// As [`resolve_token_with_ladder`], but also reports WHICH env var supplied
-/// the token: `(value, Some(var))` for an env-ladder hit, `(value, None)` for
-/// a rendered `configured` value (no single env var), `("", None)` when
-/// nothing resolves. Publishers that persist the resolving env var into
-/// rollback evidence (homebrew-core) need the second element; those that only
-/// need the value call the wrapper above.
-pub(crate) fn resolve_token_with_ladder_tracked(
-    ctx: &anodizer_core::context::Context,
-    configured: Option<&str>,
-    field: &str,
-    env_ladder: &[&str],
-) -> anyhow::Result<(String, Option<String>)> {
     if let Some(raw) = configured {
         let rendered = crate::util::render_secret(ctx, field, raw)?;
         if !rendered.is_empty() {
-            return Ok((rendered, None));
+            return Ok(rendered);
         }
     }
     let env = ctx.env_source();
-    for var in env_ladder {
-        if let Some(v) = env
-            .var(var)
-            .as_deref()
-            .and_then(anodizer_core::git::non_blank_token)
-        {
-            return Ok((v, Some((*var).to_string())));
-        }
-    }
-    Ok((String::new(), None))
+    Ok(env_ladder
+        .iter()
+        .find_map(|var| {
+            env.var(var)
+                .as_deref()
+                .and_then(anodizer_core::git::non_blank_token)
+        })
+        .unwrap_or_default())
 }
 
 /// True when a publisher entry is statically inactive for this run: its
 /// `skip:` / `skip_upload:` evaluates truthy, or its `if:` condition
 /// renders falsy. Mirrors the run-path gating for requirement derivation —
 /// a `skip: true` entry must not demand credentials from preflight.
-/// Anything unrenderable is treated as ACTIVE so preflight over-collects
-/// rather than silently under-collecting.
+/// Anything unrenderable is treated as ACTIVE so preflight over-collects;
+/// under-collecting would be silent.
 pub(crate) fn entry_inactive(
     ctx: &anodizer_core::context::Context,
     skip: Option<&anodizer_core::config::StringOrBool>,
@@ -1020,7 +998,7 @@ mod tests {
     fn a_publisher_named_like_a_sub_label_is_not_covered_by_its_neighbours_evaluator() {
         assert!(
             !skip_label_belongs_to("homebrew-core", "homebrew"),
-            "homebrew-core is a publisher token, not a homebrew sub-label"
+            "homebrew-core is a publisher token and no homebrew sub-label"
         );
         let ctx = anodizer_core::test_helpers::TestContextBuilder::new().build();
         ctx.remember_skip("homebrew-core", "widget", "no formula path");
@@ -1032,7 +1010,7 @@ mod tests {
 
     /// The exclusion is scoped to publisher tokens: a genuine sub-label still
     /// resolves to the publisher that owns it, so an over-broad rule drops
-    /// `homebrew-cask` skips instead of reporting them.
+    /// `homebrew-cask` skips without reporting them.
     #[test]
     fn a_genuine_sub_label_still_resolves_to_its_publisher() {
         assert!(
@@ -1065,7 +1043,7 @@ mod tests {
                 "no cask repository".to_string(),
                 "no tap repository".to_string()
             ],
-            "homebrew-core is a publisher, not a homebrew sub-label"
+            "homebrew-core is a publisher and no homebrew sub-label"
         );
         assert_eq!(
             entry_skip_reasons(&ctx, "homebrew-core"),
@@ -1149,7 +1127,7 @@ mod tests {
         );
     }
 
-    /// Walk the crate's production sources and pair the two halves of the
+    /// Read the crate's production sources and pair the two halves of the
     /// entry-skip contract: a publisher that can disqualify one entry must
     /// also evaluate its skips at the end of the run, or a misconfigured
     /// entry reads as a successful publisher in the run summary. A new
@@ -1198,7 +1176,7 @@ mod tests {
 
         assert!(
             !skipping.is_empty() && !evaluated.is_empty(),
-            "the walk found no call sites: skipping={skipping:?} evaluated={evaluated:?}"
+            "the scan found no call sites: skipping={skipping:?} evaluated={evaluated:?}"
         );
         for stage in &skipping {
             assert!(
@@ -1264,12 +1242,12 @@ mod tests {
         assert!(
             raised >= 10,
             "the raised entry_skip population shrank to {raised}; a rename \
-             likely slipped the walk"
+             likely slipped the scan"
         );
         assert!(
             recorded >= 4,
             "the recorded entry-skip population shrank to {recorded}; a rename \
-             likely slipped the walk"
+             likely slipped the scan"
         );
         assert!(
             offenders.is_empty(),
@@ -1280,7 +1258,7 @@ mod tests {
     }
 
     /// A missing `repository:` disqualifies ONE entry, never the run: every
-    /// per-entry publisher turns it into an entry skip rather than an error.
+    /// per-entry publisher turns it into an entry skip.
     ///
     /// `every_entry_skipping_publisher_evaluates_its_skips` cannot see this —
     /// it pairs recording with evaluating, and a publisher that raises a hard
@@ -1297,7 +1275,7 @@ mod tests {
         };
 
         // The one block-level `repository:` in the workspace. schemastore
-        // publishes a single fork for the whole run, not one entry per crate,
+        // publishes a single fork for the whole run with no per-crate entries,
         // so there is no sibling entry a hard error could strand.
         const BLOCK_LEVEL: &str = "schemastore";
 
@@ -1329,7 +1307,7 @@ mod tests {
         assert!(
             checked >= 19,
             "the resolve_repo_owner_name population shrank to {checked}; a rename \
-             likely slipped the walk"
+             likely slipped the scan"
         );
         assert!(
             offenders.is_empty(),
@@ -1486,7 +1464,7 @@ mod tests {
         );
         assert_eq!(
             handing_over, 18,
-            "the publisher population changed; a rename likely slipped the walk"
+            "the publisher population changed; a rename likely slipped the scan"
         );
     }
 
@@ -1765,7 +1743,7 @@ mod tests {
     }
 
     #[test]
-    fn effective_publish_crates_implicit_all_walks_configured_crates() {
+    fn effective_publish_crates_implicit_all_scans_configured_crates() {
         use anodizer_core::config::{CrateConfig, PublishConfig};
         use anodizer_core::test_helpers::TestContextBuilder;
         let ctx = TestContextBuilder::new()
@@ -1821,7 +1799,7 @@ mod tests {
         assert!(is_top_level_block_configured(Some(&one)));
     }
 
-    /// `effective_publish_crates` must surface workspace-only crates under
+    /// `effective_publish_crates` must return workspace-only crates under
     /// implicit-all. A crate living exclusively in `workspaces[].crates` (not
     /// in `config.crates`) that carries a publisher block must be returned
     /// when no explicit `--crate` selection is present — matching the behavior
@@ -1857,11 +1835,11 @@ mod tests {
         );
     }
 
-    /// One pin for the cross-publisher operator-line wording. Every
+    /// One test for the cross-publisher operator-line wording. Every
     /// per-crate publisher (krew, nix, homebrew, scoop, aur, chocolatey,
     /// winget, aur_source) formats its entry + no-config-block lines
     /// through these helpers, so this single test replaces the per-file
-    /// copies that kept the `starting … publish — scanning` grep surface
+    /// copies that kept the `starting … publish — scanning` grep target
     /// aligned only by copy discipline.
     #[test]
     fn shared_operator_line_wording_is_stable() {

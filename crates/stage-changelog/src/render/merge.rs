@@ -352,11 +352,10 @@ pub(crate) fn push_compare_footer(
 /// remote when the KAC file lacks one.
 ///
 /// The compare base is derived from the actual `origin` URL host, so a
-/// self-hosted GitLab/Gitea KAC file gets a host-correct link rather than a
-/// hardcoded `github.com` one (mirroring how the roll path preserves whatever
-/// base an existing footer used). Skips gracefully (no footer appended) when
-/// the previous tag or the remote cannot be resolved — a missing remote must
-/// never fail the render.
+/// self-hosted GitLab/Gitea KAC file gets a host-correct link (mirroring how
+/// the roll path preserves whatever base an existing footer used). Skips
+/// gracefully (no footer appended) when the previous tag or the remote cannot
+/// be resolved: a missing remote does not fail the render.
 pub(crate) fn synthesize_footer(
     out_lines: &mut Vec<String>,
     from_tag: Option<&str>,

@@ -3154,7 +3154,7 @@
       ]
     },
     "CargoAuthMode": {
-      "description": "How a `publish.cargo` block authenticates its `cargo publish`: a long-lived crates.io API token, or GitHub Actions OIDC (crates.io Trusted Publishing, which creates a short-lived token per run — no stored secret).\n\ncrates.io publishes through the `cargo` CLI, but the Trusted-Publishing exchange (Actions id-token → crates.io mint-token) is performed by anodizer itself: it creates one token before the dependency-order publish loop, supplies it to every `cargo publish` via `CARGO_REGISTRY_TOKEN`, and revokes it (best-effort) after the loop. The issued token is workspace-scoped, so a single token authorizes every crate whose Trusted-Publisher config matches this repository/workflow.",
+      "description": "How a `publish.cargo` block authenticates its `cargo publish`: a long-lived crates.io API token, or GitHub Actions OIDC (crates.io Trusted Publishing, which creates a short-lived token per run — no stored secret).\n\ncrates.io publishes through the `cargo` CLI, but the Trusted-Publishing exchange (Actions id-token → crates.io publish token) is performed by anodizer itself: it creates one token before the dependency-order publish loop, supplies it to every `cargo publish` via `CARGO_REGISTRY_TOKEN`, and revokes it (best-effort) after the loop. The issued token is workspace-scoped, so a single token authorizes every crate whose Trusted-Publisher config matches this repository/workflow.",
       "oneOf": [
         {
           "description": "Use a token when one is available (`CARGO_REGISTRY_TOKEN`); otherwise, when an OIDC context is present, create a Trusted-Publishing token. Errors only when neither is available.",
@@ -5881,7 +5881,7 @@
           ]
         },
         "stdin": {
-          "description": "Content written to the signing command's stdin. Rendered as a template with nothing substituted first, so neither `{{ .Artifact }}` nor `${artifact}` names anything here.",
+          "description": "Content written to the signing command's stdin. Rendered as a template with nothing substituted first, so neither `{{ .Artifact }}` nor `${artifact}` names anything here. The rendered value is a credential: leading and trailing whitespace is removed, and a template that does not render is an error naming `docker_signs[<id>].stdin` without the template's text.",
           "default": null,
           "type": [
             "string",
@@ -12439,7 +12439,7 @@
       "additionalProperties": false
     },
     "PostPublishPollConfig": {
-      "description": "Per-publisher post-publish polling config block.\n\nSee module-level docs for the polling lifecycle. Default values: `enabled: true`, `interval: 30s`, `timeout: 30m`.",
+      "description": "Per-publisher post-publish polling config block.\n\nA submission is accepted long before the package is approved (the Chocolatey moderation queue) or merged (the winget-pkgs validation pipeline). With polling enabled, the publish stage checks the upstream state every `interval` until it reaches a final state or `timeout` passes, and reports the result in the release summary. Default values: `enabled: false`, `interval: 30s`, `timeout: 30m`.",
       "type": "object",
       "properties": {
         "enabled": {
@@ -12998,7 +12998,7 @@
           ]
         },
         "token": {
-          "description": "Token used to open the pull request. Supports templates. A value that renders blank falls through to `repository.token`, then the publisher's own variable (`HOMEBREW_TAP_TOKEN`, `SCOOP_BUCKET_TOKEN`, `KREW_INDEX_TOKEN`, …), then the run's GitHub token (`--token`), then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. Set it when the token that pushes to the fork may not open pull requests against the upstream repository (a fine-grained token scoped to the fork beside a classic token for `microsoft/winget-pkgs`, for example).\n\n```yaml\nrepository:\n  token: \"{{ .Env.FORK_TOKEN }}\"\n  pull_request:\n    enabled: true\n    token: \"{{ .Env.UPSTREAM_PR_TOKEN }}\"\n```",
+          "description": "Token used to open the pull request. Supports templates. Unset, or set to a value that renders blank, it falls through to `repository.token`, then the publisher's own variables (`HOMEBREW_TAP_TOKEN`, `SCOOP_BUCKET_TOKEN`, `KREW_INDEX_TOKEN`, `HOMEBREW_CORE_GITHUB_TOKEN` then `COMMITTER_TOKEN`, …), then the run's GitHub token (`--token`) on a GitHub run, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. Every publisher that opens a pull request reads this one order. Set it when the token that pushes to the fork may not open pull requests against the upstream repository (a fine-grained token scoped to the fork beside a classic token for `microsoft/winget-pkgs`, for example).\n\n```yaml\nrepository:\n  token: \"{{ .Env.FORK_TOKEN }}\"\n  pull_request:\n    enabled: true\n    token: \"{{ .Env.UPSTREAM_PR_TOKEN }}\"\n```",
           "default": null,
           "type": [
             "string",
@@ -14477,7 +14477,7 @@
           ]
         },
         "stdin": {
-          "description": "Content written to the signing command's stdin.",
+          "description": "Content written to the signing command's stdin (e.g. a passphrase), rendered as a template (`{{ Env.GPG_PASSPHRASE }}`). The rendered value is a credential: leading and trailing whitespace is removed, and a template that does not render is an error naming `signs[<id or index>].stdin` without the template's text.",
           "default": null,
           "type": [
             "string",

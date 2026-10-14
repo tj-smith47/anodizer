@@ -97,8 +97,6 @@ fn test_tera_missing_var() {
     assert!(result.is_err());
 }
 
-// --- Custom filters and extended template tests ---
-
 #[test]
 fn test_conditional_true() {
     let mut vars = test_vars();
@@ -148,7 +146,7 @@ fn test_english_join_pipe_form_on_structured_var() {
     // Regression guard: the changelog renderer publishes per-entry
     // `LoginsList` / `AuthorsList` via `set_structured`, then user format
     // templates pipe through `englishJoin`. Existing englishJoin tests
-    // only exercised inline-literal arrays — pin the
+    // only exercised inline-literal arrays — this checks the
     // `set_structured(...) → {{ Var | englishJoin }}` path so that
     // contract doesn't regress.
     let mut vars = test_vars();
@@ -233,8 +231,6 @@ fn test_filter_chaining() {
     let result = render("{{ Tag | trimprefix(prefix=\"v\") | upper }}", &vars).unwrap();
     assert_eq!(result, "1.2.3");
 }
-
-// ---- Error path tests: unknown filter / parse failures ----
 
 #[test]
 fn test_unknown_filter_error() {
@@ -378,8 +374,6 @@ fn test_mismatched_endfor_with_if_error() {
     );
 }
 
-// ---- Error path tests: undefined variables ----
-
 #[test]
 fn test_undefined_variable_error_mentions_variable() {
     let vars = test_vars();
@@ -471,8 +465,6 @@ fn test_multiple_errors_in_template() {
         "empty if condition should produce an error"
     );
 }
-
-// ---- envOrDefault and isEnvSet function tests ----
 
 #[test]
 fn test_env_or_default_reads_from_template_env_map() {
@@ -607,7 +599,6 @@ fn test_is_env_set_missing_name_error() {
     assert!(result.is_err(), "isEnvSet without name should error");
 }
 
-// ---- Hash function tests (known-answer vectors) ----
 // Hash functions read file contents, so tests use temp files.
 
 fn hash_test_file() -> (tempfile::TempDir, String) {
@@ -696,8 +687,6 @@ fn test_hash_missing_s_arg_error() {
     );
 }
 
-// ---- Version increment tests ----
-
 #[test]
 fn test_incpatch() {
     let vars = test_vars();
@@ -733,11 +722,11 @@ fn test_incpatch_handles_prerelease() {
     assert_eq!(result, "1.2.4");
 }
 
-// Q-bump1: non-semver input must hard-error rather than silently
-// returning "0.0.1" / "0.1.0" / "1.0.0". A non-semver input panics on parse.
+// Non-semver input must hard-error; a silent fallback to
+// "0.0.1" / "0.1.0" / "1.0.0" would hide the mistake. A non-semver input panics on parse.
 //
 // `render()` wraps the underlying Tera error in `anyhow::Error`, so the
-// source chain is walked to find the actual semver-validation message.
+// source chain is read to find the actual semver-validation message.
 fn err_chain(err: &anyhow::Error) -> String {
     let mut s = String::new();
     s.push_str(&format!("{}", err));
@@ -793,8 +782,6 @@ fn test_incmajor_rejects_alpha_component() {
     assert!(err_chain(&err).contains("not a valid semver"));
 }
 
-// ---- readFile / mustReadFile tests ----
-
 #[test]
 fn test_read_file_existing() {
     let dir = tempfile::tempdir().unwrap();
@@ -849,8 +836,6 @@ fn test_must_read_file_nonexistent_errors() {
     );
 }
 
-// ---- Path filter tests ----
-
 #[test]
 fn test_dir_filter() {
     let mut vars = test_vars();
@@ -866,8 +851,6 @@ fn test_base_filter() {
     let result = render("{{ FilePath | base }}", &vars).unwrap();
     assert_eq!(result, "baz.txt");
 }
-
-// ---- urlPathEscape tests ----
 
 #[test]
 fn test_url_path_escape_spaces() {
@@ -885,8 +868,6 @@ fn test_url_path_escape_encodes_slashes() {
     assert_eq!(result, "foo%2Fbar");
 }
 
-// ---- mdv2escape tests ----
-
 #[test]
 fn test_mdv2escape() {
     let mut vars = test_vars();
@@ -894,8 +875,6 @@ fn test_mdv2escape() {
     let result = render("{{ Input | mdv2escape }}", &vars).unwrap();
     assert_eq!(result, "hello\\_world");
 }
-
-// ---- ruby_escape tests ----
 
 #[test]
 fn test_ruby_escape_quote_and_backslash() {
@@ -909,7 +888,7 @@ fn test_ruby_escape_quote_and_backslash() {
 }
 
 #[test]
-fn ruby_escape_str_matches_goreleaser() {
+fn ruby_escape_str_escapes_quotes_backslashes_and_interpolation() {
     use crate::template::ruby_escape_str;
 
     assert_eq!(ruby_escape_str(r#"a"b"#), r#"a\"b"#);
@@ -937,8 +916,6 @@ fn test_ruby_escape_plain_string_unchanged() {
     assert_eq!(result, "no special chars here");
 }
 
-// ---- contains tests ----
-
 #[test]
 fn test_contains_true() {
     let vars = test_vars();
@@ -960,8 +937,6 @@ fn test_contains_false() {
     .unwrap();
     assert_eq!(result, "no");
 }
-
-// ---- englishJoin tests ----
 
 #[test]
 fn test_english_join_zero_items() {
@@ -1003,8 +978,6 @@ fn test_english_join_three_items_no_oxford() {
     assert_eq!(result, "a, b and c");
 }
 
-// ---- filter / reverseFilter tests ----
-
 #[test]
 fn test_filter_keeps_matches() {
     let vars = test_vars();
@@ -1032,11 +1005,10 @@ fn test_reverse_filter_removes_matches() {
     assert!(!result.contains("avocado"));
 }
 
-// Q15.2 — `filter` and `reverseFilter` must return an error (not panic)
-// when the user supplies an invalid regex. A POSIX regex compiler
-// (panicking) with `regexp.CompilePOSIX` (returning error). Rust's
+// `filter` and `reverseFilter` must return an error, with no panic,
+// when the user supplies an invalid regex. Rust's
 // `regex::Regex::new` already returns `Result`, so this contract is
-// panic-free by construction; this test pins it.
+// panic-free by construction; this test checks it.
 #[test]
 fn test_filter_function_invalid_regex_returns_error() {
     let vars = test_vars();
@@ -1109,8 +1081,6 @@ fn test_reverse_filter_pipe_invalid_regex_returns_error() {
         "expected 'invalid regex' in error chain, got: {err}"
     );
 }
-
-// ---- indexOrDefault tests ----
 
 #[test]
 fn test_index_or_default_key_exists() {
@@ -1197,8 +1167,6 @@ fn test_index_or_default_function_missing_map_arg_errors() {
     );
 }
 
-// ---- filter / reverseFilter pipe-form line filtering ----
-
 #[test]
 fn test_filter_pipe_keeps_matching_lines() {
     // The successful filtering branch of the `filter` pipe closure (a multiline
@@ -1231,8 +1199,6 @@ fn test_now_format_filter_missing_format_arg_errors() {
     );
 }
 
-// ---- Runtime vars test ----
-
 #[test]
 fn test_runtime_goos_renders() {
     let mut vars = test_vars();
@@ -1243,8 +1209,6 @@ fn test_runtime_goos_renders() {
         "Runtime.Goos should render to a non-empty string"
     );
 }
-
-// ---- Custom variables (.Var.*) tests ----
 
 #[test]
 fn test_custom_var_tera_style() {
@@ -1323,15 +1287,13 @@ fn test_custom_var_empty_map_conditional() {
 #[test]
 fn test_custom_var_with_template_in_value() {
     // Verify that custom var values can themselves be template-rendered
-    // (the render happens in the CLI wiring; the end result is what is pinned here)
+    // (the render happens in the CLI wiring; the end result is what is asserted here)
     let mut vars = test_vars();
     // Simulate a pre-rendered value (as the CLI would do)
     vars.set_custom_var("version_string", "cfgd v1.2.3");
     let result = render("{{ .Var.version_string }}", &vars).unwrap();
     assert_eq!(result, "cfgd v1.2.3");
 }
-
-// ---- Go-style positional syntax tests ----
 
 #[test]
 fn test_positional_replace_standalone() {
@@ -1475,7 +1437,7 @@ fn test_positional_replace_both_quoted_args() {
 
 #[test]
 fn test_positional_split_literal_string() {
-    // split with a literal string instead of a variable
+    // split with a literal string as the separator
     let vars = test_vars();
     let result = render("{{ split \"a.b.c\" \".\" }}", &vars).unwrap();
     assert!(result.contains("a"));
@@ -1531,8 +1493,6 @@ fn test_chained_named_filter_then_positional_rewrite() {
     let result = render(input, &vars).unwrap();
     assert_eq!(result, "1-2-3");
 }
-
-// ---- `in` function tests ----
 
 #[test]
 fn test_in_list_contains_value() {
@@ -1660,8 +1620,6 @@ fn test_in_missing_value_arg_error() {
     assert!(result.is_err(), "in without value should error");
 }
 
-// ---- `reReplaceAll` function tests ----
-
 #[test]
 fn test_re_replace_all_basic() {
     let vars = test_vars();
@@ -1687,7 +1645,7 @@ fn test_re_replace_all_with_capture_groups() {
 }
 
 #[test]
-fn test_re_replace_all_capture_group_goreleaser_style() {
+fn test_re_replace_all_capture_group_docs_example() {
     // Mimics the docs example:
     // reReplaceAll "(.*) \(#(.*)\)" .Message "$1 [#$2](url/$2)"
     let mut vars = test_vars();
@@ -1831,8 +1789,6 @@ fn test_re_replace_all_filter_invalid_regex_error() {
     );
 }
 
-// --- Finding 7: `in` with numeric values ---
-
 #[test]
 fn test_in_numeric_value_as_string() {
     // in(items=[1, 2, 3], value="2") — string needle matches numeric item via stringification
@@ -1868,8 +1824,6 @@ fn test_in_numeric_value_not_found() {
     assert_eq!(result, "no");
 }
 
-// --- Finding 8: `reReplaceAll` with empty input ---
-
 #[test]
 fn test_re_replace_all_empty_input() {
     let vars = test_vars();
@@ -1882,8 +1836,6 @@ fn test_re_replace_all_empty_input() {
     assert_eq!(result, "x");
 }
 
-// --- Finding 9: `in` keyword conflict in {% set %} context ---
-
 #[test]
 fn test_in_set_context_keyword_conflict() {
     // Verify that `in` as a function name works inside `{% set %}` assignment.
@@ -1894,7 +1846,7 @@ fn test_in_set_context_keyword_conflict() {
         "{% set result = in(items=[\"a\"], value=\"a\") %}{{ result }}",
         &vars,
     );
-    // If Tera can't parse this, we'll get an error. Check behavior.
+    // A Tera parse failure is an error here.
     match result {
         Ok(val) => assert_eq!(val, "true"),
         Err(e) => {
@@ -1908,8 +1860,6 @@ fn test_in_set_context_keyword_conflict() {
         }
     }
 }
-
-// --- extract_artifact_ext tests ---
 
 #[test]
 fn test_extract_artifact_ext_tar_gz() {
@@ -1986,8 +1936,6 @@ fn test_extract_artifact_ext_empty_string() {
     assert_eq!(extract_artifact_ext(""), "");
 }
 
-// --- Outputs template variable tests ---
-
 #[test]
 fn test_outputs_set_and_render() {
     let mut vars = test_vars();
@@ -2021,8 +1969,6 @@ fn test_outputs_get_output() {
     assert_eq!(vars.get_output("y"), None);
 }
 
-// --- ArtifactExt template variable rendering test ---
-
 #[test]
 fn test_artifact_ext_template_rendering() {
     let mut vars = test_vars();
@@ -2032,8 +1978,6 @@ fn test_artifact_ext_template_rendering() {
     assert_eq!(result, "myapp-1.0.0-linux-amd64.tar.gz.tar.gz");
 }
 
-// --- Target template variable rendering test ---
-
 #[test]
 fn test_target_template_rendering() {
     let mut vars = test_vars();
@@ -2041,8 +1985,6 @@ fn test_target_template_rendering() {
     let result = render("{{ .ProjectName }}-{{ .Version }}-{{ .Target }}", &vars).unwrap();
     assert_eq!(result, "cfgd-1.2.3-x86_64-unknown-linux-gnu");
 }
-
-// --- Checksums template variable rendering test ---
 
 #[test]
 fn test_checksums_template_rendering() {
@@ -2052,8 +1994,6 @@ fn test_checksums_template_rendering() {
     let result = render("{{ .Checksums }}", &vars).unwrap();
     assert_eq!(result, checksum_content);
 }
-
-// --- Go time format translation tests ---
 
 #[test]
 fn test_translate_go_time_format_basic_date() {
@@ -2118,7 +2058,7 @@ fn test_time_chrono_format_still_works() {
 
 /// SDE-aware Tera helpers: when `SOURCE_DATE_EPOCH` is set, both the
 /// `time(...)` function AND the `now_format` filter must derive their
-/// timestamp from it instead of reading wall-clock `Utc::now()`. The
+/// timestamp from it and leave wall-clock `Utc::now()` unread. The
 /// determinism harness sets SDE on every child build subprocess, so user
 /// templates like `{{ time(format="2006-01-02") }}` flowing into artifact
 /// names must produce byte-stable output across reruns.
@@ -2165,8 +2105,6 @@ fn a_malformed_source_date_fails_only_a_template_that_reads_the_time() {
     assert_eq!(render_with_env("plain", &vars, &host).unwrap(), "plain");
 }
 
-// --- now_format filter tests ---
-
 #[test]
 fn test_now_format_filter_go_format() {
     let mut vars = test_vars();
@@ -2202,8 +2140,6 @@ fn test_now_format_preprocessed_from_go_style() {
         "expected date in YYYY-MM-DD format, got: {result}"
     );
 }
-
-// ---- comparison function preprocessing end-to-end tests ----
 
 #[test]
 fn test_eq_comparison_end_to_end() {
@@ -2268,8 +2204,6 @@ fn test_and_comparison_end_to_end() {
     assert_eq!(result, "match");
 }
 
-// ---- index function tests ----
-
 #[test]
 fn test_index_map_access() {
     let mut vars = test_vars();
@@ -2296,8 +2230,6 @@ fn test_index_array_access() {
     let result = render("{{ index(collection=myarr, key=1) }}", &vars).unwrap();
     assert_eq!(result, "second");
 }
-
-// ---- missing env var graceful handling tests ----
 
 #[test]
 fn test_missing_env_var_in_conditional() {
@@ -2326,8 +2258,6 @@ fn test_existing_env_var_still_works() {
     assert_eq!(result, "tok123");
 }
 
-// ---- map + index end-to-end test ----
-
 #[test]
 fn test_map_and_index_go_style() {
     // Full Go-style pipeline:
@@ -2352,7 +2282,6 @@ fn test_map_and_index_missing_key_returns_empty() {
     assert_eq!(result, "");
 }
 
-// ---- per-target var coverage (Q-tpl1) ----
 //
 // The per-artifact key set: every key
 // must be a member of `PER_TARGET_VARS` so the clear-on-exit pass touches it
@@ -2413,8 +2342,6 @@ fn test_clear_per_artifact_vars_clears_both_target_and_artifact_keys() {
         );
     }
 }
-
-// --- Go `slice` / `printf` / `print` / `println` builtins ---
 
 #[test]
 fn test_slice_string_end_exclusive() {
@@ -2638,14 +2565,12 @@ fn test_println_single_arg() {
 #[test]
 fn test_time_positional_renders_date() {
     let vars = test_vars();
-    // Pasted GoReleaser positional form must parse and render a date.
+    // The pasted Go-template positional form must parse and render a date.
     let result = render("{{ time \"2006-01-02\" }}", &vars).unwrap();
-    // Format yields YYYY-MM-DD; assert the shape rather than a fixed value.
+    // Format yields YYYY-MM-DD; assert the shape, since the value changes daily.
     assert_eq!(result.len(), 10, "got: {}", result);
     assert_eq!(result.matches('-').count(), 2, "got: {}", result);
 }
-
-// --- Go printf %g exponent selection ---
 
 #[test]
 fn test_printf_g_huge_uses_exponent() {
@@ -2702,8 +2627,6 @@ fn test_printf_g_uppercase() {
     let result = render("{{ printf \"%G\" Huge }}", &vars).unwrap();
     assert_eq!(result, "1E+300");
 }
-
-// --- Go printf integer precision (minimum digit count) ---
 
 #[test]
 fn test_printf_int_precision() {
@@ -2772,8 +2695,6 @@ fn test_printf_float_zero_flag_with_precision_unaffected() {
     assert_eq!(result, "00003.14");
 }
 
-// --- Go printf field-size ceiling ---
-
 #[test]
 fn test_printf_width_cap_errors() {
     let vars = test_vars();
@@ -2799,8 +2720,6 @@ fn test_printf_precision_cap_errors() {
         msg
     );
 }
-
-// --- slice: native-superset semantics (optional start, negative-from-end) ---
 
 #[test]
 fn test_slice_default_start() {
@@ -2833,8 +2752,6 @@ fn test_slice_array_default_start() {
     let result = render("{{ Items | slice(end=2) | join(sep=\",\") }}", &vars).unwrap();
     assert_eq!(result, "a,b");
 }
-
-// --- print: Go Sprint spacing (space only between two non-strings) ---
 
 #[test]
 fn test_print_two_numbers_spaced() {
@@ -2882,8 +2799,6 @@ fn test_render_preserves_emoji_in_literal_footer() {
     assert!(!result.contains('\u{f0}'), "no mojibake `ð`: {result:?}");
 }
 
-// ---- Coverage: value_to_string Bool / Array / Object arms (lines 22-23, 25) ----
-
 #[test]
 fn test_value_to_string_bool_arm_via_in_function() {
     // `in` uses value_to_string on each item; a bool item exercises the Bool arm.
@@ -2926,8 +2841,6 @@ fn test_value_to_string_array_arm_via_printf_v() {
     );
 }
 
-// ---- Coverage: pad — len >= width (line 64) ----
-
 #[test]
 fn test_printf_string_already_wider_than_width() {
     // When the formatted value is already wider than the requested width,
@@ -2936,8 +2849,6 @@ fn test_printf_string_already_wider_than_width() {
     let result = render("{{ printf \"%2s\" \"hello\" }}", &vars).unwrap();
     assert_eq!(result, "hello");
 }
-
-// ---- Coverage: pad zero-pad without sign/prefix (line 73) ----
 
 #[test]
 fn test_printf_zero_pad_string_verb() {
@@ -2951,8 +2862,6 @@ fn test_printf_zero_pad_string_verb() {
     // the zero branch (line 73) applies → "000hi".
     assert_eq!(result, "000hi");
 }
-
-// ---- Coverage: numeric_sign space flag (line 105) ----
 
 #[test]
 fn test_printf_space_flag_positive_int() {
@@ -2971,15 +2880,12 @@ fn test_printf_space_flag_negative_int() {
     assert_eq!(result, "-3");
 }
 
-// ---- Coverage: go_exponent — no e/E in string (line 136) ----
 // go_exponent is called from format_g's exponential branch AND from %e/%E.
 // The "no e/E" early return (line 136) is a defensive branch. It IS reachable
 // from format_g's trim path when trim_fraction_zeros produces a value without
 // an exponent -- but in practice the exponential branch always has an `e`.
 // This branch cannot be reached through public API without instrumenting the
 // private function; skip it.
-
-// ---- Coverage: trim_fraction_zeros — no dot in string (line 158) ----
 
 #[test]
 fn test_printf_g_integer_value_no_dot() {
@@ -2994,8 +2900,6 @@ fn test_printf_g_integer_value_no_dot() {
     // exp=1 < eprec=6 → decimal branch; "42" has no dot, trim_fraction_zeros passes through.
     assert_eq!(result, "42");
 }
-
-// ---- Coverage: format_g decimal branch with explicit precision (lines 205-207) ----
 
 #[test]
 fn test_printf_g_explicit_precision_decimal_branch() {
@@ -3014,11 +2918,8 @@ fn test_printf_g_explicit_precision_decimal_branch_rounds() {
     assert_eq!(result, "3.1");
 }
 
-// ---- Coverage: sprintf literal %% (line 233) ----
 // Already covered by test_printf_percent_literal — included in existing suite.
 // Listing here as confirmation; no new test needed if the line is reported covered.
-
-// ---- Coverage: format_verb %c — invalid code point (lines 257-258) ----
 
 #[test]
 fn test_printf_c_verb_invalid_code_point() {
@@ -3034,8 +2935,6 @@ fn test_printf_c_verb_invalid_code_point() {
     );
 }
 
-// ---- Coverage: format_verb %d type error (line 275) ----
-
 #[test]
 fn test_printf_d_verb_string_type_error() {
     // %d expects an integer; passing a non-numeric string should error.
@@ -3048,8 +2947,6 @@ fn test_printf_d_verb_string_type_error() {
         "got: {msg}"
     );
 }
-
-// ---- Coverage: format_verb %b/%o/%x/%X type error (line 279) ----
 
 #[test]
 fn test_printf_x_verb_string_type_error() {
@@ -3078,8 +2975,6 @@ fn test_printf_b_verb_string_type_error() {
     assert!(result.is_err(), "%b with non-integer must error");
 }
 
-// ---- Coverage: %b/%o prefix with # flag (lines 286, 292-296) ----
-
 #[test]
 fn test_printf_hash_binary_prefix() {
     // %#b of 5 → "0b101" (line 286 prefix "0b").
@@ -3104,8 +2999,6 @@ fn test_printf_hash_hex_upper_prefix() {
     assert_eq!(result, "0XFF");
 }
 
-// ---- Coverage: %f/%e/%E/%g/%G float type error (lines 305-306) ----
-
 #[test]
 fn test_printf_f_verb_string_type_error() {
     // %f expects a numeric argument; a string should error.
@@ -3126,10 +3019,7 @@ fn test_printf_e_verb_string_type_error() {
     assert!(result.is_err(), "%e with non-numeric must error");
 }
 
-// ---- Coverage: printf width overflow (line 369) ----
 // Already covered by test_printf_width_cap_errors.
-
-// ---- Coverage: sprintf empty precision "%.d" → precision 0 (line 413) ----
 
 #[test]
 fn test_printf_empty_precision_means_zero() {
@@ -3148,7 +3038,6 @@ fn test_printf_empty_precision_nonzero_value() {
     assert_eq!(result, "42");
 }
 
-// ---- Coverage: BASE_TERA placeholder envOrDefault / isEnvSet ----
 // The placeholders registered in BASE_TERA (overridden in render() with the
 // host-env-aware closures the suite above exercises) read directly from
 // `std::env::var` for their fallback shape. These cover that placeholder code
@@ -3210,8 +3099,6 @@ fn test_base_tera_is_env_set_placeholder_set() {
     assert_eq!(result, "set");
 }
 
-// ---- Coverage: hash fn file-read error (lines 700-701) ----
-
 #[test]
 fn test_hash_sha256_missing_file_errors() {
     // sha256 (and all hash fns) must error (not silently return "") on a missing file.
@@ -3228,8 +3115,6 @@ fn test_hash_sha256_missing_file_errors() {
     );
 }
 
-// ---- Coverage: sha224 (lines 714-717) ----
-
 #[test]
 fn test_hash_sha224() {
     let vars = test_vars();
@@ -3242,8 +3127,6 @@ fn test_hash_sha224() {
         "ea09ae9cc6768c50fcee903ed054556e5bfc8347907f12598aa24193"
     );
 }
-
-// ---- Coverage: sha384 (lines 724-727) ----
 
 #[test]
 fn test_hash_sha384() {
@@ -3258,8 +3141,6 @@ fn test_hash_sha384() {
     );
 }
 
-// ---- Coverage: sha3_224 (lines 734-737) ----
-
 #[test]
 fn test_hash_sha3_224() {
     let vars = test_vars();
@@ -3272,8 +3153,6 @@ fn test_hash_sha3_224() {
         "b87f88c72702fff1748e58b87e9141a42c0dbedc29a78cb0d4a5cd81"
     );
 }
-
-// ---- Coverage: sha3_256 (lines 739-742) ----
 
 #[test]
 fn test_hash_sha3_256() {
@@ -3288,8 +3167,6 @@ fn test_hash_sha3_256() {
     );
 }
 
-// ---- Coverage: sha3_384 (lines 744-747) ----
-
 #[test]
 fn test_hash_sha3_384() {
     let vars = test_vars();
@@ -3302,8 +3179,6 @@ fn test_hash_sha3_384() {
         "720aea11019ef06440fbf05d87aa24680a2153df3907b23631e7177ce620fa1330ff07c0fddee54699a4c3ee0ee9d887"
     );
 }
-
-// ---- Coverage: sha3_512 (lines 749-752) ----
 
 #[test]
 fn test_hash_sha3_512() {
@@ -3318,8 +3193,6 @@ fn test_hash_sha3_512() {
     );
 }
 
-// ---- Coverage: blake2b (lines 754-757) ----
-
 #[test]
 fn test_hash_blake2b() {
     let vars = test_vars();
@@ -3332,8 +3205,6 @@ fn test_hash_blake2b() {
         "e4cfa39a3d37be31c59609e807970799caa68a19bfaa15135f165085e01d41a65ba1e1b146aeb6bd0092b49eac214c103ccfa3a365954bbbe52f74a2b3620c94"
     );
 }
-
-// ---- Coverage: blake2s (lines 759-762) ----
 
 #[test]
 fn test_hash_blake2s() {
@@ -3348,8 +3219,6 @@ fn test_hash_blake2s() {
     );
 }
 
-// ---- Coverage: BASE_TERA time placeholder (lines 819-827) ----
-
 #[test]
 fn test_base_tera_time_placeholder_produces_date() {
     use super::base_tera::BASE_TERA;
@@ -3361,8 +3230,6 @@ fn test_base_tera_time_placeholder_produces_date() {
     assert_eq!(result.len(), 10, "expected YYYY-MM-DD, got: {result}");
     assert_eq!(result.matches('-').count(), 2);
 }
-
-// ---- Coverage: abs filter — relative path (lines 856-866) ----
 
 // `abs` resolves a relative input against the process-global cwd, so this test
 // must not run while a peer test (e.g. partial/artifact cwd mutators) has
@@ -3398,8 +3265,6 @@ fn test_abs_filter_absolute_path_passthrough() {
     assert_eq!(result, already_abs);
 }
 
-// ---- Coverage: list function (lines 931-937) ----
-
 #[test]
 fn test_list_function_creates_array() {
     let vars = test_vars();
@@ -3418,8 +3283,6 @@ fn test_list_function_missing_items_error() {
     assert!(result.is_err(), "list without items should error");
 }
 
-// ---- Coverage: map function — odd args error (lines 950-952) ----
-
 #[test]
 fn test_map_function_odd_args_error() {
     // map with an odd number of key-value pairs must error.
@@ -3432,8 +3295,6 @@ fn test_map_function_odd_args_error() {
         "got: {msg}"
     );
 }
-
-// ---- Coverage: reReplaceAll filter — missing pattern/replacement (lines 1027-1034) ----
 
 #[test]
 fn test_re_replace_all_filter_missing_pattern_error() {
@@ -3466,8 +3327,6 @@ fn test_re_replace_all_filter_missing_replacement_error() {
         "got: {msg}"
     );
 }
-
-// ---- Coverage: englishJoin filter form (lines 1094-1124) ----
 
 #[test]
 fn test_english_join_filter_zero_items() {
@@ -3525,8 +3384,6 @@ fn test_english_join_filter_non_array_errors() {
     );
 }
 
-// ---- Coverage: reverseFilter filter — missing arg (lines 1137-1139) ----
-
 #[test]
 fn test_reverse_filter_pipe_missing_arg_error() {
     let vars = test_vars();
@@ -3534,8 +3391,6 @@ fn test_reverse_filter_pipe_missing_arg_error() {
     let result = render("{{ ProjectName | reverseFilter }}", &vars);
     assert!(result.is_err(), "reverseFilter without regexp must error");
 }
-
-// ---- Coverage: filter fn — string items input (lines 1163-1168) ----
 
 #[test]
 fn test_filter_function_string_input_keeps_matching_lines() {
@@ -3555,8 +3410,6 @@ fn test_filter_function_string_input_no_match() {
     assert_eq!(result, "");
 }
 
-// ---- Coverage: filter fn — invalid type error (lines 1178-1180) ----
-
 #[test]
 fn test_filter_function_number_items_error() {
     // Passing a number (not string or array) as items must error.
@@ -3573,8 +3426,6 @@ fn test_filter_function_number_items_error() {
         "got: {msg}"
     );
 }
-
-// ---- Coverage: reverseFilter fn (lines 1205-1244) ----
 
 #[test]
 fn test_reverse_filter_function_string_input() {
@@ -3632,8 +3483,6 @@ fn test_reverse_filter_function_missing_regexp_error() {
     let result = render("{{ reverseFilter(items=[\"a\", \"b\"]) }}", &vars);
     assert!(result.is_err(), "reverseFilter without regexp must error");
 }
-
-// ---- Coverage: dual-registered function forms (lines 1329-1565) ----
 
 #[test]
 fn test_trim_function_form() {
@@ -3854,8 +3703,6 @@ fn test_incmajor_filter_form_increments() {
     assert_eq!(result, "3.0.0");
 }
 
-// ---- Coverage: index — array non-number index error (line 1602) ----
-
 #[test]
 fn test_index_array_string_key_errors() {
     let mut vars = test_vars();
@@ -3869,8 +3716,6 @@ fn test_index_array_string_key_errors() {
     );
 }
 
-// ---- Coverage: index — non-collection type (line 1597/1602) ----
-
 #[test]
 fn test_index_non_collection_returns_empty() {
     // Passing a scalar (string) as collection: graceful empty string.
@@ -3878,8 +3723,6 @@ fn test_index_non_collection_returns_empty() {
     let result = render("{{ index(collection=\"scalar\", key=\"k\") }}", &vars).unwrap();
     assert_eq!(result, "");
 }
-
-// ---- Coverage: slice filter — non-string/non-array type error (lines 1655-1658) ----
 
 #[test]
 fn test_slice_filter_number_errors() {
@@ -3894,8 +3737,6 @@ fn test_slice_filter_number_errors() {
         "got: {msg}"
     );
 }
-
-// ---- Coverage: printf %e / %E exponential verb formatting ----
 
 #[test]
 fn test_printf_e_lowercase_default_precision() {
@@ -3942,12 +3783,10 @@ fn test_printf_e_negative_value_keeps_sign_before_mantissa() {
     assert_eq!(result, "-1.234500e+03");
 }
 
-// ---- Coverage: split function form (split(s=, sep=)) ----
-
 #[test]
 fn test_split_function_form_returns_array() {
     // The function form returns an array; rejoin with a different separator
-    // to pin the element boundaries.
+    // to check the element boundaries.
     let vars = test_vars();
     let result = render(
         "{{ split(s=\"a,b,c\", sep=\",\") | join(sep=\"|\") }}",
@@ -3977,8 +3816,6 @@ fn test_split_function_form_missing_sep_errors() {
     let msg = format!("{:?}", result.unwrap_err());
     assert!(msg.contains("sep") || msg.contains("split"), "got: {msg}");
 }
-
-// ---- Coverage: map(pairs=[...]) named function form + odd-pairs error ----
 
 #[test]
 fn test_map_pairs_named_form_builds_object() {
@@ -4011,8 +3848,6 @@ fn test_map_pairs_missing_pairs_errors() {
     let msg = format!("{:?}", result.unwrap_err());
     assert!(msg.contains("pairs") || msg.contains("map"), "got: {msg}");
 }
-
-// ---- Coverage: contains_any (function + filter forms, the `in` alias) ----
 
 #[test]
 fn test_contains_any_function_form_found() {
@@ -4058,10 +3893,6 @@ fn test_contains_any_filter_form_numeric_value_stringified() {
     .unwrap();
     assert_eq!(result, "yes");
 }
-
-// ---------------------------------------------------------------------------
-// Typed bool/number template vars (set_bool / structured injection)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_bool_var_interpolates_as_true_false_strings() {
@@ -4146,7 +3977,7 @@ fn test_nightly_build_number_interpolates_and_compares() {
 fn test_set_and_set_structured_are_mutually_exclusive() {
     // A key must never resolve from both maps: whichever setter ran last
     // owns the key, so a test overriding a typed flag with `set` (string)
-    // takes effect instead of being shadowed by the stale structured entry.
+    // takes effect over the stale structured entry.
     let mut vars = TemplateVars::new();
     vars.set_bool("IsSnapshot", false);
     vars.set("IsSnapshot", "true");
@@ -4273,7 +4104,7 @@ fn test_standalone_tera_comment_still_stripped() {
     assert_eq!(result, "pre  post");
 }
 
-/// Pins the live behavior backing every example in
+/// Checks the live behavior backing every example in
 /// `docs/site/content/docs/general/templates.md`'s "Undefined variables"
 /// section. The page leaves out the literal `Available variables: ...` list
 /// because it is context-shaped — this test proves that shape varies instead
@@ -4304,8 +4135,6 @@ fn docs_undefined_variable_examples_stay_live_accurate() {
     );
     assert_eq!(render("{{ Some?.Missing or \"\" }}", &vars).unwrap(), "");
 }
-
-// ---- date filter (tera 1.x compat) tests ----
 
 #[test]
 fn test_date_filter_rfc3339_string() {
@@ -4436,7 +4265,7 @@ fn test_date_filter_invalid_timezone_errors() {
 fn test_date_filter_locale_arg_errors_explicitly() {
     // 1.x (without the non-default `date-locale` feature) never read the
     // `locale` argument and silently formatted in the POSIX locale; the
-    // compat filter fails loudly instead of silently dropping an explicit
+    // compat filter fails loudly on an explicit
     // argument.
     let mut vars = test_vars();
     vars.set("Now", "2026-04-05T12:34:56Z");
@@ -4450,7 +4279,6 @@ fn test_date_filter_locale_arg_errors_explicitly() {
     );
 }
 
-// ---- raw string-boundary regressions (shared `string_lit` rule) ----
 // The engine closes a string literal at the FIRST next occurrence of its
 // delimiter — `"`, `'`, or backtick, no escape concept. Every preprocessor
 // pass must agree, or 1.x-valid templates get their string contents (or the
@@ -4495,13 +4323,12 @@ fn test_backtick_string_leading_dot_content_not_stripped() {
 fn test_escaped_quote_inside_string_is_a_loud_error_not_a_silent_change() {
     // Under the raw rule `"a\"b"` closes right after the backslash, leaving
     // a dangling `b"` — such templates were never valid under 1.x either.
-    // Escape-unaware scanning must surface that as a loud parse/render
-    // error, never a silent reinterpretation.
+    // Escape-unaware scanning must report that as a loud parse/render
+    // error.
     let vars = test_vars();
     assert!(render(r#"{{ "a\"b" }}"#, &vars).is_err());
 }
 
-// ---- pass-ordering pins: positional-arg syntax containing `.N` ----
 // These survive only because the numeric-index rewrite (Pass 5) runs AFTER
 // the token-based passes: run it earlier and `list.0` lexes as `list` +
 // `[0]`, breaking positional-arity detection — each of these then fails.
@@ -4545,7 +4372,6 @@ fn test_optional_numeric_index_renders_end_to_end() {
     assert_eq!(render("{{ a?.0 }}", &vars).unwrap(), "first");
 }
 
-// ---- multiline expression blocks get the full pass surface ----
 // `{{\n x }}` is valid tera; each preprocessor pass class must apply across
 // the newline (the block regexes carry `(?s)`).
 
@@ -4577,7 +4403,7 @@ fn test_multiline_block_go_builtin_rewrite() {
 fn test_multiline_block_method_call_rewrite() {
     let mut vars = test_vars();
     vars.set("Now", "2026-04-05T12:34:56Z");
-    // SOURCE_DATE_EPOCH pins now_format's output: 1719878400 = 2024-07-02.
+    // SOURCE_DATE_EPOCH fixes now_format's output: 1719878400 = 2024-07-02.
     let env = MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1719878400");
     assert_eq!(
         render_with_env("{{\n  .Now.Format \"2006-01-02\" }}", &vars, &env).unwrap(),
@@ -4620,8 +4446,8 @@ fn test_raw_block_contents_render_verbatim() {
         "{{ $v := .Tag }}",
         r"grep '\d\+' file",
         r#"{{ reReplaceAll(pattern="(\w+)", replacement="$1") }}"#,
-        // The `${#…}` shield round-trips through a raw span rather than
-        // skipping it: the placeholder is emitted literally and restored.
+        // The `${#…}` shield round-trips through a raw span (it is not skipped):
+        // the placeholder is emitted literally and restored.
         "${#VAR}",
         "echo ${#ARR[@]}",
     ] {
@@ -4648,7 +4474,7 @@ fn test_positional_calls_render_in_every_pipeline_slot() {
     }
 }
 
-/// Nesting past the cap is rejected by name instead of killing the process on
+/// Nesting past the cap is rejected by name before it can kill the process on
 /// the way to the engine.
 #[test]
 fn test_over_nested_expression_is_rejected_by_name() {
@@ -4664,8 +4490,6 @@ fn test_over_nested_expression_is_rejected_by_name() {
     assert!(err.contains("over-nested expression in template"), "{err}");
     assert!(err.contains("parentheses nest 200 deep"), "{err}");
 }
-
-// ---- join (path) function ----
 
 #[test]
 fn filepath_join_matches_go_semantics() {
@@ -4771,8 +4595,6 @@ fn the_join_path_function_never_spells_the_platform_separator() {
         "the separator the function joins on must be a literal slash"
     );
 }
-
-// --- `Abi` and `targetVariant` ---
 
 /// `Abi` is the triple's fourth component, per target class.
 #[test]
@@ -5265,7 +5087,7 @@ fn every_scope_that_seeds_a_real_target_seeds_the_variant_vars() {
 
 /// A scope that renders per artifact hands `seed_artifact_target_vars` the
 /// artifact's target as the `Option` it is, so an artifact with no target
-/// clears the scope instead of keeping the previous artifact's. A caller that
+/// clears the scope (the previous artifact's would otherwise leak). A caller that
 /// destructures the `Option` first and seeds only in the `Some` arm is the
 /// shape that rendered a checksum file's upload URL with the last binary's
 /// `Target` and `Abi`.

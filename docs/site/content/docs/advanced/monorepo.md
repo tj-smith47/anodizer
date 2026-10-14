@@ -296,7 +296,7 @@ names an intra-workspace dependency — via the same `[dependencies]` /
 `depends_on` derivation above uses — that is itself **absent from
 `crates:`**. This catches the class of failure where a crate is a real
 publish-order requirement on disk but missing from the config entirely,
-which would otherwise only surface late, mid-`cargo publish`, as a
+which would otherwise only show up late, mid-`cargo publish`, as a
 registry-side "no matching package named ... found":
 
 ```text
@@ -322,7 +322,7 @@ for how this fits alongside `check config`'s other static lints.
 When `version_sync.enabled: true` is set per-crate, the tag command also updates that crate's `Cargo.toml` version, any intra-workspace `path + version` dependency specs that reference it, and `Cargo.lock`. The update is committed with `[skip ci]` and the tag points at that commit.
 
 The same commit also heals **every** internal `path + version` requirement
-(the dependency's minimum version, which the log calls its dep floor) in the
+(the dependency minimum, the lowest version the requirement accepts) in the
 workspace against the path crate's post-bump version, including crates that
 were not bumped in that run, so a bump commit that never reached the default branch
 cannot leave a stale requirement behind to break the next `cargo publish`:
@@ -342,7 +342,7 @@ cfgd-core = { path = "../cfgd-core", version = "0.7.0" }
 ```text
 $ anodizer tag --dry-run
    • running auto-tag (per-crate) (dry-run)
-   • (dry-run) would heal dep floor cfgd-core 0.6.1 → 0.7.0 in crates/cfgd/Cargo.toml
+   • (dry-run) would heal dependency minimum cfgd-core 0.6.1 → 0.7.0 in crates/cfgd/Cargo.toml
    • (dry-run) would create local tag cfgd-v0.7.0 ("Release cfgd-v0.7.0")
 anodizer-output crates=["cfgd"]
 anodizer-output versions={"cfgd":"0.7.0"}
@@ -350,7 +350,7 @@ anodizer-output versions={"cfgd":"0.7.0"}
 $ anodizer tag
    • running auto-tag (per-crate)
    • updated crates/cfgd/Cargo.toml from 0.6.1 to 0.7.0
-   • healed dep floor cfgd-core 0.6.1 → 0.7.0 in crates/cfgd/Cargo.toml
+   • healed dependency minimum cfgd-core 0.6.1 → 0.7.0 in crates/cfgd/Cargo.toml
    • created cfgd-v0.7.0 locally; nothing was pushed — pass --push to push the bump commit + tags atomically
 anodizer-output crates=["cfgd"]
 anodizer-output versions={"cfgd":"0.7.0"}

@@ -96,9 +96,13 @@ pub(crate) fn process_authenticode_config(
     }
 
     // Password is optional (some certs carry none). Read it from the env var
-    // named by `resolved_password_env()`; an empty value counts as absent.
+    // named by `resolved_password_env()`, trimmed; a blank value counts as
+    // absent.
     let password_env_name = authenticode.resolved_password_env().to_string();
-    let password: Option<String> = ctx.env_var(&password_env_name).filter(|v| !v.is_empty());
+    let password: Option<String> = ctx
+        .env_var(&password_env_name)
+        .as_deref()
+        .and_then(anodizer_core::git::non_blank_token);
     if password.is_none() {
         log.verbose(&format!(
             "{label} config '{sub_label}': no authenticode cert password (${password_env_name} \

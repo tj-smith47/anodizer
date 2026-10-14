@@ -127,7 +127,7 @@ fn configured_promotable(ctx: &Context) -> Vec<Box<dyn Promotable>> {
         out.push(Box::new(anodizer_stage_snapcraft::SnapcraftPromoter));
     }
 
-    // npm is a workspace-level `npms:` block, not per-crate.
+    // npm is configured once, in the workspace-level `npms:` block.
     if ctx.config.npms.as_ref().is_some_and(|n| !n.is_empty()) {
         out.push(Box::new(anodizer_stage_publish::NpmPromoter::new(
             npm_pre_dist_tag(ctx),

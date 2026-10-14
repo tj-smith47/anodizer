@@ -82,7 +82,7 @@ crates:
 
 ## Authentication
 
-{{ token_order(target="the bucket repository", publisher_var="SCOOP_BUCKET_TOKEN") }}
+{{ token_order(target="the bucket repository", publisher_vars=["SCOOP_BUCKET_TOKEN"]) }}
 
 
 ```yaml

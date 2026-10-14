@@ -113,7 +113,7 @@ fn cyclonedx_output_byte_stable_for_same_timestamp() {
     );
 }
 
-/// Pins the SDE-to-RFC3339 conversion that `run_sbom_builtin` uses on
+/// Tests the SDE-to-RFC3339 conversion that `run_sbom_builtin` uses on
 /// `Context::reproducible_epoch`. If this conversion drifts (e.g. UTC vs
 /// local TZ, seconds vs millis), the SBOM `metadata.timestamp` field
 /// changes and breaks retry idempotency.
@@ -123,9 +123,9 @@ fn sbom_metadata_timestamp_honors_sde() {
     let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(sde, 0)
         .expect("SDE 1_715_000_000 is in range");
     let derived = dt.to_rfc3339();
-    // The exact RFC3339 form chrono emits for this SDE — pinned so a
+    // The exact RFC3339 form chrono emits for this SDE — asserted so a
     // future chrono version that flips +00:00 -> Z (or vice-versa)
-    // breaks this test instead of silently breaking SBOM byte
+    // breaks this test before it silently breaks SBOM byte
     // stability.
     assert_eq!(derived, "2024-05-06T12:53:20+00:00");
 
@@ -141,7 +141,7 @@ fn sbom_metadata_timestamp_honors_sde() {
 }
 
 /// Different SDEs produce different metadata timestamps (sanity: the
-/// timestamp is not pinned to a constant). Pair test for
+/// timestamp is not fixed to a constant). Pair test for
 /// `sbom_metadata_timestamp_honors_sde`.
 #[test]
 fn sbom_metadata_timestamp_varies_with_sde() {
@@ -333,7 +333,7 @@ fn external_installer_excludes_appbundle_directory() {
     assert_eq!(
         tools.call_count("syft"),
         1,
-        "syft must catalog only the MSI file, not the `.app` directory"
+        "syft must catalog only the MSI file and skip the `.app` directory"
     );
     let sboms: Vec<&Artifact> = ctx
         .artifacts
@@ -390,7 +390,7 @@ fn external_cmd_nonzero_exit_bails_with_stderr() {
 }
 
 /// Tool succeeds but writes a zero-byte document → the stage rejects the
-/// empty SBOM rather than registering a useless file.
+/// empty SBOM and registers no file.
 #[cfg(unix)]
 #[test]
 fn external_cmd_empty_output_file_bails() {
@@ -444,8 +444,8 @@ fn external_cmd_no_output_files_bails() {
     assert!(chain.contains("sbom[noout]"), "got: {chain}");
     assert!(chain.contains("no output files"), "got: {chain}");
     assert!(chain.contains("bom.spdx.json"), "got: {chain}");
-    // The tool was actually run (this is the post-success check, not a
-    // pre-flight skip).
+    // The tool was actually run (this is the post-success check; no
+    // pre-flight skip happened).
     assert_eq!(tools.call_count("syft"), 1);
 }
 
@@ -584,7 +584,7 @@ fn default_syft_env_true_branch_and_negatives() {
 /// Via the stage: because the resolved cmd is an absolute path (never the
 /// literal `"syft"`), the default syft env is NOT injected when `env:` is
 /// unset — the subprocess sees an empty `SYFT_FILE_METADATA_CATALOGER_ENABLED`.
-/// Pins the None-env → `default_syft_env_for` resolution path end-to-end.
+/// Tests the None-env → `default_syft_env_for` resolution path end-to-end.
 #[cfg(unix)]
 #[test]
 fn external_cmd_absolute_cmd_does_not_inject_default_syft_env() {
@@ -635,7 +635,7 @@ fn external_cmd_absolute_cmd_does_not_inject_default_syft_env() {
     // default_syft_env_for keys on the resolved cmd string. The config cmd
     // is an absolute path whose basename is `syft`, but resolved_cmd()
     // returns the full path — so the default env only fires when the cmd
-    // string equals "syft". Assert the actual exported value to pin which
+    // string equals "syft". Assert the actual exported value to prove which
     // branch ran.
     let probe = std::fs::read_to_string(tmpdir.path().join("env_probe.txt")).unwrap();
     assert_eq!(
@@ -647,7 +647,7 @@ fn external_cmd_absolute_cmd_does_not_inject_default_syft_env() {
 
 /// `artifacts: binary` catalogs each matched binary: the rendered
 /// `$artifact` placeholder is the binary's path relative to dist, and the
-/// per-artifact `$document` is written + registered. Pins the typed-artifact
+/// per-artifact `$document` is written + registered. Tests the typed-artifact
 /// iteration + `$artifact`/`$document` substitution in the external path.
 #[cfg(unix)]
 #[test]
@@ -702,7 +702,7 @@ fn external_cmd_binary_artifacts_substitutes_artifact_and_document() {
 }
 
 /// Two amd64 micro-architecture builds of one binary catalog into two
-/// documents under the default `documents:`. Pins both halves: the default
+/// documents under the default `documents:`. Tests both halves: the default
 /// template carries the variant suffix, and the stage seeds the `Binary` /
 /// `Amd64` vars it renders against.
 #[cfg(unix)]
@@ -912,7 +912,7 @@ fn external_cmd_no_matching_artifacts_non_strict_skips() {
 
     SbomStage
         .run(&mut ctx)
-        .expect("zero matches under non-strict must skip, not error");
+        .expect("zero matches under non-strict must skip without an error");
     assert!(
         !tools.was_called("syft"),
         "tool must not run with no inputs"
@@ -926,7 +926,7 @@ fn external_cmd_no_matching_artifacts_non_strict_skips() {
 }
 
 /// Built-in (Cargo.lock) generator with `artifacts: archive` and MULTIPLE
-/// archives emits exactly ONE workspace SBOM, not one byte-identical copy
+/// archives emits exactly ONE workspace SBOM, with no byte-identical copy
 /// per archive. The built-in output is archive-independent (it catalogs the
 /// dependency graph), so N copies would only multiply the downstream
 /// checksum + signature object count for no information gain.
@@ -982,11 +982,11 @@ fn builtin_archive_emits_single_workspace_sbom() {
         sboms.len(),
         1,
         "built-in generator + artifacts:archive must emit exactly ONE \
-             workspace SBOM, not one per archive; got {:?}",
+             workspace SBOM for all archives; got {:?}",
         sboms.iter().map(|a| &a.name).collect::<Vec<_>>()
     );
     // The single SBOM is the workspace-level `<project>-<version>.<ext>`
-    // document, not a per-archive filename.
+    // document with no per-archive filename.
     assert_eq!(sboms[0].name, "myproj-1.0.0.cdx.json");
     assert!(sboms[0].path.exists(), "the workspace SBOM must be on disk");
     // Target-independent: it must NOT inherit the first matched archive's
@@ -1327,24 +1327,24 @@ version = "0.1.0"
     assert!(pkgs[1].source.is_none(), "path members have no source");
 }
 
-/// `parse_cargo_lock` returns an error on non-TOML input rather than
-/// silently yielding an empty package list.
+/// `parse_cargo_lock` returns an error on non-TOML input and does not
+/// silently yield an empty package list.
 #[test]
 fn parse_cargo_lock_rejects_invalid_toml() {
     let err = parse_cargo_lock("this is = = not toml ][").expect_err("must reject");
     assert!(format!("{err:#}").contains("Cargo.lock"));
 }
 
-/// `find_cargo_lock` walks up from a nested dir to the ancestor holding
+/// `find_cargo_lock` searches up from a nested dir to the ancestor holding
 /// `Cargo.lock`.
 #[test]
-fn find_cargo_lock_walks_up_to_ancestor() {
+fn find_cargo_lock_searches_up_to_ancestor() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(tmp.path().join("Cargo.lock"), "version = 3\n").unwrap();
     let nested = tmp.path().join("a/b/c");
     std::fs::create_dir_all(&nested).unwrap();
 
-    let found = find_cargo_lock(&nested).expect("walk up");
+    let found = find_cargo_lock(&nested).expect("search up");
     assert_eq!(found, tmp.path().join("Cargo.lock"));
 }
 
@@ -1405,7 +1405,7 @@ fn spdx_shape_and_namespace() {
 }
 
 /// A non-registry source (git/path) is passed through verbatim as the
-/// SPDX downloadLocation rather than rewritten to a crates.io URL.
+/// SPDX downloadLocation and is not rewritten to a crates.io URL.
 #[test]
 fn spdx_non_registry_source_passthrough() {
     let pkgs = vec![CargoPackage {

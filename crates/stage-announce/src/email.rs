@@ -11,10 +11,6 @@ use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{Message, SmtpTransport, Transport};
 
-// ---------------------------------------------------------------------------
-// Email parameters
-// ---------------------------------------------------------------------------
-
 /// Parameters needed to send an email notification.
 pub struct EmailParams<'a> {
     pub from: &'a str,
@@ -53,13 +49,9 @@ pub(crate) fn resolve_encryption(mode: EmailEncryption, port: u16) -> EmailEncry
     }
 }
 
-// ---------------------------------------------------------------------------
-// SMTP transport (via lettre)
-// ---------------------------------------------------------------------------
-
 /// Send an email via SMTP using the lettre crate.
 ///
-/// `policy` enables retry on transient SMTP failures (P1.3). Lettre errors
+/// `policy` enables retry on transient SMTP failures. Lettre errors
 /// are classified via [`anodizer_core::retry::is_network_error`] — connection
 /// resets, EOF, timeouts and similar transients retry; auth and policy
 /// failures (550, 535, etc.) fast-fail.
@@ -170,7 +162,7 @@ pub fn send_smtp(
 /// was a footgun: real auth-failure replies routinely include those phrases
 /// (e.g. `535 5.7.8 Username and Password not accepted ... (temporarily
 /// disabled)`), which made anodizer hammer the relay with bad credentials
-/// instead of fast-failing.
+/// when it should have failed fast.
 pub(crate) fn is_transient_smtp_error(message: &str) -> bool {
     // 5yz responses are permanent — never retry, regardless of any
     // transient-sounding prose elsewhere in the message.
@@ -214,10 +206,6 @@ fn has_smtp_response_code(message: &str, class: u8) -> bool {
     }
     false
 }
-
-// ---------------------------------------------------------------------------
-// Sendmail transport (RFC 2822 message piped to sendmail/msmtp)
-// ---------------------------------------------------------------------------
 
 /// Tera template for an RFC 2822 email message.
 ///
@@ -310,10 +298,6 @@ pub fn send_sendmail(
     )?;
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -466,8 +450,6 @@ mod tests {
             EmailEncryption::Starttls
         );
     }
-
-    // ---- is_transient_smtp_error (auth-fail substring trap regression) ---
 
     #[test]
     fn auth_fail_with_temporarily_disabled_message_does_not_retry() {

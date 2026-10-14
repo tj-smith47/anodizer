@@ -4,8 +4,8 @@
 //! exchanging the configured credentials for a registry JWT. Two design
 //! choices worth calling out:
 //!
-//! 1. **No on-disk token files.** Tokens are kept in memory rather than
-//!    written to the cwd and deleted post-publish — same wire behaviour,
+//! 1. **No on-disk token files.** Tokens are kept in memory and are never
+//!    written to the cwd and deleted post-publish. The wire behaviour is the same,
 //!    fewer artefacts left behind on disk if the process dies mid-publish.
 //! 2. **No separate defaulting phase.** There is no nested `mcp.github:`
 //!    block to migrate, and `McpAuth::default()` already defaults to
@@ -188,7 +188,6 @@ pub(crate) fn publish_with_registry(
     log: &StageLogger,
     registry_url: &str,
 ) -> Result<Option<McpTarget>> {
-    // ---- Skip gate + render (single evaluation) ----
     // Evaluate the name / `skip` / `if` gate exactly once via the shared
     // pipeline the schema validator also drives, then record the per-reason
     // `Skipped` outcome + log line from that single verdict. Gating here and
@@ -203,16 +202,13 @@ pub(crate) fn publish_with_registry(
         }
     };
 
-    // ---- One-shot experimental warning ----
     warn_experimental_once(log);
 
-    // ---- Assemble the ServerJSON payload ----
     // Built here (before the dry-run short-circuit) so the resolved
     // `server.name` drives the dry-run log line, the publish POST, and the
     // recorded target from one value — no separate defensive name binding.
     let server = build_server_json(&mcp_rendered, &ctx.version());
 
-    // ---- Dry-run short-circuits before any network I/O ----
     if ctx.is_dry_run() {
         log.status(&format!(
             "(dry-run) would publish to MCP registry {} as '{}' (auth={})",
@@ -232,7 +228,7 @@ pub(crate) fn publish_with_registry(
     // attempt ladder in each of them and blow past the run's retry ceiling.
     let deadline = ctx.retry_deadline();
 
-    // Surface the env-var fallback path BEFORE constructing the provider.
+    // Report the env-var fallback path BEFORE constructing the provider.
     // When `auth.type=github` and `auth.token` rendered empty (e.g. the user
     // templated `{{ .Env.GITHUB_TOKEN }}` and GITHUB_TOKEN is unset),
     // `GithubAtAuthProvider::get_token` silently falls back to
@@ -242,7 +238,6 @@ pub(crate) fn publish_with_registry(
         log.status("auth.token empty, falling back to MCP_GITHUB_TOKEN env var");
     }
 
-    // ---- Build + authenticate ----
     let provider = provider_for(
         mcp_rendered.auth.method,
         registry_url,
@@ -257,7 +252,6 @@ pub(crate) fn publish_with_registry(
 
     let body = serde_json::to_string(&server).context("mcp: serialize ServerJSON")?;
 
-    // ---- POST /v0/publish with retries ----
     match publish_payload(
         &body,
         &token,
@@ -300,7 +294,7 @@ pub(crate) fn publish_with_registry(
 /// One value per skip branch keeps the gate predicate and its per-reason
 /// reporting in lockstep: [`render_mcp_config`] decides, and
 /// [`publish_with_registry`] derives its `Skipped` outcome + log line from the
-/// same verdict rather than re-evaluating the gates.
+/// same verdict and does not re-evaluate the gates.
 struct McpSkip {
     /// Outcome reason recorded into the publisher outcome map.
     reason: anodizer_core::SkipReason,
@@ -378,7 +372,7 @@ fn render_mcp_config(ctx: &Context) -> Result<McpRenderOutcome> {
 /// [`render_mcp_config`] pipeline plus [`build_server_json`], so what gets
 /// validated is byte-for-byte what ships. Version is the global
 /// [`Context::version`] — MCP publishes a single top-level `server.json` per
-/// release, not a per-crate document.
+/// release, shared by every crate.
 pub(crate) fn render_server_json(ctx: &Context) -> Result<Option<ServerJson>> {
     let McpRenderOutcome::Rendered(mcp_rendered) = render_mcp_config(ctx)? else {
         return Ok(None);
@@ -394,7 +388,7 @@ fn fill_from_project_metadata(ctx: &Context, mcp: &mut McpConfig) {
     // The mcp block is top-level but runs on its owning crate's pass (the
     // crate whose `dockers_v2` image the manifest references); derive metadata
     // from THAT crate's `Cargo.toml`, falling back to the project primary
-    // crate when no OCI package pins ownership.
+    // crate when no OCI package names an owner.
     let owner = mcp_owning_crate_name(ctx);
     let description = owner
         .and_then(|c| ctx.config.meta_description_for(c))
@@ -416,7 +410,7 @@ fn fill_from_project_metadata(ctx: &Context, mcp: &mut McpConfig) {
 
 /// Name of the crate that owns the OCI image referenced by the mcp manifest,
 /// for per-crate metadata derivation. `None` when the manifest references no
-/// OCI package (no ownership to pin) — callers then fall back to the project
+/// OCI package (so names no owner) — callers then fall back to the project
 /// primary crate.
 fn mcp_owning_crate_name(ctx: &Context) -> Option<&str> {
     let mcp_repos: Vec<&str> = ctx
@@ -458,7 +452,7 @@ fn mcp_owning_crate_name(ctx: &Context) -> Option<&str> {
 /// The git-remote fallback is GitHub-only by construction: a self-hosted or
 /// non-GitHub `origin` never resolves to a GitHub slug via
 /// `resolve_github_slug`, so the `repository` object stays user-supplied
-/// rather than being force-derived with a wrong `source`.
+/// and is never derived with a wrong `source`.
 fn infer_repository_from_release(ctx: &Context, mcp: &mut McpConfig) {
     if !mcp.repository.url.is_empty() {
         return;
@@ -636,7 +630,7 @@ pub(crate) fn build_server_json(mcp: &McpConfig, version: &str) -> ServerJson {
         .packages
         .iter()
         .map(|pkg| {
-            // OCI image refs already pin the version (e.g.
+            // OCI image refs already carry the version (e.g.
             // `ghcr.io/foo/bar:v1.2.3`), so the registry's
             // `body.packages[i].version` field is redundant for OCI
             // packages. Combined with `Package::version`'s
@@ -691,10 +685,10 @@ pub(crate) fn build_server_json(mcp: &McpConfig, version: &str) -> ServerJson {
 /// On success, parses the response body for `_meta.official.status` and
 /// logs `published to MCP registry name=<...> status=<...>`.
 /// Maximum response-body bytes embedded in the user-visible HTTP-error
-/// message. Cap is byte-based (cheap `len()`) instead of char-based so a
+/// message. Cap is byte-based (cheap `len()`) so a
 /// large response body is rejected after a single O(1) length check —
-/// the prior `chars().take(512)` + `chars().count() > 512` shape walked a
-/// 100 KB body twice. The cut walks back to a UTF-8 char boundary so a
+/// the prior `chars().take(512)` + `chars().count() > 512` shape read a
+/// 100 KB body twice. The cut steps back to a UTF-8 char boundary so a
 /// multi-byte char is never sliced through.
 const MAX_RESPONSE_SNIPPET_BYTES: usize = 512;
 
@@ -735,7 +729,7 @@ fn truncate_response_snippet(scrubbed: &str) -> (std::borrow::Cow<'_, str>, &'st
 /// through the `dockers_v2:` block and have no hand-written `LABEL` line — and
 /// who would otherwise reach for `dockers_v2.annotations`, which the validator
 /// ignores (it reads `configFile.Config.Labels`, populated only by
-/// `dockers_v2.labels` / `--label`, not by OCI manifest annotations). Append
+/// `dockers_v2.labels` / `--label`; OCI manifest annotations do not count). Append
 /// the anodizer-specific path so the rejection is fixable without spelunking
 /// the registry source.
 ///
@@ -759,9 +753,9 @@ fn oci_rejection_hint(response_body: &str, server_name: &str) -> String {
 ///
 /// The registry rejects a re-POST of a version it already holds with HTTP 400
 /// `{"errors":[{"message":"...cannot publish duplicate version"}]}`. That is
-/// the desired end-state on an idempotent re-run, not a failure — so it is a
+/// the desired end-state on an idempotent re-run, so it is a
 /// distinct success-shaped outcome the caller maps to
-/// [`anodizer_core::SkipReason::AlreadyPublished`] rather than `Err`.
+/// [`anodizer_core::SkipReason::AlreadyPublished`].
 pub(crate) enum McpPublishOutcome {
     /// The POST returned 2xx; the version is now live on the registry.
     Published,
@@ -779,7 +773,7 @@ pub(crate) enum McpPublishOutcome {
 /// registry versions) and is case-insensitive, so it survives the registry
 /// rewording "cannot publish duplicate version" without a brittle exact-string
 /// compare. Only a 400 status qualifies — a 409/422/500 carrying the same
-/// words is a different failure mode and must still surface as an error.
+/// words is a different failure mode and must still be reported as an error.
 fn is_duplicate_version_rejection(status: u16, body: &str) -> bool {
     if status != 400 {
         return false;
@@ -819,15 +813,15 @@ fn publish_payload(
 
     let request_body_len = body.len();
 
-    // The duplicate-version 400 surfaces as `Err` from `retry_http_blocking`,
+    // The duplicate-version 400 arrives as `Err` from `retry_http_blocking`,
     // and only the formatted message (which truncates the body) is carried on
     // the error chain. Capture the raw rejection status + body here so the
-    // duplicate signal is matched against the full payload, not a 512-byte
-    // snippet. Single-threaded blocking call, so a `RefCell` is sufficient;
+    // duplicate signal is matched against the full payload, which can be
+    // longer than the 512-byte snippet. Single-threaded blocking call, so a `RefCell` is sufficient;
     // 4xx fast-fails on the first attempt, so the last write is the verdict.
     let last_error: RefCell<Option<(u16, String)>> = RefCell::new(None);
 
-    // reqwest validates header values; CRLF in `token` surfaces as a send-error, not header injection.
+    // reqwest validates header values; CRLF in `token` fails the send, so no header can be injected.
     let result = retry_http_blocking_deadline(
         RetryLog::new("mcp: POST /v0/publish", log),
         policy,
@@ -855,8 +849,8 @@ fn publish_payload(
             // diagnosable from CI logs without a curl reproduction.
             let scrubbed = anodizer_core::redact::redact_bearer_tokens(response);
             let (snippet, truncated) = truncate_response_snippet(&scrubbed);
-            // Surface the remediation hint off the full scrubbed body (not the
-            // bounded snippet) so a marker pushed past the 512-byte cut is
+            // Derive the remediation hint from the full scrubbed body (the
+            // snippet is bounded) so a marker pushed past the 512-byte cut is
             // still detected.
             let hint = oci_rejection_hint(&scrubbed, name);
             format!(
@@ -870,7 +864,7 @@ fn publish_payload(
         Ok((_, body)) => body,
         Err(err) => {
             // Re-posting an existing version is the desired end-state on a
-            // re-run; classify it as an idempotent SKIP rather than a failure.
+            // re-run; classify it as an idempotent SKIP.
             // Any other 4xx/5xx (auth, schema, server error) still propagates.
             if let Some((status, raw_body)) = last_error.borrow().as_ref()
                 && is_duplicate_version_rejection(*status, raw_body)

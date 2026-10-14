@@ -203,8 +203,8 @@ pub fn render_root_section(
         date = today_yyyy_mm_dd()?
     );
     let new_section = format!("{}\n\n{}\n", section_heading, body.trim_end());
-    // Root file: a synthesized H1 is the project header, never a crate name (a
-    // fresh lockstep/flat root must not be titled with the last-bumped crate).
+    // Root file: a synthesized H1 is the project header (a fresh
+    // lockstep/flat root must not be titled with the last-bumped crate).
     let merged = merge_into_changelog(MergeArgs {
         file_path: &file_path,
         h1: &project_h1(workspace_root),
@@ -224,7 +224,7 @@ pub fn render_root_section(
 /// Resolve the `<base>/compare` URL prefix for footer links: prefer the base
 /// embedded in an existing `[Unreleased]:` compare link, else synthesize one
 /// from the `origin` remote. Returns `None` when neither is available (the
-/// footer roll then leaves links absent rather than emitting a 404).
+/// footer roll then leaves links absent; a synthesized one would 404).
 pub(crate) fn resolve_compare_base(
     existing: &str,
     workspace_root: &std::path::Path,

@@ -167,10 +167,6 @@ pub fn resign_combined_checksums(ctx: &mut Context, dry_run: bool) -> Result<()>
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// SignStage
-// ---------------------------------------------------------------------------
-
 /// Sign stage: signs artifacts using GPG, cosign, or other signing tools.
 ///
 /// Calls `ctx.refresh_artifacts_var()` after all signing completes, matching
@@ -230,16 +226,13 @@ impl Stage for SignStage {
         // total but not which stage stalled.
         let _retry_scope = anodizer_core::retry::RetryScope::enter(self.name());
 
-        // ----------------------------------------------------------------
-        // GPG / generic signing via `signs` config (supports multiple)
-        // ----------------------------------------------------------------
         //
-        // Consumer-selection gate. `sign` is a PREP stage, not a publisher, so
+        // Consumer-selection gate. `sign` is a PREP stage with no publisher role, so
         // it has no `--publishers` identity of its own. Both slices produce
         // detached signatures and certificates that upload as release assets,
         // and the publishers that read them are `signs_consumers()`. When
         // EVERY one of those is deselected (e.g. `--publishers npm`), no
-        // selected surface will ever read the output, so producing it would
+        // selected publisher will ever read the output, so producing it would
         // demand cosign/GPG material a publisher-scoped runner does not carry
         // for no downstream effect. The consumer set is the single source of
         // truth in `signs_consumers()`, so the runtime gate and the preflight
@@ -259,15 +252,11 @@ impl Stage for SignStage {
         let sign_configs = ctx.config.signs.clone();
         process_sign_configs(&sign_configs, ctx, &log, ArtifactFilter::FromConfig, "sign")?;
 
-        // ----------------------------------------------------------------
-        // Binary-specific signing via `binary_signs` config
-        // Same as `signs` but always filters to Binary artifacts only.
-        // ----------------------------------------------------------------
         //
         // A binary that is not on disk — the publish-only case, where the
         // preserved dist carries the release assets but not the raw cargo
         // output — drops out inside `process_sign_configs`, which records the
-        // config's skip instead of handing the signer a missing path.
+        // config's skip and hands the signer nothing.
         let binary_sign_configs = ctx.config.binary_signs.clone();
         process_sign_configs(
             &binary_sign_configs,
@@ -316,9 +305,6 @@ impl Stage for DockerSignStage {
         // operator sees the total but not which stage stalled.
         let _retry_scope = anodizer_core::retry::RetryScope::enter(self.name());
 
-        // ----------------------------------------------------------------
-        // Docker image signing via `docker_signs` config
-        // ----------------------------------------------------------------
         if let Some(docker_signs) = ctx.config.docker_signs.clone() {
             // Validate docker_signs IDs are unique.
             {
@@ -644,7 +630,7 @@ impl Stage for DockerSignStage {
                     // default. An explicit `output:` template that evaluates true
                     // opts the tee back in; the default is silent (the
                     // `signed image <ref>` RESULT below is the default signal,
-                    // and a non-zero exit still surfaces via `check_output`).
+                    // and a non-zero exit still errors via `check_output`).
                     let show_output = match docker_sign_cfg.output.as_ref() {
                         Some(s) => s
                             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
@@ -716,10 +702,6 @@ impl Stage for DockerSignStage {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests;
 
@@ -779,7 +761,7 @@ fn sign_slice_requirements(
         //   literal/templated `cert_file` supplies the cert directly, so
         //   requiring the env var then would be a false positive.
         // - The password is OPTIONAL at runtime even when required (a
-        //   passwordless .p12 is valid), so it is never a preflight requirement.
+        //   passwordless .p12 is valid), so preflight does not require it.
         if let Some(authenticode) = &cfg.authenticode {
             if authenticode.is_required() {
                 out.push(anodizer_core::EnvRequirement::Tool {

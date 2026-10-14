@@ -5,10 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use super::{StringOrBool, deserialize_string_or_bool_opt};
 
-// ---------------------------------------------------------------------------
-// DockerHub description sync
-// ---------------------------------------------------------------------------
-
 /// Docker Hub description sync configuration.
 /// Pushes image descriptions and README content to Docker Hub repositories.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]

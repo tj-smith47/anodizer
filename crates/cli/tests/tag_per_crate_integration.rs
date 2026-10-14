@@ -545,19 +545,20 @@ core = { path = "../core", version = "0.0.2" }
     );
     let preview_err = String::from_utf8_lossy(&preview.stderr);
     assert!(
-        preview_err.contains("(dry-run) would heal dep floor util 0.1.0 → 0.5.0"),
+        preview_err.contains("(dry-run) would heal dependency minimum util 0.1.0 → 0.5.0"),
         "dry-run must preview the heal: {preview_err}"
     );
     // `sync_workspace_deps` reaches the top-level sections, so cli's stale
     // `core` floor is that leg's — the preview must not claim it.
     assert!(
-        !preview_err.contains("would heal dep floor core 0.0.2"),
+        !preview_err.contains("would heal dependency minimum core 0.0.2"),
         "a floor the same-run propagation owns must not be previewed as a heal: {preview_err}"
     );
     // …but it never reaches `[workspace.dependencies]`, so that floor on the
     // same bumped crate IS the sweep's, in both modes.
     assert!(
-        preview_err.contains("(dry-run) would heal dep floor core 0.0.4 → 0.2.0 in Cargo.toml"),
+        preview_err
+            .contains("(dry-run) would heal dependency minimum core 0.0.4 → 0.2.0 in Cargo.toml"),
         "dry-run must preview the root floor heal: {preview_err}"
     );
     assert_eq!(
@@ -588,11 +589,11 @@ core = { path = "../core", version = "0.0.2" }
     let stderr = String::from_utf8_lossy(&out.stderr);
     // The same two lines the preview promised, and only those.
     assert!(
-        stderr.contains("healed dep floor core 0.0.4 → 0.2.0 in Cargo.toml"),
+        stderr.contains("healed dependency minimum core 0.0.4 → 0.2.0 in Cargo.toml"),
         "the root floor must heal: {stderr}"
     );
     assert!(
-        !stderr.contains("heal dep floor core 0.0.2"),
+        !stderr.contains("heal dependency minimum core 0.0.2"),
         "a floor the same-run propagation owns must not be reported as a heal: {stderr}"
     );
     assert_eq!(

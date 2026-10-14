@@ -1,10 +1,6 @@
 use super::*;
 use crate::publisher_helpers::count_noun;
 
-// ---------------------------------------------------------------------------
-// upload_single_artifact
-// ---------------------------------------------------------------------------
-
 /// HTTP request descriptor for [`upload_single_artifact_prepared`].
 ///
 /// Bundles the "what URL / how to address it" fields. The `checksum_header`
@@ -37,7 +33,7 @@ pub(crate) struct UploadAuth<'a> {
 /// The tri-state mirrors cargo's `is_already_published` and chocolatey's
 /// `FeedHashResult`: the `Unknown` arm exists so a probe that can't prove
 /// either presence or content-match never causes a false skip — the upload
-/// proceeds and any true conflict surfaces from the PUT itself.
+/// proceeds and any true conflict is reported by the PUT itself.
 enum ArtifactPresence {
     /// The path holds an artifact whose SHA-256 equals the local file's —
     /// re-uploading is a no-op, so the upload is skipped (idempotent re-run).
@@ -59,8 +55,8 @@ enum ArtifactPresence {
 /// of an existing path. A 404 means the path is empty (`Absent`); a 2xx with a
 /// matching checksum is `PresentMatching`; a 2xx with a differing checksum is
 /// `PresentDiffering`. Any transport error, non-404 error status, or absent
-/// checksum header degrades to `Unknown` so the caller uploads rather than
-/// risking a false skip. The probe is best-effort and is NOT retried — a flaky
+/// checksum header degrades to `Unknown` so the caller uploads and never
+/// risks a false skip. The probe is best-effort and is NOT retried — a flaky
 /// HEAD must not block a release; the upstream PUT carries the retry budget and
 /// remains the source of truth for genuine conflicts.
 fn probe_artifact_presence(
@@ -156,9 +152,9 @@ pub(crate) fn upload_single_artifact(
 /// Render each `custom_headers` template value against the artifact-scoped
 /// template vars (`ArtifactName`/`ArtifactExt`/`Os`/`Arch`/`Target`).
 ///
-/// A render failure surfaces as a configuration error (bad template syntax,
-/// missing variable, …) rather than pushing `{{ ... }}` literals onto the wire
-/// — Artifactory typically rejects those with a confusing 400. Pulled out of
+/// A render failure is reported as a configuration error (bad template syntax,
+/// missing variable, …); pushing `{{ ... }}` literals onto the wire would get
+/// a confusing 400 from Artifactory. Pulled out of
 /// the upload path so it can run in the serial pre-pass (it needs the non-`Sync`
 /// `ctx`) ahead of the parallel network fan-out.
 pub(crate) fn render_custom_headers(
@@ -370,10 +366,6 @@ pub(crate) fn decode_artifactory_error_body(body: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// publish_to_artifactory
-// ---------------------------------------------------------------------------
-
 /// Tally of what an Artifactory publish run did, so the caller can decide
 /// whether the whole run was an idempotent no-op (everything skipped) versus a
 /// real publish (at least one upload).
@@ -388,7 +380,7 @@ pub struct ArtifactoryUploadSummary {
 impl ArtifactoryUploadSummary {
     /// True when at least one artifact was considered AND every one was an
     /// idempotent skip — the signal the publisher uses to record
-    /// `Skipped(AlreadyPublished)` instead of `Succeeded`.
+    /// `Skipped(AlreadyPublished)` in place of `Succeeded`.
     pub fn is_fully_idempotent_skip(&self) -> bool {
         self.uploaded == 0 && self.already_present > 0
     }
@@ -397,7 +389,7 @@ impl ArtifactoryUploadSummary {
 /// Upload artifacts to Artifactory via HTTP PUT.
 ///
 /// This is a top-level publisher: it reads from `ctx.config.artifactories`
-/// rather than from per-crate publish configs.  Each entry specifies a target
+/// and ignores per-crate publish configs.  Each entry specifies a target
 /// URL template, credentials, and optional filters.
 pub fn publish_to_artifactory(
     ctx: &Context,
@@ -544,7 +536,6 @@ pub(crate) fn publish_to_artifactory_recording(
         // (and before dry-run, so a snapshot catches it too).
         validate_artifactory_deb_slugs(entry)?;
 
-        // --- Dry-run logging ---
         if ctx.is_dry_run() {
             let target_url = ctx.render_template(target_template).with_context(|| {
                 format!("artifactory: failed to render target URL for '{}'", name)
@@ -633,7 +624,6 @@ pub(crate) fn publish_to_artifactory_recording(
             continue;
         }
 
-        // --- Live mode ---
         //
         // Credentials are already validated above; live mode just needs
         // mTLS pair coherence.
@@ -706,7 +696,7 @@ pub(crate) fn publish_to_artifactory_recording(
                 ) {
                     log.warn(&format!(
                         "exclude filter {:?} dropped all {} for \
-                         artifactory '{}'; check the globs match asset names, not full paths",
+                         artifactory '{}'; check that the globs match asset file names without their directories",
                         entry.exclude.as_deref().unwrap_or_default(),
                         count_noun(pre_exclude, "candidate artifact", "candidate artifacts"),
                         name

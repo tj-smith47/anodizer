@@ -15,7 +15,7 @@ use super::super::package::{FeedHashResult, compute_nupkg_hash, create_nupkg, pa
 use super::*;
 
 /// Resolves the required nuspec metadata (description, license, authors,
-/// project/icon URLs, tags) by walking `choco.*` → `metadata.*` fallbacks
+/// project/icon URLs, tags) by following `choco.*` → `metadata.*` fallbacks
 /// and template-rendering where applicable. Fails when `license` is
 /// unresolvable, because the Chocolatey gallery rejects empty licenses.
 pub(super) fn resolve_metadata(
@@ -105,7 +105,7 @@ pub(super) fn resolve_metadata(
     // A compound SPDX expression (`MIT OR Apache-2.0`) has no single canonical
     // license file, so a derived `…/blob/<ref>/LICENSE` URL would both
     // misrepresent the dual license AND 404 in a dual-licensed repo that ships
-    // `LICENSE-MIT` + `LICENSE-APACHE` rather than a bare `LICENSE`. An
+    // `LICENSE-MIT` + `LICENSE-APACHE` and no bare `LICENSE`. An
     // explicit `license_url` still wins.
     let license_url = match choco_cfg.license_url.as_deref() {
         Some(raw) => Some(render_cfg("chocolatey.license_url", raw)?),
@@ -156,7 +156,7 @@ pub(super) fn resolve_metadata(
     Ok(meta)
 }
 
-/// Derives the GitHub `…/blob/<ref>/LICENSE` URL for the release, pinning the
+/// Derives the GitHub `…/blob/<ref>/LICENSE` URL for the release, fixing the
 /// blob at the release tag (`template_vars["Tag"]`) so the URL is stable for
 /// the published version. Falls back to the `HEAD` ref when no tag is in
 /// scope (e.g. a snapshot render before the tag is stamped). The repo's
@@ -279,7 +279,7 @@ pub(super) fn select_windows_artifacts<'a>(
     // (broken install — what trips moderator rejection).
     //
     // Classify by the canonical arch token (`amd64` / `386`) from
-    // `map_target`, not by string-substring on the triple, so future
+    // `map_target` (no string-substring match on the triple), so future
     // triple variations can't slip through.
     let mut slot_32: Vec<&anodizer_core::artifact::Artifact> = Vec::new();
     let mut slot_64: Vec<&anodizer_core::artifact::Artifact> = Vec::new();
@@ -292,7 +292,7 @@ pub(super) fn select_windows_artifacts<'a>(
             other => {
                 // arm64 / any other architecture: skip with a log line so
                 // the operator sees why their arm64 build wasn't packaged
-                // (rather than silently failing on the consumer's machine).
+                // (a silent failure would otherwise hit the consumer's machine).
                 log.status(&format!(
                     "skipped chocolatey artifact '{}' for '{}' — arch '{}' is not \
                      supported by chocolatey (only amd64/386)",
@@ -477,7 +477,7 @@ pub(super) fn render_text_fields(
     // README.md via `from_file:`). Without this fallback an unset
     // `release_notes:` in the choco block left the nuspec
     // `<releaseNotes>` empty even when the project carried a
-    // README. `render_template` walks the structured `Metadata` map
+    // README. `render_template` reads the structured `Metadata` map
     // populated at context bootstrap.
     let release_notes = match render(
         "chocolatey.release_notes",
@@ -486,7 +486,7 @@ pub(super) fn render_text_fields(
         Some(s) => Some(s),
         None => {
             // The full-description fallback is the tool's own fixed template
-            // (`{{ Metadata.FullDescription }}`), not user config, so a render
+            // (`{{ Metadata.FullDescription }}`) with no user config in it, so a render
             // failure here is genuinely internal — keep its `.ok()` swallow.
             ctx.render_template("{{ Metadata.FullDescription }}")
                 .ok()
@@ -495,7 +495,7 @@ pub(super) fn render_text_fields(
     };
     // <id>, <packageSourceUrl>, <docsUrl>, <owners> are user-supplied config
     // string fields; render them so a value like `…/blob/{{ .Tag }}/…` resolves
-    // instead of shipping the literal delimiters into the nuspec.
+    // and no literal delimiters ship in the nuspec.
     let name = choco_cfg
         .name
         .as_deref()
@@ -651,12 +651,13 @@ pub(crate) fn resolve_api_key(
 ) -> Result<String> {
     // The caller turns an empty key into a skip, so it never reaches the
     // NuGet push API, which would answer with an opaque 403.
-    util::config_or_env_secret(
-        ctx,
-        "chocolatey.api_key",
-        choco_cfg.api_key.as_deref(),
-        "CHOCOLATEY_API_KEY",
-    )
+    Ok(ctx
+        .config_or_env_secret(
+            "chocolatey.api_key",
+            choco_cfg.api_key.as_deref(),
+            &["CHOCOLATEY_API_KEY"],
+        )?
+        .unwrap_or_default())
 }
 
 /// Inspects the feed for the current `pkg_name@version` and decides
@@ -730,7 +731,7 @@ pub(super) fn handle_feed_state(
                     // and bailing on that diff is exactly what
                     // republish_in_moderation opts out of. A still-Submitted
                     // version accepts a re-push; if it has since been Approved
-                    // (truly immutable) the push path surfaces the 403 as a
+                    // (truly immutable) the push path reports the 403 as a
                     // real error.
                     return Ok(None);
                 } else {
@@ -778,10 +779,10 @@ pub(super) fn handle_feed_state(
             // an install script pointing at a stale sha). Log the situation
             // and let the push attempt proceed; Chocolatey returns 403 with
             // a recognizable message if the version is truly immutable, and
-            // that surfaces as a real error.
+            // that is reported as a real error.
             log.warn(&format!(
                 "chocolatey package '{}-{}' exists on feed but hash was unavailable; \
-                 attempting push so any conflict surfaces as a real error",
+                 attempting push so any conflict is reported as a real error",
                 pkg_name, version
             ));
         }

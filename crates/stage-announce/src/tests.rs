@@ -36,7 +36,7 @@ fn isolated_test_dist() -> std::path::PathBuf {
 
 /// Run `AnnounceStage` with a log capture attached and return the captured
 /// WARN lines. Announce is non-fatal post-publish: a misconfigured or failed
-/// channel is surfaced as a warn naming the provider, and `run` returns `Ok`.
+/// channel is reported as a warn naming the provider, and `run` returns `Ok`.
 /// Tests that previously asserted `run(...).is_err()` / `.unwrap_err()` now
 /// assert `run` is `Ok` and that the expected provider/error text appears in
 /// these warns.
@@ -426,12 +426,8 @@ fn test_missing_discord_webhook_url_warn_and_skip() {
     ctx.template_vars_mut().set("Version", "1.0.0");
     AnnounceStage
         .run(&mut ctx)
-        .expect("normal-mode missing webhook_url must skip cleanly, not error");
+        .expect("normal-mode missing webhook_url must skip cleanly");
 }
-
-// ----------------------------------------------------------------
-// Telegram tests
-// ----------------------------------------------------------------
 
 #[test]
 fn test_skips_disabled_telegram() {
@@ -529,7 +525,7 @@ fn test_missing_telegram_bot_token_warn_and_skip() {
     ctx.template_vars_mut().set("Version", "1.0.0");
     AnnounceStage
         .run(&mut ctx)
-        .expect("normal-mode missing telegram bot_token must skip cleanly, not error");
+        .expect("normal-mode missing telegram bot_token must skip cleanly");
 }
 
 #[test]
@@ -584,12 +580,8 @@ fn test_missing_telegram_chat_id_warn_and_skip() {
     ctx.template_vars_mut().set("Version", "1.0.0");
     AnnounceStage
         .run(&mut ctx)
-        .expect("normal-mode missing telegram chat_id must skip cleanly, not error");
+        .expect("normal-mode missing telegram chat_id must skip cleanly");
 }
-
-// ----------------------------------------------------------------
-// Teams tests
-// ----------------------------------------------------------------
 
 #[test]
 fn test_skips_disabled_teams() {
@@ -661,10 +653,6 @@ fn test_missing_teams_webhook_url_returns_error() {
         "expected a warn naming the failed channel, got: {warns:?}"
     );
 }
-
-// ----------------------------------------------------------------
-// Mattermost tests
-// ----------------------------------------------------------------
 
 #[test]
 fn test_skips_disabled_mattermost() {
@@ -740,10 +728,6 @@ fn test_missing_mattermost_webhook_url_returns_error() {
         "expected a warn naming the failed channel, got: {warns:?}"
     );
 }
-
-// ----------------------------------------------------------------
-// Email tests
-// ----------------------------------------------------------------
 
 #[test]
 fn test_skips_disabled_email() {
@@ -876,10 +860,6 @@ fn test_invalid_email_from_returns_error() {
     );
 }
 
-// ----------------------------------------------------------------
-// Config struct field tests
-// ----------------------------------------------------------------
-
 #[test]
 fn test_discord_announce_new_fields() {
     let cfg = DiscordAnnounce {
@@ -976,10 +956,6 @@ fn test_dry_run_telegram_defaults_parse_mode_to_markdownv2() {
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
-// ----------------------------------------------------------------
-// announce.skip tests
-// ----------------------------------------------------------------
-
 #[test]
 fn test_announce_skip_true_skips_all() {
     let announce = AnnounceConfig {
@@ -1032,10 +1008,6 @@ fn test_announce_skip_template_evaluated() {
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
-// ----------------------------------------------------------------
-// Slack typed blocks YAML deserialization test
-// ----------------------------------------------------------------
-
 #[test]
 fn test_slack_blocks_yaml_deserialization() {
     let yaml = r#"
@@ -1063,10 +1035,6 @@ blocks:
     assert_eq!(config.blocks[1].block_type, "section");
     assert_eq!(config.blocks[1].text.as_ref().unwrap().text_type, "mrkdwn");
 }
-
-// ----------------------------------------------------------------
-// Reddit tests
-// ----------------------------------------------------------------
 
 #[test]
 fn test_skips_disabled_reddit() {
@@ -1172,7 +1140,7 @@ fn test_missing_reddit_application_id_warn_and_skip() {
     let mut ctx = make_ctx(Some(announce));
     AnnounceStage
         .run(&mut ctx)
-        .expect("normal-mode missing reddit application_id must skip cleanly, not error");
+        .expect("normal-mode missing reddit application_id must skip cleanly");
 }
 
 #[test]
@@ -1191,7 +1159,7 @@ fn test_missing_reddit_username_warn_and_skip() {
     let mut ctx = make_ctx(Some(announce));
     AnnounceStage
         .run(&mut ctx)
-        .expect("normal-mode missing reddit username must skip cleanly, not error");
+        .expect("normal-mode missing reddit username must skip cleanly");
 }
 
 #[test]
@@ -1245,7 +1213,7 @@ fn test_missing_reddit_sub_warn_and_skip() {
     let mut ctx = make_ctx(Some(announce));
     AnnounceStage
         .run(&mut ctx)
-        .expect("normal-mode missing reddit sub must skip cleanly, not error");
+        .expect("normal-mode missing reddit sub must skip cleanly");
 }
 
 #[test]
@@ -1280,10 +1248,6 @@ fn test_missing_reddit_sub_returns_error() {
         "expected a warn containing the failure text, got: {warns:?}"
     );
 }
-
-// ----------------------------------------------------------------
-// Twitter tests
-// ----------------------------------------------------------------
 
 #[test]
 fn test_skips_disabled_twitter() {
@@ -1366,10 +1330,6 @@ fn test_twitter_missing_env_var_returns_error() {
         "expected a warn containing the failure text, got: {warns:?}"
     );
 }
-
-// ----------------------------------------------------------------
-// Mastodon tests
-// ----------------------------------------------------------------
 
 #[test]
 fn test_skips_disabled_mastodon() {
@@ -1485,7 +1445,7 @@ fn test_mastodon_missing_server_warn_and_skip() {
     ctx.template_vars_mut().set("Version", "1.0.0");
     AnnounceStage
         .run(&mut ctx)
-        .expect("normal-mode missing mastodon server must skip cleanly, not error");
+        .expect("normal-mode missing mastodon server must skip cleanly");
 }
 
 #[test]
@@ -1529,13 +1489,13 @@ fn test_mastodon_empty_server_skips() {
         ..Default::default()
     };
     let mut ctx = make_ctx(Some(announce));
-    // Empty server should cause a silent skip, not an error
+    // Empty server should cause a silent skip
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
 /// `MASTODON_CLIENT_ID` is required. Anodizer
-/// must fail-fast when it is missing instead of silently proceeding with
-/// only the access token.
+/// must fail fast when it is missing; proceeding with only the access
+/// token would be silent misconfiguration.
 #[test]
 fn test_mastodon_missing_client_id_returns_error() {
     let announce = AnnounceConfig {
@@ -1649,8 +1609,8 @@ fn test_telegram_default_template_renders_without_tilde() {
 /// Q-disc1: Discord webhook URL must percent-encode the env-derived
 /// id+token segments. The URL join escapes path
 /// segments; `percent_encode_path_segment` mirrors that. Unit test of
-/// the helper boundary — `crates/core/src/url.rs` already pins the encoding
-/// table; this pins that the fed segments round-trip safely.
+/// the helper boundary — `crates/core/src/url.rs` already tests the encoding
+/// table; this checks that the fed segments round-trip safely.
 #[test]
 fn test_discord_webhook_url_percent_encodes_id_and_token() {
     let id = "id/with?weird#chars";
@@ -1675,10 +1635,6 @@ fn test_discord_webhook_url_percent_encodes_id_and_token() {
         "literal `+` in token should be encoded"
     );
 }
-
-// ----------------------------------------------------------------
-// Bluesky tests
-// ----------------------------------------------------------------
 
 #[test]
 fn test_skips_disabled_bluesky() {
@@ -1772,7 +1728,7 @@ fn test_bluesky_missing_username_warn_and_skip() {
     set_test_env(&mut ctx, &[("BLUESKY_APP_PASSWORD", "test_pass")]);
     AnnounceStage
         .run(&mut ctx)
-        .expect("normal-mode missing bluesky username must skip cleanly, not error");
+        .expect("normal-mode missing bluesky username must skip cleanly");
 }
 
 #[test]
@@ -1813,10 +1769,6 @@ fn test_bluesky_empty_env_var_errors() {
         "expected a warn containing the failure text, got: {warns:?}"
     );
 }
-
-// ----------------------------------------------------------------
-// LinkedIn tests
-// ----------------------------------------------------------------
 
 #[test]
 fn test_skips_disabled_linkedin() {
@@ -1914,10 +1866,6 @@ fn test_linkedin_empty_env_var_errors() {
     );
 }
 
-// ----------------------------------------------------------------
-// OpenCollective tests
-// ----------------------------------------------------------------
-
 #[test]
 fn test_skips_disabled_opencollective() {
     let announce = AnnounceConfig {
@@ -2010,7 +1958,7 @@ fn test_opencollective_missing_slug_warn_and_skip() {
     let mut ctx = make_ctx(Some(announce));
     AnnounceStage
         .run(&mut ctx)
-        .expect("normal-mode missing opencollective slug must skip cleanly, not error");
+        .expect("normal-mode missing opencollective slug must skip cleanly");
 }
 
 #[test]
@@ -2024,7 +1972,7 @@ fn test_opencollective_empty_slug_skips() {
         ..Default::default()
     };
     let mut ctx = make_ctx(Some(announce));
-    // Empty slug should cause a silent skip, not an error
+    // Empty slug should cause a silent skip
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
@@ -2075,10 +2023,6 @@ fn test_opencollective_empty_env_var_errors() {
         "expected a warn containing the failure text, got: {warns:?}"
     );
 }
-
-// ----------------------------------------------------------------
-// Discourse tests
-// ----------------------------------------------------------------
 
 #[test]
 fn test_skips_disabled_discourse() {
@@ -2178,7 +2122,7 @@ fn test_missing_discourse_server_warn_and_skip() {
     set_test_env(&mut ctx, &[("DISCOURSE_API_KEY", "test_key")]);
     AnnounceStage
         .run(&mut ctx)
-        .expect("normal-mode missing discourse server must skip cleanly, not error");
+        .expect("normal-mode missing discourse server must skip cleanly");
 }
 
 #[test]
@@ -2227,7 +2171,7 @@ fn test_missing_discourse_category_id_warn_and_skip() {
     set_test_env(&mut ctx, &[("DISCOURSE_API_KEY", "test_key")]);
     AnnounceStage
         .run(&mut ctx)
-        .expect("normal-mode missing discourse category_id must skip cleanly, not error");
+        .expect("normal-mode missing discourse category_id must skip cleanly");
 }
 
 #[test]
@@ -2302,11 +2246,7 @@ fn test_discourse_empty_env_var_errors() {
     );
 }
 
-// ----------------------------------------------------------------
-// Anodizer-additive UX behaviours
-// ----------------------------------------------------------------
-
-/// Pins the webhook User-Agent as `anodizer/<crate-version>` (anodizer-
+/// Checks the webhook User-Agent is `anodizer/<crate-version>` (anodizer-
 /// additive UX win documented in lib.rs near the User-Agent header
 /// fallback). A static user-agent is the baseline; the
 /// version-suffixed variant is debuggable on the receiving end without
@@ -2316,8 +2256,7 @@ fn test_webhook_user_agent_is_anodizer_versioned() {
     let ua = anodizer_core::http::USER_AGENT;
     assert!(
         ua.starts_with("anodizer/"),
-        "webhook User-Agent must start with 'anodizer/' (anodizer-additive UX divergence \
-             from GoReleaser's static 'goreleaser' UA), got: {ua:?}"
+        "webhook User-Agent must start with 'anodizer/', got: {ua:?}"
     );
     let suffix = ua.trim_start_matches("anodizer/");
     assert!(
@@ -2326,10 +2265,10 @@ fn test_webhook_user_agent_is_anodizer_versioned() {
     );
 }
 
-/// Pins the SMTP port default at 587 (anodizer-additive UX win
+/// Checks the SMTP port default is 587 (anodizer-additive UX win
 /// documented on `EmailAnnounce::port`). When both the config field
 /// and the SMTP_PORT env var are unset, the announcer defaults to the
-/// IETF submission port instead of bailing on a missing port.
+/// IETF submission port.
 #[test]
 fn test_email_smtp_port_defaults_to_587() {
     // No config port, no env override → submission port.
@@ -2341,11 +2280,11 @@ fn test_email_smtp_port_defaults_to_587() {
     assert_eq!(resolve_smtp_port(None, Some(465)), 465);
 }
 
-/// Pins Mattermost `channel` as template-rendered (anodizer-additive UX
+/// Checks Mattermost `channel` is template-rendered (anodizer-additive UX
 /// win documented near the mattermost render block). The renderer passes
 /// `channel` raw — no template substitution. Anodizer renders it through
 /// the engine, unlocking per-tag channel routing like
-/// `channel: "release-{{ Tag }}"`. Pinned by feeding a malformed
+/// `channel: "release-{{ Tag }}"`. Checked by feeding a malformed
 /// template that would only error if rendering is invoked.
 #[test]
 fn test_mattermost_renders_channel_template() {
@@ -2353,7 +2292,7 @@ fn test_mattermost_renders_channel_template() {
         mattermost: Some(MattermostAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
             webhook_url: Some("https://mm.invalid/hooks/xxx".to_string()),
-            // Unclosed Tera tag — will only surface as a render error if
+            // Unclosed Tera tag — will only show up as a render error if
             // the channel field is actually run through the engine.
             channel: Some("release-{{ Tag".to_string()),
             ..Default::default()
@@ -2364,8 +2303,8 @@ fn test_mattermost_renders_channel_template() {
     config.dist = isolated_test_dist();
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
-    // Strict mode so the per-announcer error surfaces as a stage-level
-    // failure (rather than being swallowed by any soft skip path).
+    // Strict mode so the per-announcer error becomes a stage-level
+    // failure; a soft skip path would swallow it.
     let opts = ContextOptions {
         strict: true,
         ..Default::default()
@@ -2387,7 +2326,7 @@ fn test_mattermost_renders_channel_template() {
     );
 }
 
-/// Pins Mattermost `channel` rendering on the *success* path: a valid
+/// Checks Mattermost `channel` rendering on the *success* path: a valid
 /// `{{ Tag }}` template must resolve cleanly during dry-run.
 #[test]
 fn test_mattermost_channel_template_resolves_on_dry_run() {
@@ -2424,7 +2363,6 @@ fn test_mattermost_channel_template_resolves_on_dry_run() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Webhook header resolver — case-insensitive precedence
 //
 // Pre-2026-04-28 the header-precedence logic used
@@ -2433,9 +2371,8 @@ fn test_mattermost_channel_template_resolves_on_dry_run() {
 // insensitive (RFC 7230); a user who wrote `headers: { authorization:
 // "user-foo" }` (lowercase) bypassed the gate, anodizer pushed its own
 // `Authorization` header, and reqwest emitted BOTH on the wire. The
-// resolver now case-folds the override check; these tests pin that
+// resolver now case-folds the override check; these tests check that
 // behavior.
-// -----------------------------------------------------------------------
 
 /// Lowercase `authorization` from the user must suppress anodizer's
 /// `BASIC_AUTH_HEADER_VALUE` / `BEARER_TOKEN_HEADER_VALUE` default and
@@ -2457,7 +2394,7 @@ fn test_resolve_webhook_headers_lowercase_authorization_wins() {
         "exactly one Authorization-equivalent key must be present, got {resolved:?}"
     );
 
-    // The value must be the user's, not anodizer's basic_auth default.
+    // The value must be the user's; anodizer's basic_auth default must lose.
     let (_, val) = resolved
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("Authorization"))
@@ -2497,7 +2434,7 @@ fn test_resolve_webhook_headers_lowercase_user_agent_wins() {
 }
 
 /// Mixed-case `aUtHoRiZaTiOn` likewise wins (defensive: HTTP header
-/// names are case-insensitive across the spec, not just the two
+/// names are case-insensitive across the spec, beyond the two
 /// canonical spellings).
 #[test]
 fn test_resolve_webhook_headers_mixed_case_authorization_wins() {
@@ -2577,7 +2514,7 @@ fn announce_retry_classifier_matches_a_5xx_whose_inner_has_its_own_cause() {
     );
     assert!(
         !is_retriable(wrapped.root_cause()),
-        "root_cause() reaches the leaf — wrong API for chain-walk classification"
+        "root_cause() reaches the leaf — wrong API for error-chain classification"
     );
 }
 
@@ -2651,31 +2588,28 @@ fn a_configured_announce_secret_is_rendered_trimmed_and_falls_through_when_blank
     ctx.template_vars_mut().set_env("BLANK", "  ");
     let field = "announce.telegram.bot_token";
 
-    let got =
-        crate::helpers::config_or_env_secret(&ctx, field, Some("{{ .Env.BOT }}"), "TELEGRAM_TOKEN")
-            .unwrap();
+    let got = ctx
+        .config_or_env_secret(field, Some("{{ .Env.BOT }}"), &["TELEGRAM_TOKEN"])
+        .unwrap();
     assert_eq!(got.as_deref(), Some("cfg-token"));
 
-    let got = crate::helpers::config_or_env_secret(
-        &ctx,
-        field,
-        Some("{{ .Env.BLANK }}"),
-        "TELEGRAM_TOKEN",
-    )
-    .unwrap();
+    let got = ctx
+        .config_or_env_secret(field, Some("{{ .Env.BLANK }}"), &["TELEGRAM_TOKEN"])
+        .unwrap();
     assert_eq!(got.as_deref(), Some("env-token"));
 
     set_test_env(&mut ctx, &[("TELEGRAM_TOKEN", " \n")]);
-    let got = crate::helpers::config_or_env_secret(&ctx, field, None, "TELEGRAM_TOKEN").unwrap();
+    let got = ctx
+        .config_or_env_secret(field, None, &["TELEGRAM_TOKEN"])
+        .unwrap();
     assert_eq!(got, None, "a blank variable counts as unset");
 
     let msg = format!(
         "{:#}",
-        crate::helpers::config_or_env_secret(
-            &ctx,
+        ctx.config_or_env_secret(
             field,
             Some("123:hunter2{{ Undefined }}"),
-            "TELEGRAM_TOKEN",
+            &["TELEGRAM_TOKEN"],
         )
         .expect_err("a token that does not render is an error")
     );

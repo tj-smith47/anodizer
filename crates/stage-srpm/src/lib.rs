@@ -10,10 +10,6 @@ use anodizer_core::config::SrpmConfig;
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
 
-// ---------------------------------------------------------------------------
-// SrpmStage
-// ---------------------------------------------------------------------------
-
 pub struct SrpmStage;
 
 impl Stage for SrpmStage {
@@ -58,7 +54,7 @@ impl Stage for SrpmStage {
 
         // Top-level directory inside the source tarball (set by the source
         // stage from the RAW version). The auto-gen spec's `%autosetup -n`
-        // must target this exact dir; it is the RAW prefix, not the sanitized
+        // must target this exact dir; it is the RAW prefix and differs from the sanitized
         // `Version`, so a snapshot/prerelease `.src.rpm` is rebuildable.
         let source_prefix = ctx
             .template_vars()
@@ -103,7 +99,7 @@ impl Stage for SrpmStage {
         let source_archive = &source_archives[0];
         // rpmbuild expands `%{version}` in a spec's `Source0:` to the
         // sanitized `Version:` field, so the file copied into `SOURCES/` must
-        // match that, not the raw-version artifact name. No-op for real
+        // match that and differs from the raw-version artifact name. No-op for real
         // releases (clean version → name unchanged). Per-crate safe: both
         // `source_archive` and `version` are this published crate's.
         let rpm_source_name = rpm_source_name(&source_archive.name, &version, &rpm_safe_version);
@@ -170,7 +166,7 @@ impl Stage for SrpmStage {
             if let Some(ref packager) = srpm_cfg.packager {
                 ctx.template_vars_mut().set("Packager", packager);
             }
-            // Surface the optional RPM-spec fields as template vars so
+            // Expose the optional RPM-spec fields as template vars so
             // user-supplied spec files can reference them with `{{ .Foo }}`.
             if let Some(ref build_host) = srpm_cfg.build_host {
                 ctx.template_vars_mut().set("BuildHost", build_host);
@@ -307,7 +303,7 @@ impl Stage for SrpmStage {
             .arg("--define")
             .arg(format!("_topdir {}", rpmbuild_dir.display()));
 
-        // Pin BUILDTIME + every packaged file's mtime to SOURCE_DATE_EPOCH so
+        // Fix BUILDTIME + every packaged file's mtime to SOURCE_DATE_EPOCH so
         // two builds of the same commit emit a byte-identical .src.rpm. Modern
         // rpm reads SOURCE_DATE_EPOCH from the env but only *applies* it to the
         // RPM header's BUILDTIME / clamps payload mtimes when these macros are
@@ -420,7 +416,7 @@ impl Stage for SrpmStage {
 ///   release, so a prerelease orders ahead of its final version). The
 ///   separator is the FIRST `-`, UNLESS a literal `~` already opened the
 ///   prerelease (the cfg-suffix path composes `<base>~<prerelease>`, so a
-///   `-` inside that prerelease is internal, not a second separator). Once
+///   `-` inside that prerelease is internal and opens no second separator). Once
 ///   the prerelease has started, any further `-` becomes `_`. Any other char
 ///   outside `[A-Za-z0-9._+~^]` becomes `_`.
 /// - In `tail`: RPM forbids `-` in metadata too, so EVERY `-` becomes `_`
@@ -475,7 +471,7 @@ fn rpm_version_field(version: &str) -> String {
 /// A spec's `Source0:` commonly uses the canonical `%{name}-%{version}-…`
 /// idiom; rpmbuild expands `%{version}` to the SANITIZED `Version:` field
 /// (e.g. `0.5.0~SNAPSHOT_<sha>`), so the file copied into `SOURCES/` must
-/// carry the sanitized version, not the raw artifact name (`0.5.0-SNAPSHOT-…`)
+/// carry the sanitized version in place of the raw artifact name (`0.5.0-SNAPSHOT-…`)
 /// the source stage produced. Rewriting the version token to the sanitized
 /// form keeps the copied file, the auto-gen spec's `Source0:`, and a user
 /// spec's `{{ Source }}` all in agreement.
@@ -565,7 +561,7 @@ fn generate_default_spec(
     // Compose the RAW version string with prerelease (~suffix) and version
     // metadata (+suffix) per the SrpmConfig contract, THEN run a
     // single total `rpm_version_field` pass over the whole thing. Sanitizing
-    // once at the end (rather than per-fragment) means a `-` anywhere — in the
+    // once at the end, after every fragment is joined, means a `-` anywhere — in the
     // base version (`0.5.0-rc.1`), in a configured `prerelease: rc-1`, or in
     // `version_metadata: build-7` — is neutralized to valid RPM grammar; no
     // unsanitized fragment can re-open `Illegal char '-'`.
@@ -592,7 +588,7 @@ fn generate_default_spec(
         // `Epoch:` is required for upgrade ordering when users
         // migrate from a `1:x.y.z`-style version scheme. Silently
         // dropping it lets rpm compute the wrong "newer than" order
-        // during `dnf upgrade`, pinning operators on an old release
+        // during `dnf upgrade`, stranding operators on an old release
         // they can't push past without manual epoch surgery.
         header_extras.push_str(&format!("Epoch:          {epoch}\n"));
     }
@@ -601,7 +597,7 @@ fn generate_default_spec(
     }
     if let Some(section) = cfg.section.as_deref() {
         // `section` is the deb-style classification; rpm has no native
-        // equivalent so surface it as a header comment that downstream
+        // equivalent so it is written as a header comment that downstream
         // tooling scanning for it can pick up.
         header_extras.push_str(&format!("# Section: {section}\n"));
     }
@@ -623,7 +619,7 @@ fn generate_default_spec(
     // Compression macro — `compression: zstd` (or `xz` / `gzip` / `none`)
     // injects rpmbuild's `_source_payload` + `_source_compressor` macros
     // so the .src.rpm payload is encoded with the requested algorithm
-    // instead of rpmbuild's gzip default. The `w19.zstdio` /
+    // in place of rpmbuild's gzip default. The `w19.zstdio` /
     // `w7.xzdio` / `w9.gzdio` / `w0.gzdio` (none → gzip level 0) syntax
     // is the rpm idiom; users who set `compression:` expect the file
     // size on disk to reflect their choice.
@@ -660,7 +656,7 @@ fn generate_default_spec(
     // deterministic key order (BTreeMap). These declare which installed
     // files the package owns (the binary→path map). The map values
     // are the install paths; the keys (binary names) are not emitted
-    // verbatim because RPM `%files` lists paths, not logical names.
+    // verbatim because RPM `%files` lists paths only.
     for install_path in bins.values() {
         files_block.push_str(&format!("{install_path}\n"));
     }
@@ -776,10 +772,6 @@ pub fn env_requirements(
     out
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -836,7 +828,7 @@ mod tests {
     /// downstream filename templates and publisher stages see the canonical
     /// extension and routing key. Because the artifact emission path runs
     /// `rpmbuild` (an external tool unavailable in CI), this regression test
-    /// pins the literals at source level rather than driving the full pipe
+    /// checks the literals at source level without driving the full pipe
     /// end-to-end.
     #[test]
     fn test_srpm_artifact_metadata_includes_format_and_ext() {
@@ -918,8 +910,8 @@ mod tests {
 
     // The optional RPM-spec fields (prerelease/version_metadata/prefixes/
     // build_host/pretrans/posttrans/bins) must be folded into the
-    // auto-generated default spec, not only into the user-supplied
-    // `spec_file:` template surface.
+    // auto-generated default spec as well as into the user-supplied
+    // `spec_file:` template.
     /// `generate_default_spec` must honor `SOURCE_DATE_EPOCH` for the
     /// `%changelog` header date — without this, two from-clean
     /// determinism-harness rebuilds emit `*.spec` files with different
@@ -1088,7 +1080,7 @@ mod tests {
     /// Direct unit coverage of the version sanitizer's transform rules,
     /// independent of the spec emission path. Asserts the TOTAL guarantee:
     /// only `[A-Za-z0-9._+~^]` survives, the tilde reaches the prerelease
-    /// separator (never a metadata dash), and degenerate inputs are handled.
+    /// separator (a metadata dash collapses to `_`), and degenerate inputs are handled.
     #[test]
     fn test_rpm_version_field_transform() {
         let cases = [
@@ -1465,7 +1457,7 @@ mod tests {
         assert_eq!(effective_bins, expected);
     }
 
-    /// Cover the six optional fields surfaced through
+    /// Cover the six optional fields exposed through
     /// `generate_default_spec`: epoch, section, compression, docs,
     /// contents, license_file_name. Each emits the rpm-idiom shape
     /// that downstream tooling expects to see.
@@ -1517,7 +1509,7 @@ mod tests {
             spec.contains("Epoch:          1"),
             "epoch must emit as RPM Epoch:; got:\n{spec}"
         );
-        // section — surfaced as header comment (no native rpm tag).
+        // section — written as a header comment (no native rpm tag).
         assert!(spec.contains("# Section: utils"), "got:\n{spec}");
         // group + vendor + packager — proper RPM tags.
         assert!(spec.contains("Group:           Development/Tools"));
@@ -1595,7 +1587,7 @@ crates:
     #[test]
     fn test_srpm_new_rpm_spec_fields_parse() {
         // The optional RPM-spec fields (prerelease/version_metadata/prefixes/
-        // build_host/pretrans/posttrans/bins) parse and surface on the
+        // build_host/pretrans/posttrans/bins) parse and are set on the
         // SrpmConfig struct. `bins` is a binary→install-path map.
         use anodizer_core::config::Config;
 
@@ -1636,7 +1628,6 @@ crates:
         assert_eq!(srpm.version_metadata.as_deref(), Some("g1234abc"));
     }
 
-    // -------------------------------------------------------------------
     // Live `rpmbuild` execution path (PATH-stub harness)
     //
     // `SrpmStage::run` shells out to a hard-coded `Command::new("rpmbuild")`
@@ -1645,7 +1636,6 @@ crates:
     // stub records its argv and `.creates()` the `.src.rpm` rpmbuild would
     // emit into `SRPMS/`, where the stage's glob picks it up. Gated `unix`
     // because the stub harness's `.creates()`/`.script()` are unix-only.
-    // -------------------------------------------------------------------
 
     #[cfg(all(test, unix))]
     use anodizer_core::test_helpers::fake_tool::FakeToolDir;
@@ -1807,7 +1797,7 @@ crates:
     }
 
     /// Under `SOURCE_DATE_EPOCH` the stage passes the reproducible-build macros
-    /// so rpmbuild pins BUILDTIME + payload mtimes to SDE (without them the
+    /// so rpmbuild fixes BUILDTIME + payload mtimes to SDE (without them the
     /// Ubuntu/CI rpm stamps wall-clock and the determinism gate sees drift).
     /// They must be absent when SDE is unset (production wall-clock default).
     #[cfg(all(test, unix))]
@@ -1911,7 +1901,7 @@ crates:
         );
     }
 
-    /// Tool failure surfaces: rpmbuild exits 1 with stderr `boom`; the stage
+    /// Tool failure is reported: rpmbuild exits 1 with stderr `boom`; the stage
     /// bubbles an error carrying the exit code and the stderr tail, and
     /// registers NO artifact.
     #[cfg(all(test, unix))]
@@ -1948,7 +1938,7 @@ crates:
     }
 
     /// rpmbuild exits 0 but produces no `.src.rpm` in `SRPMS/`: the stage
-    /// detects the empty glob and bails rather than registering a phantom
+    /// detects the empty glob and bails before registering a phantom
     /// artifact.
     #[cfg(all(test, unix))]
     #[test]
@@ -2295,7 +2285,7 @@ crates:
 
     /// `package_name` is template-rendered before it reaches the `.src.rpm`
     /// filename and the spec's `Name:` field. A `{{ ProjectName }}` reference
-    /// resolves rather than reaching the artifact as a literal template string.
+    /// resolves before it reaches the artifact filename.
     #[cfg(all(test, unix))]
     #[test]
     #[serial_test::serial(path_env)]

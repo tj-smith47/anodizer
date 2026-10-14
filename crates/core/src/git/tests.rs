@@ -3528,7 +3528,6 @@ mod secret_renders {
         "resolve_secret_name(",
         "config_or_env_secret(",
         "resolve_token_with_ladder(",
-        "resolve_token_with_ladder_tracked(",
     ];
 
     /// Functions whose returned literals are field labels another function
@@ -3607,12 +3606,9 @@ mod secret_renders {
         ("NpmConfig.token", &["npm.token"]),
         ("PullRequestConfig.token", &["pull_request.token"]),
         ("PypiConfig.token", &["pypi.token"]),
-        (
-            "RepositoryConfig.token",
-            &["repository.token", "homebrew_cores.repository.token"],
-        ),
+        ("RepositoryConfig.token", &["repository.token"]),
         ("ScmRepoConfig.token", &["release.*.token"]),
-        ("SignConfig.stdin", &["*.stdin"]),
+        ("SignConfig.stdin", &["*[*].stdin"]),
         ("SlackAnnounce.webhook_url", &["announce.slack.webhook_url"]),
         ("TeamsAnnounce.webhook_url", &["announce.teams.webhook_url"]),
         (
@@ -3729,7 +3725,7 @@ mod secret_renders {
 
     /// The text between the `(` that `rest` follows and its matching `)`,
     /// with string literals read whole so a parenthesis inside one is text.
-    fn call_arguments(rest: &str) -> &str {
+    pub(super) fn call_arguments(rest: &str) -> &str {
         let mut depth = 1usize;
         let mut in_str = false;
         let mut prev = '\0';
@@ -3789,10 +3785,14 @@ mod secret_renders {
     }
 
     /// The render calls in `body` handed a credential field: one named in
-    /// `names`, read as a field or named in a field label.
+    /// `names`, read as a field or named in a field label, either in the
+    /// call's arguments or in the expression an argument variable is bound
+    /// to ([`bound_expression`]), so `Some(raw) => ctx.render_template(raw)`
+    /// under `match cfg.webhook_url.as_deref()` is reported.
     fn secret_render_calls(body: &str, names: &BTreeSet<&str>) -> Vec<String> {
         let alternatives = names.iter().copied().collect::<Vec<_>>().join("|");
         let secret = regex::Regex::new(&format!(r"\b({alternatives})\b[^(]")).expect("valid regex");
+        let comment_lines = regex::Regex::new(r"(?m)^\s*//.*$").expect("valid regex");
         let mut out = Vec::new();
         for call in RENDER_CALLS {
             for (idx, _) in body.match_indices(call) {
@@ -3800,8 +3800,12 @@ mod secret_renders {
                     continue;
                 }
                 let args = call_arguments(&body[idx + call.len()..]);
-                let padded = format!("{args} ");
-                if secret.is_match(&padded) {
+                let carries_secret = |text: &str| secret.is_match(&format!("{text} "));
+                let via_binding = argument_variables(args).into_iter().any(|ident| {
+                    bound_expression(body, idx, &ident)
+                        .is_some_and(|expr| carries_secret(&comment_lines.replace_all(expr, "")))
+                });
+                if carries_secret(args) || via_binding {
                     out.push(format!(
                         "{call}{})",
                         args.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -3810,6 +3814,121 @@ mod secret_renders {
             }
         }
         out
+    }
+
+    /// The variables `args` passes whole: `raw`, `&raw`, `raw.as_str()`,
+    /// `Some(raw)`; a variable read for one of its fields (`cfg.name`) or
+    /// called (`f(x)`) is left out.
+    fn argument_variables(args: &str) -> Vec<String> {
+        let ident = regex::Regex::new(
+            r"(?:^|[^\w.:])([a-z_][a-z0-9_]*)((?:\.(?:as_str|as_deref|as_ref|clone|to_string|trim)\(\))*)",
+        )
+        .expect("valid regex");
+        let mut out = Vec::new();
+        for cap in ident.captures_iter(args) {
+            let end = cap.get(0).expect("whole match").end();
+            let next = args[end..].chars().next();
+            if next.is_some_and(|c| c.is_alphanumeric() || matches!(c, '.' | '(' | '!' | ':' | '_'))
+            {
+                continue;
+            }
+            out.push(cap[1].to_string());
+        }
+        out
+    }
+
+    /// The expression the variable `ident` is bound to by the last binding
+    /// of it before offset `at` in `body`: a `let`, an `if let` or
+    /// `while let`, a `for` pattern, a match arm `Some(ident) =>` (the
+    /// scrutinee of the `match` the arm belongs to) or a closure parameter
+    /// (the statement text before the closure).
+    fn bound_expression<'a>(body: &'a str, at: usize, ident: &str) -> Option<&'a str> {
+        let id = regex::escape(ident);
+        let before = &body[..at];
+        let last = |pattern: String| {
+            regex::Regex::new(&pattern)
+                .expect("valid regex")
+                .captures_iter(before)
+                .last()
+                .map(|c| {
+                    let whole = c.get(0).expect("whole match");
+                    (
+                        whole.start(),
+                        whole.end(),
+                        c.get(1).map(|g| (g.start(), g.end())),
+                    )
+                })
+        };
+        let candidates = [
+            (
+                "let",
+                last(format!(r"\blet\s+(?:mut\s+)?{id}\s*(?::[^=;]+)?=([^;]*)")),
+            ),
+            (
+                "if let",
+                last(format!(
+                    r"\b(?:if|while)\s+let\s+[^=;]*\b{id}\b[^=;]*=([^{{;]*)\{{"
+                )),
+            ),
+            (
+                "for",
+                last(format!(r"\bfor\s+[^;{{]*\b{id}\b[^;{{]*\bin\b([^{{;]*)\{{")),
+            ),
+            ("arm", last(format!(r"\b(?:Some|Ok)\(\s*{id}\s*\)\s*=>"))),
+            (
+                "closure",
+                last(format!(r"\|[^|;{{}}]*\b{id}\b[^|;{{}}]*\|")),
+            ),
+        ];
+        let (kind, start, _, group) = candidates
+            .into_iter()
+            .filter_map(|(kind, m)| m.map(|(s, e, g)| (kind, s, e, g)))
+            .max_by_key(|(_, start, _, _)| *start)?;
+        match kind {
+            "arm" => {
+                let brace = enclosing_brace(body, start)?;
+                let head = &body[statement_start(body, brace)..brace];
+                head.rfind("match ").map(|i| &head[i + "match ".len()..])
+            }
+            "closure" => {
+                let statement = &body[statement_start(body, start)..start];
+                // A closure handed to `render_secret` is its renderer: the
+                // template it receives is the credential, already labelled.
+                (!statement.contains("render_secret")).then_some(statement)
+            }
+            _ => group.map(|(s, e)| &body[s..e]),
+        }
+    }
+
+    /// The offset just past the last `;`, `{` or `}` before `at` in `body`
+    /// outside a string literal, where the statement holding `at` begins.
+    pub(super) fn statement_start(body: &str, at: usize) -> usize {
+        let mut start = 0;
+        let mut in_str = false;
+        let mut prev = '\0';
+        for (i, c) in body[..at].char_indices() {
+            match c {
+                '"' if prev != '\\' => in_str = !in_str,
+                ';' | '{' | '}' if !in_str => start = i + 1,
+                _ => {}
+            }
+            prev = c;
+        }
+        start
+    }
+
+    /// The offset of the `{` that opens the block holding offset `at`.
+    fn enclosing_brace(body: &str, at: usize) -> Option<usize> {
+        let mut depth = 0usize;
+        for (i, c) in body[..at].char_indices().rev() {
+            match c {
+                '}' => depth += 1,
+                '{' if depth == 0 => return Some(i),
+                '{' => depth -= 1,
+                _ => {}
+            }
+        }
+        None
     }
 
     /// Every `Struct.field` of the config structs whose name matches
@@ -3898,6 +4017,53 @@ mod secret_renders {
                 "render_template(&cfg.repository.token)".to_string(),
                 "render_template_opt(entry.password.as_deref())".to_string(),
                 "template::render(&entry.password, &vars)".to_string(),
+            ]
+        );
+    }
+
+    /// A plain render handed a variable bound to a credential field is
+    /// reported, whichever binding shape holds it, while a variable bound to
+    /// another field in the same body is not.
+    #[test]
+    fn a_secret_field_reached_through_a_variable_is_reported() {
+        let names = BTreeSet::from(["webhook_url", "password", "token"]);
+        let body = r#"fn f() {
+            let url = match (id, token_env) {
+                (Some(a), Some(b)) => format!("{a}{b}"),
+                _ => match cfg.webhook_url.as_deref() {
+                    Some(raw) => ctx.render_template(raw)?,
+                    None => return Ok(()),
+                },
+            };
+            let color = match cfg.color.as_deref() {
+                Some(raw) => {
+                    let rendered = ctx.render_template(raw)?;
+                    rendered
+                }
+                None => None,
+            };
+            let p = cfg.password.clone();
+            ctx.render_template(&p)?;
+            if let Some(t) = cfg.repository.token.as_deref() {
+                ctx.render_or_warn(t)?;
+            }
+            cfg.password.as_deref().map(|v| ctx.render_template(v));
+            let name = cfg.name.clone();
+            ctx.render_template(&name)?;
+            // the repository.token comment is no binding
+            let id = pick(&|s| ctx.render_template(s));
+            let k = render_secret("aur.private_key", raw, &|s| ctx.render_template(s))?;
+            let t = render_secret(&format!("release.{forge}.token"), raw, &|s| {
+                ctx.render_template(s)
+            })?;
+        }"#;
+        assert_eq!(
+            secret_render_calls(body, &names),
+            vec![
+                "render_or_warn(t)".to_string(),
+                "render_template(raw)".to_string(),
+                "render_template(&p)".to_string(),
+                "render_template(v)".to_string(),
             ]
         );
     }
@@ -4023,39 +4189,140 @@ mod credential_env_reads {
         text.len()
     }
 
-    /// The env reads in `body` of a credential variable that decide whether
-    /// the value is set with a bare `is_empty`, so a whitespace-only value
-    /// counts as set and a padded one is sent with its padding. The
-    /// statement holding the read is the text from the read to the next `;`
-    /// or `{`; when it binds a name with `let`, a later `<name>.is_empty()`
-    /// in the body counts too.
-    fn bare_empty_credential_reads(body: &str) -> Vec<String> {
-        let read = regex::Regex::new(
-            r#"(?:env_var|env::var|\.var|lookup|env)\(\s*&?(?:format!\()?"([A-Za-z0-9_{}]+)""#,
-        )
+    /// The calls that decide whether an env value is set without trimming
+    /// it first: a whitespace-only value counts as set and a padded one is
+    /// sent with its padding.
+    const PRESENCE_TESTS: &[&str] = &[
+        "is_empty()",
+        "is_none()",
+        "is_some()",
+        "unwrap_or_default()",
+        ".ok_or",
+        ".filter(",
+    ];
+
+    /// Words of a computed variable name (`&t.token_env_var`,
+    /// `&secret_name`) that mark it as naming a credential.
+    const CREDENTIAL_WORDS: &[&str] = &["token", "secret", "password", "passphrase", "webhook"];
+
+    /// Whether a string literal in `text` has a credential ending.
+    fn has_credential_literal(text: &str) -> bool {
+        regex::Regex::new(r#""([^"]*)""#)
+            .expect("valid regex")
+            .captures_iter(text)
+            .any(|c| is_credential_name(&c[1]))
+    }
+
+    /// Whether the argument `arg` of the env read at `at` in `body` names a
+    /// credential variable: a literal (or the literal of a `format!`) with a
+    /// credential ending; a computed name with a credential word
+    /// ([`CREDENTIAL_WORDS`], `api_key`, `private_key`); a variable the
+    /// function takes as a parameter, since its callers decide what it
+    /// names; or the parameter of a closure that iterates such a parameter
+    /// or a list of credential literals.
+    fn names_a_credential(body: &str, at: usize, arg: &str, params: &[String]) -> bool {
+        let arg = arg.trim().trim_start_matches('&').trim();
+        if arg.contains('"') {
+            return has_credential_literal(arg);
+        }
+        let lower = arg.to_ascii_lowercase();
+        let words: Vec<&str> = lower.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+        if words.iter().any(|w| CREDENTIAL_WORDS.contains(w))
+            || lower.contains("api_key")
+            || lower.contains("private_key")
+        {
+            return true;
+        }
+        if !arg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return false;
+        }
+        if params.iter().any(|p| p == arg) {
+            return true;
+        }
+        let closure = regex::Regex::new(&format!(
+            r"\|[^|;{{}}]*\b{}\b[^|;{{}}]*\|",
+            regex::escape(arg)
+        ))
         .expect("valid regex");
+        let Some(m) = closure.find_iter(&body[..at]).last() else {
+            return false;
+        };
+        if body[m.end()..at].contains(';') {
+            return false;
+        }
+        let head = &body[super::secret_renders::statement_start(body, m.start())..m.start()];
+        has_credential_literal(head)
+            || params.iter().any(|p| {
+                regex::Regex::new(&format!(r"\b{}\b", regex::escape(p)))
+                    .expect("valid regex")
+                    .is_match(head)
+            })
+    }
+
+    /// The parameter names of the function `body` opens with.
+    fn parameters(body: &str) -> Vec<String> {
+        let ident = regex::Regex::new(r"([a-z_][a-z0-9_]*)\s*:[^:]").expect("valid regex");
+        let signature = &body[..body.find('{').unwrap_or(0)];
+        ident
+            .captures_iter(signature)
+            .map(|c| c[1].to_string())
+            .collect()
+    }
+
+    /// The env reads in `body` of a credential variable that decide whether
+    /// the value is set without trimming it ([`PRESENCE_TESTS`]). The
+    /// statement holding the read is the text from the read to the next `;`
+    /// or `{`; when it binds a name with `let`, a later test of that name in
+    /// the body counts too. A read the statement passes through
+    /// `non_blank_token` or a `trim` is sound.
+    fn bare_empty_credential_reads(body: &str) -> Vec<String> {
+        let read = regex::Regex::new(r"(?:\benv_var|\benv::var|\.var|\blookup|\benv)\(")
+            .expect("valid regex");
         let let_binding = regex::Regex::new(
             r"let\s+(?:Some\()?(?:mut\s+)?([a-z_][a-z0-9_]*)\)?\s*(?::[^=]+)?=[^=]*$",
         )
         .expect("valid regex");
+        let adapter = regex::Regex::new(r"\|[^|]*\|\s*[a-z_.]*$").expect("valid regex");
+        let params = parameters(body);
         let mut out = Vec::new();
-        for cap in read.captures_iter(body) {
-            let name = &cap[1];
-            if !is_credential_name(name) {
+        for m in read.find_iter(body) {
+            let start = m.start();
+            if body[..start].ends_with("fn ")
+                || (m.as_str() == "lookup(" && body[..start].ends_with('.'))
+            {
                 continue;
             }
-            let start = cap.get(0).expect("whole match").start();
+            let arg = super::secret_renders::call_arguments(&body[m.end()..]);
+            if !names_a_credential(body, start, arg, &params) {
+                continue;
+            }
+            // `|key| env.var(key)` hands the raw lookup to a resolver that
+            // trims it; only the resolver decides whether the value is set.
+            let after = body[m.end() + arg.len() + 1..].trim_start();
+            if adapter.is_match(&body[..start])
+                && (after.starts_with([')', ',', ';', '}']) || after.starts_with(".or_else("))
+            {
+                continue;
+            }
             let rest = &body[start..];
             let end = statement_end(rest);
             let statement = &rest[..end];
             let opening = body[..start]
                 .rfind([';', '{', '}'])
                 .map_or(&body[..start], |i| &body[i + 1..start]);
-            let mut bare = statement.contains("is_empty()");
+            let mut bare = PRESENCE_TESTS.iter().any(|t| statement.contains(t));
+            let mut trimmed = statement.contains("non_blank_token") || statement.contains("trim");
             if let Some(bound) = let_binding.captures(opening.trim_end()) {
-                bare |= body[start + end..].contains(&format!("{}.is_empty()", &bound[1]));
+                let later = &body[start + end..];
+                let name = &bound[1];
+                bare |= PRESENCE_TESTS
+                    .iter()
+                    .filter(|t| t.ends_with("()"))
+                    .any(|t| later.contains(&format!("{name}.{t}")));
+                trimmed |= later.contains(&format!("non_blank_token(&{name})"))
+                    || later.contains(&format!("non_blank_token({name}"))
+                    || later.contains(&format!("{name}.trim()"));
             }
-            let trimmed = statement.contains("non_blank_token") || statement.contains("trim");
             if bare && !trimmed {
                 out.push(statement.split_whitespace().collect::<Vec<_>>().join(" "));
             }
@@ -4065,7 +4332,7 @@ mod credential_env_reads {
 
     #[test]
     fn a_credential_env_read_with_a_bare_is_empty_is_reported() {
-        let body = r#"fn f() {
+        let body = r#"fn f(token_env_var: &str, label: &str, vars: &[&str]) {
             let a = ctx.env_var("TELEGRAM_TOKEN").filter(|s| !s.is_empty());
             let b = ctx.env_var("CI_JOB_TOKEN").unwrap_or_default();
             if b.is_empty() { return; }
@@ -4077,6 +4344,27 @@ mod credential_env_reads {
             let d = ctx.env_var("DOCKER_USERNAME").filter(|u| !u.is_empty());
             let e = ctx.env_var(&format!("ARTIFACTORY_{}_SECRET", n)).filter(|s| !s.is_empty());
             let f = ctx.env_var("SLACK_WEBHOOK").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+            let g = if self.token.is_empty() {
+                self.env.var("MCP_GITHUB_TOKEN").unwrap_or_default()
+            } else {
+                self.token.clone()
+            };
+            let h = env.var(&t.token_env_var).unwrap_or_default().to_string();
+            if ctx.is_dry_run() && ctx.env_var(&secret_name).is_none() {}
+            let i = env.var(&target.secret_env_var).ok_or_else(|| anyhow!("unset"))?;
+            let j = env.var(token_env_var).filter(|v| !v.is_empty());
+            let k = vars.iter().find_map(|name| self.env_var(name).filter(|s| !s.is_empty()));
+            let l = ctx.env_var(label).filter(|s| !s.is_empty());
+            let m = ctx.env_var(&var_name).filter(|s| !s.is_empty());
+            let n = ctx.env_var("DISCORD_API").filter(|s| !s.is_empty());
+            let o = vars.iter().find_map(|name| self.env_var(name).as_deref().and_then(non_blank_token));
+            let q = resolve_github_token_with_env(None, &|key| ctx.env_var(key)).is_some();
+            let r = ["ARTIFACTORY_TOKEN", "X"].iter().any(|var| ctx.env_var(var).is_some_and(|v| !v.is_empty()));
+            let s2 = keys.iter().any(|key| lookup(key).is_some());
+            let t2 = scopes.lookup(label).is_none();
+            let value = env.var(label).ok_or_else(|| anyhow!("unset"))?;
+            let u = non_blank_token(&value);
+            let w = host.var(key).unwrap_or_default();
         }"#;
         assert_eq!(
             bare_empty_credential_reads(body),
@@ -4086,6 +4374,14 @@ mod credential_env_reads {
                 r#"env_var("SRPM_PASSPHRASE") && !p.is_empty()"#.to_string(),
                 r#"env_var(&format!("ARTIFACTORY_{}_SECRET", n)).filter(|s| !s.is_empty())"#
                     .to_string(),
+                r#".var("MCP_GITHUB_TOKEN").unwrap_or_default() } else"#.to_string(),
+                r#".var(&t.token_env_var).unwrap_or_default().to_string()"#.to_string(),
+                r#"env_var(&secret_name).is_none()"#.to_string(),
+                r#".var(&target.secret_env_var).ok_or_else(|| anyhow!("unset"))?"#.to_string(),
+                r#".var(token_env_var).filter(|v| !v.is_empty())"#.to_string(),
+                r#"env_var(name).filter(|s| !s.is_empty()))"#.to_string(),
+                r#"env_var(label).filter(|s| !s.is_empty())"#.to_string(),
+                r#"env_var(var).is_some_and(|v| !v.is_empty()))"#.to_string(),
             ]
         );
     }
@@ -4114,8 +4410,8 @@ mod credential_env_reads {
         );
         assert!(
             offenders.is_empty(),
-            "these read a credential variable and test it with a bare `is_empty`; \
-             read it through `anodizer_core::git::non_blank_token`:\n{}",
+            "these read a credential variable and decide whether it is set without \
+             trimming it; read it through `anodizer_core::git::non_blank_token`:\n{}",
             offenders.join("\n")
         );
     }

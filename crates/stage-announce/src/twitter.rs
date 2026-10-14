@@ -294,7 +294,6 @@ mod tests {
         assert!(!sig1.is_empty());
     }
 
-    // ---- live send over a mock HTTP server -----------------------------
     //
     // Drive `send_twitter` (the real OAuth-signing POST path) against a
     // scripted responder via the `ANODIZE_TWITTER_API_BASE` override. Mutating
@@ -394,10 +393,10 @@ mod tests {
             )
             .unwrap_err()
         );
-        assert!(err.contains("403"), "status must surface: {err}");
+        assert!(err.contains("403"), "error must carry the status: {err}");
         assert!(
             err.contains("duplicate"),
-            "response body must surface: {err}"
+            "error must carry the response body: {err}"
         );
     }
 

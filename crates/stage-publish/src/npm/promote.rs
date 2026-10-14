@@ -277,11 +277,12 @@ impl<'a> ReTagger<'a> {
             .ctx
             .env_source()
             .var(token_env_var)
-            .filter(|v| !v.is_empty())
+            .as_deref()
+            .and_then(anodizer_core::git::non_blank_token)
             .with_context(|| {
                 format!(
                     "npm: env var ${token_env_var} (the token for this package's \
-                     registry) is unset or empty — export it to re-tag this package"
+                     registry) is unset or blank — export it to re-tag this package"
                 )
             })
     }

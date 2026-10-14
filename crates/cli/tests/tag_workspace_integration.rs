@@ -854,11 +854,11 @@ fn lockstep_bump_heals_stale_floor_on_skipped_member() {
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("healed dep floor c 0.0.1 → 0.2.0"),
+        stderr.contains("healed dependency minimum c 0.0.1 → 0.2.0"),
         "the heal must be reported: {stderr}"
     );
     assert!(
-        !stderr.contains("healed dep floor a "),
+        !stderr.contains("healed dependency minimum a "),
         "a floor the same-run propagation owns must not be reported as a heal: {stderr}"
     );
     // Stale against `a`'s new version, yet the dep-spec propagation reaches
@@ -920,14 +920,14 @@ fn lockstep_dry_run_previews_heal_and_writes_nothing() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("(dry-run) would heal dep floor c 0.0.1 → 0.2.0"),
+        stderr.contains("(dry-run) would heal dependency minimum c 0.0.1 → 0.2.0"),
         "dry-run must preview the heal: {stderr}"
     );
     // `a` is bumped by this run, so its floor belongs to the same-run
     // propagation; previewing it as a heal would announce an edit the real run
     // attributes elsewhere.
     assert!(
-        !stderr.contains("would heal dep floor a "),
+        !stderr.contains("would heal dependency minimum a "),
         "a floor the same-run propagation owns must not be previewed as a heal: {stderr}"
     );
     assert_eq!(
@@ -1001,7 +1001,7 @@ util = { path = "../util", version = "0.1.0" }
     );
     assert!(
         String::from_utf8_lossy(&preview.stderr)
-            .contains("(dry-run) would heal dep floor util 0.1.0 → 0.5.0"),
+            .contains("(dry-run) would heal dependency minimum util 0.1.0 → 0.5.0"),
         "dry-run must preview the heal: {}",
         String::from_utf8_lossy(&preview.stderr)
     );

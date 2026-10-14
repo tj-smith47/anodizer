@@ -33,9 +33,9 @@ fn test_deadline() -> Duration {
 }
 
 /// Run one announcer end-to-end: render+enqueue via `send`, then drain the
-/// queue so the network action actually fires (it now runs on a worker, not
-/// inline). A render-phase failure surfaces directly; a send-phase failure
-/// surfaces as the first drained error. Collapses the two-phase model back
+/// queue so the network action actually fires (it now runs on a worker
+/// thread). A render-phase failure is returned directly; a send-phase failure
+/// is returned as the first drained error. Collapses the two-phase model back
 /// into a single `Result` so the per-provider tests keep their
 /// `.unwrap()` / `.unwrap_err()` shape.
 fn send_drained(
@@ -103,12 +103,6 @@ fn ok_route(path: &'static str) -> ScriptedRoute {
         times: None,
     }
 }
-
-// ------------------------------------------------------------------
-// Rendered-value validators (validate_discord_color,
-// validate_webhook_endpoint_url, validate_telegram_thread_id,
-// validate_email_from)
-// ------------------------------------------------------------------
 
 #[test]
 fn discord_color_empty_render_is_unset() {
@@ -180,10 +174,6 @@ fn email_from_rejects_missing_at_sign() {
     assert!(err.contains("missing @"), "{err}");
 }
 
-// ------------------------------------------------------------------
-// enabled() evaluation across providers
-// ------------------------------------------------------------------
-
 #[test]
 fn enabled_false_when_config_block_absent() {
     let announce = AnnounceConfig::default();
@@ -253,16 +243,12 @@ fn enabled_propagates_template_error() {
     assert!(SlackAnnouncer.enabled(&mut ctx, &announce).is_err());
 }
 
-// ------------------------------------------------------------------
-// run_announcer / dispatch loop
-// ------------------------------------------------------------------
-
 #[test]
 fn dispatch_loop_never_sends_for_disabled_announcer() {
     // A disabled announcer with a bogus URL must never reach `send`
     // (no panic from the unroutable host, no error collected). The
     // enabled gate lives in `enabled_announcers` (evaluated once per
-    // dispatch), so the pin drives the real dispatch loop.
+    // dispatch), so this test drives the real dispatch loop.
     let announce = AnnounceConfig {
         slack: Some(SlackAnnounce {
             enabled: Some(StringOrBool::Bool(false)),
@@ -521,8 +507,8 @@ fn enabled_announcers_propagate_enabled_template_error() {
         ..Default::default()
     };
     let mut ctx = live_ctx(announce.clone(), &[]);
-    // enabled() errors must bubble up as the resolver's Err, not be
-    // swallowed into an empty active set.
+    // enabled() errors must bubble up as the resolver's Err and must never
+    // be swallowed into an empty active set.
     assert!(enabled_announcers(&mut ctx, &announce, None).is_err());
 }
 
@@ -571,8 +557,8 @@ fn dispatch_all_collects_errors_from_two_failing_providers() {
     )
     .unwrap();
     assert_eq!(errors.len(), 2, "{errors:?}");
-    // Errors arrive in concurrent-completion order, not registry order, so
-    // assert on membership rather than position.
+    // Errors arrive in concurrent-completion order, so assert on
+    // membership.
     assert!(
         errors.iter().any(|e| e.starts_with("slack: ")),
         "{errors:?}"
@@ -582,10 +568,6 @@ fn dispatch_all_collects_errors_from_two_failing_providers() {
         "{errors:?}"
     );
 }
-
-// ------------------------------------------------------------------
-// Live send() request-body assertions (the major uncovered surface)
-// ------------------------------------------------------------------
 
 /// Slack `send` resolves `webhook_url`, renders the message, and POSTs the
 /// slack JSON envelope with channel/username overrides wired in.
@@ -988,7 +970,7 @@ fn email_send_smtp_requires_username() {
 }
 
 /// Email `send` hard-bails on a malformed `from` (no `@`) even in normal
-/// mode — it's a config error, not skip-when-empty.
+/// mode — a malformed `from` is a config error.
 #[test]
 fn email_send_rejects_malformed_from() {
     let announce = AnnounceConfig {
@@ -1008,14 +990,10 @@ fn email_send_rejects_malformed_from() {
     assert!(err.contains("missing @"), "{err}");
 }
 
-// ------------------------------------------------------------------
-// render_only / render_all_announcers (the pre-publish guard)
-// ------------------------------------------------------------------
-
-/// A broken `message_template` (undefined var) surfaces from
+/// A broken `message_template` (undefined var) is returned from
 /// `render_only` as an Err without any network call.
 #[test]
-fn render_only_surfaces_broken_message_template() {
+fn render_only_reports_broken_message_template() {
     let announce = AnnounceConfig {
         slack: Some(SlackAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1032,7 +1010,7 @@ fn render_only_surfaces_broken_message_template() {
 /// `literal_message` makes email's BODY render a no-op end-to-end: a body
 /// that would error (or expand a secret) when rendered passes untouched,
 /// proving email's send/render_only routes its body through the
-/// `render_message` chokepoint rather than a raw `render_template`. Guards
+/// `render_message` chokepoint and skips a raw `render_template`. Guards
 /// against the leak reopening on a provider dogfooded as an on_error hook.
 #[test]
 fn email_body_render_is_literal_under_literal_message() {
@@ -1041,7 +1019,7 @@ fn email_body_render_is_literal_under_literal_message() {
             enabled: Some(StringOrBool::Bool(true)),
             from: Some("bot@example.com".to_string()),
             to: vec!["dev@example.com".to_string()],
-            // An undefined var would surface from a real body render; in
+            // An undefined var would fail a real body render; in
             // literal mode the body is never rendered, so it does not.
             message_template: Some("{{ NoSuchVar }}".to_string()),
             ..Default::default()
@@ -1051,7 +1029,7 @@ fn email_body_render_is_literal_under_literal_message() {
     let mut ctx = render_ctx(announce.clone());
     assert!(
         EmailAnnouncer.render_only(&mut ctx, &announce).is_err(),
-        "control: a broken body must surface when rendered"
+        "control: a broken body must fail when rendered"
     );
     ctx.literal_message = true;
     assert!(
@@ -1123,7 +1101,7 @@ fn opencollective_body_render_is_literal_under_literal_message() {
         OpenCollectiveAnnouncer
             .render_only(&mut ctx, &announce)
             .is_err(),
-        "control: a broken body must surface when rendered"
+        "control: a broken body must fail when rendered"
     );
     ctx.literal_message = true;
     assert!(
@@ -1156,7 +1134,7 @@ fn render_only_validates_discord_color() {
 }
 
 /// `render_all_announcers` skips a disabled announcer's render entirely:
-/// a disabled slack with a broken template must NOT surface an error,
+/// a disabled slack with a broken template must NOT return an error,
 /// matching the live dispatch loop's skip behavior.
 #[test]
 fn render_all_skips_disabled_announcer() {
@@ -1198,10 +1176,6 @@ fn render_all_collects_enabled_provider_render_error() {
     assert!(errors[0].starts_with("webhook: "), "{}", errors[0]);
 }
 
-// ------------------------------------------------------------------
-// send() skip-when-empty / env-fallback / default-template paths
-// ------------------------------------------------------------------
-
 /// Discord `send` warn-and-skips (normal mode) when neither `webhook_url`
 /// nor the ID/TOKEN env pair is present: no network call, Ok result, no
 /// panic against a missing URL.
@@ -1219,6 +1193,47 @@ fn discord_send_missing_webhook_warn_and_skips() {
     let logger = ctx.logger("announce");
     send_drained(&DiscordAnnouncer, &mut ctx, &announce, &no_retry(), &logger)
         .expect("missing webhook_url must skip cleanly in normal mode");
+}
+
+/// A Discord `webhook_url` or webhook `endpoint_url` that renders blank
+/// counts as unset, as it does for slack, teams, mattermost and telegram:
+/// the announcer warns and skips in normal mode and fails in strict mode,
+/// and sends nothing to an empty URL.
+#[test]
+fn a_blank_discord_or_webhook_url_counts_as_unset() {
+    let announce = AnnounceConfig {
+        discord: Some(DiscordAnnounce {
+            enabled: Some(StringOrBool::Bool(true)),
+            webhook_url: Some("  ".to_string()),
+            ..Default::default()
+        }),
+        webhook: Some(WebhookConfig {
+            enabled: Some(StringOrBool::Bool(true)),
+            endpoint_url: Some(" \n".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut ctx = live_ctx(announce.clone(), &[]);
+    let logger = ctx.logger("announce");
+    send_drained(&DiscordAnnouncer, &mut ctx, &announce, &no_retry(), &logger)
+        .expect("a blank discord webhook_url skips in normal mode");
+    send_drained(&WebhookAnnouncer, &mut ctx, &announce, &no_retry(), &logger)
+        .expect("a blank webhook endpoint_url skips in normal mode");
+
+    ctx.options.strict = true;
+    let err = send_drained(&DiscordAnnouncer, &mut ctx, &announce, &no_retry(), &logger)
+        .expect_err("a blank discord webhook_url fails in strict mode");
+    assert!(
+        format!("{err:#}").contains("missing webhook_url"),
+        "{err:#}"
+    );
+    let err = send_drained(&WebhookAnnouncer, &mut ctx, &announce, &no_retry(), &logger)
+        .expect_err("a blank webhook endpoint_url fails in strict mode");
+    assert!(
+        format!("{err:#}").contains("missing endpoint_url"),
+        "{err:#}"
+    );
 }
 
 /// Discourse `send` warn-and-skips when `server` is configured but renders
@@ -1356,7 +1371,7 @@ fn webhook_send_uses_default_json_envelope_message() {
 
 /// Telegram `send` falls back to the `TELEGRAM_TOKEN` env var for the bot
 /// token, then warn-and-skips on the still-missing `chat_id` — proving the
-/// token-env-fallback branch ran (no credential error surfaced).
+/// token-env-fallback branch ran (no credential error was returned).
 #[test]
 fn telegram_send_uses_token_env_then_skips_on_missing_chat_id() {
     let announce = AnnounceConfig {
@@ -1515,7 +1530,7 @@ fn reddit_send_missing_application_id_warn_and_skips() {
         .expect("missing application_id must skip cleanly in normal mode");
 }
 
-/// Reddit `send` hard-bails (config error, not skip-when-empty) when the
+/// Reddit `send` hard-bails with a config error when the
 /// required `REDDIT_SECRET` / `REDDIT_PASSWORD` env vars are missing, even
 /// though all config fields are present.
 #[test]
@@ -1640,7 +1655,7 @@ fn bluesky_send_missing_username_warn_and_skips() {
 }
 
 /// Bluesky `send` hard-bails when `BLUESKY_APP_PASSWORD` is missing even
-/// though `username` is present (credential, not skip-when-empty).
+/// though `username` is present (a missing credential is an error).
 #[test]
 fn bluesky_send_missing_password_bails() {
     let announce = AnnounceConfig {
@@ -1906,7 +1921,7 @@ fn email_send_resolves_smtp_host_from_env() {
         ..Default::default()
     };
     // 127.0.0.1:1 is reliably connection-refused; the SMTP branch must
-    // construct SmtpParams and attempt the transport, then surface the
+    // construct SmtpParams and attempt the transport, then return the
     // retry-exhaustion context from `send_smtp`.
     let mut ctx = live_ctx(announce.clone(), &[("SMTP_HOST", "127.0.0.1")]);
     let logger = ctx.logger("announce");
@@ -1917,14 +1932,10 @@ fn email_send_resolves_smtp_host_from_env() {
     assert!(err.contains("smtp: send exhausted retry attempts"), "{err}");
 }
 
-// ------------------------------------------------------------------
-// render_only per-provider template-failure coverage
-// ------------------------------------------------------------------
-
-/// Discourse `render_only` surfaces a broken `server` template without a
+/// Discourse `render_only` reports a broken `server` template without a
 /// network call.
 #[test]
-fn render_only_discourse_surfaces_broken_server() {
+fn render_only_discourse_reports_broken_server() {
     let announce = AnnounceConfig {
         discourse: Some(DiscourseAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1980,9 +1991,9 @@ fn render_only_telegram_validates_thread_id() {
     assert!(err.contains("invalid message_thread_id"), "{err}");
 }
 
-/// Teams `render_only` surfaces a broken `title_template`.
+/// Teams `render_only` reports a broken `title_template`.
 #[test]
-fn render_only_teams_surfaces_broken_title() {
+fn render_only_teams_reports_broken_title() {
     let announce = AnnounceConfig {
         teams: Some(TeamsAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1996,9 +2007,9 @@ fn render_only_teams_surfaces_broken_title() {
     assert!(TeamsAnnouncer.render_only(&mut ctx, &announce).is_err());
 }
 
-/// Mattermost `render_only` surfaces a broken `channel` template.
+/// Mattermost `render_only` reports a broken `channel` template.
 #[test]
-fn render_only_mattermost_surfaces_broken_channel() {
+fn render_only_mattermost_reports_broken_channel() {
     let announce = AnnounceConfig {
         mattermost: Some(MattermostAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -2016,9 +2027,9 @@ fn render_only_mattermost_surfaces_broken_channel() {
     );
 }
 
-/// Reddit `render_only` surfaces a broken `url_template`.
+/// Reddit `render_only` reports a broken `url_template`.
 #[test]
-fn render_only_reddit_surfaces_broken_url_template() {
+fn render_only_reddit_reports_broken_url_template() {
     let announce = AnnounceConfig {
         reddit: Some(RedditAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -2034,10 +2045,10 @@ fn render_only_reddit_surfaces_broken_url_template() {
     assert!(RedditAnnouncer.render_only(&mut ctx, &announce).is_err());
 }
 
-/// Twitter `render_only` surfaces a broken `message_template` (it renders
+/// Twitter `render_only` reports a broken `message_template` (it renders
 /// only the message, reading no credentials).
 #[test]
-fn render_only_twitter_surfaces_broken_message() {
+fn render_only_twitter_reports_broken_message() {
     let announce = AnnounceConfig {
         twitter: Some(TwitterAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -2049,9 +2060,9 @@ fn render_only_twitter_surfaces_broken_message() {
     assert!(TwitterAnnouncer.render_only(&mut ctx, &announce).is_err());
 }
 
-/// Mastodon `render_only` surfaces a broken `server` template.
+/// Mastodon `render_only` reports a broken `server` template.
 #[test]
-fn render_only_mastodon_surfaces_broken_server() {
+fn render_only_mastodon_reports_broken_server() {
     let announce = AnnounceConfig {
         mastodon: Some(MastodonAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -2064,9 +2075,9 @@ fn render_only_mastodon_surfaces_broken_server() {
     assert!(MastodonAnnouncer.render_only(&mut ctx, &announce).is_err());
 }
 
-/// Bluesky `render_only` surfaces a broken `pds_url` template.
+/// Bluesky `render_only` reports a broken `pds_url` template.
 #[test]
-fn render_only_bluesky_surfaces_broken_pds_url() {
+fn render_only_bluesky_reports_broken_pds_url() {
     let announce = AnnounceConfig {
         bluesky: Some(BlueskyAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -2080,10 +2091,10 @@ fn render_only_bluesky_surfaces_broken_pds_url() {
     assert!(BlueskyAnnouncer.render_only(&mut ctx, &announce).is_err());
 }
 
-/// LinkedIn `render_only` surfaces a broken `message_template` (it renders
+/// LinkedIn `render_only` reports a broken `message_template` (it renders
 /// only the message, reading no credentials).
 #[test]
-fn render_only_linkedin_surfaces_broken_message() {
+fn render_only_linkedin_reports_broken_message() {
     let announce = AnnounceConfig {
         linkedin: Some(LinkedInAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -2117,9 +2128,9 @@ fn render_only_opencollective_rejects_invalid_slug() {
 
 /// OpenCollective `render_only` does NOT reject an empty-rendered slug
 /// (that's skip-when-empty in `send`), but still renders the title/message
-/// templates — a broken message template surfaces.
+/// templates — a broken message template is reported.
 #[test]
-fn render_only_opencollective_surfaces_broken_message() {
+fn render_only_opencollective_reports_broken_message() {
     let announce = AnnounceConfig {
         opencollective: Some(OpenCollectiveAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -2158,9 +2169,9 @@ fn render_only_email_validates_from() {
     assert!(err.contains("missing @"), "{err}");
 }
 
-/// Email `render_only` surfaces a broken `subject_template`.
+/// Email `render_only` reports a broken `subject_template`.
 #[test]
-fn render_only_email_surfaces_broken_subject() {
+fn render_only_email_reports_broken_subject() {
     let announce = AnnounceConfig {
         email: Some(EmailAnnounce {
             enabled: Some(StringOrBool::Bool(true)),

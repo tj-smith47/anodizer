@@ -10,10 +10,6 @@ use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
 
-// ---------------------------------------------------------------------------
-// Default NSIS script
-// ---------------------------------------------------------------------------
-
 /// Generate a default `.nsi` script template using Tera syntax.
 ///
 /// Uses `{{ ProjectName }}`, `{{ NsisOutputFile }}`, `{{ ProgramFiles }}`,
@@ -48,10 +44,6 @@ SectionEnd
 "#
 }
 
-// ---------------------------------------------------------------------------
-// makensis command construction
-// ---------------------------------------------------------------------------
-
 /// Build the `makensis` CLI arguments.
 ///
 /// - `script_path`: path to the `.nsi` script file
@@ -80,10 +72,6 @@ fn absolutize_output_path(path: PathBuf) -> PathBuf {
         }
     })
 }
-
-// ---------------------------------------------------------------------------
-// NsisStage
-// ---------------------------------------------------------------------------
 
 pub struct NsisStage;
 
@@ -178,7 +166,7 @@ impl Stage for NsisStage {
         let mut new_artifacts: Vec<Artifact> = Vec::new();
         let mut archives_to_remove: Vec<PathBuf> = Vec::new();
 
-        // Capture the loop result rather than `?`-ing inside it: a per-crate
+        // Capture the loop result without `?`-ing inside it: a per-crate
         // failure must still restore the rebound `ProjectName` below before
         // propagating, so the workspace value never leaks past this stage.
         let loop_result: Result<()> = (|| {
@@ -206,15 +194,15 @@ impl Stage for NsisStage {
 
                 // One guard spans every config of this crate so two configs that
                 // render the same dist/windows/<name>.exe (same target, default/
-                // identical name) collide loudly instead of the second silently
-                // clobbering the first; it resets per crate, so distinct crates are
+                // identical name) collide loudly before the second
+                // clobbers the first; it resets per crate, so distinct crates are
                 // unaffected.
                 let mut arch_guard = ArchPathGuard::new();
                 for (entry, nsis_cfg) in nsis_configs.iter().enumerate() {
                     let nsis_id_for_log = nsis_cfg.id.as_deref().unwrap_or("default").to_string();
 
                     // `nsis.if`: template-conditional skip (opt-in).
-                    // Render error => hard bail (W1 avoidance).
+                    // Render error => hard bail.
                     let proceed = anodizer_core::config::evaluate_if_condition(
                         nsis_cfg.if_condition.as_deref(),
                         &format!(
@@ -313,7 +301,7 @@ impl Stage for NsisStage {
                             .collect();
 
                     // Validate extra_files shape up-front so misconfiguration fails
-                    // before any subprocess spawn and surfaces in dry-run too.
+                    // before any subprocess spawn and is reported in dry-run too.
                     // The canonical resolver bails when a constant name_template is
                     // paired with a multi-match glob (which would silently
                     // overwrite every match to the same dst name). The resolved set
@@ -531,7 +519,7 @@ impl Stage for NsisStage {
                         name_vars.set("NsisBinaryName", binary_name);
 
                         // Keep global vars in sync for mod_timestamp and anything that
-                        // follows — they use ctx.render_template, not name_vars.
+                        // follows — they use ctx.render_template.
                         ctx.template_vars_mut().set("NsisOutputFile", &exe_path_str);
                         ctx.template_vars_mut()
                             .set("NsisBinaryPath", &staged_binary_str);
@@ -686,10 +674,6 @@ impl Stage for NsisStage {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 /// Environment requirements for the nsis stage: `makensis` when any
 /// active `nsis:` entry exists and the configured build targets include
 /// Windows (the stage only packages Windows binaries).
@@ -729,10 +713,6 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    // -----------------------------------------------------------------------
-    // Default NSI script generation
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_default_nsi_script_generation() {
         let script = default_nsi_script();
@@ -746,7 +726,7 @@ mod tests {
             "should reference ProjectName"
         );
         // OutFile must be the absolute NsisOutputFile (the recorded artifact
-        // path), never a bare relative filename — makensis resolves a relative
+        // path), because makensis resolves a relative
         // OutFile against the ephemeral staging dir.
         assert!(
             script.contains("OutFile \"{{ NsisOutputFile }}\""),
@@ -756,7 +736,7 @@ mod tests {
             !script.contains("OutFile \"{{ Name }}.exe\""),
             "OutFile must not be a bare relative filename"
         );
-        // Default script uses ProgramFiles (arch-aware) instead of the hardcoded $PROGRAMFILES
+        // Default script uses the arch-aware ProgramFiles
         assert!(
             script.contains("InstallDir \"{{ ProgramFiles }}\\{{ ProjectName }}\""),
             "should use ProgramFiles var for InstallDir"
@@ -924,10 +904,6 @@ mod tests {
         assert_eq!(program_files_for_arch("other"), "$PROGRAMFILES");
     }
 
-    // -----------------------------------------------------------------------
-    // Default name template renders with NSIS-native arch
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_default_name_template_contains_amd64_variant_suffix() {
         assert!(
@@ -987,10 +963,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // makensis command construction
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_nsis_command_args() {
         let cmd = nsis_command("/tmp/staging/installer.nsi");
@@ -999,10 +971,6 @@ mod tests {
         assert_eq!(cmd[1], "/tmp/staging/installer.nsi");
         assert_eq!(cmd.len(), 2);
     }
-
-    // -----------------------------------------------------------------------
-    // Stage behavior tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_stage_skips_when_no_nsis_config() {
@@ -1700,8 +1668,6 @@ crates:
         }
     }
 
-    // --- `nsis.if` template-conditional ---
-
     fn nsis_if_test_ctx(if_expr: Option<&str>) -> anodizer_core::context::Context {
         use anodizer_core::artifact::{Artifact, ArtifactKind};
         use anodizer_core::config::{Config, CrateConfig, NsisConfig};
@@ -1768,10 +1734,6 @@ crates:
             "error should name `if` render failure, got: {msg}"
         );
     }
-
-    // -------------------------------------------------------------------
-    // `nsis.amd64_variant` filter
-    // -------------------------------------------------------------------
 
     /// Build a context with three windows/amd64 binaries (v1/v2/v3) +
     /// one windows/arm64 binary. The `amd64_variant` field on the config drives
@@ -1878,7 +1840,7 @@ crates:
 
     #[test]
     fn test_nsis_amd64_variant_filter_does_not_drop_arm64() {
-        // Pin: amd64 filter never affects arm64.
+        // The amd64 filter leaves arm64 untouched.
         let mut ctx = nsis_amd64_variant_test_ctx(Some(anodizer_core::config::Amd64Variant::V4));
         NsisStage.run(&mut ctx).unwrap();
         let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
@@ -1893,7 +1855,7 @@ crates:
     fn test_nsis_name_override_renders_amd64_variant() {
         // A user `name:` override referencing `{{ Amd64 }}` must see the
         // binary's variant. NSIS renders against a CLONED `name_vars` (not the
-        // global ctx vars), so this pins that the variant is seeded on the clone
+        // global ctx vars), so this checks that the variant is seeded on the clone
         // a custom template reads. A v3 x86_64 build renders the suffix.
         use anodizer_core::config::{Config, CrateConfig, NsisConfig};
         use anodizer_core::context::{Context, ContextOptions};
@@ -2125,13 +2087,9 @@ crates:
         );
     }
 
-    // -------------------------------------------------------------------
-    // NSIS script template vars
-    // -------------------------------------------------------------------
-
     /// Render the built-in default script with realistic vars and ensure the
     /// output is the expected NSIS snippet (`OutFile`, `InstallDir`, etc.).
-    /// Pins the default-script render path end-to-end including ProgramFiles
+    /// Checks the default-script render path end-to-end including ProgramFiles
     /// (arch-aware) and the absolute `NsisOutputFile` makensis writes to.
     #[test]
     fn test_default_script_renders_correctly_for_amd64() {
@@ -2150,7 +2108,7 @@ crates:
         let out = render(default_nsi_script(), &vars).expect("default script must render");
 
         assert!(out.contains("Name \"myapp\""));
-        // OutFile is the absolute NsisOutputFile, never a bare relative filename.
+        // OutFile is the absolute NsisOutputFile.
         assert!(out.contains("OutFile \"/dist/windows/myapp_x64_setup.exe\""));
         assert!(!out.contains("OutFile \"myapp_x64_setup.exe\""));
         // 64-bit target ends up in PROGRAMFILES64 (not the WOW6432 redirect)
@@ -2181,7 +2139,7 @@ crates:
         assert!(!out.contains("$PROGRAMFILES64"));
     }
 
-    /// Pin the documented vars (`Name`, `ProgramFiles`, `Binary`, NSIS-native
+    /// Check the documented vars (`Name`, `ProgramFiles`, `Binary`, NSIS-native
     /// `Arch`) are usable inside a custom user script — pasting an example
     /// script must not raise an undefined-variable error.
     #[test]
@@ -2241,7 +2199,7 @@ SectionEnd
             size: None,
         });
 
-        // dry-run only renders the name template, not the script body, and
+        // dry-run renders only the name template, and
         // writing a real `makensis` shim to leave dry-run is overkill. The
         // script's required vars are covered by the lower-level
         // `test_default_script_renders_correctly_*` tests above; this test
@@ -2359,13 +2317,9 @@ SectionEnd
         );
     }
 
-    // -------------------------------------------------------------------
-    // extra_files glob with name_template — multi-match bail
-    // -------------------------------------------------------------------
-
     /// When a glob in `extra_files` matches multiple files and a constant
-    /// `name_template` is set, the stage must bail rather than silently
-    /// overwrite every file to the same destination name.
+    /// `name_template` is set, the stage must bail, because every file would
+    /// otherwise be written to the same destination name.
     #[test]
     fn test_extra_files_multi_match_with_name_template_bails() {
         use anodizer_core::config::ExtraFileSpec;
@@ -2543,7 +2497,7 @@ SectionEnd
         assert!(msg.contains("nsis:"), "{msg}");
         assert!(msg.contains("crate 'myapp'"), "{msg}");
         // Two ENTRIES on one target render the same `.Binary`, so the remedy
-        // is a distinct `name` per entry, never a template variable.
+        // is a distinct `name` per entry.
         assert!(
             msg.contains("give each config entry a distinct `name`"),
             "{msg}"

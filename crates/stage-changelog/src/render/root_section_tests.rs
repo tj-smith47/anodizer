@@ -8,10 +8,10 @@ fn tag_prefix_handles_common_and_embedded_digit_schemes() {
     assert_eq!(tag_prefix("0.5.0"), "");
     // Monorepo prefix with a separator.
     assert_eq!(tag_prefix("anodizer-v0.5.0"), "anodizer-v");
-    // n6: a digit *inside* the prefix must not truncate the prefix
+    // A digit *inside* the prefix must not truncate the prefix
     // (first-digit scan wrongly yielded `py`).
     assert_eq!(tag_prefix("py3-v1.2.3"), "py3-v");
-    // n6: a leading-digit calendar version yields an empty prefix (all
+    // A leading-digit calendar version yields an empty prefix (all
     // calver tags cluster together).
     assert_eq!(tag_prefix("2024.01.0"), "");
     assert_eq!(tag_prefix("release-2024.01.0"), "release-");
@@ -300,8 +300,7 @@ fn date_orders_newest_first_distinct_from_tag() {
 fn multitrack_footer_derives_tag_from_own_from_tag_not_unreleased_anchor() {
     // The shared `[Unreleased]:` anchor belongs to the `core-` track
     // (core-v0.5.0), but the `v` track is the one being tagged. The new tag and compare
-    // lower-bound MUST come from this track's from_tag (v0.6.0), not the
-    // anchor.
+    // lower-bound MUST come from this track's from_tag (v0.6.0).
     let groups = feat_fix_groups();
     let out = promote(
         &five_release_fixture(),
@@ -320,7 +319,7 @@ fn multitrack_footer_derives_tag_from_own_from_tag_not_unreleased_anchor() {
     );
     assert!(
         out.contains("[v0.7.0]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...v0.7.0"),
-        "new compare link must use this track's from_tag, not the anchor: {out}"
+        "new compare link must use this track's from_tag (the anchor is ignored): {out}"
     );
     assert!(
         !out.contains("core-v0.7.0"),
@@ -467,7 +466,7 @@ fn curated_bullet_with_no_group_and_no_catchall_is_preserved() {
     );
     assert!(
         out.contains("- docs: update readme"),
-        "unmatched curated bullet must be preserved, not dropped: {out}"
+        "unmatched curated bullet must be preserved: {out}"
     );
 }
 
@@ -559,7 +558,7 @@ fn no_groups_emits_curated_bullets_flat() {
 #[test]
 fn degenerate_flat_root_uses_bare_version_heading() {
     // A flat `[Unreleased]` with NO `### crate` subsections takes the flat
-    // KaC roll path (bare `## [<version>]` heading, not the full tag).
+    // KaC roll path (bare `## [<version>]` heading, with no tag prefix).
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("CHANGELOG.md");
     // A genuinely flat single-track `[Unreleased]`: bare bullets, no `###`
@@ -648,7 +647,7 @@ fn group_headings_under_flat_unreleased_are_not_crate_subsections() {
     );
 }
 
-/// R2: a foreign git-cliff/towncrier `### Added` heading under
+/// A foreign git-cliff/towncrier `### Added` heading under
 /// `[Unreleased]` must NEVER be misclassified as a crate subsection — only a
 /// KNOWN crate name qualifies.
 #[test]
@@ -699,7 +698,7 @@ fn first_release_footer_points_at_release_tag_not_compare() {
 
     assert!(
         out.contains("[v0.7.0]: https://github.com/tj-smith47/cfgd/releases/tag/v0.7.0"),
-        "first release must link the release page, not a compare range: {out}"
+        "first release must link the release page (no compare range): {out}"
     );
     assert!(
         !out.contains("compare/...v0.7.0") && !out.contains("/compare/None"),
@@ -793,7 +792,7 @@ fn write_anodizer_yaml(dir: &std::path::Path) {
 }
 
 /// The changelog engine's config discovery must honor the full shared
-/// candidate list, not just `.anodizer.yaml` — a repo configured via
+/// candidate list beyond `.anodizer.yaml`: a repo configured via
 /// `anodizer.yaml` previously got a silently-degraded changelog
 /// (default groups, no filters) while every CLI command honored it.
 #[test]
@@ -830,9 +829,9 @@ fn write_anodizer_yaml_templated_group(dir: &std::path::Path) {
 
 #[test]
 fn render_crate_section_renders_templated_group_title() {
-    // M1: a templated group title (`{{ .ProjectName }} features`) must be
+    // A templated group title (`{{ .ProjectName }} features`) must be
     // rendered through the per-crate template context on the write path,
-    // not shipped as a literal `{{ ... }}` into the committed CHANGELOG.md.
+    // so no literal `{{ ... }}` reaches the committed CHANGELOG.md.
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     init_repo_with_commit(root);
@@ -855,7 +854,7 @@ fn render_crate_section_renders_templated_group_title() {
 
 #[test]
 fn render_root_section_renders_templated_group_title() {
-    // M1 (root write path): the per-crate context must drive the templated
+    // Root write path: the per-crate context must drive the templated
     // group title on the shared root file too.
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
@@ -914,7 +913,7 @@ fn render_root_section_absent_file_creates_initial_root() {
     assert_eq!(
         update.file_path,
         root.join("CHANGELOG.md"),
-        "writes the root file, not a per-crate file"
+        "writes the root file (no per-crate file)"
     );
     let text = &update.rendered_text;
     let date = today_yyyy_mm_dd().unwrap();
@@ -999,7 +998,7 @@ fn render_root_section_degenerate_flat_uses_bare_version_heading() {
 fn render_root_section_subsection_promote_uses_full_tag_heading() {
     // IO branch (c): a real `### cfgd` subsection under `[Unreleased]` →
     // full subsection promote, `## [<tag>]` heading, footer base parsed
-    // from the existing compare link (resolve_compare_base, not remote).
+    // from the existing compare link (resolve_compare_base; the remote is unused).
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     write_anodizer_yaml(root);
@@ -1076,9 +1075,9 @@ fn render_root_section_subsection_promote_uses_full_tag_heading() {
     );
 }
 
-/// R1 + R5: the TOPOLOGY `multitrack=true` flag (not text inference) drives
+/// The TOPOLOGY `multitrack=true` flag alone (no text inference) drives
 /// the subsection-promote path even with an EMPTY crate-name list, and the
-/// promoted dated section is flat (`### <Group>`, not `#### <Group>`).
+/// promoted dated section is flat (`### <Group>`, one level under the heading).
 #[test]
 fn render_root_section_multitrack_flag_promotes_to_flat_dated_section() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -1119,7 +1118,7 @@ fn render_root_section_multitrack_flag_promotes_to_flat_dated_section() {
         text.contains(&format!("## [v0.7.0] - {date}")),
         "multitrack flag promotes to the full-tag dated heading: {text}"
     );
-    // Promoted dated section is FLAT `### Features` (re-leveled), not `####`.
+    // Promoted dated section is FLAT `### Features` (re-leveled from `####`).
     assert!(
         text.contains("### Features\n- feat: add thing"),
         "promoted section is flat `### Group`: {text}"
@@ -1135,7 +1134,7 @@ fn render_root_section_multitrack_flag_promotes_to_flat_dated_section() {
     );
 }
 
-/// R1+R2+R3+R5: a multitrack tag-promote on a root with NO `### <crate>`
+/// A multitrack tag-promote on a root with NO `### <crate>`
 /// subsection (the release-time workflow, no refresh first) must still emit a
 /// tag-PREFIXED `## [<tag>]` dated section built from this crate's commits,
 /// ACCUMULATE across successive promotes (both sections survive), keep a
@@ -1165,7 +1164,7 @@ fn render_root_section_multitrack_promote_without_subsection_accumulates() {
     let t1 = &first.rendered_text;
     assert!(
         t1.starts_with("# Changelog\n"),
-        "project H1, not a crate: {t1}"
+        "project H1 (no crate H1): {t1}"
     );
     assert!(
         !t1.contains("# Changelog —"),
@@ -1173,7 +1172,7 @@ fn render_root_section_multitrack_promote_without_subsection_accumulates() {
     );
     assert!(
         t1.contains("## [aaa-v0.2.0] -"),
-        "tag-prefixed heading, not bare version: {t1}"
+        "tag-prefixed heading (no bare version): {t1}"
     );
     assert!(!t1.contains("## [0.2.0]"), "no bare-version heading: {t1}");
 
@@ -1192,7 +1191,7 @@ fn render_root_section_multitrack_promote_without_subsection_accumulates() {
     .expect("ok")
     .expect("second promote produces a section");
     let t2 = &second.rendered_text;
-    // R3: both sections accumulate; R1: tag-prefixed, no collision.
+    // Both sections accumulate, tag-prefixed, with no collision.
     assert!(
         t2.contains("## [aaa-v0.2.0] -"),
         "first section survives: {t2}"
@@ -1207,7 +1206,7 @@ fn render_root_section_multitrack_promote_without_subsection_accumulates() {
     assert!(pos_app < pos_core, "date: newest (app) on top: {t2}");
 }
 
-/// R4: `tag` chronology clusters by prefix (`aaa-` before `v`), so the same
+/// `tag` chronology clusters by prefix (`aaa-` before `v`), so the same
 /// two same-version promotes order differently than `date` chronology.
 #[test]
 fn render_root_section_multitrack_tag_chronology_clusters_by_prefix() {
@@ -1254,7 +1253,7 @@ fn render_root_section_multitrack_tag_chronology_clusters_by_prefix() {
     );
 }
 
-/// R6: re-promoting a tag whose `## [<tag>]` already exists is a no-op.
+/// Re-promoting a tag whose `## [<tag>]` already exists is a no-op.
 #[test]
 fn render_root_section_multitrack_promote_is_idempotent() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -1320,10 +1319,10 @@ fn commit_in_crate(root: &std::path::Path, crate_dir: &str, file: &str, subject:
     }
 }
 
-/// R2 (body provenance / no cross-track leakage — the headline live bug):
+/// Body provenance, no cross-track leakage (the headline live bug):
 /// each promoted section must carry ONLY its own track's commit. Distinct
 /// per-crate commit ranges (core gets `alpha`, app gets `beta`) prove the
-/// section body is path-scoped to the crate, not shared across tracks.
+/// section body is path-scoped to its own crate.
 #[test]
 fn render_root_section_multitrack_body_is_per_crate_no_leakage() {
     let tmp = tempfile::tempdir().expect("tempdir");

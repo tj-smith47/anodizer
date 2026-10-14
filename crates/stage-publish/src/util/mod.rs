@@ -65,8 +65,8 @@ pub(crate) use commit::{
     CommitOutcome, GIT_FETCH_TIMEOUT, commit_and_push_with_opts, resolve_commit_opts,
 };
 pub(crate) use config::{
-    config_or_env_secret, find_crate_in_universe, get_publish_config, render_secret,
-    resolve_artifact_kind, resolve_pr_token, resolve_repo_owner_name, resolve_repo_token,
+    find_crate_in_universe, get_publish_config, render_secret, resolve_artifact_kind,
+    resolve_env_token_tracked, resolve_pr_token, resolve_repo_owner_name, resolve_repo_token,
     resolve_secret_name, run_github_token, should_skip_publisher_with_if, should_skip_upload,
     skip_upload_line,
 };
@@ -94,7 +94,7 @@ pub(crate) use pr::{
     maybe_submit_pr_with_env, reconcile_open_prs, resolve_upstream_coords,
     submit_pr_via_gh_with_opts, submit_pr_via_gh_with_opts_with_env,
 };
-pub(crate) use pr_token::configured_pr_token;
+pub(crate) use pr_token::{configured_pr_token, configured_push_token};
 pub(crate) use template::{
     UrlTarget, guard_no_unrendered, render_or_warn, render_or_warn_with_vars, render_url_template,
     render_url_template_with_ctx, render_url_template_with_ctx_and_artifact,

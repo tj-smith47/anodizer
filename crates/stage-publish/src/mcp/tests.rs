@@ -2,12 +2,12 @@
 //!
 //! Strategy: every test that exercises the publish loop runs against a
 //! one-shot HTTP responder bound to an ephemeral port (mirrors the
-//! `dockerhub.rs` test harness, keeping the test surface uniform across
+//! `dockerhub.rs` test harness, keeping the test shape uniform across
 //! HTTP publishers). The `auth.token` field is set non-empty so the
 //! `NoneAuthProvider::get_token` short-circuit returns the token verbatim
 //! without hitting `/v0/auth/none`; the only endpoint a test must serve is
 //! `POST /v0/publish`. Retry windows are clamped to 1ms so a "5xx then 2xx"
-//! scenario completes in a few milliseconds rather than waiting on the
+//! scenario completes in a few milliseconds without waiting on the
 //! default 10s base delay.
 
 #![allow(clippy::field_reassign_with_default)]
@@ -29,10 +29,6 @@ use super::{
     truncate_response_snippet, warn_experimental_once, warn_once_lock,
 };
 use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
-
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
 
 /// Build a minimal context with a sufficiently-configured `mcp:` block to
 /// reach the publish loop. `name`, `auth.token`, `packages[0]` all populated.
@@ -74,10 +70,6 @@ fn mcp_ctx(mcp_overrides: impl FnOnce(&mut McpConfig)) -> Context {
     ctx.template_vars_mut().set("Version", "1.0.0");
     ctx
 }
-
-// ---------------------------------------------------------------------------
-// Skip-gate parity
-// ---------------------------------------------------------------------------
 
 #[test]
 fn skip_when_no_name() {
@@ -151,7 +143,7 @@ fn skip_true_records_skipped_outcome() {
             ctx.take_pending_outcome(),
             Some(anodizer_core::PublisherOutcome::Skipped(_))
         ),
-        "skip=true must record a Skipped outcome, not default to Succeeded"
+        "skip=true must record a Skipped outcome"
     );
 }
 
@@ -177,7 +169,7 @@ fn if_falsy_records_skipped_outcome() {
             ctx.take_pending_outcome(),
             Some(anodizer_core::PublisherOutcome::Skipped(_))
         ),
-        "if-falsy must record a Skipped outcome, not default to Succeeded"
+        "if-falsy must record a Skipped outcome"
     );
 }
 
@@ -219,12 +211,8 @@ fn metadata_fallback_is_rendered_in_published_body() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Publish loop — retries
-// ---------------------------------------------------------------------------
-
 /// A `retry.max_elapsed` that is already spent by the time the publisher
-/// resolves it: the ladder must stop after one attempt instead of sleeping
+/// resolves it: the ladder must stop after one attempt and never sleep
 /// through the whole attempt budget against a wedged registry.
 #[test]
 fn publish_stops_on_a_spent_wall_clock_budget() {
@@ -247,7 +235,7 @@ fn publish_stops_on_a_spent_wall_clock_budget() {
     let log = ctx.logger("mcp-test");
     let start = std::time::Instant::now();
     let err = publish_with_registry(&mut ctx, &log, &registry)
-        .expect_err("a wedged registry must surface an error");
+        .expect_err("a wedged registry must return an error");
     assert!(format!("{err:#}").contains("503"), "{err:#}");
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -314,8 +302,8 @@ fn publish_retries_on_500_then_succeeds() {
 #[test]
 fn publish_unrecoverable_on_400() {
     // 4xx is Break (fast-fail) — the retry helper classifies it as
-    // unrecoverable so a bad payload surfaces immediately instead of
-    // burning the full retry budget. With responses limited to 1, a
+    // unrecoverable so a bad payload fails on the first attempt and
+    // spends none of the retry budget. With responses limited to 1, a
     // second `accept()` would block; the test passing the assert proves
     // no retry happened.
     let _g = warn_once_lock();
@@ -327,11 +315,11 @@ fn publish_unrecoverable_on_400() {
     let mut ctx = mcp_ctx(|_| {});
     let log = ctx.logger("mcp-test");
     let result = publish_with_registry(&mut ctx, &log, &registry);
-    let err = result.expect_err("400 must surface as an error");
+    let err = result.expect_err("400 must return an error");
     let chain = format!("{err:#}");
     assert!(
         chain.contains("400") || chain.contains("bad payload"),
-        "error chain must surface the HTTP status / body: {chain}"
+        "error chain must carry the HTTP status / body: {chain}"
     );
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -345,10 +333,10 @@ fn duplicate_version_400_is_idempotent_skip() {
     // Re-running a release at an already-published version: the registry
     // rejects the re-POST with 400 `cannot publish duplicate version`. That
     // is the desired end-state on a re-run, so the publisher must record a
-    // SKIP (success), return Ok(None) (NO rollback target), and NOT surface
-    // an error.
+    // SKIP (success), return Ok(None) (NO rollback target), and return no
+    // error.
     let _g = warn_once_lock();
-    // Body is 76 bytes; Content-Length pins it so the responder frames it.
+    // Body is 76 bytes; Content-Length states it so the responder frames it.
     const RESPONSE: &str = "HTTP/1.1 400 Bad Request\r\nContent-Length: 76\r\n\r\n\
         {\"errors\":[{\"message\":\"invalid version: cannot publish duplicate version\"}]}";
     let (addr, calls) = spawn_oneshot_http_responder(vec![RESPONSE]);
@@ -357,7 +345,7 @@ fn duplicate_version_400_is_idempotent_skip() {
     let mut ctx = mcp_ctx(|_| {});
     let log = ctx.logger("mcp-test");
     let result = publish_with_registry(&mut ctx, &log, &registry);
-    let target = result.expect("duplicate version must be a clean skip, not an error");
+    let target = result.expect("duplicate version must be a clean skip");
     assert!(
         target.is_none(),
         "already-published must record NO rollback target"
@@ -396,7 +384,7 @@ fn is_duplicate_version_rejection_matches_signal_not_other_400s() {
         r#"{"errors":[{"message":"body.packages[0].version: minLength"}]}"#
     ));
     // The same words on a non-400 status are a different failure mode and
-    // must still surface as an error.
+    // must still return an error.
     assert!(!is_duplicate_version_rejection(
         409,
         "cannot publish duplicate version"
@@ -427,7 +415,7 @@ fn oci_annotation_rejection_appends_actionable_hint() {
     let mut ctx = mcp_ctx(|_| {});
     let log = ctx.logger("mcp-test");
     let err = publish_with_registry(&mut ctx, &log, &registry)
-        .expect_err("422 annotation rejection must surface as an error");
+        .expect_err("422 annotation rejection must return an error");
     let chain = format!("{err:#}");
     assert!(
         chain.contains("dockers_v2.labels"),
@@ -465,16 +453,12 @@ fn oci_rejection_hint_is_empty_for_unrelated_bodies() {
     assert!(hint.contains("dockers_v2.labels"), "{hint}");
 }
 
-// ---------------------------------------------------------------------------
-// Experimental-warning one-shot semantics
-// ---------------------------------------------------------------------------
-
 #[test]
 fn experimental_warning_emitted_once_per_process() {
     // The atomic flag is a process-wide one-shot. `warn_experimental_once`
     // returns `true` exactly when this call flipped the flag (and emitted
     // the warning). Race-safe: the check uses the function's per-call return
-    // value, not on inspecting the static atomic — which other parallel
+    // value and never inspects the static atomic — which other parallel
     // tests (publish_retries_*, dry_run_*) could already have flipped via
     // their internal call. The reset_experimental_warned_for_test() helper
     // forces a known starting state but offers no protection against a
@@ -493,10 +477,6 @@ fn experimental_warning_emitted_once_per_process() {
         "expected exactly one true (first-emitter) across three calls; got {emits:?}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Dry-run short-circuit
-// ---------------------------------------------------------------------------
 
 #[test]
 fn dry_run_short_circuits_before_network() {
@@ -554,10 +534,6 @@ fn dry_run_short_circuits_before_network() {
         calls.load(Ordering::SeqCst)
     );
 }
-
-// ---------------------------------------------------------------------------
-// Repository inference from release context
-// ---------------------------------------------------------------------------
 
 /// Build a `Config` carrying only a `release:` block for the given SCM
 /// host. Centralizes the struct-update boilerplate the inference tests
@@ -682,10 +658,6 @@ fn inference_no_ops_when_owner_or_name_empty() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Repository derivation from the git remote (fallback when no release block)
-// ---------------------------------------------------------------------------
-
 /// Init a throwaway git repo with the given `origin` remote and return the
 /// tempdir handle (kept alive by the caller).
 fn temp_git_repo_with_remote(remote_url: &str) -> tempfile::TempDir {
@@ -804,10 +776,6 @@ fn apply_inferred_repository_preserves_user_source() {
     assert_eq!(mcp.repository.source, "ghe", "user-set source must win");
 }
 
-// ---------------------------------------------------------------------------
-// Project-metadata fallback
-// ---------------------------------------------------------------------------
-
 /// When `mcp.description` is unset, the publisher must fall back to the
 /// top-level `metadata.description`. Same fallback shape used by every
 /// other publisher (homebrew cask, dockerhub, snapcraft).
@@ -875,10 +843,6 @@ fn mcp_explicit_description_wins_over_meta() {
     assert_eq!(mcp.description.as_deref(), Some("explicit mcp value"));
 }
 
-// ---------------------------------------------------------------------------
-// Registry URL fallback
-// ---------------------------------------------------------------------------
-
 #[test]
 fn resolve_registry_url_fallback_matrix() {
     // The fallback chain matters: empty/whitespace/None all must
@@ -904,10 +868,6 @@ fn resolve_registry_url_fallback_matrix() {
         assert_eq!(got, *expected, "case {label}: input={input:?}");
     }
 }
-
-// ---------------------------------------------------------------------------
-// HTTP error-snippet truncation
-// ---------------------------------------------------------------------------
 
 #[test]
 fn truncate_response_snippet_short_body_returned_verbatim() {
@@ -942,8 +902,8 @@ fn truncate_response_snippet_oversized_ascii_marks_truncated() {
 }
 
 #[test]
-fn truncate_response_snippet_walks_back_to_utf8_char_boundary() {
-    // A 4-byte UTF-8 char straddling the cap forces the cut to walk
+fn truncate_response_snippet_steps_back_to_utf8_char_boundary() {
+    // A 4-byte UTF-8 char straddling the cap forces the cut to step
     // backward to a boundary. The snippet must be valid UTF-8 (the
     // `format!` formatter would panic on a slice through a multi-byte
     // char), strictly shorter than the cap, and end on a clean
@@ -951,7 +911,7 @@ fn truncate_response_snippet_walks_back_to_utf8_char_boundary() {
     let mut body = "a".repeat(MAX_RESPONSE_SNIPPET_BYTES - 2);
     // U+1F600 GRINNING FACE is 4 bytes in UTF-8. With 510 leading 'a's
     // the char straddles bytes 510..514, so a 512-byte cut ends up inside
-    // it and the loop must walk back to byte 510.
+    // it and the loop must step back to byte 510.
     body.push('\u{1F600}');
     body.push_str(&"b".repeat(20));
     let (snippet, suffix) = truncate_response_snippet(&body);
@@ -959,14 +919,14 @@ fn truncate_response_snippet_walks_back_to_utf8_char_boundary() {
     assert_eq!(suffix, "...[truncated]");
     assert!(
         snippet.len() < MAX_RESPONSE_SNIPPET_BYTES,
-        "boundary walk must yield strictly fewer bytes than the cap (got {})",
+        "boundary step must yield strictly fewer bytes than the cap (got {})",
         snippet.len()
     );
     // The smiley straddles the cap, so it must NOT appear in the snippet
-    // — otherwise the cut fell past the boundary, not before it.
+    // — otherwise the cut fell past the boundary.
     assert!(
         !snippet.contains('\u{1F600}'),
-        "the multi-byte char straddling the cap must be dropped wholesale, not split"
+        "the multi-byte char straddling the cap must be dropped wholesale"
     );
     // Round-trip back into a format! to prove the result is valid UTF-8
     // (a mid-codepoint slice would panic here, even though indexing in
@@ -974,10 +934,6 @@ fn truncate_response_snippet_walks_back_to_utf8_char_boundary() {
     // absence of a panic.
     let _ = format!("snippet={snippet}");
 }
-
-// ---------------------------------------------------------------------------
-// Owning-crate gate (per-crate iteration)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn image_repo_strips_tag_keeps_registry_port_and_digest() {
@@ -1041,8 +997,8 @@ fn owning_ctx(selected: Vec<&str>, mcp_identifier: &str) -> Context {
         }],
         // A non-owning pass is expected to short-circuit before the registry
         // is contacted; pointing the base at a dead loopback port means a
-        // short-circuit that stops working fails locally instead of POSTing
-        // to the live MCP registry.
+        // short-circuit that stops working fails locally before any POST
+        // reaches the live MCP registry.
         registry: Some("http://127.0.0.1:1".to_string()),
         ..Default::default()
     };
@@ -1064,15 +1020,15 @@ fn mcp_runs_for_owning_crate_pass() {
 #[test]
 fn mcp_skips_for_non_owning_crate_pass() {
     // `cfgd-core` owns no docker_v2 image matching the mcp identifier, so
-    // mcp must be skipped during its pass rather than firing spuriously.
+    // mcp must be skipped during its pass.
     let ctx = owning_ctx(vec!["cfgd-core"], "ghcr.io/tj-smith47/cfgd:{{ .Version }}");
     assert!(!mcp_image_owned_by_selected(&ctx));
 }
 
 #[test]
 fn mcp_non_owning_pass_records_skipped_not_applicable() {
-    // The non-owning pass must surface `Skipped(NotApplicable)` so the
-    // publisher summary reads "Skipped" rather than a passing "Succeeded" —
+    // The non-owning pass must record `Skipped(NotApplicable)` so the
+    // publisher summary reads "Skipped" —
     // mcp did not publish for this crate.
     let mut ctx = owning_ctx(vec!["cfgd-core"], "ghcr.io/tj-smith47/cfgd:{{ .Version }}");
     let log = ctx.logger("mcp-test");
@@ -1114,7 +1070,7 @@ fn mcp_runs_when_manifest_has_no_oci_package() {
 fn render_strings_renders_header_values_but_not_names() {
     // Transport header NAMES are literal protocol identifiers — published
     // exactly as written, never template-rendered — while header VALUES
-    // are rendered. Pins the documented contract in both directions.
+    // are rendered. Checks the documented contract in both directions.
     use anodizer_core::config::McpHeader;
 
     let mut ctx = mcp_ctx(|mcp| {
@@ -1143,7 +1099,7 @@ fn render_strings_renders_header_values_but_not_names() {
     );
 }
 
-/// A remote transport's endpoint is templated, so a URL pinned to the release
+/// A remote transport's endpoint is templated, so a URL carrying the release
 /// version resolves before it reaches the registry — and a stdio package,
 /// which the registry forbids a URL on, still publishes none.
 #[test]
@@ -1168,7 +1124,7 @@ fn render_strings_renders_transport_url() {
     super::render_strings(&ctx, &mut mcp).expect("render_strings succeeds");
     assert_eq!(
         mcp.packages[0].transport.url, "https://mcp.example/1.0.0",
-        "the endpoint must be rendered, not shipped as a template"
+        "the endpoint must be rendered"
     );
 
     let json = super::build_server_json(&mcp, "1.0.0");
@@ -1183,10 +1139,6 @@ fn render_strings_renders_transport_url() {
         wire["packages"][1]["transport"]
     );
 }
-
-// ---------------------------------------------------------------------------
-// Preflight requirements
-// ---------------------------------------------------------------------------
 
 #[test]
 fn requirements_self_gate_on_name_and_skip() {

@@ -1,6 +1,6 @@
 //! GemFury publish orchestration — uploads each matching artifact via
 //! `POST https://push.fury.io/<account>` with HTTP Basic auth (the push
-//! token as the username, empty password — Fury's documented surface).
+//! token as the username, empty password — Fury's documented API).
 //!
 //! Token handling:
 //!   * Push token resolved from `cfg.token` (templated) or the env var
@@ -66,7 +66,7 @@ pub(crate) const API_BASE: &str = "https://api.fury.io";
 /// Defaults to
 /// [`PUSH_BASE`]; `ANODIZE_GEMFURY_PUSH_BASE` overrides it so tests can point
 /// the push at a local responder. Threading the read through an `EnvSource`
-/// (rather than `std::env::var`) lets a test inject the base via a
+/// lets a test inject the base via a
 /// [`MapEnvSource`](anodizer_core::MapEnvSource) without mutating the process
 /// env — eliminating the cross-test race where one test's base points another
 /// test's HTTP probe at a torn-down listener. Production never sets the
@@ -80,7 +80,7 @@ pub(crate) fn push_base_from<E: anodizer_core::EnvSource + ?Sized>(env: &E) -> S
 /// [`EnvSource`](anodizer_core::EnvSource). Defaults to [`API_BASE`];
 /// `ANODIZE_GEMFURY_API_BASE`
 /// overrides it for tests. See [`push_base_from`] for why the read is
-/// `EnvSource`-routed rather than a bare `std::env::var`.
+/// `EnvSource`-routed.
 pub(crate) fn api_base_from<E: anodizer_core::EnvSource + ?Sized>(env: &E) -> String {
     env.var("ANODIZE_GEMFURY_API_BASE")
         .unwrap_or_else(|| API_BASE.to_string())
@@ -172,16 +172,17 @@ pub(crate) fn default_formats() -> Vec<&'static str> {
 /// Resolve the push token for the given entry: `cfg.token` (templated)
 /// wins; otherwise the env var named by `secret_name`. Each value is
 /// trimmed, and one that is empty or only whitespace falls through
-/// ([`crate::util::config_or_env_secret`]). Empty string when both are unset
+/// ([`Context::config_or_env_secret`]). Empty string when both are unset
 /// — the caller reports a clear "missing token" error and never runs the
 /// push anonymously. A `token` template that does not render is an error.
 pub(crate) fn resolve_push_token(ctx: &Context, cfg: &GemFuryConfig) -> Result<String> {
-    crate::util::config_or_env_secret(
-        ctx,
-        "gemfury.token",
-        cfg.token.as_deref(),
-        &push_token_env_var(ctx, cfg)?,
-    )
+    Ok(ctx
+        .config_or_env_secret(
+            "gemfury.token",
+            cfg.token.as_deref(),
+            &[&push_token_env_var(ctx, cfg)?],
+        )?
+        .unwrap_or_default())
 }
 
 /// Resolve the API (delete) token. Same shape as [`resolve_push_token`]
@@ -189,15 +190,16 @@ pub(crate) fn resolve_push_token(ctx: &Context, cfg: &GemFuryConfig) -> Result<S
 /// is the only consumer; an empty result causes rollback to fall through
 /// to the warn-only manual-cleanup checklist.
 pub(crate) fn resolve_api_token(ctx: &Context, cfg: &GemFuryConfig) -> Result<String> {
-    crate::util::config_or_env_secret(
-        ctx,
-        "gemfury.api_token",
-        cfg.api_token.as_deref(),
-        &api_token_env_var(ctx, cfg)?,
-    )
+    Ok(ctx
+        .config_or_env_secret(
+            "gemfury.api_token",
+            cfg.api_token.as_deref(),
+            &[&api_token_env_var(ctx, cfg)?],
+        )?
+        .unwrap_or_default())
 }
 
-/// Walk crate-level `archives:` blocks and bail when one declares multiple
+/// Scan crate-level `archives:` blocks and bail when one declares multiple
 /// formats AND the artifact set for that crate contains more than one
 /// format extension matching the gemfury formats filter. Without this the
 /// publisher would silently push every variant which is rarely what the
@@ -259,8 +261,8 @@ pub(crate) fn resolve_formats(cfg: &GemFuryConfig) -> Vec<String> {
 /// definitive `404` (the version genuinely does not exist on Fury).
 ///
 /// Fail-closed on an inconclusive probe: a transport/connect failure or any
-/// non-404 HTTP shape (5xx, auth failure, rate-limit) surfaces an `Err`
-/// rather than `Ok(false)`. A Fury push can be irreversible for up to 72h
+/// non-404 HTTP shape (5xx, auth failure, rate-limit) returns an `Err`;
+/// only a 404 returns `Ok(false)`. A Fury push can be irreversible for up to 72h
 /// after upload, so a probe that *cannot prove* the version is absent must
 /// not approve the push — assuming "not published" on an outage would
 /// re-push over an existing version the moment the registry recovers. The
@@ -310,10 +312,10 @@ pub(crate) fn version_already_published<E: anodizer_core::EnvSource + ?Sized>(
         Ok((status, _body)) => Ok(status.is_success() || status.is_redirection()),
         Err(err) => {
             // 404 is the documented "not present" response — the only shape
-            // that proves the version is absent, surfaced as `false` so the
+            // that proves the version is absent, returned as `false` so the
             // publish proceeds. Any other shape (5xx, auth, rate-limit) or a
-            // transport failure leaves presence UNKNOWN; bail rather than
-            // publish blind to a registry that is irreversible for up to 72h.
+            // transport failure leaves presence UNKNOWN; bail so nothing is
+            // published blind to a registry that is irreversible for up to 72h.
             if http_status(&err) == 404 {
                 return Ok(false);
             }
@@ -355,7 +357,7 @@ enum PushOutcome {
 /// Probe-then-push one artifact to Fury, returning whether it was uploaded (a
 /// rollback target) or was an idempotent no-op. Self-contained so the account
 /// loop can run it under bounded parallelism: it builds its own multipart
-/// body, carries its own retry budget (floored to
+/// body, carries its own retry budget (raised to the minimum of
 /// [`RetryPolicy::with_idempotent_floor`]), and
 /// touches no shared mutable state.
 #[allow(clippy::too_many_arguments)]
@@ -380,7 +382,7 @@ fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
     // must not error). Fury exposes a package in /packages/<name>/ under its
     // control-file name (the artifact filename minus the version+arch+
     // extension suffix), so the probe keys on the derived name — probing the
-    // raw filename always 404s. A 404 here just means we'll attempt the push
+    // raw filename always 404s. A 404 here just means the push is attempted
     // (which has its own 409/422 conflict-as-success guard for the racing
     // case).
     let fury_pkg = fury_package_name(art_name, version);
@@ -402,7 +404,7 @@ fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
     let file_bytes = std::fs::read(job.path)
         .with_context(|| format!("gemfury: read '{}'", job.path.display()))?;
 
-    // Idempotent pushes keep a transient-error retry floor even when a
+    // Idempotent pushes keep a minimum transient-error retry budget even when a
     // stateful mode (`--publish-only`) resolves `max_attempts` to 1.
     let push_policy = policy.with_idempotent_floor();
     let mime = "application/octet-stream";
@@ -450,8 +452,8 @@ fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
             // Idempotent conflict: a 409 (Conflict) / 422 (Unprocessable) means the
             // version already exists on Fury — a re-run on an already-published
             // tag, or a racing concurrent uploader. The operator's intent ("publish
-            // this artifact") is satisfied, so treat it as success rather than a
-            // hard failure (mirrors the cloudsmith conflict-as-success guard).
+            // this artifact") is satisfied, so treat it as success
+            // (mirrors the cloudsmith conflict-as-success guard).
             if matches!(status.as_u16(), 409 | 422) {
                 conflict_skipped.set(true);
                 return Ok(());
@@ -509,9 +511,9 @@ fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
 /// auth, appending one [`GemFuryTarget`] to `pushed` per artifact that
 /// actually published.
 ///
-/// `pushed` is an out-param (rather than the return value) so that on a
+/// `pushed` is an out-param so that on a
 /// mid-loop error the caller still holds the partial set of artifacts that
-/// DID upload before the failure — those must be rolled back, not orphaned.
+/// DID upload before the failure — those must be rolled back.
 /// A `?` on the previous `Result<Vec<_>>` signature discarded that evidence.
 pub fn publish_to_gemfury(
     ctx: &Context,
@@ -533,7 +535,6 @@ pub fn publish_to_gemfury(
             .unwrap_or_else(|| format!("gemfury[{}]", idx));
         log.status(&format!("processing gemfury package '{}'", label));
 
-        // ---- Skip gate ----
         if let Some(skip) = cfg.skip.as_ref() {
             let off = skip
                 .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
@@ -553,7 +554,6 @@ pub fn publish_to_gemfury(
             continue;
         }
 
-        // ---- Required pre-flight ----
         let account_raw = match cfg.account.as_deref() {
             Some(a) if !a.trim().is_empty() => a,
             _ => bail!(
@@ -597,14 +597,13 @@ pub fn publish_to_gemfury(
         ) {
             log.warn(&format!(
                 "exclude filter {:?} dropped all {} for GemFury \
-                 account '{}'; check the globs match asset names, not full paths",
+                 account '{}'; check that the globs match asset file names without their directories",
                 cfg.exclude.as_deref().unwrap_or_default(),
                 count_noun(pre_exclude, "candidate package", "candidate packages"),
                 account
             ));
         }
 
-        // ---- Dry-run logging ----
         if ctx.is_dry_run() {
             log.status(&format!(
                 "(dry-run) would push {} to GemFury account '{}'",
@@ -617,7 +616,6 @@ pub fn publish_to_gemfury(
             continue;
         }
 
-        // ---- Token ----
         let push_token = resolve_push_token(ctx, cfg)?;
         // Resolve the (templated) env-var names once per entry; every pushed
         // artifact records the same rendered names into its rollback target.
@@ -689,11 +687,11 @@ pub fn publish_to_gemfury(
         // recorded — even a sibling that succeeded concurrently with a failing
         // push must end up in `pushed` so the partial set can be rolled back. So
         // each chunk runs to completion, ALL `Pushed` outcomes are recorded in
-        // submission order, and only then is the first error surfaced.
+        // submission order, and only then is the first error returned.
         let parallelism = ctx.options.parallelism.clamp(1, MAX_PUSH_CONCURRENCY);
-        // Surface the clamp under -v when it actually lowers the operator's
+        // Report the clamp under -v when it actually lowers the operator's
         // global parallelism, so a higher --parallelism that silently has no
-        // effect on Fury pushes is discoverable rather than mysterious.
+        // effect on Fury pushes is discoverable.
         if ctx.options.parallelism > MAX_PUSH_CONCURRENCY {
             log.verbose(&format!(
                 "gemfury push concurrency clamped to {MAX_PUSH_CONCURRENCY} \

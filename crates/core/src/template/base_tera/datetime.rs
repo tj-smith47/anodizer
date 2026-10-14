@@ -67,7 +67,6 @@ pub(crate) fn translate_go_time_format(fmt: &str) -> Cow<'_, str> {
 }
 
 pub(super) fn register(tera: &mut tera::Tera) {
-    // --- time function ---
     // time(format="%Y-%m-%d") — current UTC time formatted
     // Also accepts Go time format layout (e.g. "2006-01-02") and translates
     // to chrono strftime before formatting.
@@ -89,7 +88,6 @@ pub(super) fn register(tera: &mut tera::Tera) {
         },
     );
 
-    // --- date filter (tera 1.x compat) ---
     // tera 2.0 removed the builtin `date` filter; 1.x-era anodizer templates
     // (`{{ Now | date(format='%Y%m%d') }}`) are a consumer contract, so it is
     // re-registered: input is an i64 unix timestamp or a datetime string
@@ -103,7 +101,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
     // no-timezone timestamp path formats a `DateTime<Utc>` (so `%Z` renders
     // `UTC` and `%z` renders `+0000`) where 1.x formatted a bare
     // `NaiveDateTime`, whose `%Z`/`%z` formatting failed at render — a
-    // panic→defined-output widening, never a changed byte for any format
+    // panic→defined-output widening that changes no byte for any format
     // 1.x could actually render.
     // 1.x's `locale` argument needed tera's non-default `date-locale`
     // feature; without it 1.x never read the argument and SILENTLY formatted

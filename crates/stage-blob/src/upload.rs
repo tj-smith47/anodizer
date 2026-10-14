@@ -204,7 +204,7 @@ pub(crate) fn collect_artifacts<'a>(
     ) {
         log.warn(&format!(
             "exclude filter {:?} dropped all {} for blob config on \
-             crate '{}'; check the globs match asset names, not full paths",
+             crate '{}'; check that the globs match asset file names without their directories",
             config.exclude.as_deref().unwrap_or_default(),
             anodizer_core::text::count_noun(
                 pre_exclude,

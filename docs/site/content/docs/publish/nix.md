@@ -101,7 +101,7 @@ crates:
 
 ## Authentication
 
-{{ token_order(target="your nixpkgs-style repository", publisher_var="NIX_PKGS_TOKEN") }}
+{{ token_order(target="your nixpkgs-style repository", publisher_vars=["NIX_PKGS_TOKEN"]) }}
 
 
 ```yaml

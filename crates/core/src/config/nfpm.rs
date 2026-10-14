@@ -5,10 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use super::{Amd64Variant, FileInfo, StringOrU32};
 
-// ---------------------------------------------------------------------------
-// NfpmConfig
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct NfpmConfig {
@@ -214,10 +210,6 @@ pub struct NfpmContent {
     /// When true, expand template variables in the `src` and `dst` paths.
     pub expand: Option<bool>,
 }
-
-// ---------------------------------------------------------------------------
-// nFPM format-specific configs
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]

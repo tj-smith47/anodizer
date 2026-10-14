@@ -5,9 +5,7 @@ use anodizer_core::retry::RetryPolicy;
 use anyhow::Result;
 
 use crate::dispatch::{DispatchQueue, dispatch};
-use crate::helpers::{
-    DEFAULT_DISPLAY_NAME, config_or_env_secret, is_enabled, render_json_template, render_message,
-};
+use crate::helpers::{DEFAULT_DISPLAY_NAME, is_enabled, render_json_template, render_message};
 use crate::slack;
 
 use super::Announcer;
@@ -36,11 +34,10 @@ impl Announcer for SlackAnnouncer {
             .slack
             .as_ref()
             .expect("send only called when enabled returned Ok(true)");
-        let url = match config_or_env_secret(
-            ctx,
+        let url = match ctx.config_or_env_secret(
             "announce.slack.webhook_url",
             cfg.webhook_url.as_deref(),
-            "SLACK_WEBHOOK",
+            &["SLACK_WEBHOOK"],
         )? {
             Some(url) => url,
             None => {

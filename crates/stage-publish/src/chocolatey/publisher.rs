@@ -170,7 +170,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
             .into_iter()
             .flat_map(|ch| {
                 // `xmllint` is MANDATORY at gate time: the strict pre-publish
-                // schema floor runs `xmllint --schema` against the rendered
+                // schema check runs `xmllint --schema` against the rendered
                 // nuspec and FAILS when the tool is absent (moderation
                 // submission is a one-way door — see
                 // `schema_validation::chocolatey`). Declared REQUIRED (not

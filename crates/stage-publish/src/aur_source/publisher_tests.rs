@@ -72,7 +72,7 @@ fn config_fully_inactive_false_with_empty_selection_and_active_entry() {
     );
 }
 
-/// The AUR schema floor runs `bash -n` over the rendered source
+/// The AUR schema check runs `bash -n` over the rendered source
 /// PKGBUILD when the tool is present and warn+skips otherwise, so it is
 /// ADVISORY: recommended to the auto-install layer, never a blocker.
 #[test]

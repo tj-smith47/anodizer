@@ -145,7 +145,7 @@ crates:
 
 ## Authentication
 
-{{ token_order(target="your krew-index fork", publisher_var="KREW_INDEX_TOKEN") }}
+{{ token_order(target="your krew-index fork", publisher_vars=["KREW_INDEX_TOKEN"]) }}
 
 Set `pull_request.token` when the fork token cannot open pull requests against the upstream index.
 

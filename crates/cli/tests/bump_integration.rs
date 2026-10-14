@@ -52,10 +52,6 @@ fn git_commit_empty_on_path(dir: &Path, relpath: &str, content: &str, message: &
     run_git(dir, &["commit", "-q", "-m", message]);
 }
 
-// ---------------------------------------------------------------------------
-// Workspace builders
-// ---------------------------------------------------------------------------
-
 /// Single-crate workspace at `tmp/Cargo.toml` with literal version "0.1.0".
 fn single_crate_workspace(tmp: &Path) {
     fs::write(
@@ -192,10 +188,6 @@ fn read_version(manifest: &Path) -> String {
     }
     panic!("no version in {}", manifest.display());
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn patch_bumps_single_crate() {
@@ -435,11 +427,11 @@ fn propagation_rewrites_sibling_dep() {
     );
 }
 
-/// `anodizer bump` heals a floor on a sibling it is NOT bumping: the floor is
+/// `anodizer bump` heals a version minimum on a sibling it is NOT bumping: the minimum is
 /// wrong against that sibling's own manifest version whether or not this run
 /// touches it. `--exact` still opts out of every sibling edit.
 #[test]
-fn bump_heals_stale_floor_on_unbumped_sibling() {
+fn bump_heals_stale_version_minimum_on_unbumped_sibling() {
     for (args, expected) in [
         (vec!["bump", "patch", "-p", "core", "-y"], "0.5.0"),
         (
@@ -486,14 +478,14 @@ fn bump_heals_stale_floor_on_unbumped_sibling() {
         let cli = fs::read_to_string(tmp.path().join("crates/cli/Cargo.toml")).unwrap();
         assert!(
             cli.contains(&format!("path = \"../util\", version = \"{expected}\"")),
-            "{args:?}: util floor should read {expected}: {cli}"
+            "{args:?}: util version minimum should read {expected}: {cli}"
         );
 
         if !args.contains(&"--commit") {
             continue;
         }
         // `bump` refuses to start on a dirty tree, so every manifest it edited
-        // — the propagated `core` floor and the healed `util` one — has to be
+        // — the propagated `core` minimum and the healed `util` one — has to be
         // inside the commit it just made.
         let status = anodizer_core::test_helpers::output_with_spawn_retry(
             || {
@@ -775,14 +767,10 @@ fn pre_appends_prerelease() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Bundled changelog (via stage-changelog::render_crate_section)
-// ---------------------------------------------------------------------------
-
 /// A malformed source date stops `bump` with the release reader's error
 /// before any manifest is written; a valid one dates the changelog heading.
 #[test]
-fn bump_reads_the_source_date_through_the_release_reader() {
+fn bump_refuses_a_malformed_source_date_and_dates_the_changelog_with_a_valid_one() {
     let tmp = TempDir::new().unwrap();
     single_crate_workspace(tmp.path());
     fs::write(
@@ -1095,8 +1083,8 @@ changelog:
     );
 
     let cl = fs::read_to_string(tmp.path().join("CHANGELOG.md")).unwrap();
-    // Heading is the bare version (`## [0.1.1]`), never a `{crate}-v`/`v`-tagged
-    // heading like `## [demo-v0.1.1]`.
+    // Heading is the bare version (`## [0.1.1]`); a `{crate}-v`/`v`-tagged
+    // heading like `## [demo-v0.1.1]` is wrong.
     assert!(
         cl.contains("## [0.1.1]"),
         "expected a bare-version heading `## [0.1.1]`: {cl}"
@@ -1250,11 +1238,6 @@ changelog:
     );
 }
 
-// ---------------------------------------------------------------------------
-// Inference must honor each crate's `tag_template` (cfgd-style monorepos
-// have crates whose tag is bare `v{{ Version }}` — not `<name>-v…`).
-// ---------------------------------------------------------------------------
-
 #[test]
 fn inference_respects_tag_template_from_anodizer_yaml() {
     let tmp = TempDir::new().unwrap();
@@ -1317,8 +1300,8 @@ crates:
     // be discovered and the only post-tag commit is a chore → skip. With
     // the fallback `<name>-v` prefix this row would scan all-of-history,
     // see the chore, classify it as skip ANYWAY, but the reason string would
-    // mention "no commits since cli-v" instead of `since v0.1.0`. Pin to
-    // the reason text so the regression cannot hide.
+    // mention "no commits since cli-v" in place of `since v0.1.0`. Assert
+    // on the reason text so the regression cannot hide.
     assert_eq!(
         by_name["cli"]["level"], "skip",
         "cli should skip — no feat/fix since v0.1.0"
@@ -1326,7 +1309,7 @@ crates:
     let cli_reason = by_name["cli"]["reason"].as_str().unwrap();
     assert!(
         cli_reason.contains("since v0.1.0"),
-        "cli reason must reference the actual v0.1.0 tag, not <name>-v fallback: {cli_reason}"
+        "cli reason must reference the actual v0.1.0 tag: {cli_reason}"
     );
     // core uses `core-v` template; the post-tag feat → minor, reason cites
     // core-v0.1.0 specifically.
@@ -1398,14 +1381,14 @@ crates:
     // With the bug (`.map(|c| c.tag_family_template())`), an UNSET
     // template collapses to the bare `v` prefix — neither `core-v0.1.0` nor
     // `cli-v0.1.0` matches, so both rows would scan full history (including
-    // the "initial" commit) instead of bounding at each crate's real tag.
+    // the "initial" commit) and never stop at each crate's real tag.
     assert_eq!(by_name["core"]["level"], "minor");
     assert_eq!(by_name["core"]["next"], "0.2.0");
     let core_reason = by_name["core"]["reason"].as_str().unwrap();
     assert!(
         core_reason.contains("since core-v0.1.0"),
         "core reason must reference core-v0.1.0 (the {{name}}-v convention \
-         family), not fall back to a bare-v scan of full history: {core_reason}"
+         family): {core_reason}"
     );
     assert_eq!(
         by_name["cli"]["level"], "skip",
@@ -1414,14 +1397,14 @@ crates:
     let cli_reason = by_name["cli"]["reason"].as_str().unwrap();
     assert!(
         cli_reason.contains("since cli-v0.1.0"),
-        "cli reason must reference cli-v0.1.0, not a bare-v fallback: {cli_reason}"
+        "cli reason must reference cli-v0.1.0: {cli_reason}"
     );
 }
 
 /// `bump` must discover the config through the same well-known-name candidate
-/// walk every other command uses — a repo configured via `anodizer.yaml`
-/// (a non-`.anodizer.yaml` candidate) gets its `tag_template` honored, not
-/// silently degraded to the `<name>-v` fallback family.
+/// list every other command uses — a repo configured via `anodizer.yaml`
+/// (a non-`.anodizer.yaml` candidate) gets its `tag_template` honored
+/// in place of the `<name>-v` fallback family.
 #[test]
 fn bump_discovers_non_dot_anodizer_yaml_config() {
     let tmp = TempDir::new().unwrap();
@@ -1469,13 +1452,9 @@ crates:
     assert!(
         reason.contains("since v0.1.0"),
         "anodizer.yaml's tag_template must be honored (range bounded at \
-         v0.1.0, not the cli-v fallback family): {reason}"
+         v0.1.0): {reason}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Strict-mode version-pin enforcement
-// ---------------------------------------------------------------------------
 
 /// Two-crate workspace with `core` pinned to `0.1.0` in `.anodizer.yaml`. The
 /// `cli` crate is unpinned.

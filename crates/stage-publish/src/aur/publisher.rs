@@ -103,10 +103,7 @@ pub(crate) fn resolve_aur_credentials_from_config(
             let pk = ac
                 .private_key
                 .as_deref()
-                .map(|v| {
-                    ctx.render_template(v)
-                        .with_context(|| format!("aur: render private_key template {v:?}"))
-                })
+                .map(|v| ctx.render_secret("aur.private_key", v))
                 .transpose()?;
             let ssh = ac
                 .git_ssh_command
@@ -332,7 +329,7 @@ impl anodizer_core::Publisher for AurOurPublisher {
     }
 
     fn advisory_requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        // The schema floor's `bash -n` pass over the rendered PKGBUILD
+        // The schema check's `bash -n` pass over the rendered PKGBUILD
         // warn+skips when bash is absent — a recommendation, never a gate
         // failure. Same active-entry gate as `requirements`.
         if active_aur_configs(ctx).is_empty() {

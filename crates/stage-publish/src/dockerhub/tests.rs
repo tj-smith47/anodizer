@@ -397,9 +397,9 @@ fn test_resolve_full_description_from_url_unreachable() {
     );
 }
 
-// Pin: retry_http_blocking wires through from full_description fetch —
+// retry_http_blocking wires through from full_description fetch —
 // a single 503 then a 200 should succeed end-to-end through
-// resolve_full_description. Exercises the policy-plumbing rather than
+// resolve_full_description. Exercises the policy-plumbing and leaves
 // the helper itself (which has its own 5xx-then-success test in
 // crates/core/src/retry.rs).
 use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
@@ -517,7 +517,7 @@ fn resolve_full_description_redacts_bearer_in_error_body() {
     let leaky_body = "internal error: Authorization: Bearer ghp_FAKETOKEN1234567890abcdefg";
     let body_len = leaky_body.len();
     // All 3 attempts return 500 to force exhaustion (the retry helper
-    // surfaces the *last* attempt's body in the error message).
+    // reports the *last* attempt's body in the error message).
     let resp: &'static str = Box::leak(
         format!(
             "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {body_len}\r\n\r\n{leaky_body}"
@@ -568,7 +568,7 @@ fn strict_ctx(config: Config) -> Context {
 
 /// An image with a leading/trailing/consecutive slash has an empty
 /// path segment and is rejected unconditionally (before dry-run, so
-/// even config-test runs catch it). Pins the empty-segment `bail!`.
+/// even config-test runs catch it). Checks the empty-segment `bail!`.
 #[test]
 fn test_dockerhub_rejects_empty_path_segment() {
     let mut config = Config::default();
@@ -588,7 +588,7 @@ fn test_dockerhub_rejects_empty_path_segment() {
 }
 
 /// An image with three slash-separated segments exceeds Docker Hub's
-/// `namespace/repo` format and is rejected. Pins the
+/// `namespace/repo` format and is rejected. Checks the
 /// too-many-segments `bail!`.
 #[test]
 fn test_dockerhub_rejects_too_many_segments() {
@@ -610,7 +610,7 @@ fn test_dockerhub_rejects_too_many_segments() {
 
 /// A bare image name (no namespace) maps to `library/` — which needs
 /// Docker Inc permissions — so strict mode hard-fails via
-/// `strict_guard`. Pins the strict branch of the bare-name guard
+/// `strict_guard`. Checks the strict branch of the bare-name guard
 /// (non-strict only warns; this proves the `(strict mode)` bail).
 #[test]
 fn test_dockerhub_bare_name_fails_in_strict_mode() {
@@ -635,8 +635,8 @@ fn test_dockerhub_bare_name_fails_in_strict_mode() {
 /// validation — proving the image-render pass runs. The `.Env.NS`
 /// value is supplied via the Context's TemplateVars env map (which
 /// wins over process env), so no process-global state is touched.
-/// Asserts the dry-run intent log names the *rendered* image, not the
-/// raw `{{ }}` form (which would also trip the empty-segment validator
+/// Asserts the dry-run intent log names the *rendered* image and
+/// leaves out the raw `{{ }}` form (which would also trip the empty-segment validator
 /// if rendering were skipped).
 #[test]
 fn test_dockerhub_renders_image_template_before_validation() {
@@ -665,7 +665,7 @@ use anodizer_core::test_helpers::scripted_responder::{ScriptedRoute, spawn_scrip
 
 /// `from_url` happy path: a single 200 returns the body verbatim and
 /// the request reaches the server as a plain `GET /readme.md` (no
-/// retry, exactly one hit). Pins the success branch of
+/// retry, exactly one hit). Checks the success branch of
 /// `resolve_full_description`'s `from_url` arm — the existing tests
 /// only cover the unreachable / retry / redaction failure modes.
 #[test]
@@ -709,9 +709,9 @@ fn resolve_full_description_from_url_success_records_get() {
 
 /// A 4xx on the `from_url` GET fast-fails (SuccessClass::Strict routes
 /// 4xx → Break) — the responder is hit exactly once, NOT
-/// `max_attempts` times, and the error names the URL + status. Pins
-/// the no-retry classification: a typo'd README URL must surface
-/// immediately rather than after 3 attempts.
+/// `max_attempts` times, and the error names the URL + status. Checks
+/// the no-retry classification: a typo'd README URL is reported
+/// after the first attempt.
 #[test]
 fn resolve_full_description_from_url_4xx_fast_fails_no_retry() {
     let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
@@ -843,9 +843,9 @@ fn resolve_full_description_from_url_renders_template() {
     );
 }
 
-/// A malformed template in `from_url.url` surfaces a render error
+/// A malformed template in `from_url.url` returns a render error
 /// (the `with_context` wraps it with the `render full_description
-/// from_url` label) BEFORE any network call. Pins the render-error
+/// from_url` label) BEFORE any network call. Checks the render-error
 /// arm distinct from the fetch-error arm.
 #[test]
 fn resolve_full_description_from_url_template_render_error() {
@@ -912,7 +912,7 @@ fn resolve_full_description_from_file_renders_template_path() {
 
 /// `from_file` takes precedence over `from_url` when both are set:
 /// the file content is returned and the URL is NEVER fetched (the
-/// responder records zero requests). Pins the documented precedence
+/// responder records zero requests). Checks the documented precedence
 /// — without it, a config with both set could silently prefer the
 /// network source.
 #[test]
@@ -960,7 +960,7 @@ fn resolve_full_description_from_file_wins_over_from_url() {
 /// Custom `from_url.headers` are emitted on the wire. The scripted
 /// responder doesn't capture headers, so this drives a raw inline
 /// TCP listener that records the full request and asserts the
-/// configured `X-Auth: secret-val` header arrives — pinning the
+/// configured `X-Auth: secret-val` header arrives — checking the
 /// `if let Some(ref h) = headers` forwarding loop.
 #[test]
 fn resolve_full_description_from_url_forwards_headers() {
@@ -1183,7 +1183,7 @@ mod live_http_tests {
     }
 
     /// PATCH body carries BOTH `description` and `full_description` when a
-    /// `full_description.from_file` is configured. Pins that the resolved
+    /// `full_description.from_file` is configured. Checks that the resolved
     /// file content is copied verbatim into the `full_description` key.
     #[test]
     fn publish_live_patches_description_and_full_description() {
@@ -1221,8 +1221,8 @@ mod live_http_tests {
     }
 
     /// The short description is template-rendered before the PATCH:
-    /// `{{ .ProjectName }}` resolves against the context. Pins that the
-    /// rendered (not raw) string hits the wire.
+    /// `{{ .ProjectName }}` resolves against the context. Checks that the
+    /// rendered string hits the wire.
     #[test]
     fn publish_live_renders_description_template() {
         let (addr, log) = spawn_scripted_responder(flow_routes("", ""));
@@ -1253,8 +1253,8 @@ mod live_http_tests {
         );
     }
 
-    /// Idempotency: when the snapshot already matches the description we'd
-    /// send, NO PATCH is issued (only login + snapshot GET) and the run
+    /// Idempotency: when the snapshot already matches the description the
+    /// publisher would send, NO PATCH is issued (only login + snapshot GET) and the run
     /// records zero mutated targets.
     #[test]
     fn publish_live_skips_patch_when_unchanged() {
@@ -1384,7 +1384,7 @@ mod live_http_tests {
     }
 
     /// A 500 on the PATCH (after a successful login + snapshot) fails the
-    /// publish with an error naming the PATCH + status. Pins the PATCH
+    /// publish with an error naming the PATCH + status. Checks the PATCH
     /// error-mapping arm distinct from login/snapshot failures.
     #[test]
     fn publish_live_patch_500_errors() {
@@ -1427,7 +1427,7 @@ mod live_http_tests {
 
     /// The JWT is cached across two entries that share the same
     /// `(username, secret_env)` pair: login happens exactly ONCE even
-    /// though two distinct repos are PATCHed. Pins the `jwt_cache` reuse.
+    /// though two distinct repos are PATCHed. Checks the `jwt_cache` reuse.
     #[test]
     fn publish_live_reuses_jwt_across_entries() {
         let (addr, log) = spawn_scripted_responder(vec![
@@ -1491,7 +1491,7 @@ mod live_http_tests {
     }
 
     /// A bare image name (no namespace) in NON-strict mode warns but
-    /// proceeds: the PATCH targets the `library/<name>` repo path. Pins
+    /// proceeds: the PATCH targets the `library/<name>` repo path. Checks
     /// the non-strict branch of the bare-name guard plus the
     /// `("library", parts[0])` namespace-derivation fallback.
     #[test]
@@ -1522,7 +1522,7 @@ mod live_http_tests {
             dockerhub: Some(vec![entry(vec!["solo"], Some("desc"))]),
             ..Default::default()
         };
-        // Non-strict: the bare-name guard warns instead of bailing.
+        // Non-strict: the bare-name guard warns and proceeds.
         let ctx = live_ctx(config, &format!("http://{addr}"), false);
         let logger = ctx.logger("dockerhub");
 
@@ -1572,7 +1572,7 @@ mod live_http_tests {
     }
 
     /// `run` with no mutation (dry-run) emits empty evidence: no
-    /// artifact_paths, no primary_ref, `Empty` extra. Pins that dry-run /
+    /// artifact_paths, no primary_ref, `Empty` extra. Checks that dry-run /
     /// skip paths do not leak phantom targets.
     #[test]
     fn publisher_run_dry_run_emits_empty_evidence() {
@@ -1660,9 +1660,9 @@ mod live_http_tests {
         assert_eq!(patch["full_description"], "# Prior README");
     }
 
-    /// Rollback login 403 surfaces an error naming the rollback-auth
+    /// Rollback login 403 returns an error naming the rollback-auth
     /// failure + status, so `DockerhubPublisher::rollback` can count it as
-    /// a failure rather than silently dropping the restore.
+    /// a failure and report the dropped restore.
     #[test]
     fn restore_live_login_403_errors() {
         let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
@@ -1709,7 +1709,7 @@ mod live_http_tests {
 
     /// `DockerhubPublisher::rollback` end-to-end over recorded evidence:
     /// re-authenticates and restores each target, logging the restored
-    /// count. Pins the trait rollback loop (decode → per-target restore →
+    /// count. Checks the trait rollback loop (decode → per-target restore →
     /// status tally) against the live responder.
     #[test]
     fn publisher_rollback_restores_recorded_targets() {
@@ -1780,7 +1780,7 @@ mod live_http_tests {
 
     /// `DockerhubPublisher::rollback` counts a failed restore (missing env
     /// var) as a failure and continues — the tally reports `1 failure`
-    /// and a per-target warn names the env var. Pins the warn-don't-abort
+    /// and a per-target warn names the env var. Checks the warn-and-continue
     /// rollback contract.
     #[test]
     fn publisher_rollback_counts_failure_when_env_missing() {
@@ -1837,7 +1837,7 @@ mod live_http_tests {
 
     /// Live mode with a missing secret env var hard-fails authentication
     /// BEFORE any login round-trip (the env lookup precedes the POST).
-    /// Pins the `environment variable '<X>' not set` bail on the publish
+    /// Checks the `environment variable '<X>' not set` bail on the publish
     /// path (distinct from the dry-run warn).
     #[test]
     fn publish_live_missing_secret_env_errors() {
@@ -1874,7 +1874,7 @@ mod live_http_tests {
     }
 
     /// Strict mode + both descriptions empty → the publish bails via
-    /// `strict_guard` BEFORE authenticating. Pins the strict branch of the
+    /// `strict_guard` BEFORE authenticating. Checks the strict branch of the
     /// "both description and full_description are empty" guard. The
     /// responder records zero traffic.
     #[test]
@@ -1933,7 +1933,7 @@ mod publisher_tests {
     #[test]
     fn dockerhub_rollback_warns_when_no_targets_recorded() {
         // Empty evidence drives rollback into the no-targets branch.
-        // The capture pins that production actually invoked `log.warn`
+        // The capture checks that production actually invoked `log.warn`
         // with the helper-formatted message — a hand-constructed expected
         // string compared against the helper output would pass even if
         // the rollback body forgot the warn entirely.
@@ -1957,11 +1957,11 @@ mod publisher_tests {
     /// secret material. Mirrors the negative test on every other
     /// publisher's `*Target` struct — see the `PublishEvidence::extra`
     /// rustdoc for the contract. `password` is the field the historical
-    /// warn-only rollback could not enforce; this test pins that the
+    /// warn-only rollback could not enforce; this test checks that the
     /// snapshot+restore implementation still does not persist one.
     #[test]
     fn dockerhub_target_extra_carries_no_secret_material() {
-        // Structural pin: build typed evidence with a populated
+        // Structural check: build typed evidence with a populated
         // variant and assert (a) no credential-shaped keys appear AND
         // (b) the operator-public coordinates serialize.
         let mut e = anodizer_core::PublishEvidence::new("dockerhub");
@@ -1996,7 +1996,7 @@ mod publisher_tests {
     /// `decode_dockerhub_targets` is the rollback entry point — assert
     /// the round-trip shape so a future schema drift (rename of the
     /// `dockerhub_targets` key, change to the field set) fails loudly
-    /// rather than silently degrading rollback to warn-only.
+    /// before rollback degrades to warn-only.
     #[test]
     fn dockerhub_target_decode_round_trips() {
         let original = vec![DockerhubTarget {
@@ -2019,7 +2019,7 @@ mod publisher_tests {
     }
 
     /// Wrong variant → empty vec → rollback short-circuits to the
-    /// empty-evidence warn path. Pins the failure mode so a typed-enum
+    /// empty-evidence warn path. Checks the failure mode so a typed-enum
     /// addition that accidentally matches an unrelated payload doesn't
     /// re-enable the live-PATCH path against decoded data.
     #[test]
@@ -2038,7 +2038,7 @@ mod publisher_tests {
     /// description and full_description set produces a PATCH body
     /// carrying exactly those keys. The live-HTTP path goes through
     /// `restore_dockerhub_target_with_env` (also exercised by the
-    /// missing-env and empty-snapshot tests below); this test pins
+    /// missing-env and empty-snapshot tests below); this test checks
     /// the body shape without spinning up the responder — login +
     /// PATCH both hit the hard-coded `https://hub.docker.com` host,
     /// so a unit-level happy-path requires either redirecting login
@@ -2058,7 +2058,7 @@ mod publisher_tests {
         };
 
         // Reproduce the body-construction the restore function would
-        // assemble. Pins the contract without exercising the live
+        // assemble. Checks the contract without exercising the live
         // HTTP path.
         let mut expected = serde_json::Map::new();
         if let Some(ref d) = t.snapshot_description {
@@ -2084,7 +2084,7 @@ mod publisher_tests {
     /// Defends against the failure mode where a publisher with no
     /// readable prior description would otherwise PATCH `{}` (which
     /// DockerHub treats as a no-op anyway, but issuing the call wastes
-    /// an auth round-trip and surfaces a spurious "restored" log line).
+    /// an auth round-trip and prints a spurious "restored" log line).
     #[test]
     fn dockerhub_restore_no_op_when_snapshot_empty() {
         // Build a fresh client; the function returns Ok(()) before

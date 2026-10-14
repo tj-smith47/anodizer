@@ -5,7 +5,7 @@ use anodizer_core::retry::RetryPolicy;
 use anyhow::Result;
 
 use crate::dispatch::{DispatchQueue, dispatch};
-use crate::helpers::{config_or_env_secret, is_enabled, render_message};
+use crate::helpers::{is_enabled, render_message};
 use crate::teams;
 
 use super::Announcer;
@@ -34,11 +34,10 @@ impl Announcer for TeamsAnnouncer {
             .teams
             .as_ref()
             .expect("send only called when enabled returned Ok(true)");
-        let url = match config_or_env_secret(
-            ctx,
+        let url = match ctx.config_or_env_secret(
             "announce.teams.webhook_url",
             cfg.webhook_url.as_deref(),
-            "TEAMS_WEBHOOK",
+            &["TEAMS_WEBHOOK"],
         )? {
             Some(url) => url,
             None => {

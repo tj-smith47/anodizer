@@ -27,7 +27,7 @@ pub(crate) fn deb_arch_variant(arch: &str, amd64_variant: Option<&str>) -> Optio
 /// The variant arrives from the platform group, which is keyed on it: looking
 /// it up by target triple instead would hand every variant of one triple the
 /// first one's answer. A package that needs the field materializes a `deb`
-/// block, since the stamp describes the build, not the user's deb options.
+/// block, since the stamp describes the build and leaves the user's deb options alone.
 pub(crate) fn fill_deb_arch_variant(
     rendered_cfg: &mut anodizer_core::config::NfpmConfig,
     arch: &str,
@@ -288,7 +288,7 @@ pub(crate) fn execute_nfpm_jobs(
             )
         })?;
         // Older nfpm binaries report an unregistered packager for msix; point
-        // the user at the version floor. Only on that signature — attaching it
+        // the user at the minimum version. Only on that signature — attaching it
         // to every msix failure (config validation, IO) misdirects users whose
         // nfpm is already new enough. nfpm prints errors to stdout, which the
         // error chain doesn't embed, so probe the captured output directly.
@@ -314,7 +314,7 @@ pub(crate) fn execute_nfpm_jobs(
         if let Some(mt) = job.mtime {
             // A failure here would leave the package carrying a wall-clock
             // mtime, breaking byte-reproducibility. Determinism is not
-            // best-effort: fail hard rather than ship a non-reproducible pkg.
+            // best-effort: fail hard so a non-reproducible pkg never ships.
             anodizer_core::util::set_file_mtime(&job.pkg_path, mt).with_context(|| {
                 format!(
                     "nfpm: apply reproducible mtime to {}",
@@ -373,7 +373,7 @@ pub struct NfpmRenderedConfig {
 }
 
 /// Render every nfpm config a build would feed to `nfpm pkg` for one crate,
-/// mirroring the build's per-(config × target × format) `run` walk — without
+/// mirroring the build's per-(config × target × format) `run` loop — without
 /// writing files or spawning `nfpm`.
 ///
 /// Returns `Ok(vec![])` (nothing to validate) when the crate carries no nfpm
@@ -381,7 +381,7 @@ pub struct NfpmRenderedConfig {
 /// output formats, when the `ids` filter admits no eligible binary, or when no
 /// packaging-eligible artifact was built for the crate in this snapshot shard
 /// (the same shard-tolerance cases the build's skip guards hit). Otherwise it
-/// walks the SAME shared helpers the build loop uses
+/// calls the SAME shared helpers the build loop uses
 /// (`nfpm_eligible_artifacts`, `nfpm_config_if_proceeds`,
 /// `build_platform_groups`, `resolve_format_os_arch`,
 /// `is_arch_supported_for_format`, `render_nfpm_config_fields`) and returns one

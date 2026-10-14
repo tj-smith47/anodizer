@@ -39,10 +39,14 @@ impl Announcer for WebhookAnnouncer {
             .webhook
             .as_ref()
             .expect("send only called when enabled returned Ok(true)");
-        // Skip-when-empty UX: missing endpoint_url skips this announcer
-        // in normal mode (warn) and bails in strict mode.
-        let url = match cfg.endpoint_url.as_deref() {
-            Some(raw) => ctx.render_secret("announce.webhook.endpoint_url", raw)?,
+        // An unset or blank endpoint_url skips this announcer in normal mode
+        // (warn) and bails in strict mode.
+        let url = match ctx.config_or_env_secret(
+            "announce.webhook.endpoint_url",
+            cfg.endpoint_url.as_deref(),
+            &[],
+        )? {
+            Some(url) => url,
             None => {
                 ctx.strict_guard(log, "missing endpoint_url in announce.webhook")?;
                 return Ok(());
@@ -129,8 +133,11 @@ impl Announcer for WebhookAnnouncer {
         let Some(cfg) = announce.webhook.as_ref() else {
             return Ok(());
         };
-        if let Some(raw) = cfg.endpoint_url.as_deref() {
-            let url = ctx.render_secret("announce.webhook.endpoint_url", raw)?;
+        if let Some(url) = ctx.config_or_env_secret(
+            "announce.webhook.endpoint_url",
+            cfg.endpoint_url.as_deref(),
+            &[],
+        )? {
             validate_webhook_endpoint_url(&url)?;
         }
         render_message_with_default(

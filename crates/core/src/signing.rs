@@ -58,7 +58,11 @@ pub struct SignConfig {
     /// Unset, the name is derived from the crate's `archives:` config — see
     /// the signing docs.
     pub asset_name_template: Option<String>,
-    /// Content written to the signing command's stdin.
+    /// Content written to the signing command's stdin (e.g. a passphrase),
+    /// rendered as a template (`{{ Env.GPG_PASSPHRASE }}`). The rendered
+    /// value is a credential: leading and trailing whitespace is removed,
+    /// and a template that does not render is an error naming
+    /// `signs[<id or index>].stdin` without the template's text.
     pub stdin: Option<String>,
     /// Path to a file whose content is written to the signing command's stdin.
     pub stdin_file: Option<String>,
@@ -444,7 +448,10 @@ pub struct DockerSignConfig {
     pub ids: Option<Vec<String>>,
     /// Content written to the signing command's stdin. Rendered as a
     /// template with nothing substituted first, so neither `{{ .Artifact }}`
-    /// nor `${artifact}` names anything here.
+    /// nor `${artifact}` names anything here. The rendered value is a
+    /// credential: leading and trailing whitespace is removed, and a
+    /// template that does not render is an error naming
+    /// `docker_signs[<id>].stdin` without the template's text.
     pub stdin: Option<String>,
     /// Path to a file whose content is written to the signing command's stdin.
     pub stdin_file: Option<String>,

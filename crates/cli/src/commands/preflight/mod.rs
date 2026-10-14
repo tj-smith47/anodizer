@@ -373,7 +373,7 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
         }
     }
 
-    // nfpm's schema floor cross-checks built .deb/.rpm packages with the
+    // nfpm's schema check cross-checks built .deb/.rpm packages with the
     // native tooling (`dpkg-deb --info`, `rpm -qp`) when present, and
     // warn+skips when absent — advisory, reusing the nfpm row's gate
     // decision like the build stage's cross-toolchain append.

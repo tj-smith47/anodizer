@@ -49,8 +49,8 @@ impl Stage for NotarizeStage {
         };
 
         // Respect top-level skip flag. Use try_evaluates_to_true so a malformed
-        // skip: template surfaces as Err instead of silently evaluating
-        // false and running notarization the user thought was suppressed.
+        // skip: template returns Err; evaluating it to false would run
+        // notarization the user thought was suppressed.
         if let Some(ref d) = notarize_config.skip
             && d.try_evaluates_to_true(|s| ctx.render_template(s))
                 .with_context(|| "notarize: evaluate top-level skip expression")?
@@ -82,7 +82,7 @@ impl Stage for NotarizeStage {
         // Attribute the notarytool / rcodesign retry backoff to the notarize
         // scope. Apple's notary service is a common source of long transient
         // waits; without an active scope that wait ends up in the retry summary's
-        // "(unattributed)" bucket instead of naming the stage that incurred it.
+        // "(unattributed)" bucket without naming the stage that incurred it.
         let _retry_scope = anodizer_core::retry::RetryScope::enter(self.name());
 
         // Cross-platform signing/notarization (rcodesign)
@@ -197,10 +197,6 @@ mod tests {
         StringOrBool,
     };
     use anodizer_core::context::{Context, ContextOptions};
-
-    // -----------------------------------------------------------------------
-    // Config deserialization tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_cross_platform_config_deserializes() {
@@ -362,10 +358,6 @@ notarize: {}
         assert!(notarize.macos_native.is_none());
     }
 
-    // -----------------------------------------------------------------------
-    // Stage skipping / enabled logic tests
-    // -----------------------------------------------------------------------
-
     fn make_ctx_with_notarize(config: Config) -> Context {
         Context::new(
             config,
@@ -458,10 +450,6 @@ notarize: {}
         // Should skip because enabled defaults to false
         stage.run(&mut ctx).unwrap();
     }
-
-    // -----------------------------------------------------------------------
-    // Required field validation tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_cross_platform_requires_sign_config() {
@@ -708,7 +696,7 @@ notarize: {}
     #[test]
     fn test_native_rejects_unsupported_use_type_at_parse_time() {
         // `notarize.macos_native.use` is a typed enum; unsupported values
-        // must fail at parse time instead of producing a silent no-op.
+        // must fail at parse time; a silent no-op is wrong.
         let yaml = r#"
 notarize:
   macos_native:
@@ -725,10 +713,6 @@ crates: []
             "macos_native.use: zip must be rejected (only 'dmg' / 'pkg' allowed)"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // Dry-run behavior tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_cross_platform_dry_run_with_darwin_binaries() {
@@ -1062,10 +1046,6 @@ crates: []
         stage.run(&mut ctx).unwrap();
     }
 
-    // -----------------------------------------------------------------------
-    // Artifact filtering tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_cross_platform_ids_filter() {
         let mut config = Config::default();
@@ -1254,10 +1234,6 @@ crates: []
         stage.run(&mut ctx).unwrap();
     }
 
-    // -----------------------------------------------------------------------
-    // should_skip gating tests (per-config `skip:` / inverted `enabled:`)
-    // -----------------------------------------------------------------------
-
     /// Build a `MacOSSignNotarizeConfig` with the given `skip` and a render
     /// context exposing `IsSnapshot`, returning the `should_skip` result.
     fn should_skip_with(skip: Option<StringOrBool>, is_snapshot: bool) -> anyhow::Result<bool> {
@@ -1308,8 +1284,8 @@ crates: []
     #[test]
     fn test_should_skip_direct_template_uses_sibling_truthy() {
         // A DIRECT `skip:` template must use the sibling truthy convention
-        // (`try_evaluates_to_true`: only "true"/"1" are truthy), NOT the wider
-        // inverted-`enabled:` falsy blacklist. `1` skips; `yes`/`on` do not —
+        // (`try_evaluates_to_true`: only "true"/"1" are truthy). The wider
+        // inverted-`enabled:` falsy blacklist does not apply. `1` skips; `yes`/`on` do not —
         // matching `should_skip_upload` and every other publisher gate.
         assert!(
             should_skip_marker("{{ .Marker }}", "1").unwrap(),
@@ -1368,15 +1344,11 @@ crates: []
 
     #[test]
     fn test_should_skip_malformed_skip_template_fails_closed() {
-        // A malformed `skip:` template must surface as Err (fail closed),
-        // not silently evaluate false and run.
+        // A malformed `skip:` template must return Err (fail closed);
+        // evaluating it to false would run.
         let r = should_skip_with(Some(StringOrBool::String("{{ broken".into())), false);
-        assert!(r.is_err(), "malformed skip template must error, not run");
+        assert!(r.is_err(), "malformed skip template must error");
     }
-
-    // -----------------------------------------------------------------------
-    // Inverted `enabled:` — must NOT fail open
-    // -----------------------------------------------------------------------
 
     /// Parse a one-entry `notarize.macos` block carrying the given `enabled:`
     /// value and return its `should_skip` against a context with `IsSnapshot`.
@@ -1394,7 +1366,7 @@ crates: []
 
     #[test]
     fn test_enabled_literal_false_disables() {
-        // `enabled: "false"` must DISABLE (skip), not run.
+        // `enabled: "false"` must DISABLE (skip).
         assert!(
             enabled_should_skip("\"false\"", false).unwrap(),
             "enabled: false must skip"
@@ -1423,19 +1395,15 @@ crates: []
     #[test]
     fn test_enabled_malformed_template_fails_closed() {
         // A malformed `enabled:` template must NOT silently enable. It must
-        // surface as Err (the caller treats the entry as skipped / aborts) —
+        // return Err (the caller treats the entry as skipped / aborts) —
         // the prior `{% if {{ … }} %}` construction produced malformed Tera
         // that errored and was swallowed as "run" (fail-open safety hole).
         let r = enabled_should_skip("\"{{ broken\"", false);
         assert!(
             r.is_err(),
-            "malformed enabled template must error, not silently enable notarization"
+            "malformed enabled template must error; silently enabling notarization is wrong"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // Native DMG mode defaults to "dmg" when use_ is None
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_native_defaults_to_dmg_when_use_is_none() {
@@ -1482,10 +1450,6 @@ crates: []
         // Should succeed because it defaults to DMG mode
         stage.run(&mut ctx).unwrap();
     }
-
-    // -----------------------------------------------------------------------
-    // M6: notarize retry tests
-    // -----------------------------------------------------------------------
 
     /// Build a synthetic `Output` with a non-zero exit and the given stderr,
     /// useful for exercising `is_retriable_notarize_output` without actually
@@ -1577,7 +1541,7 @@ crates: []
 
     #[cfg(unix)]
     #[test]
-    fn test_run_status_with_retry_surfaces_child_output_only_at_verbose() {
+    fn test_run_status_with_retry_prints_child_output_only_at_verbose() {
         use crate::retry::run_status_with_retry;
         let args = vec![
             "sh".to_string(),
@@ -1586,7 +1550,7 @@ crates: []
         ];
 
         // Default verbosity: the child's stdout is captured (never inherited)
-        // and surfaced nowhere — no leak into the default log register.
+        // and printed nowhere — no leak into the default log register.
         let (quiet_log, quiet_cap) = anodizer_core::log::StageLogger::with_capture(
             "notarize-test",
             anodizer_core::log::Verbosity::Normal,
@@ -1600,7 +1564,7 @@ crates: []
                 .all_messages()
                 .into_iter()
                 .all(|(_, m)| !m.contains("NOTARYCHATTER")),
-            "default-verbosity run must NOT surface the child's stdout"
+            "default-verbosity run must NOT print the child's stdout"
         );
 
         // Verbose: the captured stdout is streamed through the logger.
@@ -1617,7 +1581,7 @@ crates: []
                 .all_messages()
                 .into_iter()
                 .any(|(_, m)| m.contains("NOTARYCHATTER")),
-            "verbose run must surface the captured child stdout"
+            "verbose run must print the captured child stdout"
         );
     }
 

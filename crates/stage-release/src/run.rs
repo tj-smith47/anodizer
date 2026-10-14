@@ -579,8 +579,8 @@ pub(crate) fn assemble_artifact_entries(
     ) {
         log.warn(&format!(
             "exclude filter {:?} dropped all {} for crate '{}' \
-             (the release will be created with no uploaded files; check the globs \
-             match asset names, not full paths)",
+             (the release will be created with no uploaded files; check that the globs \
+             match asset file names without their directories)",
             exclude_filter.map(Vec::as_slice).unwrap_or_default(),
             anodizer_core::text::count_noun(pre_exclude, "candidate asset", "candidate assets"),
             crate_cfg.name

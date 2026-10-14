@@ -15,10 +15,6 @@ use super::retry::{
 };
 use super::secret::{matches_ids, materialize_secret, redact_args};
 
-// ---------------------------------------------------------------------------
-// Cross-platform (rcodesign)
-// ---------------------------------------------------------------------------
-
 pub(super) fn run_cross_platform(
     ctx: &Context,
     cfg: &MacOSSignNotarizeConfig,
@@ -88,9 +84,9 @@ pub(super) fn run_cross_platform(
     // `key_secret` below is held (never read) purely so its Drop — which
     // deletes the base64-decoded key tempfile — is deferred until the
     // notary-submit subprocess has launched. The name is kept (not
-    // underscore-prefixed) so it reads as in-use rather than
-    // discardable; the lint allow is the only honest way to say "held only
-    // for its Drop" without the misleading `_` prefix.
+    // underscore-prefixed) so it reads as in-use; the lint allow is the only
+    // honest way to say "held only for its Drop" without the misleading `_`
+    // prefix.
     #[allow(unused_variables)]
     let (notarize_api, key_secret) = if let Some(ref ncfg) = cfg.notarize {
         let issuer_id = ctx
@@ -122,9 +118,8 @@ pub(super) fn run_cross_platform(
         let key = secret.path.clone();
         // Stat-check the resolved path before launching rcodesign so a
         // typo or unmounted secret produces a clean "key not found"
-        // error instead of an opaque rcodesign exit code partway through
-        // artifact iteration. Skipped in dry-run for the same reason as
-        // the cert check above.
+        // error before any rcodesign run in the artifact loop. Skipped in
+        // dry-run for the same reason as the cert check above.
         if !dry_run && !std::path::Path::new(&key).exists() {
             bail!("notarize: macos[{idx}] notarize.key path does not exist: '{key}'");
         }
@@ -167,8 +162,7 @@ pub(super) fn run_cross_platform(
         .collect();
 
     if darwin_artifacts.is_empty() {
-        // Surface the filter contents so misconfigured `ids:` is visible
-        // instead of producing a silent no-op.
+        // Print the filter contents so a misconfigured `ids:` is visible.
         log.warn(&format!(
             "ids={:?} matched no darwin binaries — check for typos or \
              unbuilt darwin targets (macos[{idx}])",
@@ -273,10 +267,6 @@ pub(super) fn run_cross_platform(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Native (codesign + xcrun notarytool)
-// ---------------------------------------------------------------------------
-
 /// Parameters for native signing/notarization, extracted from config before
 /// calling the mode-specific functions. Avoids passing many positional args
 /// (clippy::too_many_arguments).
@@ -358,7 +348,7 @@ pub(super) fn run_native(
     });
 
     // sign.options only applies to DMG mode; warn so a configured-but-ignored
-    // field is visible instead of silently dropped.
+    // field is visible.
     if artifact_type == MacOSNativeArtifactKind::Pkg
         && sign.options.as_ref().is_some_and(|o| !o.is_empty())
     {
@@ -384,10 +374,6 @@ pub(super) fn run_native(
         MacOSNativeArtifactKind::Pkg => run_native_pkg(ctx, &params, dry_run, log),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Native DMG mode
-// ---------------------------------------------------------------------------
 
 fn run_native_dmg(
     ctx: &Context,
@@ -530,7 +516,7 @@ fn run_native_dmg(
 
             // Staple if wait was enabled. Without `wait: true`, the
             // submit returns before Apple completes processing, so the
-            // ticket isn't available to staple. Surface that explicitly
+            // ticket isn't available to staple. Report that explicitly
             // so a user who expected a stapled DMG knows the publisher
             // skipped that step on purpose.
             if !params.wait {
@@ -556,10 +542,6 @@ fn run_native_dmg(
 
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Native PKG mode
-// ---------------------------------------------------------------------------
 
 fn run_native_pkg(
     ctx: &Context,
@@ -673,7 +655,7 @@ fn run_native_pkg(
 
             // Without `wait: true`, the submit returns before Apple
             // completes processing, so the ticket isn't available to
-            // staple. Surface that explicitly so a user who expected a
+            // staple. Report that explicitly so a user who expected a
             // stapled PKG knows the publisher skipped that step on
             // purpose.
             if !params.wait {
@@ -699,10 +681,6 @@ fn run_native_pkg(
 
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(all(test, unix))]
 #[allow(clippy::field_reassign_with_default)]
@@ -749,10 +727,6 @@ mod tests {
         std::fs::write(&p, contents).unwrap();
         p
     }
-
-    // -----------------------------------------------------------------------
-    // check_notarize_output: status classification branches
-    // -----------------------------------------------------------------------
 
     #[test]
     fn check_output_accepted_success_is_ok() {
@@ -813,13 +787,9 @@ mod tests {
         assert!(msg.contains("failed (exit code"), "got: {msg}");
         assert!(
             msg.contains("unrecognized flag"),
-            "should surface stderr: {msg}"
+            "should carry stderr: {msg}"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // run_with_retry: transient failure then success drives >1 invocation
-    // -----------------------------------------------------------------------
 
     #[test]
     #[serial_test::serial(cwd, path_env)]
@@ -888,10 +858,6 @@ mod tests {
             "non-retriable failure must run exactly once"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // Native DMG end-to-end: codesign + xcrun notarytool + xcrun stapler
-    // -----------------------------------------------------------------------
 
     fn native_dmg_config(wait: bool, opts: Option<Vec<String>>) -> Config {
         let mut config = Config::default();
@@ -1117,10 +1083,6 @@ mod tests {
         assert_eq!(tools.call_count("xcrun"), 2, "submit then staple both ran");
     }
 
-    // -----------------------------------------------------------------------
-    // Native PKG end-to-end: productsign + xcrun notarytool (+ rename)
-    // -----------------------------------------------------------------------
-
     fn native_pkg_config(wait: bool) -> Config {
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
@@ -1237,10 +1199,6 @@ mod tests {
             "notarytool must not run after sign failure"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // Cross-platform (rcodesign) end-to-end: sign + notary-submit
-    // -----------------------------------------------------------------------
 
     #[test]
     #[serial_test::serial(path_env)]

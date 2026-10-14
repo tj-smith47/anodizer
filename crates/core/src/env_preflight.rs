@@ -286,7 +286,10 @@ pub fn evaluate(
 }
 
 fn present(env: &dyn Fn(&str) -> Option<String>, var: &str) -> bool {
-    env(var).is_some_and(|v| !v.is_empty())
+    env(var)
+        .as_deref()
+        .and_then(crate::git::non_blank_token)
+        .is_some()
 }
 
 fn check_one(

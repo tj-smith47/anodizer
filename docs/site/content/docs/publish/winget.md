@@ -118,7 +118,7 @@ If `package_identifier` is not set, Anodizer auto-generates it as `Publisher.Nam
 | `installation_notes` | string | none | Post-install notes shown to the user |
 | `documentations` | list of objects | none | Documentation links shown in the WinGet gallery — each entry is `{ label, url }`. See [Documentation links](#documentation-links). |
 | `additional_locales` | list of objects | none | Extra locale manifests published beside the default one, each a `{ locale, ...translated fields }` entry. See [Additional locales](#additional-locales). |
-| `moniker` | string | binary name | Short invoke alias surfaced as `Moniker` in the locale manifest, e.g. `winget install --id <id>` users can later run `winget show <moniker>`. Auto-derives from the binary name; set to override. |
+| `moniker` | string | binary name | Short invoke alias written as `Moniker` in the locale manifest, e.g. `winget install --id <id>` users can later run `winget show <moniker>`. Auto-derives from the binary name; set to override. |
 | `upgrade_behavior` | string | `install` | Installer upgrade behavior written to the installer manifest: `install` (overlay the new version), `uninstallPrevious`, or `deny`. Portable-zip tools want `install`. |
 | `silent_switch` | string | none | Silent-install switch string for `msi`/`exe` installers (e.g. `/S`, `/quiet`). Only meaningful when `use: msi`/`use: nsis`; portable-zip packages need no switch. |
 | `tags` | list of strings | none | Tags for package discovery (lowercased, spaces replaced with hyphens) |
@@ -223,7 +223,7 @@ crates:
 
 ## Authentication
 
-{{ token_order(target="your winget-pkgs fork", publisher_var="WINGET_PKGS_TOKEN") }}
+{{ token_order(target="your winget-pkgs fork", publisher_vars=["WINGET_PKGS_TOKEN"]) }}
 
 Both the `gh` and the REST API transports use this order. The pull request needs `pull_request:write` on `microsoft/winget-pkgs`.
 

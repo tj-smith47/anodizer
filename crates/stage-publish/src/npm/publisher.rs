@@ -416,7 +416,11 @@ impl anodizer_core::Publisher for NpmPublisher {
         let mut succeeded = 0usize;
         let mut failed = 0usize;
         for t in &targets {
-            let token = env.var(&t.token_env_var).unwrap_or_default().to_string();
+            let token = env
+                .var(&t.token_env_var)
+                .as_deref()
+                .and_then(anodizer_core::git::non_blank_token)
+                .unwrap_or_default();
             if token.is_empty() {
                 log.warn(&format!(
                     "npm rollback of '{}@{}' skipped — env var ${} is unset; \

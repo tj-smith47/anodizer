@@ -326,7 +326,7 @@ publish:
 
     /// End-to-end through `collect_requirements`: a homebrew-configured crate
     /// surfaces the optional `ruby -c` validator in the `tools` JSON as
-    /// ADVISORY (the schema floor warn+skips without it), alongside the hard
+    /// ADVISORY (the schema check warn+skips without it), alongside the hard
     /// `git` requirement — so the GitHub Action provisions the stronger
     /// validation without a missing ruby ever blocking the gate.
     #[test]
@@ -360,7 +360,7 @@ publish:
         let ruby = find("ruby").expect("ruby present in tools emit");
         assert!(
             ruby.advisory,
-            "ruby must be advisory — the homebrew schema floor degrades gracefully without it"
+            "ruby must be advisory — the homebrew schema check degrades gracefully without it"
         );
         let git = find("git").expect("git present in tools emit");
         assert!(!git.advisory, "git must stay required for the tap push");

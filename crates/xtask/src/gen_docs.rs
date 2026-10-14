@@ -114,11 +114,7 @@ pub fn run(check: bool) -> Result<(), String> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Per-crate README generation
-// ---------------------------------------------------------------------------
-
-/// Walk `crates/*` and produce `(path, content)` pairs for every publishable
+/// Read `crates/*` and produce `(path, content)` pairs for every publishable
 /// crate's `README.md`.
 ///
 /// The `anodizer` binary crate (`crates/cli`) reuses the workspace root README
@@ -314,10 +310,6 @@ fn generate_cli_reference(tera: &Tera) -> Result<String, String> {
     tera.render("cli.md.tera", &ctx)
         .map_err(|e| format!("failed to render cli.md: {e}"))
 }
-
-// ---------------------------------------------------------------------------
-// Config reference generation — schema-driven
-// ---------------------------------------------------------------------------
 
 use serde_json::{Map, Value};
 
@@ -1418,7 +1410,7 @@ mod tests {
     #[test]
     fn format_default_inlines_a_wide_composite_with_no_section_to_link() {
         // Nothing to point at, so the serialization is still the best answer
-        // available — never an empty cell.
+        // available, and the cell is never empty.
         let v = serde_json::json!({
             "enabled": false, "assert_assets": true,
             "assert_landing": true, "install_smoke": null
@@ -1626,12 +1618,10 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------
     // Integration tests against the real `anodizer_cli::build_cli()` output.
-    // These pin the audit-I18 closures: `check config` / `check determinism`
-    // must be documented, and `--simulate-failure` / `--inject-drift` must
-    // not leak into rendered docs.
-    // ---------------------------------------------------------------------
+    // These check that `check config` / `check determinism` are documented
+    // and that `--simulate-failure` / `--inject-drift` stay out of the
+    // rendered docs.
 
     #[test]
     fn gen_docs_includes_check_config_subcommand() {

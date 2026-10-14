@@ -283,7 +283,7 @@ impl anodizer_core::Publisher for AurSourcePublisher {
     }
 
     fn advisory_requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        // The schema floor's `bash -n` pass over the rendered source
+        // The schema check's `bash -n` pass over the rendered source
         // PKGBUILD warn+skips when bash is absent — a recommendation, never
         // a gate failure. Same both-homes active-entry gate as
         // `requirements`.

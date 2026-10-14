@@ -12,8 +12,6 @@ fn commit(description: &str, hash: &str, full_hash: &str) -> CommitInfo {
     }
 }
 
-// ---- style_login_mentions ----
-
 /// The sentinel-framed span the renderer substitutes for `AuthorUsername`.
 fn span(login: &str) -> String {
     format!("{MENTION_SENTINEL}@{login}{MENTION_SENTINEL}")
@@ -66,8 +64,6 @@ fn style_login_mentions_never_leaks_sentinels() {
     }
 }
 
-// ---- strip_mention_sentinels ----
-
 /// Clean input borrows (no allocation, byte-identical); dirty input has
 /// every sentinel removed.
 #[test]
@@ -79,8 +75,6 @@ fn strip_mention_sentinels_borrows_clean_and_cleans_dirty() {
     let dirty = format!("a{MENTION_SENTINEL}b{MENTION_SENTINEL}c");
     assert_eq!(strip_mention_sentinels(&dirty), "abc");
 }
-
-// ---- collect_all_logins ----
 
 /// `AllLogins` derives from per-commit logins when the caller supplies no
 /// fetch-time login string (the enriched local-git path): unique, sorted,
@@ -100,8 +94,6 @@ fn collect_all_logins_unique_sorted() {
     }];
     assert_eq!(collect_all_logins(&grouped), "ada,zoe");
 }
-
-// ---- collect_all_authors ----
 
 #[test]
 fn collect_all_authors_dedupes_and_sorts_across_subgroups() {
@@ -129,8 +121,6 @@ fn collect_all_authors_empty_when_no_names() {
     let g = GroupedCommits::new("Features", vec![commit("a", "h", "h")]);
     assert_eq!(collect_all_authors(&[g]), "");
 }
-
-// ---- group_to_json ----
 
 #[test]
 fn group_to_json_projects_entries_authors_and_subgroups() {
@@ -165,8 +155,6 @@ fn group_to_json_entry_with_no_author_yields_empty_authors() {
     let value = serde_json::to_value(group_to_json(&group)).expect("serialize");
     assert_eq!(value["entries"][0]["authors"], serde_json::json!([]));
 }
-
-// ---- H1 / skeleton / subsection shaping ----
 
 #[test]
 fn crate_h1_carries_crate_name() {
@@ -254,8 +242,6 @@ fn a_malformed_source_date_fails_the_changelog_date() {
     );
 }
 
-// ---- heading / footer predicates ----
-
 #[test]
 fn is_code_fence_recognizes_backtick_tilde_and_indented() {
     assert!(is_code_fence("```rust"));
@@ -314,7 +300,7 @@ fn is_version_heading_matches_exact_version_only() {
 fn is_subsection_heading_matches_h3_name_not_h4() {
     assert_eq!(is_subsection_heading("### cfgd"), Some("cfgd"));
     assert_eq!(is_subsection_heading("### cfgd-core  "), Some("cfgd-core"));
-    // Exactly three hashes: an H4 is not a crate subsection.
+    // Exactly three hashes: an H4 is no crate subsection.
     assert_eq!(is_subsection_heading("#### Features"), None);
     assert_eq!(is_subsection_heading("### "), None);
     assert_eq!(is_subsection_heading("## [Unreleased]"), None);
@@ -351,8 +337,6 @@ fn parse_compare_url_splits_base_and_anchor() {
     assert_eq!(parse_compare_url("https://x/releases/tag/v1"), None);
 }
 
-// ---- has_crate_subsections (classification) ----
-
 #[test]
 fn has_crate_subsections_true_only_for_known_crate_h3() {
     let names = vec!["cfgd".to_string(), "cfgd-core".to_string()];
@@ -360,7 +344,7 @@ fn has_crate_subsections_true_only_for_known_crate_h3() {
         "# Changelog\n\n## [Unreleased]\n\n### cfgd\n- feat: a\n\n### cfgd-core\n- feat: b\n";
     assert!(has_crate_subsections(multitrack, &names));
 
-    // Foreign curated H3 (### Added) is NOT a crate subsection.
+    // Foreign curated H3 (### Added) is no crate subsection.
     let flat = "# Changelog\n\n## [Unreleased]\n\n### Added\n- a thing\n";
     assert!(!has_crate_subsections(flat, &names));
 
@@ -371,14 +355,12 @@ fn has_crate_subsections_true_only_for_known_crate_h3() {
 
 #[test]
 fn has_crate_subsections_stops_at_section_boundary() {
-    // The `### cfgd` lives in a released section, not under [Unreleased];
+    // The `### cfgd` lives in a released section below [Unreleased];
     // the scan must stop at the first `## ` boundary and return false.
     let names = vec!["cfgd".to_string()];
     let text = "# Changelog\n\n## [Unreleased]\n\n## [v0.1.0]\n### cfgd\n- old\n";
     assert!(!has_crate_subsections(text, &names));
 }
-
-// ---- bucket_curated_bullets ----
 
 fn feat_fix() -> Vec<ChangelogGroup> {
     vec![
@@ -445,9 +427,8 @@ fn bucket_curated_bullets_unmatched_preserved_at_end_without_heading() {
 fn bucket_curated_bullets_empty_regexp_is_catch_all_not_greedy_regex() {
     // A group with `regexp: ""` is the catch-all (equivalent to omitting
     // `regexp`): it collects only bullets that no specific group matched,
-    // rather than greedily swallowing everything as a literal
-    // `Regex::new("")` (which matches every string) would. With the
-    // catch-all last, `feat:` stays in Features and only `chore:` falls
+    // where a literal `Regex::new("")` would greedily match every string.
+    // With the catch-all last, `feat:` stays in Features and only `chore:` falls
     // through to the empty-regexp group.
     let groups = vec![
         ChangelogGroup {
@@ -469,8 +450,6 @@ fn bucket_curated_bullets_empty_regexp_is_catch_all_not_greedy_regex() {
         "### Features\n- feat: add man\n### Other\n- chore: deps"
     );
 }
-
-// ---- tag_insert_index (chronology slotting) ----
 
 #[test]
 fn tag_insert_index_same_prefix_inserts_before_lower_semver() {
@@ -500,8 +479,6 @@ fn tag_insert_index_clusters_by_prefix() {
     let heading_idxs = vec![0usize];
     assert_eq!(tag_insert_index(&sections, &heading_idxs, "aaa-v0.3.0"), 0);
 }
-
-// ---- push_compare_footer / push_root_footer / synthesize_footer ----
 
 #[test]
 fn push_compare_footer_emits_two_link_lines() {
@@ -568,8 +545,6 @@ fn push_root_footer_without_base_keeps_existing_verbatim() {
     );
 }
 
-// ---- build_section_template_vars / render_field ----
-
 #[test]
 fn render_field_renders_section_vars() {
     let vars = build_section_template_vars(SectionVars {
@@ -604,7 +579,7 @@ fn render_field_falls_back_to_raw_and_warns_on_render_error() {
 
     // Malformed template => kept verbatim (non-strict write path), but the
     // fallback must NOT be silent: a warn naming the field + template proves
-    // the failure surfaces instead of a literal `{{ … }}` shipping unnoticed.
+    // the failure is reported before a literal `{{ … }}` can ship unnoticed.
     let raw = "{{ .Unterminated ";
     assert_eq!(render_field(raw, &vars, "group title", &log), raw);
 
@@ -619,8 +594,6 @@ fn render_field_falls_back_to_raw_and_warns_on_render_error() {
         "warn must name the field kind and the offending template, got: {warns:?}"
     );
 }
-
-// ---- render_groups depth cap ----
 
 #[test]
 fn render_groups_caps_heading_depth_at_six() {
@@ -663,8 +636,6 @@ fn render_groups_emits_heading_at_configured_depth() {
     assert_eq!(out, "### Features\n\n* add x\n\n");
 }
 
-// ---- splice_after_h1 (non-KAC merge path) ----
-
 #[test]
 fn splice_after_h1_inserts_section_below_existing_h1() {
     let existing = "# Changelog\n\n## [v0.1.0]\n- old\n";
@@ -684,8 +655,6 @@ fn splice_after_h1_synthesizes_h1_when_absent() {
     assert_eq!(out, "# Changelog\n\n## [v0.2.0]\n- new\n\n- loose note\n");
 }
 
-// ---- replace_unreleased_body (flat KAC refresh) ----
-
 #[test]
 fn replace_unreleased_body_absent_file_yields_skeleton() {
     let out = replace_unreleased_body(None, "# Changelog", "### Features\n- feat: x");
@@ -704,8 +673,6 @@ fn replace_unreleased_body_swaps_block_preserving_released_and_footer() {
         "# Changelog\n\n## [Unreleased]\n\n### Bug Fixes\n- fix: y\n\n## [v0.1.0] - 2026-01-01\n- prior\n\n[Unreleased]: https://x/compare/v0.1.0...HEAD\n"
     );
 }
-
-// ---- finish (blank collapse, fence-aware) ----
 
 #[test]
 fn finish_collapses_blank_runs_and_trims_trailing() {
@@ -738,8 +705,6 @@ fn finish_preserves_blank_lines_inside_code_fence() {
         "```rust\nlet a = 1;\n\n\nlet b = 2;\n```"
     );
 }
-
-// ---- slot_sections (chronology ordering) ----
 
 #[test]
 fn slot_sections_date_chronology_prepends_newest() {

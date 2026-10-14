@@ -206,13 +206,12 @@ fn collapse_doubled_digest_removes_one_pin() {
 
 #[test]
 fn test_filter_artifacts_checksum() {
-    // GoReleaser parity (internal/pipe/sign/sign.go:93-94):
-    // `artifacts: checksum` -> artifact.ByType(artifact.Checksum) — EVERY
+    // `artifacts: checksum` signs EVERY
     // Checksum, the combined `checksums.txt` AND each per-artifact split
     // `.sha256` sidecar. A checksum's metadata is irrelevant to the match.
     assert!(
         should_sign(ArtifactKind::Checksum, "checksum").unwrap(),
-        "every Checksum kind is signed by artifacts: checksum (GoReleaser parity)"
+        "every Checksum kind is signed by artifacts: checksum"
     );
     assert!(!should_sign(ArtifactKind::Archive, "checksum").unwrap());
     assert!(!should_sign(ArtifactKind::Binary, "checksum").unwrap());
@@ -222,9 +221,8 @@ fn test_filter_artifacts_checksum() {
 #[test]
 fn test_filter_artifacts_all() {
     // "all" matches anodizer_core::artifact::signable_subject_kinds() (the
-    // PRIMARY subjects) PLUS every Checksum (GoReleaser parity:
-    // ReleaseUploadableTypes() minus only Signature/Certificate;
-    // internal/pipe/sign/sign.go:103-108). Installer-family kinds (MSI/NSIS as
+    // PRIMARY subjects) PLUS every Checksum (every release-uploadable kind
+    // minus only Signature/Certificate). Installer-family kinds (MSI/NSIS as
     // Installer, DMG as DiskImage, PKG as MacOsPackage) are primary so they are
     // signed alongside archives. Dedicated filters (`installer`, `diskimage`,
     // `macos_package`) remain available for finer-grain selection.
@@ -236,7 +234,7 @@ fn test_filter_artifacts_all() {
     // produced `.sig` is never re-hashed.
     assert!(
         should_sign(ArtifactKind::Checksum, "all").unwrap(),
-        "every Checksum is signed by artifacts: all (GoReleaser parity)"
+        "every Checksum is signed by artifacts: all"
     );
     assert!(should_sign(ArtifactKind::Archive, "all").unwrap());
     assert!(should_sign(ArtifactKind::UploadableBinary, "all").unwrap());
@@ -291,12 +289,11 @@ fn test_filter_artifacts_none() {
 
 #[test]
 fn all_and_checksum_filters_sign_every_checksum_kind_without_recursion() {
-    // GoReleaser parity: BOTH `artifacts: all` and `artifacts: checksum` sign
-    // EVERY Checksum — the combined `checksums.txt` AND each per-artifact split
-    // `.sha256` sidecar (internal/pipe/sign/sign.go:93-94, 103-108) — yielding
-    // one legitimate `X.sha256.sig` each. `all` additionally signs primaries
-    // (the archive); `checksum` does not. NEITHER produces a forbidden
-    // `(.sha256|.sig)` re-derivation chain: the produced `.sig` is never
+    // BOTH `artifacts: all` and `artifacts: checksum` sign EVERY Checksum —
+    // the combined `checksums.txt` AND each per-artifact split `.sha256`
+    // sidecar — yielding one legitimate `X.sha256.sig` each. `all` additionally
+    // signs primaries (the archive); `checksum` does not. NEITHER produces a
+    // forbidden `(.sha256|.sig)` re-derivation chain: the produced `.sig` is never
     // re-checksummed (checksum input is primary-only) nor re-signed (Signature
     // is not in the sign set).
     use anodizer_core::artifact::{Artifact, ArtifactKind};
@@ -377,14 +374,14 @@ fn all_and_checksum_filters_sign_every_checksum_kind_without_recursion() {
             .map(|a| a.name.clone())
             .collect();
 
-        // Both the combined file AND the split sidecar are signed (GR parity).
+        // Both the combined file AND the split sidecar are signed.
         assert!(
             sig_names.iter().any(|n| n == "myapp_checksums.txt.sig"),
             "[{filter}] combined checksums file must be signed; got {sig_names:?}"
         );
         assert!(
             sig_names.iter().any(|n| n == "myapp.tar.gz.sha256.sig"),
-            "[{filter}] split checksum sidecar must be signed (GR parity); got {sig_names:?}"
+            "[{filter}] split checksum sidecar must be signed; got {sig_names:?}"
         );
         // The primary archive is signed only under `all`, never under `checksum`.
         assert_eq!(
@@ -395,7 +392,7 @@ fn all_and_checksum_filters_sign_every_checksum_kind_without_recursion() {
 
         // No registered artifact (subjects or produced signatures) may carry a
         // forbidden recursive chain. `myapp.tar.gz.sha256.sig` (a sig of a
-        // checksum) is the GR-legit second level and is NOT a violation.
+        // checksum) is the legitimate second level and is NOT a violation.
         for a in ctx.artifacts.all() {
             assert!(
                 !has_recursive_sidecar_chain(&a.name),
@@ -412,7 +409,7 @@ fn all_and_checksum_filters_sign_every_checksum_kind_without_recursion() {
 /// `*.pem.sig` files. The `all` and `any` filters explicitly skip the
 /// `Signature` and `Certificate` kinds even though both are otherwise
 /// release-uploadable (signatures DO get uploaded to GitHub releases —
-/// they're excluded from re-signing, not from upload).
+/// they're excluded only from re-signing).
 #[test]
 fn re_sign_idempotency_does_not_chain_signatures() {
     // The bug: on a re-run of the sign stage, prior `.sig` / `.pem`
@@ -767,10 +764,6 @@ fn test_stage_skips_with_empty_signs() {
     assert!(stage.run(&mut ctx).is_ok());
 }
 
-// -----------------------------------------------------------------------
-// Additional behavior tests — config fields actually do things
-// -----------------------------------------------------------------------
-
 #[test]
 fn test_multiple_sign_configs_run_independently() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
@@ -842,13 +835,13 @@ fn test_multiple_sign_configs_run_independently() {
 
 #[test]
 fn test_artifacts_filter_selects_correct_kinds() {
-    // "all" = signable_subject_kinds() (primary subjects) PLUS every Checksum
-    // (GoReleaser parity). Installer-family kinds (MSI/NSIS as Installer, DMG as
-    // DiskImage, PKG as MacOsPackage) are all primary, so all three are signed
-    // under "all".
+    // "all" = signable_subject_kinds() (primary subjects) PLUS every
+    // Checksum. Installer-family kinds (MSI/NSIS as Installer, DMG as
+    // DiskImage, PKG as MacOsPackage) are all primary, so all three are
+    // signed under "all".
     assert!(should_sign(ArtifactKind::Archive, "all").unwrap());
     assert!(should_sign(ArtifactKind::UploadableBinary, "all").unwrap());
-    // Checksum IS signed under `all` (GR signs checksums); one `X.sha256.sig`.
+    // Checksum IS signed under `all`; one `X.sha256.sig`.
     assert!(should_sign(ArtifactKind::Checksum, "all").unwrap());
     assert!(should_sign(ArtifactKind::LinuxPackage, "all").unwrap());
     assert!(should_sign(ArtifactKind::Sbom, "all").unwrap());
@@ -1191,7 +1184,7 @@ fn test_sign_none_filter_skips_entirely() {
     assert!(stage.run(&mut ctx).is_ok());
 
     // SkipMemento should record the (sign, skip, "artifacts: none") tuple
-    // so the end-of-pipeline summary can surface it.
+    // so the end-of-pipeline summary can report it.
     let events = ctx.skip_memento.snapshot();
     assert_eq!(events.len(), 1, "expected one recorded skip");
     assert_eq!(events[0].stage, "sign");
@@ -1268,8 +1261,6 @@ fn test_sign_positional_label_when_id_missing() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].label, "sign[0]");
 }
-
-// ---- Error path tests: missing tools / bad inputs ----
 
 #[test]
 fn test_missing_signing_binary_errors_with_command_name() {
@@ -1426,8 +1417,6 @@ fn test_stdin_file_missing_errors_with_path() {
     );
 }
 
-// ---- new field tests: env, certificate, docker sign ids/stdin ----
-
 #[test]
 fn test_sign_env_config_parsing() {
     let yaml = r#"
@@ -1558,8 +1547,7 @@ fn test_sign_env_vars_passed_to_command() {
 fn test_sign_stdin_is_template_rendered() {
     // Regression: `signs.stdin` must be template-expanded before it is piped
     // to the signer, so `stdin: "{{ Env.GPG_PASSPHRASE }}"` reaches gpg as the
-    // passphrase VALUE, not the literal template string (matches GoReleaser's
-    // `sign.go` which applies templates to `stdin`).
+    // passphrase VALUE.
     use anodizer_core::artifact::{Artifact, ArtifactKind};
 
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1735,7 +1723,8 @@ fn a_sign_stdin_is_rendered_as_a_credential() {
         "{:#}",
         result.expect_err("a stdin that does not render fails")
     );
-    assert!(msg.contains("gpg.stdin does not render"), "{msg}");
+    assert!(msg.contains("signs[gpg].stdin does not render"), "{msg}");
+    assert!(!msg.contains("binary_signs"), "{msg}");
     assert!(!msg.contains("hunter2"), "{msg}");
     assert!(piped.is_none(), "the signer never ran");
 }
@@ -2348,10 +2337,6 @@ fn docker_sign_in_allowlist_is_not_deselected() {
     );
 }
 
-// -----------------------------------------------------------------------
-// Sign stage parity — output, if, binary_signs, docker vars
-// -----------------------------------------------------------------------
-
 #[test]
 fn test_sign_config_output_field_parsing() {
     let yaml = r#"
@@ -2539,7 +2524,7 @@ fn test_if_condition_template_renders_to_empty_skips_sign() {
     // are falsy). NOTE: an EMPTY LITERAL `if: ""` is a separate no-op-gate
     // case (covered by config-tests) — this test exercises the
     // template-that-renders-empty path, which is the actual runtime
-    // gate behavior the operator-facing skip surfaces.
+    // gate behavior the operator-facing skip reports.
     let signs = vec![SignConfig {
         asset_name_template: None,
         id: Some("skipped".to_string()),
@@ -2671,7 +2656,7 @@ fn keyless_cosign_is_skipped_under_harness() {
     let (result, skips) = run_signs_capture_skips(sign, true, false);
     assert!(
         result.is_ok(),
-        "keyless cosign under the harness must skip cleanly, not error: {result:?}"
+        "keyless cosign under the harness must skip cleanly with no error: {result:?}"
     );
     assert!(
         skips
@@ -2745,7 +2730,7 @@ fn keyless_config_matching_no_artifact_still_records_the_harness_skip() {
     );
 }
 
-/// The empty-match classification is a config-level RENDER, not the raw
+/// The empty-match classification reads the config-level RENDER of the
 /// template: a `--key` that arrives through `{{ .Env.X }}` makes the config
 /// keyed, so no harness skip is recorded for it.
 #[test]
@@ -2970,7 +2955,7 @@ fn cosign_consent_env_is_injected_for_cosign() {
 }
 
 /// A non-cosign signer (gpg, custom) must NOT have `COSIGN_YES` forced into its
-/// env, and an operator who pinned `COSIGN_YES` explicitly is respected
+/// env, and an operator who set `COSIGN_YES` explicitly is respected
 /// (idempotent — no duplicate, value untouched).
 #[test]
 fn cosign_consent_env_noop_for_non_cosign_and_respects_explicit() {
@@ -3201,7 +3186,7 @@ fn test_binary_signs_only_signs_binaries() {
     assert_eq!(
         sig_artifacts.len(),
         1,
-        "binary_signs should only sign Binary artifacts, not Archive or Checksum"
+        "binary_signs should only sign Binary artifacts (no Archive or Checksum)"
     );
 }
 
@@ -3315,7 +3300,7 @@ fn test_docker_sign_digest_and_artifact_id_template_vars() {
 }
 
 /// The reference handed to cosign must be the digest-pinned
-/// `<repo>:<tag>@sha256:<digest>`, never a bare tag — signing a tag is a
+/// `<repo>:<tag>@sha256:<digest>`. Signing a bare tag is a
 /// TOCTOU hole (the tag can move between build and sign). Regression for the
 /// v0.9.0 log where cosign warned it was handed `ghcr.io/...:0.9.0` (a tag).
 /// Exercises BOTH a bare `{{ .Artifact }}` args template and the historical
@@ -3530,7 +3515,7 @@ fn a_docker_image_is_marked_signed_only_after_its_signature_verified() {
 /// Missing-digest path (safety-critical): when the build stage recorded NO
 /// digest, the publisher must NOT fabricate one — it signs the bare tag
 /// loudly (and warns elsewhere). This captures the rendered cosign reference
-/// and pins that exactly one image is signed by its bare tag, with ZERO
+/// and checks that exactly one image is signed by its bare tag, with ZERO
 /// `@sha256:` pins, so a future change cannot silently invent a digest.
 #[cfg(unix)]
 #[test]
@@ -3650,10 +3635,6 @@ fn test_output_capture_with_real_command() {
         "sign with output: true and a real command should succeed"
     );
 }
-
-// -----------------------------------------------------------------------
-// binary_signs architecture-aware signature template
-// -----------------------------------------------------------------------
 
 /// Regression: DEFAULT_BINARY_SIGNATURE_TEMPLATE must produce `<artifact>.sig`
 /// for anodizer's flat layout where binaries are already named with the
@@ -3858,10 +3839,6 @@ fn test_normal_signs_uses_simple_default() {
     assert_eq!(result, "/dist/myapp.tar.gz.sig");
 }
 
-// -----------------------------------------------------------------------
-// DockerImageV2 in docker_signs filters
-// -----------------------------------------------------------------------
-
 #[test]
 fn test_docker_signs_default_filter_selects_v2() {
     // When docker_signs artifacts is "" (default), only DockerImageV2 should match.
@@ -3898,10 +3875,6 @@ fn test_docker_signs_default_filter_selects_v2() {
     images.extend(ctx.artifacts.by_kind(ArtifactKind::DockerImageV2));
     assert_eq!(images.len(), 2);
 }
-
-// -----------------------------------------------------------------------
-// Integration: binary_signs with target triple through process_sign_configs
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_binary_signs_sets_os_arch_from_target_triple() {
@@ -4040,7 +4013,7 @@ fn test_binary_signs_armv7_default_template_appends_only_sig_ext() {
 
 /// Sign seeds the COMPOSITE build/installer policy on an armv7 binary:
 /// `Arch="armv7"` with `Arm` empty — never the archive-policy split
-/// (`Arch="arm"` + `Arm="7"`). Two probes pin both halves:
+/// (`Arch="arm"` + `Arm="7"`). Two probes test both halves:
 /// - the certificate template's bare `{{ Arch }}` renders `armv7`
 ///   (the split policy would render `arm`),
 /// - the signature template's Arm-suffix idiom appends NOTHING
@@ -4095,7 +4068,7 @@ fn test_binary_signs_armv7_templates_render_composite_arch_and_empty_arm() {
     .unwrap();
 
     // The registered name is the config-derived asset base plus the suffix
-    // the template appended to the binary's own file name, so pin the suffix.
+    // the template appended to the binary's own file name, so assert the suffix.
     let sigs: Vec<_> = ctx.artifacts.by_kind(ArtifactKind::Signature);
     assert_eq!(sigs.len(), 1);
     assert!(
@@ -4109,8 +4082,8 @@ fn test_binary_signs_armv7_templates_render_composite_arch_and_empty_arm() {
     assert_eq!(certs.len(), 1);
     assert!(
         certs[0].name.ends_with(".armv7.pem"),
-        "certificate `{{{{ Arch }}}}` must render the composite 'armv7', not \
-         the archive-split 'arm': got '{}'",
+        "certificate `{{{{ Arch }}}}` must render the composite 'armv7' (the \
+         archive split renders 'arm'): got '{}'",
         certs[0].name
     );
 }
@@ -4124,7 +4097,7 @@ fn test_binary_signs_amd64_variant_metadata_renders_in_signature_template() {
     use anodizer_core::artifact::Artifact;
 
     // The registered name is the config-derived asset base plus the suffix
-    // the template appended to the binary's own file name, so pin the suffix.
+    // the template appended to the binary's own file name, so assert the suffix.
     for (metadata, expected) in [
         (
             std::collections::HashMap::from([("amd64_variant".to_string(), "v3".to_string())]),
@@ -4366,10 +4339,6 @@ fn test_binary_signs_register_target_qualified_names_per_target() {
     }
 }
 
-// -----------------------------------------------------------------------
-// Gap E: Docker sign ID defaults to "default"
-// -----------------------------------------------------------------------
-
 #[test]
 fn test_docker_sign_id_defaults_to_default() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
@@ -4459,10 +4428,6 @@ fn test_docker_sign_none_id_defaults() {
     assert_eq!(sign_id, "default");
 }
 
-// -----------------------------------------------------------------------
-// Bug 1: "all" filter only matches release-uploadable types
-// -----------------------------------------------------------------------
-
 #[test]
 fn test_all_filter_excludes_internal_types() {
     // Internal types that should NOT be signed by the "all" filter
@@ -4497,7 +4462,7 @@ fn test_all_filter_includes_primary_subject_types() {
     assert!(should_sign(ArtifactKind::DiskImage, "all").unwrap());
     assert!(should_sign(ArtifactKind::MacOsPackage, "all").unwrap());
     assert!(should_sign(ArtifactKind::Sbom, "all").unwrap());
-    // Checksum IS signed under `all` (GoReleaser parity); one `X.sha256.sig`.
+    // Checksum IS signed under `all`; one `X.sha256.sig`.
     assert!(should_sign(ArtifactKind::Checksum, "all").unwrap());
     assert!(should_sign(ArtifactKind::UploadableFile, "all").unwrap());
     // Signature + Certificate + Metadata are excluded from `all` so re-running
@@ -4512,10 +4477,6 @@ fn test_all_filter_includes_primary_subject_types() {
     assert!(!should_sign(ArtifactKind::UniversalBinary, "all").unwrap());
     assert!(!should_sign(ArtifactKind::Snap, "all").unwrap());
 }
-
-// -----------------------------------------------------------------------
-// Bug 4: Docker sign IDs must be unique
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_docker_sign_duplicate_ids_rejected() {
@@ -4624,10 +4585,6 @@ fn test_docker_sign_duplicate_default_ids_rejected() {
     );
 }
 
-// -----------------------------------------------------------------------
-// Bug 5: Docker sign Digest variable uses correct casing
-// -----------------------------------------------------------------------
-
 #[test]
 fn test_docker_sign_digest_go_compat_syntax() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
@@ -4683,9 +4640,6 @@ fn test_docker_sign_digest_go_compat_syntax() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// SOURCE_DATE_EPOCH byte-stability regression
-// ---------------------------------------------------------------------------
 //
 // stage-sign delegates to an external signer (`cosign`, `gpg`) via
 // `Command::new`. There are no `Utc::now()` / `SystemTime::now()`
@@ -4761,17 +4715,16 @@ fn gpg_signature_byte_stable_for_same_sde() {
         std::fs::read(&sig).expect("read detached signature")
     };
 
-    // Same payload + same pinned timestamp + EdDSA (deterministic per
+    // Same payload + same fixed timestamp + EdDSA (deterministic per
     // RFC 8032) must yield byte-identical detached signatures.
     let first = sign("payload.sig.1");
     let second = sign("payload.sig.2");
     assert_eq!(
         first, second,
-        "detached gpg signatures must be byte-identical under a pinned --faked-system-time"
+        "detached gpg signatures must be byte-identical under a fixed --faked-system-time"
     );
 }
 
-// ---------------------------------------------------------------------------
 // Re-signing combined checksums after the release stage's
 // `refresh_combined_checksums` rewrites `checksums.txt`.
 //
@@ -4781,7 +4734,6 @@ fn gpg_signature_byte_stable_for_same_sde() {
 // signature. `gpg --verify` fails BAD and verify-release blocks winget/aur.
 // `resign_combined_checksums` re-signs after the refresh so the uploaded
 // `.sig` matches the uploaded `checksums.txt` byte-for-byte.
-// ---------------------------------------------------------------------------
 
 /// Provision an ephemeral gpg keypair for a live sign+verify test, or return
 /// `None` (with a skip note) when gpg/cosign are unavailable. Provisioning
@@ -4893,7 +4845,7 @@ fn resign_combined_checksums_refreshes_stale_signature() {
 fn resign_combined_checksums_covers_every_crate() {
     // per-crate layout: each crate owns a `<crate>_checksums.txt`. A refresh
     // rewrites all of them, so the re-sign must refresh EVERY crate's
-    // signature — the match loop scans the whole registry, not one crate.
+    // signature — the match loop scans the whole registry.
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use std::process::Command;
 
@@ -5015,10 +4967,6 @@ fn docker_sign_zero_match_ids_filter_warns_loudly() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Authenticode (Windows PE/MSI/DLL) signing backend
-// ---------------------------------------------------------------------------
-
 mod authenticode {
     use super::*;
     use anodizer_core::artifact::Artifact;
@@ -5064,8 +5012,6 @@ mod authenticode {
             size: None,
         });
     }
-
-    // ---- pure argv builder ----
 
     #[test]
     fn osslsigncode_argv_is_exact() {
@@ -5213,7 +5159,7 @@ mod authenticode {
 
     #[test]
     fn redact_password_in_argv_does_not_mangle_unrelated_tokens() {
-        // A password equal to the `sign` subcommand token (W1): slot-level
+        // A password equal to the `sign` subcommand token: slot-level
         // masking replaces ONLY the `-pass` value, never the matching subcommand
         // or any other token that happens to equal the password string.
         let argv = build_authenticode_argv(
@@ -5260,8 +5206,6 @@ mod authenticode {
         assert_eq!(echo.matches("***").count(), 1, "only the /p slot: {echo}");
     }
 
-    // ---- extension filter ----
-
     #[test]
     fn windows_extension_filter_selects_pe_msi_dll_only() {
         assert!(windows_artifact_extension_matches(std::path::Path::new(
@@ -5294,8 +5238,6 @@ mod authenticode {
         assert!(!should_sign(ArtifactKind::Archive, "windows").unwrap());
         assert!(!should_sign(ArtifactKind::Checksum, "windows").unwrap());
     }
-
-    // ---- end-to-end selection (dry-run) ----
 
     /// Run the sign stage in dry-run with an Authenticode config + a cert env
     /// var, returning the captured log lines.
@@ -5557,8 +5499,6 @@ mod authenticode {
         );
     }
 
-    // ---- preflight env requirements (W2/W3/W4) ----
-
     use anodizer_core::EnvRequirement;
 
     fn reqs_for(signs: Vec<SignConfig>) -> Vec<EnvRequirement> {
@@ -5579,7 +5519,7 @@ mod authenticode {
 
     #[test]
     fn preflight_not_required_declares_nothing() {
-        // W2: a non-required authenticode config may skip when the tool/cert are
+        // A non-required authenticode config may skip when the tool/cert are
         // absent, so preflight must declare NOTHING — not even the tool.
         let reqs = reqs_for(vec![authenticode_sign(AuthenticodeConfig::default())]);
         assert!(reqs.is_empty(), "non-required declares nothing: {reqs:?}");
@@ -5587,8 +5527,8 @@ mod authenticode {
 
     #[test]
     fn preflight_required_with_cert_env_requires_tool_and_cert_env_only() {
-        // W3: the password env var is NEVER required (passwordless .p12 is
-        // valid). W2: the tool IS required when the config will run.
+        // The password env var is NEVER required (passwordless .p12 is
+        // valid). The tool IS required when the config will run.
         let reqs = reqs_for(vec![authenticode_sign(AuthenticodeConfig {
             required: Some(true),
             ..Default::default()
@@ -5609,7 +5549,7 @@ mod authenticode {
 
     #[test]
     fn preflight_required_with_cert_file_omits_cert_env() {
-        // W4: a literal cert_file supplies the cert directly, so requiring the
+        // A literal cert_file supplies the cert directly, so requiring the
         // cert ENV VAR would be a false-positive preflight failure.
         let reqs = reqs_for(vec![authenticode_sign(AuthenticodeConfig {
             required: Some(true),
@@ -5629,8 +5569,6 @@ mod authenticode {
             "password env var never required: {reqs:?}"
         );
     }
-
-    // ---- non-dry-run rename lifecycle (S1/S2) ----
 
     #[cfg(unix)]
     fn run_authenticode_live(
@@ -5675,7 +5613,7 @@ mod authenticode {
     #[test]
     #[cfg(unix)]
     fn rename_after_success_replaces_original_with_signed_bytes() {
-        // S1 success path: a fake signer that writes the `-out` temp and exits 0
+        // Success path: a fake signer that writes the `-out` temp and exits 0
         // must have its temp atomically renamed over the original artifact.
         let tmp = tempfile::tempdir().expect("tempdir");
         let dist = tmp.path();
@@ -5703,7 +5641,7 @@ mod authenticode {
     #[test]
     #[cfg(unix)]
     fn failed_sign_leaves_original_untouched_and_no_litter() {
-        // S1 failure path + S2: a fake signer that writes a PARTIAL `-out` then
+        // Failure path: a fake signer that writes a PARTIAL `-out` then
         // exits non-zero must (a) leave the ORIGINAL unclobbered and (b) leave
         // no `.authenticode-tmp` litter behind.
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -5772,7 +5710,7 @@ mod authenticode {
     fn cert_file_not_found_required_hard_fails_naming_path() {
         // The mirror of the skip above: `required: true` with an absent cert
         // FILE must hard-fail with a clear message naming the missing path,
-        // rather than a generic non-zero-exit from the signer.
+        // before the signer runs.
         let tmp = tempfile::tempdir().expect("tempdir");
         let dist = tmp.path();
         let missing = dist.join("does-not-exist.p12");
@@ -5854,8 +5792,9 @@ mod authenticode {
             Some("x86_64-pc-windows-msvc"),
         );
 
-        // The child inherits the REAL parent env, not ctx's injected source, so
-        // the var must exist in the real env for the strip to be observable.
+        // The child inherits the REAL parent env and ignores ctx's injected
+        // source, so the var must exist in the real env for the strip to be
+        // observable.
         let _password =
             anodizer_core::test_helpers::env::EnvGuard::set(PW_ENV, "child-must-not-see-this");
         let result = SignStage.run(&mut ctx);
@@ -5875,13 +5814,13 @@ mod authenticode {
 
     #[test]
     fn password_redacted_via_synthetic_key_independent_of_env_name() {
-        // B1: `execute_sign_job` builds its redaction set from
+        // `execute_sign_job` builds its redaction set from
         // `env + redact_extra + process-env`. The Authenticode path puts the
         // password into `redact_extra` under the synthetic guaranteed-secret key
         // `AUTHENTICODE_PASSWORD`, so `redact::string` masks it REGARDLESS of the
         // user's `password_env` name — even one with no secret suffix. This is
         // the exact composition the live spawn path feeds; proving it here
-        // pins the decoupling without depending on per-thread log capture.
+        // tests the decoupling without depending on per-thread log capture.
         //
         // Contrast the OLD behavior: the password was scrubbed only when the
         // user's `password_env` key (e.g. `WINDOWS_CERT_PASSWORD`) ended in a
@@ -5901,8 +5840,8 @@ mod authenticode {
             "osslsigncode: error reading -pass $AUTHENTICODE_PASSWORD"
         );
 
-        // Sanity floor: the non-secret env KEY alone would NOT have masked it —
-        // this is precisely the leak B1 closed.
+        // Sanity check: the non-secret env KEY alone would NOT have masked it —
+        // this is precisely the leak the synthetic key closed.
         let leaky_env = vec![("MY_CERT_PW".to_string(), pw.to_string())];
         let unmasked = anodizer_core::redact::string(&echoed, &leaky_env);
         assert!(
@@ -5916,9 +5855,9 @@ mod authenticode {
 /// `~/.sigstore` TUF trust root under an exclusive flock; concurrent
 /// first-wave workers lose that lock with `creating cached local store:
 /// resource temporarily unavailable` (cfgd v0.5.0 run 28853272910, Publish
-/// leg, 0/22 signed). These tests pin the two halves of the fix: the first
+/// leg, 0/22 signed). These tests check the two halves of the fix: the first
 /// sign is serialized to warm the cache, and transient cosign failures are
-/// retried across a multi-second window instead of fast-failing.
+/// retried across a multi-second window.
 #[cfg(unix)]
 mod cosign_tuf_race {
     use super::*;
@@ -6095,8 +6034,8 @@ mod cosign_tuf_race {
         }
     }
 
-    /// Pins the serialization itself: NO two keyless cosign invocations may
-    /// overlap, not merely the first. The stub logs start/end wall-clock
+    /// Tests the serialization itself: NO two keyless cosign invocations may
+    /// overlap, the first included. The stub logs start/end wall-clock
     /// nanos per invocation; a parallelism-4 fan-out interleaves them.
     #[test]
     fn keyless_cosign_invocations_never_overlap() {
@@ -6112,7 +6051,7 @@ mod cosign_tuf_race {
         assert_no_overlap(&state, 6);
     }
 
-    /// Keyed cosign whose argv pins `--tlog-upload=false` never contacts
+    /// Keyed cosign whose argv sets `--tlog-upload=false` never contacts
     /// Rekor and never touches the sigstore TUF store, so it must keep the
     /// full `--parallelism`.
     #[test]
@@ -6120,7 +6059,7 @@ mod cosign_tuf_race {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = tmp.path().join("state");
         std::fs::create_dir(&state).unwrap();
-        // 600ms, not the default 150ms: this is the one test asserting an
+        // 600ms (the default is 150ms): this is the one test asserting an
         // overlap EXISTS, so on a loaded box the window must outlast the
         // scheduling jitter between four worker spawns.
         let stub = write_events_stub_sleeping(tmp.path(), "0.6");
@@ -6130,14 +6069,14 @@ mod cosign_tuf_race {
             .args
             .as_mut()
             .unwrap()
-            // Appended, not inserted: the stub writes its signature to the
+            // Appended at the end: the stub writes its signature to the
             // third argv slot, which the sign-blob prefix must keep.
             .extend([
                 "--key=env://COSIGN_KEY".to_string(),
                 "--tlog-upload=false".to_string(),
             ]);
         // The signature bytes are a stub's, so the verify leg would only
-        // measure the stub again; parallelism is what this pins.
+        // measure the stub again; parallelism is what this tests.
         signs[0].verify = Some(anodizer_core::config::SignVerifyConfig {
             enabled: Some(false),
             ..Default::default()
@@ -6256,7 +6195,7 @@ mod cosign_tuf_race {
         assert_no_overlap(&state, 6);
     }
 
-    /// The host TUF lock must be held for the WHOLE keyless run, not just a
+    /// The host TUF lock must be held for the WHOLE keyless run, past the
     /// priming first job: a neighbour that starts polling once the first
     /// cosign is in flight may not win the lock until the stage is done.
     #[test]
@@ -6348,7 +6287,7 @@ mod cosign_tuf_race {
                 signs[0].args.as_mut().unwrap().push((*arg).to_string());
             }
             // The stub's bytes are not a real signature, so a verify leg
-            // would only re-measure the stub; parallelism is what this pins.
+            // would only re-measure the stub; parallelism is what this tests.
             signs[0].verify = Some(anodizer_core::config::SignVerifyConfig {
                 enabled: Some(false),
                 ..Default::default()
@@ -6686,12 +6625,12 @@ mod cosign_tuf_race {
 
         assert!(
             child_root.join(".anodizer-tuf-init.lock").is_file(),
-            "the lock must land in the cache dir the child's TUF_ROOT names"
+            "the lock must be created in the cache dir the child's TUF_ROOT names"
         );
         assert!(
             !process_root.join(".anodizer-tuf-init.lock").exists(),
-            "the lock must scope to the cache the child will use, not the \
-             process-env dir"
+            "the lock must scope to the cache the child will use and leave the \
+             process-env dir alone"
         );
     }
 
@@ -6821,7 +6760,7 @@ mod cosign_tuf_race {
 
     /// Every image's `env:` renders before the first signature is made: a
     /// render error on image 2 aborts the config with cosign never spawned,
-    /// rather than after image 1 signed on a store nobody locked.
+    /// so image 1 is never signed on a store nobody locked.
     #[test]
     fn docker_env_render_error_aborts_before_any_image_is_signed() {
         use anodizer_core::config::DockerSignConfig;
@@ -7149,7 +7088,7 @@ mod cosign_tuf_race {
         );
     }
 
-    /// Keyed docker signing that pins `--tlog-upload=false` never contacts
+    /// Keyed docker signing that sets `--tlog-upload=false` never contacts
     /// Rekor, so serializing it across processes would be pure contention
     /// for nothing.
     #[test]
@@ -7163,10 +7102,10 @@ mod cosign_tuf_race {
         );
     }
 
-    /// Walk the keyless cosign spawn sites in source: any function that both
+    /// Scan the keyless cosign spawn sites in source: any function that both
     /// decides keyless-ness and spawns a process must take the shared host
     /// lock, so a NEW spawn site — in any file of this crate — fails here
-    /// rather than in a nightly.
+    /// before any nightly run.
     #[test]
     fn every_keyless_cosign_site_takes_the_host_lock() {
         // A function decides keyless-ness with one of these …
@@ -7190,13 +7129,13 @@ mod cosign_tuf_race {
         )));
         assert!(
             !sources.iter().any(|p| p.ends_with("tests.rs")),
-            "the walk must exclude test sources by name: {sources:?}"
+            "the scan must exclude test sources by name: {sources:?}"
         );
 
         let mut checked = 0usize;
         for source in sources {
             let text = std::fs::read_to_string(&source).expect("read source");
-            // Test modules stub cosign rather than spawning it for real.
+            // Test modules stub cosign and never spawn it for real.
             for body in function_bodies(production_half(&text)) {
                 if !KEYLESS.iter().any(|m| body.contains(m)) {
                     continue;
@@ -7223,7 +7162,7 @@ mod cosign_tuf_race {
 
     /// A `--key` that arrives through a template is invisible in the
     /// config's raw args. Keyless-ness is decided on the argv each job
-    /// spawns, so such a config is keyed; with the tlog upload pinned off
+    /// spawns, so such a config is keyed; with the tlog upload turned off
     /// it is offline: full parallelism and no host lock.
     #[test]
     fn rendered_key_flag_makes_a_sign_config_keyed() {
@@ -7239,7 +7178,7 @@ mod cosign_tuf_race {
             "{{ .Env.COSIGN_TLOG_FLAG }}".to_string(),
         ]);
         // The signature bytes are a stub's; the classification is what this
-        // pins, not the verify leg.
+        // tests.
         signs[0].verify = Some(anodizer_core::config::SignVerifyConfig {
             enabled: Some(false),
             ..Default::default()
@@ -7344,8 +7283,8 @@ mod cosign_tuf_race {
     }
 
     /// A sign config's `cmd` is never rendered: it is spawned verbatim, so a
-    /// template there fails at spawn instead of resolving to a signer whose
-    /// keyless-ness was decided on the unrendered name.
+    /// template there fails at spawn, before any keyless-ness decision is made
+    /// on the unrendered name.
     #[test]
     fn templated_cmd_is_spawned_verbatim() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -7377,8 +7316,8 @@ mod cosign_tuf_race {
     }
 
     /// A transiently-failing cosign (fails the first attempt with the
-    /// flock-EAGAIN stderr, succeeds after) must be retried to success
-    /// rather than aborting the stage on the first non-zero exit.
+    /// flock-EAGAIN stderr, succeeds after) must be retried to success,
+    /// and the stage survives the first non-zero exit.
     #[test]
     fn transient_cosign_failure_is_retried_to_success() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -7512,7 +7451,7 @@ mod cosign_tuf_race {
     }
 }
 
-/// Unit pins for the cosign transient-retry machinery (platform-neutral —
+/// Unit tests for the cosign transient-retry machinery (platform-neutral —
 /// the injected sleep means no wall-clock time is served).
 mod cosign_retry_policy {
     use crate::process::{
@@ -7558,7 +7497,7 @@ mod cosign_retry_policy {
         );
     }
 
-    /// Every attempt in the policy is spent before the error surfaces. A tiny
+    /// Every attempt in the policy is spent before the error is returned. A tiny
     /// policy keeps the served backoff to a few ms while still driving the
     /// full ladder through the shared engine.
     #[test]
@@ -7574,7 +7513,7 @@ mod cosign_retry_policy {
             attempts.set(attempts.get() + 1);
             anyhow::bail!("creating cached local store: resource temporarily unavailable")
         });
-        assert!(result.is_err(), "exhausted retries must surface the error");
+        assert!(result.is_err(), "exhausted retries must return the error");
         assert_eq!(
             attempts.get(),
             COSIGN_TRANSIENT_RETRY.max_attempts,
@@ -7700,8 +7639,7 @@ mod cosign_retry_policy {
 
     /// A deterministic signer failure (flag typo, unparseable key,
     /// identity mismatch) is identical on every re-run — it must fail on
-    /// the first attempt (no retry, hence no backoff) instead of burning the
-    /// ladder.
+    /// the first attempt (no retry, hence no backoff).
     #[test]
     fn deterministic_failure_fast_fails_without_retry() {
         for stderr in [
@@ -7967,8 +7905,8 @@ mod post_sign_verification {
     #[test]
     fn keyless_missing_identity_signs_but_skips_verification() {
         // Sealed env: no GitHub Actions OIDC context and no configured
-        // identity/issuer — the honest outcome is sign-without-verify, not a
-        // failure and not a silent no-op of the whole config.
+        // identity/issuer — the honest outcome is sign-without-verify: the
+        // config neither fails nor silently does nothing.
         let tmp = tempfile::tempdir().expect("tempdir");
         let state = tmp.path().join("state");
         std::fs::create_dir(&state).expect("state dir");
@@ -8132,7 +8070,7 @@ fn missing_signature_output_is_still_recorded_as_an_artifact() {
         "the signature stays registered so downstream stages still see it"
     );
 
-    // Registration without the warning is the failure mode this pin exists
+    // Registration without the warning is the failure mode this test exists
     // for: a downstream stage reads an artifact that names nothing on disk and
     // fails much later, with no line naming the signer at fault.
     let warnings: Vec<String> = cap
@@ -8152,7 +8090,7 @@ fn missing_signature_output_is_still_recorded_as_an_artifact() {
 }
 
 /// The file the signer writes is the file the stage registers: the signer
-/// receives the resolved path, not the raw rendering. The binary lives
+/// receives the resolved path. The binary lives
 /// outside `dist` here, as a harness build's does.
 #[cfg(unix)]
 #[test]
@@ -8323,7 +8261,7 @@ fn the_build_path_and_the_release_path_register_one_name_per_binary() {
 }
 
 /// A rendered base of nothing at all would upload every binary's signature as
-/// a bare `.sig`, so the derivation refuses it rather than letting the release
+/// a bare `.sig`, so the derivation refuses it; otherwise the release would
 /// keep whichever one was uploaded last.
 #[test]
 fn an_empty_rendered_base_fails_the_sign_stage() {
@@ -8426,7 +8364,7 @@ fn two_binaries_resolving_to_one_asset_name_fail_the_sign_stage() {
     ctx.template_vars_mut().set("Version", "1.0.0");
     // Two `builds:` entries differing only in `amd64_variant:` compile to ONE
     // path — neither declares its own `CARGO_TARGET_DIR` — so the artifacts
-    // are separated by the level they were built at, not by their file.
+    // are separated by the level they were built at (their file is shared).
     for variant in [None, Some("v3")] {
         let mut metadata =
             std::collections::HashMap::from([("binary".to_string(), "app".to_string())]);
@@ -8511,7 +8449,7 @@ fn two_binaries_resolving_to_one_asset_name_fail_the_verify_gate() {
     ctx.template_vars_mut().set("Version", "1.0.0");
     // Two `builds:` entries differing only in `amd64_variant:` compile to ONE
     // path — neither declares its own `CARGO_TARGET_DIR` — so the artifacts
-    // are separated by the level they were built at, not by their file.
+    // are separated by the level they were built at (their file is shared).
     for variant in [None, Some("v3")] {
         let mut metadata =
             std::collections::HashMap::from([("binary".to_string(), "app".to_string())]);
@@ -8612,8 +8550,8 @@ fn a_flat_dist_layout_still_fails_on_two_binaries_naming_one_asset() {
     }
 }
 
-/// The thing that must be unique is the uploaded NAME, not the base it is
-/// built from: two configs whose `signature:` templates append different
+/// The thing that must be unique is the uploaded NAME (the base it is built
+/// from may repeat): two configs whose `signature:` templates append different
 /// suffixes to one base produce two distinct assets, and neither the stage nor
 /// the gate may refuse them.
 #[test]
@@ -8855,7 +8793,7 @@ fn one_binary_whose_two_outputs_share_a_name_fails() {
 }
 
 /// Two configs matching one binary with one `signature:` template name ONE
-/// release asset, not two, so the second claim of that name by the same
+/// release asset, so the second claim of that name by the same
 /// output of the same binary is not a collision.
 #[test]
 fn two_configs_naming_one_signature_for_one_binary_are_accepted() {
@@ -8961,8 +8899,8 @@ fn two_spellings_of_one_signature_path_are_one_file() {
             .binary_signs(vec![config_for("dist/sigs/app.sig"), config_for(second)])
             // The relative `dist` every real config carries: it is what keeps a
             // rendering that is already under it spelled as written, so the two
-            // entries reach the claim as two spellings rather than one joined
-            // path. Nothing is written — the run is a dry run.
+            // entries reach the claim as two different spellings, unjoined.
+            // Nothing is written — the run is a dry run.
             .dist(std::path::PathBuf::from("dist"))
             .dry_run(true)
             .build();
@@ -9261,8 +9199,8 @@ fn a_renamed_self_collision_words_the_output_template_derivation() {
     );
 }
 
-/// A `signature:` template that renders a name of its own — rather than
-/// suffixing the binary's file name — leaves the config-derived base out of
+/// A `signature:` template that renders a name of its own (with no suffix
+/// on the binary's file name) leaves the config-derived base out of
 /// the asset name entirely, so the remedy the diagnostic offers has to be
 /// that template and not `archives[].name_template`.
 #[test]
@@ -9569,7 +9507,7 @@ fn binary_sign_collision_error(
 /// and the page's line has to be exactly what the stage produced, in the
 /// order the page shows them.
 ///
-/// The page's `check config` warnings are pinned where those checks live
+/// The page's `check config` warnings are tested where those checks live
 /// (`crates/cli`,
 /// `every_warning_quoted_in_the_sign_docs_is_a_message_the_checks_produce`).
 ///

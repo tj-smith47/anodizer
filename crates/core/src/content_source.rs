@@ -20,7 +20,7 @@ use crate::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking_dead
 const MAX_BODY_BYTES: usize = 256 * 1024;
 /// Total per-request deadline. `reqwest::blocking::ClientBuilder` does
 /// not expose a separate `read_timeout` (the API is async-only); the
-/// total `timeout` bounds connect + transfer for the blocking surface,
+/// total `timeout` bounds connect + transfer for the blocking client,
 /// so a stalled server cannot hold the connection open past 30 s.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Connect-only deadline. Allows the connect phase to fail fast on a
@@ -36,7 +36,7 @@ const POLICY: RetryPolicy = RetryPolicy {
 /// Resolve a [`ContentSource`] to its string content.
 ///
 /// `kind` is a short label (e.g. `"release header"`, `"changelog footer"`)
-/// surfaced in error messages so misconfigured fields are easy to identify.
+/// shown in error messages so misconfigured fields are easy to identify.
 pub fn resolve(
     source: &ContentSource,
     kind: &str,
@@ -151,15 +151,11 @@ mod tests {
         L.get_or_init(|| StageLogger::new("test", crate::log::Verbosity::Quiet))
     }
 
-    // ---- Inline ----
-
     #[test]
     fn inline_returns_string_verbatim() {
         let src = ContentSource::Inline("hello world".to_string());
         assert_eq!(resolve(&src, "k", &ctx(), tlog()).unwrap(), "hello world");
     }
-
-    // ---- FromFile ----
 
     #[test]
     fn from_file_renders_path_template_and_reads_contents() {
@@ -207,8 +203,6 @@ mod tests {
         let chain = format!("{err:#}");
         assert!(chain.contains("read from_file"), "context missing: {chain}");
     }
-
-    // ---- FromUrl ----
 
     #[test]
     fn from_url_success_returns_body() {
@@ -345,7 +339,7 @@ mod tests {
     #[test]
     fn from_url_5xx_exhausts_retries_then_fails() {
         // Drive exactly POLICY.max_attempts canned 500s so the responder
-        // counter pins to the configured retry budget. Wiring through the
+        // counter matches the configured retry budget. Wiring through the
         // const means a future bump of POLICY.max_attempts updates the
         // test atomically without a stale literal silently passing.
         let max_attempts = POLICY.max_attempts as usize;

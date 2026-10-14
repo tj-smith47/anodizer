@@ -558,10 +558,6 @@ fn test_generate_nfpm_yaml_empty_lists_omitted() {
     assert!(!yaml.contains("suggests:"));
 }
 
-// -----------------------------------------------------------------------
-// Additional behavior tests — config fields actually do things
-// -----------------------------------------------------------------------
-
 #[test]
 fn test_scripts_block_appears_in_generated_yaml() {
     use anodizer_core::config::NfpmScripts;
@@ -658,8 +654,7 @@ fn test_apk_yaml_drops_self_provides() {
 }
 
 /// The self-provide filter must key on the RESOLVED package name (the
-/// `NfpmRenderTarget.pkg_name` the build threads through), not the raw
-/// `package_name` field — a config relying on the project/crate-name
+/// `NfpmRenderTarget.pkg_name` the build threads through): a config relying on the project/crate-name
 /// fallback must still emit that name AND have its self-provide dropped.
 #[test]
 fn test_apk_self_provide_filter_uses_resolved_name() {
@@ -1019,8 +1014,6 @@ fn test_nfpm_yaml_custom_bindir() {
     assert!(yaml.contains("dst: /opt/myapp/bin/myapp"));
 }
 
-// ---- Error path tests: missing binary / live mode ----
-
 #[test]
 fn test_nfpm_missing_binary_produces_error_in_live_mode() {
     // When nfpm binary is missing, the stage should fail with a clear error
@@ -1215,10 +1208,6 @@ fn test_create_output_dir_failure_errors() {
         "error should mention directory creation context, got: {err}"
     );
 }
-
-// -----------------------------------------------------------------------
-// ids filtering and id metadata tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_ids_filter_includes_matching_binaries_only() {
@@ -1699,7 +1688,7 @@ fn test_nfpm_yaml_dependencies_serializes_as_flat_depends() {
         &NfpmLibraryPaths::default(),
     )
     .unwrap();
-    // The YAML key must be "depends" (what nfpm expects), not "dependencies"
+    // The YAML key must be "depends", the key nfpm expects
     assert!(
         yaml.contains("depends:"),
         "YAML should contain 'depends:' key, got:\n{}",
@@ -1710,7 +1699,7 @@ fn test_nfpm_yaml_dependencies_serializes_as_flat_depends() {
         "YAML should NOT contain 'dependencies:' key, got:\n{}",
         yaml
     );
-    // Should be a flat list, not a nested map
+    // Should be a flat list
     assert!(
         yaml.contains("- libc6"),
         "YAML should contain flat dep 'libc6', got:\n{}",
@@ -1806,10 +1795,6 @@ fn test_nfpm_yaml_dependencies_none_format_merges_all() {
         "at least some deps expected:\n{yaml}"
     );
 }
-
-// -----------------------------------------------------------------------
-// nFPM parity — versioning, metadata, format-specific, mtime
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_generate_nfpm_yaml_version_fields() {
@@ -2601,13 +2586,13 @@ fn test_msix_format_produces_installer_artifact() {
     let path_str = pkgs[0].path.to_string_lossy();
     assert!(
         path_str.ends_with("windows/myapp_1.0.0.0_x64.msix"),
-        "msix lands under dist/windows with the conventional name, got: {path_str}"
+        "msix is written under dist/windows with the conventional name, got: {path_str}"
     );
 }
 
 /// msix with no `properties.logo` hard-fails at planning: nfpm rejects a
-/// logo-less MSIX at pack time, so the guard surfaces the requirement as a
-/// config diagnostic instead.
+/// logo-less MSIX at pack time, so the guard reports the requirement as a
+/// config diagnostic at planning.
 #[test]
 fn test_msix_empty_logo_hard_fails() {
     let tmp = TempDir::new().unwrap();
@@ -2754,7 +2739,7 @@ fn test_generate_nfpm_yaml_msix_block() {
     );
     assert!(
         yaml.contains("dst: /myapp.exe"),
-        "msix binary must land at the package root, not a bindir:\n{yaml}"
+        "msix binary must sit at the package root:\n{yaml}"
     );
 }
 
@@ -2920,7 +2905,7 @@ fn test_termux_deb_yaml_and_filename_use_termux_arch() {
         assert_eq!(pkgs.len(), 1, "{triple}");
         let path_str = pkgs[0].path.to_string_lossy().into_owned();
         assert!(
-            // GoReleaser appends the full `.termux.deb` extension whenever the
+            // The full `.termux.deb` extension is appended whenever the
             // rendered template doesn't already end with it — including after
             // a `.deb`-suffixed ConventionalFileName.
             path_str.ends_with(&format!("myapp_1.0.0_{want_arch}.deb.termux.deb")),
@@ -2968,7 +2953,7 @@ fn test_plain_deb_unchanged_by_termux_mapping() {
     );
 }
 
-/// GoReleaser prefixes ANY non-empty termux dir — including non-/usr paths
+/// anodizer prefixes ANY non-empty termux dir — including non-/usr paths
 /// like /opt — with /data/data/com.termux/files.
 #[test]
 fn test_termux_bindir_prefix_is_unconditional() {
@@ -3397,7 +3382,7 @@ fn test_meta_is_never_emitted_to_yaml() {
     // nfpm's config has no `meta` field; it is an anodizer-side toggle that
     // suppresses auto-emitted binary contents. Emitting it would violate
     // nfpm's `additionalProperties: false` schema, so neither `Some(true)`
-    // nor `Some(false)` may surface in the generated YAML.
+    // nor `Some(false)` may appear in the generated YAML.
     for meta in [Some(true), Some(false)] {
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
@@ -3444,10 +3429,6 @@ fn test_meta_none_omits_from_yaml() {
     );
 }
 
-// -----------------------------------------------------------------------
-// Format validation tests
-// -----------------------------------------------------------------------
-
 #[test]
 fn test_validate_format_accepts_known_formats() {
     for fmt in KNOWN_FORMATS {
@@ -3469,10 +3450,6 @@ fn test_validate_format_rejects_unknown() {
         "error should list known formats: {err}"
     );
 }
-
-// -----------------------------------------------------------------------
-// Default filename includes arch, ConventionalFileName, nfpm --target path
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_default_filename_includes_arch() {
@@ -3876,10 +3853,6 @@ fn test_stage_rejects_unknown_format() {
     );
 }
 
-// -----------------------------------------------------------------------
-// Fix: signature key_name and type_ fields
-// -----------------------------------------------------------------------
-
 #[test]
 fn test_signature_key_name_and_type_in_yaml() {
     let nfpm_cfg = NfpmConfig {
@@ -3952,10 +3925,6 @@ fn test_signature_key_name_and_type_omitted_when_none() {
     );
 }
 
-// -----------------------------------------------------------------------
-// Fix: content packager and expand fields
-// -----------------------------------------------------------------------
-
 #[test]
 fn test_content_packager_and_expand_in_yaml() {
     use anodizer_core::config::NfpmContent;
@@ -4025,10 +3994,6 @@ fn test_content_packager_and_expand_omitted_when_none() {
         "expand should not appear when None:\n{yaml}"
     );
 }
-
-// -----------------------------------------------------------------------
-// Fix: APK scripts field
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_apk_scripts_in_yaml() {
@@ -4381,10 +4346,6 @@ fn test_release_and_epoch_combined_in_file_name_template() {
     );
 }
 
-// -----------------------------------------------------------------------
-// libdirs, changelog, owner/group template rendering
-// -----------------------------------------------------------------------
-
 #[test]
 fn test_libdirs_header_adds_content_entry() {
     use anodizer_core::config::NfpmLibdirs;
@@ -4582,9 +4543,9 @@ fn test_libdirs_defaults_applied_when_block_present() {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
         libdirs: Some(NfpmLibdirs {
-            header: None,   // GoReleaser default: /usr/include
-            carchive: None, // GoReleaser default: /usr/lib
-            cshared: None,  // GoReleaser default: /usr/lib
+            header: None,   // default: /usr/include
+            carchive: None, // default: /usr/lib
+            cshared: None,  // default: /usr/lib
         }),
         ..Default::default()
     };
@@ -4919,7 +4880,7 @@ fn test_libdirs_no_artifacts_no_entries() {
 
 #[test]
 fn test_libdirs_none_no_artifacts_byte_identical() {
-    // Pins existing-C3: with `libdirs: None` AND no library artifacts,
+    // With `libdirs: None` AND no library artifacts,
     // dropping the outer `has_library_artifacts || config.libdirs.is_some()`
     // gate must be a no-op for the resulting package YAML — no
     // `/usr/include` or `/usr/lib` entries appear because the inner emit
@@ -4951,10 +4912,6 @@ fn test_libdirs_none_no_artifacts_byte_identical() {
         "lib dir leaked despite no artifacts:\n{yaml}"
     );
 }
-
-// -----------------------------------------------------------------------
-// IPK format tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_generate_nfpm_yaml_with_ipk_config() {
@@ -5056,7 +5013,7 @@ fn test_ipk_format_dry_run_produces_artifact() {
         package_name: Some("openwrt-pkg".to_string()),
         formats: vec!["ipk".to_string()],
         // ipk requires a Maintainer (opkg control field); set it so this
-        // format-coverage test exercises emission, not the guard.
+        // format-coverage test exercises emission and passes the guard.
         maintainer: Some("Jane Doe <jane@example.com>".to_string()),
         ..Default::default()
     };
@@ -5135,10 +5092,6 @@ crates:
     assert_eq!(alt.target.as_deref(), Some("/usr/bin/target"));
     assert_eq!(alt.link_name.as_deref(), Some("/usr/bin/link"));
 }
-
-// -----------------------------------------------------------------------
-// Template rendering tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_template_rendering_in_nfpm_stage() {
@@ -5288,7 +5241,7 @@ fn test_generate_nfpm_yaml_ipk_fields() {
 #[test]
 fn test_library_paths_use_actual_artifact_paths() {
     // When actual library artifact paths are provided, they should be used
-    // directly instead of deriving from the binary stem.
+    // directly; nothing is derived from the binary stem.
     let nfpm_cfg = NfpmConfig {
         package_name: Some("mylib".to_string()),
         formats: vec!["deb".to_string()],
@@ -5366,8 +5319,6 @@ fn test_library_paths_without_libdirs_config() {
         "default header dir should be /usr/include:\n{yaml}"
     );
 }
-
-// --- `nfpm.if` template-conditional ---
 
 fn nfpm_if_test_ctx(if_expr: Option<&str>) -> anodizer_core::context::Context {
     use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
@@ -5451,8 +5402,6 @@ fn test_nfpm_if_render_failure_is_hard_error() {
         "error should name the `if` render failure, got: {msg}"
     );
 }
-
-// --- `nfpm.templated_contents` + `nfpm.templated_scripts` ---
 
 #[test]
 fn test_nfpm_templated_contents_renders_file_body() {
@@ -5664,7 +5613,7 @@ fn test_nfpm_falls_back_to_project_metadata() {
 fn compound_spdx_license_emitted_verbatim() {
     // nfpm passes the SPDX license through unchanged: a dual `MIT OR Apache-2.0`
     // expression must end up in the generated nfpm YAML's `license:` field as the
-    // exact string, not split or reshaped.
+    // exact string, unsplit and unchanged.
     use anodizer_core::config::NfpmConfig;
 
     let tmp = TempDir::new().unwrap();
@@ -5688,10 +5637,6 @@ fn compound_spdx_license_emitted_verbatim() {
         "compound license must pass through verbatim, got:\n{yaml}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// setup_lintian_overrides
-// ---------------------------------------------------------------------------
 
 /// Round-trips: lintian file content equals "<pkg>: <override>" lines, a
 /// single content entry is added with the correct dst/mode/packager, and the
@@ -5769,7 +5714,7 @@ fn lintian_body(dist: &std::path::Path) -> String {
 /// removed from the emitted `overrides:` map (nfpm has no such key) while
 /// the sibling override field beside it stays.
 #[test]
-fn per_format_lintian_overrides_land_in_the_deb() {
+fn per_format_lintian_overrides_are_written_into_the_deb() {
     use super::setup_lintian_overrides;
 
     let tmp = TempDir::new().unwrap();
@@ -5851,7 +5796,7 @@ fn an_empty_per_format_lintian_list_keeps_the_top_level_one() {
 }
 
 /// A per-format list that is not a list of strings is a config error that
-/// names the key, not a silently dropped override.
+/// names the key; the override is never silently dropped.
 #[test]
 fn a_malformed_per_format_lintian_list_is_refused() {
     use super::setup_lintian_overrides;
@@ -6007,7 +5952,7 @@ fn two_crates_rendering_one_package_path_are_refused_before_packaging() {
 }
 
 /// termux.deb shares the lintian-setup code path, but the dist
-/// subdirectory is the literal format string ("termux.deb"), not just "deb".
+/// subdirectory is the literal format string ("termux.deb") in full.
 #[test]
 fn test_setup_lintian_overrides_termux_deb_uses_format_dir() {
     use super::setup_lintian_overrides;
@@ -6095,9 +6040,6 @@ fn test_setup_lintian_overrides_dry_run_skips_write_but_injects_content() {
     );
 }
 
-// -----------------------------------------------------------------------
-// `nfpm.amd64_variant` filter
-// -----------------------------------------------------------------------
 //
 // The amd64-variant filter calls
 // `artifact.ByGoamd64s(fpm.GoAmd64...)` — the field is `[]string`, so
@@ -6256,7 +6198,7 @@ fn test_nfpm_amd64_variant_multiple_variants_pass_listed() {
 
 #[test]
 fn test_nfpm_amd64_variant_filter_does_not_drop_arm64() {
-    // Pin: filter only constrains amd64; arm64 must still pass even
+    // The filter only constrains amd64; arm64 must still pass even
     // when the filter rejects every amd64 variant.
     let mut ctx = nfpm_amd64_variant_test_ctx(Some(vec![anodizer_core::config::Amd64Variant::V4]));
     NfpmStage.run(&mut ctx).unwrap();
@@ -6287,8 +6229,8 @@ fn test_nfpm_amd64_variant_empty_vec_is_no_op() {
 /// format + arch, and the conventional default filename (no
 /// `file_name_template`), so they render the same `.deb` path. The guard now
 /// spans every config of the crate, so the second config bails loudly via the
-/// conventional-default path instead of silently clobbering the first config's
-/// package.
+/// conventional-default path and leaves the first config's package
+/// intact.
 #[test]
 fn test_nfpm_two_configs_same_default_name_bail_across_configs() {
     use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
@@ -6566,7 +6508,7 @@ fn test_nfpm_bin_alias_per_crate_config() {
 /// variant identically for a v3 build, so the documented "offline-validated
 /// config is byte-identical to shipped" invariant holds. A regression where the
 /// offline renderer fails to seed `Amd64` leaves the field empty offline while
-/// the live YAML carries `v3` — exactly what this pins.
+/// the live YAML carries `v3` — exactly what this test checks.
 #[test]
 fn test_nfpm_offline_yaml_seeds_amd64_field_like_live_build() {
     use anodizer_core::config::{Config, CrateConfig};
@@ -6727,7 +6669,7 @@ fn test_nfpm_loop_emits_libc_conflict_in_yaml_for_musl() {
     // The plain-`fd` fallback (gnu/default branch) must NOT appear as a
     // standalone conflict entry — that would mean Libc was unset at render.
     // `conflicts:\n- fd-musl` contains `- fd` as a substring, so guard on the
-    // exact bare-entry form `- fd` followed by a line end, not present here.
+    // exact bare-entry form `- fd` followed by a line end, which must be absent here.
     assert!(
         !yaml.contains("conflicts:\n- fd\n") && !yaml.ends_with("conflicts:\n- fd"),
         "musl build must not fall back to the bare-fd conflict, got:\n{yaml}"
@@ -6761,10 +6703,6 @@ fn test_nfpm_loop_emits_libc_conflict_in_yaml_for_musl() {
         "gnu build must not carry the musl conflict, got:\n{yaml_gnu}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// deb/apk maintainer hard-fail (Debian Policy 5.3 — Maintainer mandatory)
-// ---------------------------------------------------------------------------
 
 /// Build a single-crate `Context` with one nfpm config for the given formats,
 /// optional explicit maintainer, and optional derived Cargo-`authors`
@@ -6883,7 +6821,7 @@ fn test_deb_plus_rpm_empty_maintainer_hard_fails_on_deb() {
 /// Per-crate workspace mode: each published crate resolves its own maintainer.
 /// A crate whose deb has neither an explicit nor a derivable maintainer
 /// hard-fails even when a sibling crate is fully configured — the guard
-/// resolves per-crate, not globally.
+/// resolves each crate on its own.
 #[test]
 fn test_per_crate_mode_deb_maintainer_resolves_per_crate() {
     use anodizer_core::config::{Config, CrateConfig, MetadataConfig, NfpmConfig};
@@ -7118,7 +7056,7 @@ fn test_deb_buildable_target_empty_maintainer_still_fails() {
 
 /// `ipk` (OpenWrt/Entware) is deb-derived and its opkg control file carries a
 /// `Maintainer` line, so an ipk with no resolvable maintainer ships incomplete
-/// metadata exactly like its deb siblings — it must hard-fail, not warn.
+/// metadata exactly like its deb siblings — it must hard-fail.
 #[test]
 fn test_ipk_buildable_empty_maintainer_hard_fails() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
@@ -7168,7 +7106,7 @@ fn test_ipk_buildable_empty_maintainer_hard_fails() {
 
 /// Per-crate workspace mode for ipk: a crate whose ipk has neither an explicit
 /// nor a derivable maintainer hard-fails even when a sibling is fully
-/// configured — the guard resolves per-crate, not globally.
+/// configured — the guard resolves each crate on its own.
 #[test]
 fn test_ipk_per_crate_mode_empty_maintainer_fails() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
@@ -7299,10 +7237,6 @@ fn test_rpm_and_archlinux_only_empty_maintainer_succeeds() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Byte-reproducibility (two-build cmp at a fixed SOURCE_DATE_EPOCH)
-// ---------------------------------------------------------------------------
-
 /// Build one nfpm package twice with a wall-clock gap, both at a fixed
 /// `SOURCE_DATE_EPOCH`, and return the two byte streams. Hermetic: returns
 /// `None` (skip-with-pass) when the `nfpm` binary is absent.
@@ -7372,14 +7306,12 @@ fn rpm_is_byte_reproducible_across_time() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Signed-body reproducibility: the real config GPG-signs deb/rpm, so the WHOLE
 // file is intrinsically non-byte-reproducible (the signature embeds a
 // non-pinnable creation time / randomized salt). These tests prove the package
 // BODY is still byte-reproducible at a fixed SOURCE_DATE_EPOCH, justifying the
 // `*.deb` / `*.rpm` determinism allow-list entries (the harness verifies the
-// signature cryptographically, not by byte-equality).
-// ---------------------------------------------------------------------------
+// signature cryptographically).
 
 /// Provision an ephemeral GNUPGHOME with an unprotected RSA key and export the
 /// armored secret key to a file. Returns `None` (skip-with-pass) when `gpg` is
@@ -7491,7 +7423,7 @@ fn build_signed_nfpm_twice(
     // A second content entry forces data.tar.gz to carry >1 member, and a
     // postinstall scriptlet forces control.tar.gz to carry a maintainer script
     // — so the body byte-equality assertion covers a realistic multi-member
-    // body, not a near-empty one a single file would produce.
+    // body; a single file would produce a near-empty one.
     let extra = dir.path().join("extra.txt");
     std::fs::write(&extra, b"probe-extra\n").unwrap();
     let postinst = dir.path().join("postinstall.sh");
@@ -7609,13 +7541,13 @@ fn signed_deb_body_is_byte_reproducible_across_time() {
 /// file-metadata header plus the compressed cpio payload — IS byte-identical at a
 /// fixed SOURCE_DATE_EPOCH.
 ///
-/// The body is compared by parsing the RPM container directly rather than shelling
+/// The body is compared by parsing the RPM container directly, with no call
 /// to `rpm2cpio`. The signature lives in the *signature header* (the first of an
 /// RPM's two headers), so slicing from the main header to EOF isolates the
 /// deterministic region with zero external-tool dependency. `rpm2cpio` is unfit
 /// here: on rpm 4.x it verifies the package digest/signature and aborts mid-stream
 /// on a NOKEY signed package, and on rpm 6.x it is a symlink to `rpm2archive`,
-/// which emits a non-deterministically-gzipped tar instead of the raw cpio.
+/// which emits a non-deterministically-gzipped tar where the raw cpio is needed.
 #[test]
 fn signed_rpm_body_is_byte_reproducible_across_time() {
     let sig_block = |key: &std::path::Path| {
@@ -7648,12 +7580,12 @@ fn signed_rpm_body_is_byte_reproducible_across_time() {
     assert_eq!(
         a[ma..ma + 4],
         RPM_HDR_MAGIC,
-        "parsed offset must land on the main header magic (build A)"
+        "parsed offset must point at the main header magic (build A)"
     );
     assert_eq!(
         b[mb..mb + 4],
         RPM_HDR_MAGIC,
-        "parsed offset must land on the main header magic (build B)"
+        "parsed offset must point at the main header magic (build B)"
     );
     // The difference between the two signed builds must live ENTIRELY in the
     // signature header — proving signing ran AND that it is the sole source of
@@ -7675,7 +7607,7 @@ fn signed_rpm_body_is_byte_reproducible_across_time() {
 /// GPG-signed deb/rpm, nfpm's apk signature is deterministic (PKCS#1, no salt
 /// / no embedded timestamp), so the WHOLE signed artifact is reproducible —
 /// the premise that lets the determinism harness GATE `.apk` (count any drift
-/// as a regression) rather than allow-list it.
+/// as a regression) with no allow-list entry.
 #[test]
 fn signed_apk_is_byte_reproducible_across_time() {
     use std::process::Command;
@@ -7968,7 +7900,7 @@ fn signed_apk_repro_despite_varying_script_disk_mtime() {
 
     // Control B (apk-specific): pin postinstall but leave the apk preupgrade
     // RAW. The apk still drifts — proving `apk.scripts.preupgrade` must also be
-    // pinned (the gap this guards), not just the top-level scripts.
+    // pinned (the gap this guards), as well as the top-level scripts.
     let (sp1, _) = stage(t1);
     anodizer_core::util::set_file_mtime(&src_preup, t1).unwrap();
     let mixed_a = build(
@@ -8059,7 +7991,7 @@ fn pin_nfpm_script_mtimes_pins_every_hook() {
 
     let dir = TempDir::new().unwrap();
     // (hook-name, source path) for all six, each written then stamped with a
-    // different disk mtime so a missed hook would surface as a distinct mtime.
+    // different disk mtime so a missed hook would show up as a distinct mtime.
     let names = [
         "preinstall",
         "postinstall",
@@ -8117,7 +8049,7 @@ fn pin_nfpm_script_mtimes_pins_every_hook() {
     for (i, path) in staged.iter().enumerate() {
         assert_ne!(
             path, &srcs[i],
-            "hook `{}` must be rewritten to a staged copy, not left at its source path",
+            "hook `{}` must be rewritten to a staged copy away from its source path",
             names[i]
         );
         let meta = std::fs::metadata(path)
@@ -8130,10 +8062,6 @@ fn pin_nfpm_script_mtimes_pins_every_hook() {
          source mtimes; got per-hook mtimes: {mtimes:?}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// amd64 micro-architecture variant naming
-// ---------------------------------------------------------------------------
 
 mod amd64_variant {
     use super::*;
@@ -8196,7 +8124,7 @@ mod amd64_variant {
         // deb/rpm/apk arch fields must stay distro-conventional (`amd64`, never
         // `amd64v3`), so the conventional default filename can't disambiguate
         // two amd64 micro-arch variants of one triple — the guard must bail
-        // loudly instead of clobbering.
+        // loudly so no package is clobbered.
         let (mut ctx, _tmp) = ctx_with_two_variants(None);
         let err = NfpmStage.run(&mut ctx).unwrap_err().to_string();
         assert!(err.contains("crate 'myapp'"), "{err}");
@@ -8205,7 +8133,7 @@ mod amd64_variant {
 
     #[test]
     fn untagged_x86_64_conventional_default_name_unchanged() {
-        // The unified `v1` baseline must never surface in a DEFAULT filename:
+        // The unified `v1` baseline must never appear in a DEFAULT filename:
         // an untagged x86_64 binary with no `file_name_template` keeps the
         // exact historical default name (no `v1` suffix anywhere).
         let tmp = TempDir::new().unwrap();
@@ -8272,10 +8200,6 @@ mod amd64_variant {
         );
     }
 }
-
-// ---------------------------------------------------------------------------
-// nfpm vendor derivation
-// ---------------------------------------------------------------------------
 
 mod vendor_derivation {
     use anodizer_core::config::{Config, CrateConfig, MetadataConfig, NfpmConfig};
@@ -8424,7 +8348,7 @@ mod vendor_derivation {
     }
 }
 
-/// The nfpm schema floor cross-checks built packages with the native tooling
+/// The nfpm schema check cross-checks built packages with the native tooling
 /// when present (`dpkg-deb --info` / `rpm -qp`) and warn+skips otherwise, so
 /// the advisory set must track exactly the configured formats.
 #[test]

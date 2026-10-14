@@ -45,7 +45,7 @@ impl Announcer for EmailAnnouncer {
         // Skip-when-empty UX: missing `from` or empty `to` skips the
         // email announcer in normal mode (warn) and bails in strict
         // mode. A configured-but-malformed `from` (string set but no
-        // `@`) is a config error, not skip-when-empty, so it stays a
+        // `@`) is a config error (skip-when-empty covers only an unset value), so it stays a
         // hard bail regardless of strict mode.
         let from = match cfg.from.as_deref() {
             Some(raw) => ctx.render_template(raw)?,

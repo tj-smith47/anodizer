@@ -181,7 +181,7 @@ struct ExpectedControl {
 /// format, the package's control fields are read back, and a mismatch (or a
 /// non-zero tool exit with no parsed field) becomes a [`SchemaFinding`]. When
 /// the tool is absent the layer logs a `verbose` skip and relies on the
-/// primary schema floor — a missing tool is never a package defect.
+/// primary schema check — a missing tool is never a package defect.
 fn validate_built_packages(
     ctx: &Context,
     crate_name: &str,
@@ -195,11 +195,11 @@ fn validate_built_packages(
     // "an earlier run left it there", and an earlier run's package carries that
     // run's version — so inspecting it reports a mismatch describing the gap
     // between two runs rather than a defect in either. The primary config
-    // schema floor still covers the rendered config here.
+    // schema check still covers the rendered config here.
     if ctx.options.dry_run {
         log.verbose(
             "nfpm packages are predicted, not built, in a dry-run; relying on the \
-             config schema floor",
+             config schema check",
         );
         return Ok(findings);
     }
@@ -212,11 +212,11 @@ fn validate_built_packages(
         // The secondary layer inspects a package physically on disk. A snapshot
         // that skipped the nfpm build registers the predicted `LinuxPackage`
         // path without producing the file, so a missing file means the build
-        // did not run here — the primary schema floor already covered it.
+        // did not run here — the primary schema check already covered it.
         if !path.exists() {
             log.verbose(&format!(
                 "nfpm package {} not built in this run; relying on the config \
-                 schema floor",
+                 schema check",
                 path.display()
             ));
             continue;
@@ -250,12 +250,12 @@ fn validate_built_packages(
                     findings.extend(check_deb_control(path, &expected)?)
                 }
                 anodizer_core::tool_detect::ToolProbe::Unavailable => log.verbose(
-                    "dpkg-deb not on PATH — relying on the nfpm config schema floor \
+                    "dpkg-deb not on PATH — relying on the nfpm config schema check \
                      for .deb validation",
                 ),
                 anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => log.warn(&format!(
                     "could not probe dpkg-deb availability ({e}); relying on the nfpm \
-                     config schema floor for .deb validation"
+                     config schema check for .deb validation"
                 )),
             },
             "rpm" => match anodizer_core::tool_detect::runs("rpm") {
@@ -263,16 +263,16 @@ fn validate_built_packages(
                     findings.extend(check_rpm_control(path, &expected)?)
                 }
                 anodizer_core::tool_detect::ToolProbe::Unavailable => log.verbose(
-                    "rpm not on PATH — relying on the nfpm config schema floor \
+                    "rpm not on PATH — relying on the nfpm config schema check \
                      for .rpm validation",
                 ),
                 anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => log.warn(&format!(
                     "could not probe rpm availability ({e}); relying on the nfpm \
-                     config schema floor for .rpm validation"
+                     config schema check for .rpm validation"
                 )),
             },
             // Other packagers (apk, archlinux, ipk) have no portable
-            // always-present inspector here; the primary schema floor stands.
+            // always-present inspector here; the primary schema check stands.
             _ => {}
         }
     }
@@ -1203,7 +1203,7 @@ mod tests {
 
     /// A registered `LinuxPackage` whose file was never built (the
     /// snapshot/dry-run case: the predicted path exists in `ctx` but no file is
-    /// on disk) must not trip the gated layer — the primary schema floor stands
+    /// on disk) must not trip the gated layer — the primary schema check stands
     /// and the validator reports zero findings.
     #[test]
     fn unbuilt_package_artifact_does_not_trip_gated_layer() {

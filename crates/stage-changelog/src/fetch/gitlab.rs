@@ -10,10 +10,6 @@ use anodizer_core::retry::{RetryLog, SuccessClass, retry_http_blocking_deadline}
 use super::push_with_squashed;
 use crate::group::{CommitInfo, extract_co_authors, parse_commit_message};
 
-// ---------------------------------------------------------------------------
-// Helper: fetch commits from GitLab API (use: gitlab)
-// ---------------------------------------------------------------------------
-
 /// Fetch commits via the GitLab Repository Compare API.
 ///
 /// Uses `GET {api}/projects/{project_id}/repository/compare?from={prev}&to={current}`

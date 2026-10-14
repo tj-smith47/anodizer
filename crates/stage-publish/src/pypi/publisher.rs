@@ -62,7 +62,7 @@ pub(crate) const TOKEN_ENV_VARS: [&str; 2] = ["PYPI_TOKEN", "MATURIN_PYPI_TOKEN"
 
 /// Resolve the upload token: `cfg.token` (templated) wins; otherwise the
 /// first non-empty env var from [`TOKEN_ENV_VARS`]. Empty string when all
-/// are unset — the caller surfaces a clear "missing token" error.
+/// are unset — the caller reports a clear "missing token" error.
 pub(crate) fn resolve_token(ctx: &Context, cfg: &PypiConfig) -> Result<String> {
     crate::publisher_helpers::resolve_token_with_ladder(
         ctx,
@@ -111,7 +111,7 @@ pub(crate) fn resolve_upload_credential(
         // that fails to render must NOT abort the run when OIDC is available:
         // auto's contract is "use whatever credential the environment offers",
         // so a token-render error is routed around to Trusted Publishing and
-        // surfaced only when there is no OIDC fallback to take.
+        // reported only when there is no OIDC fallback to take.
         PypiAuthMode::Auto => match resolve_token(ctx, cfg) {
             Ok(token) if !token.is_empty() => Ok(token),
             token_result => {
@@ -120,7 +120,7 @@ pub(crate) fn resolve_upload_credential(
                         ctx, repository, policy, deadline, log,
                     )
                 } else {
-                    // No OIDC fallback: surface a token-render error if there
+                    // No OIDC fallback: report a token-render error if there
                     // was one, else the no-credential guidance.
                     token_result?;
                     bail!(
@@ -142,7 +142,7 @@ pub(crate) fn resolve_upload_credential(
 /// Every per-entry identity — the PyPI project name fallback and the
 /// summary/license/homepage METADATA fallbacks — resolves through THIS crate,
 /// so an entry with `ids: ["other-crate"]` publishes other-crate's binary
-/// under other-crate's metadata instead of the primary crate's (the npm
+/// under other-crate's metadata (the npm
 /// optional-deps publisher scopes the same way).
 pub(crate) fn entry_crate_name(ctx: &Context, cfg: &PypiConfig) -> String {
     static_entry_crate_name(&ctx.config, cfg)
@@ -167,7 +167,7 @@ pub fn static_entry_crate_name(config: &anodizer_core::config::Config, cfg: &Pyp
 /// `cfg.name` when it is not a template expression, else `crate_name`.
 /// Returns `None` when `cfg.name` is templated — outside a release run there
 /// is nothing to render it with, and a destructive rollback that cannot name
-/// the immutable project it would orphan must fail closed rather than probe a
+/// the immutable project it would orphan must fail closed; it never probes a
 /// guessed name. Mirrors `resolve_name` without a render context, the same
 /// way winget's `static_package_identifier` mirrors its publisher's id
 /// resolution.
@@ -231,7 +231,7 @@ pub(crate) fn build_spec_base(
     crate_name: &str,
 ) -> Result<WheelSpec> {
     // Template errors PROPAGATE: these fields end up in immutable published
-    // METADATA, so a broken template must abort the release rather than ship
+    // METADATA, so a broken template must abort the release before it can ship
     // its raw source (every other render in this file propagates the same
     // way).
     let render = |field: &str, s: &str| -> Result<String> {
@@ -390,7 +390,6 @@ pub(crate) fn publish_to_pypi(
         let label = cfg.id.clone().unwrap_or_else(|| format!("pypis[{}]", idx));
         log.status(&format!("processing pypi project '{}'", label));
 
-        // ---- Skip gates ----
         if let Some(skip) = cfg.skip.as_ref() {
             let off = skip
                 .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
@@ -410,7 +409,6 @@ pub(crate) fn publish_to_pypi(
             continue;
         }
 
-        // ---- Name + version forms ----
         let crate_name = entry_crate_name(ctx, cfg);
         let name = resolve_name(ctx, cfg);
         validate_project_name(&name)?;
@@ -425,7 +423,6 @@ pub(crate) fn publish_to_pypi(
             );
         }
 
-        // ---- Assemble the file set ----
         let binaries = select_binaries(ctx, cfg);
         if binaries.is_empty() && !cfg.sdist {
             log.status(&format!(
@@ -437,7 +434,7 @@ pub(crate) fn publish_to_pypi(
         // A `platform_tag_overrides` key that no built target matches is a typo
         // or a stale entry: without this guard the override silently falls
         // through to binary-inspection auto-detection, shipping a wheel tag the
-        // operator thought they had pinned. Fail loudly instead.
+        // operator thought they had set. This fails loudly.
         if let Some(overrides) = cfg.platform_tag_overrides.as_ref() {
             let built: std::collections::BTreeSet<&str> = binaries
                 .iter()
@@ -482,7 +479,7 @@ pub(crate) fn publish_to_pypi(
                 .with_context(|| format!("pypi: read binary '{}'", art.path.display()))?;
             let traits = inspect_binary(&bytes, *universal)?;
             // A per-target override wins verbatim over binary inspection: the
-            // configured tag is used exactly as written, skipping glibc-floor
+            // configured tag is used exactly as written, skipping glibc-minimum
             // and Mach-O deployment-target detection for this target.
             let tag = match cfg
                 .platform_tag_overrides
@@ -567,7 +564,6 @@ pub(crate) fn publish_to_pypi(
             continue;
         }
 
-        // ---- Credential + upload ----
         let token =
             resolve_upload_credential(ctx, cfg, &repository, &policy, deadline, &label, log)?;
         let client = anodizer_core::http::blocking_client(Duration::from_secs(60))
@@ -619,7 +615,7 @@ pub(crate) fn publish_to_pypi(
 /// now. Shared by [`anodizer_core::Publisher::requirements`] and
 /// [`anodizer_core::Publisher::config_fully_inactive`] so the two cannot
 /// diverge. `preflight` keeps its own loop (it needs per-entry index-URL
-/// resolution alongside the filter, not just a boolean).
+/// resolution alongside the filter as well as the boolean).
 fn active_pypi_configs(ctx: &Context) -> Vec<&anodizer_core::config::PypiConfig> {
     ctx.config
         .pypis
@@ -886,7 +882,7 @@ impl anodizer_core::Publisher for PypiPublisher {
     ///   without `sdist_manifest` ⇒ Blocker (the publish cannot proceed);
     /// * `<name>==<version>` already on the index ⇒ Warning — the run path's
     ///   `skip_existing` handles the re-run case, so this mirrors the other
-    ///   Manager publishers' duplicate-version warn rather than blocking.
+    ///   Manager publishers' duplicate-version warn and does not block.
     fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         use crate::publisher_preflight::{merge, probe_version_published};
         use anodizer_core::PreflightCheck;

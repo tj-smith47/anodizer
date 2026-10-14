@@ -2,8 +2,8 @@
 //!
 //! - Publisher config lookup (`get_publish_config`).
 //! - Artifact-kind resolution (`resolve_artifact_kind`).
-//! - Secret rendering (`render_secret`, `resolve_secret_name`,
-//!   `config_or_env_secret`) and token resolution (`resolve_token`,
+//! - Secret rendering (`render_secret`, `resolve_secret_name`) and token
+//!   resolution (`resolve_token`,
 //!   `resolve_repo_token`, `resolve_pr_token`).
 //! - Repository owner/name extraction (`resolve_repo_owner_name`).
 //! - Skip-gate evaluation (`should_skip_upload`, `should_skip_publisher_with_if`).
@@ -39,29 +39,6 @@ pub(crate) fn resolve_secret_name(
         Some(name) => render_secret(ctx, field, name),
         None => Ok(default.to_string()),
     }
-}
-
-/// A secret read from a configured value or, when that renders blank, from
-/// the variable `env_var`: the configured value rendered through
-/// [`render_secret`], then the variable, each trimmed, and an empty or
-/// whitespace-only value falls through. Empty when neither has a value.
-pub(crate) fn config_or_env_secret(
-    ctx: &Context,
-    field: &str,
-    configured: Option<&str>,
-    env_var: &str,
-) -> Result<String> {
-    if let Some(raw) = configured {
-        let rendered = render_secret(ctx, field, raw)?;
-        if !rendered.is_empty() {
-            return Ok(rendered);
-        }
-    }
-    Ok(ctx
-        .env_var(env_var)
-        .as_deref()
-        .and_then(anodizer_core::git::non_blank_token)
-        .unwrap_or_default())
 }
 
 /// Look up a crate's config and its `publish` section by name, returning a
@@ -132,16 +109,31 @@ pub(crate) fn resolve_artifact_kind(use_value: Option<&str>) -> ArtifactKind {
 /// [`MapEnvSource`](anodizer_core::MapEnvSource) without mutating the
 /// process env.
 pub(crate) fn resolve_token(ctx: &Context, env_var: Option<&str>) -> Option<String> {
+    resolve_env_token_tracked(ctx, env_var.as_slice()).map(|(token, _)| token)
+}
+
+/// [`resolve_token`] for a publisher with more than one variable of its own
+/// (`env_vars`, read in order), returning the token with the variable it came
+/// from: `None` for the run token, which no single variable holds. A
+/// publisher that records the variable in its rollback evidence reads it
+/// back from here.
+pub(crate) fn resolve_env_token_tracked(
+    ctx: &Context,
+    env_vars: &[&str],
+) -> Option<(String, Option<String>)> {
     use super::pr_token::{PUSH_TOKEN_ORDER, TokenLink};
+    let first_set = |names: &[&str]| {
+        names.iter().find_map(|name| {
+            ctx.env_var(name)
+                .as_deref()
+                .and_then(anodizer_core::git::non_blank_token)
+                .map(|token| (token, Some((*name).to_string())))
+        })
+    };
     PUSH_TOKEN_ORDER.iter().find_map(|link| match link {
-        TokenLink::PublisherVariable => env_var
-            .and_then(|v| ctx.env_var(v))
-            .as_deref()
-            .and_then(anodizer_core::git::non_blank_token),
-        TokenLink::RunToken => run_github_token(ctx),
-        TokenLink::GithubVariables => {
-            anodizer_core::git::resolve_github_token_with_env(None, &|key| ctx.env_var(key))
-        }
+        TokenLink::PublisherVariable => first_set(env_vars),
+        TokenLink::RunToken => run_github_token(ctx).map(|token| (token, None)),
+        TokenLink::GithubVariables => first_set(anodizer_core::git::GITHUB_TOKEN_ENV_LADDER),
         TokenLink::PullRequestToken | TokenLink::RepositoryToken => None,
     })
 }
@@ -161,7 +153,7 @@ pub(crate) fn run_github_token(ctx: &Context) -> Option<String> {
 ///
 /// Returns `Some((owner, name))` when both fields are populated, `None`
 /// when neither is set or only one is set. Callers chain `.ok_or_else()`
-/// to surface a missing-repository error.
+/// to report a missing-repository error.
 pub(crate) fn resolve_repo_owner_name(
     repo: Option<&anodizer_core::config::RepositoryConfig>,
 ) -> Option<(String, String)> {
@@ -253,10 +245,9 @@ pub(crate) fn should_skip_publisher_with_if(
         }
     }
     // `skip_upload` honors the `auto` value (skip for prereleases) via the
-    // shared `should_skip_upload`, NOT a bare `try_evaluates_to_true` — a
-    // bare bool-eval would silently treat `auto` as an unknown string and
-    // never skip a prerelease, regressing the documented `skip_upload: auto`
-    // semantics.
+    // shared `should_skip_upload`. A bare `try_evaluates_to_true` would
+    // silently treat `auto` as an unknown string and never skip a
+    // prerelease, regressing the documented `skip_upload: auto` semantics.
     if skip_upload.is_some() && should_skip_upload(skip_upload, ctx, log, Some(label))? {
         return Ok(true);
     }
@@ -376,9 +367,9 @@ mod tests {
     /// A templated `secret_name` (`TOKEN_{{ .Env.X }}`) must render to the
     /// env-var name BEFORE the lookup, identically regardless of which
     /// publisher's default is supplied. cloudsmith already routed through this
-    /// SSOT; dockerhub and gemfury now do too, so a `secret_name:
+    /// SSOT, and so do dockerhub and gemfury: a `secret_name:
     /// "TOKEN_{{ .Env.X }}"` with `.Env.X=FOO` resolves to `TOKEN_FOO` for all
-    /// three rather than being looked up as the literal template string.
+    /// three, and the literal template string is never looked up.
     #[test]
     fn resolve_secret_name_renders_templated_value_identically_across_publishers() {
         let mut ctx = TestContextBuilder::new().build();

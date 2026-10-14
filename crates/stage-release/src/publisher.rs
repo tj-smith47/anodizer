@@ -29,7 +29,7 @@
 //!
 //! A 404 response buckets as `ReleaseDeleteOutcome::AlreadyAbsent`
 //! so re-running `anodizer tag rollback` after a partial success does
-//! not surface false failures.
+//! not report false failures.
 //!
 //! # ID capture
 //!
@@ -64,13 +64,9 @@ use crate::ReleaseStage;
 
 /// Bounded fan-out cap for the rollback delete loop. Mirrors the
 /// `ROLLBACK_PARALLELISM` constant used by `stage-publish`'s git-revert
-/// and close-PR publishers; kept inline rather than re-exported so
+/// and close-PR publishers; kept inline (no re-export) so
 /// `stage-release` does not depend on `stage-publish`.
 const ROLLBACK_PARALLELISM: usize = 4;
-
-// ---------------------------------------------------------------------------
-// GithubReleaseTarget — evidence shape
-// ---------------------------------------------------------------------------
 
 /// Aliased to the core-owned snapshot so the evidence schema lives in
 /// [`anodizer_core::publish_evidence`]. Captures the (owner, repo,
@@ -95,7 +91,7 @@ fn decode_github_release_targets(
 
 /// Three-bucket outcome for a single release DELETE call.
 /// `AlreadyAbsent` is a success bucket — re-running rollback
-/// after a partial success must NOT surface 404s as failures.
+/// after a partial success must NOT report 404s as failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReleaseDeleteOutcome {
     Deleted,
@@ -113,10 +109,10 @@ pub(crate) enum ReleaseDeleteOutcome {
 /// - `410` / `gone` — GitHub occasionally returns 410 for resources that
 ///   were deleted recently (the target was "tombstoned").
 /// - `422` / `unprocessable` — GitHub's "does not exist" edge cases on
-///   recently-mutated resources surface as 422 Unprocessable Entity.
+///   recently-mutated resources return 422 Unprocessable Entity.
 ///
 /// Every other error message buckets as `Failed` so genuine transport /
-/// auth / 5xx failures still surface a manual-cleanup warn.
+/// auth / 5xx failures still print a manual-cleanup warn.
 fn classify_delete_err(err: &anyhow::Error) -> ReleaseDeleteOutcome {
     let s = err.to_string().to_ascii_lowercase();
     let already_absent = s.contains("404")
@@ -131,10 +127,6 @@ fn classify_delete_err(err: &anyhow::Error) -> ReleaseDeleteOutcome {
         ReleaseDeleteOutcome::Failed(err.to_string())
     }
 }
-
-// ---------------------------------------------------------------------------
-// GithubReleasePublisher
-// ---------------------------------------------------------------------------
 
 /// [`anodizer_core::Publisher`] adapter over [`ReleaseStage::run`]'s
 /// GitHub backend. See module rustdoc for the design.
@@ -239,15 +231,15 @@ pub(crate) fn active_release_configs(ctx: &Context) -> Vec<&anodizer_core::confi
         .collect()
 }
 
-/// Walk the crate universe (top-level `crates` plus every
+/// Scan the crate universe (top-level `crates` plus every
 /// `workspaces[].crates` entry) and emit one [`GithubReleaseTarget`] per
 /// crate that has a `release.github` block (or falls back to the
 /// `release.github` default per [`crate::resolve_release_repo`]).
 /// `release_id` is left `None`; the post-publish lookup fills it in.
 ///
 /// Crates whose `release.skip` would evaluate true are skipped here too,
-/// matching the publish path's filter. Render errors are surfaced so
-/// the caller fails loudly rather than silently dropping a target.
+/// matching the publish path's filter. Render errors are returned so
+/// the caller fails loudly and no target is silently dropped.
 fn collect_release_targets(ctx: &Context) -> anyhow::Result<Vec<GithubReleaseTarget>> {
     use crate::resolve_release_repo;
     use anodizer_core::release_tag::resolve_release_tag;
@@ -524,7 +516,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
                             ReleaseDeleteOutcome::AlreadyAbsent
                         };
 
-                        // Surface failure warns with the same wording
+                        // Print failure warns with the same wording
                         // shape every other publisher uses so an operator
                         // skimming the rollback log can pattern-match.
                         if let ReleaseDeleteOutcome::Failed(err) = &release_outcome {
@@ -610,10 +602,6 @@ fn rollback_failure_msg(step: &str, tag: &str, owner: &str, repo: &str, err: &st
     )
 }
 
-// ---------------------------------------------------------------------------
-// gh_cli_client — production GitHubClient impl backed by the `gh` CLI
-// ---------------------------------------------------------------------------
-
 mod gh_cli_client {
     //! Minimal `gh` CLI / reqwest backed [`GitHubClient`] used by
     //! [`super::GithubReleasePublisher`] for ID lookup + delete.
@@ -621,10 +609,9 @@ mod gh_cli_client {
     //! The publisher only consumes `get_release_by_tag`, `delete_release`,
     //! and `delete_tag`; the remaining trait methods return an explicit
     //! "not implemented" error so a future call site that wires this
-    //! client into a wider code path fails loudly rather than silently
-    //! no-opping. The real production publish path (release create +
-    //! asset upload) still goes through the octocrab client in
-    //! [`crate::github`].
+    //! client into a wider code path fails loudly. The real production publish
+    //! path (release create + asset upload) still goes through the octocrab
+    //! client in [`crate::github`].
 
     use anodizer_core::github_client::{
         AssetInfo, CreateReleaseParams, DeleteReleaseParams, DeleteTagParams,
@@ -655,7 +642,7 @@ mod gh_cli_client {
             match anodizer_core::git::gh_api_get(&endpoint, None) {
                 Ok(v) => {
                     // Successful 200 — extract the minimal fields. A
-                    // 404 surfaces as an Err with "404" in the message,
+                    // 404 returns as an Err with "404" in the message,
                     // handled in the Err arm below.
                     let id = v["id"].as_u64().ok_or_else(|| {
                         anyhow::anyhow!(
@@ -811,9 +798,9 @@ mod publisher_tests {
     fn config_fully_inactive_true_when_no_release_block_configured() {
         // The registry only pushes this publisher when
         // `is_github_release_configured` already found a `release:` block
-        // somewhere, so this path is a defensive edge case, not a live one —
-        // but it must still agree with `active_release_configs`'s empty-set
-        // semantics rather than special-casing "never configured" as active.
+        // somewhere, so this path is a defensive edge case, but it
+        // must still agree with `active_release_configs`'s empty-set semantics
+        // and treat "never configured" as inactive.
         let ctx = TestContextBuilder::new().build();
         assert!(GithubReleasePublisher::new().config_fully_inactive(&ctx));
     }
@@ -944,10 +931,10 @@ mod publisher_tests {
     /// Evidence MUST NOT serialize anything that looks like a secret —
     /// no token / auth / password keys, no bearer prefixes. The shape
     /// is fully controlled by `GithubReleaseTarget`, but a future field
-    /// addition could regress this contract; pin it explicitly.
+    /// addition could regress this contract; test it explicitly.
     #[test]
     fn github_release_target_extra_carries_no_secret_material() {
-        // Structural pin: build typed evidence and assert (a) no
+        // Structural check: build typed evidence and assert (a) no
         // credential-shaped keys appear AND (b) the operator-public
         // (owner, repo, tag) coordinates serialize.
         let mut e = PublishEvidence::new("github-release");
@@ -1023,7 +1010,7 @@ mod publisher_tests {
         let rel_calls = mock.delete_release_calls();
         assert_eq!(rel_calls[0].release_id, 42);
 
-        // Pin the classifier shape directly so a future refactor of
+        // Assert the classifier shape directly so a future refactor of
         // `classify_delete_err` cannot silently widen the "AlreadyAbsent"
         // bucket.
         let err = anyhow::anyhow!("HTTP 404 Not Found");
@@ -1039,9 +1026,9 @@ mod publisher_tests {
     }
 
     /// GitHub sometimes returns 410 Gone for tag refs that were recently
-    /// deleted (the ref was tombstoned but still surfaces in the error
+    /// deleted (the ref was tombstoned but still appears in the error
     /// shape). Bucket as `AlreadyAbsent` so re-running
-    /// `anodizer tag rollback` does not surface a spurious manual-cleanup warn.
+    /// `anodizer tag rollback` does not print a spurious manual-cleanup warn.
     #[test]
     fn classify_delete_error_treats_410_gone_as_already_absent() {
         let err = anyhow::anyhow!("HTTP 410 Gone");
@@ -1076,7 +1063,7 @@ mod publisher_tests {
     }
 
     /// 5xx is the canonical Failed bucket — genuine transport / auth
-    /// errors must still surface the manual-cleanup warn so operators
+    /// errors must still print the manual-cleanup warn so operators
     /// know to revisit.
     #[test]
     fn classify_delete_error_treats_500_as_failed() {
@@ -1187,9 +1174,9 @@ mod publisher_tests {
     }
 
     /// `is_github_release_configured` (the registry predicate) lives in
-    /// `stage-publish/src/registry.rs`. This sibling test pins the
+    /// `stage-publish/src/registry.rs`. This sibling test checks the
     /// configured/unconfigured boundary inside `stage-release` so a
-    /// publisher renaming or moving the `release.github` block surfaces
+    /// publisher renaming or moving the `release.github` block fails
     /// here too. It exercises `collect_release_targets` because the
     /// registry predicate consults the same fields.
     #[test]
@@ -1227,7 +1214,7 @@ mod publisher_tests {
 
         // Three targets sharing one (owner, repo, tag) tuple — the
         // canonical monorepo shape where one workspace-wide release
-        // surfaces under multiple crate logical labels.
+        // appears under multiple crate logical labels.
         let mut targets = vec![
             GithubReleaseTarget {
                 crate_name: "demo-core".into(),
@@ -1268,7 +1255,7 @@ mod publisher_tests {
 
     /// Negative — when each target points at a distinct `(owner, repo, tag)`
     /// tuple the memo never hits, so N targets produce N round-trips.
-    /// Pins that the dedup is keyed on the tuple, not blindly shared.
+    /// Checks that the dedup is keyed on the tuple.
     #[test]
     fn get_release_by_tag_queries_each_distinct_target_tuple() {
         use anodizer_core::github_client::ReleaseInfo;
@@ -1333,7 +1320,7 @@ mod publisher_tests {
         assert_eq!(
             mock.get_release_by_tag_call_count(),
             1,
-            "the duplicate tuple must be served from the memo, not re-queried"
+            "the duplicate tuple must be served from the memo with no second query"
         );
         assert_eq!(targets[0].release_id, Some(4242));
         assert_eq!(
@@ -1370,7 +1357,7 @@ mod publisher_tests {
         capture_release_ids(mock.as_ref(), &mut targets);
         assert_eq!(
             targets[0].release_id, None,
-            "a lookup error must clear the id to None, not abort"
+            "a lookup error must clear the id to None and keep going"
         );
     }
 

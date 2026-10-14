@@ -10,10 +10,6 @@ use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
 
-// ---------------------------------------------------------------------------
-// LSM (Linux Software Map) metadata
-// ---------------------------------------------------------------------------
-
 struct Lsm {
     title: String,
     version: String,
@@ -49,16 +45,12 @@ impl Lsm {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /// Default `.run` filename template when a config sets no `filename:`.
 ///
 /// `makeself` is a Linux-capable namer, so it appends the FULL
 /// [`MICRO_ARCH_VARIANT_SUFFIX`](anodizer_core::archive_name::MICRO_ARCH_VARIANT_SUFFIX)
-/// (Arm/Mips/Amd64) — the same suffix the archive defaults carry — rather than
-/// the amd64-only installer subset, composed from the shared const so it cannot
+/// (Arm/Mips/Amd64) — the same suffix the archive defaults carry, wider than
+/// the amd64-only installer subset — composed from the shared const so it cannot
 /// drift from the archive stage's naming.
 fn default_name_template() -> String {
     format!(
@@ -100,7 +92,7 @@ fn make_args(
     args.push("--lsm".to_string());
     args.push("package.lsm".to_string());
 
-    // Pin the extraction-target dir name. Without `--target`, makeself falls
+    // Fix the extraction-target dir name. Without `--target`, makeself falls
     // back to `makeself-$$-$(date +%Y%m%d%H%M%S)` which embeds the PID + the
     // wallclock and drifts byte-by-byte between two harness runs. The
     // filename (sans `.run` extension) is stable across runs by construction
@@ -110,7 +102,7 @@ fn make_args(
     args.push("--target".to_string());
     args.push(target_dir.to_string());
 
-    // Pin the packaging-date header under SOURCE_DATE_EPOCH so the .run
+    // Fix the packaging-date header under SOURCE_DATE_EPOCH so the .run
     // header is byte-stable across runs. makeself's default
     // `DATE=`LC_ALL=C date`` reads wall-clock and otherwise leaks into the
     // .run file (the `Date of packaging:` line in the embedded header).
@@ -149,7 +141,7 @@ fn resolve_packaging_date_with_env<E: anodizer_core::env_source::EnvSource + ?Si
         .map(|dt| dt.format("%a %b %e %H:%M:%S UTC %Y").to_string()))
 }
 
-/// Recursively pin every regular file's mtime in `dir` to `epoch_secs`.
+/// Recursively set every regular file's mtime in `dir` to `epoch_secs`.
 ///
 /// makeself wraps `tar` over the work directory; tar embeds each file's
 /// on-disk mtime into the archive header. `fs::copy` stamps destination
@@ -157,10 +149,10 @@ fn resolve_packaging_date_with_env<E: anodizer_core::env_source::EnvSource + ?Si
 /// file contents but with different mtimes — that drifts the tar payload,
 /// the gzip compressed bytes (length + content), and ultimately the
 /// `size_bytes` field that artifacts.json carries for the `.run` artifact.
-/// Pinning every file's mtime to `SOURCE_DATE_EPOCH` removes the drift.
+/// Setting every file's mtime to `SOURCE_DATE_EPOCH` removes the drift.
 fn pin_workdir_mtimes(dir: &Path, epoch_secs: i64) -> Result<()> {
     anodizer_core::util::pin_dir_mtimes_epoch(dir, epoch_secs)
-        .with_context(|| format!("makeself: pin staging mtimes under {}", dir.display()))
+        .with_context(|| format!("makeself: set staging mtimes under {}", dir.display()))
 }
 
 /// Reject duplicate makeself config IDs (per-id `default` collapses unkeyed
@@ -299,7 +291,7 @@ fn resolve_makeself_filename(
 }
 
 /// Execute a fully-prepared makeself job: stage files into the work_dir,
-/// pin mtimes for SDE determinism, invoke `makeself`, move the output into
+/// set mtimes for SDE determinism, invoke `makeself`, move the output into
 /// place, and produce the registered `Artifact`.
 ///
 /// Thread-safe: borrows only the owned data on `MakeselfJob`; never touches
@@ -343,7 +335,7 @@ fn execute_makeself_job(
     fs::write(job.work_dir.join("package.lsm"), &job.lsm_text)
         .with_context(|| format!("makeself: write LSM file in {}", job.work_dir.display()))?;
 
-    // Pin every file's mtime to SOURCE_DATE_EPOCH so tar embeds the same
+    // Set every file's mtime to SOURCE_DATE_EPOCH so tar embeds the same
     // per-file timestamps across runs. Without this, fs::copy stamps the
     // destination with the current wallclock and the resulting tar.gz
     // payload differs between consecutive runs.
@@ -419,7 +411,7 @@ fn makeself_artifact_metadata(job: &MakeselfJob) -> HashMap<String, String> {
 /// The key carries the binary's `amd64_variant` metadata alongside the os/arch
 /// platform string so two amd64 builds of one target (a baseline `v1` and a
 /// `-Ctarget-cpu=x86-64-v3` tune) end up in separate groups and produce two
-/// distinct `.run` files instead of one silently clobbering the other.
+/// distinct `.run` files; with one group the second would silently clobber the first.
 ///
 /// `BTreeMap` (not `HashMap`) so iteration order is deterministic across
 /// runs — callers iterate the result to register one makeself Artifact per
@@ -442,10 +434,6 @@ fn group_by_platform(artifacts: &[Artifact]) -> BTreeMap<(String, Option<String>
     }
     groups
 }
-
-// ---------------------------------------------------------------------------
-// MakeselfStage
-// ---------------------------------------------------------------------------
 
 pub struct MakeselfStage;
 
@@ -510,16 +498,12 @@ impl Stage for MakeselfStage {
             .unwrap_or_else(|| "0.0.0".to_string());
         let project_name = ctx.config.project_name.clone();
 
-        // ----------------------------------------------------------------
-        // Serial: render every template, collect MakeselfJob structs
-        // containing fully-owned data ready for parallel exec.
-        // ----------------------------------------------------------------
         let mut jobs: Vec<MakeselfJob> = Vec::new();
 
         // One guard spans every `makeselfs:` config of the project: two configs
         // with the default (or identical) `filename:` render the same `.run`
-        // path for one platform — error loudly across configs instead of letting
-        // the second silently clobber the first.
+        // path for one platform — error loudly across configs, because the
+        // second would otherwise silently clobber the first.
         let mut arch_guard = ArchPathGuard::new();
 
         for (entry, cfg) in configs.iter().enumerate() {
@@ -541,12 +525,10 @@ impl Stage for MakeselfStage {
             return Ok(());
         }
 
-        // ----------------------------------------------------------------
         // Parallel: each job = one `makeself` subprocess invocation with
         // its own work dir. Bounded concurrency via chunks(parallelism).
         // Workers return the fully-populated `Artifact` for serial
         // registration in ctx.artifacts below.
-        // ----------------------------------------------------------------
         let verbosity = log.verbosity();
         let built_artifacts = anodizer_core::parallel::run_parallel_chunks(
             &jobs,
@@ -557,9 +539,6 @@ impl Stage for MakeselfStage {
             |job: &MakeselfJob| execute_makeself_job(job, verbosity),
         )?;
 
-        // ----------------------------------------------------------------
-        // Serial: register artifacts in ctx. ArtifactRegistry takes &mut self.
-        // ----------------------------------------------------------------
         for artifact in built_artifacts {
             ctx.artifacts.add(artifact);
         }
@@ -896,10 +875,6 @@ pub fn env_requirements(
     }]
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -909,7 +884,7 @@ mod tests {
     #[test]
     fn default_name_template_contains_full_micro_arch_suffix() {
         // Guard the de-smell: the makeself default must compose from the shared
-        // full-suffix const, not re-embed the Arm/Mips/Amd64 clause literal.
+        // full-suffix const; a re-embedded Arm/Mips/Amd64 clause literal would drift.
         assert!(
             default_name_template()
                 .contains(anodizer_core::archive_name::MICRO_ARCH_VARIANT_SUFFIX),
@@ -951,12 +926,12 @@ mod tests {
         assert!(args.contains(&"./setup.sh".to_string()));
         assert!(
             args.contains(&"--xz".to_string()),
-            "compression must default to --xz, not makeself's --gzip default: {args:?}"
+            "compression must default to --xz (makeself's own default is --gzip): {args:?}"
         );
     }
 
     #[test]
-    fn test_make_args_target_pinned() {
+    fn test_make_args_sets_target_dir() {
         let args = make_args("MyApp", "myapp.run", None, "./setup.sh", &[], None);
         let idx = args
             .iter()
@@ -1155,8 +1130,6 @@ crates:
         );
     }
 
-    // ---- additional coverage ----
-
     #[test]
     fn test_lsm_render_skips_empty_fields() {
         let lsm = Lsm {
@@ -1249,7 +1222,7 @@ crates:
 
     #[test]
     fn test_group_by_platform_preserves_iteration_order() {
-        // BTreeMap iteration is alphabetical by key — pin that contract
+        // BTreeMap iteration is alphabetical by key — check that contract
         // so artifacts.json doesn't drift between runs.
         let a1 = Artifact {
             kind: ArtifactKind::Binary,
@@ -1379,8 +1352,8 @@ crates:
         assert_eq!(v3_meta.get("format").map(String::as_str), Some("makeself"));
 
         // A v1 build carries its variant verbatim, mirroring the flatpak /
-        // appimage stages (the disambiguator lives in the name, not by
-        // stripping v1 from metadata).
+        // appimage stages (the disambiguator lives in the name; metadata
+        // keeps v1).
         let baseline_job = jobs
             .iter()
             .find(|j| j.filename == "myapp_1.0.0_linux_amd64.run")
@@ -1406,8 +1379,8 @@ crates:
     fn test_makeself_constant_filename_bails_across_variants() {
         // A constant user `filename:` lacking any arch/variant discriminator
         // renders the same `.run` path for two amd64 variants — the
-        // ArchPathGuard must error loudly instead of letting the second job
-        // silently overwrite the first.
+        // ArchPathGuard must error loudly, because the second job would
+        // otherwise silently overwrite the first.
         let tmp = tempfile::tempdir().unwrap();
         let mut ctx = Context::new(
             anodizer_core::config::Config::default(),
@@ -1512,8 +1485,8 @@ crates:
 
     /// Two `makeselfs:` configs (distinct `id`, both the default filename)
     /// render the same `.run` path for one platform. The guard now spans every
-    /// config of the project, so the second config bails loudly instead of
-    /// silently clobbering the first config's installer.
+    /// config of the project, so the second config bails loudly; it would
+    /// otherwise silently clobber the first config's installer.
     #[test]
     fn test_makeself_two_configs_same_default_name_bail_across_configs() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1670,7 +1643,7 @@ crates:
         });
         MakeselfStage
             .run(&mut ctx)
-            .expect("per-crate-scoped empty match must skip, not bail");
+            .expect("per-crate-scoped empty match must skip");
         assert!(
             ctx.artifacts
                 .all()
@@ -1713,7 +1686,7 @@ crates:
         });
         MakeselfStage
             .run(&mut ctx)
-            .expect("target-restricted empty match must skip, not bail");
+            .expect("target-restricted empty match must skip");
     }
 
     #[test]
@@ -1731,7 +1704,6 @@ crates:
         assert!(date.contains("UTC"), "{date}");
     }
 
-    // ---- live `makeself` subprocess run path (PATH-stub harness) ----
     //
     // makeself is hard-coded as `Command::new("makeself")` (no configurable
     // `cmd:` field), so every test that drives the real run path prepends a
@@ -2017,8 +1989,8 @@ crates:
     #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]
-    fn test_makeself_live_run_pins_workdir_mtimes_under_sde() {
-        // With SOURCE_DATE_EPOCH set, every staged file's mtime is pinned to
+    fn test_makeself_live_run_sets_workdir_mtimes_to_sde() {
+        // With SOURCE_DATE_EPOCH set, every staged file's mtime is set to
         // that epoch before makeself runs, so tar embeds stable timestamps.
         let fx = MakeselfFixture::new();
         let mut ctx = fx.ctx(&[("x86_64-unknown-linux-gnu", "proj")]);
@@ -2052,13 +2024,13 @@ crates:
             .unwrap()
             .as_secs();
         // 1577836800 = 2020-01-01 00:00:00 UTC.
-        assert_eq!(secs, 1_577_836_800, "staged file mtime not pinned to SDE");
+        assert_eq!(secs, 1_577_836_800, "staged file mtime not set to SDE");
     }
 
     #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]
-    fn test_makeself_live_run_tool_failure_surfaces_stderr() {
+    fn test_makeself_live_run_tool_failure_reports_stderr() {
         // Non-zero exit → the stage bails, naming the filename, id, and the
         // tool's stderr/stdout in the error.
         let fx = MakeselfFixture::new();
@@ -2360,7 +2332,7 @@ crates:
         // .run with the id in the work-dir path and the artifact metadata. Two
         // invocations. Distinct filenames are required: a per-project guard now
         // spans every config, so two configs rendering the same default name for
-        // one platform would (correctly) bail rather than silently clobber.
+        // one platform would (correctly) bail.
         let fx = MakeselfFixture::new();
         let mut ctx = fx.ctx(&[("x86_64-unknown-linux-gnu", "proj")]);
         ctx.config.makeselfs = vec![

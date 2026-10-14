@@ -263,7 +263,7 @@ mod tests {
     }
 
     /// Missing `accessJwt` in the session response must bail with a clear
-    /// message rather than passing `None` into the next request.
+    /// message before `None` can reach the next request.
     #[test]
     fn missing_access_jwt_bails() {
         let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {

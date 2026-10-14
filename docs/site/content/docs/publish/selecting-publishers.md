@@ -83,7 +83,7 @@ never drifts):
 
 A name in the **yes** rows resolves the same whether you reach it through `--skip` (which
 also accepts stage tokens) or `--publishers`. The **publisher only** names have no stage
-of their own, so before this selection surface the only way to gate them was per-block
+of their own, so before this selection mechanism the only way to gate them was per-block
 config — now they honor `--skip`/`--publishers` uniformly at dispatch time.
 
 The last five names — `blob`, `snapcraft-publish`, `docker`, `docker-sign`, `announce` —

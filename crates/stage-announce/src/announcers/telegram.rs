@@ -6,7 +6,7 @@ use anyhow::Result;
 
 use super::validators::validate_telegram_thread_id;
 use crate::dispatch::{DispatchQueue, dispatch};
-use crate::helpers::{config_or_env_secret, is_enabled, render_message_with_default};
+use crate::helpers::{is_enabled, render_message_with_default};
 use crate::telegram;
 
 use super::Announcer;
@@ -16,7 +16,7 @@ use super::Announcer;
 /// backslash-escaped; the rendered output is byte-equivalent to the upstream
 /// `{{ print … | mdv2escape }}` Go-template form. Shared by `send` and
 /// `render_only` so the pre-publish guard exercises the exact default `send`
-/// would use. Pinned by `test_telegram_default_template_renders_without_tilde`.
+/// would use. Tested by `test_telegram_default_template_renders_without_tilde`.
 const TELEGRAM_DEFAULT_TEMPLATE: &str = "{{ ProjectName | mdv2escape }} {{ Tag | mdv2escape }} is out\\! Check it out at {{ ReleaseURL | mdv2escape }}";
 
 pub(super) struct TelegramAnnouncer;
@@ -43,11 +43,10 @@ impl Announcer for TelegramAnnouncer {
             .telegram
             .as_ref()
             .expect("send only called when enabled returned Ok(true)");
-        let bot_token = match config_or_env_secret(
-            ctx,
+        let bot_token = match ctx.config_or_env_secret(
             "announce.telegram.bot_token",
             cfg.bot_token.as_deref(),
-            "TELEGRAM_TOKEN",
+            &["TELEGRAM_TOKEN"],
         )? {
             Some(token) => token,
             None => {
@@ -85,7 +84,7 @@ impl Announcer for TelegramAnnouncer {
         // rendered output is byte-equivalent to the upstream
         // `{{ print … | mdv2escape }}` form, but the template itself
         // is `{{ … }}`-only and copy-pastes cleanly into custom
-        // user templates. Pinned by
+        // user templates. Tested by
         // `test_telegram_default_template_renders_without_tilde`.
         let message = render_message_with_default(
             ctx,

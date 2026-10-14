@@ -6,11 +6,11 @@
 //! a fixture `.anodizer.yaml` in each of the three config modes.
 //!
 //! Exiting 0 here does NOT by itself prove the dry-run spawned no `snapcraft`:
-//! a host that has the tool would also exit 0. The no-spawn property is pinned
+//! a host that has the tool would also exit 0. The no-spawn property is tested
 //! where it can be observed — `promote_dry_run_names_plan_and_spawns_nothing`
 //! in the snapcraft promoter and
 //! `dry_run_dispatch_emits_would_promote_and_spawns_nothing` in the verb's own
-//! dispatch. What these tests pin is the surface only a spawn reaches:
+//! dispatch. These tests check what only a spawn reaches:
 //! config discovery, the `--from` default, the per-publisher summary loop and
 //! the aggregated exit code.
 
@@ -107,7 +107,7 @@ workspaces:
 ";
 
 /// Omitting `--from` promotes from the canonical `prerelease` track, which the
-/// snapcraft promoter resolves to its native `candidate`. Pins that default
+/// snapcraft promoter resolves to its native `candidate`. Checks that default
 /// and the dry-run's zero exit in single-crate mode.
 #[test]
 fn promote_dry_run_single_crate_mode_names_default_from_track() {
@@ -120,7 +120,7 @@ fn promote_dry_run_single_crate_mode_names_default_from_track() {
     );
 }
 
-/// Lockstep workspace: every configured snap is promoted, not just the first.
+/// Lockstep workspace: every configured snap is promoted.
 #[test]
 fn promote_dry_run_lockstep_workspace_promotes_each_snap() {
     let dir = project(LOCKSTEP);
@@ -176,7 +176,7 @@ fn promote_invalid_channel_fails_before_any_publisher_runs() {
 /// A malformed `SOURCE_DATE_EPOCH` is the same error in `promote` as in a
 /// release, and a valid one lets the promotion run.
 #[test]
-fn promote_reads_the_source_date_through_the_release_reader() {
+fn promote_refuses_a_malformed_source_date_and_runs_with_a_valid_one() {
     let dir = project(SINGLE_CRATE);
     let args = ["--to", "stable", "--dry-run"];
     let (ok, out) = promote_with_source_date(dir.path(), "soon", &args);

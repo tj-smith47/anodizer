@@ -26,10 +26,8 @@ use crate::yaml::{
 ///   3. NFPM_PASSPHRASE
 ///
 /// `env_map` is the anodizer ctx env map (process env + project `env:` +
-/// `env_files:`). Looking up here — instead of `std::env::var` directly —
-/// means values defined in `.anodizer.yaml` `env:` are visible to the signer,
-/// reading from
-/// `ctx.Env` rather than `os.Getenv`.
+/// `env_files:`). Looking up here, with no direct `std::env::var` read,
+/// means values defined in `.anodizer.yaml` `env:` are visible to the signer.
 ///
 /// Returns `None` if no env var is set at any level.
 pub(super) fn resolve_passphrase_from_env(

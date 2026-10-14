@@ -349,7 +349,12 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
         }
         let token_set = ["ARTIFACTORY_TOKEN", "ARTIFACTORY_SECRET"]
             .iter()
-            .any(|var| ctx.env_var(var).is_some_and(|v| !v.is_empty()));
+            .any(|var| {
+                ctx.env_var(var)
+                    .as_deref()
+                    .and_then(anodizer_core::git::non_blank_token)
+                    .is_some()
+            });
         let every_entry_resolves = active_artifactory_configs(ctx)
             .iter()
             .filter_map(|entry| entry.name.as_deref())

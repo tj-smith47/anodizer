@@ -5,14 +5,12 @@ weight = 3
 template = "docs.html"
 +++
 
-> **Deprecation:** `publish.homebrew` (Homebrew **Formula**) is deprecated upstream
-> in [GoReleaser v2.16](https://goreleaser.com/blog/goreleaser-v2.16/) and anodizer
-> follows the same deprecation. The replacement is **[Homebrew Casks](./homebrew-casks.md)** —
+> **Deprecation:** `publish.homebrew` (Homebrew **Formula**) is deprecated.
+> The replacement is **[Homebrew Casks](./homebrew-casks.md)** —
 > the canonical Homebrew distribution channel for pre-compiled binaries.
->
-> Quoting upstream: _"Migrate to `homebrew_casks`, which is the right tool for the
-> job: it's how Homebrew expects pre-compiled binaries to be distributed, and it
-> gets all the new features (completion generation, post-install hooks, and so on)."_
+> `homebrew_casks` is the right tool for the job: it is how Homebrew expects
+> pre-compiled binaries to be distributed, and it gets all the new features
+> (completion generation, post-install hooks, and so on).
 >
 > Anodizer still parses `publish.homebrew` for back-compat; a `DEPRECATION:` warning
 > is emitted at config-load time. New projects should write `homebrew_casks:`
@@ -254,7 +252,7 @@ in <tap URL>`, or `Opened pull request to <owner/repo> (homebrew <name>):
 
 ## Authentication
 
-{{ token_order(target="your tap repository", publisher_var="HOMEBREW_TAP_TOKEN") }}
+{{ token_order(target="your tap repository", publisher_vars=["HOMEBREW_TAP_TOKEN"]) }}
 
 The token needs push access to the tap, and `pull_request:write` when `pull_request.enabled` is set.
 

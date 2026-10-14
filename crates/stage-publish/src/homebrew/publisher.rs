@@ -59,7 +59,7 @@ fn decode_homebrew_targets(extra: &PublishEvidenceExtra) -> Vec<HomebrewTarget> 
 
 /// Collapse the recorded tap-push targets to a unique set keyed by
 /// `(repo_url, branch, commit)`. The first entry seen wins (so its `target`
-/// label surfaces in warn lines).
+/// label appears in warn lines).
 ///
 /// One push is one commit, whatever it carried (a formula and its same-tap
 /// cask go in one commit), and each commit is reverted once. Two records
@@ -105,7 +105,7 @@ pub(super) fn record_tap_push(
 
 /// Attach the pull request opened for the push recorded at `commit`. The
 /// push was recorded before the pull request existed, so its row is amended
-/// in place rather than recorded again.
+/// in place.
 pub(super) fn record_tap_pr_url(ctx: &mut Context, commit: Option<&str>, url: Option<String>) {
     let (Some(commit), Some(url)) = (commit, url) else {
         return;
@@ -148,7 +148,7 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// each of which logs its own status line). `casks` is the number of in-scope
 /// top-level `homebrew_casks:` entries the run rendered.
 ///
-/// Both surfaces count toward the unit total: a cask-only project (the
+/// Both formulas and casks count toward the unit total: a cask-only project (the
 /// recommended path, zero formula blocks) would otherwise report
 /// `0 units considered` even after pushing its cask, which reads as a
 /// no-op to operators scanning the log.
@@ -167,7 +167,7 @@ pub(crate) fn run_done_message(considered: usize, casks: usize) -> String {
 }
 
 /// Decision predicate for the no-eligible-crates warning. True when the
-/// publisher walked the selection but the configured-predicate filtered
+/// publisher went through the selection but the configured-predicate filtered
 /// every crate out — distinct from "ran successfully in dry-run mode".
 ///
 /// `processed` is the count of crates whose `is_homebrew_per_crate_configured`
@@ -182,11 +182,11 @@ pub(crate) fn run_done_message(considered: usize, casks: usize) -> String {
 /// crate.
 ///
 /// `cask_total` is the number of top-level `homebrew_casks:` entries the
-/// run dispatched. The homebrew publisher has TWO sub-surfaces — the
+/// run dispatched. The homebrew publisher has TWO halves — the
 /// per-crate `publish.homebrew` FORMULA and the top-level
 /// `homebrew_casks:` CASK — and a cask-only project (the recommended path,
 /// zero formula blocks) publishes its cask correctly with `processed == 0`.
-/// The warning is a true "nothing pushed" signal only when NEITHER surface
+/// The warning is a true "nothing pushed" signal only when NEITHER half
 /// had anything to publish, so any configured cask suppresses it.
 pub(crate) fn should_warn_no_eligible(
     processed: usize,
@@ -198,7 +198,7 @@ pub(crate) fn should_warn_no_eligible(
 
 /// Warning emitted when the publisher was registered (at least one crate
 /// has a `publish.homebrew` block at the config level) but NEITHER
-/// homebrew sub-surface published anything: the run path processed zero
+/// homebrew half published anything: the run path processed zero
 /// formula crates AND no top-level `homebrew_casks:` entry was configured.
 ///
 /// With the implicit-all default in
@@ -208,7 +208,7 @@ pub(crate) fn should_warn_no_eligible(
 /// `--crate`/`--all` matrix selection was non-empty AND filtered every
 /// homebrew-configured crate out. Operators must see this — otherwise
 /// the publisher's `succeeded` status hides the fact that nothing was
-/// pushed. Names both surfaces (`publish.homebrew` formula and
+/// pushed. Names both halves (`publish.homebrew` formula and
 /// `homebrew_casks:` cask) since either would satisfy the publisher.
 pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     crate::publisher_helpers::run_no_eligible_crates_warning_with(
@@ -380,7 +380,7 @@ pub(crate) fn build_homebrew_crate_reconcile_target(
 
 /// Build the open-PR reconcile target for one top-level `homebrew_casks:`
 /// entry. Unlike per-crate entries these always publish at the context-global
-/// version, and carry their own `repository:` block rather than sharing a
+/// version, and carry their own `repository:` block apart from any
 /// formula's tap.
 pub(crate) fn build_homebrew_top_cask_reconcile_target(
     ctx: &Context,
@@ -507,8 +507,8 @@ impl anodizer_core::Publisher for HomebrewPublisher {
     }
 
     fn advisory_requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        // Same active-entry walk as `requirements`, but for tools whose
-        // absence only degrades the publish: the schema floor's `ruby -c`
+        // Same active-entry scan as `requirements`, but for tools whose
+        // absence only degrades the publish: the schema check's `ruby -c`
         // pass over rendered formulas/casks warn+skips without ruby, and
         // `gh pr create` is the preferred PR transport with a full REST-API
         // fallback — so both are recommendations, never gate failures.
@@ -639,7 +639,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         // orchestrator to git-revert HEAD in clones that were never
         // touched, which both fails on missing identity AND would
         // otherwise revert the wrong commit (`HEAD` = whatever was on
-        // remote before, NOT this run's work).
+        // remote before this run).
         let selected = crate::publisher_helpers::effective_publish_crates(
             ctx,
             is_homebrew_per_crate_configured,
@@ -673,8 +673,8 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             log.verbose(&run_per_crate_start_message(crate_name));
             processed += 1;
             // Re-scope the version/name template vars to THIS crate's own tag so
-            // the rendered formula carries the crate's version, not the first
-            // crate's (workspace per-crate independent-version mode).
+            // the rendered formula carries the crate's own version in workspace
+            // per-crate independent-version mode.
             let scoped = crate::publisher_helpers::with_published_crate_scope(
                 ctx,
                 crate_name,
@@ -844,7 +844,7 @@ pub(crate) fn block(
     p.homebrew.as_ref()
 }
 
-/// A crate's homebrew publish surface: its formula block, else its cask
+/// A crate's homebrew publish config: its formula block, else its cask
 /// (`publish.homebrew_cask:` or `publish.homebrew.cask:`). The single
 /// accessor the registry gate and the per-crate dispatch predicate key on,
 /// so a cask-only crate is published.
@@ -966,11 +966,11 @@ mod publisher_tests {
 
     #[test]
     fn homebrew_target_extra_carries_no_secret_material() {
-        // Structural pin: build an evidence with a populated variant,
+        // Structural test: build an evidence with a populated variant,
         // serialize, assert (a) no credential-shaped keys appear AND
         // (b) the operator-public shape is preserved. The type system
-        // pins the negative half (the snapshot struct has no token
-        // field to end up in); this test pins the positive half.
+        // covers the negative half (the snapshot struct has no token
+        // field to end up in); this test checks the positive half.
         let mut e = PublishEvidence::new("homebrew");
         e.extra = PublishEvidenceExtra::Homebrew(HomebrewExtra {
             homebrew_targets: vec![HomebrewTarget {
@@ -1031,7 +1031,7 @@ mod publisher_tests {
 
     #[test]
     fn homebrew_effective_publish_crates_implicit_all_when_selection_empty() {
-        // Regression pin for the `selected_crates = Vec::new()` failure
+        // Regression test for the `selected_crates = Vec::new()` failure
         // mode: the run path used to iterate the empty Vec and silently
         // skip every configured tap. The helper now resolves to
         // implicit-all over `publish.homebrew`-carrying crates.
@@ -1154,7 +1154,6 @@ mod publisher_tests {
         assert_eq!(dedup_homebrew_targets(&two_commits).len(), 2);
     }
 
-    // -----------------------------------------------------------------------
     // Log-message helpers — the operator-facing log strings the publisher
     // emits at each boundary.
 
@@ -1203,7 +1202,7 @@ mod publisher_tests {
     #[test]
     fn homebrew_no_config_skip_is_debug_level_by_default() {
         // Default (show_skipped=false, Normal verbosity): the per-crate
-        // "no homebrew config block" line is recorded at Debug, NOT Status,
+        // "no homebrew config block" line is recorded at Debug level,
         // so workspace mode does not emit one such line per non-applicable
         // crate at default verbosity.
         let lines = capture_homebrew_skip(false, false);
@@ -1217,7 +1216,7 @@ mod publisher_tests {
     }
 
     #[test]
-    fn homebrew_no_config_skip_surfaces_with_show_skipped() {
+    fn homebrew_no_config_skip_is_shown_with_show_skipped() {
         // --show-skipped forces the line back to Status for diagnosis.
         let lines = capture_homebrew_skip(true, false);
         assert_eq!(lines.len(), 1, "{lines:?}");
@@ -1225,9 +1224,9 @@ mod publisher_tests {
     }
 
     #[test]
-    fn homebrew_no_config_skip_surfaces_at_debug_verbosity() {
+    fn homebrew_no_config_skip_is_shown_at_debug_verbosity() {
         // Without --show-skipped (show_skipped=false) but at --debug
-        // verbosity, the no-op skip still surfaces: skip_line routes to
+        // verbosity, the no-op skip is still shown: skip_line routes to
         // debug(), which prints at Verbosity::Debug. Mirrors the default
         // fixture exactly, differing only in the logger's verbosity.
         let mut ctx = TestContextBuilder::new()
@@ -1299,7 +1298,7 @@ mod publisher_tests {
         assert!(msg.contains("nothing pushed"), "{msg}");
         assert!(msg.contains("--crate"), "{msg}");
         assert!(msg.contains("--all"), "{msg}");
-        // Both sub-surfaces must be named so an operator on the cask-only
+        // Both halves must be named so an operator on the cask-only
         // path knows that configuring a cask also satisfies the publisher.
         assert!(msg.contains("publish.homebrew"), "{msg}");
         assert!(msg.contains("homebrew_casks"), "{msg}");
@@ -1481,9 +1480,9 @@ mod publisher_tests {
         );
     }
 
-    /// The homebrew schema floor runs `ruby -c` over rendered formulas/casks
+    /// The homebrew schema check runs `ruby -c` over rendered formulas/casks
     /// when the tool is present and warn+skips otherwise, so it is ADVISORY:
-    /// recommended to the auto-install layer, never a blocker.
+    /// recommended to the auto-install layer and not a blocker.
     #[test]
     fn homebrew_advisory_requirements_emit_ruby_when_active() {
         let ctx = TestContextBuilder::new()
@@ -1533,8 +1532,8 @@ mod publisher_tests {
     }
 
     /// `pull_request.enabled` publishes via `gh pr create` when the CLI is
-    /// present, with a full REST-API fallback — so `gh` is a recommended
-    /// transport, not a hard need.
+    /// present, with a full REST-API fallback — so `gh` is a recommended,
+    /// optional transport.
     #[test]
     fn homebrew_advisory_requirements_emit_gh_when_pull_request_enabled() {
         let mut c = homebrew_crate("demo");

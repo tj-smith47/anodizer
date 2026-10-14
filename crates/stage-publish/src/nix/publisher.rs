@@ -231,7 +231,7 @@ impl anodizer_core::Publisher for NixPublisher {
 
     fn advisory_requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         // Same active-entry walk as `requirements`, but for tools whose
-        // absence only degrades the publish: the schema floor's
+        // absence only degrades the publish: the schema check's
         // `nix-instantiate --parse` pass over the rendered expression
         // warn+skips without the tool, and `gh pr create` is the preferred
         // PR transport with a full REST-API fallback — recommendations,
@@ -911,7 +911,7 @@ mod publisher_tests {
         );
     }
 
-    /// The nix schema floor runs `nix-instantiate --parse` over the rendered
+    /// The nix schema check runs `nix-instantiate --parse` over the rendered
     /// expression when the tool is present and warn+skips otherwise, so it is
     /// ADVISORY: recommended to the auto-install layer, never a blocker.
     #[test]

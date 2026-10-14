@@ -1,6 +1,6 @@
 //! Pre-flight validation for the SchemaStore publisher.
 //!
-//! Walks every non-skipped `schemas` entry and self-checks what it can before
+//! Reads every non-skipped `schemas` entry and self-checks what it can before
 //! the publish stage runs: config shape, catalog description content rules,
 //! and — for vendor mode — that the schema file exists, parses, and carries a
 //! valid `$id`/dialect. The publisher's `preflight()` forwards here.
@@ -53,7 +53,7 @@ pub(crate) fn preflight_checks(ctx: &Context) -> anyhow::Result<PreflightCheck> 
         if let Err(e) = super::publish::resolve_description(ctx, entry) {
             // `e` already carries the entry label; append a hint pointing at the
             // derived-description path so the operator knows to set an explicit
-            // `description:` rather than chase the project/crate metadata.
+            // `description:` and can leave the project/crate metadata alone.
             let hint = if entry.description.is_none() {
                 " — derived from project/crate metadata; set an explicit \
                  `description:` to override"
@@ -206,7 +206,7 @@ fn preflight_vendor(
 /// Reachability is deliberately NOT probed: anodizer may be releasing the very
 /// site that will host the schema, so the URL is legitimately not live until
 /// after this release completes. An unreachable (or here, merely malformed)
-/// external URL is therefore at most a warning, never a blocker.
+/// external URL is therefore at most a warning.
 fn preflight_external(entry: &SchemaEntry, first_warning: &mut Option<String>) {
     // `mode() == External` guarantees `url` is `Some`.
     let Some(url) = entry.url.as_deref() else {

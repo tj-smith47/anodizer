@@ -117,12 +117,12 @@ pub fn rfc3339_utc_from_epoch(secs: i64) -> Option<String> {
 /// `secs` is out of the representable range.
 ///
 /// Used by writers that must stamp an RFC 2822 date into an artifact header
-/// from the resolved `SOURCE_DATE_EPOCH` rather than wall-clock time — notably
+/// from the resolved `SOURCE_DATE_EPOCH` — notably
 /// the `.zsync` `MTime:` header the AppImage stage rewrites, since `zsyncmake`
 /// otherwise records the AppImage's filesystem mtime (wall-clock) and breaks
 /// byte-for-byte reproducibility.
 ///
-/// Uses an explicit `%d` (zero-padded) format rather than [`DateTime::to_rfc2822`]
+/// Uses an explicit `%d` (zero-padded) format; [`DateTime::to_rfc2822`]
 /// (which renders single-digit days unpadded, `1 Jul`) so the output matches
 /// `zsyncmake`'s native header byte-for-byte and the sibling RFC 2822 rendering
 /// in `stage-announce`'s email `Date:`.
@@ -137,8 +137,8 @@ pub fn rfc2822_utc_from_epoch(secs: i64) -> Option<String> {
 ///
 /// The zip timestamp format spans `1980..=2107` at 2-second resolution, so
 /// the year is CLAMPED into that window — an out-of-range epoch (a pre-1980
-/// value, or a far-future one) still yields a deterministic stamp instead of
-/// degrading to a wall-clock default. This is the single source of the
+/// value, or a far-future one) still yields a deterministic stamp and never
+/// degrades to a wall-clock default. This is the single source of the
 /// unix→zip conversion shared by every reproducible zip writer (source
 /// archives, release archives, PyPI wheels), so the three former hand-rolled
 /// copies cannot drift on the clamp again.
@@ -166,8 +166,8 @@ mod tests {
 
     #[test]
     fn zip_datetime_fields_clamps_out_of_range_years() {
-        // Epoch 0 = 1970, below zip's 1980 floor → year clamps to 1980
-        // (deterministic) rather than degrading to a wall-clock default.
+        // Epoch 0 = 1970, below zip's 1980 minimum → year clamps to 1980
+        // (deterministic) and never degrades to a wall-clock default.
         let (y, ..) = zip_datetime_fields(0).expect("epoch 0 fields");
         assert_eq!(y, 1980);
         // A normal commit timestamp (2023-11-14T22:13:20Z) is preserved.

@@ -1,10 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
-// ---------------------------------------------------------------------------
-// StringOrBool — accepts bool or template string in YAML
-// ---------------------------------------------------------------------------
-
 /// A value that can be either a bool or a template string.
 /// Used by `skip`, `skip_upload`, and similar fields across multiple config
 /// structs to support both `skip: true` and template conditionals like
@@ -231,7 +227,7 @@ pub fn active_if_gate(condition: Option<&str>) -> Option<&str> {
 ///   no-op gate; the "no `if:` = always run" behavior — keeps
 ///   round-tripping clean for configs that emit empty strings).
 /// - Template render failure → hard `Err` (matches every existing
-///   `if_condition` site; silent-skip on a typo'd template was the W1
+///   `if_condition` site; silent-skip on a typo'd template was a
 ///   release-resilience footgun and is intentionally NOT replicated).
 /// - Rendered value (trimmed, any letter case) equal to `"false"`, `"0"`,
 ///   `"no"`, or empty → skip.
@@ -400,7 +396,7 @@ const HUMAN_DURATION_PATTERN: &str = r"^[ \t]*([0-9]([ \t]*[0-9]){0,18}[ \t]*(ms
 /// The longest number a duration term may spell. Every 19-digit number fits
 /// a `u64`, and a pattern cannot tell a longer number with leading zeros from
 /// one past the cap, so the parser and the pattern both stop at 19.
-const MAX_DURATION_DIGITS: usize = 19;
+pub const MAX_DURATION_DIGITS: usize = 19;
 
 /// The longest duration a config field or `--timeout` accepts: one year
 /// (31536000 seconds). Every duration is later added to
@@ -458,7 +454,7 @@ fn is_duration_space(c: char) -> bool {
 /// Parse a duration string, the one grammar every duration config field and
 /// the `--timeout` flag share. Recognizes `ms`, `s`, `m`, `h` and `d` units
 /// and concatenated forms like `"1h30m"`, with spaces or tabs allowed between
-/// the parts. A number longer than 19 digits is an
+/// the parts. A number longer than [`MAX_DURATION_DIGITS`] digits is an
 /// error, and so is a total longer than [`MAX_DURATION`] (one year); both
 /// errors name the value.
 pub fn parse_humantime_duration(input: &str) -> Result<std::time::Duration, String> {
@@ -727,8 +723,6 @@ mod tests {
         assert_eq!(err, "f: template render failed: boom");
     }
 
-    // --- as_bool -----------------------------------------------------------
-
     #[test]
     fn as_bool_bool_arms_passthrough() {
         assert!(StringOrBool::Bool(true).as_bool());
@@ -789,8 +783,6 @@ mod tests {
         assert!(!evaluate_if_condition(Some("tmpl"), "lbl", |_| Ok("NO".to_string())).unwrap());
     }
 
-    // --- Default -----------------------------------------------------------
-
     #[test]
     fn default_is_bool_false() {
         // `skip`/`output`/`sbom` fields default to "off" — a missing key must
@@ -798,8 +790,6 @@ mod tests {
         assert_eq!(StringOrBool::default(), StringOrBool::Bool(false));
         assert!(!StringOrBool::default().as_bool());
     }
-
-    // --- as_str ------------------------------------------------------------
 
     #[test]
     fn as_str_bool_renders_word() {
@@ -812,8 +802,6 @@ mod tests {
         assert_eq!(StringOrBool::String("{{ x }}".into()).as_str(), "{{ x }}");
     }
 
-    // --- is_template -------------------------------------------------------
-
     #[test]
     fn is_template_detects_brace_only_in_string() {
         assert!(StringOrBool::String("{{ .IsSnapshot }}".into()).is_template());
@@ -821,8 +809,6 @@ mod tests {
         // A Bool never carries a template, regardless of value.
         assert!(!StringOrBool::Bool(true).is_template());
     }
-
-    // --- try_evaluates_to_true --------------------------------------------
 
     #[test]
     fn try_evaluates_bool_short_circuits_without_rendering() {
@@ -864,8 +850,6 @@ mod tests {
             .try_evaluates_to_true(|_| panic!("render must not be called for stale compare"));
         assert!(res.is_err());
     }
-
-    // --- evaluate_if_condition --------------------------------------------
 
     #[test]
     fn if_condition_none_proceeds() {
@@ -931,8 +915,6 @@ mod tests {
         assert!(err.is_err());
     }
 
-    // --- deserialize_string_or_bool_opt -----------------------------------
-
     #[derive(Deserialize)]
     struct BoolOptW {
         #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -956,8 +938,6 @@ mod tests {
         let w: BoolOptW = serde_yaml_ng::from_str("v: null").unwrap();
         assert_eq!(w.v, None);
     }
-
-    // --- HumanDuration::as_humantime_string -------------------------------
 
     #[test]
     fn human_duration_sub_second_falls_back_to_ms() {
@@ -1000,8 +980,6 @@ mod tests {
         );
     }
 
-    // --- parse_humantime_duration -----------------------------------------
-
     #[test]
     fn parse_humantime_ok_values() {
         assert_eq!(
@@ -1041,6 +1019,39 @@ mod tests {
         assert!(parse_humantime_duration("10x").is_err());
         // Trailing digits with no unit.
         assert!(parse_humantime_duration("10").is_err());
+    }
+
+    /// Every digit count this module spells for a duration term, in a doc
+    /// line or the schema pattern's repeat bound, is
+    /// [`super::MAX_DURATION_DIGITS`], so a change to the constant fails here
+    /// until the prose and the pattern follow it.
+    #[test]
+    fn every_spelled_digit_cap_is_the_constant() {
+        let max = super::MAX_DURATION_DIGITS;
+        assert!(
+            super::HUMAN_DURATION_PATTERN.contains(&format!("{{0,{}}}", max - 1)),
+            "{}",
+            super::HUMAN_DURATION_PATTERN
+        );
+        let source = include_str!("string_or_bool.rs");
+        let spelled =
+            regex::Regex::new(r"(?:up to|than|over|Every|at) (\d+)[- ]digit|stop at (\d+)\.")
+                .expect("valid regex");
+        let counts: Vec<usize> = source
+            .lines()
+            .filter(|l| l.trim_start().starts_with("///"))
+            .flat_map(|l| spelled.captures_iter(l).collect::<Vec<_>>())
+            .map(|c| {
+                c.get(1)
+                    .or(c.get(2))
+                    .expect("a count")
+                    .as_str()
+                    .parse()
+                    .expect("a number")
+            })
+            .collect();
+        assert!(counts.len() >= 3, "the scan found {counts:?}");
+        assert!(counts.iter().all(|&n| n == max), "{counts:?} against {max}");
     }
 
     /// The cap is one year: exactly 31536000 seconds loads, one second more
@@ -1179,8 +1190,6 @@ mod tests {
         }
     }
 
-    // --- StringOrU32 / deserialize_u32_from_string_or_int -----------------
-
     #[test]
     fn u32_from_int_decimal() {
         let v: StringOrU32 = serde_yaml_ng::from_str("18").unwrap();
@@ -1218,8 +1227,6 @@ mod tests {
         assert!(r.is_err());
     }
 
-    // --- deserialize_string_or_vec_opt ------------------------------------
-
     #[derive(Deserialize)]
     struct VecOptW {
         #[serde(deserialize_with = "deserialize_string_or_vec_opt", default)]
@@ -1253,7 +1260,7 @@ mod tests {
     /// gate is silently dropped and the child publishes on a run the
     /// operator gated out.
     ///
-    /// The shapes the walk reads as a presence test are `.or(` on either
+    /// The shapes the scan reads as a presence test are `.or(` on either
     /// side of the read, `.is_some()`, `.is_none()` and `.is_some_and(`.
     /// `.map(` is deliberately not one: every `.map(` near an
     /// `if_condition` in this workspace is the iterator after a gate call,
@@ -1335,7 +1342,7 @@ mod tests {
         );
         assert_eq!(
             population, 4,
-            "the walk must still find the sites that test an `if:` for \
+            "the scan must still find the sites that test an `if:` for \
              presence; a rename that empties it would pass vacuously"
         );
     }
@@ -1346,7 +1353,7 @@ mod tests {
     /// `docs/site/static/schema.json` and the configuration reference, so
     /// one left saying an empty gate SKIPS tells an operator the opposite of
     /// what the engine does — and, where a hand-written page was updated and
-    /// its generated sibling was not, the two surfaces contradict each
+    /// its generated sibling was not, the two pages contradict each
     /// other. A field with no doc comment at all (the private deserialize
     /// helper in `archives.rs`) generates nothing and is outside the
     /// question.
@@ -1400,7 +1407,7 @@ mod tests {
         );
         assert_eq!(
             documented, 35,
-            "the walk found a different number of documented `if:` fields than \
+            "the scan found a different number of documented `if:` fields than \
              it expects; a new one must carry the sentence and be counted here"
         );
     }

@@ -9,14 +9,14 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
     // Discover the workspace root once, config-derived, so `tag` resolves the
     // same root whether invoked from the repo root or a subdirectory (matching
     // `bump` and `changelog`); every workspace-load / git-working-dir site below
-    // threads this one value instead of re-reading the cwd.
+    // reuses this one value and does not re-read the cwd.
     let workspace_root_path =
         crate::commands::helpers::discover_workspace_root(resolve_config_path(&opts).as_deref())?;
     // Load the full config + Cargo workspace once so all downstream helpers
     // share the same parse (eliminates the previous triple workspace-file
     // read on lockstep repos). Resolved at the discovered workspace root so a
     // subdirectory invocation still finds the repo-root `.anodizer.yaml` and its
-    // `version_files` enrollment, not just whatever sits in the cwd.
+    // `version_files` enrollment from any working directory.
     let loaded_config: anodizer_core::config::Config = load_config_at(&opts, &workspace_root_path)?;
     let loaded_workspace: Option<WorkspaceInfo> = load_workspace(&workspace_root_path)?;
 
@@ -94,7 +94,7 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
     // prefix from its tag_template.  Also capture the crate path to
     // scope change detection to only that directory.
     //
-    // An unknown name is a hard error, never a fall-through: the repo-level
+    // An unknown name is a hard error: the repo-level
     // path below tags with the default `v` prefix and NO path scoping, so a
     // typo'd `--crate` would cut (and possibly push) a wrong repo-wide tag.
     // A KNOWN crate whose template has no extractable prefix is a distinct
@@ -126,7 +126,7 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
     // custom-tag/--version validation errors, the `release_branches`
     // guard's output dialect, and the per-crate dispatch itself. Resolve
     // it ONCE, and fold it into the ONE dispatch decision
-    // (`dispatch_groups`), so those surfaces can never disagree.
+    // (`dispatch_groups`), so those paths always agree.
     let repo_shape = detect_repo_shape(
         &workspace_root_path,
         Some(&loaded_config),
@@ -162,7 +162,7 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
         );
     }
 
-    // `--version` pins ONE version. In per-crate / flat-aggregate dispatch there
+    // `--version` sets ONE version. In per-crate / flat-aggregate dispatch there
     // is no single versioned unit — applying one version across independently
     // versioned crates would corrupt their cadences — so reject it unless
     // `--crate <name>` narrows to a single crate (which routes through the
@@ -194,8 +194,8 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
     // applied as ONE group: that creates the single shared tag (its built-in
     // dedup) and the one collapsed root changelog section. A custom tag names
     // ONE explicit tag for the shared unit; it is honored by the lockstep
-    // custom-tag fall-through below, not the per-crate engine (which ignores
-    // `custom_tag`), so a `FlatAggregate` WITH a custom tag stays out of the
+    // custom-tag fall-through below. The per-crate engine ignores
+    // `custom_tag`, so a `FlatAggregate` WITH a custom tag stays out of the
     // group dispatch.
     let mut is_flat_aggregate = false;
     let dispatch_groups: Option<Vec<Vec<CrateConfig>>> = if opts.crate_name.is_none() {
@@ -224,13 +224,13 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
         Verbosity::from_flags(opts.quiet, effective_verbose, opts.debug),
     );
 
-    // Previous-tag resolution must reflect the REMOTE's tag reality, not this
-    // clone's: a tag deleted on the remote for a re-cut can survive locally
+    // Previous-tag resolution must reflect the REMOTE's tags. The local
+    // clone can be stale: a tag deleted on the remote for a re-cut can survive locally
     // (in this or another clone) and would otherwise silently create the NEXT
-    // version instead of cutting the SAME one again. One ls-remote call per
+    // version when the SAME one should be cut again. One ls-remote call per
     // invocation; every previous-tag lookup below shares the result. A network
-    // failure falls back to local tags with a warning rather than blocking
-    // offline tagging.
+    // failure falls back to local tags with a warning, so offline
+    // tagging still works.
     let remote_tag_names: Option<std::collections::HashSet<String>> =
         if git::has_remote_in(&workspace_root_path, &remote) {
             match git::list_remote_tag_names_in(&workspace_root_path, &remote) {
@@ -380,7 +380,7 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
     // API path creates the tag object on the remote, where the user's local
     // GPG/SSH signing key cannot reach it, so honoring `--sign` there would
     // silently ship an UNSIGNED tag. Since signing is opt-in, an explicit
-    // signature request must hard-error rather than downgrade.
+    // signature request must hard-error.
     if effective_sign && cfg.git_api_tagging && push_mode {
         anyhow::bail!(
             "signed tags (--sign / tag.sign) are incompatible with git_api_tagging \
@@ -444,7 +444,7 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
             )?;
             // Resolve the repo identity once (config override -> origin
             // remote) and hand it to the API tagger so it agrees with the
-            // rest of the pipeline instead of re-parsing the remote itself.
+            // rest of the pipeline and does not re-parse the remote itself.
             let release_github = loaded_config
                 .release
                 .as_ref()
@@ -810,8 +810,8 @@ pub(crate) fn run(mut opts: TagOpts) -> Result<()> {
             // before any tag is created: tagging a commit whose Cargo.toml is
             // NOT at `new_version` would ship a tag pointing at the wrong
             // version. Staged from the discovered workspace root so the
-            // repo-relative paths resolve there, not against a subdirectory
-            // cwd.
+            // repo-relative paths resolve there even when the cwd is a
+            // subdirectory.
             git::stage_and_commit_in(
                 &workspace_root_path,
                 &files_to_stage,

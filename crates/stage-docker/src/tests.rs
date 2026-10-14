@@ -30,7 +30,7 @@ use anodizer_core::test_helpers::docs_pages::{FencedBlock, fenced_blocks, read_d
 fn docker_collect_crates_sees_workspace_only_crate() {
     // A crate declared only under `workspaces[].crates` must enter the
     // docker run loop: the collect resolves through the crate universe, so
-    // a pure-workspace `dockers_v2:` config builds instead of no-opping.
+    // a pure-workspace `dockers_v2:` config builds.
     let ctx = anodizer_core::test_helpers::TestContextBuilder::new()
         .workspaces(vec![anodizer_core::config::WorkspaceConfig {
             name: "ws".to_string(),
@@ -185,7 +185,7 @@ fn test_platform_to_arch_no_slash() {
 
 #[test]
 fn parse_platform_no_arch_does_not_panic() {
-    // Q2.1: the Go version panicked on `"linux"` because
+    // A naive split panicked on `"linux"` because
     // `strings.Split("linux", "/")` returns a single-element slice and the
     // code indexed `parts[1]`. The Rust API consumes the iterator with a
     // tuple match `(parts.next(), parts.next(), parts.next(), parts.next())`
@@ -244,10 +244,6 @@ fn test_build_docker_command_multiple_tags() {
     assert_eq!(cmd[tag_positions[0] + 1], "repo/img:v1.0.0");
     assert_eq!(cmd[tag_positions[1] + 1], "repo/img:latest");
 }
-
-// ------------------------------------------------------------------
-// New tests for skip_push, extra_files, push_flags
-// ------------------------------------------------------------------
 
 #[test]
 #[serial_test::serial(path_env)]
@@ -351,10 +347,6 @@ fn test_build_docker_command_push_flags() {
     assert!(!cmd_plain.contains(&"--push".to_string()));
     assert!(!cmd_plain.contains(&"--provenance=true".to_string()));
 }
-
-// -----------------------------------------------------------------------
-// Additional behavior tests — config fields actually do things
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_skip_push_prevents_push_flag_in_command() {
@@ -464,12 +456,6 @@ fn test_build_docker_command_context_dir_is_last() {
     assert_eq!(cmd.last().unwrap(), "/my/staging/dir");
 }
 
-// ---- Error path tests ----
-
-// -----------------------------------------------------------------------
-// Tests for id, ids, labels config fields
-// -----------------------------------------------------------------------
-
 #[test]
 fn test_labels_appear_in_docker_build_command() {
     let labels = vec![
@@ -506,10 +492,6 @@ fn test_labels_appear_in_docker_build_command() {
         "label key=value should appear in command"
     );
 }
-
-// -----------------------------------------------------------------------
-// Tests for retry configuration
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_parse_duration_string_seconds() {
@@ -632,7 +614,7 @@ fn test_resolve_retry_params_invalid_delay() {
     assert!(resolve_retry_params(&cfg, &None).is_err());
 }
 
-// P1.6 — top-level Project.Retry is consulted when per-pipe is absent;
+// Top-level Project.Retry is consulted when per-pipe is absent;
 // per-pipe wins (with deprecation warning) when both are set.
 #[test]
 fn test_docker_retry_precedence_per_pipe_top_level_defaults() {
@@ -700,10 +682,6 @@ fn test_docker_retry_deprecation_warn_emits_once() {
         "two calls must warn exactly once: {captured}"
     );
 }
-
-// -----------------------------------------------------------------------
-// skip_push auto, use_backend, docker_manifests, digest
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_config_docker_manifests_full() {
@@ -860,7 +838,7 @@ fn test_resolve_backend_podman_rejected_on_non_linux() {
     let msg = format!("{err:#}");
     assert!(
         msg.contains("Linux only"),
-        "non-linux host must surface a Linux-only error: {msg}"
+        "non-linux host must report a Linux-only error: {msg}"
     );
 }
 
@@ -1011,7 +989,7 @@ fn test_docker_manifest_dry_run() {
 
 #[test]
 fn test_docker_manifest_create_push_flags_template_rendering() {
-    // S8 regression: create_flags and push_flags must receive the same
+    // create_flags and push_flags must receive the same
     // template context as V1 docker (`{{ .Tag }}`, `{{ .Env.* }}`).
     use anodizer_core::config::{Config, CrateConfig, DockerManifestConfig};
     use anodizer_core::context::{Context, ContextOptions};
@@ -1145,7 +1123,7 @@ use: podman
     assert_eq!(cfg.use_backend.as_deref(), Some("podman"));
 }
 
-// F7: docker manifest `use:` validation -----------------------------------
+// docker manifest `use:` validation -----------------------------------
 
 #[test]
 fn test_resolve_manifester_docker_default() {
@@ -1193,8 +1171,8 @@ fn test_resolve_manifester_unknown_errors_with_value() {
 fn test_resolve_manifester_buildx_rejected() {
     // There is no `buildx manifest` subcommand; reject explicitly so that
     // pasting `use: buildx` from a build stanza into a manifest stanza
-    // surfaces a clear error instead of running `buildx manifest …` as if
-    // it were a real command.
+    // reports a clear error. Running `buildx manifest …` as if
+    // it were a real command would fail later with a confusing message.
     use super::command::resolve_manifester;
     let err = resolve_manifester(Some("buildx")).unwrap_err().to_string();
     assert!(
@@ -1202,10 +1180,6 @@ fn test_resolve_manifester_buildx_rejected() {
         "error should reject 'buildx' for manifests, got: {err}"
     );
 }
-
-// ====================================================================
-// Docker V2 tests
-// ====================================================================
 
 #[test]
 fn test_generate_v2_image_tags() {
@@ -1976,8 +1950,8 @@ fn docker_in_allowlist_is_not_deselected() {
 fn test_docker_v2_dry_run_with_hooks_does_not_panic() {
     // Hooks rendered in dry-run mode must template-expand cleanly when
     // `{{ .Images }}` / `{{ .Dockerfile }}` / `{{ .ContextDir }}` /
-    // `{{ .Digest }}` are referenced.  A render failure would surface as
-    // `Err` here rather than a silent skip.
+    // `{{ .Digest }}` are referenced.  A render failure shows up as
+    // `Err` here.
     use anodizer_core::config::{BuildHooksConfig, Config, CrateConfig, DockerV2Config, HookEntry};
     use anodizer_core::context::{Context, ContextOptions};
 
@@ -2055,7 +2029,7 @@ fn test_docker_v2_baseimage_template_var_visible_in_dry_run() {
         id: Some("b".to_string()),
         images: vec!["ghcr.io/owner/myapp".to_string()],
         // Embedding BaseImage in a tag is unusual but it's the simplest
-        // observable surface: the rendered tag flows into artifact name.
+        // observable output: the rendered tag flows into artifact name.
         tags: vec!["based-on-{{ .BaseImage | replace(from=\":\", to=\"_\") }}".to_string()],
         dockerfile: dockerfile.to_string_lossy().into_owned(),
         platforms: Some(vec!["linux/amd64".to_string()]),
@@ -2094,9 +2068,9 @@ fn test_docker_v2_baseimage_template_var_visible_in_dry_run() {
     assert_eq!(tag, "ghcr.io/owner/myapp:based-on-alpine_3.20");
 }
 
-/// Q3.1: the v2 build log line emits
-/// `images` and `digest` as separate fields, not as a single
-/// `image@digest` blob.
+/// The v2 build log line emits
+/// `images` and `digest` as two separate fields; the
+/// `image@digest` blob form is gone.
 ///
 /// Capturing `tracing` output here would need a full `tracing_subscriber`
 /// fixture, which adds dev-dep weight. Instead, the human-readable status
@@ -2136,8 +2110,8 @@ fn v2_digest_log_split_emits_images_and_digest_as_separate_fields() {
     );
 }
 
-/// P5.1: when the `dockerfile:` template renders to the
-/// empty string, the v2 build must skip cleanly instead of attempting to
+/// When the `dockerfile:` template renders to the
+/// empty string, the v2 build must skip cleanly with no attempt to
 /// copy a non-existent file.
 ///
 /// Equivalent of `dockerfile: "{{ if .IsSnapshot }}Dockerfile{{ end }}"`
@@ -2151,7 +2125,7 @@ fn dockerfile_template_renders_to_empty_skips_pipe() {
 
     let tmp = TempDir::new().unwrap();
     // Note: NO dockerfile written — if the skip logic is broken and the
-    // pipe attempts to copy, the missing-file error would surface as a
+    // pipe attempts to copy, the missing-file error would show up as a
     // distinct failure mode from the clean skip under test.
 
     let v2_cfg = DockerV2Config {
@@ -2191,7 +2165,9 @@ fn dockerfile_template_renders_to_empty_skips_pipe() {
     let stage = DockerStage::new();
     // Must succeed with a clean skip — not error out trying to copy a
     // missing Dockerfile.
-    stage.run(&mut ctx).expect("clean skip, not copy failure");
+    stage
+        .run(&mut ctx)
+        .expect("clean skip; a copy failure means the skip logic broke");
 
     // No DockerImageV2 artifacts should be registered for the skipped pipe.
     let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
@@ -2454,7 +2430,7 @@ fn test_is_docker_v2_skipped_bool_false() {
 fn test_is_docker_v2_sbom_enabled_none_defaults_on() {
     // Default: when `sbom` is unset, SBOM attestation is
     // enabled, which
-    // assigns `SBOM = "true"` at Default() time. Pins C-new-7 at the
+    // assigns `SBOM = "true"` at Default() time. Checks this at the
     // helper level — defensive path for callers that bypass the
     // Default()-apply pass.
     use anodizer_core::config::Config;
@@ -2466,7 +2442,7 @@ fn test_is_docker_v2_sbom_enabled_none_defaults_on() {
 
 #[test]
 fn test_apply_docker_v2_defaults_sbom_none_resolves_to_true() {
-    // Pins C-new-7 at the wired Default()-apply level: a config with
+    // Checks this at the wired Default()-apply level: a config with
     // `sbom: None` post-defaults must carry `Some(Bool(true))` so the
     // resolved YAML written to dist/config.yaml round-trips faithfully
     // (the persistence behavior). Complements the
@@ -2484,7 +2460,7 @@ fn test_apply_docker_v2_defaults_sbom_none_resolves_to_true() {
     );
     assert_eq!(cfg.sbom, Some(StringOrBool::Bool(true)));
     // Spot-check the other applied defaults so a regression in any one
-    // of them surfaces from the same test.
+    // of them is reported from the same test.
     assert_eq!(cfg.id.as_deref(), Some("myapp"));
     assert_eq!(cfg.dockerfile, "Dockerfile");
     assert_eq!(cfg.tags, vec!["{{ .Tag }}"]);
@@ -2564,10 +2540,6 @@ fn test_apply_docker_v2_defaults_images_default_skipped_without_owner() {
     let empty = apply_docker_v2_defaults(DockerV2Config::default(), "proj", Some(""), "my-cli");
     assert!(empty.images.is_empty());
 }
-
-// ---------------------------------------------------------------------------
-// resolve_registry_owner — 3-tier precedence
-// ---------------------------------------------------------------------------
 
 /// Build a `CrateConfig` carrying an optional `release.github.owner` and the
 /// minimal docker_v2 shape so it survives the run's crate filter. `owner: None`
@@ -3048,10 +3020,6 @@ fn test_templated_extra_files_written_to_staging_dir() {
     let content = fs::read_to_string(&output_path).unwrap();
     assert_eq!(content, "app: myapp\nversion: 1.0.0");
 }
-
-// -----------------------------------------------------------------------
-// Docker behavioral gap tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_tag_suffix_amd64() {
@@ -3626,7 +3594,7 @@ fn buildx_metadata_files_report_a_digest_for_an_exported_image_only() {
 }
 
 /// A metadata file that reports no image digest yields none, so the build
-/// records nothing rather than a value the registry does not serve.
+/// records nothing; a made-up value would be one the registry does not serve.
 #[test]
 fn a_metadata_file_without_an_image_digest_yields_none() {
     assert_eq!(crate::build::metadata_file_digest("{}"), None);
@@ -3639,10 +3607,6 @@ fn a_metadata_file_without_an_image_digest_yields_none() {
     assert_eq!(crate::build::metadata_file_digest("not json"), None);
 }
 
-// -----------------------------------------------------------------------
-// Levenshtein distance tests
-// -----------------------------------------------------------------------
-
 #[test]
 fn test_levenshtein_distance() {
     assert_eq!(levenshtein_distance("kitten", "sitting"), 3);
@@ -3654,10 +3618,6 @@ fn test_levenshtein_distance() {
         2
     );
 }
-
-// -----------------------------------------------------------------------
-// Project marker detection tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_project_marker_detection() {
@@ -3683,10 +3643,6 @@ fn test_project_marker_in_subdirectory_path() {
         .unwrap();
     assert!(PROJECT_MARKERS.contains(&filename));
 }
-
-// -----------------------------------------------------------------------
-// Docker daemon / load parameter tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_build_docker_v2_command_no_load_when_disabled() {
@@ -3726,10 +3682,6 @@ fn test_build_docker_v2_command_load_when_enabled() {
     .unwrap();
     assert!(cmd.contains(&"--load".to_string()));
 }
-
-// -----------------------------------------------------------------------
-// Gap A: Legacy push — plain docker/podman don't get --push
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_build_docker_command_plain_docker_no_push_flag() {
@@ -3842,10 +3794,6 @@ fn test_build_docker_command_multi_platform_explicit_buildx_gets_push() {
     );
 }
 
-// -----------------------------------------------------------------------
-// Gap C: Retry with HTTP 506 and 510
-// -----------------------------------------------------------------------
-
 #[test]
 fn test_is_retriable_error_506() {
     assert!(is_retriable_error(
@@ -3859,10 +3807,6 @@ fn test_is_retriable_error_510() {
         "received unexpected HTTP status: 510 Not Extended"
     ));
 }
-
-// -----------------------------------------------------------------------
-// is_retriable_build: build-scoped retry breadth
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_is_retriable_build_registry_and_rate_limit_patterns() {
@@ -3932,10 +3876,6 @@ fn test_is_retriable_build_rejects_non_transient_errors() {
     }
 }
 
-// -----------------------------------------------------------------------
-// Gap F: resolve_backend default is "docker"
-// -----------------------------------------------------------------------
-
 #[test]
 fn test_resolve_backend_none_always_defaults_to_docker() {
     // Regardless of multi_platform flag, default is always plain docker.
@@ -3946,10 +3886,6 @@ fn test_resolve_backend_none_always_defaults_to_docker() {
     assert_eq!(bin2, "docker");
     assert_eq!(subs2, vec!["build"]);
 }
-
-// -----------------------------------------------------------------------
-// Gap G: list_staging_dir_recursive
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_list_staging_dir_recursive_lists_files() {
@@ -3971,20 +3907,18 @@ fn test_list_staging_dir_recursive_lists_files() {
     list_staging_dir_recursive(root, root, &log);
 }
 
-// ---------------------------------------------------------------------------
 // `docker buildx version` availability probe
 //
 // Adds a version-availability check alongside the existing `docker buildx
 // inspect` driver check: any
 // docker config that needs buildx triggers a version probe so the user gets a
-// clear actionable message when buildx is missing, rather than a cryptic
+// clear actionable message when buildx is missing in place of a cryptic
 // failure deep inside `buildx build`.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_buildx_version_probe_available_emits_no_warning() {
     // When the probe reports buildx is reachable, the formatter returns None
-    // (no warning to surface). The wired-in call in `run.rs` is a no-op.
+    // (no warning to print). The wired-in call in `run.rs` is a no-op.
     assert_eq!(
         format_buildx_version_warning(&BuildxVersionProbe::Available),
         None
@@ -4012,7 +3946,7 @@ fn test_buildx_version_probe_docker_missing_warns_with_buildx_required() {
 #[test]
 fn test_buildx_version_probe_buildx_missing_warns_with_buildx_required() {
     // When `docker` runs but `docker buildx version` fails (e.g. plugin
-    // missing), the warning should still surface "buildx" and include the
+    // missing), the warning should still name "buildx" and include the
     // stderr context so the user can debug.
     let probe = BuildxVersionProbe::BuildxMissing {
         stderr: "docker: 'buildx' is not a docker command".to_string(),
@@ -4031,8 +3965,8 @@ fn test_buildx_version_probe_buildx_missing_warns_with_buildx_required() {
 #[test]
 fn test_buildx_version_check_increments_counter_on_v2_probe_outcome() {
     // Direct test of `run_buildx_version_check`: pass it an injected probe
-    // that records each call and assert the counter ticks. This pins the
-    // *probe-invocation contract* of `run_buildx_version_check`, not the
+    // that records each call and assert the counter ticks. This checks the
+    // *probe-invocation contract* of `run_buildx_version_check` alone, without the
     // stage-level wiring. The stage path (`DockerStage.run`) currently
     // resolves the probe via the live `docker_buildx_version_probe()`
     // function, so end-to-end probe-injection from a unit test would need
@@ -4064,8 +3998,8 @@ fn test_dockerstage_run_invokes_injected_buildx_probe_for_v2_crate() {
     // `docker_v2` config and `dry_run = true` (so no real `docker buildx
     // build` shells out), `DockerStage::with_probe(...).run(&mut ctx)` MUST
     // route the buildx-version probe through the injected closure. The gate
-    // condition is pinned here so a future refactor that drops the wiring
-    // fails this test instead of silently shelling out to `docker` in tests.
+    // condition is asserted here so a future refactor that drops the wiring
+    // fails this test before it can shell out to `docker` in tests.
     //
     // `dry_run` is intentionally `false` so the probe gate fires
     // (`!dry_run && any docker_v2`). Staying sandbox-clean still means
@@ -4139,13 +4073,7 @@ fn test_dockerstage_run_invokes_injected_buildx_probe_for_v2_crate() {
     );
 }
 
-// -----------------------------------------------------------------------
-// Additional parity fixes
-// (run.rs hook variables: BaseImage carry-through, Images-as-list,
-// unset semantics, post-hook digest hard-bail)
-// -----------------------------------------------------------------------
-
-/// A6 — `BaseImage` / `BaseImageDigest` must be REMOVED (not set-to-empty)
+/// `BaseImage` / `BaseImageDigest` must be REMOVED (not set-to-empty)
 /// from the shared template-vars map once a docker_v2 config iteration
 /// finishes (the overlay-drop semantic).
 /// Without this, strict-mode rendering downstream cannot distinguish
@@ -4221,7 +4149,7 @@ fn docker_v2_images_template_var_is_iterable_list() {
     fs::write(&dockerfile, b"FROM alpine:3.20\n").unwrap();
 
     // Two images × one tag → two image:tag entries. Iterate them in the
-    // hook so a render failure surfaces as a stage error.
+    // hook so a render failure is reported as a stage error.
     let hooks = BuildHooksConfig {
         pre: Some(vec![HookEntry::Simple(
             "echo {% for img in Images %}img={{ img }};{% endfor %}".to_string(),
@@ -4271,7 +4199,7 @@ fn docker_v2_images_template_var_is_iterable_list() {
         .expect("hook iterating `Images` as a list must render cleanly");
 }
 
-/// A5 — explicit positive test on the template engine: a `serde_json::Value::Array`
+/// Explicit positive test on the template engine: a `serde_json::Value::Array`
 /// inserted via `set_structured` is iterable from a Tera `{% for %}` loop.
 /// Locks in the rendering contract without spinning up the docker stage.
 #[test]
@@ -4287,7 +4215,7 @@ fn template_vars_images_list_iterates_via_set_structured() {
     assert_eq!(out, "<ghcr.io/foo:v1><ghcr.io/bar:v2>");
 }
 
-/// Post-hooks configured with no captured digest must fail loudly instead of
+/// Post-hooks configured with no captured digest must fail loudly before
 /// invoking the user's hook with `Digest=""`. This reproduces the
 /// `tag_digests.values().next()` to error mapping the post-hook runner
 /// applies and asserts the user-visible message shape; restoring an
@@ -4306,7 +4234,7 @@ fn docker_v2_post_hook_with_empty_digest_errors_loudly() {
         )
     });
 
-    let err = result.expect_err("empty-digest path must surface an error");
+    let err = result.expect_err("empty-digest path must return an error");
     let msg = format!("{:#}", err);
     assert!(
         msg.contains("no image digest captured"),
@@ -4319,10 +4247,6 @@ fn docker_v2_post_hook_with_empty_digest_errors_loudly() {
         msg
     );
 }
-
-// -----------------------------------------------------------------------
-// Additional run.rs coverage tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_docker_v2_duplicate_id_bails() {
@@ -4381,7 +4305,7 @@ fn test_docker_v2_duplicate_id_bails() {
 }
 
 /// An empty `image_templates:` list is the same "manifest has no images"
-/// skip GoReleaser raises (`internal/pipe/docker/manifest.go`), not a hard
+/// skip as a manifest whose templates all render empty; there is no hard
 /// error: the manifest is left unbuilt and the reason is recorded.
 #[test]
 fn test_docker_manifest_empty_image_templates_skips() {
@@ -4420,7 +4344,7 @@ fn test_docker_manifest_empty_image_templates_skips() {
 
     DockerStage::new()
         .run(&mut ctx)
-        .expect("an image-less manifest must skip, not fail the stage");
+        .expect("an image-less manifest must skip without failing the stage");
     let events = ctx.skip_memento.snapshot();
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0].stage, "docker-manifest");
@@ -4467,7 +4391,7 @@ fn test_docker_manifest_empty_image_templates_uses_index_in_message_when_no_id()
 
     DockerStage::new()
         .run(&mut ctx)
-        .expect("an image-less manifest must skip, not fail the stage");
+        .expect("an image-less manifest must skip without failing the stage");
     let events = ctx.skip_memento.snapshot();
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(
@@ -4480,7 +4404,7 @@ fn test_docker_manifest_empty_image_templates_uses_index_in_message_when_no_id()
 fn test_docker_manifest_skipped_if_already_pushed_by_v2_multiplatform() {
     // When docker_v2 pushes a multi-platform manifest list (>1 platform
     // + should_push), the same tag in docker_manifests should be skipped
-    // rather than attempted again. Use snapshot=false + dry_run=false is
+    // and only pushed once. Use snapshot=false + dry_run=false is
     // unsafe (would shell out); use snapshot=true to make should_push
     // false. But then v2_multiplatform_tags wouldn't be populated...
     //
@@ -4555,7 +4479,7 @@ fn test_docker_manifest_skipped_if_already_pushed_by_v2_multiplatform() {
 #[test]
 fn test_docker_v2_id_filter_propagates_to_artifact_metadata() {
     // The v2 config's `id` field flows into the registered artifact's
-    // metadata["id"]. Pin so a future rename of the metadata key breaks
+    // metadata["id"]. Asserted so a future rename of the metadata key breaks
     // here, not in downstream filtering / publish stages.
     use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
     use anodizer_core::context::{Context, ContextOptions};
@@ -4946,7 +4870,7 @@ fn test_docker_v2_invalid_build_arg_template_errors() {
     let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
     assert!(
         err.contains("render build_arg"),
-        "bad build_arg template must surface a contextual error, got: {err}"
+        "bad build_arg template must report a contextual error, got: {err}"
     );
 }
 
@@ -4993,7 +4917,7 @@ fn test_docker_v2_invalid_image_template_errors() {
     let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
     assert!(
         err.contains("render image template"),
-        "bad image template must surface a contextual error, got: {err}"
+        "bad image template must report a contextual error, got: {err}"
     );
 }
 
@@ -5040,7 +4964,7 @@ fn test_docker_v2_invalid_tag_template_errors() {
     let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
     assert!(
         err.contains("render tag template"),
-        "bad tag template must surface a contextual error, got: {err}"
+        "bad tag template must report a contextual error, got: {err}"
     );
 }
 
@@ -5087,7 +5011,7 @@ fn test_docker_v2_invalid_dockerfile_template_errors() {
     let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
     assert!(
         err.contains("render dockerfile path"),
-        "bad dockerfile template must surface a contextual error, got: {err}"
+        "bad dockerfile template must report a contextual error, got: {err}"
     );
 }
 
@@ -5186,7 +5110,7 @@ fn test_docker_manifest_invalid_name_template_errors() {
     let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
     assert!(
         err.contains("render manifest name_template"),
-        "bad manifest name template must surface a contextual error, got: {err}"
+        "bad manifest name template must report a contextual error, got: {err}"
     );
 }
 
@@ -5285,7 +5209,7 @@ fn test_docker_v2_skip_with_literal_false_proceeds() {
 #[test]
 fn test_docker_v2_filter_empty_rendered_platforms() {
     // A platform template that renders to "" must be filtered out of the
-    // platforms slice; pin via single-platform dry-run that still registers.
+    // platforms slice; checked via a single-platform dry-run that still registers.
     use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
     use anodizer_core::context::{Context, ContextOptions};
 
@@ -5389,7 +5313,7 @@ fn test_docker_v2_invalid_annotation_template_errors() {
     let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
     assert!(
         err.contains("render annotation"),
-        "bad annotation template must surface a contextual error, got: {err}"
+        "bad annotation template must report a contextual error, got: {err}"
     );
 }
 
@@ -5441,11 +5365,10 @@ fn test_docker_v2_invalid_label_template_errors() {
     let err = DockerStage::new().run(&mut ctx).unwrap_err().to_string();
     assert!(
         err.contains("render label"),
-        "bad label template must surface a contextual error, got: {err}"
+        "bad label template must report a contextual error, got: {err}"
     );
 }
 
-// -----------------------------------------------------------------------
 // `Platforms` artifact metadata + pre/post hook contract
 //
 // `ExtraPlatforms = "Platforms"` is a
@@ -5457,9 +5380,8 @@ fn test_docker_v2_invalid_label_template_errors() {
 // The hook contract is: pre-hook receives `{Images, Dockerfile, ContextDir,
 // BaseImage, BaseImageDigest}`; post-hook receives the same vars plus
 // `Digest`. A failing pre-hook aborts that config's build (no docker
-// spawn) and surfaces the error after sibling configs finish. A failing
+// spawn) and reports the error after sibling configs finish. A failing
 // post-hook aborts the entire stage.
-// -----------------------------------------------------------------------
 
 /// `Platforms` metadata key is present on `DockerImageV2` artifacts and
 /// holds a JSON-array string with the resolved platform list.
@@ -5635,13 +5557,13 @@ fn docker_v2_pre_hook_does_not_expose_digest() {
     let err = DockerStage::new()
         .run(&mut ctx)
         .expect_err("pre-hook referencing undefined `.Digest` must fail rendering");
-    // Pin the failure CAUSE — Tera reports the missing variable name and an
+    // Check the failure CAUSE — Tera reports the missing variable name and an
     // "is not defined" suffix. A regression that silently coerced undefined
     // vars to empty strings would Ok the render and break the contract.
     let msg = format!("{:#}", err);
     assert!(
         msg.contains("Digest") && msg.contains("is not defined"),
-        "error must pin `Digest` as the undefined variable, got: {msg}"
+        "error must name `Digest` as the undefined variable, got: {msg}"
     );
 }
 
@@ -5708,10 +5630,10 @@ fn docker_v2_post_hook_receives_digest_in_dry_run() {
 
 /// A pre-hook failure aborts that config's build: no docker spawn, no
 /// artifacts registered for the failed config. The accumulated error
-/// surfaces at end-of-stage (after sibling configs finish). Real-execution
+/// is reported at end-of-stage (after sibling configs finish). Real-execution
 /// path (dry_run=false) is required to make the hook shell out and fail;
 /// without docker installed the assertion is that the failure path is the
-/// pre-hook one, not a docker spawn error.
+/// pre-hook one (a docker spawn error would mean the early return was skipped).
 #[test]
 #[serial_test::serial(path_env)]
 fn docker_v2_pre_hook_failure_aborts_build_without_docker_spawn() {
@@ -5722,7 +5644,7 @@ fn docker_v2_pre_hook_failure_aborts_build_without_docker_spawn() {
     let dockerfile = tmp.path().join("Dockerfile");
     fs::write(&dockerfile, b"FROM alpine:3.20\n").unwrap();
 
-    // `sh -c "exit 7"` returns a non-zero status — `run_hooks` surfaces
+    // `sh -c "exit 7"` returns a non-zero status — `run_hooks` reports
     // it as a stage error. The post-hook block is intentionally empty
     // so the only error path is the pre-hook one.
     let hooks = BuildHooksConfig {
@@ -5757,7 +5679,7 @@ fn docker_v2_pre_hook_failure_aborts_build_without_docker_spawn() {
     // load — the only spawn that would occur if pre-hook succeeded is
     // the `docker buildx build` call inside `execute_docker_build`,
     // which would error with a different message (docker missing or
-    // build failure). The assertion below pins the pre-hook error
+    // build failure). The assertion below checks the pre-hook error
     // message shape so a regression that skipped the early return
     // would trip a docker spawn failure instead.
     let mut ctx = Context::new(
@@ -5770,10 +5692,10 @@ fn docker_v2_pre_hook_failure_aborts_build_without_docker_spawn() {
     ctx.template_vars_mut().set("Tag", "v1.0.0");
 
     let res = DockerStage::new().run(&mut ctx);
-    let err = res.expect_err("pre-hook failure must surface as a stage error");
+    let err = res.expect_err("pre-hook failure must be reported as a stage error");
     let msg = format!("{:#}", err);
     // The hook runner labels failures `pre-dockers_v2[<id>] hook: ...` (see
-    // `crates/stage-docker/src/run.rs`'s `pre_label`). Pinning the prefix
+    // `crates/stage-docker/src/run.rs`'s `pre_label`). Checking the prefix
     // ensures a regression that bypassed the early return and tripped a
     // docker-spawn error instead would fail the assertion.
     assert!(
@@ -5789,7 +5711,7 @@ fn docker_v2_pre_hook_failure_aborts_build_without_docker_spawn() {
     );
 }
 
-/// A post-hook block that fails must surface as the stage's error.
+/// A post-hook block that fails must be reported as the stage's error.
 #[test]
 fn docker_v2_post_hook_template_failure_aborts_stage() {
     use anodizer_core::config::{BuildHooksConfig, Config, CrateConfig, DockerV2Config, HookEntry};
@@ -5800,8 +5722,8 @@ fn docker_v2_post_hook_template_failure_aborts_stage() {
     fs::write(&dockerfile, b"FROM alpine:3.20\n").unwrap();
 
     // A reference to an undefined variable fails Tera rendering; that
-    // failure must propagate as the stage's error rather than be
-    // silently swallowed.
+    // failure must propagate as the stage's error with nothing
+    // swallowing it.
     let hooks = BuildHooksConfig {
         pre: None,
         post: Some(vec![HookEntry::Simple(
@@ -5847,10 +5769,6 @@ fn docker_v2_post_hook_template_failure_aborts_stage() {
         "post-hook with undefined template var must propagate as stage error"
     );
 }
-
-// ============================================================================
-// Podman backend coverage
-// ============================================================================
 
 #[test]
 fn podman_flag_compat_rejects_buildx_only_flags() {
@@ -5949,7 +5867,7 @@ fn build_docker_v2_command_podman_with_sbom_errors() {
     .to_string();
     assert!(
         err.contains("podman") && err.contains("sbom"),
-        "podman+sbom must surface a clear error, got: {err}"
+        "podman+sbom must report a clear error, got: {err}"
     );
 }
 
@@ -5973,7 +5891,7 @@ fn build_docker_v2_command_podman_with_buildx_only_flag_errors() {
     .to_string();
     assert!(
         err.contains("buildx-only") && err.contains("--cache-from"),
-        "podman+buildx-only-flag must surface a clear error, got: {err}"
+        "podman+buildx-only-flag must report a clear error, got: {err}"
     );
 }
 
@@ -6011,7 +5929,6 @@ use: podman
     assert_eq!(cfg.use_backend.as_deref(), Some("podman"));
 }
 
-// ===========================================================================
 // run.rs orchestration coverage
 //
 // These tests drive the docker-stage orchestration logic (template rendering,
@@ -6027,7 +5944,6 @@ use: podman
 //      `process_docker_manifest`, `validate_docker_v2_id_uniqueness`,
 //      `write_combined_digest_file`, `insert_platforms_meta`) — asserting the
 //      exact derived list / command / file contents.
-// ===========================================================================
 
 use super::run::{
     build_manifest_create_cmd, insert_platforms_meta, process_docker_manifest, render_v2_flag_list,
@@ -6084,10 +6000,6 @@ fn dry_run_ctx_with_crates(
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx
 }
-
-// ---------------------------------------------------------------------------
-// render_v2_kv_map — label / build-arg / annotation template assembly
-// ---------------------------------------------------------------------------
 
 /// Pairs keep the order of their template keys after rendering: `{{ .A }}`
 /// sorts after `vendor` as a template, so `aaa` comes out last although it
@@ -6154,10 +6066,6 @@ fn render_v2_kv_map_none_input_is_empty() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// render_v2_flag_list — extra-flag template assembly
-// ---------------------------------------------------------------------------
-
 #[test]
 fn render_v2_flag_list_renders_and_drops_empties_preserving_order() {
     use anodizer_core::config::Config;
@@ -6179,10 +6087,6 @@ fn render_v2_flag_list_renders_and_drops_empties_preserving_order() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// insert_platforms_meta — Platforms JSON-array metadata
-// ---------------------------------------------------------------------------
-
 #[test]
 fn insert_platforms_meta_encodes_json_array() {
     let mut meta: HashMap<String, String> = HashMap::new();
@@ -6196,10 +6100,6 @@ fn insert_platforms_meta_encodes_json_array() {
         r#"["linux/amd64","linux/arm64"]"#,
     );
 }
-
-// ---------------------------------------------------------------------------
-// validate_docker_v2_id_uniqueness — duplicate-ID hard error
-// ---------------------------------------------------------------------------
 
 #[test]
 fn validate_docker_v2_id_uniqueness_rejects_duplicate_ids() {
@@ -6252,10 +6152,6 @@ fn validate_docker_v2_id_uniqueness_allows_distinct_and_none_ids() {
     }];
     assert!(validate_docker_v2_id_uniqueness(&crates).is_ok());
 }
-
-// ---------------------------------------------------------------------------
-// build_manifest_create_cmd — digest pinning + did-you-mean spell-check
-// ---------------------------------------------------------------------------
 
 #[test]
 fn build_manifest_create_cmd_pins_known_image_to_digest() {
@@ -6330,10 +6226,6 @@ fn build_manifest_create_cmd_warns_no_digest_when_no_near_match() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// process_docker_manifest — render and skip paths (dry-run, no spawn)
-// ---------------------------------------------------------------------------
-
 /// The empty-list case takes the same skip path as the all-blank-render case
 /// — one reason, one memento entry, no manifest tool resolved.
 #[test]
@@ -6363,7 +6255,7 @@ fn process_docker_manifest_empty_image_templates_skips() {
         true,
         &mut artifacts,
     )
-    .expect("an image-less manifest must skip, not fail");
+    .expect("an image-less manifest must skip without an error");
     assert!(artifacts.is_empty(), "{artifacts:?}");
     let events = ctx.skip_memento.snapshot();
     assert_eq!(events.len(), 1, "{events:?}");
@@ -6515,10 +6407,6 @@ fn manifest_with_all_templates_rendering_empty_skips() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// write_combined_digest_file — sorted `<hex>  <name>` emission
-// ---------------------------------------------------------------------------
-
 #[test]
 fn write_combined_digest_file_writes_sorted_stripped_lines() {
     use anodizer_core::artifact::Artifact;
@@ -6619,11 +6507,6 @@ fn write_combined_digest_file_no_digests_writes_nothing() {
     write_combined_digest_file(&mut ctx, &log, dist, &artifacts).unwrap();
     assert!(!dist.join("digests.txt").exists());
 }
-
-// ---------------------------------------------------------------------------
-// prepare_v2_config / queue_v2_build_for_platforms via Stage::run (dry-run)
-// Orchestration up to (never through) the buildx spawn.
-// ---------------------------------------------------------------------------
 
 /// Build a single-crate dry-run `Context` carrying one docker_v2 config, with
 /// a real on-disk Dockerfile so `copy_dockerfile` / base-image resolution run.
@@ -6891,11 +6774,6 @@ fn prepare_v2_labels_build_args_flags_reach_dry_run_command_log() {
     assert!(cmd_line.contains("--no-cache"), "flag missing: {cmd_line}");
 }
 
-// ---------------------------------------------------------------------------
-// Workspace per-crate mode — docker participates per crate, each with its own
-// derived `images` default (ghcr.io/{owner}/{crate}).
-// ---------------------------------------------------------------------------
-
 #[test]
 fn workspace_per_crate_docker_renders_distinct_image_per_crate() {
     use anodizer_core::config::{
@@ -6957,10 +6835,6 @@ fn workspace_per_crate_docker_renders_distinct_image_per_crate() {
     assert!(tags.contains("ghcr.io/acme/svc-a:v1.0.0"), "got {tags:?}");
     assert!(tags.contains("ghcr.io/acme/svc-b:v1.0.0"), "got {tags:?}");
 }
-
-// ---------------------------------------------------------------------------
-// Auto-injected org.opencontainers.image.* labels
-// ---------------------------------------------------------------------------
 
 mod oci_labels {
     use std::collections::{BTreeMap, HashMap};
@@ -7878,7 +7752,7 @@ fn a_podman_push_marks_the_tag_and_records_the_pushed_digest() {
 
 /// podman reads one digestfile per tag, so the first tag can be the one that
 /// came back empty. The result line reports the first digest actually
-/// recorded rather than going silent on the whole set.
+/// recorded.
 #[cfg(target_os = "linux")]
 #[test]
 #[serial_test::serial(path_env)]
@@ -7981,7 +7855,7 @@ fn a_dry_run_marks_no_image_as_pushed() {
 /// exactly, in page order.
 ///
 /// The Linux-only refusal reads the host OS, so the test asks the message
-/// builder for the macOS wording the page shows rather than depending on the
+/// builder for the macOS wording the page shows, independent of the
 /// machine the suite runs on.
 #[test]
 fn the_refusals_quoted_in_the_podman_docs_are_what_the_checks_produce() {
@@ -8003,10 +7877,6 @@ fn the_refusals_quoted_in_the_podman_docs_are_what_the_checks_produce() {
     assert_eq!(quoted, produced, "the page's Error lines");
     assert_eq!(quoted.len(), 2, "the errors the page quotes");
 }
-
-// ---------------------------------------------------------------------------
-// dockers_v2 annotation scopes
-// ---------------------------------------------------------------------------
 
 fn v2_annotation_flags(platforms: &[&str], annotations: &[(&str, &str)]) -> Vec<String> {
     let annotations: Vec<(String, String)> = annotations
@@ -8093,10 +7963,6 @@ fn a_single_platform_annotation_is_passed_as_written() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// dockers_v2 base image from build-arg overrides
-// ---------------------------------------------------------------------------
-
 /// A `build_args` entry that replaces the Dockerfile's `ARG BASE` default
 /// decides the base image the `BaseImage` / `BaseImageDigest` annotations
 /// name, the literal and the templated value alike.
@@ -8177,10 +8043,6 @@ fn the_base_image_annotations_follow_a_build_arg_override() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// docker_manifests push_flags
-// ---------------------------------------------------------------------------
-
 /// `push_flags` render as templates and follow the manifest name on the
 /// `manifest push` command, after `create_flags` went to `manifest create`.
 #[cfg(unix)]
@@ -8254,10 +8116,6 @@ fn manifest_push_flags_are_rendered_onto_the_push_command() {
         "{calls:?}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// docker pages: config blocks and quoted output
-// ---------------------------------------------------------------------------
 
 /// The fenced blocks of one `## ` section of `page`.
 fn section_blocks(page: &str, heading: &str) -> Vec<FencedBlock> {

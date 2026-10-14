@@ -157,7 +157,7 @@ pub(crate) fn publish_to_cloudsmith_into(
         ) {
             log.warn(&format!(
                 "exclude filter {:?} dropped all {} for CloudSmith \
-                 repo '{}/{}'; check the globs match asset names, not full paths",
+                 repo '{}/{}'; check that the globs match asset file names without their directories",
                 entry.exclude.as_deref().unwrap_or_default(),
                 count_noun(pre_exclude, "candidate package", "candidate packages"),
                 organization,

@@ -74,7 +74,7 @@ pub(super) fn merge_env_with_defaults(
 /// Extract the variable keys a `variables:` template value references via the
 /// `.Var.<key>` / `Var.<key>` namespace.
 ///
-/// Used only to surface forward-reference warnings — it is a deliberately
+/// Used only to report forward-reference warnings — it is a deliberately
 /// shallow scan (it does not parse Tera), matching `<name>` against the
 /// `[A-Za-z0-9_]` key charset. Over-matching is harmless: the caller only
 /// warns when the name is also a declared sibling key, so non-variable
@@ -83,7 +83,7 @@ pub(super) fn merge_env_with_defaults(
 pub(super) fn referenced_var_keys(template: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let bytes = template.as_bytes();
-    // Walk each `Var.` occurrence and lift the following identifier.
+    // Scan each `Var.` occurrence and lift the following identifier.
     for (idx, _) in template.match_indices("Var.") {
         let start = idx + "Var.".len();
         let key_len = bytes[start..]
@@ -188,9 +188,9 @@ pub fn setup_env(
     // `{{ .Env.* }}`.
     //
     // Render errors are hard: an unknown variable / typo in a template
-    // expression (`{{ .Tagg }}`) fails the load instead of silently
-    // passing the literal `{{ }}` through to a publisher (homebrew,
-    // scoop, nix, …) where it would surface only after publication.
+    // expression (`{{ .Tagg }}`) fails the load, so the literal `{{ }}`
+    // never passes silently to a publisher (homebrew, scoop, nix, …)
+    // where it would show up only after publication.
     if let Some(ref vars_map) = config.variables {
         // Keys already rendered + visible to later values. BTreeMap iteration is
         // alphabetical, so a value referencing a sibling key that sorts LATER
@@ -297,8 +297,8 @@ pub fn setup_env(
     // `--publish-only` defers the token check to the config-derived
     // environment preflight (the github-release publisher's token ladder
     // plus the sign stage's `KeyEnv` requirements), which validates token
-    // and sign-key material together and self-gates per resolved publisher
-    // surface. If setup_env bailed here first, publish-only would never get
+    // and sign-key material together and self-gates per resolved
+    // publisher. If setup_env bailed here first, publish-only would never get
     // a chance to emit that richer per-publisher error or honor
     // `--skip=preflight`. The dispatcher enforces the env preflight
     // downstream so dropping it here doesn't widen the hole.
@@ -330,7 +330,7 @@ pub fn setup_env(
                     "no Gitea token found. Set GITEA_TOKEN.".to_string()
                 }
                 anodizer_core::scm::ScmTokenType::GitHub => {
-                    // The release surface accepts `--token`, so the hint is
+                    // The release command accepts `--token`, so the hint is
                     // the --token-inclusive ladder like its siblings.
                     format!(
                         "no GitHub token found: {}.",

@@ -267,7 +267,7 @@ For a `versioned` entry, every other option in the previous version's block (`un
 
 ## Authentication
 
-{{ token_order(target="your fork", publisher_var="SCHEMASTORE_TOKEN") }}
+{{ token_order(target="your fork", publisher_vars=["SCHEMASTORE_TOKEN"]) }}
 
 Set `pull_request.token` when the fork token cannot open pull requests against `SchemaStore/schemastore`.
 

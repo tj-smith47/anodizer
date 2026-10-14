@@ -64,8 +64,8 @@ pub fn auto_detect_github(config: &mut Config, log: &StageLogger, snapshot: bool
     } else {
         git::resolve_github_slug(None, None).ok()
     };
-    // Raw chained walk (not `crate_universe()`): this is a mutation pass and
-    // the universe walker only hands out shared borrows. Filling every entry
+    // Raw chained iteration: this is a mutation pass and `crate_universe()`
+    // only hands out shared borrows. Filling every entry
     // as written (shadowed ones included) is also correct here since dedup
     // happens at read time.
     let crates_iter = config.crates.iter_mut().chain(
@@ -306,8 +306,7 @@ pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) {
             ScmTokenType::Gitea => env("GITEA_TOKEN"),
             // Route through the canonical resolver so an empty
             // `GITHUB_TOKEN=""` (the shape GH Actions gives a missing secret)
-            // falls through to the next source instead of being taken as a
-            // real token.
+            // falls through to the next source.
             ScmTokenType::GitHub => {
                 anodizer_core::git::resolve_github_token_with_env(None, &|key| ctx.env_var(key))
             }
@@ -335,8 +334,8 @@ pub fn init_publish_stage_ctx(
 ) -> Result<(Config, Context, std::path::PathBuf)> {
     let config_path = crate::pipeline::find_config_with_logger(config_override, Some(log))?;
     // Bare load: the submitter advisories are emitted below once `ctx` carries
-    // the `--skip` / `--publishers` selection surface, so a deselected
-    // publisher's advisory is suppressed instead of printed as noise.
+    // the `--skip` / `--publishers` selection, so a deselected publisher's
+    // advisory is suppressed.
     let mut config = crate::pipeline::load_config(&config_path)?;
     if infer_project {
         infer_project_name(&mut config, log);
@@ -378,7 +377,7 @@ pub fn init_merge_stage_ctx(
 ) -> Result<(Config, Context)> {
     let config_path = crate::pipeline::find_config_with_logger(config_override, Some(log))?;
     // Bare load: advisories emitted below once `ctx` carries the selection
-    // surface (see `init_publish_stage_ctx`).
+    // (see `init_publish_stage_ctx`).
     let mut config = crate::pipeline::load_config(&config_path)?;
     infer_project_name(&mut config, log);
     auto_detect_github(&mut config, log, false)?;
@@ -426,11 +425,11 @@ pub fn load_artifacts_from_manifest(
         // supplied `dist` root. Stored paths reflect the harness worktree's
         // `dist/<file>` shape; per-crate publish-only consumes from
         // `./dist/<crate>/` and would otherwise hit the manifest path
-        // verbatim (`./dist/<file>`) instead of `./dist/<crate>/<file>` and
+        // verbatim (`./dist/<file>`), missing the `./dist/<crate>/` prefix, and
         // trip `detect_missing_files`. Flat callers (`publish`, `announce`,
         // single-crate `publish-only`) pass `dist=./dist`, so the rewrite
         // is a no-op for them. Paths outside the dist root (raw
-        // `.det-tmp/target/...` binaries surfaced as Binary artifacts) are
+        // `.det-tmp/target/...` binaries registered as Binary artifacts) are
         // left alone.
         let path_str = a.path.to_string_lossy();
         let rewritten = if let Some(rel) = path_str
@@ -470,10 +469,10 @@ pub fn load_artifacts_from_manifest(
 /// Locate the Cargo workspace root for version-aware commands (`bump`, `tag`,
 /// `changelog`).
 ///
-/// When a `--config` override is supplied, walk UP from the config file's
+/// When a `--config` override is supplied, search UP from the config file's
 /// directory to the first ancestor containing a `Cargo.toml`; this lets a
 /// config living beside (or below) the manifest resolve the same root. With no
-/// override, walk up from the current directory instead. Bails when no
+/// override, search up from the current directory. Bails when no
 /// `Cargo.toml` is found in either chain.
 ///
 /// Unifying all three commands on this discovery means they behave identically
@@ -485,7 +484,7 @@ pub(crate) fn discover_workspace_root(config_override: Option<&Path>) -> Result<
     // Always return an ABSOLUTE root: callers thread it into `git -C <root>`,
     // which fails on an empty/relative path. A config resolved cwd-relative
     // (e.g. the bare `.anodizer.yaml` auto-discovery returns) has an empty
-    // parent whose ancestor walk yields `""`, so absolutize every candidate
+    // parent whose ancestor chain yields `""`, so absolutize every candidate
     // against the cwd before returning.
     let absolutize = |p: &Path| -> PathBuf {
         if p.as_os_str().is_empty() {
@@ -497,7 +496,7 @@ pub(crate) fn discover_workspace_root(config_override: Option<&Path>) -> Result<
         }
     };
     if let Some(p) = config_override {
-        // Config override points at .anodizer.yaml; walk up to the first Cargo.toml.
+        // Config override points at .anodizer.yaml; search up to the first Cargo.toml.
         if let Some(dir) = p.parent() {
             for ancestor in dir.ancestors() {
                 if absolutize(ancestor).join("Cargo.toml").is_file() {

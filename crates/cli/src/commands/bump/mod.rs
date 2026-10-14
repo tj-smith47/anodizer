@@ -178,8 +178,8 @@ fn commit_plan(
         }
     }
     // A row names only its own manifest, so the sibling manifests the dep-spec
-    // propagation and the floor sweep rewrote would otherwise be left dirty by
-    // a commit `bump` refuses to start on.
+    // propagation and the dependency minimum-version sweep rewrote would
+    // otherwise be left dirty by a commit `bump` refuses to start on.
     for path in dep_edits {
         if !staged.contains(path) {
             staged.push(path.clone());
@@ -196,7 +196,7 @@ fn commit_plan(
     //
     // `changelog_config` / `workspace` are threaded in from `run` (loaded once
     // there for the coherence guard) so a single `bump` parses the config and
-    // Cargo workspace exactly once, not 2–3×.
+    // Cargo workspace exactly once.
     let changelog_enabled = crate::commands::changelog_sync::resolve_changelog_enabled(
         changelog_config,
         opts.changelog,
@@ -239,15 +239,14 @@ fn commit_plan(
     // Collapse same-prefix shared-root targets to ONE flat aggregate (mirroring
     // `tag --changelog` and the `changelog` command): a flat `crates:` list
     // sharing one tag track and routing to one shared root is a single lockstep
-    // release, not N multi-track subsections. Promoting each member under the
+    // release with no per-crate subsections. Promoting each member under the
     // same `## [v<X.Y.Z>]` heading would strand every member after the first and
     // graft spurious `### <crate>` subsections.
     //
     // The flat-aggregate DECISION is the shared shape classification
-    // (`detect_repo_shape` → `FlatAggregate`), not a local prefix re-derivation,
-    // so it can't drift from `tag`/`changelog`. The routing gate
-    // (`root_enabled && !per_crate`) still applies: per-crate files keep their
-    // per-crate sections.
+    // (`detect_repo_shape` → `FlatAggregate`), so it can't drift from
+    // `tag`/`changelog`. The routing gate (`root_enabled && !per_crate`) still
+    // applies: per-crate files keep their per-crate sections.
     // The real packaged crates behind the targets, captured BEFORE the flat-
     // aggregate collapse below replaces them with one synthetic project-label
     // target — provenance markers must name publishable crates only.
@@ -493,8 +492,8 @@ mod tests {
         );
     }
 
-    /// `--config <missing file>` must bail loudly, never silently proceed
-    /// with defaults — the same guard every sibling command pins.
+    /// `--config <missing file>` must bail loudly with no fallback to
+    /// defaults, the same guard every sibling command tests.
     #[test]
     #[serial_test::serial(cwd)]
     fn missing_config_bails() {

@@ -8,7 +8,7 @@ use crate::publisher_helpers::count_noun;
 /// `CHANGELOG.md` records that anodizer itself regenerated it for
 /// `crate_name` at `version` — the provenance under which a crate-root
 /// `CHANGELOG.md` difference against an already-published version is the
-/// tool's own re-cut artifact rather than operator-authored drift (see
+/// tool's own re-cut artifact and no operator-authored drift (see
 /// [`crates_equal_modulo_vcs`]).
 ///
 /// The marker is written by the `tag` / `bump --commit` `--changelog` refresh
@@ -16,7 +16,7 @@ use crate::publisher_helpers::count_noun;
 /// [`anodizer_core::git::changelog_regenerated_marker`]), so it travels with
 /// the repository to any later publish run — including a `--publish-only`
 /// re-cut whose own invocation skips the changelog stage. Keying on the
-/// FILE's provenance (who last wrote it, for which version) rather than this
+/// FILE's provenance (who last wrote it, for which version), in place of this
 /// run's changelog stage config closes both failure modes of the config
 /// proxy: a `--skip=changelog` / `use: github-native` publish run no longer
 /// dead-ends on the tool's own regeneration, and an active changelog stage
@@ -94,8 +94,8 @@ pub(crate) fn crate_changelog_rel_path(crate_path: &str) -> String {
 /// stamp is package-scoped (verified: dirt on crate A's manifest does not
 /// stamp `"dirty": true` into crate B's `.cargo_vcs_info.json`), so it cannot
 /// perturb any OTHER crate's checksum comparison. Fails loud on all remaining
-/// dirt rather than silently skipping (a poison hole) or hard-failing on
-/// content (which would misattribute the divergence to a code change). The
+/// dirt: a silent skip is a poison hole, and a hard failure on content
+/// would misattribute the divergence to a code change. The
 /// message lists the dirty paths and prescribes re-running from a clean tag
 /// checkout.
 pub(super) fn ensure_publish_tree_clean(ctx: &Context, log: &StageLogger) -> Result<()> {
@@ -107,9 +107,9 @@ pub(super) fn ensure_publish_tree_clean(ctx: &Context, log: &StageLogger) -> Res
     let porcelain = match anodizer_core::git::git_status_porcelain_result_in(&repo) {
         Ok(out) => out,
         // An errored `git status` (non-repo cwd, git absent, locked index)
-        // cannot PROVE the tree is clean. A guard that "fails loud rather than
-        // silently skipping" must refuse here, never treat the indeterminate
-        // result as clean — that would be the very poison hole this gate closes.
+        // cannot PROVE the tree is clean. A guard that fails loud on dirt must
+        // refuse here; treating the indeterminate result as clean would be
+        // the very poison hole this gate closes.
         Err(e) => anyhow::bail!(
             "publish: cannot verify the working tree is clean before checking already-published \
              crates against the crates.io index ({e:#}). Without a clean-tree proof, a local \
@@ -128,7 +128,7 @@ pub(super) fn ensure_publish_tree_clean(ctx: &Context, log: &StageLogger) -> Res
         .filter(|line| {
             // `XY <path>` per porcelain v1 — but the helper trims the overall
             // output, so the first line's leading status space is gone; split
-            // on the first space run instead of a fixed-width prefix.
+            // on the first space run.
             let path = line
                 .trim_start()
                 .split_once(' ')
@@ -282,8 +282,8 @@ pub(crate) fn resolve_workspace_cargo_token(
     let oidc_available = oidc::oidc_context_available(ctx);
 
     // A strict `oidc` block against a non-crates.io registry cannot be honored
-    // — Trusted Publishing only creates crates.io tokens. Fail loud rather than
-    // silently creating an unusable token or falling back to a stored one.
+    // — Trusted Publishing only creates crates.io tokens. Fail loud: a silently
+    // created unusable token or a stored-token fallback would hide that.
     for (cargo, is_crates_io) in &active {
         if cargo.resolved_auth() == CargoAuthMode::Oidc && !is_crates_io {
             anyhow::bail!(
@@ -351,7 +351,7 @@ pub(crate) fn publish_to_cargo_with(
     registry_token: Option<&str>,
 ) -> Result<()> {
     // Resolved before the `&mut ctx` borrow below; the probes only need the
-    // retry policy and this invocation's wall-clock budget, not the context.
+    // retry policy and this invocation's wall-clock budget.
     let existence_policy = ctx.retry_policy();
     let probe_deadline = ctx.retry_deadline();
     publish_to_cargo_with_guard(
@@ -463,7 +463,7 @@ pub(crate) fn publish_to_cargo_with_guard(
             log.verbose(&run_per_crate_start_message(name));
             let cmd = publish_command(name, cargo_cfgs.get(name));
             log.status(&format!("(dry-run) would run: {}", cmd.join(" ")));
-            // Surface that the content-vs-version poison guard would run for
+            // Report that the content-vs-version poison guard would run for
             // any crate already on crates.io — operators see WHAT would be
             // checked without a network round-trip or local package step.
             if targets_crates_io(cargo_cfgs.get(name)) {
@@ -486,7 +486,7 @@ pub(crate) fn publish_to_cargo_with_guard(
     // (non-dev) dependency that is neither in the set nor already on
     // crates.io. The publish-simulation preflight runs the same guard earlier
     // for a louder/earlier abort, but that check-only mode is opt-in
-    // (`--preflight`), not run automatically before every real publish;
+    // (`--preflight`) and does not run before every real publish;
     // re-running it here means no real-publish path (publish_to_cargo /
     // --publish-only) can bypass it. Cheap: at most one sparse-index GET per
     // out-of-set dep, and a no-op for the common lockstep case where every
@@ -540,9 +540,9 @@ pub(crate) fn publish_to_cargo_with_guard(
     // `cargo package` stamps `"dirty": true` into `.cargo_vcs_info.json`,
     // changing the `.crate` bytes vs the clean tag checkout the original release
     // published from — so the content-vs-index comparison is unreliable (false
-    // poison on a clean-published crate, or masking real drift). Fail loud
-    // rather than skip (a poison hole) or hard-fail on content (which would
-    // misattribute the divergence to a code change). Only gates when at least
+    // poison on a clean-published crate, or masking real drift). Fail loud:
+    // a skip is a poison hole, and a hard failure on content would
+    // misattribute the divergence to a code change. Only gates when at least
     // one crate in the set could actually run the guard (crates.io target with a
     // resolved version); a pure non-crates.io / unversioned set never packages
     // for comparison, so a dirty tree there is irrelevant.
@@ -790,8 +790,7 @@ pub(crate) struct PublishedCrateRef {
 /// [`PublishEvidence`](anodizer_core::PublishEvidence) schema's
 /// `primary_ref` carries one canonical URL. The crate whose `name` matches
 /// `ctx.config.project_name` is preferred, so operators see the marquee
-/// crate (e.g. `anodizer` from the `anodizer-*` workspace) instead of
-/// whichever crate happens to iterate first. If no such match exists
+/// crate (e.g. `anodizer` from the `anodizer-*` workspace) first. If no such match exists
 /// (project_name unset, or no eligible crate matches it), fall back to
 /// the first crate with `publish.cargo` configured.
 pub(crate) fn first_published_crate(ctx: &Context) -> Option<PublishedCrateRef> {

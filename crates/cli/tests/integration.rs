@@ -5695,7 +5695,7 @@ crates:
 /// where the promote arg lacked the `parse_run_id` guard the release arg
 /// already carried.
 #[test]
-fn promote_from_run_rejects_path_traversal_at_binary_surface() {
+fn promote_from_run_rejects_path_traversal_through_the_binary() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
     init_git_repo(tmp.path());

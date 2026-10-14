@@ -204,7 +204,7 @@ mod harden_cosign_tests {
                 .filter(|a| a.starts_with("--tlog-upload"))
                 .count(),
             1,
-            "no duplicate when already pinned false: {out:?}"
+            "no duplicate when already set to false: {out:?}"
         );
     }
 

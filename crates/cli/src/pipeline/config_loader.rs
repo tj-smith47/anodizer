@@ -32,7 +32,7 @@ const MAX_INCLUDE_DEPTH: usize = 32;
 pub use anodizer_core::config::CONFIG_CANDIDATES;
 
 /// The operator signal for the Cargo.toml defaults fallback, shared by every
-/// discovery surface that can fall back (release/tag/check via
+/// discovery command that can fall back (release/tag/check via
 /// [`find_config_with_logger`], bump via [`find_config_in`]) so the same
 /// event always emits the same warn.
 pub(crate) const CARGO_TOML_FALLBACK_WARNING: &str =
@@ -43,7 +43,7 @@ pub(crate) const CARGO_TOML_FALLBACK_WARNING: &str =
 ///
 /// When the Cargo.toml fallback fires, the warning is routed through
 /// `log.warn` if a logger is supplied; otherwise it falls back to
-/// `tracing::warn!` so the bare-pipeline / tests path still surfaces the
+/// `tracing::warn!` so the bare-pipeline / tests path still reports the
 /// signal without bypassing structured logging.
 pub fn find_config(config_override: Option<&Path>) -> Result<PathBuf> {
     find_config_with_logger(config_override, None)
@@ -83,13 +83,13 @@ pub fn find_config_with_logger(
             path.display()
         )));
     }
-    // An empty base joins to the bare candidate names, so core's shared walk
+    // An empty base joins to the bare candidate names, so core's shared scan
     // probes cwd-relative here and `anchor_to_cwd` keeps the getcwd-failure
     // degradation (bare filename) unchanged.
     if let Some(path) = anodizer_core::config::find_config_candidate_in(Path::new("")) {
         return Ok(anchor_to_cwd(path));
     }
-    // Fallback: if Cargo.toml exists, use a default config instead of erroring.
+    // Fallback: if Cargo.toml exists, use a default config.
     if Path::new("Cargo.toml").exists() {
         match log {
             Some(l) => l.warn(CARGO_TOML_FALLBACK_WARNING),
@@ -183,7 +183,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
 
 /// [`load_config`] for config text that is not (yet) what `path` holds: the
 /// same include resolution, legacy folds, validators and derivations, run
-/// against `content` instead of the file's current bytes.
+/// against `content` in place of the file's current bytes.
 ///
 /// `path` still decides the format and anchors relative `includes:`, so a
 /// caller checking an edit it is about to write sees exactly the config that
@@ -191,7 +191,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
 pub(crate) fn load_config_from_str(path: &Path, content: &str) -> Result<Config> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-    // Walk the raw YAML pre-parse for two checks that lose information
+    // Scan the raw YAML pre-parse for two checks that lose information
     // once typed deserialization runs:
     //   * legacy `snapshot.name_template` (renamed to `version_template`
     //     historically; serde alias accepts both but collapses them on parse).
@@ -261,7 +261,7 @@ pub(crate) fn load_config_from_str(path: &Path, content: &str) -> Result<Config>
     anodizer_core::config::validate_on_failure_not_rollback(&config)
         .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate nightly.publish_repo is "owner/repo" shaped (fail at config
-    // time rather than as a confusing 404 when the release is created).
+    // time; a bad value would otherwise be a confusing 404 when the release is created).
     anodizer_core::config::validate_nightly_publish_repo(&config)
         .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate defaults.crates / defaults.workspaces axis matches top-level.
@@ -299,7 +299,7 @@ pub(crate) fn load_config_from_str(path: &Path, content: &str) -> Result<Config>
         .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate every upload-destination `exclude:` glob (blobs / release /
     // artifactories / cloudsmiths / gemfury) — reject a malformed pattern at
-    // config-load rather than letting it silently no-op or drop every asset.
+    // config-load; a malformed pattern would otherwise silently no-op or drop every asset.
     anodizer_core::config::validate_exclude_globs(&config)
         .map_err(anodizer_core::error_class::deterministic_msg)?;
     anodizer_core::config::warn_on_legacy_homebrew_formula(&config);
@@ -354,16 +354,16 @@ pub(crate) fn load_config_from_str(path: &Path, content: &str) -> Result<Config>
 }
 
 /// [`load_config`] plus emission of verbose-only config advisories through
-/// `log`. Currently surfaces the submitter moderation-queue notices
+/// `log`. Currently prints the submitter moderation-queue notices
 /// ([`anodizer_core::config::submitter_required_warnings`]) at
 /// `StageLogger::verbose` so they stay hidden at the default log level and
 /// appear only under `--verbose`. Route every command's PRIMARY config load
 /// through this (best-effort secondary `.ok()` loads keep using
-/// [`load_config`]) so the advisory surfaces uniformly, exactly once per run.
+/// [`load_config`]) so the advisory prints uniformly, exactly once per run.
 ///
 /// Emits EVERY advisory: this load runs before any publisher-selection
-/// surface (`Context`) exists, so it cannot deselect. Commands with a real
-/// selection surface (release / publish) load via plain [`load_config`] and
+/// state (`Context`) exists, so it cannot deselect. Commands with a real
+/// selection (release / publish) load via plain [`load_config`] and
 /// call [`emit_config_advisories_filtered`] once `Context` is built, passing
 /// `Context::publisher_deselected` so an advisory for a deselected publisher
 /// (e.g. `chocolatey` under `--publishers npm`) is suppressed.
@@ -374,8 +374,8 @@ pub fn load_config_logged(path: &Path, log: &StageLogger) -> Result<Config> {
 }
 
 /// Emit the verbose-only config advisories for an already-loaded config,
-/// with no deselection (every advisory surfaces). Used by command paths with
-/// no publisher-selection surface — `tag`, `bump`, `changelog`, `check`.
+/// with no deselection (every advisory prints). Used by command paths with
+/// no publisher selection — `tag`, `bump`, `changelog`, `check`.
 pub fn emit_config_advisories(config: &anodizer_core::config::Config, log: &StageLogger) {
     emit_config_advisories_filtered(config, log, |_| false);
 }
@@ -404,7 +404,7 @@ pub fn emit_config_advisories_filtered(
     }
 }
 
-/// Walk the loaded config and fill in commit_author defaults on every
+/// Go through the loaded config and fill in commit_author defaults on every
 /// publisher that has one (homebrew formula + cask, scoop, chocolatey, winget,
 /// nix, aur, krew). This is the per-publisher defaulting
 /// pass; anodizer centralises here so the normalization runs once at load.
@@ -484,7 +484,7 @@ fn load_yaml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
     // Mark the base config itself as visited so a child include cannot
     // form an A -> B -> A cycle back through the root. The same key is
     // also passed as `root_key` so a direct A -> A self-cycle errors
-    // explicitly instead of silently deduping into an empty mapping.
+    // explicitly; it would otherwise silently dedup into an empty mapping.
     let root_key = canonical_path_key(path);
     if let Some(ref key) = root_key {
         visited.insert(key.clone());
@@ -727,13 +727,13 @@ fn expand_path_tilde_and_env(path_str: &str) -> String {
     anodizer_core::path_util::expand_tilde(&expanded).into_owned()
 }
 
-/// Resolve a single include entry recursively, walking the included
+/// Resolve a single include entry recursively, reading the included
 /// file's own `includes:` array (depth-first) before applying it to the
 /// caller's merge tree.
 ///
 /// Cycle detection: each include's canonical path (or normalized URL)
 /// goes into `visited` before recursing; a repeat hit bails with the
-/// chain so a misconfigured `A -> B -> A` surfaces with a clear
+/// chain so a misconfigured `A -> B -> A` is reported with a clear
 /// message. The same set survives across siblings, which means an
 /// include referenced twice in a chain (or twice in the same array) is
 /// deduplicated — the second hit returns an empty mapping. This matches
@@ -742,8 +742,8 @@ fn expand_path_tilde_and_env(path_str: &str) -> String {
 /// merge is idempotent.
 ///
 /// Path resolution: file includes inside a child config resolve
-/// relative to THAT child's directory, not the root config's directory,
-/// so a shared `includes/team-defaults.yaml` that itself references
+/// relative to THAT child's directory (the root config's directory plays
+/// no part), so a shared `includes/team-defaults.yaml` that itself references
 /// `./platform.yaml` finds `includes/platform.yaml` correctly.
 fn resolve_include_recursive(
     entry: &serde_yaml_ng::Value,
@@ -806,7 +806,7 @@ fn resolve_include_recursive(
     // already-loaded values.
     if !visited.insert(key.clone()) {
         if depth > 0 {
-            // Mid-chain repeat: this is a cycle, not just a dedup hit.
+            // Mid-chain repeat: this is a cycle. A dedup hit only happens at depth 0.
             // The same key can only re-appear in `visited` here because
             // an ancestor loaded it; report the cycle.
             bail!(
@@ -946,9 +946,9 @@ crates:
         .unwrap()
     }
 
-    /// With no deselection, every submitter advisory surfaces (verbose). This
-    /// is the `tag` / `bump` / `changelog` / `check` behavior — no selection
-    /// surface, emit all.
+    /// With no deselection, every submitter advisory prints (verbose). This
+    /// is the `tag` / `bump` / `changelog` / `check` behavior — no selection,
+    /// emit all.
     #[test]
     fn emit_config_advisories_emits_all_without_deselection() {
         use anodizer_core::log::{StageLogger, Verbosity};
@@ -958,11 +958,11 @@ crates:
         let msgs = cap.all_messages();
         assert!(
             msgs.iter().any(|(_, m)| m.contains("chocolatey")),
-            "chocolatey advisory must surface, got: {msgs:?}"
+            "chocolatey advisory must print, got: {msgs:?}"
         );
         assert!(
             msgs.iter().any(|(_, m)| m.contains("winget")),
-            "winget advisory must surface, got: {msgs:?}"
+            "winget advisory must print, got: {msgs:?}"
         );
     }
 
@@ -982,13 +982,13 @@ crates:
         );
         assert!(
             msgs.iter().any(|(_, m)| m.contains("winget")),
-            "selected winget advisory must still surface, got: {msgs:?}"
+            "selected winget advisory must still print, got: {msgs:?}"
         );
     }
 
     /// The advisories are emitted through the VERBOSE register (tagged
     /// `LogLevel::Verbose`), so they print only under `-v` and stay hidden at
-    /// the default level — never `status` / `warn`. Pins the "hidden at
+    /// the default level, and `status` / `warn` are never used. Checks the "hidden at
     /// default" contract by asserting every advisory line carries the Verbose
     /// level (the capture records the level regardless of console gating).
     #[test]
@@ -1085,13 +1085,13 @@ notarize:
 "#,
         )
         .unwrap();
-        load_config(&cfg_path).expect("20m is the ceiling, not past it");
+        load_config(&cfg_path).expect("20m is the ceiling and loads");
     }
 
     /// The defaults-axis bypass is closed at the PARSE: `validate_builds`
-    /// runs before `apply_defaults` and walks only crates/workspaces, so a
+    /// runs before `apply_defaults` and reads only crates/workspaces, so a
     /// garbage `defaults.builds.amd64_variant` used to sail through the load
-    /// untouched. Typed as an enum, the load itself rejects it — this pins
+    /// untouched. Typed as an enum, the load itself rejects it — this checks
     /// the message the user actually sees.
     #[test]
     fn load_config_rejects_defaults_axis_amd64_variant_garbage() {
@@ -1145,9 +1145,9 @@ crates:
     }
 
     /// `release.on_failure: rollback` must be rejected by the loader itself,
-    /// not merely by a validator someone remembered to call. Every surface
+    /// and a validator someone remembered to call is not enough. Every command
     /// that reads a config (`check config`, `release`, `tag`, …) goes through
-    /// `load_config`, so pinning the refusal here is what makes the documented
+    /// `load_config`, so testing the refusal here is what makes the documented
     /// hard error real — a validator that is defined but unwired passes its own
     /// unit tests while the config silently loads clean.
     #[test]
@@ -1168,7 +1168,7 @@ release:
         let msg = format!("{err:#}");
         assert!(
             msg.contains("release.on_failure: rollback is no longer supported"),
-            "the loader must surface the migration error: {msg}"
+            "the loader must report the migration error: {msg}"
         );
         assert!(
             msg.contains("anodizer tag rollback"),
@@ -1196,7 +1196,7 @@ crates:
 
     /// A config that omits `on_failure` — and one that spells out the only
     /// supported value — must still load. The rollback refusal has to be
-    /// value-specific, not a blanket rejection of the key.
+    /// value-specific; a blanket rejection of the key is wrong.
     #[test]
     fn load_config_accepts_hold_and_unset_on_failure() {
         let tmp = TempDir::new().unwrap();
@@ -1281,10 +1281,6 @@ crates:
         assert_eq!(result.unwrap(), cfg_path);
     }
 
-    // -----------------------------------------------------------------------
-    // merge_yaml tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_merge_yaml_mappings_recursive() {
         let mut base: serde_yaml_ng::Value = serde_yaml_ng::from_str("a: 1\nb: 2").unwrap();
@@ -1329,10 +1325,6 @@ crates:
         merge_yaml(&mut base, &overlay);
         assert_eq!(base["name"].as_str().unwrap(), "overlay");
     }
-
-    // -----------------------------------------------------------------------
-    // load_config with includes tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_load_config_includes_field_parses() {
@@ -1548,7 +1540,7 @@ crates:
     #[test]
     fn test_load_config_includes_path_relative_to_included_file() {
         // a.yaml includes nested/b.yaml; b.yaml includes c.yaml — which
-        // lives in `nested/` next to b.yaml, NOT next to a.yaml.
+        // lives in `nested/` next to b.yaml; a.yaml's directory has no copy.
         let tmp = TempDir::new().unwrap();
         let nested = tmp.path().join("nested");
         fs::create_dir_all(&nested).unwrap();
@@ -1577,8 +1569,8 @@ crates:
     /// `~user/...` (POSIX user-home form) is intentionally NOT expanded
     /// — only `~/` and `$VAR` are recognized. A path like `~bob/foo`
     /// must round-trip unchanged so the downstream `read_to_string`
-    /// surfaces the missing-file error, rather than the expander guessing at
-    /// `bob`'s home and silently rewriting the user's path.
+    /// reports the missing-file error; the expander must not guess at
+    /// `bob`'s home and silently rewrite the user's path.
     #[test]
     fn test_expand_path_tilde_user_form_not_supported() {
         let got = expand_path_tilde_and_env("~bob/foo");
@@ -1615,8 +1607,6 @@ crates:
             "duplicate include should only contribute once"
         );
     }
-
-    // ---- Version validation in load_config ----
 
     #[test]
     fn test_load_config_version_1_accepted() {
@@ -1716,10 +1706,6 @@ crates: []
         assert_eq!(builds.ignore.unwrap().len(), 1);
         assert_eq!(builds.overrides.unwrap().len(), 1);
     }
-
-    // -----------------------------------------------------------------------
-    // Structured includes (from_file, from_url) tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_includes_from_file_structured_form() {
@@ -1853,10 +1839,6 @@ crates: []
         assert_eq!(config.report_sizes, Some(true));
     }
 
-    // -----------------------------------------------------------------------
-    // normalize_include_url tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_normalize_url_full_https() {
         let result = normalize_include_url("https://example.com/config.yaml");
@@ -1886,10 +1868,6 @@ crates: []
             "https://raw.githubusercontent.com/org/repo/branch/path/to/config.yaml"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // TOML includes with structured form
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_toml_includes_plain_string_backward_compat() {
@@ -1935,17 +1913,13 @@ path = "shared.yaml"
         assert_eq!(config.dist, std::path::PathBuf::from("/shared-dist"));
     }
 
-    // -----------------------------------------------------------------------
-    // Fix #5: Header keys NOT expanded, only values are
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_header_keys_not_expanded_only_values() {
         // Drive `expand_with` against a closed lookup map so the test never
         // touches process env. The production header pipeline calls
         // `expand_env_vars` (which routes through `std::env::var`); the
-        // contract this test pins is the value-vs-key expansion shape,
-        // not the lookup backend.
+        // contract this test checks is the value-vs-key expansion shape;
+        // the lookup backend is outside it.
         let lookup = |name: &str| match name {
             "ANODIZER_HDR_VAL" => Some("expanded_val".to_string()),
             _ => None,
@@ -1977,10 +1951,6 @@ path = "shared.yaml"
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Fix #8: from_url error path (unreachable URL)
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_fetch_url_unreachable_returns_error() {
         // Use a clearly invalid URL that will fail to connect.
@@ -1997,10 +1967,6 @@ path = "shared.yaml"
             msg
         );
     }
-
-    // -----------------------------------------------------------------------
-    // Fix #10: TOML from_url structured form in TOML config
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_toml_includes_from_url_structured_form() {
@@ -2028,30 +1994,28 @@ url = "https://example.com/config.yaml"
         .unwrap();
 
         // This will fail at fetch time (no server), but the TOML parsing and
-        // IncludeSpec deserialization should work; that is pinned separately.
+        // IncludeSpec deserialization should work; that is tested separately.
         let config_result = load_config(&cfg_path);
-        // The error must come from the URL fetch, not from parsing
+        // The error must come from the URL fetch; parsing succeeds
         assert!(config_result.is_err());
         let msg = config_result.unwrap_err().to_string();
         assert!(
             msg.contains("fetch") || msg.contains("include URL"),
-            "should fail at fetch, not parse: {}",
+            "should fail at fetch after a clean parse: {}",
             msg
         );
     }
 
-    // -----------------------------------------------------------------------
     // Regression: full-`Config` deserialization must not depend on the
     // caller's thread stack size. Debug-built `serde_yaml_ng::from_value::
     // <Config>` and `toml::from_str::<Config>` consume several MiB of stack
     // because each generated visitor branch lives in one monomorphised
     // frame. Routing through `core::config::deserialize_on_worker` keeps
     // every caller safe regardless of the host's main-thread reservation
-    // (Windows: 1 MiB). The test below pins the contract by invoking
+    // (Windows: 1 MiB). The test below checks the contract by invoking
     // `load_config` from a deliberately small (256 KiB) caller thread.
     // Pre-fix this overflows on every platform under debug builds; post-fix
     // it succeeds because the worker thread carries its own 8 MiB stack.
-    // -----------------------------------------------------------------------
 
     #[test]
     fn load_config_succeeds_on_small_caller_stack() {
@@ -2074,7 +2038,7 @@ crates:
         // monolithic `Config` visitor overflow on Linux. Post-fix the
         // deserialize is routed through the helper's 8 MiB worker so the
         // outer 512 KiB budget only has to cover the YAML-Value parse,
-        // the include-merge walk, and the per-CrateConfig JSON round-trips
+        // the include-merge pass, and the per-CrateConfig JSON round-trips
         // inside `defaults_merge`, each comfortably small.
         let cfg_path_string = cfg_path.to_string_lossy().to_string();
         let handle = std::thread::Builder::new()
@@ -2128,9 +2092,9 @@ crates:
     }
 
     #[test]
-    fn config_candidates_is_the_core_list_not_a_copy() {
+    fn config_candidates_is_the_core_static() {
         // The CLI candidate list must be the exact same static as core's
-        // (a re-export, not a duplicated literal) — pointer identity, so a
+        // (a re-export) — pointer identity, so a
         // divergent copy cannot reappear.
         assert!(std::ptr::eq(
             CONFIG_CANDIDATES.as_ptr(),

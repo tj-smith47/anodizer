@@ -65,7 +65,7 @@ fn signature_env_requirements(
     }
 }
 
-/// ADVISORY tool requirements for the nfpm schema floor: the pre-publish
+/// ADVISORY tool requirements for the nfpm schema check: the pre-publish
 /// guard cross-checks built packages with the native tooling when present
 /// (`dpkg-deb --info` for deb, `rpm -qp` for rpm) and warn+skips when
 /// absent, so these must never block a release — but `anodizer tools`

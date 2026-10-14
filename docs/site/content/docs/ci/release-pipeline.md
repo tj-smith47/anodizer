@@ -5,7 +5,7 @@ weight = 3
 template = "docs.html"
 +++
 
-This is the production-grade release pipeline anodizer runs against itself, generalized for any consumer. It is the most hardened shape — a preflight that runs *before a tag exists*, a commit-driven auto-tag, a sharded byte-for-byte reproducibility proof, a publish step that ships the **proven** artifacts (never a rebuild), and an npm leg split out so npm provenance can be issued from a GitHub-hosted OIDC token.
+This is the production-grade release pipeline anodizer runs against itself, generalized for any consumer. It is the most hardened shape — a preflight that runs *before a tag exists*, a commit-driven auto-tag, a sharded byte-for-byte reproducibility proof, a publish step that ships the **proven** artifacts without rebuilding them, and an npm leg split out so npm provenance can be issued from a GitHub-hosted OIDC token.
 
 If you just want a release on tag-push, start with [GitHub Actions](@/docs/ci/github-actions.md). Reach for this topology when you publish to one-way-door registries (crates.io, chocolatey, winget, snapcraft) and want every byte proven reproducible before it ships.
 
@@ -165,8 +165,8 @@ The publish job downloads and merges all four shards' preserved dist, asserts ev
     name: Publish Release
     needs: [tag, determinism-check]
     # !cancelled() matters: it lets the explicit gate govern when
-    # determinism-check is skipped (the re-publish path) rather than GHA
-    # applying an implicit success() and skipping the publish. Exclude both
+    # determinism-check is skipped (the re-publish path). Without it GHA
+    # applies an implicit success() and skips the publish. Exclude both
     # failure AND cancelled — a cancelled shard leaves the merged dist partial.
     if: ${{ !cancelled() && needs.tag.outputs.tagged == 'true' && needs.determinism-check.result != 'failure' && needs.determinism-check.result != 'cancelled' }}
     runs-on: ubuntu-latest
@@ -211,8 +211,8 @@ These do **not** run as a job inside `release.yml`. crates.io and PyPI Trusted P
   dispatch-oidc:
     name: Dispatch OIDC publish
     needs: [tag, release]
-    # always() + explicit result check: gated on a real publish, not skipped-need
-    # propagation.
+    # always() + explicit result check: gated on a real publish, so a
+    # skipped need does not propagate.
     if: ${{ always() && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:

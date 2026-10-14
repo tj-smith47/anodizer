@@ -7,10 +7,6 @@ use anodizer_core::context::Context;
 
 use super::detect::docker_supports_provenance;
 
-// ---------------------------------------------------------------------------
-// resolve_backend
-// ---------------------------------------------------------------------------
-
 /// Resolve the docker backend binary and subcommand for build operations.
 ///
 /// Returns `(binary, subcommands)`:
@@ -33,7 +29,7 @@ pub fn resolve_backend(
     // branch (multi-platform podman writes a local manifest list via
     // `--manifest <name>`, single-platform podman uses `--tag <name>`); the
     // subcommand vector itself is identical for both arities. Reading it here
-    // keeps the parameter in use rather than silently ignored, and a
+    // keeps the parameter in use, and a
     // future backend whose *subcommand* depends on arity has the value ready.
     let _ = multi_platform;
     match use_backend {
@@ -78,10 +74,6 @@ pub(crate) fn podman_not_linux_message(os: &str) -> String {
          remove `use: podman` or run on a Linux host"
     )
 }
-
-// ---------------------------------------------------------------------------
-// Buildx-only flag validation (for podman backend)
-// ---------------------------------------------------------------------------
 
 /// Flags that ONLY make sense for `docker buildx build` and that plain
 /// `podman build` does not recognise. Configs that opt into the podman
@@ -129,21 +121,17 @@ pub fn validate_podman_flag_compat(flags: &[String]) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// resolve_manifester
-// ---------------------------------------------------------------------------
-
 /// Resolve the binary used for `docker manifest …` (or its podman cousin).
 ///
 /// Errors at default-time when the configured `manifest.use:` is not in the
 /// supported manifester set. An unknown value (including typos like
-/// `use: dockr`) is rejected rather than silently falling back to `"docker"`,
-/// which previously masked bugs. The supported set is enumerated explicitly
-/// and anything else surfaces a clear error.
+/// `use: dockr`) is rejected; a silent fallback to `"docker"`
+/// previously masked bugs. The supported set is enumerated explicitly
+/// and anything else produces a clear error.
 ///
 /// `"podman"` is accepted in addition to `"docker"` because podman ships a
 /// `podman manifest create/push` CLI that mirrors
-/// `docker manifest`; that surface is already wired through the rest of
+/// `docker manifest`; that command set is already wired through the rest of
 /// this module. `"buildx"` is NOT a valid manifester (buildx pushes manifest
 /// lists as a side-effect of `--push`, it does not have a `buildx manifest`
 /// subcommand) and rejecting it explicitly catches a common copy-paste bug
@@ -166,9 +154,6 @@ pub fn resolve_manifester(use_backend: Option<&str>) -> Result<&'static str> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Shared command-construction helpers
-// ---------------------------------------------------------------------------
 //
 // `build_docker_command` (V1) and `build_docker_v2_command` (V2) share the
 // same skeleton: backend prefix → `--progress=plain` → `--platform=…` →
@@ -221,10 +206,6 @@ fn push_labels(cmd: &mut Vec<String>, labels: &[(String, String)]) {
         cmd.push(format!("{}={}", key, value));
     }
 }
-
-// ---------------------------------------------------------------------------
-// V1 spec + builder
-// ---------------------------------------------------------------------------
 
 /// Spec for the legacy (V1) `docker build` invocation.
 ///
@@ -323,14 +304,6 @@ pub fn build_docker_command(spec: &DockerV1Spec<'_>) -> Result<Vec<String>> {
 
     Ok(cmd)
 }
-
-// ---------------------------------------------------------------------------
-// build_docker_v2_command
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// V2 spec + builder
-// ---------------------------------------------------------------------------
 
 /// Spec for the V2 `docker buildx build` invocation.
 ///
@@ -445,8 +418,8 @@ pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
         cmd.push(flag.clone());
     }
 
-    // Use --attest=type=sbom for proper OCI attestation rather than the
-    // older --sbom=true flag. Buildx-only — already gated by the
+    // Use --attest=type=sbom for proper OCI attestation; the
+    // older --sbom=true flag is superseded. Buildx-only — already gated by the
     // `is_podman` check above (sbom forbidden under podman).
     if sbom && !is_podman {
         cmd.push("--attest=type=sbom".to_string());
@@ -522,10 +495,6 @@ pub(crate) fn has_annotation_scope(key: &str) -> bool {
     })
 }
 
-// ---------------------------------------------------------------------------
-// build_podman_push_commands
-// ---------------------------------------------------------------------------
-
 /// Construct the publish argv for every rendered tag of a podman build.
 ///
 /// `podman build` cannot bake `--push` into the build the way `docker buildx
@@ -558,8 +527,8 @@ pub(crate) fn has_annotation_scope(key: &str) -> bool {
 /// `{{ Digest }}`, the `.digest` artifact and the release's landing check
 /// compare one kind of value whichever backend built the image.
 ///
-/// Podman 2.0 is the floor a podman backend needs: an older podman exits
-/// non-zero on the unknown option instead of degrading, and the push fails.
+/// Podman 2.0 is the minimum a podman backend needs: an older podman exits
+/// non-zero on the unknown option, and the push fails.
 /// `podman push` took the flag in 1.6.0 ("The `podman push` command now
 /// supports the `--digestfile` option to save a file containing the pushed
 /// digest", RELEASE_NOTES.md at the v1.6.0 tag, 1.6.0 Features).
@@ -568,7 +537,7 @@ pub(crate) fn has_annotation_scope(key: &str) -> bool {
 /// `docs/source/markdown/podman-manifest-push.1.md` documents the flag from
 /// the start ("**--digestfile**=*Digestfile* — After copying the image,
 /// write the digest of the resulting image to the file"). The higher of the
-/// two is the floor.
+/// two is the minimum.
 ///
 /// The file is named per tag under the build's own staging directory: one
 /// build can push several tags, and one path would leave every tag holding
@@ -614,8 +583,8 @@ pub fn podman_push_digest_file(staging_dir: &Path, tag: &str) -> PathBuf {
 /// Evaluate whether a Docker V2 config is skipped.
 ///
 /// Checks the `skip` field: if it's a template, renders it and checks for "true".
-/// Returns `true` when the config should be skipped. Surfaces template render
-/// errors instead of silently treating them as "not skipped".
+/// Returns `true` when the config should be skipped. Returns template render
+/// errors; a render failure is never read as "not skipped".
 pub fn is_docker_v2_skipped(skip: &Option<StringOrBool>, ctx: &Context) -> Result<bool> {
     match skip {
         None => Ok(false),
@@ -669,7 +638,7 @@ pub(crate) fn resolve_digest_config(
 /// Retry defaults are applied later by `resolve_retry_params` (10 attempts,
 /// 10s base, 5m max) so they aren't repeated here.
 /// `image_name` is the crate's own binary/crate name — the per-crate `images`
-/// default is `ghcr.io/{owner}/{image_name}`, NOT the workspace primary's, so
+/// default is `ghcr.io/{owner}/{image_name}` (the workspace primary's name plays no part), so
 /// each crate in a workspace defaults to its own image namespace. `owner` is
 /// the git-remote owner (GitHub org/user); when `None` (no remote resolvable),
 /// the `images` default is skipped and the empty list flows through unchanged —
@@ -711,8 +680,8 @@ pub fn apply_docker_v2_defaults(
 /// Evaluate whether the sbom flag should be added for a Docker V2 config.
 ///
 /// The `sbom` field is a [`StringOrBool`]. When it evaluates to true, the
-/// `--attest=type=sbom` flag is added to the buildx command. Surfaces template
-/// render errors instead of silently treating them as "not enabled".
+/// `--attest=type=sbom` flag is added to the buildx command. Returns template
+/// render errors; a render failure is never read as "not enabled".
 ///
 /// Default-on: the `Default()`-apply block sets `SBOM = "true"`. Users opt
 /// out with `sbom: false` (or a templated string evaluating to `"false"`).
@@ -755,8 +724,8 @@ pub fn generate_v2_image_tags(images: &[String], tags: &[String]) -> Vec<String>
 
 /// Resolve whether to skip push based on `SkipPushConfig` and prerelease status.
 ///
-/// A malformed `skip_push` template is propagated as an error rather than
-/// resolved to "do not skip" — silently pushing on a render failure is the
+/// A malformed `skip_push` template is propagated as an error — resolving it
+/// to "do not skip" and silently pushing on a render failure is the
 /// wrong-and-irreversible direction. Mirrors `is_docker_v2_skipped`.
 pub fn resolve_skip_push(skip_push: &Option<SkipPushConfig>, ctx: &Context) -> Result<bool> {
     Ok(match skip_push {

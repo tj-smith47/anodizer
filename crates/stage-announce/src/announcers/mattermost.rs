@@ -5,7 +5,7 @@ use anodizer_core::retry::RetryPolicy;
 use anyhow::Result;
 
 use crate::dispatch::{DispatchQueue, dispatch};
-use crate::helpers::{DEFAULT_DISPLAY_NAME, config_or_env_secret, is_enabled, render_message};
+use crate::helpers::{DEFAULT_DISPLAY_NAME, is_enabled, render_message};
 use crate::mattermost;
 
 use super::Announcer;
@@ -34,11 +34,10 @@ impl Announcer for MattermostAnnouncer {
             .mattermost
             .as_ref()
             .expect("send only called when enabled returned Ok(true)");
-        let url = match config_or_env_secret(
-            ctx,
+        let url = match ctx.config_or_env_secret(
             "announce.mattermost.webhook_url",
             cfg.webhook_url.as_deref(),
-            "MATTERMOST_WEBHOOK",
+            &["MATTERMOST_WEBHOOK"],
         )? {
             Some(url) => url,
             None => {
@@ -56,9 +55,9 @@ impl Announcer for MattermostAnnouncer {
         // fields raw — no template substitution. Rendering is
         // tradeoff-free (raw strings still pass through unchanged)
         // and unlocks per-tag channel routing like
-        // `channel: "release-{{ Tag }}"`. Render errors surface via
+        // `channel: "release-{{ Tag }}"`. Render errors are reported via
         // the strict_guard collected-errors path, same as message.
-        // Pinned by `test_mattermost_renders_channel_template`.
+        // Checked by `test_mattermost_renders_channel_template`.
         let channel = ctx.render_template_opt(cfg.channel.as_deref())?;
         // Default username to DEFAULT_DISPLAY_NAME (brand-default policy
         // keeps anodizer's own attribution).
@@ -66,11 +65,7 @@ impl Announcer for MattermostAnnouncer {
             ctx.render_template_opt(cfg.username.as_deref().or(Some(DEFAULT_DISPLAY_NAME)))?;
         let icon_url = ctx.render_template_opt(cfg.icon_url.as_deref())?;
         let icon_emoji = ctx.render_template_opt(cfg.icon_emoji.as_deref())?;
-        // Default color to "#2D313E". Reads
-        // from `MattermostAnnounce.color` — anodizer always has, even
-        // before a cross-pipe bug was fixed upstream
-        // where mattermost mistakenly consulted `TeamsAnnounce.Color`.
-        // Pinned by `test_mattermost_reads_own_color_not_teams`.
+        // Default color to "#2D313E", read from `MattermostAnnounce.color`.
         let color_val = cfg.color.clone().unwrap_or_else(|| "#2D313E".to_string());
         // Default title to "{{ ProjectName }} {{ Tag }} is out!".
         let title_template = cfg

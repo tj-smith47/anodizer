@@ -248,7 +248,7 @@ crates:
   non-deterministic data (e.g., `env!("HOME")`, file modification times). Audit your
   dependency tree for such usage if full bit-for-bit reproducibility is required.
 
-- **Cross-platform differences.** Even with all timestamps pinned, binaries compiled on
+- **Cross-platform differences.** Even with every timestamp fixed, binaries compiled on
   different operating systems or with different toolchain versions will differ. Reproducible
   builds guarantee identical output given identical inputs -- the same OS, toolchain, and
   source.

@@ -280,7 +280,7 @@ The key is `hooks:` in every block. The older `post:` spelling is still accepted
 | `if` | string | — | Template-conditional: skip this sign config when the gate renders `false`, `0`, `no` or empty (any letter case). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `output` | 0 \| 1 \| bool \| string | — | Capture and log stdout/stderr of the signing command. Accepts bool or template string (e.g., "{{ IsSnapshot }}"). |
 | `signature` | string | — | Signature output filename template (supports templates). |
-| `stdin` | string | — | Content written to the signing command's stdin. |
+| `stdin` | string | — | Content written to the signing command's stdin (e.g. a passphrase), rendered as a template (`{{ Env.GPG_PASSPHRASE }}`). The rendered value is a credential: leading and trailing whitespace is removed, and a template that does not render is an error naming `signs[<id or index>].stdin` without the template's text. |
 | `stdin_file` | string | — | Path to a file whose content is written to the signing command's stdin. |
 | `verify` | object | — | Post-sign verification knobs. Verification is ON by default wherever its inputs are derivable (keyed cosign, keyless cosign on GitHub Actions, gpg); set `verify: { enabled: false }` to disable, or supply the keyless certificate identity / issuer when they cannot be derived from the environment. |
 
@@ -423,7 +423,7 @@ Workspace-level defaults. Each key has the same shape as the matching key under 
 | `if` | string | — | Template-conditional: skip this docker sign config when the gate renders `false`, `0`, `no` or empty (any letter case). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `output` | 0 \| 1 \| bool \| string | — | Capture and log stdout/stderr of the docker signing command. |
 | `signature` | string | — | Ignored. A container signature is stored in the registry beside the image, and no file is written, so the docker sign stage synthesizes the `<image>@<digest>.sig` name its argv substitutes and reads this template nowhere. |
-| `stdin` | string | — | Content written to the signing command's stdin. Rendered as a template with nothing substituted first, so neither `{{ .Artifact }}` nor `${artifact}` names anything here. |
+| `stdin` | string | — | Content written to the signing command's stdin. Rendered as a template with nothing substituted first, so neither `{{ .Artifact }}` nor `${artifact}` names anything here. The rendered value is a credential: leading and trailing whitespace is removed, and a template that does not render is an error naming `docker_signs[<id>].stdin` without the template's text. |
 | `stdin_file` | string | — | Path to a file whose content is written to the signing command's stdin. |
 | `verify` | object | — | Verification of each signature after signing. Docker signatures are verified with `cosign verify` against the registry the signature was just pushed to. |
 
@@ -906,7 +906,7 @@ Top-level `schemastore:` block. Shared fields here are defaults for every entry 
 | `if` | string | — | Template-conditional: skip this sign config when the gate renders `false`, `0`, `no` or empty (any letter case). An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 | `output` | 0 \| 1 \| bool \| string | — | Capture and log stdout/stderr of the signing command. Accepts bool or template string (e.g., "{{ IsSnapshot }}"). |
 | `signature` | string | — | Signature output filename template (supports templates). |
-| `stdin` | string | — | Content written to the signing command's stdin. |
+| `stdin` | string | — | Content written to the signing command's stdin (e.g. a passphrase), rendered as a template (`{{ Env.GPG_PASSPHRASE }}`). The rendered value is a credential: leading and trailing whitespace is removed, and a template that does not render is an error naming `signs[<id or index>].stdin` without the template's text. |
 | `stdin_file` | string | — | Path to a file whose content is written to the signing command's stdin. |
 | `verify` | object | — | Post-sign verification knobs. Verification is ON by default wherever its inputs are derivable (keyed cosign, keyless cosign on GitHub Actions, gpg); set `verify: { enabled: false }` to disable, or supply the keyless certificate identity / issuer when they cannot be derived from the environment. |
 
@@ -1405,7 +1405,7 @@ Every key is optional in both places.
 ## `crates[].publish.chocolatey.post_publish_poll` {#crates-publish-chocolatey-post-publish-poll}
 Per-publisher post-publish polling config block.
 
-See module-level docs for the polling lifecycle. Default values: `enabled: true`, `interval: 30s`, `timeout: 30m`.
+A submission is accepted long before the package is approved (the Chocolatey moderation queue) or merged (the winget-pkgs validation pipeline). With polling enabled, the publish stage checks the upstream state every `interval` until it reaches a final state or `timeout` passes, and reports the result in the release summary. Default values: `enabled: false`, `interval: 30s`, `timeout: 30m`.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `false` | Whether to poll at all. Default `false` — the upstream moderation queues these publishers feed (Chocolatey, winget-pkgs) routinely take HOURS to DAYS; the publish stage cannot reasonably block on them in a CI workflow. Opt in to in-band verification by setting `true` per-publisher (e.g. when running locally and willing to wait). |
@@ -1460,7 +1460,7 @@ See module-level docs for the polling lifecycle. Default values: `enabled: true`
 ## `crates[].publish.winget.post_publish_poll` {#crates-publish-winget-post-publish-poll}
 Per-publisher post-publish polling config block.
 
-See module-level docs for the polling lifecycle. Default values: `enabled: true`, `interval: 30s`, `timeout: 30m`.
+A submission is accepted long before the package is approved (the Chocolatey moderation queue) or merged (the winget-pkgs validation pipeline). With polling enabled, the publish stage checks the upstream state every `interval` until it reaches a final state or `timeout` passes, and reports the result in the release summary. Default values: `enabled: false`, `interval: 30s`, `timeout: 30m`.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `false` | Whether to poll at all. Default `false` — the upstream moderation queues these publishers feed (Chocolatey, winget-pkgs) routinely take HOURS to DAYS; the publish stage cannot reasonably block on them in a CI workflow. Opt in to in-band verification by setting `true` per-publisher (e.g. when running locally and willing to wait). |

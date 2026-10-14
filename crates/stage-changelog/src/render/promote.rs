@@ -23,14 +23,14 @@ pub(crate) struct PromoteArgs<'a> {
 
 /// Inputs to [`promote_multitrack_section`].
 ///
-/// Kept distinct from [`PromoteArgs`] rather than folded: this path runs at tag
+/// Kept distinct from [`PromoteArgs`]: this path runs at tag
 /// time before any refresh, so `existing` is `Option` (the root may not exist
 /// yet) — `PromoteArgs` requires a present file with a `## [Unreleased]` heading.
 pub(crate) struct MultitrackPromoteArgs<'a> {
     /// Current root `CHANGELOG.md` contents, or `None` when the file is absent.
     pub(crate) existing: Option<&'a str>,
     /// Project H1 ([`project_h1`]) used to title an absent root; an existing H1
-    /// is always preserved. Never a crate name.
+    /// is always preserved. A crate name is wrong here.
     pub(crate) h1: &'a str,
     /// Crate being released; its `### <crate>` subsection is consumed when one
     /// exists under `[Unreleased]`, else the section is built from commits.
@@ -155,7 +155,7 @@ pub(crate) fn promote_multitrack_section(
     }
 
     // Preserve the file's existing H1, else synthesize the project header `h1`
-    // (a project title, never a crate name).
+    // (a project title).
     let h1_idx = lines.iter().position(|l| l.starts_with("# "));
     let head: Vec<String> = match h1_idx {
         Some(idx) => lines[..=idx].iter().map(|s| s.to_string()).collect(),
@@ -370,7 +370,7 @@ pub(crate) fn bucket_curated_bullets(
     let mut buckets: Vec<Vec<&str>> = vec![Vec::new(); compiled.len()];
     let mut unmatched: Vec<&str> = Vec::new();
     // Where the previous bullet ended, so a wrapped continuation line (no list
-    // marker) follows its parent bullet instead of being re-classified.
+    // marker) follows its parent bullet.
     let mut last: Option<usize> = None;
 
     'bullet: for &line in curated {
@@ -421,7 +421,7 @@ pub(crate) fn bucket_curated_bullets(
         out.extend(buckets[i].iter().map(|s| s.to_string()));
     }
     // Curated bullets that matched no group and had no catch-all to absorb them
-    // are preserved at the end under no heading rather than dropped.
+    // are preserved at the end under no heading.
     out.extend(unmatched.iter().map(|s| s.to_string()));
     Ok(out.join("\n"))
 }
@@ -431,7 +431,7 @@ pub(crate) fn bucket_curated_bullets(
 ///
 /// Returns `None` when the line carries no list marker — a wrapped
 /// continuation of the preceding bullet — so the caller can attach it to that
-/// bullet rather than re-classifying it as a fresh entry.
+/// bullet.
 pub(crate) fn strip_list_marker(line: &str) -> Option<&str> {
     let t = line.trim_start();
     t.strip_prefix("- ")
@@ -545,8 +545,8 @@ pub(crate) fn push_root_footer(
         push_compare_footer(out, base, from, tag, tag);
     } else {
         // First release of a track: roll the `[Unreleased]:` anchor by hand
-        // and point `[<tag>]:` at the release page rather than a 404 compare
-        // range (no prior tag to compare against).
+        // and point `[<tag>]:` at the release page, since a compare range would 404
+        // (no prior tag to compare against).
         out.push(format!("[Unreleased]: {}/compare/{}...HEAD", base, tag));
         out.push(format!("[{}]: {}/releases/tag/{}", tag, base, tag));
     }

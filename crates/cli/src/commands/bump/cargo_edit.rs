@@ -636,11 +636,11 @@ fn heal_dep_table(
         let Some((floor_op, floor)) = floor_minimum(spec) else {
             match semver::VersionReq::parse(spec) {
                 Ok(req) if req.comparators.len() > 1 => log.warn(&format!(
-                    "multi-comparator version requirement {dep_name} = \"{spec}\" in {}; dep floor left unchanged",
+                    "multi-comparator version requirement {dep_name} = \"{spec}\" in {}; dependency minimum left unchanged",
                     scope.manifest_rel
                 )),
                 Err(_) => log.warn(&format!(
-                    "unparseable version requirement {dep_name} = \"{spec}\" in {}; dep floor left unchanged",
+                    "unparseable version requirement {dep_name} = \"{spec}\" in {}; dependency minimum left unchanged",
                     scope.manifest_rel
                 )),
                 _ => {}
@@ -673,12 +673,12 @@ fn heal_dep_table(
         }
         if scope.dry_run {
             log.status(&format!(
-                "(dry-run) would heal dep floor {dep_name} {old} → {next} in {}",
+                "(dry-run) would heal dependency minimum {dep_name} {old} → {next} in {}",
                 scope.manifest_rel
             ));
         } else {
             log.status(&format!(
-                "healed dep floor {dep_name} {old} → {next} in {}",
+                "healed dependency minimum {dep_name} {old} → {next} in {}",
                 scope.manifest_rel
             ));
         }
@@ -1385,7 +1385,7 @@ mod tests {
         assert_eq!(
             capture.warn_messages(),
             vec![
-                "multi-comparator version requirement b = \">=0.6, <0.8\" in crates/c/Cargo.toml; dep floor left unchanged"
+                "multi-comparator version requirement b = \">=0.6, <0.8\" in crates/c/Cargo.toml; dependency minimum left unchanged"
             ]
         );
         assert_eq!(
@@ -1420,7 +1420,7 @@ mod tests {
         assert_eq!(
             capture.warn_messages(),
             vec![
-                "unparseable version requirement b = \"not-a-version\" in crates/c/Cargo.toml; dep floor left unchanged"
+                "unparseable version requirement b = \"not-a-version\" in crates/c/Cargo.toml; dependency minimum left unchanged"
             ]
         );
         assert_eq!(

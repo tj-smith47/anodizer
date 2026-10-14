@@ -280,30 +280,113 @@ mod tests {
         }
     }
 
+    /// The variables the publisher under `src/<dir>/` hands to the shared
+    /// token resolvers, read from its production code: the last argument of
+    /// every `resolve_pr_token`, `resolve_repo_token`, `pr_token_before_push`
+    /// and `resolve_env_token_tracked` call, as a literal (`Some("X")`) or a
+    /// constant of the publisher (`TOKEN_ENV_VAR`, `TOKEN_ENV_VARS`). An
+    /// argument read from evidence (`t.token_env_var`) names nothing here.
+    /// Every call must name the same list.
+    fn publisher_token_vars(dir: &str) -> Vec<String> {
+        use anodizer_core::test_helpers::test_sources::{
+            function_bodies, production_half, rust_sources,
+        };
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join(dir);
+        let texts: Vec<String> = rust_sources(&src)
+            .iter()
+            .map(|f| std::fs::read_to_string(f).expect("readable source"))
+            .map(|t| production_half(&t).to_string())
+            .collect();
+        let literals = |text: &str| -> Vec<String> {
+            regex::Regex::new(r#""([A-Z0-9_]+)""#)
+                .expect("valid regex")
+                .captures_iter(text)
+                .map(|c| c[1].to_string())
+                .collect()
+        };
+        let constant = |name: &str| -> Option<Vec<String>> {
+            let decl =
+                regex::Regex::new(&format!(r"const {name}: [^=]+=([^;]+);")).expect("valid regex");
+            texts
+                .iter()
+                .find_map(|t| decl.captures(t).map(|c| literals(&c[1])))
+        };
+        let call = regex::Regex::new(
+            r"\b(resolve_pr_token|resolve_repo_token|pr_token_before_push|resolve_env_token_tracked)\(",
+        )
+        .expect("valid regex");
+        let named_constant =
+            regex::Regex::new(r"^(?:Some\()?&?([A-Z][A-Z0-9_]*)\)?$").expect("valid regex");
+        let mut lists: std::collections::BTreeSet<Vec<String>> = Default::default();
+        for text in &texts {
+            for body in function_bodies(text) {
+                for m in call.find_iter(&body) {
+                    if body[..m.start()].ends_with("fn ") {
+                        continue;
+                    }
+                    let mut depth = 1usize;
+                    let rest = &body[m.end()..];
+                    let end = rest
+                        .char_indices()
+                        .find(|(_, c)| {
+                            match c {
+                                '(' => depth += 1,
+                                ')' => depth -= 1,
+                                _ => {}
+                            }
+                            depth == 0
+                        })
+                        .map_or(rest.len(), |(i, _)| i);
+                    let last = rest[..end].trim().trim_end_matches(',');
+                    let last = last.rsplit(',').next().unwrap_or(last).trim();
+                    let names = literals(last);
+                    if !names.is_empty() {
+                        lists.insert(names);
+                    } else if let Some(name) = named_constant.captures(last) {
+                        let values = constant(&name[1])
+                            .unwrap_or_else(|| panic!("{dir} names {} with no constant", &name[1]));
+                        lists.insert(values);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            lists.len(),
+            1,
+            "src/{dir} hands the token resolvers one list of its own variables: {lists:?}"
+        );
+        lists.into_iter().next().expect("one list")
+    }
+
     /// Each publisher page's Authentication section renders the shared
-    /// `token_order` shortcode with the variable its publisher reads, and the
-    /// shortcode lists the push links in [`super::PUSH_TOKEN_ORDER`] and the
-    /// pull request links in [`super::PR_TOKEN_ORDER`]. No docs page writes
-    /// a pull request order by hand, and every page that calls the shortcode
-    /// is listed here, so a new publisher page is held to the same order.
+    /// `token_order` shortcode with the variables its publisher's code hands
+    /// the token resolvers ([`publisher_token_vars`]), and the shortcode
+    /// lists the push links in [`super::PUSH_TOKEN_ORDER`] and the pull
+    /// request links in [`super::PR_TOKEN_ORDER`]. No docs page writes a
+    /// pull request order by hand, and every page that calls the shortcode
+    /// is listed here with its publisher's source directory, so a new
+    /// publisher page is held to the same order.
     #[test]
     fn every_publisher_page_states_the_token_orders_the_resolvers_read() {
         use super::{PR_TOKEN_ORDER, PUSH_TOKEN_ORDER, TokenLink};
         use anodizer_core::test_helpers::docs_pages::{docs_pages, read_docs_page, repo_root};
 
         const PAGES: &[(&str, &str)] = &[
-            ("publish/homebrew.md", "HOMEBREW_TAP_TOKEN"),
-            ("publish/homebrew-casks.md", "HOMEBREW_TAP_TOKEN"),
-            ("publish/krew.md", "KREW_INDEX_TOKEN"),
-            ("publish/nix.md", "NIX_PKGS_TOKEN"),
-            ("publish/schemastore.md", "SCHEMASTORE_TOKEN"),
-            ("publish/scoop.md", "SCOOP_BUCKET_TOKEN"),
-            ("publish/winget.md", "WINGET_PKGS_TOKEN"),
+            ("publish/homebrew.md", "homebrew"),
+            ("publish/homebrew-casks.md", "homebrew"),
+            ("publish/homebrew-core.md", "homebrew_core"),
+            ("publish/krew.md", "krew"),
+            ("publish/nix.md", "nix"),
+            ("publish/schemastore.md", "schemastore"),
+            ("publish/scoop.md", "scoop"),
+            ("publish/winget.md", "winget"),
         ];
-        let label = |link: &TokenLink, var: &str| match link {
+        let label = |link: &TokenLink, vars: &[String]| match link {
             TokenLink::PullRequestToken => "`repository.pull_request.token`".to_string(),
             TokenLink::RepositoryToken => "`repository.token`".to_string(),
-            TokenLink::PublisherVariable => format!("`{var}`"),
+            TokenLink::PublisherVariable => format!("`{}`", vars.join("`, then `")),
             TokenLink::RunToken => "the run's GitHub token".to_string(),
             TokenLink::GithubVariables => anodizer_core::git::GITHUB_TOKEN_ENV_LADDER
                 .iter()
@@ -315,7 +398,8 @@ mod tests {
         let shortcode = std::fs::read_to_string(&shortcode_path)
             .unwrap_or_else(|e| panic!("read {}: {e}", shortcode_path.display()));
 
-        for (page, var) in PAGES {
+        for (page, dir) in PAGES {
+            let vars = publisher_token_vars(dir);
             let text = read_docs_page(page);
             let calls: Vec<&str> = text
                 .lines()
@@ -323,12 +407,16 @@ mod tests {
                 .collect();
             assert_eq!(calls.len(), 1, "{page} calls token_order once: {calls:?}");
             let call = calls[0];
+            let quoted: Vec<String> = vars.iter().map(|v| format!("\"{v}\"")).collect();
+            let passed = format!("publisher_vars=[{}]", quoted.join(", "));
             assert!(
-                call.contains(&format!("publisher_var=\"{var}\"")),
-                "{page} passes the variable its publisher reads ({var}): {call}"
+                call.contains(&passed),
+                "{page} passes the variables its publisher's code reads ({passed}): {call}"
             );
-            let comment =
-                format!("(default: repository.token, then {var}, then the GitHub token chain)");
+            let comment = format!(
+                "(default: repository.token, then {}, then the GitHub token chain)",
+                vars.join(", then ")
+            );
             for line in text
                 .lines()
                 .filter(|l| l.contains("token used to open the PR"))
@@ -344,7 +432,10 @@ mod tests {
                 .and_then(|rest| rest.split('"').next())
                 .unwrap_or_else(|| panic!("{page} passes a target: {call}"));
             let rendered = shortcode
-                .replace("{{ publisher_var }}", var)
+                .replace(
+                    "{{ publisher_vars | join(sep=\"`, then `\") }}",
+                    &vars.join("`, then `"),
+                )
                 .replace("{{ target }}", target);
             let mut lists: Vec<Vec<String>> = Vec::new();
             let mut in_list = false;
@@ -374,7 +465,7 @@ mod tests {
                     "{page}: {list:?} against {order:?}"
                 );
                 for (item, link) in list.iter().zip(order) {
-                    let want = label(link, var);
+                    let want = label(link, &vars);
                     assert!(
                         item.starts_with(&want),
                         "{page}: the item for {link:?} reads {item:?}, expected it to start with {want}"

@@ -214,13 +214,15 @@ pub struct GithubAtAuthProvider {
 
 impl McpAuthProvider for GithubAtAuthProvider {
     fn get_token(&self, log: &anodizer_core::log::StageLogger) -> Result<String> {
-        // Two resolution sources: config `auth.token` first, then the
-        // `MCP_GITHUB_TOKEN` env var. `unwrap_or_default()` collapses
-        // "var unset" and "var set to empty string" into the same empty-
-        // string sentinel; the explicit `is_empty()` check below fails
-        // fast with a single actionable error covering both states.
+        // Two sources: config `auth.token` first, then the
+        // `MCP_GITHUB_TOKEN` env var, trimmed, with a blank value counting
+        // as unset, so the check below reports both states with one error.
         let github_token = if self.token.is_empty() {
-            self.env.var("MCP_GITHUB_TOKEN").unwrap_or_default()
+            self.env
+                .var("MCP_GITHUB_TOKEN")
+                .as_deref()
+                .and_then(anodizer_core::git::non_blank_token)
+                .unwrap_or_default()
         } else {
             self.token.clone()
         };

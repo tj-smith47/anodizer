@@ -23,8 +23,12 @@ use super::HumanDuration;
 
 /// Per-publisher post-publish polling config block.
 ///
-/// See module-level docs for the polling lifecycle. Default values:
-/// `enabled: true`, `interval: 30s`, `timeout: 30m`.
+/// A submission is accepted long before the package is approved (the
+/// Chocolatey moderation queue) or merged (the winget-pkgs validation
+/// pipeline). With polling enabled, the publish stage checks the upstream
+/// state every `interval` until it reaches a final state or `timeout`
+/// passes, and reports the result in the release summary. Default values:
+/// `enabled: false`, `interval: 30s`, `timeout: 30m`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct PostPublishPollConfig {

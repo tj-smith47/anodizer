@@ -422,7 +422,7 @@ fn formula_skip_gates_trip(
 ///
 /// Errors when the crate carries no `homebrew` block or no archive artifact
 /// matches the configured filters (a release always builds at least one). A
-/// sharded snapshot that built no matching archive surfaces as that error; the
+/// sharded snapshot that built no matching archive produces that error; the
 /// validator treats it as a skip via [`crate_has_homebrew_archives`].
 pub(crate) fn render_homebrew_formula_for_crate(
     ctx: &Context,
@@ -452,7 +452,7 @@ pub(crate) fn render_homebrew_formula_for_crate(
 /// `UploadableBinary`) for `crate_name` survives the homebrew filters — i.e.
 /// the formula render has a candidate to point at. A sharded snapshot that
 /// built no homebrew-eligible archive (e.g. a windows-only determinism shard)
-/// returns false so the validator can SKIP rather than trip the publisher's
+/// returns false so the validator can SKIP without tripping the publisher's
 /// "no archives matched" guard.
 ///
 /// The macOS/Linux OS filter lives in [`homebrew_matching_artifacts`]: a
@@ -462,9 +462,9 @@ pub(crate) fn render_homebrew_formula_for_crate(
 /// This is presence-only: it does NOT read url/sha256, so it returns `true`
 /// even for a matched (macOS/Linux) artifact whose metadata is incomplete.
 /// That is deliberate — a present-but-broken artifact is a real defect the
-/// caller must surface by then calling the render (which `Err`s), not silently
-/// skip. The OS filter does not swallow that: a broken macOS/Linux artifact is
-/// still eligible, so the probe returns `true` and the render surfaces it.
+/// caller must report by then calling the render (which `Err`s); a silent
+/// skip would hide it. The OS filter does not swallow that: a broken macOS/Linux artifact is
+/// still eligible, so the probe returns `true` and the render reports it.
 pub(crate) fn crate_has_homebrew_archives(
     ctx: &Context,
     hb_cfg: &HomebrewConfig,

@@ -17,7 +17,7 @@ use super::template::render_or_warn;
 /// Wall-clock bound on `git clone` of a publisher index repo (a tap, AUR,
 /// winget-pkgs, krew-index). The clone hits the remote, so an unreachable or
 /// stalled host would otherwise hang the release forever with no deadline; on
-/// expiry the clone subtree is killed and the error surfaces (redacted). Sized
+/// expiry the clone subtree is killed and the error is returned (redacted). Sized
 /// as a remote clone/fetch, matching the release-backend/bucket bound.
 const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -73,7 +73,7 @@ pub(crate) fn clone_repo_with_auth(
         .arg(repo_path_str.as_ref())
         .current_dir(clone_cwd(tmp_dir));
     // Bounded: the clone hits the remote, so a stalled host must not hang the
-    // release with no deadline. A deadline kill surfaces as a Retriable error.
+    // release with no deadline. A deadline kill is returned as a Retriable error.
     let output = run_capture_timeout(
         &mut cmd,
         log,
@@ -343,7 +343,7 @@ fn open_secure_key_file(path: &Path) -> std::io::Result<std::fs::File> {
 }
 
 /// Windows has no `std`-level analogue of the unix `mode(0o600)` open:
-/// `std` exposes no DACL surface, and the `readonly` attribute does not
+/// `std` exposes no DACL API, and the `readonly` attribute does not
 /// restrict reads, so an in-process ACL tightening would require a winapi
 /// dependency. The mitigation is containment instead: every key this module
 /// writes lives either in a per-invocation `tempfile` dir or in the clone's
@@ -564,10 +564,6 @@ mod tests {
         (bare.path().to_string_lossy().into_owned(), bare, work)
     }
 
-    // ------------------------------------------------------------------
-    // inject_token_in_url — pure string transform.
-    // ------------------------------------------------------------------
-
     /// HTTPS URLs get the `x-access-token:<tok>@` prefix injected after
     /// the scheme — the exact shape `actions/checkout` uses and the only
     /// shape that works across all GitHub token types per the rustdoc.
@@ -591,10 +587,6 @@ mod tests {
         assert_eq!(inject_token_in_url(path, "tok"), path);
     }
 
-    // ------------------------------------------------------------------
-    // clone_repo_with_auth — token-less happy path against local bare.
-    // ------------------------------------------------------------------
-
     /// Cloning a real local bare remote with `token = None` must succeed
     /// and populate the working tree with the committed file. Exercises
     /// the no-auth branch of `clone_repo_with_auth` end-to-end.
@@ -613,7 +605,7 @@ mod tests {
         );
     }
 
-    /// A bad URL must surface as an Err (not a panic). `label` should
+    /// A bad URL must return an Err and must not panic. `label` should
     /// appear in the bubbled error to help operators correlate the
     /// failure with the calling publisher.
     #[test]
@@ -634,10 +626,6 @@ mod tests {
             "expected label in error chain, got: {msg}"
         );
     }
-
-    // ------------------------------------------------------------------
-    // clone_repo_ssh — exercise key-writing + ssh_command pass-through.
-    // ------------------------------------------------------------------
 
     /// With no `private_key` / `ssh_command`, `clone_repo_ssh` falls
     /// through to a plain `git clone` (no `GIT_SSH_COMMAND` set). Using
@@ -684,8 +672,8 @@ mod tests {
             "FAKE-KEY-MATERIAL\n"
         );
 
-        // core.sshCommand must reference the PERSISTED key, not the
-        // (already-deleted) bootstrap copy.
+        // core.sshCommand must reference the PERSISTED key; the bootstrap
+        // copy is already deleted.
         let cfg = anodizer_core::test_helpers::output_with_spawn_retry(
             || {
                 let mut cmd = Command::new("git");
@@ -743,7 +731,7 @@ mod tests {
 
     /// The bootstrap key vanishes from disk the moment its tempdir guard
     /// drops — the cleanup guarantee `clone_repo_ssh` relies on for every
-    /// exit path, pinned at the unit level.
+    /// exit path, tested at the unit level.
     #[test]
     fn stage_bootstrap_key_removes_key_when_guard_drops() {
         let (guard, key_path) =
@@ -761,7 +749,7 @@ mod tests {
     /// file is created with `0o600` from the start. The helper applies no
     /// separate `chmod`, so observing `0o600` immediately after creation
     /// proves the mode was carried by `OpenOptions::mode` at `open` time
-    /// rather than relaxed-then-tightened the way a `fs::write` + chmod pair
+    /// and was never relaxed-then-tightened the way a `fs::write` + chmod pair
     /// would briefly leave it at the umask default (commonly `0o644`).
     #[cfg(unix)]
     #[test]
@@ -843,7 +831,7 @@ mod tests {
     }
 
     /// Content that is nothing but newlines carries no key bytes and is
-    /// treated like empty content: the file stays empty rather than keeping
+    /// treated like empty content: the file stays empty and keeps no
     /// meaningless newline-only bytes.
     #[test]
     fn write_ssh_key_secure_treats_newline_only_content_as_empty() {
@@ -859,7 +847,7 @@ mod tests {
 
     /// Empty content yields an empty file — the newline-normalization must not
     /// manufacture a lone-newline file from nothing (an empty key is invalid
-    /// regardless, but the byte output should be faithful, not fabricated).
+    /// regardless, but the byte output should be faithful).
     #[test]
     fn write_ssh_key_secure_leaves_empty_content_empty() {
         let dir = tempfile::tempdir().unwrap();
@@ -868,13 +856,9 @@ mod tests {
         assert_eq!(
             std::fs::read(&key_path).unwrap(),
             Vec::<u8>::new(),
-            "empty content must produce an empty file, not a lone newline"
+            "empty content must produce an empty file with no lone newline"
         );
     }
-
-    // ------------------------------------------------------------------
-    // clone_repo dispatcher — picks SSH vs HTTPS.
-    // ------------------------------------------------------------------
 
     /// When `repository.git.url` is set, the dispatcher routes to the
     /// SSH path and ignores the HTTPS fallback owner/name. Local-path
@@ -938,7 +922,7 @@ mod tests {
         .expect("templated git.url must render to the env value before clone");
         assert!(
             dest.path().join("README").exists(),
-            "clone must have used the rendered URL, not the literal template"
+            "clone must have used the rendered URL"
         );
     }
 
@@ -1137,7 +1121,7 @@ mod tests {
         };
 
         // With the CWD dangling, both helpers must still clone because they
-        // anchor at the target's parent rather than inheriting the dead CWD.
+        // anchor at the target's parent and ignore the dead CWD.
         let https_dest = target_parent.path().join("https-clone");
         let mut https = Ok(());
         with_dangling_cwd(&mut || {

@@ -23,7 +23,7 @@ pub use description::resolve_full_description;
 ///
 /// CREDENTIAL CONTRACT: this struct is the payload that ends up in
 /// [`anodizer_core::PublishEvidence::extra`], which is persisted to
-/// `dist/run-<id>/report.json` and may surface in the announce body.
+/// `dist/run-<id>/report.json` and may appear in the announce body.
 /// `username` is operator-public (the DockerHub login appears on every
 /// pushed image) and is recorded verbatim; `secret_env_var` records only
 /// the NAME of the env var the rollback path re-resolves the password
@@ -74,8 +74,8 @@ fn configured_username(entry: &anodizer_core::config::DockerHubConfig) -> Option
 ///
 /// The one ladder shared by `run()` (bails on `None`) and `preflight()`
 /// (maps `Err` to a Warning naming the render failure, so a template typo
-/// is reported as a template problem instead of probing the login endpoint
-/// with the literal template string and misreporting a credential
+/// is reported as a template problem; probing the login endpoint
+/// with the literal template string would misreport a credential
 /// failure). A config value that renders to the empty string is an `Err`
 /// naming the template — the config explicitly owns the field when
 /// present, so falling back to the env var (or reporting "'username' is
@@ -98,10 +98,6 @@ fn resolve_dockerhub_username(
         .as_deref()
         .and_then(anodizer_core::git::non_blank_token))
 }
-
-// ---------------------------------------------------------------------------
-// publish_to_dockerhub
-// ---------------------------------------------------------------------------
 
 /// Updates every configured repository description, writing each mutated repository into `targets`
 /// as it is changed so a failure on a later entry still leaves the caller the
@@ -165,7 +161,7 @@ fn publish_to_dockerhub_into(
         }
 
         // Resolve username from config, falling back to DOCKER_USERNAME.
-        // Bail early when neither is set so config errors surface even in
+        // Bail early when neither is set so config errors show even in
         // dry-run.
         let Some(username) = resolve_dockerhub_username(ctx, entry)? else {
             bail!("dockerhub: 'username' is required (set in config or via DOCKER_USERNAME env)")
@@ -205,7 +201,7 @@ fn publish_to_dockerhub_into(
             None => None,
         };
         let short_desc: &str = description_owned.as_deref().unwrap_or("");
-        // Docker Hub counts code points, not UTF-8 bytes, so emoji /
+        // Docker Hub counts code points (UTF-8 bytes do not matter), so emoji /
         // accented descriptions don't falsely trip the 100-char warning.
         let short_desc_chars = short_desc.chars().count();
         if short_desc_chars > 100 {
@@ -242,7 +238,7 @@ fn publish_to_dockerhub_into(
             }
         }
 
-        // Surface a missing secret env in dry-run as a warning (live mode
+        // Report a missing secret env in dry-run as a warning (live mode
         // will hard-fail later) so a typo'd secret_name doesn't slip
         // through unnoticed during config-test runs.
         // A templated `secret_name` (`TOKEN_{{ .Env.STAGE }}`) must be
@@ -255,7 +251,13 @@ fn publish_to_dockerhub_into(
             entry.secret_name.as_deref(),
             "DOCKER_PASSWORD",
         )?;
-        if ctx.is_dry_run() && ctx.env_var(&secret_name).is_none() {
+        if ctx.is_dry_run()
+            && ctx
+                .env_var(&secret_name)
+                .as_deref()
+                .and_then(anodizer_core::git::non_blank_token)
+                .is_none()
+        {
             log.warn(&format!(
                 "dockerhub secret env '{}' is not set; live mode will fail authentication",
                 secret_name
@@ -399,7 +401,7 @@ fn publish_to_dockerhub_into(
                 .map(str::to_string);
 
             // Content-hash idempotency: skip the PATCH entirely when the
-            // snapshot already matches the values we'd send. Saves an API
+            // snapshot already matches the values to send. Saves an API
             // call AND keeps the Docker Hub audit log free of no-op
             // "description updated" entries.
             let short_unchanged = if short_desc.is_empty() {
@@ -512,13 +514,17 @@ fn restore_dockerhub_target_with_env<E: anodizer_core::EnvSource + ?Sized>(
         return Ok(());
     }
 
-    let password = env.var(&target.secret_env_var).ok_or_else(|| {
-        anyhow!(
-            "dockerhub: env var '{}' not set; cannot re-authenticate to restore '{}'",
-            target.secret_env_var,
-            target.target
-        )
-    })?;
+    let password = env
+        .var(&target.secret_env_var)
+        .as_deref()
+        .and_then(anodizer_core::git::non_blank_token)
+        .ok_or_else(|| {
+            anyhow!(
+                "dockerhub: env var '{}' is unset or blank; cannot re-authenticate to restore '{}'",
+                target.secret_env_var,
+                target.target
+            )
+        })?;
 
     let login_body = serde_json::json!({
         "username": &target.username,
@@ -569,10 +575,6 @@ fn restore_dockerhub_target_with_env<E: anodizer_core::EnvSource + ?Sized>(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// DockerhubPublisher (Publisher trait wrapper)
-// ---------------------------------------------------------------------------
-
 // Wraps [`publish_to_dockerhub`] in the [`anodizer_core::Publisher`] trait so
 // the dispatch path (see [`crate::registry::configured_publishers`]) can
 // drive Docker Hub description sync alongside every other publisher.
@@ -600,7 +602,7 @@ simple_publisher!(
 /// right now. Shared by [`anodizer_core::Publisher::requirements`] and
 /// [`anodizer_core::Publisher::config_fully_inactive`] so the two cannot
 /// diverge. `preflight` keeps its own loop (it needs per-entry repository
-/// resolution alongside the filter, not just a boolean).
+/// resolution alongside the filter, beyond a boolean).
 fn active_dockerhub_configs(ctx: &Context) -> Vec<&anodizer_core::config::DockerHubConfig> {
     ctx.config
         .dockerhub
@@ -730,9 +732,8 @@ impl anodizer_core::Publisher for DockerhubPublisher {
             Err(e) => {
                 // Building a reqwest client only fails on a malformed
                 // TLS config — vanishingly unlikely, but it degrades to
-                // the warn-only checklist rather than
-                // bubbling Err and gating rollback of sibling
-                // publishers.
+                // the warn-only checklist; bubbling Err would gate
+                // rollback of sibling publishers.
                 log.warn(&format!(
                     "dockerhub rollback could not build HTTP client ({e:#}); \
                      manual review required for {}",
@@ -783,7 +784,7 @@ impl anodizer_core::Publisher for DockerhubPublisher {
     /// Live pre-publish gate. For every active `dockerhub[]` entry whose login
     /// credentials resolve, POST `{api_base}/v2/users/login/` with
     /// `{username, password}` — the exact login the publish path performs to create
-    /// its JWT. A rejected login (401/403) or an unreachable host surfaces as a
+    /// its JWT. A rejected login (401/403) or an unreachable host is reported as a
     /// Warning (this publisher is OPTIONAL — a failed description sync must not
     /// abort the release). Logins are de-duplicated per `(username, secret_name)`
     /// so N entries sharing one credential probe once.
@@ -815,7 +816,7 @@ impl anodizer_core::Publisher for DockerhubPublisher {
                 continue;
             }
             // Same ladder `run()` uses; a render failure becomes a Warning
-            // naming the template problem instead of probing the login
+            // naming the template problem without probing the login
             // endpoint with the raw template string (which would misreport
             // a template typo as a credential failure).
             let username = match resolve_dockerhub_username(ctx, entry) {
@@ -897,10 +898,6 @@ impl anodizer_core::Publisher for DockerhubPublisher {
         Self::resolved_retain_on_rollback(self)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 /// Sync descriptions to Docker Hub repositories.
 ///

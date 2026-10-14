@@ -32,10 +32,10 @@ pub(crate) use anodizer_core::parallel::lock_recover;
 /// `label` names the publisher / phase so operators can correlate the
 /// log with the surrounding "closed N, failed M" summary. The panic
 /// payload's most common shapes (`&'static str` / `String`) are
-/// downcast to surface a readable message; other payload types fall
-/// back to `{:?}` rather than vanishing.
+/// downcast to a readable message; other payload types fall
+/// back to `{:?}`, so no payload is lost.
 ///
-/// Accepts [`ScopedJoinHandle`] (not [`std::thread::JoinHandle`])
+/// Accepts [`ScopedJoinHandle`]
 /// because every caller drives workers through [`std::thread::scope`]
 /// — that's what makes it safe to borrow `&Mutex` / `&StageLogger`
 /// across thread boundaries without a `'static` bound.
@@ -46,7 +46,7 @@ pub(crate) fn join_or_warn<'scope, T>(
 ) {
     if let Err(panic_payload) = h.join() {
         // Try the two common payload types first so the warn line
-        // shows a readable string rather than the `Any` placeholder.
+        // shows a readable string.
         let msg = if let Some(s) = panic_payload.downcast_ref::<&'static str>() {
             (*s).to_string()
         } else if let Some(s) = panic_payload.downcast_ref::<String>() {
@@ -92,7 +92,7 @@ pub(crate) struct RevertCounts {
 /// Each chunk uses [`std::thread::scope`] (no `'static` bounds
 /// needed; the `&[RevertTarget]` and `&StageLogger` slice references
 /// remain valid for the lifetime of the scope). Failures are
-/// captured by counter increment + warn, NOT short-circuited — one
+/// captured by counter increment + warn and the loop keeps going: one
 /// auth failure on target 1 must not skip targets 2..n.
 pub(crate) fn run_revert_targets_parallel(
     targets: &[RevertTarget],
@@ -161,7 +161,7 @@ pub(crate) fn run_revert_targets_parallel(
     }
     // `into_inner` consumes the Mutex — poison here would mean a worker
     // panicked while holding the guard. Counters are still readable, so
-    // recover rather than abandon the operator-facing summary.
+    // recover them and keep the operator-facing summary.
     match counts.into_inner() {
         Ok(c) => c,
         Err(poisoned) => {
@@ -184,11 +184,11 @@ pub(crate) fn run_revert_targets_parallel(
 ///
 /// The AUR publisher is deliberately NOT a `TokenRevertTarget`: it
 /// authenticates with SSH key material (`private_key` + `ssh_command`)
-/// resolved from config at rollback time, not an HTTPS token env var, so it
+/// resolved from config at rollback time (it reads no HTTPS token env var), so it
 /// keeps its own `rollback()` body while still sharing the
 /// [`run_revert_targets_parallel`] fan-out core.
 pub(crate) trait TokenRevertTarget {
-    /// Per-target label (crate / formula / cask / manifest name) surfaced in
+    /// Per-target label (crate / formula / cask / manifest name) printed in
     /// rollback warn lines.
     fn target(&self) -> &str;
     /// HTTPS clone URL of the publisher-owned repo to revert.
@@ -341,9 +341,9 @@ pub(crate) fn run_token_revert_rollback<T: TokenRevertTarget>(
         skipped,
         failed,
     ));
-    // A per-target git-revert failure must surface as `Err` here so
+    // A per-target git-revert failure must be returned as `Err` here so
     // `execute_rollback_step` maps this publisher's row to
-    // `RollbackFailed`/`RollbackDisposition::Failed` instead of `RolledBack`
+    // `RollbackFailed`/`RollbackDisposition::Failed`
     // — otherwise the outer `rollback complete — N rolled back, M failed`
     // summary miscounts an unreverted index repo as a success.
     if failed > 0 {
@@ -511,7 +511,7 @@ mod tests {
 
     /// Two pushes to one branch are two records; both are reverted, by one
     /// worker, and a record without a commit is counted as skipped and
-    /// warned about rather than failed.
+    /// warned about, and does not fail.
     #[test]
     fn two_pushes_to_one_branch_are_both_reverted_and_an_old_record_is_skipped() {
         let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
@@ -672,7 +672,7 @@ mod tests {
         let targets = vec![
             target("good", &good_url),
             // Local path that does not exist — clone will fail with
-            // a non-zero exit, surfacing as a per-target error.
+            // a non-zero exit, reported as a per-target error.
             target("bad", "/this/path/must/not/exist/anywhere/zzz.git"),
         ];
 
@@ -710,9 +710,9 @@ mod tests {
     }
 
     /// Chunking: more targets than `ROLLBACK_PARALLELISM` must all be
-    /// processed, not just the first batch. This is the regression
+    /// processed, every batch included. This is the regression
     /// guard for the chunk-loop boundary (`chunks(cap)` must visit
-    /// every chunk, not stop after one).
+    /// every chunk).
     #[test]
     fn run_revert_targets_parallel_processes_all_chunks() {
         let log = StageLogger::new("test", Verbosity::Quiet);
@@ -753,8 +753,8 @@ mod tests {
     }
 
     /// `join_or_warn` on a panicking worker must emit one warn line
-    /// naming the publisher label AND surfacing the panic payload as a
-    /// readable string (NOT the `Any { .. }` placeholder).
+    /// naming the publisher label AND printing the panic payload as a
+    /// readable string (the `Any { .. }` placeholder is a failure).
     #[test]
     fn join_or_warn_logs_string_panic_payload() {
         let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
@@ -777,7 +777,7 @@ mod tests {
         );
         assert!(
             msg.contains("boom-from-worker"),
-            "warn must surface the panic payload, got: {msg}"
+            "warn must print the panic payload, got: {msg}"
         );
     }
 
@@ -910,7 +910,7 @@ mod tests {
     }
 
     /// A target carrying no `token_env_var` falls back to the supplied
-    /// `default_env_hint`, which must surface in the per-failure warn so the
+    /// `default_env_hint`, which must appear in the per-failure warn so the
     /// operator knows which credential to restore.
     #[test]
     fn run_token_revert_rollback_failure_warn_uses_default_env_hint() {
@@ -925,7 +925,7 @@ mod tests {
         let targets = vec![ScoopTargetSnapshot {
             pr_url: None,
             target: "bad".into(),
-            // Local path that does not exist — clone fails, surfacing a
+            // Local path that does not exist — clone fails, producing a
             // per-target failure warn.
             repo_url: "/this/path/must/not/exist/anywhere/zzz.git".into(),
             branch: Some("master".into()),
@@ -942,7 +942,7 @@ mod tests {
             "bucket clone targets",
             "bucket",
         )
-        .expect_err("a per-target git-revert failure must surface as Err so the caller's rollback summary counts it as failed, not rolled-back");
+        .expect_err("a per-target git-revert failure must be returned as Err so the caller's rollback summary counts it as failed");
         assert!(
             format!("{err:#}").contains("1 of 1"),
             "error should report the failure count: {err:#}"

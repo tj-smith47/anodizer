@@ -71,7 +71,7 @@ fn aur_preflight_defaults_to_pass() {
     ));
 }
 
-/// The AUR schema floor runs `bash -n` over the rendered PKGBUILD when
+/// The AUR schema check runs `bash -n` over the rendered PKGBUILD when
 /// the tool is present and warn+skips otherwise, so it is ADVISORY:
 /// recommended to the auto-install layer, never a blocker.
 #[test]
@@ -230,6 +230,33 @@ fn aur_our_target_extra_omits_private_key_after_serde_roundtrip() {
     // conversion.
     assert_eq!(first["target"], "demo-bin");
     assert_eq!(first["git_url"], "ssh://aur@aur.archlinux.org/demo-bin.git");
+}
+
+/// The rollback reads `private_key` as a credential: a padded value is
+/// trimmed, and a template that does not render is an error naming the
+/// field without the template's text.
+#[test]
+fn aur_rollback_renders_the_private_key_as_a_credential() {
+    let with_key = |key: &str| {
+        let mut c = aur_crate("demo");
+        if let Some(p) = c.publish.as_mut()
+            && let Some(a) = p.aur.as_mut()
+        {
+            a.private_key = Some(key.into());
+        }
+        TestContextBuilder::new().crates(vec![c]).build()
+    };
+    let url = "ssh://aur@aur.archlinux.org/demo-bin.git";
+    let (pk, _) = resolve_aur_credentials_from_config(&with_key("  KEY-BODY\n"), url).unwrap();
+    assert_eq!(pk.as_deref(), Some("KEY-BODY"));
+
+    let msg = format!(
+        "{:#}",
+        resolve_aur_credentials_from_config(&with_key("hunter2{{ Undefined }}"), url)
+            .expect_err("a key that does not render is an error")
+    );
+    assert!(msg.contains("aur.private_key does not render"), "{msg}");
+    assert!(!msg.contains("hunter2"), "{msg}");
 }
 
 #[test]

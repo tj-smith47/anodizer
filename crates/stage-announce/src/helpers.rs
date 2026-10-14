@@ -149,25 +149,6 @@ pub(crate) fn require_env_all_with_env<E: EnvSource + ?Sized>(
     Ok(values)
 }
 
-/// A credential from the config field `field`, rendered through
-/// [`Context::render_secret`], or, when that is unset or renders blank, from
-/// the variable `env_var`; each trimmed, and `None` when neither has a value.
-pub(crate) fn config_or_env_secret(
-    ctx: &Context,
-    field: &str,
-    configured: Option<&str>,
-    env_var: &str,
-) -> Result<Option<String>> {
-    let configured = ctx
-        .render_secret_opt(field, configured)?
-        .filter(|v| !v.is_empty());
-    Ok(configured.or_else(|| {
-        ctx.env_var(env_var)
-            .as_deref()
-            .and_then(anodizer_core::git::non_blank_token)
-    }))
-}
-
 /// Render a message-BODY template, falling back to `default` when unset.
 ///
 /// The single send-time chokepoint for announce message bodies. When

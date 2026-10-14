@@ -11,10 +11,6 @@ use anodizer_core::stage::Stage;
 
 use super::*;
 
-// ---------------------------------------------------------------------------
-// SbomStage — independent pipeline stage
-// ---------------------------------------------------------------------------
-
 pub struct SbomStage;
 
 impl Stage for SbomStage {
@@ -70,8 +66,8 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     let id = sbom_cfg.resolved_id();
 
     // Evaluate skip — supports bool or template string. Use
-    // try_evaluates_to_true so a malformed skip: template surfaces as Err
-    // instead of silently evaluating false.
+    // try_evaluates_to_true so a malformed skip: template is an Err
+    // (a silent false would skip the stage by mistake).
     if let Some(ref d) = sbom_cfg.skip
         && d.try_evaluates_to_true(|s| ctx.render_template(s))
             .with_context(|| format!("sbom[{}]: evaluate skip expression", id))?
@@ -107,7 +103,6 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
         return run_sbom_builtin(ctx, dist, sbom_cfg, &project_name, &version);
     }
 
-    // --- External command (subprocess) model ---
     let cmd = sbom_cfg.resolved_cmd();
     let artifacts_type = sbom_cfg.resolved_artifacts();
 
@@ -336,7 +331,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
             // for the SBOM document path. This lets a
             // user write `documents: ["*.spdx.json"]` and get a separate
             // registered artifact per matched file (e.g.
-            // `myproj-1.0.spdx.json`), rather than one artifact whose name
+            // `myproj-1.0.spdx.json`) in place of one artifact whose name
             // is the literal glob pattern:
             // `Name: filepath.Base(match)` (NOT `filepath.Base(path)`).
             let full_pattern = dist.join(doc_path);
@@ -427,8 +422,8 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
 ///   `<project>-<version>.<ext>` legacy filename, no per-artifact template
 ///   rendering.
 /// * `artifacts: archive|binary|source|package|diskimage|installer` →
-///   STILL one workspace SBOM at `<project>-<version>.<ext>`, NOT one per
-///   matched artifact. The built-in output is Cargo.lock-derived (it catalogs
+///   STILL one workspace SBOM at `<project>-<version>.<ext>`, with no per-
+///   artifact copies. The built-in output is Cargo.lock-derived (it catalogs
 ///   the workspace dependency graph), so it is archive-independent; emitting N
 ///   differently-named copies of identical bytes would only multiply the
 ///   downstream checksum + signature object count. The matched-artifact scan
@@ -585,8 +580,8 @@ pub(crate) fn run_sbom_builtin(
     }
 
     // The built-in (Cargo.lock) generator's output is archive-INDEPENDENT by
-    // construction — it catalogs the workspace dependency graph, not the
-    // contents of any one archive. Emitting one document per matched artifact
+    // construction — it catalogs the workspace dependency graph and reads the
+    // contents of no archive. Emitting one document per matched artifact
     // would write the SAME bytes to N differently-named files (N redundant
     // checksum + signature objects). So emit ONE workspace SBOM regardless of
     // `artifacts:` mode, named `<project>-<version>.<ext>` (the `any`
@@ -637,13 +632,13 @@ pub(crate) fn run_sbom_builtin(
         name,
         path: output_path,
         // Target-INDEPENDENT by construction: this document catalogs the
-        // workspace dependency graph, not any one archive, and every shard of
+        // workspace dependency graph alone, and every shard of
         // a sharded release produces byte-identical output. Stamping it with
         // `subject_target` would give each shard a different target on the
         // same path, so the per-shard manifest merge's
         // `dedupe_targetless_duplicates` (which only collapses `None`) leaves
         // N copies and the duplicate-path guard rejects them. Subject
-        // provenance the `ids:` filter needs is carried in `metadata`, not here.
+        // provenance the `ids:` filter needs is carried in `metadata`.
         target: None,
         crate_name: ctx.config.release_owner_crate_name().to_string(),
         metadata,

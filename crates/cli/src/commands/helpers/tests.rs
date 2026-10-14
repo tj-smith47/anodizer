@@ -89,7 +89,7 @@ fn write_effective_config_emits_sorted_keys() {
 
 /// Recursive guard: the harness's drift channel is most often a *nested*
 /// HashMap (e.g. `docker.labels`, `nfpm.dependencies`,
-/// `announce.<flavour>.headers`). `sort_yaml_mapping` must walk into
+/// `announce.<flavour>.headers`). `sort_yaml_mapping` must descend into
 /// sub-mappings AND into sequences-of-mappings. Hand-crafted
 /// `serde_yaml_ng::Value` to exercise both axes.
 #[test]
@@ -163,7 +163,7 @@ fn test_apply_workspace_overlay_replaces_crates() {
 fn test_apply_workspace_overlay_clears_workspaces() {
     // The overlaid run IS the chosen workspace: sibling workspaces must
     // drop out of the universe, or every stage's "empty selection = all"
-    // walk (and `check config --workspace X`) would still see sibling
+    // scan (and `check config --workspace X`) would still see sibling
     // crates under X's overlay.
     let ws_a = WorkspaceConfig {
         name: "ws-a".to_string(),
@@ -334,10 +334,6 @@ fn test_apply_workspace_overlay_skips_none_fields() {
     );
 }
 
-// -----------------------------------------------------------------------
-// load_artifacts_from_dist tests
-// -----------------------------------------------------------------------
-
 #[test]
 fn test_load_artifacts_from_dist_valid() {
     use anodizer_core::artifact::ArtifactKind;
@@ -502,7 +498,7 @@ fn test_load_artifacts_from_dist_roundtrip() {
     // crate_name, name, path) to keep `dist/artifacts.json` byte-
     // identical across runs regardless of registration order, so the
     // round-tripped order is Binary (kind="binary") before Checksum
-    // (kind="checksum"), not the insertion order.
+    // (kind="checksum") whatever the insertion order.
     assert_eq!(loaded[0].kind, ArtifactKind::Binary);
     assert_eq!(loaded[0].name, "myapp");
     assert_eq!(loaded[0].target.as_deref(), Some("aarch64-apple-darwin"));
@@ -512,10 +508,6 @@ fn test_load_artifacts_from_dist_roundtrip() {
     assert_eq!(loaded[1].name, "checksums.txt");
     assert_eq!(loaded[1].size, Some(256));
 }
-
-// -----------------------------------------------------------------------
-// resolve_scm_token_type tests
-// -----------------------------------------------------------------------
 
 /// Build a `Context` whose `EnvSource` is a closed `MapEnvSource` carrying
 /// the supplied `(key, value)` fixtures. Routes `resolve_scm_token_type`'s
@@ -723,7 +715,7 @@ fn test_resolve_scm_token_type_anodizer_force_token_env_github() {
 }
 
 #[test]
-fn test_resolve_scm_token_type_goreleaser_force_token_compat() {
+fn test_resolve_scm_token_type_reads_the_compat_force_token_alias() {
     let config = Config::default();
     let mut ctx = ctx_with_env(
         &config,
@@ -743,7 +735,7 @@ fn test_resolve_scm_token_type_goreleaser_force_token_compat() {
 }
 
 #[test]
-fn test_resolve_scm_token_type_anodizer_force_token_overrides_goreleaser() {
+fn test_resolve_scm_token_type_anodizer_force_token_overrides_the_compat_alias() {
     let config = Config::default();
     let mut ctx = ctx_with_env(
         &config,
@@ -807,8 +799,6 @@ fn test_resolve_scm_token_type_invalid_force_token_env_ignored() {
     assert_eq!(ctx.options.token.as_deref(), Some("glpat-detected"));
 }
 
-// ---- collect_build_targets override semantics ---------------------
-
 #[test]
 fn test_collect_build_targets_per_build_overrides_defaults() {
     use anodizer_core::config::{BuildConfig, Defaults};
@@ -836,7 +826,7 @@ fn test_collect_build_targets_per_build_overrides_defaults() {
     assert_eq!(
         result,
         vec!["c".to_string()],
-        "per-build targets should REPLACE defaults.targets, not concat",
+        "per-build targets should REPLACE defaults.targets",
     );
 }
 
@@ -876,7 +866,7 @@ fn test_collect_build_targets_no_bin_crate_contributes_nothing() {
     use anodizer_core::config::Defaults;
 
     // A crate with no `builds:` and no `--bin` named after itself (path="."
-    // resolves to package "anodizer", not "lib") compiles nothing in the
+    // resolves to package "anodizer", and "lib" is no package) compiles nothing in the
     // planner, so it must contribute no targets — even though defaults.targets
     // is set. Reporting the defaults here would over-report against the build.
     let config = Config {
@@ -935,8 +925,6 @@ fn test_collect_build_targets_unset_defaults_falls_back_to_canonical_set() {
     );
 }
 
-// ---- merge_env_with_defaults --------------------------------------
-
 #[test]
 fn test_merge_env_with_defaults_both_none_yields_none() {
     assert!(merge_env_with_defaults(None, None).is_none());
@@ -982,8 +970,6 @@ fn test_merge_env_with_defaults_top_level_wins_on_collision() {
     assert_eq!(merged[0], "FOO=a");
     assert_eq!(merged[1], "FOO=b");
 }
-
-// ---- defaults.env wired into setup_env ------------------------------
 
 use anodizer_core::config::Defaults;
 
@@ -1089,7 +1075,7 @@ fn resolve_git_context_github_ref_name_fallback_fires_when_anodizer_tags_unset()
     assert_eq!(
         tag_override.as_deref(),
         Some("v1.2.3"),
-        "GITHUB_REF_NAME fallback must fire when anodizer/goreleaser tag vars are absent"
+        "GITHUB_REF_NAME fallback must fire when both tag vars are absent"
     );
 }
 
@@ -1200,10 +1186,6 @@ fn test_setup_env_variables_backward_reference_no_warn() {
     );
 }
 
-// -----------------------------------------------------------------------
-// parse_csv_list
-// -----------------------------------------------------------------------
-
 #[test]
 fn parse_csv_list_none_passes_through() {
     assert_eq!(parse_csv_list(None, "--targets=<a,b>").unwrap(), None);
@@ -1239,10 +1221,6 @@ fn parse_csv_list_empty_string_is_error() {
     assert!(parse_csv_list(Some(""), "--flag=<x>").is_err());
 }
 
-// -----------------------------------------------------------------------
-// detect_duplicate_paths
-// -----------------------------------------------------------------------
-
 #[test]
 fn detect_duplicate_paths_unique_is_ok() {
     let a = Path::new("dist/a.tar.gz");
@@ -1265,10 +1243,6 @@ fn detect_duplicate_paths_empty_iter_is_ok() {
     let none: [&Path; 0] = [];
     assert!(detect_duplicate_paths(none).is_ok());
 }
-
-// -----------------------------------------------------------------------
-// detect_missing_files
-// -----------------------------------------------------------------------
 
 #[test]
 fn detect_missing_files_present_relative_under_dist_is_ok() {
@@ -1305,10 +1279,6 @@ fn detect_missing_files_absolute_path_checked_literally() {
     assert!(err.contains("nope.bin"));
 }
 
-// -----------------------------------------------------------------------
-// referenced_var_keys
-// -----------------------------------------------------------------------
-
 #[test]
 fn referenced_var_keys_lifts_each_var_dot_identifier() {
     let keys = referenced_var_keys("{{ .Var.FOO }}-{{ .Var.bar_baz }}");
@@ -1317,7 +1287,7 @@ fn referenced_var_keys_lifts_each_var_dot_identifier() {
 
 #[test]
 fn referenced_var_keys_stops_at_non_identifier_char() {
-    // The identifier ends at the dot / brace, not at end-of-string.
+    // The identifier ends at the dot / brace.
     let keys = referenced_var_keys("Var.alpha.Var.beta}");
     assert_eq!(keys, vec!["alpha", "beta"]);
 }
@@ -1333,10 +1303,6 @@ fn referenced_var_keys_bare_var_dot_with_no_identifier_yields_nothing() {
     assert!(referenced_var_keys("Var. ").is_empty());
 }
 
-// -----------------------------------------------------------------------
-// yaml_key_sort_key
-// -----------------------------------------------------------------------
-
 #[test]
 fn yaml_key_sort_key_strings_compare_on_raw_value() {
     let v = serde_yaml_ng::Value::String("zeta".to_string());
@@ -1349,10 +1315,6 @@ fn yaml_key_sort_key_non_string_falls_back_to_debug() {
     // A non-string key must still produce a deterministic, non-empty key.
     assert_eq!(yaml_key_sort_key(&v), format!("{:?}", v));
 }
-
-// -----------------------------------------------------------------------
-// resolve_force_token_with_env (injected EnvSource — no process-env mutation)
-// -----------------------------------------------------------------------
 
 #[test]
 fn resolve_force_token_config_field_wins_over_env() {
@@ -1378,7 +1340,7 @@ fn resolve_force_token_reads_anodizer_env_case_insensitively() {
 }
 
 #[test]
-fn resolve_force_token_goreleaser_alias_is_fallback() {
+fn resolve_force_token_compat_alias_is_fallback() {
     let config = Config::default();
     let env = anodizer_core::MapEnvSource::new().with("GORELEASER_FORCE_TOKEN", "github");
     assert_eq!(
@@ -1388,7 +1350,7 @@ fn resolve_force_token_goreleaser_alias_is_fallback() {
 }
 
 #[test]
-fn resolve_force_token_anodizer_var_takes_precedence_over_goreleaser_alias() {
+fn resolve_force_token_anodizer_var_takes_precedence_over_compat_alias() {
     let config = Config::default();
     let env = anodizer_core::MapEnvSource::new()
         .with("ANODIZER_FORCE_TOKEN", "gitea")
@@ -1417,8 +1379,6 @@ fn quiet_log() -> StageLogger {
     StageLogger::new("test", anodizer_core::log::Verbosity::Quiet)
 }
 
-// ---- sort_yaml_mapping — Tagged-node recursion ---------------------
-
 /// A `!Tag`-tagged YAML mapping must still have its inner keys sorted —
 /// the `Value::Tagged` arm recurses into the wrapped value. Without that
 /// arm a tagged sub-map would emit in source order and drift the
@@ -1443,8 +1403,6 @@ fn sort_yaml_mapping_sorts_inside_tagged_node() {
         "keys inside a tagged node must be sorted; got {out:?}"
     );
 }
-
-// ---- token-presence hard error in setup_env ------------------------
 
 /// A crate carrying a `release:` block, no token, and a non-snapshot /
 /// non-dry-run / non-publish-only run must bail with the GitHub-specific
@@ -1561,8 +1519,6 @@ fn write_metadata_and_artifacts_leaves_dist_empty_in_dry_run() {
     );
 }
 
-// ---- write_metadata_and_artifacts — mod_timestamp application ------
-
 /// `metadata.mod_timestamp` (when it renders non-empty) must be parsed and
 /// stamped onto both metadata.json and artifacts.json. Assert the files
 /// are written and the mtime matches the parsed epoch — proving the stamp arm
@@ -1647,13 +1603,11 @@ fn write_metadata_and_artifacts_registers_metadata_artifact() {
     );
 }
 
-// ---- write_metadata_json — release_url emission --------------------
-
 /// metadata.json must carry the `ReleaseURL` the release stage resolved
 /// into the template var (authoritative `html_url` or its derived
 /// default). The action-side `release-url` output reads `.release_url`
 /// from this file; announce/webhook templates render the same var, so
-/// the two surfaces must agree byte-for-byte. Single-crate shape: one
+/// the two outputs must agree byte-for-byte. Single-crate shape: one
 /// crate, root dist.
 #[test]
 fn write_metadata_json_emits_release_url_from_context() {
@@ -1751,11 +1705,9 @@ fn write_metadata_json_lockstep_root_carries_shared_release_url() {
     assert_eq!(json["tag"], "v0.4.0");
 }
 
-// ---- load_artifacts_from_manifest — targetless dedup skip ----------
-
 /// Two manifest entries sharing the same path with `target: null` (e.g. a
 /// source archive duplicated across shard manifests) must collapse to a
-/// single registry entry — the second is skipped, not re-added.
+/// single registry entry — the second is skipped.
 #[test]
 fn load_manifest_dedupes_targetless_duplicate_paths() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1787,7 +1739,6 @@ fn load_manifest_dedupes_targetless_duplicate_paths() {
     );
 }
 
-// ---- publish-only rehydrate → ChecksumStage idempotence ------------
 //
 // Exercises the exact runtime sequence `publish_only::run_one_crate_dist`
 // performs — REAL `load_artifacts_from_manifest` (rehydrate a preserved
@@ -1803,7 +1754,7 @@ fn load_manifest_dedupes_targetless_duplicate_paths() {
 /// A re-checksum over a rehydrated registry that already holds the
 /// per-target Checksum sidecars must leave exactly one artifact per
 /// (path, kind) — the re-add at an existing coordinate is an idempotent
-/// update, never a second entry.
+/// update that adds no second entry.
 #[test]
 fn rehydrate_then_checksum_split_has_no_duplicate_artifacts() {
     use anodizer_core::config::{ChecksumConfig, CrateConfig};
@@ -1873,7 +1824,7 @@ fn rehydrate_then_checksum_split_has_no_duplicate_artifacts() {
     }
 
     // Re-checksum is idempotent: the registry holds exactly the rehydrated
-    // unique set, not a doubled one.
+    // unique set.
     assert_eq!(
         ctx.artifacts.all().len(),
         rehydrated,
@@ -1881,7 +1832,6 @@ fn rehydrate_then_checksum_split_has_no_duplicate_artifacts() {
     );
 }
 
-// ---- publish-only rehydrate → AttestStage emit idempotence ---------
 //
 // The emit-mode in-toto statement registers as `UploadableFile`, a kind
 // `ArtifactRegistry::add` deliberately does NOT collapse (a same-path
@@ -1971,7 +1921,7 @@ fn rehydrate_then_attest_emit_has_no_duplicate_artifacts() {
     }
 
     // Re-emit is idempotent: the registry holds exactly the rehydrated
-    // unique set, not a doubled one.
+    // unique set.
     assert_eq!(
         ctx.artifacts.all().len(),
         rehydrated,
@@ -1979,7 +1929,6 @@ fn rehydrate_then_attest_emit_has_no_duplicate_artifacts() {
     );
 }
 
-// ---- resolve_git_context — workspace fallback + snapshot defaults --
 //
 // resolve_git_context shells to `git` in the process cwd. Driving its
 // crate-selection + snapshot-default branches hermetically needs the cwd
@@ -2219,7 +2168,7 @@ fn resolve_git_context_unset_template_resolves_name_v_family_consistently() {
         let mut ctx = empty_env_ctx(&config, ContextOptions::default());
         resolve_git_context(&mut ctx, &config, &quiet_log()).expect(
             "an UNSET tag_template must still resolve the {name}-v convention \
-                 family at HEAD, not bail for a missing bare-v tag",
+                 family at HEAD even when no bare-v tag exists",
         );
         assert_eq!(
             ctx.template_vars().get("Tag").map(String::as_str),
@@ -2343,8 +2292,6 @@ fn resolve_git_context_notify_dirty_tree_does_not_bail() {
     });
 }
 
-// ---- auto_detect_github — no-remote warn path ----------------------
-
 /// In a git repo with no `origin` remote, `auto_detect_github` can't detect
 /// a repo, so a crate with a release block but no `github:` is left as-is
 /// (the warn arm fires, no github filled). Gated + serial: cwd swap.
@@ -2371,7 +2318,7 @@ fn auto_detect_github_leaves_github_none_without_remote() {
 }
 
 /// The auto-detected slug fills a WORKSPACE crate's missing `github`
-/// block, not just top-level entries — a workspace-only crate's release
+/// block as well as top-level entries — a workspace-only crate's release
 /// stage reads the same per-crate override.
 #[cfg(unix)]
 #[test]
@@ -3010,10 +2957,8 @@ fn the_refusal_quoted_in_the_github_release_docs_is_what_the_inference_produces(
     });
 }
 
-// ---- discover_workspace_root — override ancestor walk --------------
-
 /// With a `--config` override pointing at a file inside a dir that has a
-/// `Cargo.toml`, discovery walks up from the config's parent and returns
+/// `Cargo.toml`, discovery searches upward from the config's parent and returns
 /// that dir (absolutized). Gated: asserts on an absolute unix path.
 #[cfg(unix)]
 #[test]
@@ -3029,8 +2974,6 @@ fn discover_workspace_root_override_finds_cargo_toml_ancestor() {
         "override discovery must return the absolute dir holding Cargo.toml"
     );
 }
-
-// ---- workspace scoping: resolve / infer / validate ------------------
 
 fn scope_crate(name: &str) -> CrateConfig {
     CrateConfig {
@@ -3148,7 +3091,7 @@ fn infer_workspace_two_workspace_selection_errors() {
 fn validate_selection_rejects_unknown_names() {
     let config = scope_mixed_config();
     let err = validate_selection_against_universe(&config, &["nope".to_string()], None)
-        .expect_err("an unknown --crate name must be a hard error, not a silent drop");
+        .expect_err("an unknown --crate name must be a hard error");
     assert!(err.to_string().contains("nope"), "got: {err}");
     // Known names across the whole universe pass.
     validate_selection_against_universe(&config, &["top".to_string(), "b-one".to_string()], None)
@@ -3216,8 +3159,6 @@ fn apply_workspace_scope_infers_and_returns_skip() {
     assert_eq!(names, vec!["a-one", "a-two"], "universe is ws-a's crates");
 }
 
-// ---- resolve_git_context — synthesized-version base across tag families --
-
 /// Seed one commit carrying every tag in `tags`, so a latest-tag probe per
 /// family has something to find. Hermetic committer identity via env.
 #[cfg(unix)]
@@ -3226,7 +3167,7 @@ fn with_multi_family_tags_repo_cwd(tags: &[&str], body: impl FnOnce()) {
 }
 
 /// Seed one commit per entry in `commits`, tagging each with that entry's
-/// tags, so a previous-tag look-back has an earlier commit to walk back to.
+/// tags, so a previous-tag look-back has an earlier commit to reach.
 #[cfg(unix)]
 fn with_tagged_commits_repo_cwd(commits: &[&[&str]], body: impl FnOnce()) {
     let tmp = tempfile::tempdir().unwrap();
@@ -3261,7 +3202,7 @@ fn with_tagged_commits_repo_cwd(commits: &[&[&str]], body: impl FnOnce()) {
 }
 
 /// The cfgd shape: three tracks, and the FIRST-declared one lags far behind
-/// its siblings. A nightly creates its version from a base rather than from a
+/// its siblings. A nightly creates its version from a base and reads no
 /// tag at HEAD, so taking the first crate's base stamped every track with
 /// `0.5.2` (incpatch of `crd-v0.5.1`) while the repo had shipped `v0.10.0`.
 #[cfg(unix)]
@@ -3279,14 +3220,13 @@ fn resolve_git_context_nightly_base_is_newest_across_tag_families() {
         assert_eq!(
             ctx.template_vars().get("Version").map(String::as_str),
             Some("0.10.0"),
-            "the nightly base must be the newest tag across families, not the \
-             first-declared crate's",
+            "the nightly base must be the newest tag across families",
         );
     });
 }
 
 /// The same holds for `--snapshot`, the other mode that synthesizes a
-/// version from a base instead of reading a tag at HEAD.
+/// version from a base.
 #[cfg(unix)]
 #[test]
 #[serial_test::serial(cwd)]
@@ -3457,7 +3397,7 @@ fn resolve_git_context_nightly_base_ignores_a_family_with_no_tags() {
 }
 
 /// No family has a tag: a nightly still runs, off the documented `v0.0.0`
-/// floor, rather than bailing on a repo that has never released.
+/// minimum, on a repo that has never released.
 #[cfg(unix)]
 #[test]
 #[serial_test::serial(cwd)]
@@ -3473,7 +3413,7 @@ fn resolve_git_context_nightly_with_no_tags_at_all_falls_back_to_zero() {
         assert_eq!(
             ctx.template_vars().get("Version").map(String::as_str),
             Some("0.0.0"),
-            "the documented tagless floor",
+            "the documented tagless minimum",
         );
         assert_eq!(
             ctx.git_info.as_ref().unwrap().previous_tag,

@@ -25,7 +25,7 @@ pub(crate) struct AnthropicProvider {
     /// Base URL for the Anthropic API (default `https://api.anthropic.com`).
     base_url: String,
     /// Injected environment-variable source used for the API key lookup
-    /// at `enhance` time. Routing through the source instead of
+    /// at `enhance` time. Reading the key through the source and not
     /// `std::env::var` keeps the provider testable via
     /// `Context::set_env_source` and aligns with the rest of the
     /// codebase's env-handling convention.

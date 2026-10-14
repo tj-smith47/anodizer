@@ -204,7 +204,7 @@ fn apply_source_mutations_with_resolver(
         // git lookup (and no re-scope) happens there.
         //
         // A mutation-enabled crate with no resolvable per-crate tag/version is
-        // a fail-loud error, never a silent fall-back to the first crate's
+        // a fail-loud error, with no fall-back to the first crate's
         // vars: stamping crate B with crate A's version (or rendering B's
         // binstall URL with A's version) ships a wrong, hard-to-spot artifact.
         let saved: Vec<(&'static str, Option<String>)> = if skip_mutations {
@@ -478,7 +478,7 @@ fn harness_intermediate_prune_enabled(ctx: &Context) -> bool {
 }
 
 /// Sequential path: compile each job in-process, register the produced
-/// artifact, then drain `copy_jobs` after all source builds complete.
+/// artifact, then run `copy_jobs` after all source builds complete.
 pub(crate) fn run_sequential(
     ctx: &mut Context,
     exec: &BuildExec<'_>,
@@ -522,8 +522,8 @@ pub(crate) fn run_sequential(
             cmd.args.join(" ")
         )));
         // Target-qualify the label so the liveness heartbeat attributes a slow
-        // build to its target (`still running cargo (aarch64-…)`) instead of a
-        // bare `cargo` that is ambiguous once builds run concurrently.
+        // build to its target (`still running cargo (aarch64-…)`); a bare `cargo`
+        // is ambiguous once builds run concurrently.
         let label = format!("{} ({})", cmd.program, job.target);
         anodizer_core::run::run_checked(&mut command, &child_log, &label)?;
         exec.log.status(&format!(
@@ -634,9 +634,9 @@ pub(crate) fn run_parallel(
                 .map(|job| {
                     // `job.cmd` is populated for every build job (copy-from-only
                     // jobs take a separate code path). If it's absent here, that's a
-                    // pipeline invariant violation — surface as an error, not a panic,
-                    // so the worker thread unwinds through the Result channel instead
-                    // of killing the process.
+                    // pipeline invariant violation. Return it as an error so the worker
+                    // thread unwinds through the Result channel and the process keeps
+                    // running.
                     let cmd_opt = job.cmd.clone();
                     let crate_name_for_err = job.crate_name.clone();
                     let program = cmd_opt.as_ref().map(|c| c.program.clone());
@@ -704,7 +704,7 @@ pub(crate) fn run_parallel(
                         )));
                         // Target-qualify the label so concurrent build heartbeats
                         // are distinguishable (`still running cargo (aarch64-…)`)
-                        // rather than an ambiguous bare `cargo` shared by all jobs.
+                        // even when every job runs `cargo`.
                         let label = format!("{program} ({target})");
                         anodizer_core::run::run_checked(&mut command, &child_log, &label)?;
 
@@ -781,8 +781,8 @@ pub(crate) fn run_parallel(
         });
 
         // Zip each result back to its source job so the reaper re-derives its
-        // key from the job's PLANNED inputs (identical to the seed), not the
-        // post-build resolved path. `results` preserves `chunk` order (the
+        // key from the job's PLANNED inputs (identical to the seed) and ignores
+        // the post-build resolved path. `results` preserves `chunk` order (the
         // handles are spawned and joined in order).
         for (job, result) in chunk.iter().zip(results) {
             let r = result?;
@@ -814,7 +814,7 @@ pub(crate) fn run_parallel(
     run_copy_jobs(ctx, exec, copy_jobs)
 }
 
-/// Drain `copy_from` jobs after the source builds complete. Shared between
+/// Run `copy_from` jobs after the source builds complete. Shared between
 /// the sequential and parallel paths to keep their semantics identical.
 fn run_copy_jobs(ctx: &mut Context, exec: &BuildExec<'_>, copy_jobs: &[BuildJob]) -> Result<()> {
     for job in copy_jobs {
@@ -990,7 +990,7 @@ mod source_mutation_tests {
         assert_eq!(
             beta_doc["package"]["version"].as_str().unwrap(),
             "4.5.6",
-            "beta must get ITS OWN version, not alpha's 1.2.3"
+            "beta must get ITS OWN version 4.5.6 (alpha's is 1.2.3)"
         );
 
         // binstall pkg-url: each rendered with its own Version + ProjectName.
@@ -1010,7 +1010,7 @@ mod source_mutation_tests {
             beta_url.contains("/myorg/beta/")
                 && beta_url.contains("/v4.5.6/")
                 && beta_url.contains("beta-4.5.6-"),
-            "beta pkg-url must carry beta's OWN name+version, not alpha's, got: {beta_url}"
+            "beta pkg-url must carry beta's OWN name+version, got: {beta_url}"
         );
         assert!(
             !beta_url.contains("alpha") && !beta_url.contains("1.2.3"),
@@ -1198,7 +1198,7 @@ mod source_mutation_tests {
         assert_eq!(
             ctx.template_vars().get("Version").map(String::as_str),
             Some("9.9.9"),
-            "Version must be restored after a failed crate, not left at boom's 1.0.0"
+            "Version must be restored to 9.9.9 after the failed crate boom (1.0.0)"
         );
         assert_eq!(
             ctx.template_vars().get("ProjectName").map(String::as_str),
@@ -1211,7 +1211,7 @@ mod source_mutation_tests {
     }
 
     /// No resolvable tag for a mutation-enabled crate is a fail-loud error
-    /// naming the crate — never a silent fall-back to the first crate's vars.
+    /// naming the crate, with no fall-back to the first crate's vars.
     #[test]
     fn apply_source_mutations_no_tag_fails_loud() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1251,7 +1251,7 @@ mod source_mutation_tests {
             "error must name the crate and the no-tag cause, got: {msg}"
         );
         // The test cwd is not a git repo, so the diagnosis must take the
-        // zero-tags branch: name the state and the remedies, not just the
+        // zero-tags branch: name the state and the remedies as well as the
         // template mismatch.
         assert!(
             msg.contains("no git tags at all")
@@ -1309,8 +1309,6 @@ mod source_mutation_tests {
             "unparseable-tag crate must remain unstamped, got:\n{toml}"
         );
     }
-
-    // -- git-backed integration: the REAL resolve_crate_tag path --------------
 
     fn run_git(dir: &std::path::Path, args: &[&str]) {
         let out = anodizer_core::test_helpers::output_with_spawn_retry(
@@ -1389,7 +1387,7 @@ mod source_mutation_tests {
         assert_eq!(
             beta_doc["package"]["version"].as_str().unwrap(),
             "4.5.6",
-            "git-backed: beta must get ITS OWN tag's version 4.5.6, not alpha's 1.2.3"
+            "git-backed: beta must get ITS OWN tag's version 4.5.6 (alpha's is 1.2.3)"
         );
 
         let beta_url = beta_doc["package"]["metadata"]["binstall"]["pkg-url"]
@@ -1925,7 +1923,7 @@ mod run_helpers_tests {
     }
 
     /// run_dry_run with a copy_from job (cmd=None, copy_from set): the copy_from
-    /// log branch fires instead of the cmd branch.
+    /// log branch fires and the cmd branch does not.
     #[test]
     fn run_dry_run_logs_copy_from_branch() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2045,7 +2043,7 @@ mod run_helpers_tests {
 
         let arts = ctx.artifacts.by_kind(ArtifactKind::Binary);
         assert_eq!(arts.len(), 1);
-        // Flat path: dist_dir/mybin, not the original src path.
+        // Flat path: the artifact is copied to dist_dir/mybin.
         assert_eq!(arts[0].path, dist.join("mybin"));
         // Dry-run: file must NOT have been written.
         assert!(!dist.join("mybin").exists());
@@ -2122,7 +2120,7 @@ mod run_helpers_tests {
     }
 
     /// A copy_job with copy_from=None is a programmer bug; the function must
-    /// return an error rather than panicking.
+    /// return an error.
     #[test]
     fn run_copy_jobs_missing_copy_from_pair_returns_error() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2263,12 +2261,12 @@ mod run_helpers_tests {
 }
 
 /// Tests for the live compile paths (`run_sequential` / `run_parallel` /
-/// `run_copy_jobs`) that actually spawn `BuildJob::cmd`. Rather than invoke a
-/// real toolchain, each job's `program` points at a `FakeToolDir` stub that
-/// records argv and (where the post-build `exists()` check matters) materialises
-/// the binary at `bin_path` via `.creates()`. Asserts the produced artifact's
-/// path/target, the applied mtime (reproducible + mod_timestamp), and the exact
-/// error text on the failure paths — never just "no panic".
+/// `run_copy_jobs`) that actually spawn `BuildJob::cmd`. Each job's `program`
+/// points at a `FakeToolDir` stub (no real toolchain runs) that records argv
+/// and (where the post-build `exists()` check matters) materialises the binary
+/// at `bin_path` via `.creates()`. Asserts the produced artifact's path/target,
+/// the applied mtime (reproducible + mod_timestamp), and the exact error text
+/// on the failure paths.
 #[cfg(unix)]
 #[cfg(test)]
 mod run_exec_tests {
@@ -2636,7 +2634,7 @@ mod run_exec_tests {
         }
     }
 
-    /// The compiler exits non-zero: `check_output` surfaces a failure naming the
+    /// The compiler exits non-zero: `check_output` returns a failure naming the
     /// program. No artifact is registered.
     #[test]
     fn run_sequential_compile_failure_propagates() {
@@ -2667,7 +2665,7 @@ mod run_exec_tests {
         let msg = format!("{err:#}").to_lowercase();
         assert!(
             msg.contains("cargo") && (msg.contains("exit") || msg.contains("fail")),
-            "compile failure must surface the program + failure, got: {msg}"
+            "compile failure must name the program + failure, got: {msg}"
         );
         assert!(
             ctx.artifacts.by_kind(ArtifactKind::Binary).is_empty(),
@@ -2676,7 +2674,7 @@ mod run_exec_tests {
     }
 
     /// A build job with `cmd: None` reaching the sequential path is a planner
-    /// invariant violation surfaced as an error, not a panic.
+    /// invariant violation returned as an error.
     #[test]
     fn run_sequential_missing_cmd_errors() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2811,7 +2809,8 @@ mod run_exec_tests {
     }
 
     /// A failing job in the parallel path unwinds through the Result channel
-    /// (not a process abort) and the redacted exit-code message surfaces.
+    /// (the process does not abort) and the redacted exit-code message is
+    /// reported.
     #[test]
     fn run_parallel_compile_failure_returns_error() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2841,7 +2840,7 @@ mod run_exec_tests {
         let msg = format!("{err:#}");
         assert!(
             msg.contains("failed with exit code") && msg.contains("cargo"),
-            "parallel failure must surface the exit-code message, got: {msg}"
+            "parallel failure must report the exit-code message, got: {msg}"
         );
     }
 
@@ -2904,7 +2903,7 @@ mod run_exec_tests {
     }
 
     /// A `cmd: None` job reaching the parallel worker unwinds as an error naming
-    /// the planner-invariant violation, not a panic that aborts the process.
+    /// the planner-invariant violation, and the process does not abort.
     #[test]
     fn run_parallel_missing_cmd_errors() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2926,7 +2925,7 @@ mod run_exec_tests {
         let err = run_parallel(&mut ctx, &exec, &[job], &[], 1).unwrap_err();
         assert!(
             format!("{err:#}").contains("planner invariant violation"),
-            "missing cmd in the parallel worker must surface the invariant error"
+            "missing cmd in the parallel worker must report the invariant error"
         );
     }
 
@@ -3199,7 +3198,7 @@ mod run_exec_tests {
 
         // The per-crate dir (member) — its `cwd` has NO local target/, so the
         // planned RELATIVE `target/<triple>/release/app` does not exist here
-        // and resolution walks to the workspace-root absolute path.
+        // and resolution falls back to the workspace-root absolute path.
         let member = ws_root.join("member");
         std::fs::create_dir_all(&member).unwrap();
 
@@ -3213,7 +3212,7 @@ mod run_exec_tests {
 
         // Planned bin_path is RELATIVE (`target/<triple>/release/app`); the cwd
         // for the stub is the member dir. crate_path = member so
-        // find_workspace_root walks up to ws_root.
+        // find_workspace_root searches up to ws_root.
         let mut job = building_job(&tools.tool_path("cargo"), &member, "app", triple);
         job.bin_path = std::path::PathBuf::from("target")
             .join(triple)

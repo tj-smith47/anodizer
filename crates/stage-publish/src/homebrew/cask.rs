@@ -14,10 +14,6 @@ pub(super) const URL_ARGS_INDENT: &str = "      ";
 /// `on_<os> do` and `on_<arch> do`.
 pub(super) const ARCH_URL_ARGS_INDENT: &str = "          ";
 
-// ---------------------------------------------------------------------------
-// generate_cask
-// ---------------------------------------------------------------------------
-
 /// Cask `binary` template entry.
 ///
 /// The bare-string YAML form `"my-cli"` deserialises to `name = "my-cli",
@@ -222,11 +218,6 @@ pub fn render_generate_completions(
     Some(out)
 }
 
-// ---------------------------------------------------------------------------
-// Keyword-argument layout shared by `uninstall`, `zap`, `conflicts_with` and
-// the `url` options.
-// ---------------------------------------------------------------------------
-
 /// Indent of a stanza directly inside `cask "…" do`.
 const STANZA_INDENT: &str = "  ";
 /// Indent of a line inside a stanza's own `do … end` block.
@@ -341,10 +332,6 @@ fn render_list_stanza(stanza: &str, pairs: &[(&str, &[String])]) -> String {
     format!("{stanza} {}", render_keyword_args(column, &args, true))
 }
 
-// ---------------------------------------------------------------------------
-// uninstall / zap / conflicts_with rendering.
-// ---------------------------------------------------------------------------
-
 /// The `uninstall` / `zap` directives present in `u`, in the order
 /// `Cask/UninstallMethodsOrder` requires.
 fn uninstall_like_pairs(
@@ -396,10 +383,6 @@ pub(super) fn conflicting_casks(
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// additional_url_params
-// ---------------------------------------------------------------------------
-
 /// Render Ruby kwargs for the `url "<url>"` line: `using`, `cookies`,
 /// `referer`, `header`, `user_agent`, `data`. Returns `""` when every
 /// sub-field is unset.
@@ -426,7 +409,7 @@ pub(super) fn render_additional_url_params(
     let mut args: Vec<(&str, ArgValue)> = Vec::new();
     if let Some(v) = u.using.as_deref().filter(|v| !v.is_empty()) {
         // `using:` accepts either a Ruby symbol (`:homebrew_curl`) or a
-        // class name (no quotes). It is raw Ruby, not a string literal, so it
+        // class name (no quotes). It is raw Ruby, so it
         // passes through verbatim without quoting or escaping.
         args.push(("using", ArgValue::Literal(v.to_string())));
     }
@@ -512,7 +495,7 @@ pub(super) fn split_alternative_names(
 }
 
 /// Pre-render every `alternative_names` entry through the user's template
-/// engine. A failure surfaces as `Err` so a typo in the template doesn't
+/// engine. A failure returns `Err` so a typo in the template doesn't
 /// silently degrade the rendered cask body.
 pub(super) fn render_alternative_names(ctx: &Context, raw: &[String]) -> Result<Vec<String>> {
     let mut out: Vec<String> = Vec::with_capacity(raw.len());

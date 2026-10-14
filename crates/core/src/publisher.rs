@@ -275,8 +275,8 @@ pub trait Publisher: Send + Sync {
     }
 }
 
-/// Whether the env var a rollback-scope label opens with is set to a
-/// non-empty value.
+/// Whether the env var a rollback-scope label opens with is set to a value
+/// that is not blank.
 ///
 /// A label reads `"CARGO_REGISTRY_TOKEN yank"`: the first whitespace-separated
 /// token names the variable, and the rest describes the scope for the
@@ -288,7 +288,10 @@ pub fn rollback_scope_label_available<E: crate::EnvSource + ?Sized>(label: &str,
     if env_var == "GITHUB_TOKEN" {
         return crate::git::resolve_github_token_with_env(None, &|key| env.var(key)).is_some();
     }
-    env.var(env_var).map(|v| !v.is_empty()).unwrap_or(false)
+    env.var(env_var)
+        .as_deref()
+        .and_then(crate::git::non_blank_token)
+        .is_some()
 }
 
 /// The exact warn message a publisher emits when `rollback()` is invoked

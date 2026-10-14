@@ -63,8 +63,12 @@ impl Announcer for DiscordAnnouncer {
                     anodizer_core::url::percent_encode_path_segment(&token),
                 )
             }
-            _ => match cfg.webhook_url.as_deref() {
-                Some(raw) => ctx.render_secret("announce.discord.webhook_url", raw)?,
+            _ => match ctx.config_or_env_secret(
+                "announce.discord.webhook_url",
+                cfg.webhook_url.as_deref(),
+                &[],
+            )? {
+                Some(url) => url,
                 None => {
                     // Skip-when-empty UX policy: in strict mode this
                     // bails (collected by the closure-level wrapper

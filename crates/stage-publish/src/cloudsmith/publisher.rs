@@ -1,9 +1,5 @@
 use super::*;
 
-// ---------------------------------------------------------------------------
-// CloudsmithPublisher (Publisher trait wrapper)
-// ---------------------------------------------------------------------------
-
 // Wraps [`publish_to_cloudsmith`] in the [`anodizer_core::Publisher`] trait
 // so the dispatch path (see [`crate::registry::configured_publishers`])
 // can drive Cloudsmith uploads alongside every other publisher.
@@ -17,8 +13,8 @@ use super::*;
 // identifier returned by the step-3 `packages/upload/<format>/` response
 // and is captured into `CloudsmithTarget.slug` so [`PublishEvidence::extra`]
 // (`cloudsmith_targets` key) carries it across the publish/rollback split.
-// Targets whose slug couldn't be parsed (older evidence written before
-// B13, or a response-shape change) degrade to the warn-only manual-cleanup
+// Targets whose slug couldn't be parsed (evidence written before slug
+// capture existed, or a response-shape change) degrade to the warn-only manual-cleanup
 // checklist via [`cloudsmith_manual_cleanup_msg`]. Per-target DELETE
 // failures (non-2xx, transport errors) emit a warn and continue —
 // rollback is best-effort and a single 5xx must not orphan the remaining
@@ -36,8 +32,8 @@ simple_publisher!(
 /// `slug` (Cloudsmith's per-package permanent identifier, returned by the
 /// step-3 `packages/upload/<format>/` response) lets
 /// [`Publisher::rollback`](anodizer_core::Publisher::rollback) issue a
-/// real `DELETE /v1/packages/<org>/<repo>/<slug>/` instead of a warn-only
-/// manual-cleanup checklist.
+/// real `DELETE /v1/packages/<org>/<repo>/<slug>/`; without one the rollback
+/// falls back to a warn-only manual-cleanup checklist.
 ///
 /// Aliased to the core-owned snapshot so the evidence schema lives in
 /// [`anodizer_core::publish_evidence`] and credential-shaped fields
@@ -62,7 +58,7 @@ pub(crate) fn encode_cloudsmith_targets(
 
 /// Decode the typed Cloudsmith variant back into structured targets.
 /// Returns an empty vec when the variant doesn't match — the rollback
-/// then surfaces the empty-evidence warn instead of crashing.
+/// then prints the empty-evidence warning and carries on.
 pub(crate) fn decode_cloudsmith_targets(
     extra: &anodizer_core::PublishEvidenceExtra,
 ) -> Vec<CloudsmithTarget> {
@@ -73,11 +69,10 @@ pub(crate) fn decode_cloudsmith_targets(
 }
 
 /// The per-target warn line a rollback emits as a FALLBACK when no slug is
-/// available in evidence (legacy evidence written before B13 added slug
-/// capture, or a step-3 `packages/upload/<format>/` response that didn't
-/// surface a slug). Operator-readable; renders the
+/// available in evidence (evidence written before slug capture existed, or a step-3
+/// `packages/upload/<format>/` response that returned no slug). Operator-readable; renders the
 /// `<org>/<repo>` location plus the filename to remove. Exposed as a
-/// helper so tests can pin the wording without intercepting stderr.
+/// helper so tests can assert the wording without intercepting stderr.
 ///
 /// The PRIMARY rollback path issues a real
 /// `DELETE /v1/packages/<org>/<repo>/<slug>/` against the Cloudsmith API
@@ -86,7 +81,7 @@ pub(crate) fn decode_cloudsmith_targets(
 /// this helper is reached only when `target.slug` is `None`.
 pub(crate) fn cloudsmith_manual_cleanup_msg(target: &CloudsmithTarget) -> String {
     format!(
-        "manually withdraw '{}' from cloudsmith {}/{} (per-package slug not surfaced in evidence; delete via the Cloudsmith dashboard)",
+        "manually withdraw '{}' from cloudsmith {}/{} (per-package slug missing from evidence; delete via the Cloudsmith dashboard)",
         target.filename, target.org, target.repo
     )
 }
@@ -142,7 +137,7 @@ pub(crate) fn resolve_rollback_token(
 /// right now. Shared by [`anodizer_core::Publisher::requirements`] and
 /// [`anodizer_core::Publisher::config_fully_inactive`] so the two cannot
 /// diverge. `preflight` keeps its own loop (it needs per-entry endpoint
-/// resolution alongside the filter, not just a boolean).
+/// resolution alongside the filter as well as the boolean).
 pub(crate) fn active_cloudsmith_configs(
     ctx: &Context,
 ) -> Vec<&anodizer_core::config::CloudSmithConfig> {
@@ -224,9 +219,9 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         let log = ctx.logger("publish");
         // The upload path returns the live target list (with slugs
         // populated when step 3's response carried one) so evidence
-        // records what was actually uploaded — not a post-hoc walk of
-        // config + artifacts, which can drift from the upload list and
-        // never captures the slug. SkipIdempotent matches (artifact
+        // records what was actually uploaded; a post-hoc scan of
+        // config + artifacts would drift from the upload list and
+        // miss the slug. SkipIdempotent matches (artifact
         // already on Cloudsmith with matching md5) are NOT in `targets`
         // because rollback only undoes what THIS run did.
         let mut targets = Vec::new();
@@ -258,7 +253,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         if resolve_rollback_token(ctx, None).ok().flatten().is_none() {
             log.warn(
                 "no Cloudsmith API key in the environment (CLOUDSMITH_API_KEY or the entry's \
-                 publish token); emitting manual-cleanup checklist instead of DELETE",
+                 publish token); emitting the manual-cleanup checklist with no DELETE",
             );
         }
 
@@ -434,7 +429,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
                 }
             };
             // `?page_size=1` keeps the authed list cheap; the repo coordinate is
-            // the auth + existence surface (401/403 = bad token, 404 = bad repo).
+            // the request that checks auth and existence (401/403 = bad token, 404 = bad repo).
             let url = format!("{api_base}/packages/{org}/{repo}/?page_size=1");
             acc = merge(
                 acc,
@@ -472,7 +467,3 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         Self::ROLLBACK_SCOPE
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------

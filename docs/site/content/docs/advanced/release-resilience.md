@@ -12,7 +12,7 @@ Each has a different cost of failure. A botched Docker Hub description sync is
 a no-op for end users; a botched `cargo publish` burns a version slot forever.
 Anodizer's release pipeline is shaped around that asymmetry.
 
-This guide walks through:
+This guide covers:
 
 - The three-line recovery model — what to type when a release fails.
 - The three publisher groups (Assets / Manager / Submitter) and why dispatch order matters.
@@ -313,7 +313,7 @@ shell code:
 ```yaml,fragment
 # UNSAFE: a single quote in the error body breaks out of the quoting,
 # and the `{{ .Error }}` template form splices the untrusted text into
-# the `sh -c` cmd string — a shell-injection surface.
+# the `sh -c` cmd string, which opens a shell-injection hole.
 - cmd: "anodizer notify 'failed: {{ .Error }}'"
 
 # SAFE: the shell expands $ANODIZER_ERROR at run time; the value is
@@ -352,7 +352,7 @@ fires there. When an operator runs `tag rollback` to withdraw a release,
 it can revert a publisher that **succeeded and never errored** — a pushed
 Homebrew tap, an opened PR — because the operator withdrew the whole run,
 though that publisher itself did not fail. That reverted-but-not-failed publisher
-has no `on_error` surface. `on_rollback` is its notification surface: it fires
+has no `on_error` hook. `on_rollback` is its notification hook: it fires
 once per publisher the unwind reverted, including the succeeded-then-reverted
 case, and including a revert that itself failed (`{{ .RollbackFailed }}` is
 then `true` — the orphaned-artifact escalation signal).
@@ -1065,7 +1065,7 @@ for an already-open PR titled for this package and version at the upstream
 index repo and skips when it finds one, so a re-run cannot stack duplicate
 pull requests against the same tag.
 
-## CLI surface summary
+## CLI command summary
 
 ```
 anodizer release \
@@ -1131,7 +1131,7 @@ becomes `$GITHUB_TOKEN`). Which variables count as secrets is described in
 Redaction is on by default; no value those rules match can leak into a
 notification unless you explicitly opt out.
 
-### Two redaction surfaces
+### Two redaction points
 
 - **Outbound body** (what the channel receives): redacted by default;
   `--allow-secrets` opts out.
@@ -1206,7 +1206,7 @@ secret-named env var inside a template block in an announce content field.
 crate that is a real on-disk Cargo dependency of a published crate is
 missing from `crates:` entirely. It catches the class of failure where a
 crate is a publish-order requirement on disk but absent from the config —
-which would otherwise only surface late, mid-`cargo publish`, as a
+which would otherwise only show up late, mid-`cargo publish`, as a
 registry-side "no matching package named ... found":
 
 ```text

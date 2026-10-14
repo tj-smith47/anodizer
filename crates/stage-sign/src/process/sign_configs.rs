@@ -297,7 +297,7 @@ pub(crate) fn process_sign_configs(
             //     templates against the controlled template var set, then
             //     joined with a `dist/` prefix if not already under it.
             //   - digest / artifactID: read from artifact metadata, also
-            //     populated by stages (no direct config write surface).
+            //     populated by stages (no config field writes them).
             // Values feed `Command::args` (no shell), so shell metacharacters
             // (`;`, backticks, `$()`) cannot escape into a subshell. Keep
             // this invariant in mind when adding new entries — anything
@@ -396,8 +396,7 @@ pub(crate) fn process_sign_configs(
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| sig_path.display().to_string());
             // Per-target binary signatures live in per-target directories
-            // (the preserved-bin layout keys on the directory, not the
-            // basename), so their bare basenames collide across targets in
+            // (the preserved-bin layout keys on the directory), so their bare basenames collide across targets in
             // the registry and on the release. Register them under the
             // config-derived asset name, unique per (crate, target, binary),
             // and carry the triple on the artifact. The on-disk path is
@@ -419,7 +418,7 @@ pub(crate) fn process_sign_configs(
                 }
                 _ => (sig_name, None, None),
             };
-            // The claim is on the uploaded NAME, not on the base: two configs
+            // The claim is on the uploaded NAME: two configs
             // whose `signature:` templates append different suffixes to one
             // base name two distinct assets and must both be allowed.
             if let (Some(naming), Some(source)) = (&naming, sig_source) {
@@ -511,13 +510,19 @@ pub(crate) fn process_sign_configs(
                 continue;
             }
 
-            // Render `stdin` through the template engine (then shell-var
-            // expansion, mirroring the args path above) so a passphrase like
-            // `{{ Env.GPG_PASSPHRASE }}` reaches the signer as its value, not
-            // the literal template string. `stdin_file` is a path read raw.
+            // Render `stdin` as a credential (then shell-var expansion, as
+            // the args path above does) so a passphrase like
+            // `{{ Env.GPG_PASSPHRASE }}` reaches the signer as its value.
+            // `stdin_file` is a path read raw.
+            let config_key = if label == "binary-sign" {
+                "binary_signs"
+            } else {
+                "signs"
+            };
+            let entry = sign_cfg.id.clone().unwrap_or_else(|| sign_idx.to_string());
             let rendered_stdin = match sign_cfg.stdin.as_deref() {
                 Some(s) => Some(expand_shell_vars(
-                    &ctx.render_secret(&format!("{sub_label}.stdin"), s)?,
+                    &ctx.render_secret(&format!("{config_key}[{entry}].stdin"), s)?,
                     &shell_vars,
                 )),
                 None => None,
@@ -686,14 +691,14 @@ pub(crate) fn process_sign_configs(
         }
 
         // Cosign contends a host-exclusive sigstore TUF trust store whenever
-        // it talks to Rekor — keyless always, keyed unless the argv pins
+        // it talks to Rekor — keyless always, keyed unless the argv sets
         // `--tlog-upload=false`: two concurrent invocations on one host
         // collide and the loser exits with `creating cached local store:
         // resource temporarily unavailable`, whether or not the store is
         // already populated. So such a config runs one invocation at a time
         // and holds the host-level advisory lock for its whole run, which
-        // also queues a second anodizer process behind this one instead of
-        // racing it. Offline keyed cosign keeps the full parallelism. Decided
+        // also queues a second anodizer process behind this one so the two
+        // never race. Offline keyed cosign keeps the full parallelism. Decided
         // per job on the argv that job spawns — one contending job makes the
         // config contend.
         let keyless = sign_jobs
@@ -812,7 +817,7 @@ pub(crate) fn process_sign_configs(
 
 /// Inject `--faked-system-time=<SOURCE_DATE_EPOCH>!` after the first
 /// arg when `cmd` is gpg and SDE is set, so the OpenPGP signature
-/// packet's creation timestamp is pinned. With an EdDSA key this gives
+/// packet's creation timestamp is fixed. With an EdDSA key this gives
 /// byte-identical detached signatures across runs (RFC 8032). No-op if
 /// the user already supplied `--faked-system-time`.
 pub(crate) fn inject_gpg_faked_system_time(cmd: &str, args: &mut Vec<String>, env: &dyn EnvSource) {

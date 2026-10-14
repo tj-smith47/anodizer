@@ -11,7 +11,7 @@ use super::tags::create_and_push_tag_in;
 /// GET a GitHub API endpoint via the `gh` CLI (single request, no pagination).
 ///
 /// Returns the parsed JSON response. Useful for endpoints that return a single
-/// object (e.g. the Compare API) rather than a paginated array.
+/// object (e.g. the Compare API) and no paginated array.
 pub fn gh_api_get(endpoint: &str, token: Option<&str>) -> Result<serde_json::Value> {
     gh_api_get_with_binary(Path::new("gh"), endpoint, token)
 }
@@ -139,7 +139,7 @@ pub fn commit_author_login_with_binary(
     let key = (owner.to_string(), repo.to_string(), email.to_string());
     let cache = COMMIT_LOGIN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     // A poisoned lock only means another thread panicked mid-insert; the map
-    // itself is still a valid memo, so recover it rather than panic here.
+    // itself is still a valid memo, so recover it here.
     {
         let guard = match cache.lock() {
             Ok(g) => g,
@@ -187,14 +187,14 @@ pub const GITHUB_TOKEN_ENV_LADDER: &[&str] = &["ANODIZER_GITHUB_TOKEN", "GITHUB_
 /// from [`GITHUB_TOKEN_ENV_LADDER`] in actual resolution-precedence order:
 /// `ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN or GH_TOKEN`. Error messages
 /// interpolate this
-/// (or [`github_token_hint`]) instead of restating the vars, so a
+/// (or [`github_token_hint`]) in place of restating the vars, so a
 /// hand-spelled hint can never list the ladder in the wrong order or go
 /// stale when a var is added or renamed.
 pub fn github_token_env_hint() -> String {
     GITHUB_TOKEN_ENV_LADDER.join(" or ")
 }
 
-/// Full remediation hint for surfaces that also accept a `--token` flag:
+/// Full remediation hint for commands that also accept a `--token` flag:
 /// `set ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN or GH_TOKEN, or pass
 /// --token`, rendered
 /// from [`GITHUB_TOKEN_ENV_LADDER`].
@@ -297,7 +297,7 @@ fn redact_gh_stderr(stderr: &str, token: Option<&str>) -> String {
 
 /// Env-injectable core of [`redact_gh_stderr`]; see
 /// [`gh_api_get_with_binary_with_env`] for why a caller would supply a
-/// sealed `env` instead of the real process environment.
+/// sealed `env` in place of the real process environment.
 fn redact_gh_stderr_with_env(
     stderr: &str,
     token: Option<&str>,
@@ -437,12 +437,12 @@ fn gh_api_post_with_binary(
 
 /// Error shown when a signed tag is requested on the GitHub-API path: the API
 /// creates the tag object server-side, out of reach of any local GPG/SSH key, so
-/// the request is rejected rather than downgraded to a silently-unsigned tag.
+/// the request is rejected; downgrading to a silently-unsigned tag is wrong.
 /// Shared by the real-run guard and the dry-run preview so the two cannot
 /// diverge on wording or on whether the case errors at all.
 const SIGN_VIA_API_UNSUPPORTED: &str = "cannot create a signed tag via the GitHub API: the API creates the tag object \
-     server-side and cannot apply a local signature (sign a tag locally instead of \
-     using git_api_tagging)";
+     server-side and cannot apply a local signature (disable git_api_tagging and \
+     sign the tag locally)";
 
 /// Cheap, side-effect-free probe of whether `gh_binary` can be spawned at all.
 ///
@@ -469,7 +469,7 @@ fn gh_is_available(gh_binary: &Path) -> bool {
 ///
 /// `slug` is the resolved repository identity (config override -> remote),
 /// supplied by the caller so the API target and the rest of the pipeline agree
-/// on one owner/repo rather than this function re-deriving its own.
+/// on one owner/repo; this function does not re-derive its own.
 pub fn create_tag_via_github_api(
     slug: &RepoSlug,
     tag: &str,
@@ -516,7 +516,7 @@ pub fn create_tag_via_github_api_in(
         // takes — with `gh` present the API path rejects the signature, with
         // `gh` missing the local-signing fallback honors it — so probe (a
         // side-effect-free `gh --version`, never the real `gh api` tag call)
-        // ONLY then, letting a `dry_run + sign` request surface the same
+        // ONLY then, letting a `dry_run + sign` request report the same
         // incompatibility the real run would. A non-signed preview never shells
         // out: it reports the configured API-tagging intent uniformly (the real
         // run's common `gh`-present branch), so a push preview contacts nothing.
@@ -541,7 +541,7 @@ pub fn create_tag_via_github_api_in(
     let repo = slug.name();
 
     // Get the current HEAD SHA to point the tag at — via the canonical
-    // single sha resolver, not a private `rev-parse` here.
+    // single sha resolver; no private `rev-parse` here.
     let sha = super::get_head_commit_in(cwd)?;
 
     let tagger_date =
@@ -582,7 +582,7 @@ pub fn create_tag_via_github_api_in(
     // API path proper: `gh` is present and the tag object was issued
     // server-side, where a local GPG/SSH key cannot reach it. A caller that
     // requested a signature here would otherwise get a silently-unsigned tag,
-    // so reject rather than downgrade. The gh-missing branch above already
+    // so reject. The gh-missing branch above already
     // returned through the local-signing fallback, so this never fires for it.
     if sign {
         anyhow::bail!("{}", SIGN_VIA_API_UNSUPPORTED);
@@ -628,7 +628,7 @@ mod tests {
         // secret-suffixed var whose value collides with a digit in "401",
         // masking it and breaking this exact-output assertion.
         let redacted = redact_gh_stderr_with_env(&stderr, Some(secret), &[]);
-        // Exact-output, not absence-only: guards the env-value masking
+        // Exact-output assertion: guards the env-value masking
         // layer — the token is replaced by its `$NAME` placeholder.
         assert_eq!(redacted, "HTTP 401: token $GITHUB_TOKEN is invalid");
     }
@@ -639,7 +639,7 @@ mod tests {
         // token argument.
         let stderr = "auth failed: https://user:secret-pw@github.com/o/r.git rejected";
         let redacted = redact_gh_stderr_with_env(stderr, None, &[]);
-        // Exact-output, not absence-only: guards the inline URL-credential
+        // Exact-output assertion: guards the inline URL-credential
         // stripping layer — userinfo becomes `<redacted>`.
         assert_eq!(
             redacted,
@@ -741,7 +741,7 @@ mod tests {
         assert_eq!(
             resolve_github_token_with_env(None, &gh_only),
             Some("gh-tok".to_string()),
-            "GITHUB_TOKEN alone must resolve (the CI-gap pin)"
+            "GITHUB_TOKEN alone must resolve (the CI-gap check)"
         );
         assert_eq!(
             resolve_github_token_with_env(Some(""), &gh_only),
@@ -761,7 +761,7 @@ mod tests {
         assert_eq!(resolve_github_token_with_env(Some(""), &none), None);
     }
 
-    /// `gh_api_get_with_binary` must surface a user-actionable spawn
+    /// `gh_api_get_with_binary` must return a user-actionable spawn
     /// failure when the binary path doesn't exist on disk.
     ///
     /// Drives the function with a temp-dir-relative path that points to
@@ -803,9 +803,9 @@ mod tests {
     #[test]
     fn create_tag_via_github_api_in_bails_when_not_a_git_repo() {
         // spawn-retry-ok: this is a git *availability* probe — an Err means git
-        // is absent (skip the test via the success() guard), not a transient
+        // is absent (skip the test via the success() guard) and no transient
         // spawn-init failure to retry; routing it through the panicking helper
-        // would crash on a git-less host instead of skipping.
+        // would crash on a git-less host that should skip.
         if !Command::new("git")
             .arg("--version")
             .output()
@@ -858,7 +858,7 @@ mod tests {
         assert!(result.is_ok(), "dry-run must succeed: {result:?}");
     }
 
-    /// P2: with `gh` present, a `dry_run + sign` request on the API path must
+    /// With `gh` present, a `dry_run + sign` request on the API path must
     /// be REJECTED — mirroring the real run's post-POST sign guard — so the
     /// preview never masks the sign incompatibility. A spawnable stub `gh`
     /// makes `gh_is_available` true without any real API call being reached
@@ -892,10 +892,10 @@ mod tests {
         );
     }
 
-    /// P2 companion: with `gh` ABSENT, `dry_run + sign` must NOT be rejected —
+    /// Companion: with `gh` ABSENT, `dry_run + sign` must NOT be rejected —
     /// the real run would take the local-signing fallback, so the preview must
     /// mirror that (it previews `create_and_push_tag_in` in dry-run, which can
-    /// sign locally) and return Ok rather than erroring on the API-path guard.
+    /// sign locally) and return Ok; the API-path guard does not apply.
     #[test]
     fn create_tag_via_github_api_in_dry_run_sign_gh_missing_previews_local() {
         let tmp = tempfile::tempdir().unwrap();
@@ -915,7 +915,7 @@ mod tests {
         );
         assert!(
             result.is_ok(),
-            "gh-missing dry-run + sign must preview the local fallback, not reject: {result:?}"
+            "gh-missing dry-run + sign must preview the local fallback: {result:?}"
         );
     }
 }

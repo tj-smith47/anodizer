@@ -55,7 +55,7 @@ pub(super) fn unwind_published_state(
     let dist_root = super::guard::resolve_dist_dir(cwd, repo_config);
     let targets = discover_unwind_targets(&dist_root, tags);
     if targets.is_empty() {
-        // Warn, not verbose: the tag and its GitHub release are about to be
+        // Warn level: the tag and its GitHub release are about to be
         // destroyed, and a miss here means whatever that run published stays
         // live with nothing left pointing at it. The benign shape (a checkout
         // that never ran the release) is worth the line.
@@ -264,7 +264,7 @@ mod tests {
     /// now orphaned — a verbose-only line hides it behind a flag nobody
     /// passes to a rollback.
     #[test]
-    fn a_missing_run_dir_warns_rather_than_whispering() {
+    fn a_missing_run_dir_warns_at_default_verbosity() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let dist = tmp.path().join("dist");
         std::fs::create_dir_all(&dist).expect("dist");
@@ -372,7 +372,7 @@ mod tests {
         );
     }
 
-    /// Unreadable recorded state is a REFUSAL, not a shrug: completing the
+    /// Unreadable recorded state is a REFUSAL: completing the
     /// git half while the publisher half is unknown would orphan whatever
     /// that run published. `--force` downgrades it to a warning.
     #[test]

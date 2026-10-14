@@ -29,10 +29,6 @@ pub use nix::*;
 mod schemastore;
 pub use schemastore::{SchemaEntry, SchemaMode, SchemastoreConfig};
 
-// ---------------------------------------------------------------------------
-// Shared publisher config types: RepositoryConfig, CommitAuthorConfig
-// ---------------------------------------------------------------------------
-
 /// Shared repository configuration used by all git-based publishers
 /// (Homebrew, Scoop, Winget, Krew, Nix). A repository reference.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -115,11 +111,14 @@ pub struct PullRequestConfig {
     pub body: Option<String>,
     /// Target base repository/branch for the PR.
     pub base: Option<PullRequestBaseConfig>,
-    /// Token used to open the pull request. Supports templates. A value
-    /// that renders blank falls through to `repository.token`, then the
-    /// publisher's own variable (`HOMEBREW_TAP_TOKEN`, `SCOOP_BUCKET_TOKEN`,
-    /// `KREW_INDEX_TOKEN`, …), then the run's GitHub token (`--token`), then
-    /// `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. Set it when the token that pushes
+    /// Token used to open the pull request. Supports templates. Unset, or
+    /// set to a value that renders blank, it falls through to
+    /// `repository.token`, then the publisher's own variables
+    /// (`HOMEBREW_TAP_TOKEN`, `SCOOP_BUCKET_TOKEN`, `KREW_INDEX_TOKEN`,
+    /// `HOMEBREW_CORE_GITHUB_TOKEN` then `COMMITTER_TOKEN`, …), then the
+    /// run's GitHub token (`--token`) on a GitHub run, then
+    /// `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. Every publisher
+    /// that opens a pull request reads this one order. Set it when the token that pushes
     /// to the fork may not open pull requests against the upstream
     /// repository (a fine-grained token scoped to the fork beside a classic
     /// token for `microsoft/winget-pkgs`, for example).
@@ -201,10 +200,6 @@ pub struct CommitSigningConfig {
     /// Signing format: "openpgp" (default), "x509", or "ssh".
     pub format: Option<String>,
 }
-
-// ---------------------------------------------------------------------------
-// PublishConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -317,7 +312,6 @@ pub struct PublishConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct CargoPublishConfig {
-    // ----- Registry selection -----
     /// Alternate registry name from `~/.cargo/config.toml` (`--registry`).
     pub registry: Option<String>,
     /// Registry index URL (`--index`).
@@ -337,13 +331,11 @@ pub struct CargoPublishConfig {
     /// itself) leave this off — there is no inter-tag race to gate on.
     pub wait_for_workspace_deps: Option<WaitForWorkspaceDepsConfig>,
 
-    // ----- Verify / dirty -----
     /// Skip the local `cargo build --release` verification step (`--no-verify`).
     pub no_verify: Option<bool>,
     /// Allow publishing with an uncommitted working tree (`--allow-dirty`).
     pub allow_dirty: Option<bool>,
 
-    // ----- Feature selection -----
     /// Crate features to activate (`--features`).
     pub features: Option<Vec<String>>,
     /// Activate every feature, including `default` (`--all-features`).
@@ -351,7 +343,6 @@ pub struct CargoPublishConfig {
     /// Disable the `default` feature set (`--no-default-features`).
     pub no_default_features: Option<bool>,
 
-    // ----- Compilation -----
     /// Build target triple for the verification step (`--target`).
     pub target: Option<String>,
     /// Override the cargo target directory (`--target-dir`).
@@ -361,7 +352,6 @@ pub struct CargoPublishConfig {
     /// Continue on errors when verifying multiple crates (`--keep-going`).
     pub keep_going: Option<bool>,
 
-    // ----- Manifest -----
     /// Path to the crate's `Cargo.toml` (`--manifest-path`).
     pub manifest_path: Option<PathBuf>,
     /// Require an up-to-date `Cargo.lock` matching the resolver (`--locked`).
@@ -371,7 +361,6 @@ pub struct CargoPublishConfig {
     /// Both `--locked` and `--offline` (`--frozen`).
     pub frozen: Option<bool>,
 
-    // ----- Authentication -----
     /// Whether the publish authenticates with a long-lived API token
     /// (`CARGO_REGISTRY_TOKEN`) or with GitHub Actions OIDC (crates.io
     /// Trusted Publishing). Default `auto`: a token when one is present,
@@ -393,7 +382,6 @@ pub struct CargoPublishConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<CargoAuthMode>,
 
-    // ----- Peer-publisher pattern -----
     /// Skip this publisher; supports template strings or bool.
     /// Truthy renders disable the publisher without removing the block.
     #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
@@ -445,7 +433,7 @@ impl CargoPublishConfig {
 /// Publishing, which creates a short-lived token per run — no stored secret).
 ///
 /// crates.io publishes through the `cargo` CLI, but the Trusted-Publishing
-/// exchange (Actions id-token → crates.io mint-token) is performed by
+/// exchange (Actions id-token → crates.io publish token) is performed by
 /// anodizer itself: it creates one token before the dependency-order publish
 /// loop, supplies it to every `cargo publish` via `CARGO_REGISTRY_TOKEN`, and
 /// revokes it (best-effort) after the loop. The issued token is
@@ -544,10 +532,6 @@ impl WaitForWorkspaceDepsConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Publisher gate overrides
-// ---------------------------------------------------------------------------
-
 /// Uniform access to the `required` / `retain_on_rollback` release-gate
 /// overrides that every publisher config block carries.
 ///
@@ -607,8 +591,6 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    // --- CommitAuthorConfig::normalize_defaults ---------------------------
-
     #[test]
     fn normalize_defaults_fills_missing_name_and_email() {
         let mut c = CommitAuthorConfig::default();
@@ -640,8 +622,6 @@ mod tests {
         assert_eq!(c.name.as_deref(), Some("Release Bot"));
         assert_eq!(c.email.as_deref(), Some("release@corp.example"));
     }
-
-    // --- CargoAuthMode / resolved_auth ------------------------------------
 
     #[test]
     fn cargo_auth_mode_defaults_to_auto() {
@@ -679,8 +659,6 @@ mod tests {
         assert_eq!(cfg.resolved_auth(), CargoAuthMode::Oidc);
     }
 
-    // --- WaitForWorkspaceDepsConfig resolvers -----------------------------
-
     #[test]
     fn wait_for_workspace_deps_defaults() {
         let d = WaitForWorkspaceDepsConfig::default();
@@ -697,8 +675,6 @@ mod tests {
         assert_eq!(cfg.resolved_poll_interval(), Duration::from_secs(10));
         assert_eq!(cfg.resolved_max_wait(), Duration::from_secs(120));
     }
-
-    // --- PublisherGateOverrides trait -------------------------------------
 
     #[test]
     fn gate_overrides_expose_required_and_retain() {

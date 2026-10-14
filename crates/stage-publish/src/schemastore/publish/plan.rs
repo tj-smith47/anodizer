@@ -20,8 +20,9 @@ pub(super) const UPSTREAM_DEFAULT_BRANCH: &str = "master";
 pub(super) const CATALOG_PATH: &str = "src/api/json/catalog.json";
 /// Repo-relative path of the dialect allowlist (`highSchemaVersion`).
 pub(super) const DIALECT_ALLOWLIST_PATH: &str = "src/schema-validation.jsonc";
-/// The publisher's own token variable, read by the publish, the preflight
-/// and the rollback for the push and pull request tokens.
+/// The publisher's own token variable. The publish and the preflight read it
+/// for the push and pull request tokens, and the rollback reads it to close
+/// the pull request when the recorded target names no variable.
 pub(crate) const TOKEN_ENV_VAR: &str = "SCHEMASTORE_TOKEN";
 
 /// The resolved publish action for one schema entry, computed purely from the
@@ -53,7 +54,7 @@ pub(crate) struct SchemaPlan {
 impl SchemaPlan {
     /// Operator-facing hosting-mode label, distinguishing a versioned vendor
     /// from a plain one. Shared by the dry-run log line and the PR body so the
-    /// two surfaces never drift.
+    /// two outputs always agree.
     pub(super) fn mode_label(&self) -> &'static str {
         match self.mode {
             SchemaMode::External => "external",
@@ -239,7 +240,7 @@ pub(crate) fn schema_change_needed(
     }
 
     // Too-high dialect: the vendored filename must already be allowlisted. The
-    // dialect is read off the local schema (what we'd publish); if the jsonc
+    // dialect is read off the local schema (the file that would be published); if the jsonc
     // wasn't fetched, treat as change-needed.
     if raw_dialect(local) == Dialect::TooHigh {
         let Some(jsonc) = remote.jsonc else {
@@ -343,7 +344,7 @@ fn versioned_stem(filename: &str) -> Option<&str> {
     let base = filename.strip_suffix(".json")?;
     // Rightmost split first, so a family stem carrying its own hyphens keeps
     // them; a prerelease suffix (`-0.4.2-rc.1`) only parses at the earlier
-    // hyphen, which is why the scan continues instead of stopping at the first.
+    // hyphen, which is why the scan continues past the first match.
     base.rmatch_indices('-')
         .map(|(at, _)| (&base[..at], &base[at + 1..]))
         .find(|(stem, version)| {
@@ -436,7 +437,7 @@ pub(super) fn effective_schemas<'a>(
 ///
 /// Shared by the publish path and preflight so a DERIVED description (the
 /// omitted-`description` path) is validated at preflight exactly as it will be
-/// at publish time — the two surfaces can never disagree on what passes.
+/// at publish time — both paths accept the same descriptions.
 pub(crate) fn resolve_description(ctx: &Context, entry: &SchemaEntry) -> anyhow::Result<String> {
     let raw = match entry.description.as_deref() {
         Some(d) => d.to_string(),

@@ -26,7 +26,7 @@ signs:
 | `args` | list | — | Arguments. Templates supported, plus six `${…}` substitution variables (see below). |
 | `signature` | string | `{{ .Artifact }}.sig` | Signature output filename template. Templates and the `${…}` variables both apply. |
 | `certificate` | string | none | Certificate file to embed in the signature (Cosign bundle signing). |
-| `stdin` | string | none | Content piped to the signing command's stdin; template-expanded (e.g. `{{ Env.GPG_PASSPHRASE }}`). |
+| `stdin` | string | none | Content piped to the signing command's stdin; template-expanded (e.g. `{{ Env.GPG_PASSPHRASE }}`). The value is a credential: leading and trailing whitespace is removed, and a template that does not render is an error naming `signs[<id or index>].stdin` (or `binary_signs[…]`) without the template's text. |
 | `stdin_file` | string | none | Path to a file piped to the signing command's stdin. |
 | `ids` | list | none | Only sign artifacts from builds whose `id` is in this list. |
 | `env` | list | none | Environment variables passed to the signing command (`KEY=VALUE` strings). Entries render in order; a later one can read an earlier one through `.Env`. |

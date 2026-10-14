@@ -11,11 +11,10 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result, bail};
 
-/// Env var fallback ladder for the bump token: the dedicated
+/// The publisher's own token variables, read in this order: the dedicated
 /// `HOMEBREW_CORE_GITHUB_TOKEN`, then `COMMITTER_TOKEN` (the name
-/// mislav/bump-homebrew-formula-action consumes, so a project migrating from
-/// that action keeps its existing secret), then the standard GitHub ladder
-/// (`ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`).
+/// mislav/bump-homebrew-formula-action reads, so a project moving from that
+/// action keeps its existing secret).
 pub(crate) const TOKEN_ENV_VARS: [&str; 2] = ["HOMEBREW_CORE_GITHUB_TOKEN", "COMMITTER_TOKEN"];
 
 /// The default formula repository when `repository:` is unset.
@@ -27,45 +26,33 @@ pub(crate) struct ResolvedToken {
     /// The token value used to authenticate the bump.
     pub token: String,
     /// The env var the token came from, threaded into the target snapshot so
-    /// `rollback` re-resolves through the SAME var (the H15 fix — a
+    /// `rollback` re-resolves through the SAME var (a
     /// `COMMITTER_TOKEN`-sourced token must not record `HOMEBREW_CORE_GITHUB_TOKEN`).
-    /// `None` when the token came from a templated `repository.token` (no
-    /// single env var to record; rollback falls back to the GitHub ladder).
+    /// `None` when the token came from `repository.token` or the run token
+    /// (no single env var to record; the rollback resolves the order again).
     pub env_var: Option<String>,
 }
 
-/// The full bump-token ladder: the dedicated `HOMEBREW_CORE_GITHUB_TOKEN` /
-/// `COMMITTER_TOKEN`, then the standard GitHub ladder (`ANODIZER_GITHUB_TOKEN`
-/// / `GITHUB_TOKEN` / `GH_TOKEN`). A `repository.token` template still wins
-/// ahead of it.
-fn token_env_ladder() -> Vec<&'static str> {
-    TOKEN_ENV_VARS
-        .iter()
-        .copied()
-        .chain(anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.iter().copied())
-        .collect()
-}
-
-/// Resolve the bump token: `repository.token` (templated) wins, then the
-/// [`token_env_ladder`]. `Ok(None)` when nothing resolves; `Err` only when a
-/// configured `repository.token` template fails to render. Empty values are
-/// filtered at every rung by the shared helper.
+/// Resolve the bump token in the push order every publisher shares
+/// ([`crate::util::resolve_repo_token`]): `repository.token`, then
+/// [`TOKEN_ENV_VARS`], then the run token on a GitHub run, then
+/// `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`. Each value is
+/// trimmed and a blank one falls through. `Ok(None)` when nothing resolves;
+/// `Err` only when a configured `repository.token` template fails to render.
 pub(crate) fn resolve_token(
     ctx: &Context,
     cfg: &HomebrewCoreConfig,
 ) -> Result<Option<ResolvedToken>> {
-    let configured = cfg.repository.as_ref().and_then(|r| r.token.as_deref());
-    let (token, env_var) = crate::publisher_helpers::resolve_token_with_ladder_tracked(
-        ctx,
-        configured,
-        "homebrew_cores.repository.token",
-        &token_env_ladder(),
-    )?;
-    if token.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(ResolvedToken { token, env_var }))
+    let configured =
+        crate::util::configured_push_token(cfg.repository.as_ref(), &|s| ctx.render_template(s))?;
+    if let Some(token) = configured {
+        return Ok(Some(ResolvedToken {
+            token,
+            env_var: None,
+        }));
     }
+    Ok(crate::util::resolve_env_token_tracked(ctx, &TOKEN_ENV_VARS)
+        .map(|(token, env_var)| ResolvedToken { token, env_var }))
 }
 
 /// Resolve the token the bump pull request opens with: `pull_request.token`,

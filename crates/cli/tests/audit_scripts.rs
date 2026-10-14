@@ -20,7 +20,7 @@
 //!
 //! Treating those siblings as test code by NAME is sound only while every
 //! such file really is declared under `#[cfg(test)]` by its parent module;
-//! `every_named_test_source_is_declared_cfg_test` walks the real tree for that
+//! `every_named_test_source_is_declared_cfg_test` scans the real tree for that
 //! premise.
 #![cfg(unix)]
 
@@ -98,7 +98,7 @@ fn an_unregistered_default_host_constant_stops_the_audit() {
 /// A test proves it stays local by naming a loopback endpoint in its own body
 /// or in a same-file fixture helper it calls, or by stating in a comment what
 /// else keeps the run offline. A marker spelled inside a string literal is
-/// code, not a comment, so it proves nothing; and a helper that is not itself
+/// code and proves nothing; and a helper that is not itself
 /// a `#[test]` never runs on its own.
 #[test]
 fn a_test_reaching_a_registry_is_reported_and_a_bounded_one_is_not() {
@@ -126,7 +126,7 @@ const PROSE_VOICE_YML: &str = include_str!("fixtures/audit_scripts/prose_voice.y
 const PROSE_NAME_RS: &str = include_str!("fixtures/audit_scripts/prose_name.rs.txt");
 const PROSE_PLURAL_SH: &str = include_str!("fixtures/audit_scripts/prose_plural.sh.txt");
 
-/// `audit-prose.sh` reports both counts in one run, so each pin gets a tree
+/// `audit-prose.sh` reports both counts in one run, so each test gets a tree
 /// carrying only its own shapes; a shared tree would make either failure block
 /// depend on the other's fixture.
 fn prose_tree(files: &[(&str, &str)]) -> TempDir {
@@ -186,8 +186,8 @@ fn first_person_in_a_comment_is_reported_and_code_or_quoted_prose_is_not() {
     assert_eq!(code, 1, "{out}");
 }
 
-/// The tree carries no misspelling today, so this pin holds the rule rather
-/// than reporting a finding: the fixture supplies the hit, and the serde alias
+/// The tree carries no misspelling today, so this test holds the rule
+/// without a finding to report: the fixture supplies the hit, and the serde alias
 /// that keeps an old config spelling loadable stays exempt because there the
 /// spelling is data.
 #[test]
@@ -346,7 +346,7 @@ fn a_script_whose_counts_go_through_plural_passes_the_plural_scan() {
     );
 }
 
-/// The bash the scanners run under. Every scanner asserts the 4.4 floor
+/// The bash the scanners run under. Every scanner asserts the 4.4 minimum
 /// (`.claude/scripts/lib/require-bash.sh`), and macOS ships 3.2 at `/bin/bash`,
 /// so a Homebrew bash is preferred wherever one is installed; elsewhere `PATH`
 /// answers.
@@ -567,7 +567,7 @@ fn exec_writer_audit_reports_every_mode_spelling_in_test_context_only() {
     assert_eq!(code, 1, "{out}");
 }
 
-/// The two audits whose whole surface is a marker: `audit-log-status.sh`'s
+/// The two audits that check nothing but a marker: `audit-log-status.sh`'s
 /// `status-ok:` and `audit-repo-identity.sh`'s `slug-ok:` / `token-ok:`. Each
 /// fixture pairs one genuine marker with one spelled inside a string literal;
 /// only the forged one is a hit, because a marker is read from the comment
@@ -607,7 +607,7 @@ fn repo_identity_audit_reads_its_markers_from_the_comment_half() {
 }
 
 /// The collector's fail-loud direction, the half a permissive edit would
-/// silently reopen: grep's own failure is never an empty result. Both a grep
+/// silently reopen: grep's own failure is an error, so it cannot pass as an empty result. Both a grep
 /// that ran and failed and a grep that is not there stop the audit at exit 2,
 /// the code reserved for "the scan did not run".
 #[test]
@@ -711,8 +711,8 @@ fn the_collector_refuses_a_call_without_the_separator() {
 
 /// A collection with NO root at all still runs grep, which then has no file
 /// operand; `< /dev/null` is what keeps it from reading the caller's stdin.
-/// Spelled without `-r`, because a recursive grep with no operand walks the
-/// working directory instead of reading stdin and would prove nothing here.
+/// Spelled without `-r`, because a recursive grep with no operand reads the
+/// working directory, skips stdin, and would prove nothing here.
 #[test]
 fn the_collector_never_reads_the_callers_stdin() {
     let dir = fixture_tree();
@@ -725,7 +725,7 @@ fn the_collector_never_reads_the_callers_stdin() {
     assert!(out.contains("n=0"), "stdin is not a scan root: {out}");
 }
 
-/// Every NAMED root absent is an empty result decided before grep runs, not a
+/// Every NAMED root absent is an empty result decided before grep runs, with no
 /// grep over the whole tree. A different mechanism from the stdin guard above:
 /// this call never reaches grep at all.
 #[test]
@@ -765,7 +765,7 @@ fn a_rootless_recursive_collection_is_refused_naming_the_flag() {
 }
 
 /// A NON-recursive rootless collection keeps working: it reaches grep with
-/// stdin on /dev/null and returns empty, which is what the stdin guard pins.
+/// stdin on /dev/null and returns empty, which is what the stdin guard checks.
 #[test]
 fn a_rootless_non_recursive_collection_is_still_allowed() {
     let dir = fixture_tree();
@@ -800,7 +800,7 @@ fn an_absent_optional_scan_root_is_not_a_failed_scan() {
     );
 }
 
-/// Zero matches is a clean tree, not a failed scan. The keyed-attribute
+/// Zero matches is a clean tree and the scan passes. The keyed-attribute
 /// collection feeds a `sed | sort | wc` pipeline, and a bare grep at its head
 /// aborts the whole audit under `pipefail` when nothing matches.
 #[test]
@@ -896,7 +896,7 @@ fn dead_port_audit_passes_once_the_tests_take_the_refusing_address() {
     );
 }
 
-/// `--count` tells the three classes apart, so the fixture pins what the
+/// `--count` tells the three classes apart, so the fixture checks what the
 /// matcher matched and not only how much it read.
 #[test]
 fn the_dead_port_count_names_each_class_of_bind() {
@@ -918,9 +918,9 @@ fn the_dead_port_count_names_each_class_of_bind() {
 }
 
 /// The audit reads the real tree's listener binds. The named count moves
-/// with every responder test added, so it is held to a floor: a spelling
-/// change that empties the walk fails here instead of printing a clean scan
-/// of nothing. The other two classes are pinned exactly: a chained read is a
+/// with every responder test added, so it is held to a minimum: a spelling
+/// change that empties the scan fails here and cannot print a clean scan
+/// of nothing. The other two classes are checked exactly: a chained read is a
 /// finding the clean scan above would have reported, and a bind the matcher
 /// could place in neither class is a bind it did not read.
 #[test]
@@ -1108,12 +1108,12 @@ fn path_stub_serial_audit_records_name_every_mutator_and_stub() {
     );
 }
 
-/// The population the mutator audit walks on the real tree, pinned by name so
-/// a spelling change that empties the walk fails here instead of printing a
+/// The population the mutator audit scans on the real tree, named one by one
+/// so a spelling change that empties the scan fails here and cannot print a
 /// clean scan of nothing. A crate joins this list the day its tests first
 /// stub a tool on `PATH`.
 #[test]
-fn the_path_stub_audit_walks_every_crate_that_stubs_a_tool() {
+fn the_path_stub_audit_scans_every_crate_that_stubs_a_tool() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let script = repo.join(".claude/scripts/audit-path-stub-serial.sh");
     let out = bash()
@@ -1244,7 +1244,7 @@ fn path_stub_readers_audit_refuses_to_pass_on_no_measurement() {
 }
 
 /// Every way the measurement can fail to happen is exit 2 with its reason,
-/// never a clean scan of nothing: a tree with no mutator, a mutator in an
+/// so none of them prints a clean scan of nothing: a tree with no mutator, a mutator in an
 /// integration test (a binary the audit does not build), a hand-built stub
 /// its file does not declare, a test binary that is not executable, and a
 /// binary that cannot list its tests.
@@ -1328,15 +1328,15 @@ fn path_stub_readers_audit_names_every_reason_it_could_not_measure() {
 
 /// Every audit scanner runs on bash >= 4.4 — `mapfile` arrived in 4.0 and 4.4
 /// is where `set -u` stopped treating an empty array's `"${arr[@]}"` as an
-/// unset expansion — and the floor is a property of the script SET, not of a
-/// feature list: a scanner that uses no array today grows one tomorrow, and a
+/// unset expansion — and the minimum is a property of the script SET as a
+/// whole, independent of any feature list: a scanner that uses no array today grows one tomorrow, and a
 /// detection rule keyed on today's spellings (`mapfile `, `[@]}"`, `readarray
 /// -t` with index-only expansion) silently stops covering it. So every
 /// `audit-*.sh` sources `lib/require-bash.sh`, and no script restates the
 /// check inline.
 #[test]
-fn every_audit_script_sources_the_bash_floor() {
-    let mut walked = 0usize;
+fn every_audit_script_sources_the_minimum_bash_check() {
+    let mut scanned = 0usize;
     let mut missing = Vec::new();
     let mut restated = Vec::new();
     for script in audit_scripts() {
@@ -1346,7 +1346,7 @@ fn every_audit_script_sources_the_bash_floor() {
             .to_string_lossy()
             .into_owned();
         let body = std::fs::read_to_string(&script).expect("script body");
-        walked += 1;
+        scanned += 1;
         if !body.contains("source \"$LIB_DIR/require-bash.sh\"") {
             missing.push(name.clone());
         }
@@ -1360,19 +1360,19 @@ fn every_audit_script_sources_the_bash_floor() {
     );
     assert!(
         restated.is_empty(),
-        "the bash floor is asserted once, in lib/require-bash.sh; these restate it: {restated:?}"
+        "the minimum bash version is asserted once, in lib/require-bash.sh; these restate it: {restated:?}"
     );
     assert!(
-        walked >= 14,
-        "expected every audit script to be walked, found {walked}"
+        scanned >= 14,
+        "expected every audit script to be scanned, found {scanned}"
     );
 }
 
 /// A scanner that could not run must never read as a clean scan. Every audit
 /// script that loads an awk library from `.claude/scripts/lib` is driven from
 /// a copy whose sibling `lib/` is empty, so awk dies loading its source: the
-/// script has to fail with that error visible instead of printing an empty hit
-/// list and exiting 0.
+/// script has to fail with that error visible; an empty hit list with exit 0
+/// fails the test.
 #[test]
 fn a_scanner_that_cannot_load_its_awk_library_fails_loudly() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -1402,7 +1402,7 @@ fn a_scanner_that_cannot_load_its_awk_library_fails_loudly() {
             continue;
         }
         // `-f "$LIB_DIR/…"` is an awk source load; `source "$LIB_DIR/…"` is
-        // the bash floor, which every script takes and no scanner depends on.
+        // the minimum bash check, which every script takes and no scanner depends on.
         if !std::fs::read_to_string(&src)
             .expect("script body")
             .contains("-f \"$LIB_DIR/")
@@ -1475,7 +1475,7 @@ fn every_named_test_source_is_declared_cfg_test() {
 
 /// The awk lexer's `is_test_file` and the Rust `is_test_source_path` answer
 /// the same question for two families of consumer — the shell scanners and
-/// the crates' structural walks. Feed both the same paths and compare
+/// the crates' structural scans. Feed both the same paths and compare
 /// verdicts: a rule changed on one side alone fails here.
 const AGREEMENT_PATHS: &[&str] = &[
     "crates/demo/src/tests.rs",
@@ -1567,7 +1567,7 @@ const AGREEMENT_CFG_LINES: &[&str] = &[
 
 /// The awk lexer's `is_test_only_cfg` and the Rust `is_test_only_cfg` decide
 /// which `cfg(…)` predicates gate test code — the shell scanners bound their
-/// test regions with one, the crates' structural walks check the premise
+/// test regions with one, the crates' structural scans check the premise
 /// behind a name match with the other. A rule loosened on one side alone (an
 /// `any(…)` counted as a gate, a `not(…)` term rejected beside a `test` one)
 /// lets a production module be skipped as test code, or the reverse. Feed
@@ -1651,7 +1651,7 @@ fn is_top_level_key(line: &str) -> bool {
 }
 
 /// The `cmds:` body of one top-level Taskfile target, or `None` when the file
-/// declares no such target. The walk needs to tell a target that is absent
+/// declares no such target. The scan needs to tell a target that is absent
 /// from one whose NAME it mis-parsed, so the fallible form is the primitive.
 fn taskfile_block_opt(taskfile: &str, target: &str) -> Option<String> {
     let key = format!("  {target}:");
@@ -1679,7 +1679,7 @@ fn taskfile_block(taskfile: &str, target: &str) -> String {
 
 /// The targets one target block names: every `- task: <name>` item, plus
 /// every entry of a `deps:` list in either spelling (`deps: [a, b]` and a
-/// block list). A dep runs the target just as a cmd does, so a walk that
+/// block list). A dep runs the target just as a cmd does, so a scan that
 /// followed only `- task:` edges would miss half the graph.
 fn child_tasks(block: &str) -> Vec<String> {
     let mut children = Vec::new();
@@ -1718,7 +1718,7 @@ fn child_tasks(block: &str) -> Vec<String> {
 
 /// Every target reachable from `roots` through `child_tasks`, roots included.
 /// The `seen` guard is what makes this terminate: the graph is a DAG only by
-/// convention, and a diamond would otherwise re-walk a shared child.
+/// convention, and a diamond would otherwise revisit a shared child.
 fn reachable_tasks(taskfile: &str, roots: &[&str]) -> Vec<String> {
     let mut seen: Vec<String> = Vec::new();
     // Each queued child carries the parent whose block named it, so an edge
@@ -1731,12 +1731,12 @@ fn reachable_tasks(taskfile: &str, roots: &[&str]) -> Vec<String> {
         }
         let block = match (taskfile_block_opt(taskfile, &name), &parent) {
             (Some(block), _) => block,
-            // A child with no block is an edge whose text was mis-read, not a
-            // missing target: reporting it as missing sends the reader hunting
+            // A child with no block is an edge whose text was mis-read. Reporting
+            // it as a missing target sends the reader hunting
             // for a target nobody ever wrote. A root, named by the caller, is
             // the other case and keeps the plain lookup panic.
             (None, Some(parent)) => {
-                panic!("`task {parent}` has a dep the walk cannot resolve: `{name}`")
+                panic!("`task {parent}` has a dep the scan cannot resolve: `{name}`")
             }
             (None, None) => taskfile_block(taskfile, &name),
         };
@@ -1785,36 +1785,36 @@ fn a_multibyte_char_at_the_key_column_is_not_a_key() {
 }
 
 /// The `seen` guard collapses a diamond to one visit. Kept acyclic so that
-/// losing the guard fails as a duplicated name rather than as a hung run —
+/// losing the guard fails as a duplicated name and does not hang the run;
 /// a named assertion is the failure a reader can act on.
 #[test]
-fn the_task_walk_visits_a_diamond_once() {
+fn the_task_graph_scan_visits_a_diamond_once() {
     let snippet = "tasks:\n  a:\n    cmds:\n      - task: b\n      - task: c\n  b:\n    deps: [d]\n  c:\n    cmds:\n      - task: d\n  d:\n    cmds:\n      - echo leaf\n";
-    let walked = reachable_tasks(snippet, &["a"]);
+    let visited = reachable_tasks(snippet, &["a"]);
     assert_eq!(
-        walked,
+        visited,
         vec!["a", "b", "c", "d"],
-        "the shared child `d` is walked once, not once per parent"
+        "the shared child `d` is visited once in all"
     );
 }
 
 /// The same guard is the only thing that terminates a cycle. Taskfile graphs
-/// are acyclic by convention, not by construction, so pin the cycle too.
+/// are acyclic only by convention, so test the cycle too.
 #[test]
-fn the_task_walk_terminates_on_a_cycle() {
+fn the_task_graph_scan_terminates_on_a_cycle() {
     let snippet = "tasks:\n  a:\n    cmds:\n      - task: b\n  b:\n    cmds:\n      - task: a\n";
     assert_eq!(reachable_tasks(snippet, &["a"]), vec!["a", "b"]);
 }
 
 /// A dep spelling this parser does not understand yields a child name that
 /// names no target. Saying "no such target" would describe a Taskfile bug that
-/// does not exist; the bug is in the walk, so the message says so and names
+/// does not exist; the bug is in the scan, so the message says so and names
 /// the parent and the raw text.
 #[test]
 fn an_unparsed_dep_names_its_parent_and_its_raw_text() {
     let snippet = "tasks:\n  t:\n    deps: [{task: x}]\n    cmds:\n      - echo hi\n";
     let panic = std::panic::catch_unwind(|| reachable_tasks(snippet, &["t"]))
-        .expect_err("an unparsed dep must fail the walk");
+        .expect_err("an unparsed dep must fail the scan");
     let message = panic
         .downcast_ref::<String>()
         .map(String::as_str)
@@ -1822,8 +1822,8 @@ fn an_unparsed_dep_names_its_parent_and_its_raw_text() {
         .unwrap_or_default()
         .to_string();
     assert_eq!(
-        message, "`task t` has a dep the walk cannot resolve: `{task: x}`",
-        "the failure must name the walk's own gap, not a missing target"
+        message, "`task t` has a dep the scan cannot resolve: `{task: x}`",
+        "the failure must name the scan's own gap"
     );
 }
 
@@ -1839,7 +1839,7 @@ fn a_dep_is_an_edge_in_both_spellings() {
         ["one", "two", "three"]
     );
 
-    // A bare `- item` outside a deps list is a shell command, not a target.
+    // A bare `- item` outside a deps list is a shell command.
     let cmds_only = "tasks:\n  t:\n    cmds:\n      - cargo build\n";
     assert!(child_tasks(&taskfile_block(cmds_only, "t")).is_empty());
 
@@ -1853,7 +1853,7 @@ fn a_dep_is_an_edge_in_both_spellings() {
 /// Rustdoc over this workspace holds several GB, so it may not run on the
 /// commit path; it is CI's job and `task gate`'s (and so `task push`'s). The
 /// wiring spans four files that no compiler ties together — a rename or a
-/// dropped line on one side leaves the gate silently ungated — so pin all of
+/// dropped line on one side leaves the gate silently ungated — so check all of
 /// them textually, with no dependency on a `task` binary being installed.
 #[test]
 fn rustdoc_gate_is_wired_into_gate_and_ci_never_commit() {
@@ -1870,9 +1870,9 @@ fn rustdoc_gate_is_wired_into_gate_and_ci_never_commit() {
         "the `doc:` target must run the workspace rustdoc, got:\n{doc}"
     );
 
-    // The floor is only sound in two legs: an unreadable /proc/meminfo makes
+    // The minimum is only sound in two legs: an unreadable /proc/meminfo makes
     // the numeric comparison a shell error, which go-task would report with the
-    // floor's own message. Pin the shape, not the prose.
+    // minimum's own message. Check the shape and leave the prose free.
     let headroom = taskfile_block(&taskfile, "_check:mem-headroom");
     let legs: Vec<&str> = headroom
         .lines()
@@ -1882,7 +1882,7 @@ fn rustdoc_gate_is_wired_into_gate_and_ci_never_commit() {
     assert_eq!(
         legs.len(),
         2,
-        "the memory precondition is a digits guard followed by a floor test, got:\n{headroom}"
+        "the memory precondition is a digits guard followed by a minimum test, got:\n{headroom}"
     );
     assert!(
         legs[0].contains("^[0-9]+$"),
@@ -1891,7 +1891,7 @@ fn rustdoc_gate_is_wired_into_gate_and_ci_never_commit() {
     );
     assert!(
         legs[1].contains("-ge 8388608"),
-        "the second leg must test the 8 GB floor, got: {}",
+        "the second leg must test the 8 GB minimum, got: {}",
         legs[1]
     );
     for leg in &legs {
@@ -1907,7 +1907,7 @@ fn rustdoc_gate_is_wired_into_gate_and_ci_never_commit() {
         "`task gate` must run the rustdoc gate, got:\n{gate}"
     );
     // Absent from `lint` alone proves nothing: `task commit` reaches the gate
-    // through whatever it and `lint` chain, by cmd or by dep, so walk the whole
+    // through whatever it and `lint` chain, by cmd or by dep, so scan the whole
     // closure from the target a commit actually invokes.
     let commit_path = reachable_tasks(&taskfile, &["commit"]);
     for name in &commit_path {
@@ -1942,15 +1942,15 @@ fn rustdoc_gate_is_wired_into_gate_and_ci_never_commit() {
 }
 
 /// A directory holding an `awk` that reports a MemAvailable of 1024 kB and
-/// delegates every other script to the real binary, so a walk of the task
-/// graph runs against a host the 8 GB floor rejects.
+/// delegates every other script to the real binary, so a scan of the task
+/// graph runs against a host the 8 GB minimum rejects.
 fn low_memory_awk_shim() -> tempfile::TempDir {
     let real = Command::new("sh")
         .args(["-c", "command -v awk"])
         .output()
         .expect("locating awk");
     let real = String::from_utf8_lossy(&real.stdout).trim().to_string();
-    assert!(!real.is_empty(), "awk must be on PATH for this pin");
+    assert!(!real.is_empty(), "awk must be on PATH for this test");
 
     let dir = tempfile::tempdir().expect("shim dir");
     let shim = dir.path().join("awk");
@@ -1968,10 +1968,10 @@ fn low_memory_awk_shim() -> tempfile::TempDir {
 }
 
 /// go-task evaluates `preconditions:` even under `-n`, so before the bypass
-/// existed the gate-mirror audit exited 2 on a host under the memory floor —
+/// existed the gate-mirror audit exited 2 on a host under the memory minimum —
 /// a question it never asked, answered by a resource it never spends.
 #[test]
-fn the_gate_mirror_audit_walks_the_graph_on_a_host_under_the_memory_floor() {
+fn the_gate_mirror_audit_reads_the_graph_on_a_host_under_the_memory_minimum() {
     required_tool("task");
     required_tool("yq");
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -1979,16 +1979,16 @@ fn the_gate_mirror_audit_walks_the_graph_on_a_host_under_the_memory_floor() {
     let (code, out) = run_audit_with_path("audit-gate-mirror.sh", &repo, Some(shim.path()));
     assert_eq!(
         code, 0,
-        "a structural walk of the task graph spawns no rustdoc, so the memory \
-         floor must not decide it; got:\n{out}"
+        "a structural scan of the task graph spawns no rustdoc, so the memory \
+         minimum must not decide it; got:\n{out}"
     );
 }
 
-/// The other direction: the bypass is scoped to the walk. A real `task gate`
+/// The other direction: the bypass is scoped to the scan. A real `task gate`
 /// on the same host still refuses, because that one would spawn rustdoc.
 #[test]
 #[cfg(target_os = "linux")]
-fn the_memory_floor_still_refuses_a_gate_run_on_a_host_under_it() {
+fn the_memory_minimum_still_refuses_a_gate_run_on_a_host_under_it() {
     if Command::new("sh")
         .args(["-c", "command -v task >/dev/null"])
         .status()
@@ -1996,7 +1996,7 @@ fn the_memory_floor_still_refuses_a_gate_run_on_a_host_under_it() {
         .unwrap_or(true)
     {
         eprintln!(
-            "SKIP the_memory_floor_still_refuses_a_gate_run_on_a_host_under_it: task missing"
+            "SKIP the_memory_minimum_still_refuses_a_gate_run_on_a_host_under_it: task missing"
         );
         return;
     }
@@ -2017,7 +2017,7 @@ fn the_memory_floor_still_refuses_a_gate_run_on_a_host_under_it() {
     );
     assert!(
         !out.status.success() && text.contains("8388608 kB (8 GB) floor"),
-        "without the walk's own bypass the floor must still refuse; got:\n{text}"
+        "without the scan's own bypass the memory minimum must still refuse; got:\n{text}"
     );
 }
 
@@ -2045,13 +2045,13 @@ const COMMAND_WRAPPERS: &[&str] = &[
     "command", "exec", "env", "xargs", "nice", "time", "sudo", "busybox", "toybox",
 ];
 
-/// Reserved words that introduce a command rather than being one.
+/// Reserved words that introduce a command and are not one themselves.
 const RESERVED_WORDS: &[&str] = &[
     "if", "then", "elif", "else", "while", "until", "do", "coproc", "{", "}", "!",
 ];
 
 /// Builtins that answer whether a program EXISTS. The word after one is the
-/// name being asked about, not a program being run.
+/// name being asked about; nothing runs it.
 const PROBES: &[&str] = &["type", "hash", "which"];
 
 /// `find` options whose argument is a whole command line, so a command
@@ -2066,8 +2066,7 @@ fn basename(word: &str) -> &str {
     word.rsplit('/').next().unwrap_or(word)
 }
 
-/// Whether `word` is a `VAR=value` assignment, which precedes a command
-/// rather than being one.
+/// Whether `word` is a `VAR=value` assignment, which precedes a command.
 fn is_assignment(word: &str) -> bool {
     match word.find('=') {
         None | Some(0) => false,
@@ -2155,7 +2154,7 @@ struct Segment {
 /// Why the command `segment` starts may not stand in an `audit-*.sh`, or
 /// `None`. `eval` and a command word that is a variable expansion are refused
 /// outright: an audit script has no business with either, and both put a
-/// program the pin cannot read into command position.
+/// program the check cannot read into command position.
 fn forbidden_word(segment: &Segment) -> Option<String> {
     let mut rest = segment.text.as_str();
     // `find … -exec awk … {} +` runs awk as surely as a pipeline does — but
@@ -2237,8 +2236,7 @@ impl SegmentSink {
 /// all start one. What is NOT a command never reaches the classifier: a
 /// heredoc body (an awk program is full of `$0`), a comment, `((…))`
 /// arithmetic, and the interior of a `[[ … ]]` test, whose `||` joins
-/// conditions rather than commands. A `\`-continued line carries its command
-/// word forward instead of starting a new one.
+/// conditions. A `\`-continued line carries its command word forward.
 fn command_segments(body: &str) -> Vec<Segment> {
     #[derive(PartialEq)]
     enum Quote {
@@ -2322,7 +2320,7 @@ fn command_segments(body: &str) -> Vec<Segment> {
                 i = arithmetic_end(&chars, i);
                 sink.current.clear();
             } else if c == '(' && sink.current.trim().is_empty() {
-                // A subshell, not the `(` of `arr+=(…)` or a `case` pattern:
+                // A subshell. The `(` of `arr+=(…)` or a `case` pattern is no subshell:
                 // only at a command position is the parenthesis itself one.
                 stack.push(Quote::Bare);
                 substituted.push(false);
@@ -2378,7 +2376,7 @@ fn arithmetic_end(chars: &[char], open: usize) -> usize {
 }
 
 /// The delimiter of the heredoc `line` opens, if it opens one. `<<<` is a
-/// here-string, not a heredoc, and carries no delimiter.
+/// here-string and carries no delimiter.
 fn heredoc_delimiter(line: &str) -> Option<&str> {
     let mut rest = line;
     while let Some(start) = rest.find("<<") {
@@ -2414,8 +2412,8 @@ fn heredoc_delimiter(line: &str) -> Option<&str> {
 /// `var="$(awk …)"` under `set -e` instead exits 1 — the repo's
 /// "violations found" code — with an empty findings block, and a
 /// `grep … 2>/dev/null || true` collection hands the scanner an empty file
-/// list, so a grep that never ran reads as a clean tree. Textual rather than
-/// behavioural so a script added tomorrow with either shape is caught before
+/// list, so a grep that never ran reads as a clean tree. The check is textual
+/// so a script added tomorrow with either shape is caught before
 /// it ever runs.
 #[test]
 fn every_awk_invocation_goes_through_the_shared_runner() {
@@ -2456,7 +2454,7 @@ fn every_awk_invocation_goes_through_the_shared_runner() {
     );
     assert!(
         scanners >= 15,
-        "expected every scanning script to be walked, found {scanners}"
+        "expected every scanning script to be scanned, found {scanners}"
     );
 }
 
@@ -2468,7 +2466,7 @@ fn collect_without_separator(line: &str) -> bool {
 }
 
 /// The collector's `--` is the whole of its option parsing, so a call without
-/// one is refused rather than guessed at. Kept as its own table because the
+/// one is refused. Kept as its own table because the
 /// separator rule is not part of `forbidden_command`: an accepted row there
 /// once carried a call the collector would have exited 2 on.
 #[test]
@@ -2513,13 +2511,13 @@ fn logical_lines(body: &str) -> Vec<(usize, String)> {
     joined
 }
 
-/// The spellings the runner pin has to recognise. Each ran awk while the pin
-/// matched only the literal first word `awk`, so each is pinned by name here
-/// rather than left to a reading of `command_word`. The allowed column is the
+/// The spellings the runner check has to recognise. Each ran awk while the
+/// check matched only the literal first word `awk`, so each is named here and
+/// none is left to a reading of `command_word`. The allowed column is the
 /// other half of the same rule: an `awk` in prose, a `.awk` path handed to
 /// `run_scanner`, and a `grep`/`sed` command line stay legal.
 #[test]
-fn the_runner_pin_recognises_every_awk_spelling() {
+fn the_runner_check_recognises_every_awk_spelling() {
     for line in [
         "awk -f prog.awk file",
         "gawk -f prog.awk file",
@@ -2566,7 +2564,7 @@ fn the_runner_pin_recognises_every_awk_spelling() {
     ] {
         assert!(
             forbidden_command(line).is_some(),
-            "the runner pin must reject: {line}"
+            "the runner check must reject: {line}"
         );
     }
 
@@ -2588,7 +2586,7 @@ fn the_runner_pin_recognises_every_awk_spelling() {
     ] {
         assert!(
             forbidden_command(line).is_none(),
-            "the runner pin must accept {line}, got {:?}",
+            "the runner check must accept {line}, got {:?}",
             forbidden_command(line)
         );
     }
@@ -2631,7 +2629,7 @@ fn a_scanner_whose_inline_program_is_broken_fails_loudly() {
     assert_eq!(
         out.status.code(),
         Some(2),
-        "a syntax error in the program must exit 2, not the violations-found 1.\n{stdout}{stderr}"
+        "a syntax error in the program must exit 2 (the violations-found code is 1).\n{stdout}{stderr}"
     );
     assert!(
         stderr.contains("audit-log-status: awk scanner exited")
@@ -2668,7 +2666,7 @@ fn lockstep_root() -> TempDir {
 
 /// A publish-oidc.yml job that declares no `timeout-minutes` runs under
 /// GitHub's 360-minute default, which no waiter covers; the audit names the
-/// job instead of reading the missing value as 0 and passing.
+/// job and does not read the missing value as 0.
 #[test]
 fn lockstep_audit_fails_a_publish_oidc_job_without_a_timeout() {
     if Command::new("yq").arg("--version").output().is_err() {
@@ -2792,7 +2790,7 @@ const GATE_MIRROR_STEP_TARGETS: &[&str] = &[
 /// another target, and a target named after go-task flags, and whose
 /// `task gate` reaches every mapped target plus those, `test:brew-style` only
 /// when `wire_brew_style` is set. `test:brew-style` is reached through `ci`, a
-/// second hop, so the walk has to follow the graph. A commented-out
+/// second hop, so the scan has to follow the graph. A commented-out
 /// `task` call, one inside a quoted string, a `task` word that is not the
 /// first word of its command, a redirection target, a pipe's next command
 /// and the value of a value-taking flag name targets nothing defines, so
@@ -2920,7 +2918,7 @@ fn run_gate_mirror(root: &Path, path: &str) -> (i32, String) {
 }
 
 /// A `task <target>` a ci.yml step runs must be reachable from `task gate`,
-/// through the `task -n -v gate` dry-run and through the yq walk the audit falls
+/// through the `task -n -v gate` dry-run and through the yq scan the audit falls
 /// back to where no `task` binary is installed (CI's actionlint job). A
 /// fixture whose gate reaches `test:brew-style` two hops down passes; the
 /// same fixture with that edge removed fails naming the step.
@@ -2953,7 +2951,7 @@ fn the_gate_mirror_audit_requires_every_ci_step_target_in_the_gate() {
         legs.push(("task -n -v gate", &inherited));
     }
     if task_hidden {
-        legs.push(("yq walk", &without_task));
+        legs.push(("yq scan", &without_task));
     }
     assert!(
         !legs.is_empty(),

@@ -110,7 +110,7 @@ homebrew_casks:
 
 ## Authentication
 
-{{ token_order(target="your tap repository", publisher_var="HOMEBREW_TAP_TOKEN") }}
+{{ token_order(target="your tap repository", publisher_vars=["HOMEBREW_TAP_TOKEN"]) }}
 
 
 ```yaml

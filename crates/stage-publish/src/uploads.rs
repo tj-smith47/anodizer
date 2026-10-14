@@ -35,7 +35,7 @@ pub struct UploadsSummary {
 impl UploadsSummary {
     /// True when at least one artifact was considered AND every one was an
     /// idempotent skip — the signal the publisher uses to record
-    /// `Skipped(AlreadyPublished)` instead of `Succeeded`.
+    /// `Skipped(AlreadyPublished)`.
     pub fn is_fully_idempotent_skip(&self) -> bool {
         self.uploaded == 0 && self.already_present > 0
     }
@@ -201,7 +201,6 @@ pub(crate) fn publish_uploads_recording(
         let custom_artifact_name = entry.custom_artifact_name.unwrap_or(false);
         let flags = entry_collect_flags(entry);
 
-        // --- Dry-run logging (no network) ---
         if ctx.is_dry_run() {
             let target_url = ctx
                 .render_template(target_template)
@@ -292,7 +291,6 @@ pub(crate) fn publish_uploads_recording(
             continue;
         }
 
-        // --- Live mode ---
         if crate::publisher_helpers::absorb_entry_skip(
             ctx,
             log,
@@ -350,7 +348,7 @@ pub(crate) fn publish_uploads_recording(
                 ) {
                     log.warn(&format!(
                         "exclude filter {:?} dropped all {} for \
-                         upload '{}'; check the globs match asset names, not full paths",
+                         upload '{}'; check that the globs match asset file names without their directories",
                         entry.exclude.as_deref().unwrap_or_default(),
                         count_noun(pre_exclude, "candidate artifact", "candidate artifacts"),
                         name
@@ -432,10 +430,6 @@ pub(crate) fn target_origin(target: &str) -> Option<String> {
     Some(format!("{scheme}://{host_port}"))
 }
 
-// ---------------------------------------------------------------------------
-// UploadsPublisher (Publisher trait wrapper)
-// ---------------------------------------------------------------------------
-
 // Wraps [`publish_uploads`] in the [`anodizer_core::Publisher`] trait so the
 // dispatch path drives generic HTTP uploads alongside every other publisher.
 //
@@ -456,7 +450,7 @@ simple_publisher!(
 
 /// Top-level `uploads:` entries whose `skip:`/`if:` evaluates active right
 /// now. Used only by [`anodizer_core::Publisher::config_fully_inactive`] —
-/// `requirements()` intentionally keeps its own unfiltered walk (endpoint
+/// `requirements()` intentionally keeps its own unfiltered scan (endpoint
 /// reachability is probed for every entry with a `target`, skip-state
 /// notwithstanding; see the comment there).
 fn active_upload_configs(ctx: &Context) -> Vec<&anodizer_core::config::UploadConfig> {
@@ -517,7 +511,7 @@ impl anodizer_core::Publisher for UploadsPublisher {
             // Endpoint reachability is emitted for EVERY entry carrying a
             // `target`, regardless of `skip`/`if` — exactly mirroring the blob
             // stage, which probes its endpoint unconditionally. This is
-            // deliberate, not incidental: the standalone `preflight` command
+            // deliberate: the standalone `preflight` command
             // forces `snapshot = true` so the canary can run from any untagged
             // commit, so an entry that skips on `{{ .IsSnapshot }}` (the real
             // `.anodizer.yaml` mirror does) would look INACTIVE under that
@@ -599,7 +593,7 @@ impl anodizer_core::Publisher for UploadsPublisher {
                 .filter(anodizer_core::PublishEvidence::records_published_work)
         })?;
         // Every matched artifact was already present at its target path (an
-        // idempotent re-run): record a SKIP, not a fresh publish.
+        // idempotent re-run): record a SKIP.
         if summary.is_fully_idempotent_skip() {
             ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
                 anodizer_core::SkipReason::AlreadyPublished,
@@ -705,7 +699,7 @@ impl anodizer_core::Publisher for UploadsPublisher {
     /// target's `scheme://host[:port]` origin (path/`{{ .Version }}` stripped so
     /// the probe needs no resolved tag) through the same mTLS client + basic-auth
     /// credential cascade the upload uses. A rejected credential (401/403) or an
-    /// unreachable host surfaces as a Warning (this publisher is OPTIONAL — a
+    /// unreachable host is reported as a Warning (this publisher is OPTIONAL — a
     /// failed upload must not abort the release). A 404/405/redirect at the
     /// origin root still proves the host is reachable and is treated as a pass.
     /// Severity follows [`required()`](anodizer_core::Publisher::required).
@@ -730,7 +724,7 @@ impl anodizer_core::Publisher for UploadsPublisher {
                 continue;
             }
             // A missing name/target is config-validation territory the upload
-            // path already fails loud on — skip rather than double-report.
+            // path already fails loud on, so skip it here to avoid a double report.
             let Some(name) = entry.name.as_deref().filter(|n| !n.is_empty()) else {
                 continue;
             };
@@ -839,7 +833,7 @@ impl anodizer_core::Publisher for UploadsPublisher {
 /// `UPLOAD_<NAME>_USERNAME` / `UPLOAD_<NAME>_SECRET` env). Returns `None` when
 /// the entry is no longer present in config (operator pruned the YAML between
 /// publish and rollback) so the caller falls back to an unauthenticated
-/// DELETE (which surfaces a 401 in the failure bucket rather than bailing).
+/// DELETE (which records a 401 in the failure bucket and does not bail).
 fn resolve_rollback_credentials(ctx: &Context, entry_name: &str) -> Option<(String, String)> {
     let entries = ctx.config.uploads.as_ref()?;
     let entry = entries
@@ -858,10 +852,6 @@ fn resolve_rollback_credentials(ctx: &Context, entry_name: &str) -> Option<(Stri
     )
     .ok()
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
@@ -965,8 +955,8 @@ mod tests {
 
     /// Empty `--crate` selection means "all crates" — an active
     /// `uploads[]` entry must keep the publisher live even with no
-    /// `--crate` filter applied. `uploads` is a top-level list, not itself
-    /// crate-scoped, so this also guards a future refactor from
+    /// `--crate` filter applied. `uploads` is a top-level list with no crate
+    /// scope, so this also guards a future refactor from
     /// accidentally wiring it to `selected_crates` and dropping entries.
     #[test]
     fn config_fully_inactive_false_with_empty_selection_and_active_entry() {
@@ -1120,7 +1110,7 @@ mod tests {
     }
 
     /// Every entry disqualified itself, so the publisher reports itself
-    /// skipped rather than as a run that happened to publish nothing.
+    /// skipped.
     #[test]
     fn every_entry_skipped_reports_the_publisher_as_skipped() {
         let mut config = Config::default();
@@ -1171,7 +1161,7 @@ mod tests {
         assert_eq!(
             report.results[0].outcome,
             anodizer_core::PublisherOutcome::Skipped(anodizer_core::SkipReason::EntriesSkipped),
-            "nothing landed, so the publisher is skipped: {:?}",
+            "nothing was uploaded, so the publisher is skipped: {:?}",
             report.results[0]
         );
         assert_eq!(report.results[0].entry_skips.len(), 1);
@@ -1191,7 +1181,7 @@ mod tests {
         }]);
         let ctx = dry_run_ctx(config);
         let log = ctx.logger("uploads");
-        publish_uploads(&ctx, &log).expect("a nameless entry must skip, not fail");
+        publish_uploads(&ctx, &log).expect("a nameless entry must skip without an error");
         let events = ctx.skip_memento.snapshot();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].stage, "uploads");
@@ -1213,7 +1203,7 @@ mod tests {
         }]);
         let ctx = dry_run_ctx(config);
         let log = ctx.logger("uploads");
-        publish_uploads(&ctx, &log).expect("a target-less entry must skip, not fail");
+        publish_uploads(&ctx, &log).expect("a target-less entry must skip without an error");
         let events = ctx.skip_memento.snapshot();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].label, "mirror");
@@ -1235,7 +1225,7 @@ mod tests {
         }]);
         let ctx = dry_run_ctx(config);
         let log = ctx.logger("uploads");
-        publish_uploads(&ctx, &log).expect("an invalid mode must skip, not fail");
+        publish_uploads(&ctx, &log).expect("an invalid mode must skip without an error");
         let events = ctx.skip_memento.snapshot();
         assert_eq!(events.len(), 1);
         assert!(
@@ -1247,7 +1237,7 @@ mod tests {
 
     /// Half-set credentials (password without username) must hard-error even
     /// though `uploads` tolerates fully-anonymous endpoints — a half-set pair
-    /// is always a config bug, never an intentional anonymous upload. Live
+    /// is always a config bug. Live
     /// mode only; dry-run skips credential validation. No artifacts are
     /// registered so the loop reaches credential resolution and bails there.
     #[test]
@@ -1260,7 +1250,7 @@ mod tests {
             ..Default::default()
         }]);
         let log = ctx.logger("uploads");
-        publish_uploads(&ctx, &log).expect("a half-set credential must skip, not fail");
+        publish_uploads(&ctx, &log).expect("a half-set credential must skip without an error");
         let events = ctx.skip_memento.snapshot();
         assert_eq!(events.len(), 1, "{events:?}");
         assert_eq!(events[0].label, "mirror");
@@ -1287,8 +1277,6 @@ mod tests {
         let summary = publish_uploads(&ctx, &log).expect("anonymous upload allowed");
         assert_eq!(summary.uploaded, 0);
     }
-
-    // --- requirements (preflight endpoint reachability) ---------------------
 
     /// Collect the `Endpoint` URLs the publisher's `requirements` emits for a
     /// config (dry-run ctx with NO Version seeded — the pre-tag state).
@@ -1439,7 +1427,7 @@ mod tests {
         );
         // Its credentials are suppressed (the entry is skip-inactive). The
         // target carries no `{{ Env.* }}`, so the only way a `MIRROR_*` var
-        // could surface is the cred cascade — which must stay gated.
+        // could appear is the cred cascade — which must stay gated.
         assert!(
             !reqs.iter().any(|r| matches!(
                 r,
@@ -2022,7 +2010,7 @@ mod live_http_tests {
     }
 
     /// A non-2xx PUT response maps to a contextful error naming the failing
-    /// artifact / status; the publish fails rather than silently succeeding.
+    /// artifact / status, and the publish fails.
     #[test]
     fn live_put_5xx_maps_to_error() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2039,7 +2027,7 @@ mod live_http_tests {
                     method: "PUT",
                     path_pattern: "/repo/app-1.0.0.tar.gz",
                     // Always 500: the fast retry exhausts, then the error
-                    // surfaces.
+                    // is returned.
                     response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\n\r\nboom!",
                     times: None,
                 },
@@ -2207,7 +2195,7 @@ mod live_http_tests {
     }
     /// Routes for one artifact that is absent and then arrives: the absence
     /// probe 404s, the PUT is created.
-    fn landing_routes() -> Vec<ScriptedRoute> {
+    fn published_entry_routes() -> Vec<ScriptedRoute> {
         vec![
             ScriptedRoute {
                 method: "HEAD",
@@ -2243,10 +2231,10 @@ mod live_http_tests {
     /// and a reason on the result — never by overwriting it, because the
     /// upload that happened is still live at the remote.
     #[test]
-    fn a_publisher_that_landed_an_entry_keeps_its_outcome_and_records_the_skips() {
+    fn a_publisher_that_published_an_entry_keeps_its_outcome_and_records_the_skips() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let (_addr, _log) = spawn_scripted_responder_on(listener, |_| landing_routes());
+        let (_addr, _log) = spawn_scripted_responder_on(listener, |_| published_entry_routes());
 
         let (_dir, mut ctx, _checksum, _name) = live_ctx(addr, MapEnvSource::new(), |_| {});
         prepend_targetless_entry(&mut ctx);
@@ -2292,10 +2280,10 @@ mod live_http_tests {
     /// candidate list — otherwise the artifact it really PUT is stranded at
     /// the remote with no record.
     #[test]
-    fn a_landed_publisher_with_entry_skips_stays_a_rollback_candidate() {
+    fn a_publisher_that_published_with_entry_skips_stays_a_rollback_candidate() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let (_addr, _log) = spawn_scripted_responder_on(listener, |_| landing_routes());
+        let (_addr, _log) = spawn_scripted_responder_on(listener, |_| published_entry_routes());
 
         let (_dir, mut ctx, _checksum, _name) = live_ctx(addr, MapEnvSource::new(), |_| {});
         prepend_targetless_entry(&mut ctx);
@@ -2312,7 +2300,7 @@ mod live_http_tests {
         assert_eq!(
             report.results[0].outcome,
             anodizer_core::PublisherOutcome::Succeeded,
-            "the row records what landed: {:?}",
+            "the row records what was uploaded: {:?}",
             report.results[0]
         );
         assert_eq!(
@@ -2324,7 +2312,7 @@ mod live_http_tests {
         assert_eq!(
             crate::rollback::rollback_candidates(&report),
             vec![0],
-            "the upload that landed must still be rollback-eligible"
+            "the completed upload must still be rollback-eligible"
         );
     }
 
@@ -2644,7 +2632,7 @@ mod dryrun_and_pure_tests {
     fn empty_name_skips_the_entry() {
         let (_dir, ctx) = dryrun_ctx(|e| e.name = Some(String::new()));
         let (log, _cap) = StageLogger::with_capture("uploads", Verbosity::Normal);
-        publish_uploads(&ctx, &log).expect("an empty name must skip, not fail");
+        publish_uploads(&ctx, &log).expect("an empty name must skip without an error");
         assert!(
             ctx.skip_memento.snapshot()[0]
                 .reason
@@ -2658,7 +2646,7 @@ mod dryrun_and_pure_tests {
     fn empty_target_skips_the_entry() {
         let (_dir, ctx) = dryrun_ctx(|e| e.target = String::new());
         let (log, _cap) = StageLogger::with_capture("uploads", Verbosity::Normal);
-        publish_uploads(&ctx, &log).expect("an empty target must skip, not fail");
+        publish_uploads(&ctx, &log).expect("an empty target must skip without an error");
         assert!(
             ctx.skip_memento.snapshot()[0]
                 .reason
@@ -2672,7 +2660,7 @@ mod dryrun_and_pure_tests {
     fn invalid_mode_skips_the_entry() {
         let (_dir, ctx) = dryrun_ctx(|e| e.mode = Some("nonsense".to_string()));
         let (log, _cap) = StageLogger::with_capture("uploads", Verbosity::Normal);
-        publish_uploads(&ctx, &log).expect("an invalid mode must skip, not fail");
+        publish_uploads(&ctx, &log).expect("an invalid mode must skip without an error");
         assert!(
             ctx.skip_memento.snapshot()[0]
                 .reason

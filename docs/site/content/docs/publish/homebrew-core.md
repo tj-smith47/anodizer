@@ -146,14 +146,11 @@ Re-running a release is safe — the bump is a no-op when it has already happene
 
 ## Authentication
 
-The bump needs a GitHub token that can fork the formula repository and open pull requests. Resolution ladder:
+The bump needs a GitHub token that can fork the formula repository and open pull requests.
 
-1. `homebrew_cores[].repository.token` (templated) when set;
-2. `$HOMEBREW_CORE_GITHUB_TOKEN`;
-3. `$COMMITTER_TOKEN` — the name [`mislav/bump-homebrew-formula-action`](https://github.com/mislav/bump-homebrew-formula-action) consumes, so a project migrating from that action keeps its existing secret;
-4. the standard GitHub ladder (`$ANODIZER_GITHUB_TOKEN`, then `$GITHUB_TOKEN`, then `$GH_TOKEN`).
+{{ token_order(target="the formula repository or your fork of it", publisher_vars=["HOMEBREW_CORE_GITHUB_TOKEN", "COMMITTER_TOKEN"], gh_login=false) }}
 
-Empty values are skipped at every link, so a blank `GITHUB_TOKEN` (GitHub Actions' shape for a missing secret) never masquerades as a real token.
+`COMMITTER_TOKEN` is the name [`mislav/bump-homebrew-formula-action`](https://github.com/mislav/bump-homebrew-formula-action) reads, so a project moving from that action keeps its existing secret. Each value is trimmed, and an empty one is skipped, so a blank `GITHUB_TOKEN` (GitHub Actions' shape for a missing secret) is never sent as a token.
 
 `repository.pull_request.token` and `repository.token` are rendered before any request is made. A template that does not render skips that entry with no fork, branch or pull request created; the entries after it still run, and the run summary names the reason (`pull_request.token does not render: <cause>`) without the template's text. The per-entry line prints under `--show-skipped`:
 

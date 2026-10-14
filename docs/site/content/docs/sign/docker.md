@@ -27,7 +27,7 @@ docker_signs:
 | `signature` | string | — | **Ignored.** A container signature is stored in the registry beside the image with no file written, so anodizer synthesizes the `<image>@<digest>.sig` name its argv substitutes and reads this template nowhere. `anodizer check config` warns when it is set. |
 | `certificate` | string | | Certificate file whose **presence** selects cosign's bundle verification mode. The path itself never reaches the signing command — `{{ Certificate }}` in `args:` renders empty. |
 | `ids` | list | all | Only sign images from docker configs whose `id` is in this list. |
-| `stdin` | string | | Content written to the signing command's stdin (e.g. a passphrase); rendered as a template (e.g. `{{ Env.GPG_PASSPHRASE }}`) with nothing substituted first, so neither `{{ Artifact }}` nor `${artifact}` names anything here. |
+| `stdin` | string | | Content written to the signing command's stdin (e.g. a passphrase); rendered as a template (e.g. `{{ Env.GPG_PASSPHRASE }}`) with nothing substituted first, so neither `{{ Artifact }}` nor `${artifact}` names anything here. The value is a credential: leading and trailing whitespace is removed, and a template that does not render is an error naming `docker_signs[<id>].stdin` without the template's text. |
 | `stdin_file` | string | | Path to a file whose content is written to the signing command's stdin. |
 | `env` | list | | Environment variables passed to the signing command (`KEY=VALUE` strings). Entries render in order; a later one can read an earlier one through `.Env`. |
 | `output` | bool | `false` | Capture and log the signing command's stdout/stderr. |

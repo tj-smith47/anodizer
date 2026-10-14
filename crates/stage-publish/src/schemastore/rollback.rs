@@ -15,9 +15,7 @@ use anodizer_core::{PublishEvidence, PublishEvidenceExtra};
 
 use anodizer_core::publish_evidence::SchemastoreTargetSnapshot;
 
-/// Default env var consulted for the close-PR token when a target recorded
-/// none. Kept in sync with the publish path's `TOKEN_ENV_VAR`.
-const DEFAULT_TOKEN_ENV_VAR: &str = "SCHEMASTORE_TOKEN";
+use super::publish::TOKEN_ENV_VAR;
 
 /// Decode the `schemastore_targets` array from
 /// [`anodizer_core::PublishEvidence::extra`]. Returns an empty vec for any
@@ -91,7 +89,7 @@ pub(crate) fn rollback_publish(
     let (mut closed, mut already_closed, mut failed) = (0usize, 0usize, 0usize);
     for t in &targets {
         let label = format!("{}/{}", t.upstream_owner, t.upstream_repo);
-        let env_hint = t.token_env_var.as_deref().unwrap_or(DEFAULT_TOKEN_ENV_VAR);
+        let env_hint = t.token_env_var.as_deref().unwrap_or(TOKEN_ENV_VAR);
 
         let token = match resolve_token(t) {
             Ok(token) => token,
@@ -199,7 +197,7 @@ mod tests {
             upstream_repo: "schemastore".to_string(),
             fork_owner: "acme".to_string(),
             branch: branch.to_string(),
-            token_env_var: Some(DEFAULT_TOKEN_ENV_VAR.to_string()),
+            token_env_var: Some(TOKEN_ENV_VAR.to_string()),
         }
     }
 

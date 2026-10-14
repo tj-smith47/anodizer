@@ -48,8 +48,8 @@ impl Context {
             // Minor/Patch/Prerelease/BuildMetadata) is factored into
             // `set_version_vars` so `render_template_for_version` can re-derive
             // the SAME block for a promotion's target version without drift.
-            // Deriving Version/RawVersion from the parsed `SemVer` struct (not
-            // `tag.strip_prefix('v')`) handles monorepo tags like `core-v0.3.2`.
+            // Deriving Version/RawVersion from the parsed `SemVer` struct handles
+            // monorepo tags like `core-v0.3.2`.
             set_version_vars(&mut self.template_vars, &info.semver, &info.tag);
             self.template_vars.set("FullCommit", &info.commit);
             self.template_vars.set("Commit", &info.commit);
@@ -105,8 +105,7 @@ impl Context {
                 // the monorepo prefix — no separate string-strip needed.
                 //
                 // For a non-semver tag under `--skip=validate`, info.semver is
-                // the skip-validate fallback, so this yields "0.0.0" rather than
-                // the old raw prefix-stripped string.
+                // the skip-validate fallback, so this yields "0.0.0".
                 let version = info.semver.version_string();
                 self.template_vars.set("Version", &version);
 
@@ -128,7 +127,7 @@ impl Context {
             } else {
                 // Non-monorepo: compose tag.tag_prefix onto the tag git reported. The
                 // composition is idempotent: a `tag_prefix: "v"` beside a `v1.2.3`
-                // tag names `v1.2.3`, not `vv1.2.3`.
+                // tag names `v1.2.3` (no doubled `vv`).
                 let tag_prefix = self
                     .config
                     .tag
@@ -188,7 +187,7 @@ impl Context {
             .set_bool("IsSnapshot", self.options.snapshot);
         self.template_vars
             .set_bool("IsNightly", self.options.nightly);
-        // Surfaced to user `if_condition:` templates so stages can
+        // Exposed to user `if_condition:` templates so stages can
         // selectively run inside the determinism harness even when
         // `not IsSnapshot` would otherwise skip them.
         self.template_vars
@@ -204,7 +203,7 @@ impl Context {
         self.template_vars
             .set_bool("IsSingleTarget", self.options.single_target.is_some());
 
-        // Pro addition: IsRelease — true if this is a regular release (not snapshot, not nightly).
+        // IsRelease — true if this is a regular release (not snapshot, not nightly).
         let is_release = !self.options.snapshot && !self.options.nightly;
         self.template_vars.set_bool("IsRelease", is_release);
 
@@ -281,7 +280,7 @@ impl Context {
     /// Probes `rustc -vV` and extracts the `release:` line (e.g. `"1.96.0"`).
     /// Sets `RustcVersion` to the extracted string, or to `""` when rustc is
     /// unavailable or the line is absent — templates that reference
-    /// `{{ .RustcVersion }}` degrade to an empty value rather than erroring.
+    /// `{{ .RustcVersion }}` render an empty value with no error.
     fn populate_rustc_vars(&mut self) {
         let ver = crate::partial::detect_rustc_version().unwrap_or_default();
         self.template_vars.set("RustcVersion", &ver);
@@ -292,18 +291,18 @@ impl Context {
     /// Should be called after the changelog stage has run and populated
     /// `self.stage_outputs`. Prefers the single-track AGGREGATE body
     /// ([`StageOutputs::release_body_changelog`]) when present, so a lockstep
-    /// release's `{{ .ReleaseNotes }}` spans the whole workspace rather than one
-    /// crate's path slice. Falls back to the first crate (by crate universe
-    /// order — top-level `crates:` then every `workspaces[].crates` entry) whose
-    /// per-crate changelog is present, or an empty string. Universe order is
-    /// deterministic, unlike HashMap iteration order.
+    /// release's `{{ .ReleaseNotes }}` spans the whole workspace. Falls back to
+    /// the first crate (by crate universe order — top-level `crates:` then every
+    /// `workspaces[].crates` entry) whose per-crate changelog is present, or an
+    /// empty string. Universe order is deterministic, unlike HashMap iteration
+    /// order.
     pub fn populate_release_notes_var(&mut self) {
         // The single-track aggregate spans every crate dir over the whole range;
         // prefer it so `ReleaseNotes` matches the GitHub release body. Fall back
-        // to per-crate lookup in universe order for determinism — the universe
-        // walk (not `config.crates`) is what lets a pure-`workspaces:` config
-        // resolve a non-empty `ReleaseNotes`, since its crates carry the
-        // changelogs but never appear in the top-level list.
+        // to per-crate lookup in universe order for determinism — the crate
+        // universe is what lets a pure-`workspaces:` config resolve a
+        // non-empty `ReleaseNotes`, since its crates carry the changelogs but
+        // never appear in the top-level `config.crates` list.
         let notes = self
             .stage_outputs
             .release_body_changelog

@@ -4,10 +4,6 @@
 use super::*;
 use crate::publisher_helpers::count_noun;
 
-// ---------------------------------------------------------------------------
-// CargoPublisher - Publisher trait adapter
-// ---------------------------------------------------------------------------
-
 // Publisher trait adapter around `publish_to_cargo`. Classified as
 // `Submitter` + `required=true`: crates.io publish is effectively one-way
 // (versions cannot be re-uploaded), so a failure here must fail the release
@@ -30,8 +26,8 @@ simple_publisher!(
 
 /// Operator-visible start line for the cargo publisher. Worded apart from
 /// [`crate::publisher_helpers::run_start_message`] on purpose: cargo
-/// processes every selected crate rather than scanning them for a config
-/// block, so "scanning … for a cargo config block" would misdescribe it.
+/// processes every selected crate with no config-block scan, so
+/// "scanning … for a cargo config block" would misdescribe it.
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
         "starting cargo publish — processing {}",
@@ -275,7 +271,7 @@ impl anodizer_core::Publisher for CargoPublisher {
                 // `Publish` here is unexpected (the caller routed only
                 // crates.io targets); let run() own it.
                 Ok(CargoSkipDecision::Publish) => return Ok(ReconcileState::Absent),
-                // Both "genuinely diverged" and "cannot verify" surface as
+                // Both "genuinely diverged" and "cannot verify" return as
                 // Err from the guard; run() re-derives the same decision and
                 // bails with the canonical message (bump-the-version for
                 // divergence, fail-closed for unverifiable) — never skip.
@@ -400,8 +396,8 @@ impl anodizer_core::Publisher for CargoPublisher {
         // that case, leaving succeeded crates live.
         let targets = decode_cargo_yank_targets(&evidence.extra);
         if targets.is_empty() {
-            // Nothing was published this run — a clean no-op, not a
-            // failure to recover. (Verbose, not a scary warn: an empty
+            // Nothing was published this run, so there is nothing to
+            // recover. (Logged at verbose level: an empty
             // record is the normal shape when the failing publisher never
             // reached its first successful `cargo publish`.)
             log.verbose("no crates published this run; cargo rollback is a no-op");

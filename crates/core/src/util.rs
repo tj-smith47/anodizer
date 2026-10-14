@@ -8,18 +8,14 @@ use anyhow::{Context as _, Result};
 /// Compile a regex, panicking with a diagnostic if the pattern is invalid.
 /// Intended for `LazyLock::new(…)` initializers where the pattern is a
 /// hardcoded literal (or built from `format!` over known-safe fragments).
-/// A compile failure means a programmer bug surfaced at first use, not a
-/// runtime-path user-input error. Exists because the anti-pattern hook
+/// A compile failure means a programmer bug reported at first use; user
+/// input never reaches it. Exists because the anti-pattern hook
 /// forbids bare panicking error helpers in lib code, and `Regex::new` on
 /// a trusted literal is inherently infallible.
 pub fn static_regex(pattern: &str) -> regex::Regex {
     regex::Regex::new(pattern)
         .unwrap_or_else(|e| panic!("invalid static regex literal `{}`: {}", pattern, e))
 }
-
-// ---------------------------------------------------------------------------
-// Topological sort (Kahn's algorithm)
-// ---------------------------------------------------------------------------
 
 /// Topologically sort items by their dependency lists.
 ///
@@ -98,14 +94,6 @@ pub fn topological_sort(items: &[(impl AsRef<str>, impl AsRef<[String]>)]) -> Ve
     result
 }
 
-// ---------------------------------------------------------------------------
-// apply_mod_timestamp
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// mod_timestamp helpers
-// ---------------------------------------------------------------------------
-
 /// Parse a `mod_timestamp` string into a `SystemTime`.
 ///
 /// Accepts:
@@ -160,10 +148,10 @@ pub fn system_time_from_epoch(epoch_secs: i64) -> Result<SystemTime> {
 /// Parses the timestamp via `parse_mod_timestamp`, then recurses into
 /// subdirectories, setting the mtime on every regular file. Symlinks are not
 /// followed and directory mtimes are left untouched (files-only semantics,
-/// matching [`pin_dir_mtimes_epoch`], the SDE reproducibility floor this
+/// matching [`pin_dir_mtimes_epoch`], the SDE reproducibility base this
 /// override is layered on top of). A nested staged file — e.g. a
 /// `templated_extra_files` entry whose dst is `docs/README.txt` — must receive
-/// the user's `mod_timestamp`, not the SDE epoch left by the floor.
+/// the user's `mod_timestamp` in place of the SDE epoch left by that base.
 pub fn apply_mod_timestamp(dir: &Path, raw: &str, log: &crate::log::StageLogger) -> Result<()> {
     let mtime = parse_mod_timestamp(raw)?;
 
@@ -216,7 +204,7 @@ pub fn set_file_mtime_epoch(path: &Path, epoch_secs: i64) -> Result<()> {
 /// two harness runs with identical contents drift the packed bytes. Pinning to
 /// the build epoch removes that variance.
 ///
-/// Subdirectories are walked; only regular files have their mtime set (mirrors
+/// Subdirectories are scanned; only regular files have their mtime set (mirrors
 /// the mtime semantics relevant to the archive headers these tools emit).
 pub fn pin_dir_mtimes_epoch(dir: &Path, epoch_secs: i64) -> Result<()> {
     let mut stack: Vec<std::path::PathBuf> = vec![dir.to_path_buf()];
@@ -241,7 +229,7 @@ pub fn pin_dir_mtimes_epoch(dir: &Path, epoch_secs: i64) -> Result<()> {
 /// Recursively copy the directory tree rooted at `src` into `dst`, recreating
 /// subdirectories, copying regular files (with [`fs::copy`], which preserves
 /// the Unix mode bits — including the executable bit), and recreating symlinks
-/// as symlinks rather than dereferencing them.
+/// as symlinks.
 ///
 /// Preserving symlinks matters for macOS app bundles, which embed framework
 /// version symlinks (`Versions/Current -> A`); a dereferencing copy would
@@ -256,7 +244,7 @@ pub fn copy_dir_tree(src: &Path, dst: &Path) -> Result<()> {
         let from = entry.path();
         let to = dst.join(entry.file_name());
         // symlink_metadata (via DirEntry::file_type) so a symlink is recreated
-        // as a link rather than dereferenced.
+        // as a link.
         let file_type = entry
             .file_type()
             .with_context(|| format!("stat {}", from.display()))?;
@@ -287,10 +275,6 @@ pub fn copy_dir_tree(src: &Path, dst: &Path) -> Result<()> {
     }
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// collect_replace_archives
-// ---------------------------------------------------------------------------
 
 /// Collect archive artifact paths for a given crate + target, for removal by `replace` options.
 pub fn collect_replace_archives(
@@ -471,10 +455,6 @@ pub fn free_cargo_build_intermediates(
 mod tests {
     use super::*;
 
-    // -----------------------------------------------------------------------
-    // topological_sort tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_topo_sort_simple_chain() {
         let items = vec![
@@ -540,10 +520,6 @@ mod tests {
         let sorted = topological_sort(&items);
         assert!(sorted.is_empty());
     }
-
-    // -----------------------------------------------------------------------
-    // parse_mod_timestamp tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_parse_mod_timestamp_epoch_integer() {
@@ -627,10 +603,6 @@ mod tests {
         assert_eq!(t, SystemTime::UNIX_EPOCH);
     }
 
-    // -----------------------------------------------------------------------
-    // set_file_mtime tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_set_file_mtime_sets_both_atime_and_mtime() {
         let dir = tempfile::tempdir().unwrap();
@@ -705,10 +677,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // -----------------------------------------------------------------------
-    // apply_mod_timestamp tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_apply_mod_timestamp_sets_mtime_on_regular_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -779,10 +747,6 @@ mod tests {
         let result = apply_mod_timestamp(dir.path(), "not-valid", &log);
         assert!(result.is_err());
     }
-
-    // -----------------------------------------------------------------------
-    // free_cargo_build_intermediates tests
-    // -----------------------------------------------------------------------
 
     /// Build a `target/<triple>/release/` profile dir under `root` so the
     /// helper's profile-dir guard (basename must be `release`/`debug`) is
@@ -870,7 +834,7 @@ mod tests {
     #[test]
     fn test_free_cargo_build_intermediates_non_profile_dir_is_noop() {
         let tmp = tempfile::tempdir().unwrap();
-        // A workspace-root-shaped dir whose basename is `target`, not a profile.
+        // A workspace-root-shaped dir whose basename is `target` and is no profile.
         let not_profile = tmp.path().join("target");
         std::fs::create_dir_all(not_profile.join("deps")).unwrap();
         std::fs::create_dir_all(not_profile.join("build")).unwrap();

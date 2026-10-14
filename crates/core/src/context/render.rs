@@ -27,7 +27,7 @@ impl Context {
 
     /// Render `template` with the FULL version-derived var set (`Version`, `Tag`,
     /// `Major`/`Minor`/`Patch`, `RawVersion`, `Prerelease`, `BuildMetadata`,
-    /// `Base`) re-derived from `version`/`tag` rather than the context's own git
+    /// `Base`) re-derived from `version`/`tag`, ignoring the context's own git
     /// version — used by promotion to reconstruct the immutable tag a prior
     /// release pushed for a specific `--version`. Overriding only `Version`+`Tag`
     /// would leave `{{ .Major }}` etc. resolving to the CONTEXT version, so a
@@ -37,8 +37,8 @@ impl Context {
     /// A non-semver `version` (no parse) falls back to overriding `Version`+`Tag`
     /// and BLANKING the seven semver-part vars (`RawVersion`, `Base`, `Major`,
     /// `Minor`, `Patch`, `Prerelease`, `BuildMetadata`), so a semver-part template
-    /// cannot silently resolve the context version — it renders empty instead of
-    /// inheriting the cloned context's parts. Does not mutate `self`.
+    /// cannot silently resolve the context version — it renders empty and
+    /// never inherits the cloned context's parts. Does not mutate `self`.
     pub fn render_template_for_version(
         &self,
         template: &str,
@@ -52,8 +52,8 @@ impl Context {
                 vars.set("Version", version);
                 vars.set("Tag", tag);
                 // Blank the semver-derived vars `set_version_vars` writes so a
-                // `{{ .Major }}`-style template renders empty rather than
-                // inheriting the cloned context version's parts (a false match).
+                // `{{ .Major }}`-style template renders empty; inheriting the
+                // cloned context version's parts would be a false match.
                 for key in [
                     "RawVersion",
                     "Base",
@@ -86,6 +86,30 @@ impl Context {
         raw: Option<&str>,
     ) -> anyhow::Result<Option<String>> {
         raw.map(|r| self.render_secret(field, r)).transpose()
+    }
+
+    /// A credential from the config field `field`, rendered through
+    /// [`render_secret`](Self::render_secret), or, when that is unset or
+    /// renders blank, from the first of the variables `env_vars` that holds a
+    /// value. Each value is trimmed, a blank variable counts as unset
+    /// ([`crate::git::non_blank_token`]), and the result is `None` when no
+    /// source has a value.
+    pub fn config_or_env_secret(
+        &self,
+        field: &str,
+        configured: Option<&str>,
+        env_vars: &[&str],
+    ) -> anyhow::Result<Option<String>> {
+        let configured = self
+            .render_secret_opt(field, configured)?
+            .filter(|v| !v.is_empty());
+        Ok(configured.or_else(|| {
+            env_vars.iter().find_map(|name| {
+                self.env_var(name)
+                    .as_deref()
+                    .and_then(crate::git::non_blank_token)
+            })
+        }))
     }
 
     /// Render a template if present, returning `None` for `None` input.

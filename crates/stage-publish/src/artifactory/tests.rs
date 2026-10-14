@@ -85,7 +85,7 @@ fn test_artifactory_missing_target_skips_the_entry() {
     }]);
     let ctx = dry_run_ctx(config);
     let log = ctx.logger("artifactory");
-    publish_to_artifactory(&ctx, &log).expect("a nameless target must skip, not fail");
+    publish_to_artifactory(&ctx, &log).expect("a nameless target must skip without an error");
     assert_eq!(
         ctx.skip_memento
             .snapshot()
@@ -214,7 +214,7 @@ fn a_half_configured_mtls_pair_does_not_stop_the_next_entry() {
 }
 
 /// Every entry disqualified itself, so the publisher reports itself skipped
-/// rather than as a run that happened to publish nothing.
+/// and does not count as a run that published nothing.
 #[test]
 fn every_entry_skipped_reports_the_publisher_as_skipped() {
     use anodizer_core::Publisher;
@@ -250,7 +250,7 @@ fn test_artifactory_empty_target_skips_the_entry() {
     }]);
     let ctx = dry_run_ctx(config);
     let log = ctx.logger("artifactory");
-    publish_to_artifactory(&ctx, &log).expect("an empty target must skip, not fail");
+    publish_to_artifactory(&ctx, &log).expect("an empty target must skip without an error");
     assert_eq!(ctx.skip_memento.len(), 1);
 }
 
@@ -358,7 +358,7 @@ fn test_artifactory_invalid_mode_skips_the_entry() {
     }]);
     let ctx = dry_run_ctx(config);
     let log = ctx.logger("artifactory");
-    publish_to_artifactory(&ctx, &log).expect("an invalid mode must skip, not fail");
+    publish_to_artifactory(&ctx, &log).expect("an invalid mode must skip without an error");
     assert!(
         ctx.skip_memento.snapshot()[0]
             .reason
@@ -431,7 +431,7 @@ fn test_artifactory_missing_name_skips_the_entry() {
     }]);
     let ctx = dry_run_ctx(config);
     let log = ctx.logger("artifactory");
-    publish_to_artifactory(&ctx, &log).expect("a nameless entry must skip, not fail");
+    publish_to_artifactory(&ctx, &log).expect("a nameless entry must skip without an error");
     assert_eq!(
         ctx.skip_memento
             .snapshot()
@@ -459,7 +459,7 @@ fn test_artifactory_empty_name_skips_the_entry() {
     }]);
     let ctx = dry_run_ctx(config);
     let log = ctx.logger("artifactory");
-    publish_to_artifactory(&ctx, &log).expect("a nameless entry must skip, not fail");
+    publish_to_artifactory(&ctx, &log).expect("a nameless entry must skip without an error");
     assert_eq!(
         ctx.skip_memento
             .snapshot()
@@ -534,7 +534,7 @@ fn test_artifactory_trusted_certificates_in_dry_run() {
     assert!(publish_to_artifactory(&ctx, &log).is_ok());
 }
 
-/// A username with no password disqualifies the entry rather than failing the
+/// A username with no password disqualifies the entry without failing the
 /// publisher: the reason is recorded, and every sibling entry still runs.
 #[test]
 fn test_artifactory_username_without_password_skips_the_entry_in_live_mode() {
@@ -546,7 +546,7 @@ fn test_artifactory_username_without_password_skips_the_entry_in_live_mode() {
         ..Default::default()
     }]);
     let log = ctx.logger("artifactory");
-    publish_to_artifactory(&ctx, &log).expect("a half-set credential must skip, not fail");
+    publish_to_artifactory(&ctx, &log).expect("a half-set credential must skip without an error");
     let events = ctx.skip_memento.snapshot();
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0].label, "test");
@@ -1015,7 +1015,7 @@ fn deb_matrix_params_unmapped_target_hard_errors() {
     let entry = ArtifactoryConfig::default();
     let art = deb_artifact("p.deb", Some("frob-unknown-linux-gnu"));
     let err = append_deb_matrix_params("https://a/p.deb", &art, &entry)
-        .expect_err("unmapped target must hard-fail, not inject a raw fragment");
+        .expect_err("unmapped target must hard-fail; a raw fragment must never be injected");
     let msg = err.to_string();
     assert!(
         msg.contains("frob-unknown-linux-gnu"),
@@ -1224,7 +1224,7 @@ fn test_dry_run_lists_matching_artifacts() {
 /// `Authorization: Bearer <PAT>` header back must not leak the token
 /// into the user-visible error chain. The decode helper sits on the
 /// JSON-parse fallback, raw-body fallback, and joined-output paths;
-/// this test pins all three.
+/// this test checks all three.
 #[test]
 fn decode_artifactory_error_body_redacts_bearer_tokens() {
     // Path 1: raw body when JSON parsing fails entirely.
@@ -1271,15 +1271,13 @@ fn decode_artifactory_error_body_redacts_bearer_tokens() {
     );
 }
 
-// -----------------------------------------------------------------
 // Live HTTP path tests (scripted responder)
 //
 // The in-process responder records (method, path, body) for every
 // request. Header capture is not available, so credential/checksum
 // header assertions go through `resolve_http_credentials` directly
-// (covered below) while the wire-shape assertions here pin method,
+// (covered below) while the wire-shape assertions here check method,
 // path, uploaded body bytes, and retry count.
-// -----------------------------------------------------------------
 
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::test_helpers::scripted_responder::{ScriptedRoute, spawn_scripted_responder};
@@ -1369,7 +1367,7 @@ fn upload_put_sends_file_body_to_target() {
     );
 }
 
-/// POST method routes the request as a POST (not PUT). Pins that the
+/// POST method routes the request as a POST. Checks that the
 /// configured method actually selects `client.post`.
 #[test]
 fn upload_post_uses_post_verb() {
@@ -1458,7 +1456,7 @@ fn upload_retries_5xx_then_succeeds() {
     assert_eq!(entries.len(), 2, "one 503 + one 201 = two attempts");
 }
 
-/// 5xx on every attempt exhausts the retry budget and surfaces an
+/// 5xx on every attempt exhausts the retry budget and returns an
 /// error naming the artifact, method, and status. The number of
 /// requests equals `max_attempts`.
 #[test]
@@ -1664,7 +1662,7 @@ fn upload_routes_url_echo_to_verbose_keeps_concise_result_at_default() {
 
     // Per-artifact upload detail is verbose-only — the default-verbosity
     // RESULT for an upload entry is the aggregate count-summary the shared
-    // driver emits (see `upload_summary`), not one line per artifact. So
+    // driver emits (see `upload_summary`), with no per-artifact line. So
     // `upload_single_artifact_prepared` emits nothing at Status.
     assert!(
         status.is_empty(),
@@ -1848,8 +1846,8 @@ fn upload_directory_path_bails() {
 }
 
 /// A custom header carrying broken template syntax fails fast (outside
-/// the retry loop) rather than pushing an unrendered `{{ }}` literal
-/// onto the wire.
+/// the retry loop), so an unrendered `{{ }}` literal never reaches
+/// the wire.
 #[test]
 fn upload_bad_custom_header_template_fails_fast() {
     let (addr, log_recorder) = spawn_scripted_responder(vec![ScriptedRoute {
@@ -2056,7 +2054,7 @@ fn publish_skips_when_identical_artifact_already_present() {
 }
 
 /// A path already holding a *different* artifact for the same version is
-/// immutable-version drift: the publish must hard-error, NOT silently
+/// immutable-version drift: the publish must hard-error, with no silent
 /// overwrite, when `overwrite` is unset.
 #[test]
 fn publish_bails_on_content_drift_without_overwrite() {
@@ -2130,11 +2128,7 @@ fn publish_live_no_artifacts_makes_no_request() {
     );
 }
 
-// -----------------------------------------------------------------
-// build_reqwest_client — mTLS + trusted-CA error/success paths
-// -----------------------------------------------------------------
-
-/// A non-existent client cert path surfaces a read error naming the
+/// A non-existent client cert path returns a read error naming the
 /// path (the `failed to read client cert` branch).
 #[test]
 fn build_client_missing_cert_file_errors() {
@@ -2184,8 +2178,8 @@ fn build_client_half_mtls_pair_errors() {
 }
 
 /// A set-but-empty (whitespace) trusted-certificates bundle is
-/// rejected with the copy-paste-accident guidance rather than
-/// installing an empty trust store.
+/// rejected with the copy-paste-accident guidance, so no
+/// empty trust store is installed.
 #[test]
 fn build_client_empty_trusted_certs_errors() {
     let err =
@@ -2216,10 +2210,6 @@ fn build_client_unparseable_trusted_certs_errors() {
 fn build_client_plain_succeeds() {
     assert!(build_reqwest_client(None, None, None).is_ok());
 }
-
-// -----------------------------------------------------------------
-// Credential cascade via resolve_http_credentials (env override)
-// -----------------------------------------------------------------
 
 /// With no config credentials, the per-entry env vars
 /// `ARTIFACTORY_PROD_USERNAME` / `_SECRET` resolve the basic-auth

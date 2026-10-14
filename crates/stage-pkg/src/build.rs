@@ -3,17 +3,13 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-// ---------------------------------------------------------------------------
-// Linux flat-package builder
-// ---------------------------------------------------------------------------
-
 /// Recursively apply `mtime` to every file and directory under `root`.
 ///
 /// [`anodizer_core::util::apply_mod_timestamp`] is files-only; the cpio
 /// `Payload` embeds the mtime of every entry it archives — including the
 /// directories that hold the install location — so deterministic packages
 /// require stamping directories as well as files. `filetime::set_file_mtime`
-/// uses `utimensat` rather than `open(O_WRONLY)`, so it stamps directories
+/// uses `utimensat`, so it stamps directories
 /// (which `open(O_WRONLY)` rejects with EISDIR) — leaving directory mtimes at
 /// wall-clock would leak non-reproducible bytes into the cpio Payload.
 fn apply_mtime_recursive(root: &std::path::Path, mtime: std::time::SystemTime) -> Result<()> {
@@ -30,7 +26,7 @@ fn apply_mtime_recursive(root: &std::path::Path, mtime: std::time::SystemTime) -
             .with_context(|| format!("set mtime on {}", path.display()))?;
     }
     // Stamp `root` itself last: the cpio archive includes the payload root as
-    // its `.` entry, whose mtime must be pinned too or the Payload (and the
+    // its `.` entry, whose mtime must be stamped too or the Payload (and the
     // .pkg) drifts by the directory's wall-clock creation time every build.
     filetime::set_file_mtime(root, ft_time)
         .with_context(|| format!("set mtime on {}", root.display()))?;
@@ -42,9 +38,9 @@ fn apply_mtime_recursive(root: &std::path::Path, mtime: std::time::SystemTime) -
 /// the files they contain.
 ///
 /// Returned unsorted; the caller sorts, which reproduces `LC_ALL=C sort` for
-/// the UTF-8 names a payload carries. A non-UTF-8 name is rejected rather than
-/// lossily transcoded — a mangled name in the archive would surface as a
-/// corrupt install, not an error.
+/// the UTF-8 names a payload carries. A non-UTF-8 name is rejected; a
+/// lossily transcoded, mangled name in the archive would show up as a
+/// corrupt install with no error.
 pub(crate) fn collect_find_paths(root: &std::path::Path) -> Result<Vec<String>> {
     fn walk(dir: &std::path::Path, prefix: &str, out: &mut Vec<String>) -> Result<()> {
         for entry in
@@ -118,17 +114,17 @@ fn xml_escape(s: &str) -> String {
 ///   which the odc format encodes from the live filesystem and which differ
 ///   every build — the dominant source of `.pkg` drift before this fix.
 /// - the gzip is produced in-process with flate2 (mtime=0, no embedded OS
-///   byte), not shell `gzip`, so the compressed stream is itself stable.
+///   byte) in place of shell `gzip`, so the compressed stream is itself stable.
 ///
-/// Payload mtimes are already pinned by [`apply_mtime_recursive`] (including
+/// Payload mtimes are already stamped by [`apply_mtime_recursive`] (including
 /// the `.` root) before this runs, so the cpio header `mtime` fields are fixed.
 fn cpio_gzip_archive(
     src_root: &std::path::Path,
     dest: &std::path::Path,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
-    // The name list is built and sorted here rather than piped in from
-    // `find | LC_ALL=C sort`: guarding that pipeline needed `set -o pipefail`,
+    // The name list is built and sorted here in place of a
+    // `find | LC_ALL=C sort` pipeline: guarding that pipeline needed `set -o pipefail`,
     // a bashism, and /bin/sh is dash on Debian and Ubuntu — there the shell
     // aborted on the unknown option and cpio never ran at all. Driving cpio
     // directly also makes its exit status the only one to check, which is what
@@ -190,7 +186,7 @@ fn cpio_gzip_archive(
 /// filesystem's live inode numbers, which change on every build and are the
 /// primary reason two otherwise-identical Payloads differ byte-for-byte.
 /// pkgbuild's Payloads carry zeroed inode identity, so zeroing here both fixes
-/// reproducibility and matches Apple's output. The walk stops at the
+/// reproducibility and matches Apple's output. The scan stops at the
 /// `TRAILER!!!` sentinel; trailing zero-padding after it is preserved verbatim.
 pub(crate) fn normalize_odc_cpio(data: &[u8]) -> Vec<u8> {
     const HDR: usize = 76;
@@ -199,7 +195,7 @@ pub(crate) fn normalize_odc_cpio(data: &[u8]) -> Vec<u8> {
     while i + HDR <= data.len() {
         if &data[i..i + 6] != b"070707" {
             // Not on a header boundary (unexpected) — copy the remainder as-is
-            // rather than corrupt the archive.
+            // which keeps the archive intact.
             out.extend_from_slice(&data[i..]);
             return out;
         }
@@ -267,7 +263,7 @@ pub fn build_flat_pkg_linux(
 
     // Mirror `--root <staging> --install-location <loc>`: the payload must live
     // UNDER the install location inside pkgroot so Bom/Payload carry the real
-    // destination path, not a flat `./binary`.
+    // destination path in place of a flat `./binary`.
     let rel_install = install_location.trim_start_matches('/');
     let payload_dest = if rel_install.is_empty() {
         pkgroot.clone()
@@ -313,8 +309,8 @@ pub fn build_flat_pkg_linux(
     cpio_gzip_archive(&pkgroot, &component.join("Payload"), log)?;
 
     // Bom: mkbom of the pkgroot. `-u 0 -g 0` forces root ownership so the Bom's
-    // encoded uid/gid match the `-R 0:0` Payload and native pkgbuild, instead of
-    // leaking the runner's per-user ids.
+    // encoded uid/gid match the `-R 0:0` Payload and native pkgbuild, with none of
+    // the runner's per-user ids leaking in.
     let bom_out = component.join("Bom");
     let output = Command::new("mkbom")
         .arg("-u")
@@ -417,7 +413,7 @@ pub fn build_flat_pkg_linux(
     // The xar TOC embeds wall-clock per-file ctime/mtime/atime, the live
     // inode, and an archive-level creation-time that msitools' xar fills from
     // `now` and does NOT derive from SOURCE_DATE_EPOCH — so two builds a second
-    // apart produce different `.pkg` bytes despite an otherwise-pinned payload.
+    // apart produce different `.pkg` bytes despite an otherwise-stable payload.
     // Rewrite those fields to the same epoch the payload was stamped with and
     // re-seal the archive so the output is byte-reproducible.
     normalize_xar_toc(&pkg_abs, stamp_epoch).with_context(|| {
@@ -478,7 +474,8 @@ pub(crate) fn normalize_xar_toc(path: &std::path::Path, epoch_secs: i64) -> Resu
     let toc_len_comp = u64::from_be_bytes(data[8..16].try_into().unwrap()) as usize;
     let cksum_alg = u32::from_be_bytes(data[24..28].try_into().unwrap());
     // SHA-1 is the only algorithm anodizer's flat-pkg path produces; refuse to
-    // touch anything else rather than reseal with a wrong-width/garbage digest.
+    // touch anything else; resealing with a wrong-width or garbage digest would
+    // corrupt the archive.
     if cksum_alg != 1 {
         anyhow::bail!(
             "unexpected xar checksum algorithm {cksum_alg} (expected 1=SHA-1); \
@@ -537,7 +534,7 @@ pub(crate) fn normalize_xar_toc(path: &std::path::Path, epoch_secs: i64) -> Resu
 ///
 /// `<ctime>/<mtime>/<atime>` use a `Z`-suffixed RFC-3339 stamp; xar's
 /// archive-level `<creation-time>` is the same instant without the `Z`. Inodes
-/// are pinned to `0` (matching pkgbuild's identity-stripped output).
+/// are set to `0` (matching pkgbuild's identity-stripped output).
 pub(crate) fn rewrite_toc_fields(toc: &[u8], stamp: &str) -> Vec<u8> {
     let toc = String::from_utf8_lossy(toc);
     let mut s = toc.into_owned();

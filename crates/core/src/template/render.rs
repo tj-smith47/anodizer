@@ -28,8 +28,8 @@ fn insert_sorted(ctx: &mut tera::Context, key: &'static str, map: &HashMap<Strin
 /// Build a `tera::Context` from `TemplateVars`, pre-populating missing env var
 /// keys referenced in the template with empty strings.
 ///
-/// An empty string is returned for `{{ .Env.NONEXISTENT }}` rather than
-/// erroring. Tera's strict mode would error on a missing map key, so the
+/// An empty string is returned for `{{ .Env.NONEXISTENT }}`, with no
+/// error. Tera's strict mode would error on a missing map key, so the
 /// preprocessed template is scanned for `Env.VARNAME` references and every
 /// referenced key is ensured to exist in the env map (defaulting to "").
 ///
@@ -156,8 +156,8 @@ pub fn render_with_env(
     vars: &TemplateVars,
     host_env: &dyn EnvSource,
 ) -> Result<String> {
-    // Runs against the source text so the diagnostic quotes what the author
-    // wrote, not a half-rewritten intermediate.
+    // Runs against the source text so the diagnostic quotes exactly what the
+    // author wrote.
     check_block_expressions(template)?;
     check_target_variant_calls(template)?;
     // Shield bash `${#…}` from Tera's `{#` comment-open before parsing, so it
@@ -186,7 +186,7 @@ pub fn render_with_env(
 
     // Override envOrDefault and isEnvSet with closures that read from the
     // template context's Env map. This ensures .env file vars (loaded into
-    // TemplateVars via set_env) are visible, not just process env vars.
+    // TemplateVars via set_env) are visible as well as process env vars.
     // Falls back to the injected `host_env` for vars that exist there but
     // were not explicitly added to the template context.
     let env_map = std::sync::Arc::new(vars.all_env().clone());

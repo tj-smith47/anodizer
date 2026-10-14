@@ -50,7 +50,7 @@ fn decode_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<HomebrewCo
 /// right now. Shared by [`anodizer_core::Publisher::requirements`] and
 /// [`anodizer_core::Publisher::config_fully_inactive`] so the two cannot
 /// diverge. `preflight` keeps its own loop (it needs per-entry repository
-/// resolution alongside the filter, not just a boolean).
+/// resolution alongside the filter as well as a boolean).
 fn active_homebrew_core_configs(ctx: &Context) -> Vec<&anodizer_core::config::HomebrewCoreConfig> {
     ctx.config
         .homebrew_cores
@@ -336,8 +336,8 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
         Ok(())
     }
 
-    /// Live pre-publish gate. Per active entry, everything surfaces as a
-    /// Warning (never a Blocker): a missing token, a formula that does not
+    /// Live pre-publish gate. Per active entry, everything is reported as a
+    /// Warning (no Blocker): a missing token, a formula that does not
     /// exist in the target repo, and a formula already at the new version
     /// (the run path skips it idempotently) are all operator signals, not
     /// hard stops — the publisher itself defaults to `required: false`.
@@ -364,8 +364,8 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
             };
             let (up_owner, up_repo) = resolve_upstream(cfg);
             // A configured `repository.token` template that fails to render is
-            // a real misconfiguration; surface it rather than treating it as
-            // an absent token.
+            // a real misconfiguration; report it as such, distinct from an
+            // absent token.
             let token = match resolve_token(ctx, cfg) {
                 Ok(t) => t,
                 Err(e) => {

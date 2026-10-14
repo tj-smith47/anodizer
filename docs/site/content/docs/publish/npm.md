@@ -58,7 +58,7 @@ By default (`libc_aware: true`) anodizer emits **separate** packages for linux m
 npms:
   - scope: "@acme"
     metapackage: cli
-    libc_aware: false     # one @acme/cli-linux-x64 instead of -musl / -glibc
+    libc_aware: false     # one @acme/cli-linux-x64, with no -musl / -glibc split
 ```
 
 ### Custom per-platform package names

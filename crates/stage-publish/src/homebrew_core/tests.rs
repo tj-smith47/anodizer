@@ -36,10 +36,6 @@ fn new_sha() -> String {
     "22".repeat(32)
 }
 
-// -----------------------------------------------------------------------------
-// Formula fixtures
-// -----------------------------------------------------------------------------
-
 /// Archive-form formula with an explicit `version` stanza and a `bottle`
 /// block whose keyed `sha256` lines must survive the rewrite untouched.
 fn archive_formula() -> String {
@@ -119,10 +115,6 @@ fn rw(sha256: Option<String>, tag: Option<&str>, revision: Option<&str>) -> Form
         revision: revision.map(str::to_string),
     }
 }
-
-// =============================================================================
-// formula.rs — pure rewrite (no HTTP)
-// =============================================================================
 
 #[test]
 fn rewrite_archive_form_bumps_url_sha256_and_version() {
@@ -333,7 +325,7 @@ fn rewrite_errors_when_no_url_stanza() {
 #[test]
 fn rewrite_errors_when_archive_form_missing_sha256_digest() {
     // Archive-form formula has a source `sha256` stanza but the caller
-    // supplied no new digest — a hard error, never a silent no-op.
+    // supplied no new digest, which is a hard error.
     let err = rewrite_formula(&archive_formula(), &rw(None, None, None)).unwrap_err();
     assert!(err.to_string().contains("sha256"), "{err:#}");
 }
@@ -349,10 +341,6 @@ fn rewrite_preserves_trailing_newline_presence() {
     let (out, _) = rewrite_formula(&without_nl, &rw(Some(new_sha()), None, None)).expect("rewrite");
     assert!(!out.ends_with('\n'), "absent trailing newline stays absent");
 }
-
-// -----------------------------------------------------------------------------
-// revision reset — a version bump drops the standalone `revision N` line
-// -----------------------------------------------------------------------------
 
 /// Archive-form formula carrying a standalone `revision 2` line between the
 /// `version` stanza and the bottle block. Dropping that line must leave the
@@ -509,11 +497,6 @@ fn rewrite_revisionless_formula_is_unaffected() {
     );
 }
 
-// -----------------------------------------------------------------------------
-// resource blocks — multi-source formulae are left byte-identical past the
-// first url + first source sha256
-// -----------------------------------------------------------------------------
-
 /// Archive-form formula with a `resource "docs" do url ...; sha256 ... end`
 /// block. The resource's url/sha256 sit AFTER the top-level ones and must
 /// survive the first-match rewrite untouched.
@@ -562,10 +545,6 @@ fn rewrite_leaves_resource_url_and_sha256_untouched() {
     assert_eq!(out.matches(&new_sha()).count(), 1, "{out}");
 }
 
-// -----------------------------------------------------------------------------
-// formula path layout
-// -----------------------------------------------------------------------------
-
 #[test]
 fn sharded_and_flat_paths() {
     assert_eq!(sharded_formula_path("my-tool"), "Formula/m/my-tool.rb");
@@ -575,10 +554,6 @@ fn sharded_and_flat_paths() {
     // Shard char is lowercased.
     assert_eq!(sharded_formula_path("Zsh"), "Formula/z/Zsh.rb");
 }
-
-// -----------------------------------------------------------------------------
-// formula_is_current — idempotency
-// -----------------------------------------------------------------------------
 
 #[test]
 fn formula_is_current_matches_url_tag_or_version() {
@@ -607,10 +582,6 @@ fn formula_is_current_matches_url_tag_or_version() {
         "1.2.3"
     ));
 }
-
-// =============================================================================
-// Config derivation defaults
-// =============================================================================
 
 fn demo_crate(name: &str, path: &str) -> CrateConfig {
     CrateConfig {
@@ -760,7 +731,7 @@ fn resolve_token_ladder() {
     assert_eq!(got.env_var.as_deref(), Some("HOMEBREW_CORE_GITHUB_TOKEN"));
 
     // COMMITTER_TOKEN (mislav/bump-homebrew-formula-action's name) is next, and
-    // the ACTUAL var is recorded (H15: not hardcoded to TOKEN_ENV_VARS[0]).
+    // the ACTUAL var is recorded (whichever entry of TOKEN_ENV_VARS was read).
     let ctx = TestContextBuilder::new()
         .project_name("demo")
         .tag("v1.2.3")
@@ -802,9 +773,63 @@ fn resolve_token_ladder() {
     );
 }
 
-// =============================================================================
-// run() — end-to-end against a scripted GitHub API
-// =============================================================================
+/// homebrew-core reads the order every pull-request publisher shares: its
+/// own variables before the run token, the run token on a GitHub run before
+/// the GitHub variables, and a `pull_request.token` ahead of all of them for
+/// the pull request. The run token records no variable.
+#[test]
+fn homebrew_core_reads_the_shared_token_order() {
+    let run = TestContextBuilder::new()
+        .sealed_env()
+        .token(Some("run-tok".into()))
+        .env("GITHUB_TOKEN", "gh-tok")
+        .build();
+    let got = resolve_token(&run, &HomebrewCoreConfig::default())
+        .unwrap()
+        .unwrap();
+    assert_eq!(got.token, "run-tok", "the run token precedes GITHUB_TOKEN");
+    assert_eq!(got.env_var, None, "the run token records no variable");
+
+    let own = TestContextBuilder::new()
+        .sealed_env()
+        .token(Some("run-tok".into()))
+        .env("COMMITTER_TOKEN", " committer-tok\n")
+        .build();
+    let got = resolve_token(&own, &HomebrewCoreConfig::default())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        got.token, "committer-tok",
+        "the publisher variable precedes the run token"
+    );
+    assert_eq!(got.env_var.as_deref(), Some("COMMITTER_TOKEN"));
+
+    let cfg = HomebrewCoreConfig {
+        repository: Some(RepositoryConfig {
+            token: Some("repo-tok".into()),
+            pull_request: Some(anodizer_core::config::PullRequestConfig {
+                token: Some("pr-tok".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve_pr_token(&own, &cfg).unwrap().as_deref(),
+        Some("pr-tok")
+    );
+    assert_eq!(
+        resolve_token(&own, &cfg).unwrap().unwrap().token,
+        "repo-tok"
+    );
+    assert_eq!(
+        resolve_pr_token(&run, &HomebrewCoreConfig::default())
+            .unwrap()
+            .as_deref(),
+        Some("run-tok")
+    );
+}
 
 fn leak_resp(status: &str, body: &str) -> &'static str {
     Box::leak(
@@ -849,7 +874,7 @@ fn run_ctx(
     ctx
 }
 
-/// A homebrew-core entry with the download URL + sha256 pinned so the run
+/// A homebrew-core entry with the download URL + sha256 fixed so the run
 /// path never touches the network for the digest.
 fn pinned_cfg() -> HomebrewCoreConfig {
     HomebrewCoreConfig {
@@ -1000,10 +1025,10 @@ fn run_fork_pr_happy_path_bumps_core_formula() {
 #[test]
 fn run_git_form_bumps_tag_and_revision_not_url_and_does_not_fail() {
     // End-to-end git-form bump: the committed formula moves tag:/revision:
-    // and leaves the `.git` url untouched — the H1 regression (a tarball url
-    // clobbering the git url) must not recur, and the bump must not hard-fail.
+    // and leaves the `.git` url untouched — the regression of a tarball url
+    // clobbering the git url must not recur, and the bump must not hard-fail.
     let mut routes = core_fork_pr_routes();
-    // Serve a git-form formula instead of the archive one.
+    // Serve a git-form formula.
     routes[1].response = contents_resp(&git_formula());
     let (addr, log) = spawn_scripted_responder(routes);
 
@@ -1226,7 +1251,7 @@ fn run_skips_when_open_pr_already_exists() {
 fn run_records_snapshot_when_create_pr_returns_already_exists() {
     // A concurrent run opened the PR between the idempotency probe (empty) and
     // this create → 422 already-exists. The target MUST still be recorded so
-    // rollback can find+close the PR by head+branch (H6).
+    // rollback can find+close the PR by head+branch.
     let mut routes = core_fork_pr_routes();
     // Idempotency probe stays empty; the create returns 422 already-exists.
     routes[7].response = leak_resp(
@@ -1253,7 +1278,7 @@ fn run_records_snapshot_when_create_pr_returns_already_exists() {
 
 #[test]
 fn run_skips_repo_get_when_base_branch_explicit_on_core_path() {
-    // H12: with an explicit base branch, a Homebrew/homebrew-core bump never
+    // With an explicit base branch, a Homebrew/homebrew-core bump never
     // needs GET /repos (default_branch derived, can_push never consulted on the
     // fork path). Routes omit it entirely — a lazy fetch means it is not called.
     let routes: Vec<ScriptedRoute> = core_fork_pr_routes().into_iter().skip(1).collect();
@@ -1359,10 +1384,6 @@ fn run_hard_errors_when_token_missing() {
     assert!(err.to_string().contains("token is required"), "{err:#}");
 }
 
-// =============================================================================
-// run() evidence + rollback decode
-// =============================================================================
-
 #[test]
 fn run_builds_evidence_with_pr_ref_and_snapshot() {
     let (addr, _log) = spawn_scripted_responder(core_fork_pr_routes());
@@ -1439,13 +1460,11 @@ fn rollback_decodes_evidence_and_closes_the_pr() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // rollback: per-branch coverage (empty / direct-commit / token-less /
 // query-fail / no-open-PR / already-closed / failed-close) driven end-to-end
 // over the loopback GitHub API through the Context env source (no process-env
 // mutation — `find_open_pr_numbers_for_head_with_env` /
 // `close_pr_via_api_with_env` resolve `ANODIZER_GITHUB_API_BASE` off `env`).
-// -----------------------------------------------------------------------------
 
 /// One recorded bump target. `direct_commit` marks the no-PR path; a
 /// non-direct target carries the fork head/branch the close flow queries.
@@ -1589,7 +1608,7 @@ fn rollback_warns_when_pr_query_fails() {
             .any(|m| m.contains("failed to query")
                 && m.contains("open bump PRs")
                 && m.contains("manual cleanup")),
-        "a failed query must surface the actionable warn: {:?}",
+        "a failed query must print the actionable warn: {:?}",
         cap.warn_messages()
     );
     assert!(
@@ -1625,7 +1644,7 @@ fn rollback_warns_when_no_open_pr_for_head() {
 }
 
 /// PATCH returns 410 ⇒ the desired end-state (PR not open) is already true;
-/// the already-closed status line fires, NOT a failure warn.
+/// the already-closed status line fires and no failure warn does.
 #[test]
 fn rollback_treats_gone_pr_as_already_closed() {
     let (cap, reqs) = run_hbc_rollback(
@@ -1650,7 +1669,7 @@ fn rollback_treats_gone_pr_as_already_closed() {
         cap.all_messages()
             .iter()
             .any(|(_, m)| m.contains("#42 already closed")),
-        "a 410 PATCH must record the already-closed status, not a failure: {:?}",
+        "a 410 PATCH must record the already-closed status and no failure: {:?}",
         cap.all_messages()
     );
     assert!(
@@ -1719,10 +1738,6 @@ fn snapshot_serde_round_trips_without_token_value() {
         serde_json::from_str(&json).unwrap();
     assert_eq!(back, snap);
 }
-
-// =============================================================================
-// preflight
-// =============================================================================
 
 fn preflight_ctx(
     addr: &std::net::SocketAddr,
@@ -1804,8 +1819,9 @@ fn preflight_warns_when_version_already_current() {
     }
 }
 
-/// No resolvable GitHub token ⇒ the missing-token Warning surfaces (never a
-/// Blocker) even though the probe may still proceed against the responder.
+/// No resolvable GitHub token ⇒ the missing-token Warning is reported (a
+/// Warning, with no Blocker) even though the probe may still proceed against
+/// the responder.
 #[test]
 fn preflight_warns_when_no_token_resolvable() {
     let routes = vec![
@@ -1925,8 +1941,8 @@ fn preflight_probes_the_pull_request_token_the_publish_opens_with() {
     }
 }
 
-/// The default-branch query failing ⇒ the `cannot query` Warning (never a
-/// hard stop), so a transient API blip doesn't block the release.
+/// The default-branch query failing ⇒ the `cannot query` Warning, so a
+/// transient API blip doesn't block the release.
 #[test]
 fn preflight_warns_when_default_branch_query_fails() {
     let routes = vec![ScriptedRoute {
@@ -1943,7 +1959,7 @@ fn preflight_warns_when_default_branch_query_fails() {
     {
         PreflightCheck::Warning(m) => assert!(
             m.contains("cannot query") && m.contains("homebrew-core"),
-            "a failed default-branch query must warn, not block; got: {m}"
+            "a failed default-branch query must warn and must not block; got: {m}"
         ),
         other => panic!("expected a query-failure Warning, got {other:?}"),
     }
@@ -1981,10 +1997,6 @@ fn preflight_warns_when_formula_probe_errors() {
     }
 }
 
-// =============================================================================
-// config_fully_inactive
-// =============================================================================
-
 /// Empty `--crate` selection means "all crates" — an active
 /// `homebrew_cores[]` entry must keep the publisher live even with no
 /// `--crate` filter applied. `homebrew_cores` is a top-level list, not
@@ -2000,10 +2012,6 @@ fn config_fully_inactive_false_with_empty_selection_and_active_entry() {
         "an active homebrew_cores[] entry must keep the publisher live"
     );
 }
-
-// =============================================================================
-// requirements() — the per-active-entry env-preflight declaration
-// =============================================================================
 
 /// A templated `repository.token` declares the env refs it reads ahead of
 /// the variables the chain falls through to, as one any-of: a template that
@@ -2058,10 +2066,6 @@ fn requirements_without_token_declares_the_full_any_of_ladder() {
     );
 }
 
-// =============================================================================
-// Config-mode axis: single-crate, lockstep, per-crate `ids:` scoping
-// =============================================================================
-
 #[test]
 fn config_mode_single_crate_derives_name_from_the_one_crate() {
     let ctx = ctx_with(vec![demo_crate("my-tool", ".")]);
@@ -2100,10 +2104,6 @@ fn config_mode_per_crate_ids_scopes_name_and_download_url() {
         "https://github.com/acme/cli-repo/archive/refs/tags/v1.2.3.tar.gz"
     );
 }
-
-// =============================================================================
-// commit_author — author/committer identity on the contents-API commit
-// =============================================================================
 
 /// Decode the base64 `content` of a captured PUT into the committed formula.
 fn put_committed_body(put: &RequestLog) -> serde_json::Value {
@@ -2175,10 +2175,6 @@ fn run_use_github_app_token_omits_author_and_committer() {
         put.body
     );
 }
-
-// =============================================================================
-// direct_commit vs repository.pull_request.enabled convergence
-// =============================================================================
 
 /// The 3-route personal-repo set (the token can push): repo probe, sharded
 /// locate, and the direct-commit PUT to the base branch.
@@ -2311,10 +2307,6 @@ fn run_opens_the_pull_request_with_the_pull_request_token() {
     assert_eq!(pr.header("Authorization"), Some("Bearer ghp_pr_token"));
 }
 
-// =============================================================================
-// update_existing_pr — refresh an open bump PR in place
-// =============================================================================
-
 #[test]
 fn run_update_existing_pr_refreshes_branch_in_place() {
     let mut routes = core_fork_pr_routes();
@@ -2382,15 +2374,11 @@ fn run_default_leaves_open_pr_untouched() {
     );
 }
 
-// =============================================================================
-// per-crate config mode — commit_author + update_existing_pr end-to-end
-// =============================================================================
-
 #[test]
 fn run_per_crate_mode_threads_commit_author_and_updates_existing_pr() {
     // `ids: [cli]` scopes the bump to the cli crate: the formula name is
     // `cli`, the commit carries the configured author, and an open PR for the
-    // scoped branch is refreshed in place rather than duplicated.
+    // scoped branch is refreshed in place with no duplicate opened.
     let routes = vec![
         ScriptedRoute {
             method: "GET",

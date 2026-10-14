@@ -52,8 +52,8 @@ fn read(dir: &Path, rel: &str) -> String {
     fs::read_to_string(dir.join(rel)).unwrap()
 }
 
-/// The refreshed CHANGELOG.md must be committed, not left as an unstaged
-/// working-tree edit. Returns the file content at HEAD.
+/// The refreshed CHANGELOG.md must be committed; an unstaged
+/// working-tree edit is a failure. Returns the file content at HEAD.
 fn show_head(dir: &Path, rel: &str) -> String {
     let out = anodizer_core::test_helpers::output_with_spawn_retry(
         || {
@@ -89,10 +89,6 @@ fn head_commit_message(dir: &Path) -> String {
     );
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
-
-// ---------------------------------------------------------------------------
-// Mode 1: single-crate (--crate + version_sync)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn single_crate_refreshes_changelog() {
@@ -142,7 +138,7 @@ crates:
 
     // A bare `changelog: {}` resolves to the root destination (the deliberate
     // default), so the single-crate section ends up in the workspace-root
-    // CHANGELOG.md rather than a per-crate file.
+    // CHANGELOG.md and no per-crate file is written.
     let changelog = read(root, "CHANGELOG.md");
     assert!(
         changelog.contains("## [0.2.0]"),
@@ -152,7 +148,7 @@ crates:
         changelog.contains("add a thing"),
         "expected the feat commit in the section: {changelog}"
     );
-    // Refreshed file is in the bump commit, not just the working tree.
+    // Refreshed file is in the bump commit as well as the working tree.
     let head = show_head(root, "CHANGELOG.md");
     assert!(
         head.contains("## [0.2.0]"),
@@ -163,7 +159,7 @@ crates:
     let msg = head_commit_message(root);
     assert!(
         !msg.contains("changelog regenerated"),
-        "root-only aggregate must mint no provenance marker: {msg}"
+        "root-only aggregate must write no provenance marker: {msg}"
     );
 }
 
@@ -455,10 +451,6 @@ crates:
     );
 }
 
-// ---------------------------------------------------------------------------
-// Mode 2: workspace-lockstep
-// ---------------------------------------------------------------------------
-
 #[test]
 fn lockstep_refreshes_each_member_changelog() {
     let tmp = TempDir::new().unwrap();
@@ -578,10 +570,6 @@ version = "0.1.0"
         "--dry-run must not write a CHANGELOG.md"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Mode 3: workspace per-crate (flat crates: with independent versions)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn per_crate_refreshes_each_bumped_crate_changelog() {
@@ -732,10 +720,6 @@ crates:
     );
 }
 
-// ---------------------------------------------------------------------------
-// Edge cases
-// ---------------------------------------------------------------------------
-
 /// First tag (no prior tag → `from_tag == None`): the engine renders from full
 /// HEAD history, so a section is still produced and committed. Exercises the
 /// `old_tag_str.is_empty()` branch.
@@ -882,7 +866,7 @@ crates:
 }
 
 /// Lockstep default (no `--changelog`) suppresses the refresh for every member
-/// (proves the opt-in default at the lockstep site, not just single-crate).
+/// (proves the opt-in default at the lockstep site as well as single-crate).
 #[test]
 fn lockstep_default_no_flag_suppresses() {
     let tmp = TempDir::new().unwrap();
@@ -1080,10 +1064,6 @@ crates:
     }
 }
 
-// ---------------------------------------------------------------------------
-// version_files + changelog cohesion: both sibling features ride ONE commit
-// ---------------------------------------------------------------------------
-
 /// Enrolling BOTH a `version_files` path AND a `changelog:` block at the
 /// lockstep site: a single `anodizer tag` must fold the rewritten version_files
 /// file AND the new `## [<ver>]` changelog section into the SAME bump commit
@@ -1258,7 +1238,7 @@ fn lockstep_root_aggregate_spans_all_members() {
     let msg = head_commit_message(root);
     assert!(
         !msg.contains("changelog regenerated"),
-        "root-only aggregate must mint no provenance marker: {msg}"
+        "root-only aggregate must write no provenance marker: {msg}"
     );
 }
 
@@ -1288,10 +1268,6 @@ fn lockstep_root_aggregate_ignores_non_first_member_filter() {
         "aggregate still spans every member regardless of root.crates: {changelog}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Multi-track per-crate root: subsection-promote + chronology + both + filter
-// ---------------------------------------------------------------------------
 
 /// Seed a two-crate per-crate workspace (`core` on the `core-v*` track, `cli` on
 /// `cli-v*`) whose root `CHANGELOG.md` carries a curated `### core` and `### cli`
@@ -1445,7 +1421,7 @@ fn multitrack_root_date_promotes_only_tagged_track_subsection() {
 
 /// Multi-track per-crate root, `chronology: tag`: with a seeded
 /// newer-dated OTHER-track section present, the newly promoted `core` section
-/// must end up in its tag-prefix cluster (semver-desc) rather than on top — the
+/// must end up in its tag-prefix cluster (semver-desc) below the top — the
 /// observable divergence from `date`, which would slot newest-by-date first.
 #[test]
 fn multitrack_root_tag_clusters_by_prefix_not_date() {
@@ -1509,11 +1485,11 @@ fn multitrack_root_tag_clusters_by_prefix_not_date() {
     // Divergence vs `date`: under `date` today's section would be the file's
     // newest and sit above the 2099 cli release; under `tag` the cli cluster
     // stays on top, so core-v0.2.0 is written between the cli cluster and the older
-    // core release rather than at the top.
+    // core release, below the top.
     assert!(
         new_idx > cli_idx && new_idx < old_core_idx,
         "tag chronology must slot core-v0.2.0 between the cli cluster ({cli_idx}) \
-         and the older core release ({old_core_idx}), not at the top: {changelog}"
+         and the older core release ({old_core_idx}); found it at the top: {changelog}"
     );
 }
 
@@ -1647,7 +1623,6 @@ fn root_crates_subset_filters_excluded_track_from_root() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Cross-engine end-to-end: `changelog --write` (refresh) → hand-edit → `tag
 // --changelog` (promote). The headline guarantee: an operator can preview /
 // generate the pending section, curate it by hand, commit, then tag WITHOUT
@@ -1656,7 +1631,6 @@ fn root_crates_subset_filters_excluded_track_from_root() {
 // (regenerate `[Unreleased]`, no promote); `tag --changelog` runs
 // `render_*_section` (promote `[Unreleased]` → `## [<version>] - <date>`,
 // preserving a curated body verbatim).
-// ---------------------------------------------------------------------------
 
 /// Replace the substring `needle` in the file at `dir/rel` with `replacement`,
 /// asserting `needle` was actually present (so a silent no-op edit can't pass
@@ -2021,12 +1995,10 @@ fn same_prefix_flat_bump_collapses_to_one_section() {
     assert_section_no_graft(&head, "[0.2.0]", &["Docs", "Features"]);
 }
 
-// ---------------------------------------------------------------------------
-// C1 guard: the verbose live tee must NOT pollute stdout (the machine-readable
+// The verbose live tee must NOT pollute stdout (the machine-readable
 // GHA-output channel). `tag` emits `new_tag=…` on stdout; a `tag_pre_hooks`
-// hook that echoes to its own stdout, at --verbose, must surface ONLY on
+// hook that echoes to its own stdout, at --verbose, must appear ONLY on
 // stderr — never interleaved into the `new_tag=` stream.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn verbose_tag_pre_hook_stdout_does_not_pollute_stdout_channel() {
@@ -2091,7 +2063,7 @@ crates:
     );
     assert!(
         stderr.contains("HOOKSTDOUTPOLLUTANT"),
-        "the hook's stdout must still surface live on stderr at --verbose; \
+        "the hook's stdout must still appear live on stderr at --verbose; \
          got stderr: {stderr:?}"
     );
 }

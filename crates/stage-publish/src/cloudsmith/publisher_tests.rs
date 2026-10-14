@@ -237,7 +237,7 @@ fn cloudsmith_target_extra_carries_no_secret_material() {
     assert!(s.contains("\"slug\":\"aBcD1234\""), "{s}");
 }
 
-// B13 — rollback against evidence whose targets all lack a slug
+// Rollback against evidence whose targets all lack a slug
 // (older `anodizer tag rollback` replays, or step-3 responses
 // that omitted the slug field) returns Ok and never tries to issue
 // a DELETE against the Cloudsmith API. The `CLOUDSMITH_API_KEY` is
@@ -282,7 +282,10 @@ fn cloudsmith_rollback_falls_back_to_warn_when_slug_missing() {
     let msg = cloudsmith_manual_cleanup_msg(&targets[0]);
     assert!(msg.contains("widget_1.0.0_amd64.deb"), "{msg}");
     assert!(msg.contains("acme/widget"), "{msg}");
-    assert!(msg.contains("per-package slug not surfaced"), "{msg}");
+    assert!(
+        msg.contains("per-package slug missing from evidence"),
+        "{msg}"
+    );
     assert!(msg.contains("Cloudsmith dashboard"), "{msg}");
 }
 
